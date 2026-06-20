@@ -11,6 +11,24 @@ import { executeInspectWorkspaceTask } from "../src/execution/inspect-workspace.
 const now = "2026-01-01T00:00:00.000Z";
 
 describe("inspect workspace executor", () => {
+  for (const [name, hook, expectedStep, expectsEvidence] of [
+    ["evidence persistence", "beforeEvidencePersist", 1, false],
+    ["verification persistence", "beforeVerificationPersist", 2, true],
+    ["final verified transition", "beforeFinalTransition", 2, true],
+  ] as const) it(`fails safely when ${name} fails`, () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-executor-failure-"));
+    try {
+      writeFileSync(join(root, "file.txt"), "content");
+      const db = openDatabase(":memory:"); const projects = projectRepository(db); const tasks = taskRepository(db); const records = taskRecordsRepository(db);
+      projects.createProject({ id: "project", name: "Project", workspacePath: root, createdAt: now }); tasks.createTask({ id: "task", projectId: "project", kind: "inspect_workspace", status: "queued", createdAt: now });
+      expect(() => executeInspectWorkspaceTask({ db, taskId: "task", now: () => now, hooks: { [hook]: () => { throw new Error("forced"); } } })).toThrow("Workspace task failed");
+      const aggregate = records.getAggregate("task");
+      expect(aggregate.task.status).toBe("failed"); expect(aggregate.plan[expectedStep]?.status).toBe("failed");
+      expect(aggregate.verification).toBeUndefined(); expect(aggregate.events.at(-1)?.type).toBe("task.failed");
+      expect(aggregate.disclosure?.executionMode).toBe("deterministic-local"); expect(aggregate.evidence).toHaveLength(expectsEvidence ? 1 : 0); db.close();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("marks active inspection step failed without a verified result", () => {
     const root = mkdtempSync(join(tmpdir(), "morrow-executor-failure-"));
     try {

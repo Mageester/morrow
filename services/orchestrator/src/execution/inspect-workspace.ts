@@ -7,9 +7,10 @@ import { projectRepository } from "../repositories/projects.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 
-type Dependencies = { db: Database.Database; taskId: string; now?: () => string; maxDepth?: number; maxResults?: number; inspect?: typeof inspectWorkspace };
+type Hooks = { beforeEvidencePersist?: () => void; beforeVerificationPersist?: () => void; beforeFinalTransition?: () => void };
+type Dependencies = { db: Database.Database; taskId: string; now?: () => string; maxDepth?: number; maxResults?: number; inspect?: typeof inspectWorkspace; hooks?: Hooks };
 
-export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date().toISOString(), maxDepth = 8, maxResults = 500, inspect = inspectWorkspace }: Dependencies) {
+export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date().toISOString(), maxDepth = 8, maxResults = 500, inspect = inspectWorkspace, hooks = {} }: Dependencies) {
   const projects = projectRepository(db); const tasks = taskRepository(db); const records = taskRecordsRepository(db);
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "inspect_workspace" || task.status !== "queued") throw new Error("Task is not available for workspace inspection");
@@ -35,17 +36,23 @@ export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date()
   activeStepId = inspectionStep.id;
   records.updatePlanStepStatus(inspectionStep.id, "running", now()); event("step.started", { stepId: inspectionStep.id });
   const inspection = inspect(validatedPath, { maxDepth, maxResults });
-  for (const entry of inspection.entries) records.appendEvidence({ id: randomUUID(), taskId, type: "file", path: entry.path, metadata: { type: entry.type, size: entry.size }, createdAt: now() });
+  for (const entry of inspection.entries) { hooks.beforeEvidencePersist?.(); records.appendEvidence({ id: randomUUID(), taskId, type: "file", path: entry.path, metadata: { type: entry.type, size: entry.size }, createdAt: now() }); }
   event("workspace.inspected", { resultCount: inspection.entries.length, depthTruncated: inspection.truncatedByDepth, countTruncated: inspection.truncatedByCount, inaccessibleEntryCount: inspection.inaccessibleEntryCount });
   event("evidence.persisted", { count: inspection.entries.length });
   records.updatePlanStepStatus(inspectionStep.id, "completed", now()); event("step.completed", { stepId: inspectionStep.id }); activeStepId = undefined;
-  runStep(steps[2]!.id, () => {
-    const evidence = records.listEvidence(taskId);
-    if (evidence.length !== inspection.entries.length || evidence.some((item) => item.path.startsWith("/") || item.path.includes(".."))) throw new Error("Workspace evidence verification failed");
+  const verificationStep = steps[2]!; activeStepId = verificationStep.id;
+  records.updatePlanStepStatus(verificationStep.id, "running", now()); event("step.started", { stepId: verificationStep.id });
+  const evidence = records.listEvidence(taskId);
+  if (evidence.length !== inspection.entries.length || evidence.some((item) => item.path.startsWith("/") || item.path.includes(".."))) throw new Error("Workspace evidence verification failed");
+  db.transaction(() => {
+    hooks.beforeVerificationPersist?.();
     records.upsertVerification({ taskId, status: "verified", summary: `Inspected ${evidence.length} workspace file(s)`, details: { resultCount: inspection.entries.length, depthTruncated: inspection.truncatedByDepth, countTruncated: inspection.truncatedByCount, inaccessibleEntryCount: inspection.inaccessibleEntryCount }, createdAt: now(), updatedAt: now() });
     event("verification.completed", { evidenceCount: evidence.length });
-  });
-  records.transitionTask(taskId, "verified", { id: randomUUID(), createdAt: now(), payload: {} });
+    records.updatePlanStepStatus(verificationStep.id, "completed", now()); event("step.completed", { stepId: verificationStep.id });
+    hooks.beforeFinalTransition?.();
+    records.transitionTask(taskId, "verified", { id: randomUUID(), createdAt: now(), payload: {} });
+  })();
+  activeStepId = undefined;
   return records.getAggregate(taskId);
   } catch {
     if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
