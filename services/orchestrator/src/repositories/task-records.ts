@@ -58,7 +58,7 @@ export function taskRecordsRepository(db: Database.Database) {
   };
   const mapPlan = (row: unknown): PlanStep => {
     const value = row as Record<string, unknown>;
-    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: value.title, status: value.status });
+    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: value.title, description: value.description, status: value.status });
   };
   const mapDisclosure = (row: unknown): ExecutionDisclosure => {
     const value = row as Record<string, unknown>;
@@ -114,7 +114,7 @@ export function taskRecordsRepository(db: Database.Database) {
         db.prepare("DELETE FROM plan_steps WHERE task_id=?").run(taskId);
         const insert = db.prepare("INSERT INTO plan_steps(id,schema_version,task_id,position,title,description,status,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?,?)");
         const timestamp = new Date().toISOString();
-        for (const step of steps) insert.run(step.id, taskId, step.position, step.title, null, step.status, timestamp, timestamp);
+        for (const step of steps) insert.run(step.id, taskId, step.position, step.title, step.description, step.status, timestamp, timestamp);
       })();
       return this.listPlanSteps(taskId);
     },
