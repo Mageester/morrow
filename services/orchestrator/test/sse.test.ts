@@ -40,6 +40,13 @@ describe("SSE Streaming", () => {
     const res2 = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/events/stream`, headers: { "last-event-id": "xyz" } });
     expect(res2.statusCode).toBe(400);
     expect(res2.json().error.code).toBe("INVALID_CURSOR");
+
+    const res3 = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/events?after=1oops` });
+    expect(res3.statusCode).toBe(400);
+    expect(res3.json().error.code).toBe("INVALID_CURSOR");
+    const res4 = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/events/stream?after=-1` });
+    expect(res4.statusCode).toBe(400);
+    expect(res4.json().error.code).toBe("INVALID_CURSOR");
   });
 
   it("handles SSE streaming correctly including reconnect and terminal close", async () => {

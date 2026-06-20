@@ -17,6 +17,13 @@ export class ApiError extends Error {
   }
 }
 
+function parseEventCursor(value: string): number {
+  if (!/^(0|[1-9]\d*)$/.test(value)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
+  const cursor = Number(value);
+  if (!Number.isSafeInteger(cursor)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
+  return cursor;
+}
+
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
@@ -139,8 +146,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     let events = records.listEvents(taskId);
     if (after) {
-      const cursor = parseInt(after, 10);
-      if (isNaN(cursor)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
+      const cursor = parseEventCursor(after);
       events = events.filter(e => e.sequence > cursor);
     }
     return events;
@@ -156,10 +162,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const cursorRaw = lastEventIdHeader ?? afterQuery;
     
     if (cursorRaw !== undefined) {
-      afterSeq = parseInt(cursorRaw, 10);
-      if (isNaN(afterSeq)) {
-        throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
-      }
+      afterSeq = parseEventCursor(cursorRaw);
     }
 
     const task = tasks.getTaskById(taskId);
