@@ -1,0 +1,1 @@
+{"name":"@morrow/contracts","version":"0.1.0","private":true,"type":"module","exports":"./src/index.ts","scripts":{"check":"tsc -p tsconfig.json","test":"vitest run","build":"tsc -p tsconfig.build.json"},"dependencies":{"zod":"4.1.12"},"devDependencies":{"typescript":"5.9.3","vitest":"4.1.9"}}
