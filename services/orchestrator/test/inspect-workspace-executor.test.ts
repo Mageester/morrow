@@ -11,6 +11,18 @@ import { executeInspectWorkspaceTask } from "../src/execution/inspect-workspace.
 const now = "2026-01-01T00:00:00.000Z";
 
 describe("inspect workspace executor", () => {
+  it("marks active inspection step failed without a verified result", () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-executor-failure-"));
+    try {
+      const db = openDatabase(":memory:"); const projects = projectRepository(db); const tasks = taskRepository(db); const records = taskRecordsRepository(db);
+      projects.createProject({ id: "project", name: "Project", workspacePath: root, createdAt: now }); tasks.createTask({ id: "task", projectId: "project", kind: "inspect_workspace", status: "queued", createdAt: now });
+      expect(() => executeInspectWorkspaceTask({ db, taskId: "task", now: () => now, inspect: () => { throw new Error("internal path leak"); } })).toThrow("Workspace task failed");
+      const aggregate = records.getAggregate("task");
+      expect(aggregate.task.status).toBe("failed"); expect(aggregate.plan[1]?.status).toBe("failed"); expect(aggregate.verification).toBeUndefined();
+      expect(aggregate.events.at(-1)?.type).toBe("task.failed"); db.close();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("persists verified aggregate from real workspace inspection", () => {
     const root = mkdtempSync(join(tmpdir(), "morrow-executor-"));
     const databaseDirectory = mkdtempSync(join(tmpdir(), "morrow-executor-db-"));
