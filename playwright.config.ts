@@ -21,12 +21,12 @@ export default defineConfig({
     {
       command: 'pnpm --filter @morrow/orchestrator start',
       port: 4317,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     },
     {
       command: 'pnpm --filter @morrow/web dev',
       port: 5173,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     }
   ],
 });
