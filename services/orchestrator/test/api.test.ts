@@ -114,10 +114,12 @@ describe("REST API and Task Runner Vertical Slice", () => {
     const tRes = await app.inject({ method: "POST", url: `/api/projects/${projectId}/tasks/inspect-workspace` });
     const taskId = tRes.json().taskId;
 
-    // Simulate duplicate task execution manually
-    runner.activeTasks.add("mock-task");
-    expect(() => runner.run("mock-task")).toThrow(/Duplicate/);
-    runner.activeTasks.delete("mock-task");
+    // Start a long-running task to simulate active processing
+    const taskPromise = new Promise(resolve => setTimeout(resolve, 50));
+    (runner as any).activeTasks.add("task-3");
+    (runner as any).activePromises.set("task-3", taskPromise);
+    expect(() => runner.run("task-3")).toThrow(/Duplicate/);
+    (runner as any).activeTasks.delete("task-3");
 
     await runner.waitFor(taskId);
   });
