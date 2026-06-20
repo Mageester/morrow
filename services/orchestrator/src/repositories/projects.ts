@@ -1,0 +1,5 @@
+import type Database from "better-sqlite3";
+import { ProjectSchema, type Project } from "@morrow/contracts";
+type Input={id:string;name:string;workspacePath:string;createdAt:string;updatedAt?:string};
+const map=(r:unknown):Project=>{const x=r as Record<string,unknown>;return ProjectSchema.parse({version:x.schema_version,id:x.id,name:x.name,workspacePath:x.workspace_path,createdAt:x.created_at})};
+export function projectRepository(db:Database.Database){const create=db.prepare("INSERT INTO projects(id,schema_version,name,workspace_path,created_at,updated_at) VALUES(@id,1,@name,@workspacePath,@createdAt,@updatedAt)");const get=db.prepare("SELECT * FROM projects WHERE id=?");const list=db.prepare("SELECT * FROM projects ORDER BY created_at ASC,id ASC");return{createProject(input:Input){const updatedAt=input.updatedAt??input.createdAt;create.run({...input,updatedAt});return this.getProjectById(input.id)!},getProjectById(id:string){const r=get.get(id);return r?map(r):undefined},listProjects(){return list.all().map(map)}}}
