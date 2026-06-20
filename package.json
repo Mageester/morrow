@@ -9,8 +9,11 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "check": "node scripts/validate-repository.mjs",
+    "dev": "turbo dev --parallel",
+    "build": "turbo build",
+    "check": "turbo check && node scripts/validate-repository.mjs",
     "format": "node scripts/validate-repository.mjs",
-    "test": "node --test scripts/validate-repository.test.mjs"
-  }
+    "test": "turbo test && node --test scripts/validate-repository.test.mjs"
+  },
+  "devDependencies": { "turbo": "2.6.3" }
 }
