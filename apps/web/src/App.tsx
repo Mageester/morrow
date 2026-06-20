@@ -187,7 +187,6 @@ export default function App() {
                   <div>
                     <p><strong>Status:</strong> {taskState.verification.status}</p>
                     <p><strong>Summary:</strong> {taskState.verification.summary}</p>
-                    <p><strong>Truncated:</strong> {taskState.verification.truncated ? "Yes" : "No"}</p>
                   </div>
                 ) : (
                   <em>Waiting for verification...</em>

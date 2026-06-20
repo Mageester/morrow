@@ -1,5 +1,4 @@
-import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, CreateProjectSchema } from "@morrow/contracts";
-import { z } from "zod";
+import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult } from "@morrow/contracts";
 
 const BASE_URL = "http://127.0.0.1:4317";
 
