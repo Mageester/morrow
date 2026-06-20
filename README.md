@@ -78,6 +78,38 @@ The first milestone is a narrow vertical slice:
 
 This milestone must be reliable before broad integrations are added.
 
+## Setup & Development
+
+### Install
+```bash
+pnpm install
+```
+
+### Development Commands
+- `pnpm dev`: Start both the web app and orchestrator in watch mode.
+- `pnpm build`: Build all packages.
+- `pnpm check`: Run type checking.
+- `pnpm test`: Run tests across all packages.
+- `pnpm run smoke:vertical-slice`: Run the end-to-end deterministic smoke test.
+
+### Running Individual Services
+- **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
+- **Web App**: `pnpm --filter @morrow/web dev`
+
+### Data Storage
+Morrow stores data locally. By default, the SQLite database is located at `.morrow/morrow.db` within the project directory.
+
+## Inspect Workspace Workflow
+The "Inspect workspace" task is a safe, deterministic execution workflow:
+1. **Data Read**: It reads the file entries within the bounded workspace path.
+2. **Guarantees**: For this specific executor, there is **no network access**, **no model invocation**, and **no shell execution**. It operates entirely locally and predictably.
+3. **Restart-Recovery**: If the orchestrator is restarted while tasks are running, any interrupted tasks are recovered and transitioned to a safe `interrupted` state.
+
+## Current Pre-Alpha Limitations
+- The system currently only supports the deterministic "Inspect workspace" task.
+- Authentication, advanced agents, and model routing are not yet active in this slice.
+- Local capabilities are constrained to read-only filesystem access for the workspace.
+
 ## Ownership and licensing
 
 Copyright © 2026 Aidan Magee. All rights reserved.
