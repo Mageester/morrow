@@ -1,36 +1,62 @@
 import { test, expect } from '@playwright/test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('Full Vertical Slice: Project Creation through Verification', async ({ page }) => {
-  // Setup temp workspace
-  const workspacePath = mkdtempSync(join(tmpdir(), 'morrow-e2e-'));
-  writeFileSync(join(workspacePath, 'evidence.txt'), 'Hello from E2E');
+function workspace(prefix: string) {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
+}
 
-  await page.goto('/');
+test('persists verified workspace inspection across browser reload', async ({ page }) => {
+  const item = workspace('morrow-e2e-');
+  try {
+    writeFileSync(join(item.path, 'evidence.txt'), 'Hello from E2E');
+    const projectName = `E2E ${Date.now()}`;
+    await page.goto('/');
+    await page.fill('#new-project-name', projectName);
+    await page.fill('#new-workspace-path', item.path);
+    await page.getByRole('button', { name: 'Create Project' }).click();
+    await expect(page.locator('.workspace-header h3')).toHaveText(`${projectName} Workspace`);
 
-  // Create Project
-  const projectName = `E2E ${Date.now()}`;
-  await page.fill('input[id="new-project-name"]', projectName);
-  await page.fill('input[id="new-workspace-path"]', workspacePath);
-  await page.click('button:has-text("Create Project")');
+    await page.getByRole('button', { name: 'Inspect Workspace' }).click();
+    await expect(page.locator('.task-item-header .task-badge')).toHaveText(/Queued|Running/);
+    await expect(page.locator('.activity-item').first()).toBeVisible();
+    await expect(page.locator('.verification-box.verified')).toBeVisible();
+    await expect(page.locator('.plan-step.completed')).toHaveCount(3);
+    await expect(page.locator('.evidence-section')).toContainText('evidence.txt');
+    await expect(page.locator('.disclosure-section')).toContainText('Deterministic local');
+    await expect(page.locator('.disclosure-section')).toContainText('No model invoked');
+    await expect(page.locator('.activity-item:last-child')).toContainText('task.verified');
 
-  // Verify Project Selected
-  await expect(page.locator('.workspace-header h3')).toContainText(projectName);
+    await page.reload();
+    await page.selectOption('#project-select', { label: projectName });
+    await page.locator('.task-item').filter({ hasText: 'Inspect Workspace' }).click();
+    await expect(page.locator('.task-badge.verified')).toBeVisible();
+    await expect(page.locator('.verification-box.verified')).toBeVisible();
+    await expect(page.locator('.plan-step.completed')).toHaveCount(3);
+    await expect(page.locator('.evidence-section')).toContainText('evidence.txt');
+    await expect(page.locator('.disclosure-section')).toContainText('Network disabled');
+  } finally { item.remove(); }
+});
 
-  // Start Inspection
-  await page.click('button:has-text("Inspect Workspace")');
+test('renders failed workspace inspection without false success', async ({ page }) => {
+  const item = workspace('morrow-e2e-failure-');
+  try {
+    const projectName = `Failed ${Date.now()}`;
+    await page.goto('/');
+    await page.fill('#new-project-name', projectName);
+    await page.fill('#new-workspace-path', item.path);
+    await page.getByRole('button', { name: 'Create Project' }).click();
+    await expect(page.locator('.workspace-header h3')).toHaveText(`${projectName} Workspace`);
+    item.remove();
 
-  // Verify Queueing and Execution state
-  await expect(page.locator('.task-item-header .task-badge')).toContainText(/(QUEUED|RUNNING|VERIFIED)/i);
-
-  // Wait for verification completion
-  await expect(page.locator('.verification-box')).toBeVisible({ timeout: 10000 });
-  await expect(page.locator('.verification-box.verified')).toBeVisible();
-
-  // Validate Inspector Content
-  await expect(page.locator('.disclosure-section')).toContainText('Deterministic local');
-  await expect(page.locator('.evidence-section')).toContainText('evidence.txt');
-  await expect(page.locator('.activity-item:last-child')).toContainText('task.verified');
+    await page.getByRole('button', { name: 'Inspect Workspace' }).click();
+    await expect(page.locator('.task-badge.failed')).toBeVisible();
+    await expect(page.locator('.plan-step.failed')).toHaveCount(1);
+    await expect(page.getByRole('alert')).toContainText('Task failed');
+    await expect(page.locator('.verification-box')).toHaveCount(0);
+    await expect(page.locator('.evidence-section')).toHaveCount(0);
+    await expect(page.locator('.activity-item:last-child')).toContainText('task.failed');
+  } finally { item.remove(); }
 });

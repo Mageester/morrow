@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import App from '../src/App';
 import { apiClient } from '../src/api/client';
 
@@ -74,7 +74,10 @@ describe('Morrow Web App', () => {
     
     // Trigger an SSE event
     expect(subCallback).toBeDefined();
-    subCallback({ sequence: 1, type: 'step.completed', payload: {}, id: 'ev1', taskId: 't1', createdAt: new Date().toISOString() });
+    await act(async () => {
+      subCallback({ sequence: 1, type: 'step.completed', payload: {}, id: 'ev1', taskId: 't1', createdAt: new Date().toISOString() });
+    });
+    await waitFor(() => expect(apiClient.getTaskAggregate).toHaveBeenCalledTimes(2));
   });
 
   it('handles and displays errors correctly', async () => {

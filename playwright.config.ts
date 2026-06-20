@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+const databasePath = join(mkdtempSync(join(tmpdir(), 'morrow-playwright-')), 'morrow.db');
 
 export default defineConfig({
   testDir: './tests',
@@ -22,6 +27,7 @@ export default defineConfig({
       command: 'pnpm --filter @morrow/orchestrator start',
       port: 4317,
       reuseExistingServer: false,
+      env: { ...process.env, DATABASE_URL: databasePath },
     },
     {
       command: 'pnpm --filter @morrow/web dev',

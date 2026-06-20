@@ -263,6 +263,10 @@ export default function App() {
               <span className={`task-badge ${taskState.task?.status}`}>{getTaskStatusLabel(taskState.task?.status || 'queued')}</span>
             </header>
 
+            {taskState.task?.status === 'failed' && (
+              <div className="error-message" role="alert">Task failed. Review execution activity.</div>
+            )}
+
             <section className="inspector-section disclosure-section">
               <h4>Execution Disclosure</h4>
               <ul className="disclosure-list">
