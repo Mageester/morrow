@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { apiClient } from './api/client';
 import type { Project, Task, TaskEvent, PlanStep, TaskEvidence, ExecutionDisclosure, VerificationResult } from '@morrow/contracts';
 import './App.css';
@@ -260,7 +260,7 @@ export default function App() {
           <div className="inspector-content">
             <header className="inspector-header">
               <h3>Task Details</h3>
-              <span className={`task-badge ${taskState.task?.status}`}>{getTaskStatusLabel(taskState.task?.status || 'unknown')}</span>
+              <span className={`task-badge ${taskState.task?.status}`}>{getTaskStatusLabel(taskState.task?.status || 'queued')}</span>
             </header>
 
             <section className="inspector-section disclosure-section">

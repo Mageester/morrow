@@ -5,6 +5,7 @@ import { TaskRunner } from "../src/runner.js";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as http from "node:http";
 
 describe("SSE Streaming", () => {
   let db: any;
@@ -20,9 +21,9 @@ describe("SSE Streaming", () => {
     app = buildServer({ db, runner, sseIntervalMs: 10 });
   });
 
-  afterEach(() => {
-    app.close();
-    db.close();
+  afterEach(async () => {
+    await app?.close();
+    db?.close();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -47,60 +48,80 @@ describe("SSE Streaming", () => {
     
     let releaseGate: () => void;
     const gate = new Promise<void>(resolve => { releaseGate = resolve; });
-    const gatedRunner = new TaskRunner(db, async () => { await gate; });
+    const { executeInspectWorkspaceTask } = await import("../src/execution/inspect-workspace.js");
+    const gatedRunner = new TaskRunner(db, async (deps) => {
+      await gate;
+      await executeInspectWorkspaceTask(deps);
+    });
     
-    // We override runner in the app for this specific test, so we recreate app
     await app.close();
     app = buildServer({ db, runner: gatedRunner, sseIntervalMs: 10 });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address() as any;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
 
-    const tRes = await app.inject({ method: "POST", url: `/api/projects/${projectId}/tasks/inspect-workspace` });
-    const taskId = tRes.json().taskId;
+    const tRes = await fetch(`${baseUrl}/api/projects/${projectId}/tasks/inspect-workspace`, { method: "POST" });
+    const { taskId } = await tRes.json();
 
-    // Task is queued, we can listen
-    let streamedEvents: any[] = [];
-    app.inject({ method: "GET", url: `/api/tasks/${taskId}/events/stream` }).then((res: any) => {
-      // Parsing the SSE raw body
-      const chunks = res.body.split("\n\n").filter(Boolean);
-      for (const chunk of chunks) {
-        const lines = chunk.split("\n");
-        const idLine = lines.find((l: string) => l.startsWith("id: "));
-        const eventLine = lines.find((l: string) => l.startsWith("event: "));
-        const dataLine = lines.find((l: string) => l.startsWith("data: "));
-        if (idLine && eventLine && dataLine) {
-          streamedEvents.push({
-            id: parseInt(idLine.substring(4)),
-            event: eventLine.substring(7),
-            data: JSON.parse(dataLine.substring(6))
-          });
-        }
-      }
+    const streamedEvents: any[] = [];
+    const streamPromise = new Promise<void>((resolve, reject) => {
+      http.get(`${baseUrl}/api/tasks/${taskId}/events/stream`, (res: any) => {
+        let buffer = '';
+        res.on('data', (chunk: any) => {
+          buffer += chunk.toString();
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+          for (const part of parts) {
+            const lines = part.split('\n');
+            const idLine = lines.find((l: string) => l.startsWith('id: '));
+            const eventLine = lines.find((l: string) => l.startsWith('event: '));
+            const dataLine = lines.find((l: string) => l.startsWith('data: '));
+            if (idLine && eventLine && dataLine) {
+              streamedEvents.push({
+                id: parseInt(idLine.substring(4)),
+                event: eventLine.substring(7),
+                data: JSON.parse(dataLine.substring(6))
+              });
+            }
+          }
+        });
+        res.on('end', () => resolve());
+        res.on('error', reject);
+      }).on('error', reject);
     });
 
-    // Wait for the stream to grab at least task.created
     await new Promise(r => setTimeout(r, 50));
     expect(streamedEvents.length).toBeGreaterThan(0);
     expect(streamedEvents[0].event).toBe("task.created");
 
-    // Test reconnect using Last-Event-ID
     const lastEventId = streamedEvents[streamedEvents.length - 1].id;
-    let reconnectedEvents: any[] = [];
-    const reconnectPromise = app.inject({ method: "GET", url: `/api/tasks/${taskId}/events/stream`, headers: { "last-event-id": lastEventId.toString() } }).then((res: any) => {
-      const chunks = res.body.split("\n\n").filter(Boolean);
-      for (const chunk of chunks) {
-        const lines = chunk.split("\n");
-        const idLine = lines.find((l: string) => l.startsWith("id: "));
-        if (idLine) {
-          reconnectedEvents.push(parseInt(idLine.substring(4)));
-        }
-      }
+    
+    const reconnectedEvents: any[] = [];
+    const reconnectPromise = new Promise<void>((resolve, reject) => {
+      http.get(`${baseUrl}/api/tasks/${taskId}/events/stream`, { headers: { "last-event-id": lastEventId.toString() } }, (res: any) => {
+        let buffer = '';
+        res.on('data', (chunk: any) => {
+          buffer += chunk.toString();
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+          for (const part of parts) {
+            const lines = part.split('\n');
+            const idLine = lines.find((l: string) => l.startsWith('id: '));
+            if (idLine) {
+              reconnectedEvents.push(parseInt(idLine.substring(4)));
+            }
+          }
+        });
+        res.on('end', () => resolve());
+        res.on('error', reject);
+      }).on('error', reject);
     });
 
-    // Release gate, which triggers terminal state
     releaseGate!();
     await gatedRunner.waitFor(taskId);
+    await streamPromise;
     await reconnectPromise;
 
-    // Check no duplicates and ordered delivery
     expect(reconnectedEvents.every(id => id > lastEventId)).toBe(true);
     for (let i = 1; i < reconnectedEvents.length; i++) {
       expect(reconnectedEvents[i]).toBeGreaterThan(reconnectedEvents[i-1]);

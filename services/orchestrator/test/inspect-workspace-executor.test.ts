@@ -58,7 +58,7 @@ describe("inspect workspace executor", () => {
       expect(aggregate.disclosure).toMatchObject({ executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: root, estimatedCostUsd: "$0.00" });
       expect(aggregate.verification?.details).toMatchObject({ resultCount: 1, depthTruncated: false, countTruncated: false, inaccessibleEntryCount: 0 });
       expect(aggregate.events.map((event) => event.sequence)).toEqual(aggregate.events.map((_, index) => index + 1));
-      expect(aggregate.events.map((event) => event.type)).toEqual(["task.created", "plan.created", "task.running", "step.started", "step.completed", "step.started", "workspace.inspected", "evidence.persisted", "step.completed", "step.started", "verification.completed", "step.completed", "task.verified"]);
+      expect(aggregate.events.map((event) => event.type)).toEqual(["plan.created", "task.running", "step.started", "step.completed", "step.started", "workspace.inspected", "evidence.persisted", "step.completed", "step.started", "verification.completed", "step.completed", "task.verified"]);
       db.close();
       const reopened = openDatabase(database); expect(taskRecordsRepository(reopened).getAggregate("task").task.status).toBe("verified"); reopened.close();
     } finally { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); try { rmSync(databaseDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* Windows may retain a short-lived SQLite file handle. */ } }

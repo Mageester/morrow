@@ -27,7 +27,7 @@ describe('Morrow Web App', () => {
     expect(await screen.findByText(/Morrow/)).toBeDefined();
     
     // Check that it shows in the dropdown
-    expect(await screen.findByText(/Test/)).toBeDefined();
+    expect(await screen.findAllByText(/Test/)).toBeDefined();
   });
 
   it('starts inspection and displays three-step plan', async () => {
@@ -69,8 +69,8 @@ describe('Morrow Web App', () => {
 
     // Initial state has 'running' step
     expect(await screen.findByText(/Validate workspace boundary/)).toBeDefined();
-    expect(screen.getByText(/deterministic-local/)).toBeDefined();
-    expect(screen.getByText(/disabled/)).toBeDefined();
+    expect(screen.getByText(/Deterministic local/i)).toBeDefined();
+    expect(screen.getByText(/Network disabled/i)).toBeDefined();
     
     // Trigger an SSE event
     expect(subCallback).toBeDefined();
@@ -98,7 +98,7 @@ describe('Morrow Web App', () => {
     
     fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'New' } });
     fireEvent.change(screen.getByLabelText(/Workspace Path/i), { target: { value: '/new' } });
-    fireEvent.click(screen.getByText(/Create Project/i));
+    fireEvent.click(screen.getByRole('button', { name: /Create Project/i }));
     
     expect(await screen.findByText(/Project error/)).toBeDefined();
   });
