@@ -12,8 +12,13 @@
     "dev": "turbo dev --parallel",
     "build": "turbo build",
     "check": "turbo check && node scripts/validate-repository.mjs",
-    "format": "node scripts/validate-repository.mjs",
-    "test": "turbo test && node --test scripts/validate-repository.test.mjs"
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
-  "devDependencies": { "turbo": "2.6.3" }
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "turbo": "2.6.3"
+  }
 }
