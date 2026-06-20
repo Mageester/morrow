@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Builds
+.next/
+dist/
+build/
+target/
+*.tsbuildinfo
+
+# Test and generated output
+coverage/
+playwright-report/
+test-results/
+screenshots/
+*-screenshots/
+.generated/
+artifacts/
+
+# Local state
+.env
+.env.*
+!.env.example
+*.local
+*.db
+*.db-shm
+*.db-wal
+.morrow/
+.hermes/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Logs
+*.log
+logs/

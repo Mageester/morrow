@@ -1,0 +1,10 @@
+# Default ownership
+* @Mageester
+
+# Security-sensitive surfaces
+/services/runtime/ @Mageester
+/services/orchestrator/ @Mageester
+/packages/contracts/ @Mageester
+/packages/hermes-compat/ @Mageester
+/SECURITY.md @Mageester
+/docs/privacy-model.md @Mageester

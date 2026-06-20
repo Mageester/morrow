@@ -1,0 +1,33 @@
+- name: bug
+  color: d73a4a
+  description: Incorrect or broken behavior
+- name: enhancement
+  color: a2eeef
+  description: User-facing improvement
+- name: architecture
+  color: 5319e7
+  description: Significant technical decision
+- name: security
+  color: b60205
+  description: Security-sensitive change
+- name: privacy
+  color: 0052cc
+  description: Data flow, retention, or user control
+- name: parity
+  color: fbca04
+  description: Hermes capability comparison
+- name: benchmark
+  color: 0e8a16
+  description: Repeatable product evidence
+- name: design
+  color: c5def5
+  description: Product and interface design
+- name: agent-runtime
+  color: 006b75
+  description: Models, tools, and execution
+- name: orchestrator
+  color: 1d76db
+  description: Tasks, plans, agents, and recovery
+- name: triage
+  color: ededed
+  description: Needs review and prioritization

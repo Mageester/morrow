@@ -1,0 +1,36 @@
+name: Architecture proposal
+description: Propose a significant technical boundary or decision
+title: "architecture: "
+labels: ["architecture", "triage"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences and migration
+    validations:
+      required: true
+  - type: checkboxes
+    id: adr
+    attributes:
+      label: Decision record
+      options:
+        - label: I will add or update an ADR if this proposal is accepted.
+          required: true

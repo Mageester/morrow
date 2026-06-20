@@ -1,0 +1,16 @@
+{
+  "name": "morrow",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A private, customizable, self-hosted personal AI agent.",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "check": "node scripts/validate-repository.mjs",
+    "format": "node scripts/validate-repository.mjs",
+    "test": "node --test scripts/validate-repository.test.mjs"
+  }
+}
