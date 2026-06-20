@@ -47,6 +47,7 @@ describe("SSE Streaming", () => {
     const res4 = await app.inject({ method: "GET", url: `/api/tasks/${taskId}/events/stream?after=-1` });
     expect(res4.statusCode).toBe(400);
     expect(res4.json().error.code).toBe("INVALID_CURSOR");
+    await runner.waitFor(taskId);
   });
 
   it("handles SSE streaming correctly including reconnect and terminal close", async () => {
