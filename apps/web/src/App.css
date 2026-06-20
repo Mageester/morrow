@@ -560,3 +560,44 @@ select:focus, input:focus {
   white-space: nowrap;
   border-width: 0;
 }
+
+@media (max-width: 960px) {
+  .morrow-app {
+    display: grid;
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .left-nav,
+  .right-inspector {
+    width: 100%;
+    border-inline: 0;
+  }
+
+  .left-nav {
+    padding: 1rem;
+  }
+
+  .nav-links {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .main-canvas {
+    overflow: visible;
+    padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
