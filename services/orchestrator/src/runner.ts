@@ -41,6 +41,18 @@ export class TaskRunner {
           await this.executor({ db: this.db, taskId });
         } catch (e) {
           console.error("Task execution failed", e);
+          try {
+            const task = taskRepository(this.db).getTaskById(taskId);
+            if (task?.status === "queued" || task?.status === "running") {
+              taskRecordsRepository(this.db).transitionTask(taskId, "failed", {
+                id: crypto.randomUUID(),
+                createdAt: new Date().toISOString(),
+                payload: { message: "Task execution failed" },
+              });
+            }
+          } catch (persistenceError) {
+            console.error("Task failure persistence failed", persistenceError);
+          }
         } finally {
           this.activeTasks.delete(taskId);
           this.activePromises.delete(taskId);

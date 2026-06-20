@@ -51,7 +51,7 @@ describe("TaskRunner", () => {
     // task.created is persisted synchronously
     const events = taskRecordsRepository(db).listEvents("t1");
     expect(events.length).toBe(1);
-    expect(events[0].type).toBe("task.created");
+    expect(events[0]!.type).toBe("task.created");
 
     // Release and wait
     releaseGate!();
@@ -71,5 +71,7 @@ describe("TaskRunner", () => {
     
     const activeTasks = (runner as any).activeTasks;
     expect(activeTasks.has("t1")).toBe(false);
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("failed");
+    expect(taskRecordsRepository(db).listEvents("t1").at(-1)?.type).toBe("task.failed");
   });
 });
