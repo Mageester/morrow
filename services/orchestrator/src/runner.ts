@@ -3,11 +3,20 @@ import { executeInspectWorkspaceTask } from "./execution/inspect-workspace.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 
+export type TaskExecutor = (deps: { db: Database.Database; taskId: string }) => Promise<void>;
+
 export class TaskRunner {
   private activeTasks = new Set<string>();
   private activePromises = new Map<string, Promise<void>>();
+  private executor: TaskExecutor;
 
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database, executor?: TaskExecutor) {
+    this.executor = executor || (async (deps) => {
+      // Import lazily to avoid circular dependencies if needed, or directly
+      const { executeInspectWorkspaceTask } = await import("./execution/inspect-workspace.js");
+      await executeInspectWorkspaceTask(deps);
+    });
+  }
 
   run(taskId: string) {
     if (this.activeTasks.has(taskId)) {
@@ -15,17 +24,31 @@ export class TaskRunner {
     }
 
     this.activeTasks.add(taskId);
-    const promise = (async () => {
-      try {
-        executeInspectWorkspaceTask({ db: this.db, taskId });
-      } catch (e) {
-        // executeInspectWorkspaceTask handles persistence of failure
-        console.error("Task execution failed", e);
-      } finally {
-        this.activeTasks.delete(taskId);
-        this.activePromises.delete(taskId);
-      }
-    })();
+    
+    const records = taskRecordsRepository(this.db);
+    records.appendEvent({
+      id: crypto.randomUUID(),
+      taskId,
+      type: "task.created",
+      payload: {},
+      createdAt: new Date().toISOString()
+    });
+
+    const promise = new Promise<void>((resolve) => {
+      // Execute on next event loop turn
+      setTimeout(async () => {
+        try {
+          await this.executor({ db: this.db, taskId });
+        } catch (e) {
+          console.error("Task execution failed", e);
+        } finally {
+          this.activeTasks.delete(taskId);
+          this.activePromises.delete(taskId);
+          resolve();
+        }
+      }, 0);
+    });
+    
     this.activePromises.set(taskId, promise);
   }
 

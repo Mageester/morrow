@@ -19,7 +19,7 @@ export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date()
   const event = (type: Parameters<typeof records.appendEvent>[0]["type"], payload: Record<string, unknown> = {}) => records.appendEvent({ id: randomUUID(), taskId, type, payload, createdAt: now() });
   const plan = inspectWorkspacePlan(taskId);
   records.replacePlan(taskId, plan.map(({ version: _, taskId: __, ...step }) => step));
-  event("task.created"); event("plan.created", { stepCount: plan.length });
+  event("plan.created", { stepCount: plan.length });
   let activeStepId: string | undefined;
   try {
   const canonicalPath = project.workspacePath;

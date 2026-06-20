@@ -20,6 +20,7 @@ export class ApiError extends Error {
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
+  sseIntervalMs?: number;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -147,8 +148,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   app.get("/api/tasks/:taskId/events/stream", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
-    let afterSeq = parseInt(request.headers["last-event-id"] as string || (request.query as any).after || "0", 10);
-    if (isNaN(afterSeq)) afterSeq = 0;
+    
+    const lastEventIdHeader = request.headers["last-event-id"] as string | undefined;
+    const afterQuery = (request.query as any).after as string | undefined;
+    
+    let afterSeq = 0;
+    const cursorRaw = lastEventIdHeader ?? afterQuery;
+    
+    if (cursorRaw !== undefined) {
+      afterSeq = parseInt(cursorRaw, 10);
+      if (isNaN(afterSeq)) {
+        throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
+      }
+    }
 
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
@@ -160,7 +172,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
 
     let isClosed = false;
-    request.raw.on("close", () => { isClosed = true; });
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    request.raw.on("close", () => {
+      isClosed = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    });
 
     const sendEvent = (event: any) => {
       reply.raw.write(`id: ${event.sequence}\n`);
@@ -170,6 +187,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     const pollEvents = async () => {
       if (isClosed) return;
+      
       const allEvents = records.listEvents(taskId);
       const newEvents = allEvents.filter(e => e.sequence > afterSeq);
       
@@ -188,7 +206,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         return;
       }
 
-      setTimeout(pollEvents, 100);
+      timeoutId = setTimeout(pollEvents, deps.sseIntervalMs ?? 100);
     };
 
     pollEvents();
