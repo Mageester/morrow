@@ -7,5 +7,5 @@ const steps = [
 ] as const;
 
 export function inspectWorkspacePlan(taskId: string): PlanStep[] {
-  return steps.map((step) => ({ version: 1, taskId, ...step, status: "pending" }));
+  return steps.map((step) => ({ version: 1, taskId, ...step, id: `${taskId}-${step.id}`, status: "pending" }));
 }
