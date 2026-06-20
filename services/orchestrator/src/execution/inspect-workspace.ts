@@ -22,7 +22,7 @@ export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date()
   let activeStepId: string | undefined;
   try {
   const canonicalPath = project.workspacePath;
-  records.upsertDisclosure({ taskId, executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", workspaceScope: canonicalPath, estimatedCostUsd: "$0.00", createdAt: now(), updatedAt: now() });
+  records.upsertDisclosure({ taskId, executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: canonicalPath, estimatedCostUsd: "$0.00", createdAt: now(), updatedAt: now() });
   records.transitionTask(taskId, "running", { id: randomUUID(), createdAt: now(), payload: {} });
   const steps = records.listPlanSteps(taskId);
   const runStep = <T>(stepId: string, action: () => T): T => {

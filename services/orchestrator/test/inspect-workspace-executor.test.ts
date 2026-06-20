@@ -37,7 +37,7 @@ describe("inspect workspace executor", () => {
       expect(aggregate.task.status).toBe("verified");
       expect(aggregate.plan.map((step) => step.status)).toEqual(["completed", "completed", "completed"]);
       expect(aggregate.evidence.map((item) => item.path)).toEqual(["nested/file.txt"]);
-      expect(aggregate.disclosure).toMatchObject({ executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", workspaceScope: root, estimatedCostUsd: "$0.00" });
+      expect(aggregate.disclosure).toMatchObject({ executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: root, estimatedCostUsd: "$0.00" });
       expect(aggregate.verification?.details).toMatchObject({ resultCount: 1, depthTruncated: false, countTruncated: false, inaccessibleEntryCount: 0 });
       expect(aggregate.events.map((event) => event.sequence)).toEqual(aggregate.events.map((_, index) => index + 1));
       expect(aggregate.events.map((event) => event.type)).toEqual(["task.created", "plan.created", "task.running", "step.started", "step.completed", "step.started", "workspace.inspected", "evidence.persisted", "step.completed", "step.started", "verification.completed", "step.completed", "task.verified"]);

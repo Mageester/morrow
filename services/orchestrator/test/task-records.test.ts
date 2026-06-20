@@ -107,8 +107,8 @@ describe("task records repository", () => {
 
   it("upserts disclosure and verification, ordering isolated evidence", () => {
     const { db, records } = setup();
-    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt: createdAt });
-    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
+    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt: createdAt });
+    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
     records.appendEvidence({ id: "b", taskId: "t1", type: "file", path: "b", metadata: {}, createdAt: updatedAt });
     records.appendEvidence({ id: "a", taskId: "t1", type: "file", path: "a", metadata: { size: 1 }, createdAt });
     records.appendEvidence({ id: "other", taskId: "t2", type: "file", path: "x", metadata: {}, createdAt });
@@ -129,13 +129,13 @@ describe("task records repository", () => {
     initial.records.appendEvent({ id: "event", taskId: "t1", type: "task.created", payload: {}, createdAt });
     initial.records.replacePlan("t1", [{ id: "step", position: 1, title: "step", description: "step", status: "pending" }]);
     initial.records.appendEvidence({ id: "evidence", taskId: "t1", type: "file", path: "file", metadata: {}, createdAt });
-    initial.records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
+    initial.records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
     initial.records.upsertVerification({ taskId: "t1", status: "verified", summary: "done", details: { truncated: false }, createdAt, updatedAt });
     initial.db.close();
     const reopened = openDatabase(file);
     const records = taskRecordsRepository(reopened);
     expect(records.getAggregate("t1").events).toHaveLength(1);
-    expect(records.getAggregate("t1").disclosure?.provider).toBe("built-in");
+    expect(records.getAggregate("t1").disclosure?.provider).toBe("deterministic-local");
     expect(records.getAggregate("t1").verification?.summary).toBe("done");
     expect(records.getAggregate("t2").disclosure).toBeUndefined();
     expect(records.getAggregate("t2").verification).toBeUndefined();
