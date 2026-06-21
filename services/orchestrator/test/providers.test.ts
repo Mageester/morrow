@@ -75,10 +75,12 @@ describe("OpenAI-compatible provider normalization", () => {
   it("classifies HTTP errors into typed kinds", async () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
 
-    mockFetch(new Response(`{"error":{"message":"bad key"}}`, { status: 401 }));
+    mockFetch(new Response(`{"error":{"message":"Authorization: Bearer sk-secret-key"}}`, { status: 401 }));
     let chunks = await collect(provider, userMessages);
     expect(chunks.at(-1)?.error?.kind).toBe("auth");
     expect(chunks.at(-1)?.error?.retryable).toBe(false);
+    expect(chunks.at(-1)?.error?.message).not.toContain("sk-secret-key");
+    expect(chunks.at(-1)?.error?.message).toContain("***redacted***");
 
     mockFetch(new Response(`{"error":{"message":"slow down"}}`, { status: 429 }));
     chunks = await collect(provider, userMessages);

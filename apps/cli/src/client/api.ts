@@ -74,7 +74,7 @@ export class MorrowApi {
         ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
       });
     } catch (e: any) {
-      throw new CliError(`Cannot reach the Morrow service at ${this.baseUrl}.`, {
+      throw new CliError(`Cannot reach the Morrow service at ${displayUrl(this.baseUrl)}.`, {
         code: "SERVICE_UNREACHABLE",
         exitCode: EXIT.SERVICE_UNAVAILABLE,
         hint: "Start it with `morrow serve` (or it will auto-start for most commands).",
@@ -171,5 +171,14 @@ function safeJson(text: string): unknown {
     return JSON.parse(text);
   } catch {
     return undefined;
+  }
+}
+
+function displayUrl(input: string): string {
+  try {
+    const url = new URL(input);
+    return `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
+  } catch {
+    return input;
   }
 }

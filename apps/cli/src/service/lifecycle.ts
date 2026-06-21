@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "../cli/context.js";
@@ -11,8 +11,10 @@ const BIN_PATH = resolve(here, "../../bin/morrow.mjs");
 
 export function readPid(pidFile: string): number | null {
   try {
-    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
-    return Number.isInteger(pid) ? pid : null;
+    const raw = readFileSync(pidFile, "utf-8").trim();
+    if (!/^(0|[1-9]\d*)$/.test(raw)) return null;
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) ? pid : null;
   } catch {
     return null;
   }
@@ -89,7 +91,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
 /** Start the orchestrator as a detached background process and wait until healthy. */
 export async function serveDetached(ctx: Context): Promise<void> {
   if (await isRunning(ctx)) {
-    ctx.out.info(`Service already running at ${ctx.service.baseUrl}.`);
+    ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
     return;
   }
   mkdirSync(ctx.paths.home, { recursive: true });
@@ -111,20 +113,37 @@ export async function serveDetached(ctx: Context): Promise<void> {
   child.unref();
   if (child.pid) writeFileSync(ctx.paths.pidFile, String(child.pid));
 
-  // Poll for health.
   const api = new MorrowApi(ctx.service.baseUrl);
-  for (let i = 0; i < 50; i++) {
-    if (await api.ping(500)) {
-      ctx.out.success(`Service started at ${ctx.service.baseUrl} (pid ${child.pid}).`);
-      return;
+  try {
+    for (let i = 0; i < 50; i++) {
+      if (await api.ping(500)) {
+        ctx.out.success(`Service started at ${displayUrl(ctx.service.baseUrl)} (pid ${child.pid}).`);
+        return;
+      }
+      await sleep(200);
     }
-    await sleep(200);
+    throw new CliError("Service did not become healthy in time.", {
+      code: "SERVICE_START_FAILED",
+      exitCode: EXIT.SERVICE_UNAVAILABLE,
+      hint: `Check the log at ${ctx.paths.logFile}.`,
+    });
+  } catch (error) {
+    if (child.pid) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+    }
+    rmSync(ctx.paths.pidFile, { force: true });
+    throw error;
+  } finally {
+    try {
+      closeSync(logFd);
+    } catch {
+      /* ignore */
+    }
   }
-  throw new CliError("Service did not become healthy in time.", {
-    code: "SERVICE_START_FAILED",
-    exitCode: EXIT.SERVICE_UNAVAILABLE,
-    hint: `Check the log at ${ctx.paths.logFile}.`,
-  });
 }
 
 /**
@@ -149,27 +168,33 @@ export async function ensureRunning(ctx: Context): Promise<void> {
 export async function stop(ctx: Context): Promise<boolean> {
   const pid = readPid(ctx.paths.pidFile);
   const running = await isRunning(ctx);
-  if (!running && (!pid || !processAlive(pid))) {
-    rmSync(ctx.paths.pidFile, { force: true });
-    return false;
+  if (!pid || !processAlive(pid)) {
+    if (!running) {
+      rmSync(ctx.paths.pidFile, { force: true });
+      return false;
+    }
+    if (pid) rmSync(ctx.paths.pidFile, { force: true });
+    throw new CliError(`Service is reachable at ${displayUrl(ctx.service.baseUrl)}, but no local pid file matches it.`, {
+      code: "SERVICE_UNMANAGED",
+      exitCode: EXIT.SERVICE_UNAVAILABLE,
+      hint: "Stop that process with its own manager, or fix stale .morrow state before retrying.",
+    });
   }
-  if (pid && processAlive(pid)) {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    /* ignore */
+  }
+  // Wait for it to exit.
+  for (let i = 0; i < 25; i++) {
+    if (!processAlive(pid) && !(await isRunning(ctx))) break;
+    await sleep(200);
+  }
+  if (processAlive(pid)) {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(pid, "SIGKILL");
     } catch {
       /* ignore */
-    }
-    // Wait for it to exit.
-    for (let i = 0; i < 25; i++) {
-      if (!processAlive(pid) && !(await isRunning(ctx))) break;
-      await sleep(200);
-    }
-    if (processAlive(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* ignore */
-      }
     }
   }
   rmSync(ctx.paths.pidFile, { force: true });
@@ -185,4 +210,13 @@ export function tailLog(ctx: Context, lines: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function displayUrl(input: string): string {
+  try {
+    const url = new URL(input);
+    return `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
+  } catch {
+    return input;
+  }
 }

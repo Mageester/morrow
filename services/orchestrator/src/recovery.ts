@@ -8,11 +8,18 @@ export function recoverRunningTasks(db: Database.Database, records = taskRecords
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: timestamp, payload: {} });
     records.appendEvent({ id: randomUUID(), taskId, type: "task.recovery_required", payload: {}, createdAt: timestamp });
   })();
-  
+
   // Transition streaming/queued messages to interrupted
-  db.transaction(() => {
-    db.prepare("UPDATE conversation_messages SET streaming_state='interrupted', updated_at=? WHERE streaming_state IN ('streaming', 'queued')").run(timestamp);
-  })();
-  
+  if (taskIds.length > 0) {
+    db.transaction(() => {
+      const placeholders = taskIds.map(() => "?").join(", ");
+      db.prepare(
+        `UPDATE conversation_messages
+         SET streaming_state='interrupted', updated_at=?
+         WHERE task_id IN (${placeholders}) AND streaming_state IN ('streaming', 'queued')`
+      ).run(timestamp, ...taskIds);
+    })();
+  }
+
   return taskIds.length;
 }
