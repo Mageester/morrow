@@ -48,16 +48,18 @@ const allowedAgentStateTransitions: Record<AgentExecutionState, readonly AgentEx
   idle: ["understanding", "failed", "cancelled", "interrupted"],
   understanding: ["planning", "failed", "cancelled", "interrupted"],
   planning: ["waiting_for_approval", "executing_tool", "proposing_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
-  waiting_for_approval: ["executing_tool", "proposing_changes", "applying_changes", "cancelled", "failed", "interrupted"],
-  executing_tool: ["observing", "failed", "cancelled", "interrupted"],
+  waiting_for_approval: ["executing_tool", "proposing_changes", "applying_changes", "observing", "cancelled", "failed", "interrupted"],
+  executing_tool: ["observing", "waiting_for_approval", "proposing_changes", "applying_changes", "failed", "cancelled", "interrupted"],
   observing: ["planning", "waiting_for_approval", "executing_tool", "proposing_changes", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
-  proposing_changes: ["waiting_for_approval", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
-  applying_changes: ["verifying", "completed", "failed", "cancelled", "interrupted"],
+  proposing_changes: ["waiting_for_approval", "applying_changes", "verifying", "observing", "completed", "failed", "cancelled", "interrupted"],
+  applying_changes: ["verifying", "observing", "completed", "failed", "cancelled", "interrupted"],
   verifying: ["completed", "failed", "cancelled", "interrupted"],
   completed: [],
   failed: [],
   cancelled: [],
-  interrupted: [],
+  // A task interrupted by a restart resumes back into the active lifecycle when
+  // its persisted approval is resolved (restart-resilient continuation).
+  interrupted: ["understanding", "failed", "cancelled"],
 };
 
 function parseJson(value: unknown, label: string): Record<string, unknown> {
