@@ -90,7 +90,9 @@ pnpm install
 - `pnpm build`: Build all packages.
 - `pnpm check`: Run type checking.
 - `pnpm test`: Run tests across all packages.
-- `pnpm run smoke:vertical-slice`: Run the end-to-end deterministic smoke test.
+- `pnpm --filter @morrow/orchestrator smoke:vertical-slice`: deterministic inspect-workspace E2E.
+- `pnpm --filter @morrow/orchestrator smoke:agent-alpha`: agent chat E2E via the mock provider.
+- `pnpm --filter @morrow/orchestrator smoke:providers`: provider registry + routing checks (offline).
 
 ### Running Individual Services
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
@@ -105,10 +107,37 @@ The "Inspect workspace" task is a safe, deterministic execution workflow:
 2. **Guarantees**: For this specific executor, there is **no network access**, **no model invocation**, and **no shell execution**. It operates entirely locally and predictably.
 3. **Restart-Recovery**: If the orchestrator is restarted while tasks are running, any interrupted tasks are recovered and transitioned to a safe `interrupted` state.
 
-## Current Pre-Alpha Limitations
-- The system currently only supports the deterministic "Inspect workspace" task.
-- Authentication, advanced agents, and model routing are not yet active in this slice.
-- Local capabilities are constrained to read-only filesystem access for the workspace.
+## Multi-provider agent (alpha)
+
+Morrow runs a conversation-first agent through a provider-neutral runtime:
+
+- **Providers:** OpenAI, Anthropic, Google Gemini, OpenRouter, DeepSeek, a
+  generic OpenAI-compatible endpoint, and local Ollama — all normalized to one
+  streaming/tool-call/typed-error contract.
+- **Presets & routing:** seven real presets (Best Quality, Balanced, Fast,
+  Cheap, Coding, Research, Private Local) resolve to a configured provider+model
+  and disclose the decision. `Private Local` never leaves the machine.
+- **Read-only tools:** `inspect_workspace`, `list_files`, `read_file`,
+  `search_files` behind a shared containment layer (traversal/symlink/secret/
+  binary rejection, byte and depth limits, evidence for every read).
+- **Truthful execution:** visible plan, tool calls, files read, evidence,
+  provider/model, routing, privacy, and disclosure; cancellation, timeout, and
+  restart recovery are persisted honestly. Cost is never fabricated.
+- **Memory:** a deterministic, project-isolated, user-controlled SQLite memory
+  layer (no hidden capture, no cross-project leakage).
+
+Secrets are resolved server-side from environment variables and never reach the
+browser, database, logs, or task events. See [docs/providers.md](docs/providers.md)
+for the capability matrix, credential reference, honest OAuth findings, and
+manual verification steps.
+
+## Current alpha limitations
+- Live model discovery is not implemented; the model registry is built-in plus
+  user-configurable model ids.
+- Write and terminal tools are intentionally not enabled (architecture and UI
+  are sketched but gated until their full safety boundaries are implemented).
+- Subscription-based "OAuth" sign-in (Codex/Claude/Gemini) is reported as
+  honestly unavailable; use API keys or a local provider.
 
 ## Ownership and licensing
 
