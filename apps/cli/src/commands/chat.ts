@@ -1,8 +1,8 @@
-import type { Conversation } from "@morrow/contracts";
+import type { AgentMode, Conversation } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
-import { resolveProject, ask, isInteractive, shortId, relativeTime } from "./common.js";
+import { resolveProject, ask, isInteractive, select, shortId, relativeTime } from "./common.js";
 import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
@@ -12,19 +12,21 @@ interface SessionState {
   preset: string;
   provider: string | undefined;
   model: string | undefined;
+  mode: AgentMode;
   useMemory: boolean;
 }
 
 export async function chatCommand(ctx: Context): Promise<number> {
   await ensureRunning(ctx);
   const api = ctx.api();
-  const project = await resolveProject(ctx, api, { required: true });
+  const project = await resolveProject(ctx, api, { required: true, autoCreateMissing: true });
   if (!project) return EXIT.NOT_FOUND;
 
   const session: SessionState = {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
+    mode: flagBool(ctx.flags, "plan") ? "plan-only" : "read-only",
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
   };
 
@@ -44,12 +46,19 @@ export async function chatCommand(ctx: Context): Promise<number> {
 
 async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
   const resumeId = flagString(ctx.flags, "resume");
-  if (resumeId) {
-    try {
-      return await api.getConversation(resumeId);
-    } catch {
-      throw new CliError(`Conversation not found: ${resumeId}`, { code: "NOT_FOUND", exitCode: EXIT.NOT_FOUND });
+  if (resumeId !== undefined) {
+    if (resumeId) {
+      try {
+        return await api.getConversation(resumeId);
+      } catch {
+        throw new CliError(`Conversation not found: ${resumeId}`, { code: "NOT_FOUND", exitCode: EXIT.NOT_FOUND });
+      }
     }
+    const existing = await api.listConversations(projectId);
+    if (existing.length === 0) return api.createConversation(projectId, "New Conversation");
+    if (!isInteractive(ctx)) return existing[0]!;
+    const idx = await select(ctx, "Resume a session", existing, (conversation) => `${conversation.title}  ${ctx.out.gray(shortId(conversation.id))}  ${ctx.out.gray(relativeTime(conversation.updatedAt))}`);
+    return existing[idx]!;
   }
   if (flagBool(ctx.flags, "new")) {
     return api.createConversation(projectId, flagString(ctx.flags, "title"));
@@ -65,6 +74,7 @@ function sendOptions(s: SessionState) {
     preset: s.preset,
     ...(s.provider ? { providerId: s.provider } : {}),
     ...(s.model ? { model: s.model } : {}),
+    mode: s.mode,
     useMemory: s.useMemory,
   };
 }
@@ -90,10 +100,27 @@ async function runOneShot(ctx: Context, api: MorrowApi, conversation: Conversati
 async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial: Conversation, session: SessionState): Promise<number> {
   let conversation = initial;
   const out = ctx.out;
+  const project = await api.getProject(projectId);
+  const providerStatus = await api.providerStatus().catch(() => null);
+  const modelLine = session.model
+    ? `${session.provider ?? "auto"} / ${session.model}`
+    : session.provider
+      ? `${session.provider} / auto`
+      : providerStatus?.configured
+        ? `${providerStatus.provider} / ${providerStatus.model || "auto"}`
+        : "auto / auto";
 
-  out.print(out.bold("Morrow chat") + out.gray(` — ${conversation.title} (${shortId(conversation.id)})`));
-  out.print(out.gray(`preset ${session.preset}${session.provider ? ` · provider ${session.provider}` : ""}${session.model ? ` · model ${session.model}` : ""} · memory ${session.useMemory ? "on" : "off"}`));
-  out.print(out.gray("Type a message, or /help for commands. /exit to quit."));
+  out.print(out.bold("MORROW"));
+  out.print(out.gray("Private intelligence, built around you."));
+  out.keyValue([
+    ["Project", project.workspacePath],
+    ["Model", modelLine],
+    ["Preset", session.preset],
+    ["Mode", session.mode],
+    ["Memory", session.useMemory ? "project enabled" : "disabled"],
+  ]);
+  out.print(out.gray(`Session ${conversation.title} (${shortId(conversation.id)})`));
+  out.print(out.gray("Type message, or /help for commands. /exit quits."));
 
   // Replay existing history for context continuity.
   const history = await api.listMessages(conversation.id);
@@ -103,7 +130,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   }
 
   while (true) {
-    const line = (await ask(out.green("\nyou › "))).trim();
+    const line = (await ask(out.green("\n› "))).trim();
     if (!line) continue;
 
     if (line.startsWith("/")) {
@@ -178,6 +205,12 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         return {};
       }
     }
+    case "sessions": {
+      const list = await api.listConversations(projectId);
+      out.heading("Sessions");
+      list.forEach((c) => out.print(`  ${out.cyan(shortId(c.id))}  ${c.title}  ${out.gray(relativeTime(c.updatedAt))}`));
+      return {};
+    }
     case "project":
       out.info(`Active project: ${projectId}`);
       return {};
@@ -214,6 +247,19 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "mode": {
+      if (!arg) {
+        out.info(`Mode: ${session.mode}`);
+        return {};
+      }
+      if (arg !== "read-only" && arg !== "plan-only") {
+        out.warn("Usage: /mode [read-only|plan-only]");
+        return {};
+      }
+      session.mode = arg;
+      out.success(`Mode set to ${arg}.`);
+      return {};
+    }
     case "tools": {
       const tools = await api.listTools();
       out.heading("Tools (read-only)");
@@ -237,9 +283,11 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       out.keyValue([
         ["service", health ? "running" : "unreachable"],
         ["conversation", `${conversation.title} (${shortId(conversation.id)})`],
+        ["project", projectId],
         ["preset", session.preset],
         ["provider", session.provider ?? "auto"],
         ["model", session.model ?? "auto"],
+        ["mode", session.mode],
         ["memory", session.useMemory ? "on" : "off"],
       ]);
       return {};
@@ -317,10 +365,12 @@ function printReplHelp(ctx: Context) {
     ["/help", "show this help"],
     ["/new [title]", "start a new conversation"],
     ["/resume [id]", "list or resume a conversation"],
+    ["/sessions", "list recent conversations"],
     ["/project", "show the active project"],
     ["/provider [id]", "show providers or set the active provider"],
     ["/model [id]", "show models or set the active model"],
     ["/preset [id]", "show presets or set the active preset"],
+    ["/mode [kind]", "show or set read-only vs plan-only"],
     ["/tools", "list available read-only tools"],
     ["/permissions", "show the permission profile"],
     ["/status", "show service and session status"],

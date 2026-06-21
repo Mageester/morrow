@@ -1,10 +1,11 @@
-import { join } from "node:path";
 import { openDatabase } from "./database.js";
 import { buildServer } from "./server.js";
+import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot } from "./home.js";
 import { TaskRunner } from "./runner.js";
 import { recoverRunningTasks } from "./recovery.js";
 
-const dbPath = process.env.DATABASE_URL || join(process.cwd(), ".morrow", "morrow.db");
+const dbPath = resolveDefaultDatabasePath(process.env);
+migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
 const db = openDatabase(dbPath);
 
 // Recover tasks on startup

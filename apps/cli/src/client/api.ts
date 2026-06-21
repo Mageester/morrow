@@ -10,6 +10,7 @@ import type {
   RoutingDecision,
   MemoryEntry,
   MemoryScope,
+  AgentMode,
   OAuthFinding,
   ToolSpec,
   PermissionProfile,
@@ -23,6 +24,7 @@ export interface SendMessageOptions {
   preset?: string;
   providerId?: string;
   model?: string;
+  mode?: AgentMode;
   useMemory?: boolean;
 }
 

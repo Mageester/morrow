@@ -89,6 +89,7 @@ export const ModelStatusSchema=z.object({
 
 export const PresetIdSchema=z.enum(["best-quality","balanced","fast","cheap","coding","research","private-local"]);
 export const ToolProfileSchema=z.enum(["read-only","none"]);
+export const AgentModeSchema=z.enum(["read-only","plan-only"]);
 export const PresetPrivacySchema=z.enum(["local-only","prefers-local","cloud"]);
 export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
 export const PresetSchema=z.object({
@@ -130,6 +131,8 @@ export const RoutingDecisionSchema=z.object({
   overridden:z.boolean(),
   privacy:PresetPrivacySchema,
   candidates:z.array(RoutingCandidateSchema),
+  mode:AgentModeSchema.optional(),
+  toolProfile:ToolProfileSchema.optional(),
 }).strict();
 
 export const SendMessageSchema=z.object({
@@ -137,6 +140,7 @@ export const SendMessageSchema=z.object({
   preset:PresetIdSchema.optional(),
   providerId:ProviderIdSchema.optional(),
   model:z.string().min(1).max(200).optional(),
+  mode:AgentModeSchema.optional(),
   useMemory:z.boolean().optional(),
 }).strict();
 
@@ -173,6 +177,7 @@ export type PresetId=z.infer<typeof PresetIdSchema>;
 export type Preset=z.infer<typeof PresetSchema>;
 export type PresetStatus=z.infer<typeof PresetStatusSchema>;
 export type ToolProfile=z.infer<typeof ToolProfileSchema>;
+export type AgentMode=z.infer<typeof AgentModeSchema>;
 export type RoutingDecision=z.infer<typeof RoutingDecisionSchema>;
 export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
 export type SendMessageInput=z.infer<typeof SendMessageSchema>;
@@ -265,4 +270,3 @@ export const HealthSchema=z.object({
   time:z.string(),
 }).strict();
 export type Health=z.infer<typeof HealthSchema>;
-

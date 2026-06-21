@@ -6,6 +6,13 @@
  */
 export { buildServer, ApiError, type ServerDependencies } from "./server.js";
 export { openDatabase, migrations, type Migration } from "./database.js";
+export {
+  resolveMorrowHome,
+  resolveDefaultDatabasePath,
+  resolveMorrowDevelopmentRoot,
+  legacyDatabaseCandidatesForRepo,
+  migrateLegacyDatabase,
+} from "./home.js";
 export { TaskRunner, type TaskExecutor } from "./runner.js";
 export { recoverRunningTasks } from "./recovery.js";
 

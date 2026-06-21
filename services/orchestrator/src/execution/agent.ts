@@ -12,7 +12,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provi
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
-import type { ProviderId } from "@morrow/contracts";
+import type { AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 type Dependencies = {
   db: Database.Database;
@@ -65,11 +65,17 @@ export async function executeAgentChatTask({
   };
 
   // Define plan
-  const plan = [
-    { id: randomUUID(), position: 1, title: "Analyze & Plan", description: "Understand request and determine necessary workspace inspection tools.", status: "pending" as const },
-    { id: randomUUID(), position: 2, title: "Read Workspace", description: "Inspect project structure and read relevant files.", status: "pending" as const },
-    { id: randomUUID(), position: 3, title: "Generate Answer", description: "Synthesize findings and stream response to user.", status: "pending" as const }
-  ];
+  const agentMode: AgentMode = routingRepo.get(taskId)?.decision.mode ?? "read-only";
+  const plan = agentMode === "plan-only"
+    ? [
+        { id: randomUUID(), position: 1, title: "Understand Request", description: "Interpret the user request and decide what plan would best address it.", status: "pending" as const },
+        { id: randomUUID(), position: 2, title: "Produce Plan", description: "Return a concise implementation plan without using tools or claiming execution.", status: "pending" as const }
+      ]
+    : [
+        { id: randomUUID(), position: 1, title: "Analyze & Plan", description: "Understand request and determine necessary workspace inspection tools.", status: "pending" as const },
+        { id: randomUUID(), position: 2, title: "Read Workspace", description: "Inspect project structure and read relevant files.", status: "pending" as const },
+        { id: randomUUID(), position: 3, title: "Generate Answer", description: "Synthesize findings and stream response to user.", status: "pending" as const }
+      ];
   records.replacePlan(taskId, plan);
   event("plan.created", { stepCount: plan.length });
 
@@ -80,8 +86,8 @@ export async function executeAgentChatTask({
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
   const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
   const useMemory = routing?.useMemory ?? true;
-
-  const turnsLimit = maxTurns ?? preset.maxToolIterations;
+  const activeToolProfile: ToolProfile = routing?.decision.toolProfile ?? preset.toolProfile;
+  const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
 
@@ -188,6 +194,12 @@ You MUST choose relevant files, do NOT automatically ingest the entire repositor
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
 You are forbidden from writing files, executing shell commands, or accessing external networks besides your provider.`
   });
+  if (agentMode === "plan-only") {
+    chatMessages.push({
+      role: "system",
+      content: "You are in plan-only mode. Do not use tools, do not claim to have inspected files or run commands, and return only a concise actionable plan."
+    });
+  }
 
   // Inject user-controlled memory (bounded, deterministic, project-isolated).
   if (useMemory) {
@@ -218,11 +230,16 @@ You are forbidden from writing files, executing shell commands, or accessing ext
   }
 
   let turn = 0;
+  let completedWithoutMoreTools = false;
   let totalBytesRead = 0;
   let responseContent = "";
   const steps = records.listPlanSteps(taskId);
 
-  let activeStepId = steps[0]!.id; // Start with "Analyze & Plan"
+  const planningStep = steps[0]!;
+  const workspaceStep = steps.find((step) => step.title === "Read Workspace");
+  const finalStep = steps[steps.length - 1]!;
+
+  let activeStepId = planningStep.id;
   records.updatePlanStepStatus(activeStepId, "running", now());
   event("step.started", { stepId: activeStepId });
 
@@ -262,7 +279,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     try {
       const stream = activeProvider.streamChat(chatMessages, {
         ...(abortSignal ? { abortSignal } : {}),
-        tools: preset.toolProfile === "none" ? [] : tools,
+        tools: activeToolProfile === "none" ? [] : tools,
         model: resolvedModel || assistantMessageRow.model || undefined,
         timeoutMs: preset.timeoutMs,
         temperature: preset.temperature,
@@ -281,10 +298,10 @@ You are forbidden from writing files, executing shell commands, or accessing ext
 
         if (chunk.type === "text" && chunk.text) {
           // If we transitioned to generating final text, mark Generate Answer as running
-          if (activeStepId !== steps[2]!.id) {
+          if (activeStepId !== finalStep.id) {
             records.updatePlanStepStatus(activeStepId, "completed", now());
             event("step.completed", { stepId: activeStepId });
-            activeStepId = steps[2]!.id;
+            activeStepId = finalStep.id;
             records.updatePlanStepStatus(activeStepId, "running", now());
             event("step.started", { stepId: activeStepId });
           }
@@ -297,6 +314,9 @@ You are forbidden from writing files, executing shell commands, or accessing ext
         }
 
         if (chunk.type === "tool_call" && chunk.toolCalls) {
+          if (activeToolProfile === "none") {
+            throw new Error("Provider attempted a tool call while tools are disabled");
+          }
           hasToolCalls = true;
           for (const tc of chunk.toolCalls) {
             const index = tc.index !== undefined ? tc.index : 0;
@@ -330,10 +350,10 @@ You are forbidden from writing files, executing shell commands, or accessing ext
 
     if (hasToolCalls && currentToolCalls.length > 0) {
       // Transition step to Read Workspace
-      if (activeStepId !== steps[1]!.id) {
+      if (workspaceStep && activeStepId !== workspaceStep.id) {
         records.updatePlanStepStatus(activeStepId, "completed", now());
         event("step.completed", { stepId: activeStepId });
-        activeStepId = steps[1]!.id;
+        activeStepId = workspaceStep.id;
         records.updatePlanStepStatus(activeStepId, "running", now());
         event("step.started", { stepId: activeStepId });
       }
@@ -449,6 +469,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
       }
     } else {
       // No more tool calls, we're done
+      completedWithoutMoreTools = true;
       break;
     }
   }
@@ -458,7 +479,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     return;
   }
 
-  if (turn >= turnsLimit) {
+  if (!completedWithoutMoreTools && turn >= turnsLimit) {
     const loopErrMsg = `Agent turn loop limit reached (${turnsLimit})`;
     records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: loopErrMsg } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${loopErrMsg}]`, "failed", now());

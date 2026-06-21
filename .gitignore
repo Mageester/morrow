@@ -33,6 +33,7 @@ artifacts/
 *.db-wal
 .morrow/
 .hermes/
+MEMORY/
 
 # Editors and OS
 .DS_Store

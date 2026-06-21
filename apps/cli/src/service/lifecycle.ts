@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { migrateLegacyDatabase } from "@morrow/orchestrator";
 import type { Context } from "../cli/context.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { MorrowApi } from "../client/api.js";
@@ -45,6 +46,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
     secretsFile: ctx.paths.secretsFile,
   });
 
+  const migration = migrateLegacyDatabase(ctx.service.dbPath, ctx.paths.legacyDbPaths);
   mkdirSync(dirname(ctx.service.dbPath), { recursive: true });
   const db = openDatabase(ctx.service.dbPath);
   const recovered = recoverRunningTasks(db);
@@ -58,6 +60,9 @@ export async function serveForeground(ctx: Context): Promise<number> {
 
   ctx.out.success(`Morrow orchestrator listening at http://${ctx.service.host}:${ctx.service.port}`);
   ctx.out.info(`Database: ${ctx.service.dbPath}`);
+  if (migration.migratedFrom) {
+    ctx.out.info(`Migrated legacy database from ${migration.migratedFrom}.`);
+  }
   if (recovered > 0) ctx.out.warn(`Recovered ${recovered} interrupted task(s) from a prior run.`);
   if (applied.length > 0) ctx.out.info(`Loaded credentials from secrets/.env: ${applied.join(", ")}`);
   ctx.out.info("Press Ctrl+C to stop.");

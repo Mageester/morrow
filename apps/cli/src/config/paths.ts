@@ -1,17 +1,16 @@
 import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { legacyDatabaseCandidatesForRepo, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot, resolveMorrowHome } from "@morrow/orchestrator";
 
 /**
- * Resolves the canonical Morrow filesystem locations. The CLI prefers to share
- * the same SQLite database as the web app: when run inside the Morrow repo, the
- * default database path matches the orchestrator's dev path
- * (services/orchestrator/.morrow/morrow.db). Outside a repo it falls back to a
- * per-user data directory.
+ * Resolves the canonical Morrow filesystem locations. Global service state
+ * lives under MORROW_HOME by default, while repository-local .morrow remains
+ * available for project metadata such as CLI config.
  */
 export interface MorrowPaths {
   home: string;
   repoRoot: string | null;
+  legacyDbPaths: string[];
   userConfigFile: string;
   projectConfigFile: string | null;
   secretsFile: string;
@@ -33,17 +32,14 @@ export function findRepoRoot(start: string = process.cwd()): string | null {
 }
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): MorrowPaths {
-  const home = env.MORROW_HOME ? resolve(env.MORROW_HOME) : join(homedir(), ".morrow");
+  const home = resolveMorrowHome(env);
   const repoRoot = findRepoRoot(cwd);
   const projectConfigFile = repoRoot ? join(repoRoot, ".morrow", "cli.json") : null;
-  const defaultDbPath = env.DATABASE_URL
-    ? resolve(env.DATABASE_URL)
-    : repoRoot
-      ? join(repoRoot, "services", "orchestrator", ".morrow", "morrow.db")
-      : join(home, "morrow.db");
+  const defaultDbPath = resolveDefaultDatabasePath(env);
   return {
     home,
     repoRoot,
+    legacyDbPaths: legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()),
     userConfigFile: join(home, "config.json"),
     projectConfigFile,
     secretsFile: join(home, "secrets.env"),

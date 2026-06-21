@@ -861,7 +861,7 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
                 )}
               </>) : <p className="empty-state">Select a project (from Projects) to manage its memory.</p>}
             </div>
-            <div className="card"><h3>Storage</h3><p className="muted">Data is stored locally in SQLite at <span className="codeword">.morrow/morrow.db</span>. Test runs use isolated temporary databases.</p></div>
+            <div className="card"><h3>Storage</h3><p className="muted">Data is stored locally in SQLite at <span className="codeword">~/.morrow/morrow.db</span>. Project-local <span className="codeword">.morrow</span> remains available for workspace metadata. Test runs use isolated temporary databases.</p></div>
           </div>
         )}
 

@@ -14,6 +14,50 @@ import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } fro
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      /* best effort cancellation */
+    }
+    return null;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 function sampleModels(json: unknown): string[] {
   try {
@@ -128,12 +172,7 @@ export async function testProviderConnectivity(
   try {
     const res = await fetch(url, { method: "GET", headers, signal: controller.signal });
     const latencyMs = Date.now() - startedAt;
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      /* some gateways return non-JSON on success; ignore */
-    }
+    const body = await readBoundedJson(res);
     if (res.ok) {
       return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: sampleModels(body) };
     }

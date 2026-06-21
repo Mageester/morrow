@@ -86,6 +86,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Liveness + schema probe. Used by the CLI to detect a running service and by
   // `morrow doctor` to report migration state. Exposes no secrets.
+  app.get("/", async () => ({
+    name: "morrow-orchestrator",
+    status: "healthy",
+    ui: "http://127.0.0.1:5173",
+    health: "/api/health",
+  }));
+
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
     return {
@@ -316,6 +323,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = SendMessageSchema.parse(request.body);
 
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
+    const mode = body.mode ?? "read-only";
+    const toolProfile = mode === "plan-only" ? "none" : "read-only";
 
     // Resolve the provider+model the agent will actually use, and report it.
     let decision: RoutingDecision;
@@ -331,6 +340,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         overridden: false,
         privacy: preset.privacy,
         candidates: [{ providerId: "mock", configured: true, reason: "mock enabled" }],
+        mode,
+        toolProfile,
       };
     } else {
       const override = body.providerId
@@ -345,6 +356,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       if (body.model && !body.providerId) {
         decision = { ...decision, model: body.model, overridden: true };
       }
+      decision = { ...decision, mode, toolProfile };
     }
 
     const timestamp = new Date().toISOString();

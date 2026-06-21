@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { basename } from "node:path";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Project } from "@morrow/contracts";
@@ -15,13 +16,20 @@ export function isInteractive(ctx: Context): boolean {
  * Resolve the active project from --project (id | name | workspace path) or the
  * configured default. Throws a clear error when none can be resolved.
  */
-export async function resolveProject(ctx: Context, api: MorrowApi, opts: { required?: boolean } = {}): Promise<Project | null> {
+export async function resolveProject(
+  ctx: Context,
+  api: MorrowApi,
+  opts: { required?: boolean; autoCreateMissing?: boolean } = {},
+): Promise<Project | null> {
   const flag = flagString(ctx.flags, "project");
   const configured = ctx.config.get("defaults.project") as string | undefined;
   const ref = flag ?? configured;
   const projects = await api.listProjects();
 
   if (!ref) {
+    const cwdProject = matchProjectByPath(projects, process.cwd());
+    if (cwdProject) return cwdProject;
+    if (opts.autoCreateMissing) return autoCreateProjectForPath(ctx, api, process.cwd());
     if (projects.length === 1) return projects[0]!;
     if (!opts.required) return null;
     throw usageError(
@@ -36,14 +44,9 @@ export async function resolveProject(ctx: Context, api: MorrowApi, opts: { requi
 
   // Workspace path match (resolve to canonical path like the server does).
   if (looksLikePath(ref)) {
-    let canonical = ref;
-    try {
-      if (existsSync(ref)) canonical = realpathSync(ref);
-    } catch {
-      /* ignore */
-    }
-    const byPath = projects.find((p) => p.workspacePath === canonical || p.workspacePath === ref);
+    const byPath = matchProjectByPath(projects, ref);
     if (byPath) return byPath;
+    if (opts.autoCreateMissing) return autoCreateProjectForPath(ctx, api, ref);
     throw notFound(`No project registered for path "${ref}". Add it with \`morrow projects add ${ref}\`.`);
   }
 
@@ -53,6 +56,24 @@ export async function resolveProject(ctx: Context, api: MorrowApi, opts: { requi
   if (byName.length > 1) throw usageError(`Multiple projects named "${ref}". Use the project id instead.`);
 
   throw notFound(`No project matching "${ref}".`);
+}
+
+function matchProjectByPath(projects: Project[], ref: string): Project | undefined {
+  let canonical = ref;
+  try {
+    if (existsSync(ref)) canonical = realpathSync(ref);
+  } catch {
+    /* ignore */
+  }
+  return projects.find((p) => p.workspacePath === canonical || p.workspacePath === ref);
+}
+
+async function autoCreateProjectForPath(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {
+  const canonical = validateDirectory(ref);
+  const name = basename(canonical) || canonical;
+  const project = await api.createProject(name, canonical);
+  ctx.out.info(`Using current workspace as project: ${project.name}`);
+  return project;
 }
 
 export function looksLikePath(ref: string): boolean {

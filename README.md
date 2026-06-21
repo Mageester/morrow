@@ -99,7 +99,7 @@ pnpm install
 - **Web App**: `pnpm --filter @morrow/web dev`
 
 ### Data Storage
-Morrow stores data locally. By default, the SQLite database is located at `.morrow/morrow.db` within the project directory.
+Morrow stores data locally. By default, global service state lives under `~/.morrow/`, including the primary SQLite database at `~/.morrow/morrow.db`. Project-local `.morrow/` remains available for workspace metadata.
 
 ## Inspect Workspace Workflow
 The "Inspect workspace" task is a safe, deterministic execution workflow:

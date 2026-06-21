@@ -1,6 +1,4 @@
-import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { spawnSync } from "node:child_process";
 import { parseArgs, flagBool, flagString } from "./cli/args.js";
 import { Context } from "./cli/context.js";
 import { CliError, EXIT, usageError } from "./cli/errors.js";
@@ -13,12 +11,27 @@ import { modelsCommand } from "./commands/models.js";
 import { presetsCommand } from "./commands/presets.js";
 import { projectsCommand, initCommand } from "./commands/projects.js";
 import { providersCommand } from "./commands/providers.js";
+import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 
 export const VERSION = "0.1.0";
 
-const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value"];
+const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
+const COMMANDS = new Set(["status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory"]);
+
+type Invocation =
+  | { kind: "interactive" }
+  | { kind: "prompt"; prompt: string }
+  | { kind: "command"; root: string; sub: string | undefined; args: string[] };
+
+export function resolveInvocation(positionals: string[]): Invocation {
+  const [root, sub, ...args] = positionals;
+  if (!root) return { kind: "interactive" };
+  if (root === "run") return { kind: "prompt", prompt: [sub, ...args].filter((value): value is string => Boolean(value)).join(" ") };
+  if (COMMANDS.has(root)) return { kind: "command", root, sub, args };
+  return { kind: "prompt", prompt: positionals.join(" ") };
+}
 
 export async function run(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv, { valueFlags: VALUE_FLAGS, aliases: ALIASES });
@@ -29,9 +42,20 @@ export async function run(argv: string[]): Promise<number> {
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
-    const [root, sub, ...args] = parsed.positionals;
+    const invocation = resolveInvocation(parsed.positionals);
+    switch (invocation.kind) {
+      case "interactive":
+        return chatCommand(ctx);
+      case "prompt": {
+        if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
+        const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });
+        return chatCommand(promptCtx);
+      }
+      case "command":
+        break;
+    }
+    const { root, sub, args = [] } = invocation;
     switch (root) {
-      case undefined: return printHelp(out);
       case "status": return status(ctx);
       case "doctor": return doctor(ctx);
       case "onboard": return onboard(ctx);
@@ -44,6 +68,13 @@ export async function run(argv: string[]): Promise<number> {
       case "init": return initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "chat": return chatCommand(ctx);
       case "conversations": return conversationsCommand(ctx, sub ?? "", args);
+      case "conversation": return conversationsCommand(ctx, sub ?? "", args);
+      case "sessions": return conversationsCommand(ctx, "list", []);
+      case "session": return conversationsCommand(ctx, sub ?? "list", args);
+      case "resume": {
+        const resumeCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, resume: sub ?? "" } });
+        return chatCommand(resumeCtx);
+      }
       case "providers": return providersCommand(ctx, sub ?? "", args);
       case "models": return modelsCommand(ctx, sub ?? "", args);
       case "presets": return presetsCommand(ctx, sub, args);
@@ -66,7 +97,7 @@ export async function run(argv: string[]): Promise<number> {
 
 function printVersion(out: Output): number { if (out.json) out.data({ version: VERSION }); else out.print(VERSION); return EXIT.OK; }
 function printHelp(out: Output): number {
-  const help = `Morrow CLI ${VERSION}\n\nUsage: morrow <command> [options]\n\nCommands:\n  morrow status | morrow doctor | morrow onboard\n  morrow serve [--detach] | morrow stop | morrow restart | morrow logs\n  morrow config list|get|set|unset|path\n  morrow projects list|add|select|inspect|remove | morrow init [path]\n  morrow chat [--new|--resume <id>|--message <prompt>]\n  morrow conversations list|show|rename|archive|export\n  morrow providers list|status|test|configure\n  morrow models list|info|select\n  morrow presets list|show|select\n  morrow tools list|info | morrow permissions show | morrow audit list|show\n  morrow memory list|add|remove|status\n\nGlobal options: --json --quiet --no-color --project --provider --model --preset --timeout`;
+  const help = `Morrow CLI ${VERSION}\n\nUsage:\n  morrow\n  morrow "Explain this repository"\n  morrow --resume [id]\n  morrow run "Return a JSON repository overview" --json\n  morrow <command> [options]\n\nCommands:\n  morrow status | morrow doctor | morrow onboard\n  morrow serve [--detach] | morrow stop | morrow restart | morrow logs\n  morrow config list|get|set|unset|path\n  morrow projects list|add|select|inspect|remove | morrow init [path]\n  morrow chat [--new|--resume <id>|--message <prompt>]\n  morrow conversations list|show|rename|archive|export\n  morrow sessions | morrow resume [id]\n  morrow session show|rename|archive|export <id>\n  morrow providers list|status|test|configure\n  morrow models list|info|select\n  morrow presets list|show|select\n  morrow tools list|info | morrow permissions show | morrow audit list|show\n  morrow memory list|add|remove|status\n\nGlobal options: --json --quiet --no-color --project --provider --model --preset --timeout --resume --plan --read-only`;
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;
 }
@@ -80,12 +111,11 @@ async function status(ctx: Context): Promise<number> {
 }
 
 async function doctor(ctx: Context): Promise<number> {
-  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const pnpm = spawnSync(pnpmBin, ["--version"], { encoding: "utf8" });
+  const pnpm = probePnpm(process.env);
   const checks: Array<{ name: string; ok: boolean; detail: string; critical: boolean }> = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.versions.node, critical: true },
-    { name: "pnpm", ok: pnpm.status === 0, detail: (pnpm.stdout || pnpm.stderr || "not found").trim(), critical: true },
-    { name: "data directory", ok: existsSync(dirname(ctx.service.dbPath)), detail: dirname(ctx.service.dbPath), critical: false },
+    { name: "pnpm", ok: pnpm.ok, detail: pnpm.executable ? `${pnpm.detail} (${pnpm.executable})` : pnpm.detail, critical: true },
+    { name: "data directory", ok: true, detail: dirname(ctx.service.dbPath), critical: false },
   ];
   try {
     const health = await ctx.api().health();
@@ -114,7 +144,7 @@ async function onboard(ctx: Context): Promise<number> {
     ctx.out.heading("Morrow onboarding");
     ctx.out.print("Morrow keeps data local, uses only configured providers, and exposes read-only tools with evidence.");
     ctx.out.keyValue([["projects", String(summary.projects)], ["configured providers", summary.configuredProviders.join(", ") || "none"], ["available models", String(summary.availableModels.length)], ["available presets", summary.availablePresets.join(", ") || "none"]]);
-    ctx.out.print("Next: morrow projects add .; morrow providers configure <provider>; morrow models select; morrow presets select; morrow chat");
+    ctx.out.print("Next: morrow providers configure <provider>; morrow models select; morrow presets select; morrow");
   }
   return EXIT.OK;
 }
