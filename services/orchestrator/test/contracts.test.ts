@@ -5,6 +5,7 @@ import {
   RoutingDecisionSchema,
   MemoryEntrySchema,
   ExecutionDisclosureSchema,
+  AgentExecutionStateSchema,
   TaskStatusSchema,
   SendMessageSchema,
   ModelInfoSchema,
@@ -25,6 +26,13 @@ describe("Contract schemas", () => {
 
   it("enforces the full set of truthful task states", () => {
     expect(TaskStatusSchema.options).toEqual(["queued", "running", "completed", "verified", "failed", "cancelled", "interrupted"]);
+  });
+
+  it("enforces the persisted agent state machine vocabulary", () => {
+    expect(AgentExecutionStateSchema.options).toEqual([
+      "idle", "understanding", "planning", "waiting_for_approval", "executing_tool", "observing",
+      "proposing_changes", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted",
+    ]);
   });
 
   it("accepts every provider id in the disclosure schema", () => {

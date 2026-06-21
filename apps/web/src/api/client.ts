@@ -1,4 +1,4 @@
-import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope } from "@morrow/contracts";
+import type { AgentStateTransition, Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope } from "@morrow/contracts";
 
 export interface SendMessageOptions {
   preset?: string;
@@ -46,7 +46,7 @@ export const apiClient = {
     return res.json();
   },
 
-  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult }> {
+  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult }> {
     const res = await fetch(`${BASE_URL}/api/tasks/${taskId}`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
@@ -82,7 +82,7 @@ export const apiClient = {
         }
       };
 
-      const eventTypes = ["task.created", "plan.created", "step.started", "step.completed", "workspace.inspected", "evidence.persisted", "verification.completed", "task.running", "task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"];
+      const eventTypes = ["task.created", "plan.created", "step.started", "step.completed", "workspace.inspected", "evidence.persisted", "agent.state_changed", "verification.completed", "task.running", "task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"];
       eventTypes.forEach(type => {
         eventSource!.addEventListener(type, handler);
       });

@@ -12,7 +12,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provi
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
-import type { AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
+import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 type Dependencies = {
   db: Database.Database;
@@ -63,6 +63,11 @@ export async function executeAgentChatTask({
   const event = (type: Parameters<typeof records.appendEvent>[0]["type"], payload: Record<string, unknown> = {}) => {
     return records.appendEvent({ id: randomUUID(), taskId, type, payload, createdAt: now() });
   };
+  const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) =>
+    records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: now() });
+
+  if (!records.getAgentState(taskId)) transitionAgentState("idle");
+  transitionAgentState("understanding");
 
   // Define plan
   const agentMode: AgentMode = routingRepo.get(taskId)?.decision.mode ?? "read-only";
@@ -78,6 +83,7 @@ export async function executeAgentChatTask({
       ];
   records.replacePlan(taskId, plan);
   event("plan.created", { stepCount: plan.length });
+  transitionAgentState("planning", { stepCount: plan.length });
 
   // Resolve routing decision + preset-derived execution budgets
   const routing = routingRepo.get(taskId);
@@ -118,6 +124,7 @@ export async function executeAgentChatTask({
       activeProvider = createProvider(providerId, process.env, resolvedModel);
       providerType = providerId;
     } catch (e: any) {
+      transitionAgentState("failed", { message: e.message || "Provider not configured" });
       records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: e.message || "Provider not configured" } });
       convs.updateMessageContentAndState(assistantMessageRow.id, `Provider not available: ${e.message || "not configured"}`, "failed", now());
       event("task.failed", { message: e.message || "Provider not configured" });
@@ -256,6 +263,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     if (currentTask && currentTask.status !== "cancelled") {
       records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: {} });
     }
+    transitionAgentState("cancelled");
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "cancelled", now());
     if (activeStepId) {
       records.updatePlanStepStatus(activeStepId, "failed", now());
@@ -334,6 +342,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     } catch (e: any) {
       console.error("Provider stream error", e);
       const errMessage = e.message || "Failed to query AI provider";
+      transitionAgentState("failed", { message: errMessage });
       records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: errMessage } });
       convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${errMessage}]`, "failed", now());
       if (activeStepId) {
@@ -349,6 +358,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     }
 
     if (hasToolCalls && currentToolCalls.length > 0) {
+      transitionAgentState("executing_tool", { toolCount: currentToolCalls.length });
       // Transition step to Read Workspace
       if (workspaceStep && activeStepId !== workspaceStep.id) {
         records.updatePlanStepStatus(activeStepId, "completed", now());
@@ -467,6 +477,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
           content: resultStr
         });
       }
+      transitionAgentState("observing", { toolCount: currentToolCalls.length });
     } else {
       // No more tool calls, we're done
       completedWithoutMoreTools = true;
@@ -481,6 +492,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
 
   if (!completedWithoutMoreTools && turn >= turnsLimit) {
     const loopErrMsg = `Agent turn loop limit reached (${turnsLimit})`;
+    transitionAgentState("failed", { message: loopErrMsg });
     records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: loopErrMsg } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${loopErrMsg}]`, "failed", now());
     if (activeStepId) {
@@ -502,6 +514,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
   }
 
   // Final transition to completed
+  transitionAgentState("completed");
   records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
   convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "completed", now());
   event("task.completed", {});

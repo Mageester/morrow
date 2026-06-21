@@ -70,6 +70,19 @@ export const migrations:Migration[]=[
   {id:5,name:"conversation_archive",sql:`
     ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS conversations_project_idx ON conversations(project_id);
+  `},
+  {id:6,name:"agent_state_transitions",sql:`
+    CREATE TABLE agent_state_transitions (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, sequence)
+    );
+    CREATE INDEX agent_state_transitions_task_id_sequence_idx ON agent_state_transitions(task_id, sequence);
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

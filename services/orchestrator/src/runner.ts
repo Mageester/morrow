@@ -59,10 +59,16 @@ export class TaskRunner {
           console.error("Task execution failed", e);
           try {
             const task = taskRepository(this.db).getTaskById(taskId);
+            const timestamp = new Date().toISOString();
+            const records = taskRecordsRepository(this.db);
+            if (task?.kind === "agent_chat") {
+              if (!records.getAgentState(taskId)) records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
+              records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "failed", details: { message: e.message || "Task execution failed" }, createdAt: timestamp });
+            }
             if (task?.status === "queued" || task?.status === "running") {
-              taskRecordsRepository(this.db).transitionTask(taskId, "failed", {
+              records.transitionTask(taskId, "failed", {
                 id: crypto.randomUUID(),
-                createdAt: new Date().toISOString(),
+                createdAt: timestamp,
                 payload: { message: e.message || "Task execution failed" },
               });
             }
@@ -103,9 +109,14 @@ export class TaskRunner {
     const records = taskRecordsRepository(this.db);
     const task = taskRepository(this.db).getTaskById(taskId);
     if (task && ["queued", "running"].includes(task.status)) {
+      const timestamp = new Date().toISOString();
+      if (task.kind === "agent_chat") {
+        if (!records.getAgentState(taskId)) records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
+        records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "cancelled", details: { reason: "user_cancelled" }, createdAt: timestamp });
+      }
       records.transitionTask(taskId, "cancelled", {
         id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
+        createdAt: timestamp,
         payload: { message: "Task cancelled by user" }
       });
 
@@ -136,4 +147,3 @@ export class TaskRunner {
     }
   }
 }
-

@@ -1,12 +1,15 @@
 import type Database from "better-sqlite3";
 import {
   ExecutionDisclosureSchema,
+  AgentStateTransitionSchema,
   PlanStepSchema,
   TaskEvidenceSchema,
   TaskEventSchema,
   TaskSchema,
   VerificationResultSchema,
   type ExecutionDisclosure,
+  type AgentExecutionState,
+  type AgentStateTransition,
   type PlanStep,
   type Task,
   type TaskEvidence,
@@ -20,6 +23,7 @@ type PlanInput = Omit<PlanStep, "version" | "taskId">;
 type DisclosureInput = Omit<ExecutionDisclosure, "version">;
 type EvidenceInput = Omit<TaskEvidence, "version">;
 type VerificationInput = Omit<VerificationResult, "version">;
+type AgentStateInput = Omit<AgentStateTransition, "version" | "taskId" | "sequence">;
 
 const eventTypes = {
   running: "task.running",
@@ -35,6 +39,22 @@ const allowedTransitions: Record<Task["status"], readonly Task["status"][]> = {
   running: ["verified", "completed", "failed", "cancelled", "interrupted"],
   completed: [],
   verified: [],
+  failed: [],
+  cancelled: [],
+  interrupted: [],
+};
+
+const allowedAgentStateTransitions: Record<AgentExecutionState, readonly AgentExecutionState[]> = {
+  idle: ["understanding", "failed", "cancelled", "interrupted"],
+  understanding: ["planning", "failed", "cancelled", "interrupted"],
+  planning: ["waiting_for_approval", "executing_tool", "proposing_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
+  waiting_for_approval: ["executing_tool", "proposing_changes", "applying_changes", "cancelled", "failed", "interrupted"],
+  executing_tool: ["observing", "failed", "cancelled", "interrupted"],
+  observing: ["planning", "waiting_for_approval", "executing_tool", "proposing_changes", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
+  proposing_changes: ["waiting_for_approval", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted"],
+  applying_changes: ["verifying", "completed", "failed", "cancelled", "interrupted"],
+  verifying: ["completed", "failed", "cancelled", "interrupted"],
+  completed: [],
   failed: [],
   cancelled: [],
   interrupted: [],
@@ -76,6 +96,10 @@ export function taskRecordsRepository(db: Database.Database) {
     const value = row as Record<string, unknown>;
     return VerificationResultSchema.parse({ version: value.schema_version, taskId: value.task_id, status: value.status, summary: value.summary, details: parseJson(value.details_json, "verification details"), createdAt: value.created_at, updatedAt: value.updated_at });
   };
+  const mapAgentState = (row: unknown): AgentStateTransition => {
+    const value = row as Record<string, unknown>;
+    return AgentStateTransitionSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, sequence: value.sequence, state: value.state, details: parseJson(value.details_json, "agent state details"), createdAt: value.created_at });
+  };
 
   const appendEvent = (input: EventInput): TaskEvent => db.transaction(() => {
     const sequence = (db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM task_events WHERE task_id = ?").get(input.taskId) as { sequence: number }).sequence;
@@ -99,6 +123,35 @@ export function taskRecordsRepository(db: Database.Database) {
     return mapTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));
   })();
 
+  const listAgentStates = (taskId: string): AgentStateTransition[] => db
+    .prepare("SELECT * FROM agent_state_transitions WHERE task_id=? ORDER BY sequence ASC")
+    .all(taskId)
+    .map(mapAgentState);
+
+  const getAgentState = (taskId: string): AgentStateTransition | undefined => {
+    const row = db.prepare("SELECT * FROM agent_state_transitions WHERE task_id=? ORDER BY sequence DESC LIMIT 1").get(taskId);
+    return row ? mapAgentState(row) : undefined;
+  };
+
+  const transitionAgentState = (taskId: string, input: AgentStateInput): AgentStateTransition => db.transaction(() => {
+    const taskRow = db.prepare("SELECT * FROM tasks WHERE id=?").get(taskId);
+    if (!taskRow) throw new Error(`Task not found: ${taskId}`);
+    if (mapTask(taskRow).kind !== "agent_chat") throw new Error("Agent state is only available for agent tasks");
+
+    const previous = getAgentState(taskId);
+    if (previous?.state === input.state) return previous;
+    if (!previous && input.state !== "idle") throw new Error(`Invalid agent state transition: none -> ${input.state}`);
+    if (previous && !allowedAgentStateTransitions[previous.state].includes(input.state)) {
+      throw new Error(`Invalid agent state transition: ${previous.state} -> ${input.state}`);
+    }
+
+    const sequence = (db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM agent_state_transitions WHERE task_id=?").get(taskId) as { sequence: number }).sequence;
+    const value = AgentStateTransitionSchema.parse({ ...input, version: 1, taskId, sequence });
+    db.prepare("INSERT INTO agent_state_transitions(id,schema_version,task_id,sequence,state,details_json,created_at) VALUES(?,1,?,?,?,?,?)").run(value.id, taskId, value.sequence, value.state, JSON.stringify(value.details), value.createdAt);
+    appendEvent({ id: value.id, taskId, type: "agent.state_changed", payload: { ...value.details, state: value.state }, createdAt: value.createdAt });
+    return value;
+  })();
+
   return {
     appendEvent,
     listEvents(taskId: string, afterSequence?: number) {
@@ -107,6 +160,9 @@ export function taskRecordsRepository(db: Database.Database) {
     },
     transitionTask(id: string, target: Task["status"], event: TransitionEvent) { return transition(id, target, event); },
     resumeInterruptedTask(id: string, event: TransitionEvent) { return transition(id, "running", event, true); },
+    transitionAgentState,
+    listAgentStates,
+    getAgentState,
     replacePlan(taskId: string, steps: PlanInput[]) {
       const positions = new Set<number>();
       for (const step of steps) {
@@ -149,7 +205,7 @@ export function taskRecordsRepository(db: Database.Database) {
     getAggregate(taskId: string) {
       const row = db.prepare("SELECT * FROM tasks WHERE id=?").get(taskId);
       if (!row) throw new Error(`Task not found: ${taskId}`);
-      return { task: mapTask(row), plan: this.listPlanSteps(taskId), events: this.listEvents(taskId), disclosure: this.getDisclosure(taskId), evidence: this.listEvidence(taskId), verification: this.getVerification(taskId) };
+      return { task: mapTask(row), plan: this.listPlanSteps(taskId), events: this.listEvents(taskId), agentState: getAgentState(taskId), agentStates: listAgentStates(taskId), disclosure: this.getDisclosure(taskId), evidence: this.listEvidence(taskId), verification: this.getVerification(taskId) };
     },
   };
 }

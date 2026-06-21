@@ -377,6 +377,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       status: "queued",
       createdAt: timestamp,
     });
+    records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
 
     const assistantMsg = convs.appendMessage({
       id: crypto.randomUUID(),

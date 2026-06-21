@@ -14,10 +14,12 @@ describe("TaskRunner", () => {
       CREATE TABLE projects (id TEXT PRIMARY KEY, schema_version INTEGER, name TEXT, workspace_path TEXT, created_at TEXT, updated_at TEXT);
       CREATE TABLE tasks (id TEXT PRIMARY KEY, schema_version INTEGER, project_id TEXT, type TEXT, status TEXT, created_at TEXT, updated_at TEXT, started_at TEXT, completed_at TEXT);
       CREATE TABLE task_events (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, type TEXT, payload_json TEXT, created_at TEXT);
+      CREATE TABLE agent_state_transitions (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, state TEXT, details_json TEXT, created_at TEXT);
       CREATE TABLE plan_steps (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, position INTEGER, title TEXT, description TEXT, status TEXT, created_at TEXT, updated_at TEXT);
       CREATE TABLE execution_disclosures (task_id TEXT PRIMARY KEY, schema_version INTEGER, execution_mode TEXT, provider TEXT, network_access TEXT, workspace_scope TEXT, estimated_cost_usd TEXT, created_at TEXT, updated_at TEXT, filesystem_access TEXT, shell_execution INTEGER, model_invocation INTEGER);
       CREATE TABLE task_evidence (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, type TEXT, path TEXT, metadata_json TEXT, created_at TEXT);
       CREATE TABLE verification_results (task_id TEXT PRIMARY KEY, schema_version INTEGER, status TEXT, summary TEXT, details_json TEXT, created_at TEXT, updated_at TEXT);
+      CREATE TABLE conversation_messages (id TEXT PRIMARY KEY, task_id TEXT, content TEXT, streaming_state TEXT, updated_at TEXT);
     `);
     
     projectRepository(db).createProject({ id: "p1", name: "test", workspacePath: "/test", createdAt: new Date().toISOString() });
@@ -73,5 +75,35 @@ describe("TaskRunner", () => {
     expect(activeTasks.has("t1")).toBe(false);
     expect(taskRepository(db).getTaskById("t1")?.status).toBe("failed");
     expect(taskRecordsRepository(db).listEvents("t1").at(-1)?.type).toBe("task.failed");
+  });
+
+  it("records failed agent state when an executor fails unexpectedly", async () => {
+    const createdAt = new Date().toISOString();
+    taskRepository(db).createTask({ id: "agent", projectId: "p1", kind: "agent_chat", status: "queued", createdAt });
+    const records = taskRecordsRepository(db);
+    records.transitionAgentState("agent", { id: "agent-idle", state: "idle", details: {}, createdAt });
+    const runner = new TaskRunner(db, async () => {
+      throw new Error("executor failure");
+    });
+
+    runner.run("agent");
+    await runner.waitFor("agent");
+
+    expect(records.getAgentState("agent")?.state).toBe("failed");
+  });
+
+  it("records cancelled agent state when a user cancels a running task", async () => {
+    const createdAt = new Date().toISOString();
+    taskRepository(db).createTask({ id: "agent", projectId: "p1", kind: "agent_chat", status: "queued", createdAt });
+    const records = taskRecordsRepository(db);
+    records.transitionAgentState("agent", { id: "agent-idle", state: "idle", details: {}, createdAt });
+    const runner = new TaskRunner(db, async ({ abortSignal }) => {
+      await new Promise<void>((resolve) => abortSignal?.addEventListener("abort", () => resolve(), { once: true }));
+    });
+
+    runner.run("agent");
+    runner.cancel("agent");
+
+    expect(records.getAgentState("agent")?.state).toBe("cancelled");
   });
 });
