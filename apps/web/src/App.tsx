@@ -1,344 +1,152 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from './api/client';
-import type { Project, Task, TaskEvent, PlanStep, TaskEvidence, ExecutionDisclosure, VerificationResult } from '@morrow/contracts';
+import type { ExecutionDisclosure, PlanStep, Project, Task, TaskEvent, TaskEvidence, VerificationResult } from '@morrow/contracts';
 import './App.css';
+
+type TaskAggregate = { task?: Task; plan?: PlanStep[]; events?: TaskEvent[]; evidence?: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult };
+const terminal = new Set(['verified', 'failed', 'interrupted']);
+const nav = [['◷', 'Today'], ['◌', 'Conversations'], ['▣', 'Projects'], ['◎', 'Agents'], ['↻', 'Automations'], ['⚙', 'Settings']] as const;
+
+function statusLabel(status: Task['status']) { return status[0]!.toUpperCase() + status.slice(1); }
+function compactPath(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path; }
+function relativeTime(value?: string) { if (!value) return '—'; const minutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60000)); return minutes < 1 ? 'Just now' : minutes < 60 ? `${minutes}m ago` : new Date(value).toLocaleDateString(); }
 
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
-  
-  const [newProjectName, setNewProjectName] = useState('');
-  const [newWorkspacePath, setNewWorkspacePath] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [activeTaskId, setActiveTaskId] = useState('');
+  const [taskState, setTaskState] = useState<TaskAggregate | null>(null);
   const [projectError, setProjectError] = useState('');
   const [taskError, setTaskError] = useState('');
-
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [activeTaskId, setActiveTaskId] = useState<string>('');
-  const [taskState, setTaskState] = useState<{
-    task?: Task;
-    plan?: PlanStep[];
-    events?: TaskEvent[];
-    evidence?: TaskEvidence[];
-    disclosure?: ExecutionDisclosure;
-    verification?: VerificationResult;
-  } | null>(null);
-
-  const [activeNav, setActiveNav] = useState('projects');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newWorkspacePath, setNewWorkspacePath] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [loadingProjects, setLoadingProjects] = useState(true);
 
   useEffect(() => {
-    apiClient.listProjects().then(p => {
-      setProjects(p);
-      if (p.length > 0 && !selectedProjectId) setSelectedProjectId(p[0].id);
-    }).catch(console.error);
+    apiClient.listProjects().then((items) => {
+      setProjects(items); setSelectedProjectId((current) => current || items[0]?.id || '');
+    }).catch(() => setProjectError('Projects could not be loaded.')).finally(() => setLoadingProjects(false));
   }, []);
 
-  const refreshTasks = (projectId: string) => {
-    apiClient.listProjectTasks(projectId).then(t => {
-      setTasks(t);
-      // We don't automatically select the first task to allow the user to see the 'ready' state
-    }).catch(console.error);
-  };
-
+  const refreshTasks = (projectId: string) => apiClient.listProjectTasks(projectId).then(setTasks).catch(() => setTaskError('Task history could not be loaded.'));
   useEffect(() => {
-    if (selectedProjectId) {
-      refreshTasks(selectedProjectId);
-    } else {
-      setTasks([]);
-      setActiveTaskId('');
-    }
+    if (!selectedProjectId) { setTasks([]); setActiveTaskId(''); return; }
+    refreshTasks(selectedProjectId);
   }, [selectedProjectId]);
 
   useEffect(() => {
-    if (!activeTaskId) {
-      setTaskState(null);
-      return;
-    }
-    let unsub: () => void = () => {};
-    let isSubscribed = true;
-
-    const loadAgg = async () => {
+    if (!activeTaskId) { setTaskState(null); return; }
+    let subscribed = true;
+    let unsubscribe = () => {};
+    const load = async () => {
       try {
-        const agg = await apiClient.getTaskAggregate(activeTaskId);
-        if (!isSubscribed) return;
-        setTaskState(agg);
-        
-        if (["queued", "running"].includes(agg.task.status)) {
-          const lastSeq = agg.events.length > 0 ? agg.events[agg.events.length - 1].sequence : 0;
-          unsub = apiClient.subscribeToTaskEvents(activeTaskId, lastSeq, (event) => {
-            if (!isSubscribed) return;
-            setTaskState(prev => {
-              if (!prev) return prev;
-              const hasEvent = prev.events?.some(e => e.id === event.id);
-              if (hasEvent) return prev;
-              return {
-                ...prev,
-                events: [...(prev.events || []), event].sort((a, b) => a.sequence - b.sequence)
-              };
-            });
-            // Refresh aggregate on status changes
-            if (["step.started", "step.completed", "task.verified", "task.failed"].includes(event.type)) {
-              apiClient.getTaskAggregate(activeTaskId).then(newAgg => {
-                if (isSubscribed) setTaskState(newAgg);
+        const aggregate = await apiClient.getTaskAggregate(activeTaskId);
+        if (!subscribed) return;
+        setTaskState(aggregate);
+        if (aggregate.task && !terminal.has(aggregate.task.status)) {
+          const after = aggregate.events?.at(-1)?.sequence ?? 0;
+          unsubscribe = apiClient.subscribeToTaskEvents(activeTaskId, after, (event) => {
+            if (!subscribed) return;
+            setTaskState((current) => current ? { ...current, events: [...(current.events ?? []), event].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).sort((a, b) => a.sequence - b.sequence) } : current);
+            if (['step.started', 'step.completed', 'task.verified', 'task.failed', 'task.interrupted'].includes(event.type)) {
+              apiClient.getTaskAggregate(activeTaskId).then((next) => {
+                if (!subscribed) return;
+                setTaskState(next);
+                if (next.task && terminal.has(next.task.status)) setTasks((items) => items.map((item) => item.id === next.task?.id ? next.task : item));
               });
+              if (['task.verified', 'task.failed', 'task.interrupted'].includes(event.type)) refreshTasks(selectedProjectId);
             }
           }, () => {
-            apiClient.getTaskAggregate(activeTaskId).then(newAgg => {
-              if (isSubscribed) {
-                setTaskState(newAgg);
-                refreshTasks(selectedProjectId); // Refresh list to get updated status
-              }
-            });
+            apiClient.getTaskAggregate(activeTaskId).then((next) => { if (subscribed) { setTaskState(next); if (next.task) setTasks((items) => items.map((item) => item.id === next.task?.id ? next.task : item)); refreshTasks(selectedProjectId); } });
           });
         }
-      } catch (err) {
-        console.error(err);
-      }
+      } catch { if (subscribed) setTaskError('Task details could not be loaded.'); }
     };
-    loadAgg();
-
-    return () => {
-      isSubscribed = false;
-      unsub();
-    };
+    load();
+    return () => { subscribed = false; unsubscribe(); };
   }, [activeTaskId, selectedProjectId]);
 
-  const handleCreateProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setProjectError('');
-    try {
-      const p = await apiClient.createProject(newProjectName, newWorkspacePath);
-      setProjects([...projects, p]);
-      setSelectedProjectId(p.id);
-      setNewProjectName('');
-      setNewWorkspacePath('');
-    } catch (err: any) {
-      setProjectError(err.message || 'Failed to create project');
-    }
-  };
+  const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const selectedTask = taskState?.task;
+  const latestTask = taskState?.task?.projectId === selectedProjectId ? taskState.task : tasks.at(0);
+  const projectRows = useMemo(() => projects.map((project) => ({ project, selected: project.id === selectedProjectId })), [projects, selectedProjectId]);
 
-  const handleStartInspection = async () => {
+  async function createProject(event: React.FormEvent) {
+    event.preventDefault(); setProjectError('');
+    try {
+      const project = await apiClient.createProject(newProjectName, newWorkspacePath);
+      setProjects((items) => [...items, project]); setSelectedProjectId(project.id); setNewProjectName(''); setNewWorkspacePath(''); setCreateOpen(false);
+    } catch (error) { setProjectError(error instanceof Error ? error.message : 'Project could not be created.'); }
+  }
+  async function startInspection() {
     if (!selectedProjectId) return;
     setTaskError('');
     try {
       const { taskId } = await apiClient.startInspectWorkspace(selectedProjectId);
-      // Immediately add the new task to the local list as queued so we can show it
-      const newTask: Task = {
-        version: 1,
-        id: taskId,
-        projectId: selectedProjectId,
-        kind: 'inspect_workspace',
-        status: 'queued',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      setTasks(prev => [newTask, ...prev]);
-      setActiveTaskId(taskId);
-    } catch (err: any) {
-      setTaskError(err.message || 'Failed to start task');
-    }
-  };
+      const now = new Date().toISOString();
+      setTasks((items) => [{ version: 1, id: taskId, projectId: selectedProjectId, kind: 'inspect_workspace', status: 'queued', createdAt: now, updatedAt: now }, ...items]);
+      setActiveTaskId(taskId); setInspectorOpen(true);
+    } catch (error) { setTaskError(error instanceof Error ? error.message : 'Inspection could not start.'); }
+  }
 
-  const selectedProject = projects.find(p => p.id === selectedProjectId);
-
-  const getTaskStatusLabel = (status: Task['status']) => {
-    switch (status) {
-      case 'queued': return 'Queued';
-      case 'running': return 'Running';
-      case 'verified': return 'Verified';
-      case 'failed': return 'Failed';
-      case 'interrupted': return 'Interrupted';
-      default: return status;
-    }
-  };
-
-  return (
-    <div className="morrow-app">
-      <nav className="left-nav" aria-label="Main Navigation">
-        <div className="brand">Morrow</div>
-        <ul className="nav-links">
-          <li><button className="nav-btn disabled" disabled aria-disabled="true">Today <span className="sr-only">(Planned)</span></button></li>
-          <li><button className="nav-btn disabled" disabled aria-disabled="true">Conversations <span className="sr-only">(Planned)</span></button></li>
-          <li><button className={`nav-btn ${activeNav === 'projects' ? 'active' : ''}`} onClick={() => setActiveNav('projects')}>Projects</button></li>
-          <li><button className="nav-btn disabled" disabled aria-disabled="true">Agents <span className="sr-only">(Planned)</span></button></li>
-          <li><button className="nav-btn disabled" disabled aria-disabled="true">Automations <span className="sr-only">(Planned)</span></button></li>
-        </ul>
+  return <div className="app-shell">
+    <aside className="sidebar" aria-label="Primary navigation">
+      <div className="brand-lockup"><span className="brand-mark" aria-hidden="true">M</span><span>Morrow</span></div>
+      <nav className="nav-list">
+        {nav.map(([icon, label]) => <button key={label} className={`nav-item ${label === 'Projects' ? 'active' : 'planned'}`} disabled={label !== 'Projects'} aria-current={label === 'Projects' ? 'page' : undefined}>
+          <span aria-hidden="true">{icon}</span><span>{label}</span>{label !== 'Projects' && <small>Planned</small>}
+        </button>)}
       </nav>
+      <div className="sidebar-footer"><span className="local-dot" aria-hidden="true" />Local workspace</div>
+    </aside>
 
-      <main className="main-canvas" aria-live="polite">
-        <header className="canvas-header">
-          <h2>Projects</h2>
-        </header>
-
-        <div className="project-controls">
-          <div className="project-selection">
-            <label htmlFor="project-select">Active Project</label>
-            <select id="project-select" value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)}>
-              <option value="">-- Select a project --</option>
-              {projects.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <form onSubmit={handleCreateProject} className="new-project-form" aria-labelledby="create-project-heading">
-            <h3 id="create-project-heading">Create Project</h3>
-            {projectError && <div className="error-message" role="alert">{projectError}</div>}
-            <div className="form-group">
-              <label htmlFor="new-project-name">Name</label>
-              <input id="new-project-name" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} required />
-            </div>
-            <div className="form-group">
-              <label htmlFor="new-workspace-path">Workspace Path</label>
-              <input id="new-workspace-path" value={newWorkspacePath} onChange={e => setNewWorkspacePath(e.target.value)} required />
-            </div>
-            <button type="submit" className="primary-btn">Create Project</button>
-          </form>
-        </div>
-
-        {selectedProject && (
-          <div className="workspace-area">
-            <div className="workspace-header">
-              <h3>{selectedProject.name} Workspace</h3>
-              <p className="path-display" title={selectedProject.workspacePath}>
-                Path: <span className="path-truncate">{selectedProject.workspacePath.split(/[/\\]/).pop()}</span>
-              </p>
-            </div>
-
-            <div className="task-submission">
-              {taskError && <div className="error-message" role="alert">{taskError}</div>}
-              <button onClick={handleStartInspection} className="action-btn">Inspect Workspace</button>
-              {activeTaskId && (
-                <button onClick={() => setActiveTaskId('')} className="secondary-btn">Clear Selection</button>
-              )}
-            </div>
-
-            <div className="task-history">
-              <h3>Task History</h3>
-              {tasks.length === 0 ? (
-                <p className="empty-state">No tasks yet. Start an inspection.</p>
-              ) : (
-                <ul className="task-list" role="listbox">
-                  {tasks.map(t => (
-                    <li 
-                      key={t.id} 
-                      className={`task-item ${activeTaskId === t.id ? 'selected' : ''}`}
-                      role="option"
-                      aria-selected={activeTaskId === t.id}
-                      tabIndex={0}
-                      onClick={() => setActiveTaskId(t.id)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setActiveTaskId(t.id);
-                        }
-                      }}
-                    >
-                      <div className="task-item-header">
-                        <span className="task-kind">Inspect Workspace</span>
-                        <span className={`task-badge ${t.status}`}>{getTaskStatusLabel(t.status)}</span>
-                      </div>
-                      <div className="task-item-meta">
-                        {new Date(t.createdAt).toLocaleString()}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
+    <section className="workspace">
+      <header className="topbar">
+        <div><p className="crumb">Workspace / Projects</p><h1>Projects</h1></div>
+        <div className="topbar-actions"><span className="local-status"><span className="local-dot" />Local</span><button className="inspector-toggle" onClick={() => setInspectorOpen((open) => !open)} aria-expanded={inspectorOpen}>Inspector</button><button className="primary-action" onClick={() => setCreateOpen(true)}>+ New project</button></div>
+      </header>
+      <main className="project-workspace" aria-live="polite">
+        {projectError && <div className="inline-error" role="alert">{projectError}</div>}
+        {taskError && <div className="inline-error" role="alert">{taskError}</div>}
+        <section className="project-table-wrap" aria-label="Projects">
+          <div className="table-toolbar"><span>{projects.length} project{projects.length === 1 ? '' : 's'}</span><span>{selectedProject ? `Selected: ${selectedProject.name}` : 'Choose a project'}</span></div>
+          {loadingProjects ? <div className="table-state">Loading projects…</div> : projects.length === 0 ? <div className="table-state empty"><strong>No projects yet</strong><span>Create a local workspace project to start a deterministic inspection.</span><button className="secondary-action" onClick={() => setCreateOpen(true)}>Create project</button></div> : <div className="project-table" role="table" aria-label="Project list">
+            <div className="project-row header" role="row"><span>Name</span><span>Workspace</span><span>Latest task</span><span>Activity</span><span>Tasks</span></div>
+            {projectRows.map(({ project, selected }) => <button key={project.id} className={`project-row ${selected ? 'selected' : ''}`} role="row" onClick={() => { setSelectedProjectId(project.id); setInspectorOpen(true); }}>
+              <span className="project-name"><b>{project.name}</b><small>Local project</small></span><span className="workspace-cell" title={project.workspacePath}>{compactPath(project.workspacePath)}</span><span>{selected && latestTask ? <StatusChip status={latestTask.status} /> : <span className="muted">—</span>}</span><span className="muted">{selected && latestTask ? relativeTime(latestTask.updatedAt) : '—'}</span><span className="muted">{selected ? tasks.length : '—'}</span>
+            </button>)}
+          </div>}
+        </section>
+        {selectedProject && <section className="task-panel"><div className="task-panel-head"><div><p className="eyebrow">{compactPath(selectedProject.workspacePath)}</p><h2>{selectedProject.name}</h2></div><button className="primary-action" onClick={startInspection}>Inspect workspace</button></div>
+          {tasks.length === 0 ? <div className="task-empty">No inspections recorded. Run a read-only workspace inspection when ready.</div> : <div className="task-list" role="listbox" aria-label="Project tasks">{tasks.map((task) => { const currentTask = task.id === activeTaskId && taskState?.task ? taskState.task : task; return <button key={task.id} className={`task-row ${activeTaskId === task.id ? 'selected' : ''}`} role="option" aria-selected={activeTaskId === task.id} onClick={() => { setActiveTaskId(task.id); setInspectorOpen(true); }}><span className="task-glyph" aria-hidden="true">⌁</span><span><b>Inspect workspace</b><small>{new Date(task.createdAt).toLocaleString()}</small></span><StatusChip status={currentTask.status} /><span className="task-chevron">›</span></button>; })}</div>}
+        </section>}
       </main>
+    </section>
 
-      <aside className="right-inspector" aria-label="Task Inspector">
-        {!activeTaskId ? (
-          <div className="inspector-empty">
-            <p>Select a task to view execution details.</p>
-          </div>
-        ) : !taskState ? (
-          <div className="inspector-loading">Loading task details...</div>
-        ) : (
-          <div className="inspector-content">
-            <header className="inspector-header">
-              <h3>Task Details</h3>
-              <span className={`task-badge ${taskState.task?.status}`}>{getTaskStatusLabel(taskState.task?.status || 'queued')}</span>
-            </header>
+    <aside className={`inspector ${inspectorOpen ? 'open' : ''}`} aria-label="Contextual inspector">
+      <div className="inspector-bar"><div><p className="eyebrow">Inspector</p><h2>{selectedTask ? 'Task details' : selectedProject ? selectedProject.name : 'No selection'}</h2></div><button className="close-inspector" onClick={() => setInspectorOpen(false)} aria-label="Close inspector">×</button></div>
+      {!selectedTask ? <div className="inspector-state">Select an inspection to view plans, evidence, and verification.</div> : <Inspector aggregate={taskState!} />}
+    </aside>
 
-            {taskState.task?.status === 'failed' && (
-              <div className="error-message" role="alert">Task failed. Review execution activity.</div>
-            )}
-
-            <section className="inspector-section disclosure-section">
-              <h4>Execution Disclosure</h4>
-              <ul className="disclosure-list">
-                <li><span className="label">Mode:</span> Deterministic local</li>
-                <li><span className="label">Network:</span> Network disabled</li>
-                <li><span className="label">Filesystem:</span> Read-only filesystem</li>
-                <li><span className="label">Model:</span> No model invoked</li>
-                <li><span className="label">Shell:</span> No shell execution</li>
-                <li><span className="label">Cost:</span> Estimated cost: $0.00</li>
-              </ul>
-            </section>
-
-            <section className="inspector-section plan-section">
-              <h4>Execution Plan</h4>
-              <ol className="plan-steps">
-                {taskState.plan?.map(step => (
-                  <li key={step.id} className={`plan-step ${step.status}`}>
-                    <div className="step-header">
-                      <span className="step-title">{step.title}</span>
-                      <span className="step-status">{step.status}</span>
-                    </div>
-                    <div className="step-desc">{step.description}</div>
-                  </li>
-                ))}
-              </ol>
-            </section>
-
-            {taskState.verification && (
-              <section className="inspector-section verification-section">
-                <h4>Verification</h4>
-                <div className={`verification-box ${taskState.verification.status}`}>
-                  <p className="v-status">{taskState.verification.status}</p>
-                  <p className="v-summary">{taskState.verification.summary}</p>
-                  <div className="v-details">
-                    <p>Entries: {taskState.verification.details?.resultCount as number}</p>
-                    <p>Inaccessible: {taskState.verification.details?.inaccessibleEntryCount as number}</p>
-                    <p>Depth truncated: {(taskState.verification.details?.depthTruncated as boolean) ? 'Yes' : 'No'}</p>
-                    <p>Count truncated: {(taskState.verification.details?.countTruncated as boolean) ? 'Yes' : 'No'}</p>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            <section className="inspector-section activity-section">
-              <h4>Live Activity</h4>
-              <ul className="activity-list">
-                {taskState.events?.map(event => (
-                  <li key={event.id} className="activity-item">
-                    <span className="activity-seq">{event.sequence}</span>
-                    <span className="activity-type">{event.type}</span>
-                    <span className="activity-time">{new Date(event.createdAt).toLocaleTimeString()}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-
-            {taskState.evidence && taskState.evidence.length > 0 && (
-              <section className="inspector-section evidence-section">
-                <h4>Files Accessed ({taskState.evidence.length})</h4>
-                <ul className="evidence-list">
-                  {taskState.evidence.map(ev => (
-                    <li key={ev.id} className="evidence-item" title={ev.path}>
-                      {ev.path}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-          </div>
-        )}
-      </aside>
-    </div>
-  );
+    {createOpen && <div className="modal-backdrop" role="presentation"><form className="create-modal" onSubmit={createProject} aria-labelledby="create-project-title"><div className="modal-head"><div><p className="eyebrow">New local project</p><h2 id="create-project-title">Create project</h2></div><button type="button" className="close-inspector" onClick={() => setCreateOpen(false)} aria-label="Close create project">×</button></div><label>Name<input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} required autoFocus /></label><label>Workspace path<input value={newWorkspacePath} onChange={(event) => setNewWorkspacePath(event.target.value)} required /></label><p className="form-note">Morrow resolves this path locally before creating the project.</p><div className="modal-actions"><button type="button" className="secondary-action" onClick={() => setCreateOpen(false)}>Cancel</button><button className="primary-action" type="submit">Create project</button></div></form></div>}
+  </div>;
 }
+
+function StatusChip({ status }: { status: Task['status'] }) { return <span className={`status-chip ${status}`}><i aria-hidden="true" />{statusLabel(status)}</span>; }
+
+function Inspector({ aggregate }: { aggregate: TaskAggregate }) {
+  const { task, plan = [], events = [], evidence = [], disclosure, verification } = aggregate;
+  if (!task) return null;
+  return <div className="inspector-scroll"><div className="status-overview"><StatusChip status={task.status} /><span>{task.kind === 'inspect_workspace' ? 'Read-only local inspection' : task.kind}</span></div>
+    {task.status === 'failed' && <div className="inline-error" role="alert">Task failed. Review execution activity.</div>}
+    <InspectorSection title="Plan"><ol className="step-list">{plan.map((step) => <li key={step.id} className={step.status}><span>{step.position}</span><div><b>{step.title}</b><small>{step.description}</small></div><em>{step.status}</em></li>)}</ol></InspectorSection>
+    <InspectorSection title="Privacy & execution">{disclosure ? <dl className="detail-grid"><dt>Mode</dt><dd>Deterministic local</dd><dt>Network</dt><dd>Network disabled</dd><dt>Filesystem</dt><dd>Read-only filesystem</dd><dt>Model</dt><dd>No model invoked</dd><dt>Shell</dt><dd>No shell execution</dd><dt>Cost</dt><dd>Estimated cost: zero</dd></dl> : <p className="muted">Disclosure appears when execution begins.</p>}</InspectorSection>
+    <InspectorSection title={`Activity · ${events.length}`}><ul className="event-list">{events.slice(-8).map((event) => <li key={event.id}><span>{event.sequence}</span><div><b>{event.type}</b><small>{new Date(event.createdAt).toLocaleTimeString()}</small></div></li>)}</ul></InspectorSection>
+    <InspectorSection title={`Evidence · ${evidence.length}`}>{evidence.length ? <ul className="evidence-list">{evidence.map((item) => <li key={item.id}><span>⌁</span>{item.path}</li>)}</ul> : <p className="muted">No workspace entries recorded.</p>}</InspectorSection>
+    <InspectorSection title="Verification">{verification ? <div className="verification"><StatusChip status={verification.status as Task['status']} /><p>{verification.summary}</p><small>{String(verification.details.resultCount ?? 0)} entries · {Boolean(verification.details.depthTruncated || verification.details.countTruncated) ? 'truncated' : 'complete'}</small></div> : <p className="muted">Verification pending.</p>}</InspectorSection>
+  </div>;
+}
+function InspectorSection({ title, children }: { title: string; children: React.ReactNode }) { return <section className="inspector-section"><h3>{title}</h3>{children}</section>; }

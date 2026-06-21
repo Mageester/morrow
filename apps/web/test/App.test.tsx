@@ -98,10 +98,11 @@ describe('Morrow Web App', () => {
     (apiClient.createProject as any).mockRejectedValue(new Error('Project error'));
     
     render(<App />);
-    
+    fireEvent.click(await screen.findByRole('button', { name: /New project/i }));
+    await screen.findByRole('heading', { name: /Create project/i });
     fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'New' } });
     fireEvent.change(screen.getByLabelText(/Workspace Path/i), { target: { value: '/new' } });
-    fireEvent.click(screen.getByRole('button', { name: /Create Project/i }));
+    fireEvent.submit(screen.getByRole('heading', { name: /Create project/i }).closest('form')!);
     
     expect(await screen.findByText(/Project error/)).toBeDefined();
   });
