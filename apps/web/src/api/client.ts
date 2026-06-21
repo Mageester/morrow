@@ -1,4 +1,11 @@
-import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage } from "@morrow/contracts";
+import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope } from "@morrow/contracts";
+
+export interface SendMessageOptions {
+  preset?: string;
+  providerId?: string;
+  model?: string;
+  useMemory?: boolean;
+}
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -120,11 +127,11 @@ export const apiClient = {
     return res.json();
   },
 
-  async sendMessage(conversationId: string, content: string, preset?: string): Promise<{ task: Task; userMessage: ConversationMessage; assistantMessage: ConversationMessage; aggregateUrl: string; sseUrl: string }> {
+  async sendMessage(conversationId: string, content: string, options: SendMessageOptions = {}): Promise<{ task: Task; userMessage: ConversationMessage; assistantMessage: ConversationMessage; routing: RoutingDecision; aggregateUrl: string; sseUrl: string }> {
     const res = await fetch(`${BASE_URL}/api/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, preset })
+      body: JSON.stringify({ content, ...options })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => null);
@@ -144,5 +151,63 @@ export const apiClient = {
     const res = await fetch(`${BASE_URL}/api/provider/status`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  },
+
+  async listProviders(): Promise<ProviderStatus[]> {
+    const res = await fetch(`${BASE_URL}/api/providers`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listOAuthFindings(): Promise<OAuthFinding[]> {
+    const res = await fetch(`${BASE_URL}/api/providers/oauth`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listModels(): Promise<ModelStatus[]> {
+    const res = await fetch(`${BASE_URL}/api/models`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listPresets(): Promise<PresetStatus[]> {
+    const res = await fetch(`${BASE_URL}/api/presets`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listProjectMemory(projectId: string): Promise<MemoryEntry[]> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/memory`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async addMemory(projectId: string, scope: MemoryScope, content: string, conversationId?: string): Promise<MemoryEntry> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, content, conversationId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error?.message || "Failed to add memory");
+    }
+    return res.json();
+  },
+
+  async setMemoryEnabled(id: string, enabled: boolean): Promise<MemoryEntry> {
+    const res = await fetch(`${BASE_URL}/api/memory/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteMemory(id: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/api/memory/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(await res.text());
   }
 };

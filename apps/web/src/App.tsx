@@ -9,8 +9,15 @@ import type {
   ExecutionDisclosure,
   Conversation,
   ConversationMessage,
-  VerificationResult
+  VerificationResult,
+  PresetStatus,
+  ProviderStatus,
+  ModelStatus,
+  OAuthFinding,
+  MemoryEntry,
+  RoutingDecision
 } from "@morrow/contracts";
+import { Markdown } from "./Markdown";
 import "./App.css";
 
 export default function App() {
@@ -28,8 +35,19 @@ export default function App() {
   const [composerPrompt, setComposerPrompt] = useState("");
   const [composerError, setComposerError] = useState("");
   
-  const [activePreset, setActivePreset] = useState<"Balanced" | "Fast" | "Private Local">("Balanced");
+  const [activePreset, setActivePreset] = useState<string>("balanced");
   const [providerStatus, setProviderStatus] = useState<{ configured: boolean; provider: string; model: string } | null>(null);
+  const [presets, setPresets] = useState<PresetStatus[]>([]);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [models, setModels] = useState<ModelStatus[]>([]);
+  const [oauthFindings, setOauthFindings] = useState<OAuthFinding[]>([]);
+  const [memoryEntries, setMemoryEntries] = useState<MemoryEntry[]>([]);
+  const [newMemoryContent, setNewMemoryContent] = useState("");
+  const [useMemory, setUseMemory] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [overrideProviderId, setOverrideProviderId] = useState("");
+  const [overrideModel, setOverrideModel] = useState("");
+  const [settingsTab, setSettingsTab] = useState<"providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics">("providers");
 
   const [activeTaskId, setActiveTaskId] = useState<string>("");
   const [taskState, setTaskState] = useState<{
@@ -40,6 +58,7 @@ export default function App() {
     disclosure?: ExecutionDisclosure;
     toolCalls?: any[];
     verification?: VerificationResult;
+    routing?: RoutingDecision | null;
   } | null>(null);
 
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -55,7 +74,7 @@ export default function App() {
     }
   };
 
-  // Load projects & provider status on mount
+  // Load projects, provider status, presets, providers, and models on mount
   useEffect(() => {
     apiClient.listProjects().then(p => {
       setProjects(p);
@@ -65,7 +84,21 @@ export default function App() {
     apiClient.getProviderStatus().then(status => {
       setProviderStatus(status);
     }).catch(console.error);
+
+    apiClient.listPresets?.().then(setPresets).catch(console.error);
+    apiClient.listProviders?.().then(setProviders).catch(console.error);
+    apiClient.listModels?.().then(setModels).catch(console.error);
+    apiClient.listOAuthFindings?.().then(setOauthFindings).catch(console.error);
   }, []);
+
+  // Load memory when the project changes
+  useEffect(() => {
+    if (selectedProjectId && apiClient.listProjectMemory) {
+      apiClient.listProjectMemory(selectedProjectId).then(setMemoryEntries).catch(console.error);
+    } else {
+      setMemoryEntries([]);
+    }
+  }, [selectedProjectId]);
 
   // Load conversations & tasks when project changes
   useEffect(() => {
@@ -111,7 +144,7 @@ export default function App() {
 
   // Scroll to bottom when messages load/change
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messageEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages]);
 
   // Handle active task subscription
@@ -143,7 +176,8 @@ export default function App() {
               evidence: agg.evidence,
               disclosure: agg.disclosure,
               verification: agg.verification,
-              toolCalls: extra.toolCalls || []
+              toolCalls: extra.toolCalls || [],
+              routing: extra.routing ?? null
             });
           }).catch(() => {
             setTaskState({
@@ -152,7 +186,8 @@ export default function App() {
               events: agg.events,
               evidence: agg.evidence,
               disclosure: agg.disclosure,
-              verification: agg.verification
+              verification: agg.verification,
+              routing: (agg as any).routing ?? null
             });
           });
       }).catch(console.error);
@@ -246,13 +281,12 @@ export default function App() {
     if (!activeConversationId || !composerPrompt.trim()) return;
     setComposerError("");
 
-    if (activePreset === "Private Local") {
-      setComposerError("Private Local preset is not available (requires a local model provider adapter).");
-      return;
-    }
-
-    if (providerStatus && !providerStatus.configured) {
-      setComposerError("No AI provider configured. Please check your orchestrator environment settings.");
+    const presetStatus = presets.find(p => p.preset.id === activePreset);
+    const usingOverride = advancedOpen && !!overrideProviderId;
+    // Pre-block only when we are confident nothing can run; otherwise defer to the
+    // server, which is the source of truth and returns a precise reason.
+    if (!usingOverride && presetStatus && !presetStatus.available && !providerStatus?.configured) {
+      setComposerError(presetStatus.unavailableReason || "This preset is not available.");
       return;
     }
 
@@ -260,13 +294,53 @@ export default function App() {
     setComposerPrompt("");
 
     try {
-      const res = await apiClient.sendMessage(activeConversationId, contentToSend, activePreset);
+      const res = await apiClient.sendMessage(activeConversationId, contentToSend, {
+        preset: activePreset,
+        ...(usingOverride ? { providerId: overrideProviderId } : {}),
+        ...(advancedOpen && overrideModel ? { model: overrideModel } : {}),
+        useMemory
+      });
       setMessages(prev => [...prev, res.userMessage, res.assistantMessage]);
       setActiveTaskId(res.task.id);
     } catch (err: any) {
       setComposerError(err.message || "Failed to send message");
     }
   };
+
+  const handleAddMemory = async () => {
+    if (!selectedProjectId || !newMemoryContent.trim() || !apiClient.addMemory) return;
+    try {
+      const entry = await apiClient.addMemory(selectedProjectId, "project", newMemoryContent.trim());
+      setMemoryEntries(prev => [...prev, entry]);
+      setNewMemoryContent("");
+    } catch (err) {
+      console.error("Failed to add memory", err);
+    }
+  };
+
+  const handleToggleMemory = async (id: string, enabled: boolean) => {
+    try {
+      const updated = await apiClient.setMemoryEnabled(id, enabled);
+      setMemoryEntries(prev => prev.map(m => (m.id === id ? updated : m)));
+    } catch (err) {
+      console.error("Failed to toggle memory", err);
+    }
+  };
+
+  const handleDeleteMemory = async (id: string) => {
+    try {
+      await apiClient.deleteMemory(id);
+      setMemoryEntries(prev => prev.filter(m => m.id !== id));
+    } catch (err) {
+      console.error("Failed to delete memory", err);
+    }
+  };
+
+  const activePresetStatus = presets.find(p => p.preset.id === activePreset);
+  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  const latestAssistant = [...messages].reverse().find(m => m.role === "assistant" && (m.provider || m.model));
+  const activeProviderLabel = latestAssistant?.provider || activePresetStatus?.resolved?.providerId || providerStatus?.provider || "—";
+  const activeModelLabel = latestAssistant?.model || activePresetStatus?.resolved?.model || providerStatus?.model || "—";
 
   const handleStopStreaming = async () => {
     if (!activeTaskId) return;
@@ -377,15 +451,11 @@ export default function App() {
       <main className="main-canvas" aria-live="polite">
         {activeNav === "conversations" && (
           <>
+            {projects.length === 0 && (
             <div className="project-controls card">
-              <div className="project-selection">
-                <label htmlFor="project-select-main">Active Project</label>
-                <select id="project-select-main" value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)}>
-                  <option value="">-- Select a project --</option>
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
+              <div className="welcome-block">
+                <h2>Welcome to Morrow</h2>
+                <p className="muted">Create a local project to start a conversation. Morrow inspects only the workspace you point it at, with read-only tools.</p>
               </div>
 
               <form onSubmit={handleCreateProject} className="new-project-form" aria-labelledby="create-project-heading">
@@ -412,6 +482,7 @@ export default function App() {
                 <button type="submit" className="primary-btn">Create Project</button>
               </form>
             </div>
+            )}
 
             {selectedProject && (
               <>
@@ -469,49 +540,63 @@ export default function App() {
                 <div className="agent-conversation-section card" style={{ marginTop: "2rem" }}>
                   <header className="canvas-header">
                     <div className="header-info">
-                      <h2>Morrow Conversations</h2>
-                      {providerStatus && (
-                        <div className={`provider-indicator ${providerStatus.configured ? "configured" : "unconfigured"}`}>
-                          {providerStatus.configured ? (
-                            <span>Active Provider: <strong>{providerStatus.provider}</strong> ({providerStatus.model})</span>
-                          ) : (
-                            <strong>No AI provider configured</strong>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Preset Selector */}
-                    <div className="preset-selector">
-                      <label>Preset:</label>
-                      <div className="preset-options">
-                        <button 
-                          className={`preset-btn ${activePreset === "Balanced" ? "selected" : ""}`}
-                          onClick={() => setActivePreset("Balanced")}
-                        >
-                          Balanced
-                        </button>
-                        <button 
-                          className={`preset-btn ${activePreset === "Fast" ? "selected" : ""}`}
-                          onClick={() => setActivePreset("Fast")}
-                        >
-                          Fast
-                        </button>
-                        <div className="preset-btn-wrapper">
-                          <button 
-                            className={`preset-btn disabled`}
-                            disabled
-                            aria-disabled="true"
-                          >
-                            Private Local (Unavailable)
-                          </button>
-                          <span className="tooltip-text">
-                            Unavailable: requires a real local model provider (e.g. Ollama) which is planned for a future milestone.
-                          </span>
-                        </div>
+                      <h2>{activeConversation?.title || "Conversation"}</h2>
+                      <div className="header-meta">
+                        <span className="meta-chip">{selectedProject?.name}</span>
+                        <span className="meta-chip">{activePresetStatus?.preset.label ?? activePreset}</span>
+                        <span className={`meta-chip provider-chip ${providerStatus?.configured ? "ok" : "warn"}`}>
+                          {providerStatus?.configured ? `${activeProviderLabel} · ${activeModelLabel}` : "No provider configured"}
+                        </span>
                       </div>
                     </div>
+
+                    {/* Dynamic preset selector driven by live availability */}
+                    <div className="preset-selector">
+                      <div className="preset-options" role="radiogroup" aria-label="Preset">
+                        {presets.map(ps => (
+                          <button
+                            key={ps.preset.id}
+                            className={`preset-btn ${activePreset === ps.preset.id ? "selected" : ""} ${!ps.available ? "unavailable" : ""}`}
+                            onClick={() => setActivePreset(ps.preset.id)}
+                            title={ps.available ? ps.preset.description : ps.unavailableReason || ""}
+                            role="radio"
+                            aria-checked={activePreset === ps.preset.id}
+                          >
+                            {ps.preset.label}
+                            {!ps.available && <span className="unavail-dot" aria-hidden="true"> •</span>}
+                          </button>
+                        ))}
+                      </div>
+                      <button type="button" className="link-btn" onClick={() => setAdvancedOpen(o => !o)} aria-expanded={advancedOpen}>
+                        {advancedOpen ? "Hide advanced" : "Advanced"}
+                      </button>
+                    </div>
                   </header>
+
+                  {activePresetStatus && !activePresetStatus.available && !(advancedOpen && overrideProviderId) && (
+                    <div className="preset-warning" role="status">{activePresetStatus.unavailableReason}</div>
+                  )}
+
+                  {advancedOpen && (
+                    <div className="advanced-override">
+                      <div className="override-row">
+                        <label htmlFor="ov-provider">Provider override</label>
+                        <select id="ov-provider" value={overrideProviderId} onChange={e => setOverrideProviderId(e.target.value)}>
+                          <option value="">Use preset routing</option>
+                          {providers.filter(p => p.configured).map(p => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="override-row">
+                        <label htmlFor="ov-model">Model override</label>
+                        <input id="ov-model" value={overrideModel} onChange={e => setOverrideModel(e.target.value)} placeholder="(optional model id)" />
+                      </div>
+                      <label className="memory-toggle">
+                        <input type="checkbox" checked={useMemory} onChange={e => setUseMemory(e.target.checked)} /> Use project memory
+                      </label>
+                    </div>
+                  )}
 
                   {/* Conversation Feed */}
                   <div className="chat-container">
@@ -537,11 +622,19 @@ export default function App() {
                             </div>
                             <div className="message-content">
                               {msg.content ? (
-                                <p className="msg-text">{msg.content}</p>
+                                msg.role === "assistant" ? (
+                                  <div className="msg-text"><Markdown source={msg.content} /></div>
+                                ) : (
+                                  <p className="msg-text">{msg.content}</p>
+                                )
                               ) : msg.streamingState === "queued" ? (
-                                <p className="msg-text loading-pulse">Preparing workspace context...</p>
+                                <p className="msg-text loading-pulse">Preparing workspace context…</p>
                               ) : msg.streamingState === "streaming" ? (
-                                <p className="msg-text loading-pulse">Reading workspace and streaming answer...</p>
+                                <p className="msg-text loading-pulse">Reading workspace and streaming answer…</p>
+                              ) : msg.streamingState === "failed" ? (
+                                <p className="msg-text muted">No response (the run failed).</p>
+                              ) : msg.streamingState === "interrupted" ? (
+                                <p className="msg-text muted">Interrupted before completion.</p>
                               ) : (
                                 <p className="msg-text muted">[No response content]</p>
                               )}
@@ -631,46 +724,234 @@ export default function App() {
 
         {activeNav === "settings" && (
           <div className="settings-view">
-            <h2>Settings & Provider Configuration</h2>
-            
-            <div className="card">
-              <h3>AI Provider Status</h3>
-              <div className="provider-status-grid">
-                <div className="status-label">Active Provider:</div>
-                <div className="status-val">OpenAI</div>
-                
-                <div className="status-label">Default Model:</div>
-                <div className="status-val">gpt-4o-mini</div>
-                
-                <div className="status-label">API Key Configured:</div>
-                <div className="status-val">
-                  {providerStatus?.configured ? (
-                    <span className="badge-ok">Configured (Environment)</span>
-                  ) : (
-                    <span className="badge-err">Not Configured</span>
-                  )}
-                </div>
-              </div>
+            <h2>Settings</h2>
+            <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+              {([
+                ["providers", "Providers"],
+                ["models", "Models"],
+                ["presets", "Presets"],
+                ["privacy", "Privacy"],
+                ["permissions", "Tool Permissions"],
+                ["data", "Data & Memory"],
+                ["diagnostics", "Diagnostics"]
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  role="tab"
+                  aria-selected={settingsTab === key}
+                  className={`settings-tab ${settingsTab === key ? "active" : ""}`}
+                  onClick={() => setSettingsTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
-            <div className="card">
-              <h3>Setup Instructions</h3>
-              <p>Morrow resolves API credentials server-side from environment variables. Credentials never enter SQLite, browser local storage, or telemetry streams.</p>
-              <ol className="setup-steps">
-                <li>
-                  To configure OpenAI, add the following line to your local environment configuration or <code>.env</code> file in the orchestrator directory:
-                  <pre><code>OPENAI_API_KEY=sk-proj-...</code></pre>
-                </li>
-                <li>
-                  Restart the orchestrator service to apply the environment changes:
-                  <pre><code>pnpm dev</code></pre>
-                </li>
-                <li>
-                  If using a custom OpenAI-compatible server (e.g. local gateway or proxy), you can optionally customize the endpoint by setting:
-                  <pre><code>OPENAI_BASE_URL=https://your-custom-gateway.v1</code></pre>
-                </li>
-              </ol>
-            </div>
+            {settingsTab === "providers" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Model Providers</h3>
+                  <p className="muted">Secrets are resolved server-side from environment variables and never reach the browser. Status shows only whether a provider is configured and which host it targets.</p>
+                  <div className="provider-grid">
+                    {providers.map(p => (
+                      <div key={p.id} className={`provider-card ${p.configured ? "ok" : ""}`}>
+                        <div className="provider-card-head">
+                          <strong>{p.label}</strong>
+                          <span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>
+                            {p.configured ? "Configured" : "Not configured"}
+                          </span>
+                        </div>
+                        <div className="provider-card-meta">
+                          <span className="kv"><span className="k">Kind</span>{p.kind}</span>
+                          <span className="kv"><span className="k">Endpoint</span>{p.endpointHost ?? p.endpointType}</span>
+                          <span className="kv"><span className="k">Auth</span>{p.authStatus}</span>
+                        </div>
+                        <div className="cap-row">
+                          {p.capabilities.toolCalls && <span className="cap">tools</span>}
+                          {p.capabilities.vision && <span className="cap">vision</span>}
+                          {p.capabilities.systemMessages && <span className="cap">system</span>}
+                          {p.capabilities.local && <span className="cap local">local</span>}
+                          {p.capabilities.customEndpoint && <span className="cap">custom endpoint</span>}
+                        </div>
+                        {!p.configured && p.setupHint && <p className="setup-hint">{p.setupHint}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>API Key Setup</h3>
+                  <p className="muted">Add keys to the orchestrator environment (e.g. a local <code>.env</code>), then restart it. Keys are never entered in the browser.</p>
+                  <pre className="code-block"><code>{`OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
+OPENROUTER_API_KEY=...
+DEEPSEEK_API_KEY=...
+# Local, fully private (opt-in):
+OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
+                </div>
+
+                <div className="card">
+                  <h3>Subscription OAuth (Codex / Claude / Gemini)</h3>
+                  <p className="muted">Morrow only labels a flow "OAuth" when it is an officially supported third-party integration. Current findings:</p>
+                  <ul className="oauth-list">
+                    {oauthFindings.map(f => (
+                      <li key={f.id} className="oauth-item">
+                        <div className="oauth-head"><strong>{f.label}</strong><span className="badge badge-muted">{f.status}</span></div>
+                        <p className="oauth-reason">{f.reason}</p>
+                        <p className="oauth-rec">{f.recommendation}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "models" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Model Registry</h3>
+                  <p className="muted">Built-in known models. Model IDs are configurable; availability follows configured providers. Context windows are shown only where well documented.</p>
+                  <table className="model-table">
+                    <thead><tr><th>Model</th><th>Provider</th><th>Context</th><th>Speed</th><th>Cost</th><th>Privacy</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {models.map(({ model, available }) => (
+                        <tr key={model.id} className={available ? "" : "row-muted"}>
+                          <td>{model.label}</td>
+                          <td>{model.providerId}</td>
+                          <td>{model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "—"}</td>
+                          <td>{model.speedClass}</td>
+                          <td>{model.costClass}</td>
+                          <td>{model.privacy}</td>
+                          <td>{available ? <span className="badge-ok">available</span> : <span className="badge-muted">needs provider</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "presets" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Presets</h3>
+                  <p className="muted">Each preset is a routing policy with concrete budgets. Unavailable presets explain why.</p>
+                  <div className="preset-grid">
+                    {presets.map(ps => (
+                      <div key={ps.preset.id} className={`preset-card ${ps.available ? "" : "unavailable"}`}>
+                        <div className="preset-card-head">
+                          <strong>{ps.preset.label}</strong>
+                          {ps.available
+                            ? <span className="badge-ok">{ps.resolved?.providerId} · {ps.resolved?.model}</span>
+                            : <span className="badge-muted">unavailable</span>}
+                        </div>
+                        <p className="preset-desc">{ps.preset.description}</p>
+                        <div className="preset-meta">
+                          <span>{ps.preset.privacyDescription}</span>
+                          <span>{ps.preset.costDescription}</span>
+                        </div>
+                        {!ps.available && ps.unavailableReason && <p className="preset-reason">{ps.unavailableReason}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "privacy" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Privacy</h3>
+                  <ul className="bullet-list">
+                    <li>Morrow is local-first: projects, conversations, and memory are stored in a local SQLite database.</li>
+                    <li>API keys live only in the orchestrator environment, never in the database, browser, logs, or task events.</li>
+                    <li>Hosted providers receive your prompt and any file content the agent reads. The active provider and model are always disclosed per run.</li>
+                    <li>The <strong>Private Local</strong> preset routes only to local providers (Ollama); nothing leaves your machine.</li>
+                    <li>Default tools are read-only and scoped to the project workspace. Secret files (.env, keys, credentials) are rejected.</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "permissions" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Tool Permissions</h3>
+                  <p className="muted">The alpha tool profile is read-only and enforced by a shared containment layer.</p>
+                  <table className="perm-table">
+                    <thead><tr><th>Tool</th><th>Access</th><th>Status</th></tr></thead>
+                    <tbody>
+                      <tr><td>inspect_workspace</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
+                      <tr><td>list_files</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
+                      <tr><td>read_file</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+                      <tr><td>write_file</td><td>requires approval, diff, rollback</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
+                      <tr><td>run_command</td><td>requires approval, sandbox</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "data" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Project Memory</h3>
+                  <p className="muted">Deterministic, user-controlled memory for <strong>{selectedProject?.name ?? "the selected project"}</strong>. Each entry has a source and timestamp, can be disabled, and never crosses projects.</p>
+                  {selectedProjectId ? (
+                    <>
+                      <div className="memory-add">
+                        <input
+                          aria-label="New memory"
+                          value={newMemoryContent}
+                          onChange={e => setNewMemoryContent(e.target.value)}
+                          placeholder="Add a fact Morrow should remember for this project…"
+                        />
+                        <button className="primary-btn" onClick={handleAddMemory} disabled={!newMemoryContent.trim()}>Add</button>
+                      </div>
+                      {memoryEntries.length === 0 ? (
+                        <p className="empty-state">No memory entries yet.</p>
+                      ) : (
+                        <ul className="memory-list">
+                          {memoryEntries.map(m => (
+                            <li key={m.id} className={`memory-item ${m.enabled ? "" : "disabled"}`}>
+                              <label className="memory-toggle">
+                                <input type="checkbox" checked={m.enabled} onChange={e => handleToggleMemory(m.id, e.target.checked)} />
+                              </label>
+                              <div className="memory-body">
+                                <span className="memory-content">{m.content}</span>
+                                <span className="memory-meta">{m.scope} · {m.source} · {new Date(m.createdAt).toLocaleDateString()}</span>
+                              </div>
+                              <button className="icon-btn" aria-label="Delete memory" onClick={() => handleDeleteMemory(m.id)}>✕</button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  ) : (
+                    <p className="empty-state">Select a project to manage its memory.</p>
+                  )}
+                </div>
+                <div className="card">
+                  <h3>Storage</h3>
+                  <p className="muted">Data is stored locally in SQLite at <code>.morrow/morrow.db</code> within the project directory. Test runs use isolated temporary databases.</p>
+                </div>
+              </div>
+            )}
+
+            {settingsTab === "diagnostics" && (
+              <div className="settings-panel">
+                <div className="card">
+                  <h3>Diagnostics</h3>
+                  <ul className="diag-list">
+                    <li><span className="k">Default provider summary</span>{providerStatus?.configured ? `${providerStatus.provider} · ${providerStatus.model}` : "none configured"}</li>
+                    <li><span className="k">Configured providers</span>{providers.filter(p => p.configured).map(p => p.id).join(", ") || "none"}</li>
+                    <li><span className="k">Available presets</span>{presets.filter(p => p.available).map(p => p.preset.id).join(", ") || "none"}</li>
+                    <li><span className="k">Known models</span>{models.length}</li>
+                  </ul>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -722,6 +1003,21 @@ export default function App() {
                     <p>Count truncated: {(taskState.verification.details?.countTruncated as boolean) ? "Yes" : "No"}</p>
                   </div>
                 </div>
+              </section>
+            )}
+
+            {taskState.routing && (
+              <section className="inspector-section routing-section">
+                <h4>Provider Routing</h4>
+                <ul className="disclosure-list">
+                  <li><span className="label">Provider:</span> {taskState.routing.providerId}</li>
+                  <li><span className="label">Model:</span> {taskState.routing.model}</li>
+                  <li><span className="label">Preset:</span> {taskState.routing.presetId}</li>
+                  <li><span className="label">Privacy:</span> {taskState.routing.privacy}</li>
+                  <li><span className="label">Decision:</span> {taskState.routing.reason}</li>
+                  {taskState.routing.fallbackUsed && <li className="routing-flag">Fallback used</li>}
+                  {taskState.routing.overridden && <li className="routing-flag">Manual override</li>}
+                </ul>
               </section>
             )}
 
