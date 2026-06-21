@@ -412,8 +412,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return listModels().map((model) => ({ model, available: configured.has(model.providerId) }));
   });
 
-  // Presets with live availability + resolved provider/model.
-  app.get("/api/presets", async () => listPresetStatuses());
+  // Presets with live availability + resolved provider/model. In mock mode every
+  // preset resolves to the mock provider so the UI reflects what will actually run.
+  app.get("/api/presets", async () => {
+    if (process.env.MOCK_PROVIDER === "true") {
+      return listPresets().map((preset) => ({ preset, available: true, unavailableReason: null, resolved: { providerId: "mock", model: "mock-model" } }));
+    }
+    return listPresetStatuses();
+  });
 
   // ── Memory ──────────────────────────────────────────────────────────────────
 
