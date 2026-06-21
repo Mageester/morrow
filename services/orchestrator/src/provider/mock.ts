@@ -28,7 +28,7 @@ export class MockProvider implements AiProvider {
       if (options.abortSignal?.aborted) {
         yield {
           type: "error",
-          error: { type: "cancelled", message: "Task execution cancelled" }
+          error: { type: "cancelled", kind: "cancelled", message: "Task execution cancelled", retryable: false }
         };
         return;
       }
@@ -38,7 +38,7 @@ export class MockProvider implements AiProvider {
       if (options.abortSignal?.aborted) {
         yield {
           type: "error",
-          error: { type: "cancelled", message: "Task execution cancelled" }
+          error: { type: "cancelled", kind: "cancelled", message: "Task execution cancelled", retryable: false }
         };
         return;
       }
