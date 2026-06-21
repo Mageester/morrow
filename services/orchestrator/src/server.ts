@@ -26,6 +26,12 @@ import { memoryRepository } from "./repositories/memory.js";
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
+import { changeSetsRepository } from "./repositories/change-sets.js";
+import { ApprovalContinuationRegistry } from "./execution/continuation.js";
+import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
+import { resolveMorrowHome } from "./home.js";
+import { unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { listModels } from "./routing/models.js";
@@ -64,6 +70,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const routingRepo = taskRoutingRepository(deps.db);
   const memory = memoryRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
+  const changeSets = changeSetsRepository(deps.db);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -428,6 +435,95 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     reply.status(204).send();
   });
 
+  app.get("/api/tasks/:taskId/diff", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const csList = changeSets.listByTask(taskId);
+    const applied = csList.find(c => c.state === "applied" || c.state === "undone");
+    if (!applied) {
+      return { diff: null };
+    }
+    return {
+      id: applied.id,
+      state: applied.state,
+      diff: applied.diff,
+      diffHash: applied.diffHash,
+      files: Object.keys(applied.originalHashes),
+      undoResult: applied.undoResult,
+    };
+  });
+
+  app.post("/api/tasks/:taskId/undo", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const csList = changeSets.listByTask(taskId);
+    const applied = csList.find(c => c.state === "applied");
+    if (!applied) throw new ApiError(404, "No applied change set found for this task", "NOT_FOUND");
+
+    const project = projects.getProjectById(applied.projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+
+    // 1. Verify containment (incl. symlink escape), existence, and that the
+    //    file still matches the hash we wrote — refuse if manually edited since.
+    const containedPaths: Record<string, string> = {};
+    for (const file of Object.keys(applied.originalHashes)) {
+      if (file === "/dev/null") continue;
+      let fullPath: string;
+      try {
+        fullPath = assertContainedRealPath(project.workspacePath, file);
+      } catch (e: any) {
+        throw new ApiError(403, `Path containment violation: ${file}`, "FORBIDDEN");
+      }
+      containedPaths[file] = fullPath;
+
+      if (!existsSync(fullPath)) {
+        throw new ApiError(409, `File has been deleted since application: ${file}`, "CONFLICT");
+      }
+      const currentContent = readFileSync(fullPath, "utf8");
+      const currentHash = hashString(currentContent);
+      if (currentHash !== applied.postApplyHashes?.[file]) {
+        throw new ApiError(409, `Unsafe undo: file has manual modifications: ${file}`, "CONFLICT");
+      }
+    }
+
+    // 2. Perform rollback from trusted backups only (no git reset/clean/checkout).
+    const backupsDir = join(resolveMorrowHome(process.env), "backups");
+    const restoredFiles: string[] = [];
+
+    for (const file of Object.keys(applied.originalHashes)) {
+      const originalHash = applied.originalHashes[file];
+      const fullPath = file === "/dev/null" ? "" : (containedPaths[file] ?? assertContainedRealPath(project.workspacePath, file));
+
+      if (originalHash === "") {
+        // File was created by the change set: removing it restores the original
+        // (absent) state.
+        if (fullPath && existsSync(fullPath)) {
+          unlinkSync(fullPath);
+          restoredFiles.push(file);
+        }
+      } else {
+        const backupFile = join(backupsDir, `${originalHash}.bak`);
+        if (!existsSync(backupFile)) {
+          throw new ApiError(500, `Backup file not found for ${file}`, "INTERNAL_ERROR");
+        }
+        const originalContent = readFileSync(backupFile, "utf8");
+        mkdirSync(dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, originalContent, "utf8");
+        restoredFiles.push(file);
+      }
+    }
+
+    // 3. Persist the undo result
+    const undoResult = {
+      undoneAt: new Date().toISOString(),
+      restoredFiles
+    };
+    changeSets.updateUndone(applied.id, undoResult);
+
+    return {
+      status: "success",
+      restoredFiles
+    };
+  });
+
   app.get("/api/projects/:projectId/approvals", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
@@ -438,6 +534,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       return approvals.listByProject(projectId, parsed.data);
     }
     return approvals.listByProject(projectId);
+  });
+
+  app.get("/api/approvals/:approvalId", async (request) => {
+    const { approvalId } = request.params as { approvalId: string };
+    const approval = approvals.get(approvalId);
+    if (!approval) throw new ApiError(404, "Approval not found", "NOT_FOUND");
+    return approval;
   });
 
   app.post("/api/approvals/:approvalId/resolve", async (request) => {
@@ -458,6 +561,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       payload: { approvalId, decision: body.decision },
       createdAt: resolved.resolvedAt!,
     });
+
+    const t = tasks.getTaskById(approval.taskId);
+    if (t && ["interrupted", "failed", "cancelled"].includes(t.status)) {
+      deps.db.prepare("UPDATE tasks SET status='queued', updated_at=? WHERE id=?").run(new Date().toISOString(), approval.taskId);
+      deps.runner.run(approval.taskId);
+    } else {
+      ApprovalContinuationRegistry.resolveApproval(approvalId, body.decision);
+    }
+
     return resolved;
   });
 

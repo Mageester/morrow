@@ -96,10 +96,47 @@ export const TOOL_CATALOG: ToolSpec[] = [
     parameters: { limit: { type: "number", description: "Maximum recent commits, up to 20" } },
     constraints: ["Runs fixed git log arguments in the project workspace", "One-second timeout and 64 KB output cap"],
   },
+  {
+    name: "run_command",
+    title: "Run command",
+    description: "Run a safe, structured verification, build, test, or mutation command in the workspace.",
+    sideEffect: "execute",
+    enabled: true,
+    parameters: {
+      executable: { type: "string", description: "The executable name or path (e.g. 'pnpm' or 'git')" },
+      args: { type: "array", items: { type: "string" }, description: "Arguments passed to the executable" },
+      cwd: { type: "string", description: "Optional working directory relative to project root" },
+      purpose: { type: "string", description: "Explain why this command is being run" }
+    },
+    constraints: [
+      "Must not use shell: true",
+      "Rejects shell metacharacters and privilege escalation",
+      "Requires explicit user approval unless trusted",
+      "Kills the process tree on timeout, cancellation, or task interruption"
+    ],
+  },
+  {
+    name: "propose_patch",
+    title: "Propose patch",
+    description: "Propose a unified diff patch to modify workspace files.",
+    sideEffect: "write",
+    enabled: true,
+    parameters: {
+      patch: { type: "string", description: "The unified diff content" },
+      explanation: { type: "string", description: "Explain why this patch is proposed" },
+      files: { type: "array", items: { type: "string" }, description: "Relative paths of files expected to change" }
+    },
+    constraints: [
+      "Rejected if path traversal, absolute paths or escape occurs",
+      "Rejected if files change between proposal and approval",
+      "Creates backups under MORROW_HOME/backups",
+      "Requires explicit user approval"
+    ],
+  }
 ];
 
 /** Tool names the agent runtime actually implements (must match the catalog). */
-export const IMPLEMENTED_TOOL_NAMES = ["inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log"] as const;
+export const IMPLEMENTED_TOOL_NAMES = ["inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log", "run_command", "propose_patch"] as const;
 
 export function getTool(name: string): ToolSpec | undefined {
   return TOOL_CATALOG.find((t) => t.name === name);

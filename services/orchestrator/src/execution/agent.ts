@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
 import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
@@ -10,6 +12,15 @@ import { taskRecordsRepository } from "../repositories/task-records.js";
 import { conversationsRepository, type ToolCallRecord } from "../repositories/conversations.js";
 import { taskRoutingRepository } from "../repositories/task-routing.js";
 import { memoryRepository } from "../repositories/memory.js";
+import { approvalsRepository } from "../repositories/approvals.js";
+import { changeSetsRepository } from "../repositories/change-sets.js";
+import { taskContinuationsRepository } from "../repositories/task-continuations.js";
+import { ApprovalContinuationRegistry } from "./continuation.js";
+import { classifyCommand } from "../tools/command-policy.js";
+import { PERMISSION_PROFILE } from "../tools/catalog.js";
+import { runProcessSafe } from "../tools/command-executor.js";
+import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath } from "../tools/diff-applier.js";
+import { resolveMorrowHome } from "../home.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
@@ -43,9 +54,12 @@ export async function executeAgentChatTask({
   const convs = conversationsRepository(db);
   const routingRepo = taskRoutingRepository(db);
   const memoryRepo = memoryRepository(db);
+  const approvals = approvalsRepository(db);
+  const changeSets = changeSetsRepository(db);
+  const continuationsRepo = taskContinuationsRepository(db);
 
   const task = tasks.getTaskById(taskId);
-  if (!task || task.kind !== "agent_chat" || task.status !== "queued") {
+  if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
     throw new Error("Task is not available for agent execution");
   }
 
@@ -53,6 +67,9 @@ export async function executeAgentChatTask({
   if (!project) {
     throw new Error("Project not found");
   }
+  const projectId = project.id;
+  const projectName = project.name;
+  const workspacePath = project.workspacePath;
 
   // Find the assistant message associated with this task
   const allMessages = db.prepare("SELECT * FROM conversation_messages WHERE task_id = ?").all(taskId);
@@ -146,7 +163,7 @@ export async function executeAgentChatTask({
     filesystemAccess: "read-only",
     shellExecution: false,
     modelInvocation: true,
-    workspaceScope: project.workspacePath,
+    workspaceScope: workspacePath,
     estimatedCostUsd: providerType === "mock" || isLocalProvider ? "$0.00" : "unknown (not metered)",
     createdAt: now(),
     updatedAt: now()
@@ -228,6 +245,33 @@ export async function executeAgentChatTask({
         type: "object",
         properties: { limit: { type: "number", description: "Maximum recent commits, up to 20" } }
       }
+    },
+    {
+      name: "run_command",
+      description: "Run a verification, build, test, or mutation command safely. Denies metacharacters and privilege escalation. Scoped to the project workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          executable: { type: "string", description: "Executable name (e.g. 'pnpm' or 'git')" },
+          args: { type: "array", items: { type: "string" }, description: "Command arguments" },
+          cwd: { type: "string", description: "Optional working directory relative to project root" },
+          purpose: { type: "string", description: "Reason for running this command" }
+        },
+        required: ["executable", "args", "purpose"]
+      }
+    },
+    {
+      name: "propose_patch",
+      description: "Propose a unified diff patch to modify workspace files. Rejects absolute paths, binary files, traversal, and unauthorized directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          patch: { type: "string", description: "Unified diff content" },
+          explanation: { type: "string", description: "Reason for the changes" },
+          files: { type: "array", items: { type: "string" }, description: "Relative paths of files expected to change" }
+        },
+        required: ["patch", "explanation", "files"]
+      }
     }
   ];
 
@@ -239,11 +283,11 @@ export async function executeAgentChatTask({
   chatMessages.push({
     role: "system",
     content: `You are Morrow, a secure personal AI coding assistant.
-You are running in a read-only environment scoped to the project: ${project.name} located at ${project.workspacePath}.
-You have access to safe read-only tools to inspect the workspace and read files.
+You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
+You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
-You are forbidden from writing files, executing shell commands, or accessing external networks besides your provider.`
+You must run test/verification commands using run_command, and propose file modifications using propose_patch.`
   });
   if (agentMode === "plan-only") {
     chatMessages.push({
@@ -254,7 +298,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
 
   // Inject user-controlled memory (bounded, deterministic, project-isolated).
   if (useMemory) {
-    const entries = memoryRepo.listActiveForConversation(project.id, conversationId);
+    const entries = memoryRepo.listActiveForConversation(projectId, conversationId);
     const lines: string[] = [];
     let used = 0;
     const memoryCap = 4000;
@@ -280,10 +324,251 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     });
   }
 
+  async function executeApprovedTool(toolName: string, args: any, tcId: string): Promise<string> {
+    if (toolName === "run_command") {
+      const exec = args.executable;
+      const cmdArgs = args.args || [];
+      const cmdCwd = args.cwd || "";
+      const purpose = args.purpose || "";
+
+      // Re-assert workspace containment of the working directory immediately
+      // before execution (defense in depth: the cwd was also checked before the
+      // approval was created). Rejects absolute paths, traversal, and symlink
+      // escape.
+      const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
+
+      transitionAgentState("executing_tool", { tool: "run_command" });
+      const runOptions: Parameters<typeof runProcessSafe>[4] = {
+        timeoutMs: 30000,
+        maxOutputBytes: 65536,
+        onChunk: (chunk) => {
+          if (chunk.stdout) {
+            event("evidence.persisted", { deltaText: chunk.stdout });
+          }
+          if (chunk.stderr) {
+            event("evidence.persisted", { deltaText: chunk.stderr });
+          }
+        }
+      };
+      if (abortSignal) {
+        runOptions.abortSignal = abortSignal;
+      }
+      const result = await runProcessSafe(exec, cmdArgs, resolvedCwd, process.env, runOptions);
+
+      if (result.terminationReason === "error") {
+        throw new Error(result.error || "Process execution failed");
+      }
+
+      const resultStr = JSON.stringify({
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        durationMs: result.durationMs,
+        terminationReason: result.terminationReason
+      });
+
+      records.appendEvidence({
+        id: randomUUID(),
+        taskId,
+        type: "file",
+        path: `${exec} ${cmdArgs.join(" ")}`,
+        metadata: {
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          terminationReason: result.terminationReason
+        },
+        createdAt: now()
+      });
+
+      return resultStr;
+    } else if (toolName === "propose_patch") {
+      const patch = args.patch;
+      const explanation = args.explanation;
+      const files = args.files || [];
+
+      const patchFiles = parseUnifiedDiff(patch);
+      validatePatchPaths(workspacePath, patchFiles, PERMISSION_PROFILE.deniedNamePatterns);
+
+      const diffHash = hashString(patch);
+      const changeSet = changeSets.listByTask(taskId).find(cs => cs.diffHash === diffHash);
+      if (!changeSet) {
+        throw new Error(`Change set record not found for diff hash: ${diffHash}`);
+      }
+      const originalHashes = changeSet.originalHashes;
+
+      transitionAgentState("applying_changes");
+
+      // Revalidate workspace containment & original hashes. The real-path guard
+      // re-checks symlink escape immediately before we touch the filesystem.
+      validatePatchPaths(workspacePath, patchFiles, PERMISSION_PROFILE.deniedNamePatterns);
+      for (const pf of patchFiles) {
+        if (pf.oldPath !== "/dev/null") {
+          const fullPath = assertContainedRealPath(workspacePath, pf.oldPath);
+          const content = readFileSync(fullPath, "utf8");
+          const currentHash = hashString(content);
+          if (currentHash !== originalHashes[pf.oldPath]) {
+            throw new Error(`File hashes changed between proposal and application for: ${pf.oldPath}`);
+          }
+        }
+      }
+
+      // Create backups under MORROW_HOME
+      const backupsDir = join(resolveMorrowHome(process.env), "backups");
+      mkdirSync(backupsDir, { recursive: true });
+
+      const backupReferences: Record<string, string> = {};
+      const postApplyHashes: Record<string, string> = {};
+
+      // Apply the patch
+      for (const pf of patchFiles) {
+        const fullPath = pf.oldPath !== "/dev/null" ? assertContainedRealPath(workspacePath, pf.oldPath) : "";
+        let originalContent: string | null = null;
+        if (pf.oldPath !== "/dev/null" && existsSync(fullPath)) {
+          originalContent = readFileSync(fullPath, "utf8");
+          const h = originalHashes[pf.oldPath];
+          if (!h) {
+            throw new Error(`Missing original hash for: ${pf.oldPath}`);
+          }
+          const backupFile = join(backupsDir, `${h}.bak`);
+          writeFileSync(backupFile, originalContent, "utf8");
+          backupReferences[pf.oldPath] = h;
+        }
+
+        const newContent = applyUnifiedPatch(originalContent, pf.chunks);
+        const destPath = assertContainedRealPath(workspacePath, pf.newPath);
+        mkdirSync(dirname(destPath), { recursive: true });
+        writeFileSync(destPath, newContent, "utf8");
+
+        postApplyHashes[pf.newPath] = hashString(newContent);
+
+        records.appendEvidence({
+          id: randomUUID(),
+          taskId,
+          type: "file",
+          path: pf.newPath,
+          metadata: { action: "patched", diffHash },
+          createdAt: now()
+        });
+        event("evidence.persisted", { path: pf.newPath, size: Buffer.byteLength(newContent, "utf8") });
+      }
+
+      changeSets.updateApplied(changeSet.id, postApplyHashes, backupReferences);
+
+      return JSON.stringify({
+        status: "success",
+        appliedFiles: files,
+        diffHash
+      });
+    } else {
+      throw new Error(`Forbidden tool: ${toolName}`);
+    }
+  }
+
   let turn = 0;
+  let responseContent = assistantMessageRow.content || "";
+
+  const continuation = continuationsRepo.get(taskId);
+  if (continuation) {
+    const messageToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const incompleteTc = messageToolCalls.find(tc => tc.id === continuation.toolCallId);
+    if (incompleteTc) {
+      const approvalRecord = approvals.listByTask(taskId).find(a => 
+        a.kind === (continuation.toolName === "propose_patch" ? "change_set" : "command") &&
+        (a.status === "pending" || a.status === "approved" || a.status === "denied")
+      );
+
+      if (approvalRecord) {
+        let isApproved = false;
+        let decision = approvalRecord.decision;
+
+        if (approvalRecord.status === "pending") {
+          transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+          event("approval.requested", { approvalId: approvalRecord.id, kind: approvalRecord.kind });
+          decision = (await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id)) as any;
+        }
+
+        const updatedApproval = approvals.get(approvalRecord.id)!;
+        if (updatedApproval.status === "approved") {
+          isApproved = true;
+        }
+
+        let resultStr = "";
+        let isSuccess = true;
+        let errorType = null;
+        let errorMessage = null;
+
+        if (isApproved) {
+          try {
+            resultStr = await executeApprovedTool(continuation.toolName, continuation.args, continuation.toolCallId);
+          } catch (err: any) {
+            isSuccess = false;
+            errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
+            errorMessage = err.message || "Unknown error";
+            resultStr = JSON.stringify({ error: errorMessage });
+            event("task.failed", { toolName: continuation.toolName, message: errorMessage });
+          }
+        } else {
+          isSuccess = false;
+          errorType = "tool_failed";
+          errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
+          resultStr = JSON.stringify({ error: errorMessage });
+          event("task.failed", { toolName: continuation.toolName, message: errorMessage });
+        }
+
+        convs.upsertToolCall({
+          id: continuation.toolCallId,
+          messageId: assistantMessageRow.id,
+          taskId,
+          toolName: continuation.toolName,
+          argsJson: JSON.stringify(continuation.args),
+          status: isSuccess ? "completed" : "failed",
+          resultJson: resultStr,
+          errorType: errorType ?? null,
+          errorMessage: errorMessage ?? null,
+          createdAt: incompleteTc.createdAt,
+          startedAt: incompleteTc.startedAt ?? null,
+          completedAt: now()
+        });
+
+        continuationsRepo.delete(taskId);
+
+        // Mirror the live tool path: once a resumed tool has executed we are
+        // back in the observe phase before the next model turn. Without this the
+        // agent state would still read executing_tool/applying_changes and the
+        // terminal transition to completed would be rejected.
+        const resumedState = records.getAgentState(taskId)?.state;
+        if (resumedState === "executing_tool" || resumedState === "applying_changes") {
+          transitionAgentState("observing", { resumedTool: continuation.toolName });
+        }
+      }
+    }
+  }
+
+  const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+  if (finalToolCalls.length > 0) {
+    chatMessages.push({
+      role: "assistant",
+      content: responseContent,
+      toolCalls: finalToolCalls.map(tc => ({
+        id: tc.id,
+        type: "function",
+        function: { name: tc.toolName, arguments: tc.argsJson }
+      }))
+    });
+
+    for (const tc of finalToolCalls) {
+      chatMessages.push({
+        role: "tool",
+        name: tc.toolName,
+        toolCallId: tc.id,
+        content: tc.resultJson || ""
+      });
+    }
+    turn = 1;
+  }
+
   let completedWithoutMoreTools = false;
   let totalBytesRead = 0;
-  let responseContent = "";
   const steps = records.listPlanSteps(taskId);
 
   const planningStep = steps[0]!;
@@ -540,6 +825,228 @@ You are forbidden from writing files, executing shell commands, or accessing ext
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "git_log", resultCount: result.commits.length, truncated: result.truncated || result.timedOut });
+          } else if (tc.name === "run_command") {
+            const exec = args.executable;
+            const cmdArgs = args.args || [];
+            const cmdCwd = args.cwd || "";
+            const purpose = args.purpose || "";
+
+            if (typeof exec !== "string") {
+              throw new Error("Missing required argument: executable");
+            }
+
+            // Command risk classification
+            const policy = classifyCommand(exec, cmdArgs);
+            if (policy.risk === "denied") {
+              throw new Error(`Command denied: ${policy.reason}`);
+            }
+
+            // Reject a working directory that escapes the workspace before any
+            // approval is created (categorical: cannot be bypassed by trust).
+            if (cmdCwd) {
+              assertContainedRealPath(project.workspacePath, cmdCwd);
+            }
+
+            // Check if there is already an approval decision for this command in this task
+            const existingApprovals = approvals.listByTask(taskId);
+            let approvalRecord = existingApprovals.find(a => 
+              a.kind === "command" &&
+              a.details.executable === exec &&
+              JSON.stringify(a.details.args) === JSON.stringify(cmdArgs) &&
+              a.details.cwd === cmdCwd
+            );
+
+            let isApproved = false;
+            let reuseApproval = false;
+
+            if (approvalRecord) {
+              if (approvalRecord.status === "approved" && (approvalRecord.decision === "trust_project" || approvalRecord.details.toolCallId === tc.id)) {
+                isApproved = true;
+                reuseApproval = true;
+              } else if (approvalRecord.status === "denied") {
+                throw new Error(`Command execution denied by user.`);
+              }
+            }
+
+            if (!reuseApproval) {
+              // Not yet approved. Let's check project command trust!
+              const isTrusted = approvals.getCommandTrust(project.id, policy.pattern) !== undefined;
+              if (isTrusted) {
+                isApproved = true;
+              } else {
+                // We must request approval!
+                const approvalId = randomUUID();
+                approvalRecord = approvals.create({
+                  id: approvalId,
+                  taskId,
+                  projectId: project.id,
+                  kind: "command",
+                  summary: `Run command: ${exec} ${cmdArgs.join(" ")}`,
+                  createdAt: now(),
+                  details: {
+                    executable: exec,
+                    args: cmdArgs,
+                    cwd: cmdCwd,
+                    risk: policy.risk,
+                    purpose,
+                    pattern: policy.pattern,
+                    toolCallId: tc.id,
+                  }
+                });
+
+                // Persist continuation state
+                continuationsRepo.save({
+                  taskId,
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  args: args
+                });
+
+                // Transition state
+                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+
+                // Block in-process
+                const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
+                
+                // Clean up continuation record
+                continuationsRepo.delete(taskId);
+
+                // Reload approval record
+                const updatedApproval = approvals.get(approvalRecord.id)!;
+                if (updatedApproval.status === "approved") {
+                  isApproved = true;
+                } else {
+                  throw new Error(`Command execution denied by user.`);
+                }
+              }
+            }
+
+            if (isApproved) {
+              resultStr = await executeApprovedTool(tc.name, args, tc.id);
+            }
+          } else if (tc.name === "propose_patch") {
+            const patch = args.patch;
+            const explanation = args.explanation;
+            const files = args.files || [];
+
+            if (typeof patch !== "string") {
+              throw new Error("Missing required argument: patch");
+            }
+
+            // 1. Parse unified diff
+            const patchFiles = parseUnifiedDiff(patch);
+
+            // 2. Validate paths containment and safety
+            validatePatchPaths(project.workspacePath, patchFiles, PERMISSION_PROFILE.deniedNamePatterns);
+
+            // Calculate original hashes and exact diff hash
+            const diffHash = hashString(patch);
+            const originalHashes: Record<string, string> = {};
+            for (const pf of patchFiles) {
+              if (pf.oldPath !== "/dev/null") {
+                const fullPath = resolve(project.workspacePath, pf.oldPath);
+                if (existsSync(fullPath)) {
+                  const content = readFileSync(fullPath, "utf8");
+                  originalHashes[pf.oldPath] = hashString(content);
+                } else {
+                  throw new Error(`File found missing: ${pf.oldPath}`);
+                }
+              } else {
+                originalHashes[pf.oldPath] = "";
+              }
+            }
+
+            // 3. Dry-run verify it applies cleanly
+            for (const pf of patchFiles) {
+              const fullPath = resolve(project.workspacePath, pf.oldPath);
+              let originalContent: string | null = null;
+              if (pf.oldPath !== "/dev/null" && existsSync(fullPath)) {
+                originalContent = readFileSync(fullPath, "utf8");
+              }
+              // This throws if there is a conflict
+              applyUnifiedPatch(originalContent, pf.chunks);
+            }
+
+            // 4. Check if there is already an approval decision for this change set in this task
+            const existingApprovals = approvals.listByTask(taskId);
+            let approvalRecord = existingApprovals.find(a => 
+              a.kind === "change_set" &&
+              a.details.diffHash === diffHash
+            );
+
+            let isApproved = false;
+
+            if (approvalRecord) {
+              if (approvalRecord.status === "approved" && approvalRecord.details.toolCallId === tc.id) {
+                isApproved = true;
+              } else if (approvalRecord.status === "denied") {
+                throw new Error(`Patch application denied by user.`);
+              }
+            } else {
+              // Transition through proposing_changes -> waiting_for_approval
+              transitionAgentState("proposing_changes");
+              
+              // We must request approval!
+              const approvalId = randomUUID();
+              approvalRecord = approvals.create({
+                id: approvalId,
+                taskId,
+                projectId: project.id,
+                kind: "change_set",
+                summary: `Apply patch: ${explanation}`,
+                createdAt: now(),
+                details: {
+                  explanation,
+                  files,
+                  diff: patch,
+                  diffHash,
+                  originalHashes,
+                  toolCallId: tc.id,
+                }
+              });
+
+              // Create change_set proposed record
+              changeSets.create({
+                id: randomUUID(),
+                taskId,
+                projectId: project.id,
+                approvalId: approvalRecord.id,
+                diff: patch,
+                diffHash,
+                originalHashes,
+              });
+
+              // Persist continuation state
+              continuationsRepo.save({
+                taskId,
+                toolCallId: tc.id,
+                toolName: tc.name,
+                args: args
+              });
+
+              // Transition to waiting_for_approval
+              transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+              event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
+
+              // Block in-process
+              const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
+              
+              // Clean up continuation
+              continuationsRepo.delete(taskId);
+
+              // Reload approval record
+              const updatedApproval = approvals.get(approvalRecord.id)!;
+              if (updatedApproval.status === "approved") {
+                isApproved = true;
+              } else {
+                throw new Error(`Patch application denied by user.`);
+              }
+            }
+
+            if (isApproved) {
+              resultStr = await executeApprovedTool(tc.name, args, tc.id);
+            }
           } else {
             throw new Error(`Forbidden tool: ${tc.name}`);
           }

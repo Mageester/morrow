@@ -16,6 +16,12 @@ export {
 export { TaskRunner, type TaskExecutor } from "./runner.js";
 export { recoverRunningTasks } from "./recovery.js";
 
+// Execution building blocks. Exposed so an embedding host (and integration
+// tests exercising the real CLI client path) can stand up a deterministic
+// backend with an injected provider, exactly as the server does at runtime.
+export { executeAgentChatTask } from "./execution/agent.js";
+export { MockProvider } from "./provider/mock.js";
+
 export { listProviderStatuses, getProviderStatus, isProviderConfigured, createProvider, PROVIDER_IDS } from "./provider/registry.js";
 export { testProviderConnectivity } from "./provider/connectivity.js";
 export { OAUTH_FINDINGS } from "./provider/oauth.js";
