@@ -451,12 +451,13 @@ export default function App() {
       <main className="main-canvas" aria-live="polite">
         {activeNav === "conversations" && (
           <>
-            {projects.length === 0 && (
             <div className="project-controls card">
+              {projects.length === 0 && (
               <div className="welcome-block">
                 <h2>Welcome to Morrow</h2>
                 <p className="muted">Create a local project to start a conversation. Morrow inspects only the workspace you point it at, with read-only tools.</p>
               </div>
+              )}
 
               <form onSubmit={handleCreateProject} className="new-project-form" aria-labelledby="create-project-heading">
                 <h3 id="create-project-heading">Create Project</h3>
@@ -482,7 +483,6 @@ export default function App() {
                 <button type="submit" className="primary-btn">Create Project</button>
               </form>
             </div>
-            )}
 
             {selectedProject && (
               <>
