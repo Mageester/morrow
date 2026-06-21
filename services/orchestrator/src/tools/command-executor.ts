@@ -1,37 +1,44 @@
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { delimiter, join, resolve, isAbsolute } from "node:path";
 import { existsSync, statSync } from "node:fs";
 
-const ALLOWED_ENV_KEYS = new Set([
-  "path",
-  "pathext",
-  "systemroot",
-  "windir",
-  "comspec",
-  "temp",
-  "tmp",
-  "userprofile",
-  "homedrive",
-  "homepath",
-  "home",
-  "appdata",
-  "localappdata",
-  "programdata",
-  "programfiles",
-  "programfiles(x86)",
-  "programw6432",
-  "commonprogramfiles",
-  "commonprogramfiles(x86)",
-  "commonprogramw6432",
-  "node",
-]);
+// Map of allowed environment variables, keyed by their lowercased name, to the
+// canonical key the filtered environment should expose. Windows preserves the
+// caller's original casing (commonly `Path`, `PathExt`), but the rest of this
+// module — and most child tools — read canonical upper-case keys (`PATH`,
+// `PATHEXT`, `COMSPEC`). Building a plain object that copies the original casing
+// would make `env.PATH` undefined and break executable resolution, so we
+// normalize here. ProgramFiles-family keys keep their conventional casing
+// because some tools interpolate `%ProgramFiles%` literally.
+const CANONICAL_ENV_KEYS: Record<string, string> = {
+  path: "PATH",
+  pathext: "PATHEXT",
+  systemroot: "SYSTEMROOT",
+  windir: "WINDIR",
+  comspec: "COMSPEC",
+  temp: "TEMP",
+  tmp: "TMP",
+  userprofile: "USERPROFILE",
+  homedrive: "HOMEDRIVE",
+  homepath: "HOMEPATH",
+  home: "HOME",
+  appdata: "APPDATA",
+  localappdata: "LOCALAPPDATA",
+  programdata: "PROGRAMDATA",
+  programfiles: "ProgramFiles",
+  "programfiles(x86)": "ProgramFiles(x86)",
+  programw6432: "ProgramW6432",
+  commonprogramfiles: "CommonProgramFiles",
+  "commonprogramfiles(x86)": "CommonProgramFiles(x86)",
+  commonprogramw6432: "CommonProgramW6432",
+};
 
 export function filterEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const filtered: NodeJS.ProcessEnv = {};
   for (const key of Object.keys(env)) {
-    const lowerKey = key.toLowerCase();
-    if (ALLOWED_ENV_KEYS.has(lowerKey)) {
-      filtered[key] = env[key];
+    const canonical = CANONICAL_ENV_KEYS[key.toLowerCase()];
+    if (canonical && env[key] !== undefined && filtered[canonical] === undefined) {
+      filtered[canonical] = env[key];
     }
   }
   return filtered;
@@ -119,6 +126,18 @@ export function runProcessSafe(
     const filteredEnv = filterEnv(env);
     const start = Date.now();
 
+    // Never spawn if cancellation already happened (e.g. the task was cancelled
+    // while the approval was pending).
+    if (options.abortSignal?.aborted) {
+      return resolveResult({
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+        terminationReason: "cancelled",
+      });
+    }
+
     let resolvedPath: string;
     try {
       resolvedPath = resolveExecutable(executable, filteredEnv);
@@ -152,7 +171,7 @@ export function runProcessSafe(
           });
         }
       }
-      spawnCmd = env.COMSPEC || "cmd.exe";
+      spawnCmd = filteredEnv.COMSPEC || "cmd.exe";
       spawnArgs = ["/c", resolvedPath, ...args];
     }
 
@@ -176,9 +195,14 @@ export function runProcessSafe(
       isTerminated = true;
 
       if (isWindows) {
-        try {
-          execSync(`taskkill /F /T /PID ${child.pid}`);
-        } catch {
+        // Structured, no-shell process-tree termination. Never interpolate the
+        // pid into a shell string.
+        let killed = false;
+        if (child.pid) {
+          const r = spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { shell: false, windowsHide: true });
+          killed = r.status === 0;
+        }
+        if (!killed) {
           try { child.kill("SIGKILL"); } catch {}
         }
       } else {
