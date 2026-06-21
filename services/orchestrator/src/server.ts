@@ -1,15 +1,31 @@
 import { z } from "zod";
 import Fastify, { FastifyInstance } from "fastify";
 import type Database from "better-sqlite3";
-import { CreateProjectSchema, CreateTaskSchema, StructuredApiErrorSchema } from "@morrow/contracts";
+import {
+  CreateProjectSchema,
+  CreateTaskSchema,
+  StructuredApiErrorSchema,
+  SendMessageSchema,
+  CreateMemoryEntrySchema,
+  type PresetId,
+  type ProviderId,
+  type RoutingDecision,
+} from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync } from "node:fs";
 import { projectRepository } from "./repositories/projects.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
+import { taskRoutingRepository } from "./repositories/task-routing.js";
+import { memoryRepository } from "./repositories/memory.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
+import { listProviderStatuses } from "./provider/registry.js";
+import { OAUTH_FINDINGS } from "./provider/oauth.js";
+import { listModels } from "./routing/models.js";
+import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
+import { routePreset, listPresetStatuses } from "./routing/router.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -38,6 +54,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
+  const routingRepo = taskRoutingRepository(deps.db);
+  const memory = memoryRepository(deps.db);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -139,7 +157,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
     const agg = records.getAggregate(taskId);
     const toolCalls = convs.listToolCallsForTask(taskId);
-    return { ...agg, toolCalls };
+    const routing = routingRepo.get(taskId)?.decision ?? null;
+    return { ...agg, toolCalls, routing };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -256,25 +275,49 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const conversation = convs.getConversation(conversationId);
     if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
     
-    const body = request.body as { content: string; preset?: "Balanced" | "Fast" | "Private Local" } | null;
-    if (!body || !body.content?.trim()) {
-      throw new ApiError(400, "Message content is required", "VALIDATION_ERROR");
-    }
+    const body = SendMessageSchema.parse(request.body);
 
-    const preset = body.preset || "Balanced";
-    if (preset === "Private Local") {
-      throw new ApiError(400, "Private Local preset is not available because a local provider is not configured", "PRESET_UNAVAILABLE");
+    const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
+
+    // Resolve the provider+model the agent will actually use, and report it.
+    let decision: RoutingDecision;
+    if (process.env.MOCK_PROVIDER === "true" && !body.providerId) {
+      const preset = getPreset(presetId)!;
+      decision = {
+        version: 1,
+        presetId,
+        providerId: "mock",
+        model: "mock-model",
+        reason: "Routed to mock provider (MOCK_PROVIDER=true).",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: preset.privacy,
+        candidates: [{ providerId: "mock", configured: true, reason: "mock enabled" }],
+      };
+    } else {
+      const override = body.providerId
+        ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) }
+        : undefined;
+      const result = routePreset(presetId, process.env, override);
+      if (!result.ok) {
+        throw new ApiError(400, result.reason, "PRESET_UNAVAILABLE");
+      }
+      decision = result.decision;
+      // Model-only override (keep routed provider, force the model id).
+      if (body.model && !body.providerId) {
+        decision = { ...decision, model: body.model, overridden: true };
+      }
     }
 
     const timestamp = new Date().toISOString();
-    
+
     const userMsg = convs.appendMessage({
       id: crypto.randomUUID(),
       conversationId,
       role: "user",
       content: body.content,
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
     });
 
     const task = tasks.createTask({
@@ -282,7 +325,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       projectId: conversation.projectId,
       kind: "agent_chat",
       status: "queued",
-      createdAt: timestamp
+      createdAt: timestamp,
     });
 
     const assistantMsg = convs.appendMessage({
@@ -292,10 +335,20 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       content: "",
       taskId: task.id,
       streamingState: "queued",
-      provider: "openai",
-      model: preset === "Fast" ? "gpt-4o-mini" : "gpt-4o-mini",
+      provider: decision.providerId,
+      model: decision.model,
       createdAt: new Date(Date.now() + 50).toISOString(),
-      updatedAt: new Date(Date.now() + 50).toISOString()
+      updatedAt: new Date(Date.now() + 50).toISOString(),
+    });
+
+    routingRepo.upsert({
+      taskId: task.id,
+      presetId,
+      providerId: decision.providerId,
+      model: decision.model,
+      useMemory: body.useMemory ?? true,
+      decision,
+      createdAt: timestamp,
     });
 
     deps.runner.run(task.id);
@@ -305,8 +358,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       task,
       userMessage: userMsg,
       assistantMessage: assistantMsg,
+      routing: decision,
       aggregateUrl: `/api/tasks/${task.id}`,
-      sseUrl: `/api/tasks/${task.id}/events/stream`
+      sseUrl: `/api/tasks/${task.id}/events/stream`,
     };
   });
 
@@ -319,14 +373,100 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     reply.status(204).send();
   });
 
-  app.get("/api/provider/status", async (request, reply) => {
-    const isMock = process.env.MOCK_PROVIDER === "true";
-    const hasKey = !!process.env.OPENAI_API_KEY;
-    return {
-      configured: isMock || hasKey,
-      provider: isMock ? "mock" : "openai",
-      model: isMock ? "mock-model" : "gpt-4o-mini"
-    };
+  // Backward-compatible summary of the active default provider (no secrets).
+  app.get("/api/provider/status", async () => {
+    if (process.env.MOCK_PROVIDER === "true") {
+      return { configured: true, provider: "mock", model: "mock-model" };
+    }
+    const routed = routePreset(DEFAULT_PRESET_ID, process.env);
+    if (routed.ok) {
+      return { configured: true, provider: routed.decision.providerId, model: routed.decision.model };
+    }
+    const anyConfigured = listProviderStatuses().find((s) => s.configured);
+    if (anyConfigured) {
+      return { configured: true, provider: anyConfigured.id, model: anyConfigured.defaultModel ?? "" };
+    }
+    return { configured: false, provider: "none", model: "" };
+  });
+
+  // Full provider status list (configured/available, capabilities, endpoint host).
+  app.get("/api/providers", async () => listProviderStatuses());
+
+  // Capability matrix for the UI.
+  app.get("/api/providers/capabilities", async () =>
+    listProviderStatuses().map((s) => ({
+      id: s.id,
+      label: s.label,
+      kind: s.kind,
+      configured: s.configured,
+      capabilities: s.capabilities,
+    }))
+  );
+
+  // Honest OAuth integration findings.
+  app.get("/api/providers/oauth", async () => OAUTH_FINDINGS);
+
+  // Built-in model registry with availability derived from configured providers.
+  app.get("/api/models", async () => {
+    const configured = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
+    return listModels().map((model) => ({ model, available: configured.has(model.providerId) }));
+  });
+
+  // Presets with live availability + resolved provider/model.
+  app.get("/api/presets", async () => listPresetStatuses());
+
+  // ── Memory ──────────────────────────────────────────────────────────────────
+
+  app.get("/api/projects/:projectId/memory", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return memory.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/memory", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateMemoryEntrySchema.parse(request.body);
+    if (body.scope === "conversation") {
+      if (!body.conversationId) throw new ApiError(400, "conversationId is required for conversation-scoped memory", "VALIDATION_ERROR");
+      const conv = convs.getConversation(body.conversationId);
+      if (!conv || conv.projectId !== projectId) throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
+    }
+    const entry = memory.create({
+      id: crypto.randomUUID(),
+      projectId,
+      conversationId: body.conversationId ?? null,
+      scope: body.scope,
+      content: body.content,
+      source: "user",
+      createdAt: new Date().toISOString(),
+    });
+    reply.status(201);
+    return entry;
+  });
+
+  app.get("/api/conversations/:conversationId/memory", async (request) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    return memory.listActiveForConversation(conversation.projectId, conversationId);
+  });
+
+  app.patch("/api/memory/:id", async (request) => {
+    const { id } = request.params as { id: string };
+    const existing = memory.get(id);
+    if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    const body = z.object({ enabled: z.boolean() }).parse(request.body);
+    return memory.setEnabled(id, body.enabled, new Date().toISOString());
+  });
+
+  app.delete("/api/memory/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const removed = memory.delete(id);
+    if (!removed) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    reply.status(204).send();
   });
 
   return app;

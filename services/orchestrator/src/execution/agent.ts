@@ -6,9 +6,13 @@ import { projectRepository } from "../repositories/projects.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { conversationsRepository, type ToolCallRecord } from "../repositories/conversations.js";
+import { taskRoutingRepository } from "../repositories/task-routing.js";
+import { memoryRepository } from "../repositories/memory.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
-import { OpenAiProvider } from "../provider/openai.js";
+import { createProvider, providerCapabilities } from "../provider/registry.js";
+import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
+import type { ProviderId } from "@morrow/contracts";
 
 type Dependencies = {
   db: Database.Database;
@@ -26,15 +30,17 @@ export async function executeAgentChatTask({
   taskId,
   provider,
   now = () => new Date().toISOString(),
-  maxTurns = 5,
-  maxFileBytes = 102400, // 100 KB
-  maxContextBytes = 512000, // 500 KB
+  maxTurns,
+  maxFileBytes,
+  maxContextBytes,
   abortSignal
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
   const records = taskRecordsRepository(db);
   const convs = conversationsRepository(db);
+  const routingRepo = taskRoutingRepository(db);
+  const memoryRepo = memoryRepository(db);
 
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "agent_chat" || task.status !== "queued") {
@@ -67,35 +73,56 @@ export async function executeAgentChatTask({
   records.replacePlan(taskId, plan);
   event("plan.created", { stepCount: plan.length });
 
-  // Resolve active provider
-  const activeProvider = provider || (process.env.MOCK_PROVIDER === "true" ? new MockProvider({
-    chunks: [
-      // Turn 0: LLM decides to inspect files
-      [
-        {
-          type: "tool_call",
-          toolCalls: [
-            {
-              id: "call-1",
-              index: 0,
-              type: "function",
-              function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) }
-            }
-          ]
-        },
-        { type: "done" }
-      ],
-      // Turn 1: LLM answers based on tool call
-      [
-        { type: "text", text: "Based on the evidence, the system is fully operational." },
-        { type: "done" }
-      ]
-    ],
-    delayMs: 150
-  }) : new OpenAiProvider());
-  const providerType = activeProvider.constructor.name === "MockProvider" ? "mock" as const : "openai" as const;
+  // Resolve routing decision + preset-derived execution budgets
+  const routing = routingRepo.get(taskId);
+  const presetId = routing?.presetId ?? DEFAULT_PRESET_ID;
+  const preset = getPreset(presetId as any) ?? getPreset(DEFAULT_PRESET_ID)!;
+  const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
+  const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
+  const useMemory = routing?.useMemory ?? true;
 
-  // Enforce disclosure
+  const turnsLimit = maxTurns ?? preset.maxToolIterations;
+  const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
+  const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
+
+  // Resolve active provider: an injected provider wins (tests); otherwise the
+  // deterministic mock for demo mode, or a registry-built real provider.
+  let activeProvider: AiProvider;
+  let providerType: ProviderId;
+  if (provider) {
+    activeProvider = provider;
+    providerType = ((provider as { id?: ProviderId }).id ?? "mock") as ProviderId;
+  } else if (providerId === "mock" || process.env.MOCK_PROVIDER === "true") {
+    activeProvider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "call-1", index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) } }] },
+          { type: "done" }
+        ],
+        [
+          { type: "text", text: "Based on the evidence, the system is fully operational." },
+          { type: "done" }
+        ]
+      ],
+      delayMs: 150
+    });
+    providerType = "mock";
+  } else {
+    try {
+      activeProvider = createProvider(providerId, process.env, resolvedModel);
+      providerType = providerId;
+    } catch (e: any) {
+      records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: e.message || "Provider not configured" } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, `Provider not available: ${e.message || "not configured"}`, "failed", now());
+      event("task.failed", { message: e.message || "Provider not configured" });
+      return;
+    }
+  }
+
+  const isLocalProvider = providerCapabilities(providerType)?.local ?? false;
+
+  // Enforce honest execution disclosure. Cost is reported as unknown for hosted
+  // providers because Morrow does not meter spend; local/mock are genuinely $0.
   records.upsertDisclosure({
     taskId,
     executionMode: "agent-interactive",
@@ -105,18 +132,10 @@ export async function executeAgentChatTask({
     shellExecution: false,
     modelInvocation: true,
     workspaceScope: project.workspacePath,
-    estimatedCostUsd: "$0.00",
+    estimatedCostUsd: providerType === "mock" || isLocalProvider ? "$0.00" : "unknown (not metered)",
     createdAt: now(),
     updatedAt: now()
   });
-
-  // Check if provider is configured
-  if (providerType === "openai" && !process.env.OPENAI_API_KEY) {
-    records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: "No AI provider configured" } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, "No AI provider configured. Please set the OPENAI_API_KEY environment variable.", "failed", now());
-    event("task.failed", { message: "No AI provider configured" });
-    return;
-  }
 
   records.transitionTask(taskId, "running", { id: randomUUID(), createdAt: now(), payload: {} });
   convs.updateMessageContentAndState(assistantMessageRow.id, "", "streaming", now());
@@ -170,6 +189,26 @@ If you need to explore, first call inspect_workspace or list_files, then call re
 You are forbidden from writing files, executing shell commands, or accessing external networks besides your provider.`
   });
 
+  // Inject user-controlled memory (bounded, deterministic, project-isolated).
+  if (useMemory) {
+    const entries = memoryRepo.listActiveForConversation(project.id, conversationId);
+    const lines: string[] = [];
+    let used = 0;
+    const memoryCap = 4000;
+    for (const entry of entries) {
+      const line = `- (${entry.scope}) ${entry.content}`;
+      if (used + line.length > memoryCap) break;
+      lines.push(line);
+      used += line.length + 1;
+    }
+    if (lines.length > 0) {
+      chatMessages.push({
+        role: "system",
+        content: `Relevant saved memory for this project (user-controlled, may be edited or deleted by the user):\n${lines.join("\n")}`
+      });
+    }
+  }
+
   for (const msg of dbMessages) {
     if (msg.id === assistantMessageRow.id) break;
     chatMessages.push({
@@ -210,7 +249,7 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     }
   };
 
-  while (turn < maxTurns) {
+  while (turn < turnsLimit) {
     if (checkCancelled()) {
       handleCancellation();
       return;
@@ -223,8 +262,11 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     try {
       const stream = activeProvider.streamChat(chatMessages, {
         ...(abortSignal ? { abortSignal } : {}),
-        tools,
-        model: assistantMessageRow.model || "gpt-4o-mini"
+        tools: preset.toolProfile === "none" ? [] : tools,
+        model: resolvedModel || assistantMessageRow.model || undefined,
+        timeoutMs: preset.timeoutMs,
+        temperature: preset.temperature,
+        maxOutputTokens: preset.outputBudgetTokens
       });
 
       for await (const chunk of stream) {
@@ -357,11 +399,11 @@ You are forbidden from writing files, executing shell commands, or accessing ext
             const relPath = args.path;
             if (!relPath) throw new Error("Missing required argument: path");
             
-            const fileData = readWorkspaceFile(project.workspacePath, relPath, maxFileBytes);
+            const fileData = readWorkspaceFile(project.workspacePath, relPath, fileBytesLimit);
             totalBytesRead += fileData.size;
 
-            if (totalBytesRead > maxContextBytes) {
-              throw new SafeReadError(`Raw byte budget ceiling (${maxContextBytes / 1024} KB) exceeded`);
+            if (totalBytesRead > contextBytesLimit) {
+              throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             }
 
             resultStr = fileData.content;
@@ -416,8 +458,8 @@ You are forbidden from writing files, executing shell commands, or accessing ext
     return;
   }
 
-  if (turn >= maxTurns) {
-    const loopErrMsg = `Agent turn loop limit reached (${maxTurns})`;
+  if (turn >= turnsLimit) {
+    const loopErrMsg = `Agent turn loop limit reached (${turnsLimit})`;
     records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: loopErrMsg } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${loopErrMsg}]`, "failed", now());
     if (activeStepId) {

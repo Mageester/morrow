@@ -11,6 +11,9 @@ import { IncomingMessage } from "node:http";
 import * as http from "node:http";
 
 async function run() {
+  // The server routes a chat to the mock provider when MOCK_PROVIDER is set; the
+  // injected MockProvider below is what actually streams the deterministic turns.
+  process.env.MOCK_PROVIDER = "true";
   const tempDir = mkdtempSync(join(tmpdir(), "morrow-agent-smoke-"));
   const wsDir = join(tempDir, "workspace");
   mkdirSync(wsDir);
