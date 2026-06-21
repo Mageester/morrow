@@ -8,6 +8,8 @@ import {
   SendMessageSchema,
   CreateMemoryEntrySchema,
   UpdateConversationSchema,
+  ApprovalStatusSchema,
+  ResolveApprovalSchema,
   ProviderIdSchema,
   type PresetId,
   type ProviderId,
@@ -21,6 +23,7 @@ import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
+import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
 import { listProviderStatuses } from "./provider/registry.js";
@@ -60,6 +63,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const convs = conversationsRepository(deps.db);
   const routingRepo = taskRoutingRepository(deps.db);
   const memory = memoryRepository(deps.db);
+  const approvals = approvalsRepository(deps.db);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -183,7 +187,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const agg = records.getAggregate(taskId);
     const toolCalls = convs.listToolCallsForTask(taskId);
     const routing = routingRepo.get(taskId)?.decision ?? null;
-    return { ...agg, toolCalls, routing };
+    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), routing };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -421,6 +425,53 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
     
     deps.runner.cancel(taskId);
+    reply.status(204).send();
+  });
+
+  app.get("/api/projects/:projectId/approvals", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status) {
+      const parsed = ApprovalStatusSchema.safeParse(status);
+      if (!parsed.success) throw new ApiError(400, "Invalid approval status", "VALIDATION_ERROR");
+      return approvals.listByProject(projectId, parsed.data);
+    }
+    return approvals.listByProject(projectId);
+  });
+
+  app.post("/api/approvals/:approvalId/resolve", async (request) => {
+    const { approvalId } = request.params as { approvalId: string };
+    const body = ResolveApprovalSchema.parse(request.body);
+    const approval = approvals.get(approvalId);
+    if (!approval || approval.projectId !== body.projectId) throw new ApiError(404, "Approval not found in project", "NOT_FOUND");
+
+    const resolved = approvals.resolve(approvalId, { decision: body.decision, ...(body.note ? { note: body.note } : {}), resolvedAt: new Date().toISOString() });
+    if (!resolved) throw new ApiError(409, "Approval is no longer pending", "APPROVAL_ALREADY_RESOLVED");
+    if (body.decision === "trust_project") {
+      approvals.grantCommandTrust({ projectId: approval.projectId, pattern: body.trustPattern!, createdAt: resolved.resolvedAt! });
+    }
+    records.appendEvent({
+      id: crypto.randomUUID(),
+      taskId: approval.taskId,
+      type: "approval.resolved",
+      payload: { approvalId, decision: body.decision },
+      createdAt: resolved.resolvedAt!,
+    });
+    return resolved;
+  });
+
+  app.get("/api/projects/:projectId/command-trusts", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return approvals.listCommandTrusts(projectId);
+  });
+
+  app.delete("/api/projects/:projectId/command-trusts", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = z.object({ pattern: z.string().trim().min(1).max(240) }).parse(request.body);
+    if (!approvals.revokeCommandTrust(projectId, body.pattern)) throw new ApiError(404, "Command trust not found", "NOT_FOUND");
     reply.status(204).send();
   });
 

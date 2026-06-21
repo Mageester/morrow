@@ -6,6 +6,8 @@ import {
   MemoryEntrySchema,
   ExecutionDisclosureSchema,
   AgentExecutionStateSchema,
+  ApprovalSchema,
+  ResolveApprovalSchema,
   TaskStatusSchema,
   SendMessageSchema,
   ModelInfoSchema,
@@ -33,6 +35,13 @@ describe("Contract schemas", () => {
       "idle", "understanding", "planning", "waiting_for_approval", "executing_tool", "observing",
       "proposing_changes", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted",
     ]);
+  });
+
+  it("requires an explicit project trust pattern", () => {
+    const approval = { version: 1, id: "approval", taskId: "task", projectId: "project", kind: "command", status: "pending", summary: "pnpm test", details: {}, decision: null, decisionNote: null, createdAt: new Date().toISOString(), resolvedAt: null };
+    expect(() => ApprovalSchema.parse(approval)).not.toThrow();
+    expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project" })).toThrow();
+    expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project", trustPattern: "pnpm test" })).not.toThrow();
   });
 
   it("accepts every provider id in the disclosure schema", () => {

@@ -11,6 +11,10 @@ import type {
   MemoryEntry,
   MemoryScope,
   AgentMode,
+  AgentStateTransition,
+  Approval,
+  ApprovalDecision,
+  CommandTrust,
   OAuthFinding,
   ToolSpec,
   PermissionProfile,
@@ -41,6 +45,9 @@ export interface TaskAggregate {
   task: Task;
   plan: Array<{ id: string; position: number; title: string; description: string; status: string }>;
   events: TaskEvent[];
+  agentState?: AgentStateTransition;
+  agentStates: AgentStateTransition[];
+  approvals: Approval[];
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
   disclosure?: {
     provider: string;
@@ -121,6 +128,19 @@ export class MorrowApi {
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
+
+  // ── Approvals and project-scoped command trust ────────────────────────────
+  listApprovals(projectId: string, status?: "pending" | "approved" | "denied" | "cancelled") {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<Approval[]>("GET", `/api/projects/${projectId}/approvals${suffix}`);
+  }
+  resolveApproval(id: string, input: { projectId: string; decision: ApprovalDecision; trustPattern?: string; note?: string }) {
+    return this.req<Approval>("POST", `/api/approvals/${id}/resolve`, input);
+  }
+  listCommandTrusts(projectId: string) { return this.req<CommandTrust[]>("GET", `/api/projects/${projectId}/command-trusts`); }
+  revokeCommandTrust(projectId: string, pattern: string) {
+    return this.req<void>("DELETE", `/api/projects/${projectId}/command-trusts`, { pattern });
+  }
 
   // ── Conversations ───────────────────────────────────────────────────────────
   listConversations(projectId: string, includeArchived = false) {

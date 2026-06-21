@@ -83,6 +83,31 @@ export const migrations:Migration[]=[
       UNIQUE(task_id, sequence)
     );
     CREATE INDEX agent_state_transitions_task_id_sequence_idx ON agent_state_transitions(task_id, sequence);
+  `},
+  {id:7,name:"approvals_and_command_trusts",sql:`
+    CREATE TABLE approvals (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      decision TEXT,
+      decision_note TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+    CREATE INDEX approvals_project_id_created_at_idx ON approvals(project_id, created_at DESC);
+    CREATE INDEX approvals_task_id_created_at_idx ON approvals(task_id, created_at ASC);
+    CREATE TABLE project_command_trusts (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      pattern TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, pattern)
+    );
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
