@@ -7,6 +7,8 @@ import {
   StructuredApiErrorSchema,
   SendMessageSchema,
   CreateMemoryEntrySchema,
+  UpdateConversationSchema,
+  ProviderIdSchema,
   type PresetId,
   type ProviderId,
   type RoutingDecision,
@@ -26,6 +28,8 @@ import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { listModels } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
+import { testProviderConnectivity } from "./provider/connectivity.js";
+import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -78,6 +82,20 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       version: 1,
       error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" }
     });
+  });
+
+  // Liveness + schema probe. Used by the CLI to detect a running service and by
+  // `morrow doctor` to report migration state. Exposes no secrets.
+  app.get("/api/health", async () => {
+    const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
+    return {
+      ok: true,
+      service: "morrow-orchestrator",
+      apiVersion: 1,
+      mockProvider: process.env.MOCK_PROVIDER === "true",
+      migrations: { applied: Number(row.applied), latest: row.latest },
+      time: new Date().toISOString(),
+    };
   });
 
   app.post("/api/projects", async (request, reply) => {
@@ -242,7 +260,27 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId } = request.params as { projectId: string };
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
-    return convs.listConversationsByProject(projectId);
+    const { includeArchived } = request.query as { includeArchived?: string };
+    return convs.listConversationsByProject(projectId, includeArchived === "true" || includeArchived === "1");
+  });
+
+  app.get("/api/conversations/:conversationId", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    return conversation;
+  });
+
+  app.patch("/api/conversations/:conversationId", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    const body = UpdateConversationSchema.parse(request.body);
+    const now = new Date().toISOString();
+    let updated = conversation;
+    if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title.trim(), now) ?? updated;
+    if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, now) ?? updated;
+    return updated;
   });
 
   app.post("/api/projects/:projectId/conversations", async (request, reply) => {
@@ -406,6 +444,53 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // Honest OAuth integration findings.
   app.get("/api/providers/oauth", async () => OAUTH_FINDINGS);
 
+  // Bounded, server-side connectivity test for a single provider. The request is
+  // made with credentials from the server environment; the response never
+  // contains the key or any header value — only the host and a normalized result.
+  app.post("/api/providers/:providerId/test", async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    const parsed = ProviderIdSchema.safeParse(providerId);
+    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+    return testProviderConnectivity(parsed.data, process.env);
+  });
+
+  // Safe read-only tool catalog and the enforced permission profile.
+  app.get("/api/tools", async () => TOOL_CATALOG);
+  app.get("/api/permissions", async () => PERMISSION_PROFILE);
+
+  // Audit: a truthful record of executed tasks with their disclosure, tool-call
+  // count, and evidence count. Detailed per-run audit reuses GET /api/tasks/:id.
+  app.get("/api/audit", async (request) => {
+    const { projectId, limit } = request.query as { projectId?: string; limit?: string };
+    const max = Math.min(Math.max(parseInt(limit ?? "50", 10) || 50, 1), 500);
+    const where = projectId ? "WHERE t.project_id = ?" : "";
+    const rows = deps.db
+      .prepare(
+        `SELECT t.id AS task_id, t.project_id, t.type AS kind, t.status, t.created_at,
+                d.provider, d.network_access,
+                (SELECT COUNT(*) FROM message_tool_calls mtc WHERE mtc.task_id = t.id) AS tool_calls,
+                (SELECT COUNT(*) FROM task_evidence te WHERE te.task_id = t.id) AS evidence
+         FROM tasks t LEFT JOIN execution_disclosures d ON d.task_id = t.id
+         ${where} ORDER BY t.created_at DESC, t.id DESC LIMIT ?`
+      )
+      .all(...(projectId ? [projectId, max] : [max])) as any[];
+    return rows.map((r) => {
+      const routing = routingRepo.get(r.task_id)?.decision ?? null;
+      return {
+        taskId: r.task_id,
+        projectId: r.project_id,
+        kind: r.kind,
+        status: r.status,
+        provider: r.provider ?? routing?.providerId ?? null,
+        model: routing?.model ?? null,
+        networkAccess: r.network_access ?? null,
+        toolCalls: Number(r.tool_calls),
+        evidence: Number(r.evidence),
+        createdAt: r.created_at,
+      };
+    });
+  });
+
   // Built-in model registry with availability derived from configured providers.
   app.get("/api/models", async () => {
     const configured = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
@@ -464,12 +549,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { id } = request.params as { id: string };
     const existing = memory.get(id);
     if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
-    const body = z.object({ enabled: z.boolean() }).parse(request.body);
+    const body = z.object({ projectId: z.string().min(1), enabled: z.boolean() }).parse(request.body);
+    if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     return memory.setEnabled(id, body.enabled, new Date().toISOString());
   });
 
   app.delete("/api/memory/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    const existing = memory.get(id);
+    if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     const removed = memory.delete(id);
     if (!removed) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     reply.status(204).send();

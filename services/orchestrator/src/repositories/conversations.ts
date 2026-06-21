@@ -23,6 +23,7 @@ export function conversationsRepository(db: Database.Database) {
       id: row.id,
       projectId: row.project_id,
       title: row.title,
+      archived: Number(row.archived ?? 0) !== 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     });
@@ -62,7 +63,7 @@ export function conversationsRepository(db: Database.Database) {
   };
 
   return {
-    createConversation(input: Omit<Conversation, "version">): Conversation {
+    createConversation(input: Omit<Conversation, "version" | "archived"> & { archived?: boolean }): Conversation {
       db.prepare(
         "INSERT INTO conversations (id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
       ).run(input.id, input.projectId, input.title, input.createdAt, input.updatedAt);
@@ -74,11 +75,21 @@ export function conversationsRepository(db: Database.Database) {
       return row ? mapConversation(row) : undefined;
     },
 
-    listConversationsByProject(projectId: string): Conversation[] {
-      return db
-        .prepare("SELECT * FROM conversations WHERE project_id = ? ORDER BY updated_at DESC")
-        .all(projectId)
-        .map(mapConversation);
+    listConversationsByProject(projectId: string, includeArchived = false): Conversation[] {
+      const sql = includeArchived
+        ? "SELECT * FROM conversations WHERE project_id = ? ORDER BY updated_at DESC"
+        : "SELECT * FROM conversations WHERE project_id = ? AND archived = 0 ORDER BY updated_at DESC";
+      return db.prepare(sql).all(projectId).map(mapConversation);
+    },
+
+    renameConversation(id: string, title: string, updatedAt: string): Conversation | undefined {
+      db.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?").run(title, updatedAt, id);
+      return this.getConversation(id);
+    },
+
+    setArchived(id: string, archived: boolean, updatedAt: string): Conversation | undefined {
+      db.prepare("UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, updatedAt, id);
+      return this.getConversation(id);
     },
 
     appendMessage(input: {

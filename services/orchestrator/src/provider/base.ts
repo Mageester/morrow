@@ -1,3 +1,5 @@
+import { redactSecrets } from "./credentials.js";
+
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
@@ -110,19 +112,20 @@ export class ProviderError extends Error {
 
 /** Classify an HTTP status code from any provider into a normalized error. */
 export function classifyHttpStatus(status: number, message: string): ProviderErrorPayload {
+  const safeMessage = redactSecrets(message);
   if (status === 401 || status === 403) {
-    return { type: "auth_error", kind: "auth", message, retryable: false, status };
+    return { type: "auth_error", kind: "auth", message: safeMessage, retryable: false, status };
   }
   if (status === 429) {
-    return { type: "rate_limit", kind: "rate_limit", message, retryable: true, status };
+    return { type: "rate_limit", kind: "rate_limit", message: safeMessage, retryable: true, status };
   }
   if (status === 400 || status === 404 || status === 422) {
-    return { type: "invalid_request", kind: "invalid_request", message, retryable: false, status };
+    return { type: "invalid_request", kind: "invalid_request", message: safeMessage, retryable: false, status };
   }
   if (status >= 500) {
-    return { type: "provider_error", kind: "provider", message, retryable: true, status };
+    return { type: "provider_error", kind: "provider", message: safeMessage, retryable: true, status };
   }
-  return { type: "provider_error", kind: "provider", message, retryable: false, status };
+  return { type: "provider_error", kind: "provider", message: safeMessage, retryable: false, status };
 }
 
 /** Translate a thrown fetch/abort error into a normalized provider error payload. */
@@ -133,7 +136,7 @@ export function classifyThrownError(e: any, aborted: boolean): ProviderErrorPayl
   return {
     type: "network_error",
     kind: "network",
-    message: e?.message || "Network request failed",
+    message: redactSecrets(e?.message || "Network request failed"),
     retryable: true,
   };
 }

@@ -15,6 +15,28 @@ importers:
         specifier: 2.6.3
         version: 2.6.3
 
+  apps/cli:
+    dependencies:
+      '@morrow/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@morrow/orchestrator':
+        specifier: workspace:*
+        version: link:../../services/orchestrator
+      tsx:
+        specifier: 4.20.6
+        version: 4.20.6
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.9
+        version: 4.1.9(@types/node@24.10.1)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.10.1)(tsx@4.20.6))
+
   apps/web:
     dependencies:
       '@morrow/contracts':
@@ -2287,7 +2309,7 @@ snapshots:
 
   '@types/better-sqlite3@7.6.13':
     dependencies:
-      '@types/node': 24.10.1
+      '@types/node': 24.13.2
 
   '@types/chai@5.2.3':
     dependencies:

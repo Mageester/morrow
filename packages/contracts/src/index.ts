@@ -14,7 +14,8 @@ export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,tas
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
-export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
 export const ConversationMessageSchema=z.object({version:SchemaVersionSchema,id:z.string(),conversationId:z.string(),role:z.enum(["user","assistant"]),content:z.string(),taskId:z.string().nullable().optional(),streamingState:z.enum(["queued","streaming","completed","failed","cancelled","interrupted"]),provider:z.string().nullable().optional(),model:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 
 export type Project=z.infer<typeof ProjectSchema>;
@@ -192,4 +193,76 @@ export const OAuthFindingSchema=z.object({
   documentationUrl:z.string().nullable(),
 }).strict();
 export type OAuthFinding=z.infer<typeof OAuthFindingSchema>;
+export type UpdateConversationInput=z.infer<typeof UpdateConversationSchema>;
+
+// ── Tool catalog, permissions, audit, provider connectivity ──────────────────
+// These describe the real, safe read-only capability surface exposed by the
+// orchestrator. They are descriptive contracts the CLI and web render; the tool
+// execution itself lives in the agent runtime behind the same containment layer.
+export const ToolSideEffectSchema=z.enum(["read-only","write","execute","network"]);
+export const ToolSpecSchema=z.object({
+  name:z.string(),
+  title:z.string(),
+  description:z.string(),
+  sideEffect:ToolSideEffectSchema,
+  enabled:z.boolean(),
+  parameters:z.record(z.string(),z.unknown()),
+  constraints:z.array(z.string()),
+}).strict();
+export type ToolSpec=z.infer<typeof ToolSpecSchema>;
+
+export const PermissionProfileSchema=z.object({
+  version:SchemaVersionSchema,
+  toolProfileOptions:z.array(ToolProfileSchema),
+  defaultToolProfile:ToolProfileSchema,
+  filesystemAccess:z.enum(["read-only","none"]),
+  shellExecution:z.boolean(),
+  networkAccess:z.enum(["provider-only","disabled","enabled"]),
+  writeAccess:z.boolean(),
+  deniedNamePatterns:z.array(z.string()),
+  deniedPathRules:z.array(z.string()),
+  limits:z.object({
+    maxFileBytes:z.number().int().positive(),
+    maxInspectResults:z.number().int().positive(),
+    maxInspectDepth:z.number().int().positive(),
+  }).strict(),
+}).strict();
+export type PermissionProfile=z.infer<typeof PermissionProfileSchema>;
+
+export const AuditEntrySchema=z.object({
+  taskId:z.string(),
+  projectId:z.string(),
+  kind:z.string(),
+  status:TaskStatusSchema,
+  provider:z.string().nullable(),
+  model:z.string().nullable(),
+  networkAccess:z.string().nullable(),
+  toolCalls:z.number().int().nonnegative(),
+  evidence:z.number().int().nonnegative(),
+  createdAt:z.string(),
+}).strict();
+export type AuditEntry=z.infer<typeof AuditEntrySchema>;
+
+export const ProviderTestResultSchema=z.object({
+  id:ProviderIdSchema,
+  ok:z.boolean(),
+  configured:z.boolean(),
+  status:z.number().int().nullable(),
+  latencyMs:z.number().int().nonnegative().nullable(),
+  checkedEndpoint:z.string().nullable(),
+  detail:z.string(),
+  errorKind:z.string().nullable(),
+  modelsSample:z.array(z.string()),
+}).strict();
+export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
+
+export const HealthSchema=z.object({
+  ok:z.boolean(),
+  service:z.literal("morrow-orchestrator"),
+  apiVersion:z.number().int(),
+  mockProvider:z.boolean(),
+  migrations:z.object({applied:z.number().int(),latest:z.number().int().nullable()}).strict(),
+  time:z.string(),
+}).strict();
+export type Health=z.infer<typeof HealthSchema>;
 
