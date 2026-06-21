@@ -126,10 +126,19 @@ async function doctor(ctx: Context): Promise<number> {
     checks.push({ name: "orchestrator", ok: false, detail: error instanceof Error ? error.message : String(error), critical: true });
   }
   const ok = checks.every((check) => !check.critical || check.ok);
-  if (ctx.out.json) ctx.out.data({ ok, checks, logPath: ctx.paths.logFile });
+  if (ctx.out.json) ctx.out.data({ ok, checks, pnpm, logPath: ctx.paths.logFile });
   else {
     ctx.out.heading("Morrow doctor");
     ctx.out.table(["check", "status", "detail"], checks.map((check) => [check.name, check.ok ? ctx.out.green("ok") : ctx.out.red("fail"), check.detail]));
+    // When pnpm resolution fails, surface every ranked candidate we tried so the
+    // user can see why each was rejected (rather than a single opaque error).
+    if (!pnpm.ok && pnpm.tried && pnpm.tried.length > 0) {
+      ctx.out.print();
+      ctx.out.heading("pnpm candidates checked");
+      for (const attempt of pnpm.tried) {
+        ctx.out.print(`  ${ctx.out.gray(`[${attempt.source}]`)} ${attempt.path} ${ctx.out.gray(`→ ${attempt.reason}`)}`);
+      }
+    }
     ctx.out.info(`Logs: ${ctx.paths.logFile}`);
   }
   return ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
