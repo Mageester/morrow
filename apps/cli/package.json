@@ -1,0 +1,26 @@
+{
+  "name": "@morrow/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Morrow command-line interface — a thin, capable client over the Morrow orchestrator.",
+  "bin": {
+    "morrow": "bin/morrow.mjs"
+  },
+  "scripts": {
+    "morrow": "tsx src/main.ts",
+    "check": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@morrow/contracts": "workspace:*",
+    "@morrow/orchestrator": "workspace:*",
+    "tsx": "4.20.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  }
+}

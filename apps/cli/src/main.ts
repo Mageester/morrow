@@ -1,0 +1,135 @@
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import { parseArgs, flagBool, flagString } from "./cli/args.js";
+import { Context } from "./cli/context.js";
+import { CliError, EXIT, usageError } from "./cli/errors.js";
+import { Output, resolveColor } from "./cli/output.js";
+import { ConfigStore } from "./config/config.js";
+import { chatCommand } from "./commands/chat.js";
+import { conversationsCommand } from "./commands/conversations.js";
+import { memoryCommand, auditCommand, permissionsCommand, toolsCommand } from "./commands/observability.js";
+import { modelsCommand } from "./commands/models.js";
+import { presetsCommand } from "./commands/presets.js";
+import { projectsCommand, initCommand } from "./commands/projects.js";
+import { providersCommand } from "./commands/providers.js";
+import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
+
+export const VERSION = "0.1.0";
+
+const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value"];
+const ALIASES = { h: "help", v: "version", q: "quiet" };
+
+export async function run(argv: string[]): Promise<number> {
+  const parsed = parseArgs(argv, { valueFlags: VALUE_FLAGS, aliases: ALIASES });
+  const noColor = parsed.flags.color === false || flagBool(parsed.flags, "no-color");
+  const out = new Output({ json: flagBool(parsed.flags, "json"), quiet: flagBool(parsed.flags, "quiet"), color: resolveColor({ noColorFlag: noColor, json: flagBool(parsed.flags, "json"), env: process.env, isTTY: Boolean(process.stdout.isTTY) }) });
+  try {
+    if (flagBool(parsed.flags, "help") || parsed.positionals[0] === "help") return printHelp(out);
+    if (flagBool(parsed.flags, "version")) return printVersion(out);
+    const config = ConfigStore.load();
+    const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
+    const [root, sub, ...args] = parsed.positionals;
+    switch (root) {
+      case undefined: return printHelp(out);
+      case "status": return status(ctx);
+      case "doctor": return doctor(ctx);
+      case "onboard": return onboard(ctx);
+      case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
+      case "stop": return serviceStop(ctx);
+      case "restart": return restart(ctx);
+      case "logs": return logs(ctx);
+      case "config": return configCommand(ctx, sub, args);
+      case "projects": return projectsCommand(ctx, sub ?? "", args);
+      case "init": return initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
+      case "chat": return chatCommand(ctx);
+      case "conversations": return conversationsCommand(ctx, sub ?? "", args);
+      case "providers": return providersCommand(ctx, sub ?? "", args);
+      case "models": return modelsCommand(ctx, sub ?? "", args);
+      case "presets": return presetsCommand(ctx, sub, args);
+      case "tools": return toolsCommand(ctx, sub, args);
+      case "permissions": return permissionsCommand(ctx, sub);
+      case "audit": return auditCommand(ctx, sub, args);
+      case "memory": return memoryCommand(ctx, sub, args);
+      default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
+    }
+  } catch (error) {
+    if (error instanceof CliError) {
+      out.error(error.message);
+      if (error.hint) out.diag(`  ${error.hint}`);
+      return error.exitCode;
+    }
+    out.error(error instanceof Error ? error.message : String(error));
+    return EXIT.ERROR;
+  }
+}
+
+function printVersion(out: Output): number { if (out.json) out.data({ version: VERSION }); else out.print(VERSION); return EXIT.OK; }
+function printHelp(out: Output): number {
+  const help = `Morrow CLI ${VERSION}\n\nUsage: morrow <command> [options]\n\nCommands:\n  morrow status | morrow doctor | morrow onboard\n  morrow serve [--detach] | morrow stop | morrow restart | morrow logs\n  morrow config list|get|set|unset|path\n  morrow projects list|add|select|inspect|remove | morrow init [path]\n  morrow chat [--new|--resume <id>|--message <prompt>]\n  morrow conversations list|show|rename|archive|export\n  morrow providers list|status|test|configure\n  morrow models list|info|select\n  morrow presets list|show|select\n  morrow tools list|info | morrow permissions show | morrow audit list|show\n  morrow memory list|add|remove|status\n\nGlobal options: --json --quiet --no-color --project --provider --model --preset --timeout`;
+  if (out.json) out.data({ version: VERSION, help }); else out.print(help);
+  return EXIT.OK;
+}
+
+async function status(ctx: Context): Promise<number> {
+  const health = await ctx.api().health();
+  const provider = await ctx.api().providerStatus();
+  if (ctx.out.json) ctx.out.data({ health, provider });
+  else ctx.out.keyValue([["service", health.service], ["status", health.ok ? "healthy" : "unhealthy"], ["provider", provider.provider], ["model", provider.model], ["database", ctx.service.dbPath]]);
+  return health.ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
+}
+
+async function doctor(ctx: Context): Promise<number> {
+  const pnpm = spawnSync("pnpm", ["--version"], { shell: process.platform === "win32", encoding: "utf8" });
+  const checks: Array<{ name: string; ok: boolean; detail: string; critical: boolean }> = [
+    { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.versions.node, critical: true },
+    { name: "pnpm", ok: pnpm.status === 0, detail: (pnpm.stdout || pnpm.stderr || "not found").trim(), critical: true },
+    { name: "data directory", ok: existsSync(dirname(ctx.service.dbPath)), detail: dirname(ctx.service.dbPath), critical: false },
+  ];
+  try {
+    const health = await ctx.api().health();
+    checks.push({ name: "orchestrator", ok: health.ok, detail: `${health.service}; migrations ${health.migrations.applied}/${health.migrations.latest ?? "?"}`, critical: true });
+    const providers = await ctx.api().listProviders();
+    checks.push({ name: "providers", ok: true, detail: `${providers.filter((provider) => provider.configured).length} configured`, critical: false });
+  } catch (error) {
+    checks.push({ name: "orchestrator", ok: false, detail: error instanceof Error ? error.message : String(error), critical: true });
+  }
+  const ok = checks.every((check) => !check.critical || check.ok);
+  if (ctx.out.json) ctx.out.data({ ok, checks, logPath: ctx.paths.logFile });
+  else {
+    ctx.out.heading("Morrow doctor");
+    ctx.out.table(["check", "status", "detail"], checks.map((check) => [check.name, check.ok ? ctx.out.green("ok") : ctx.out.red("fail"), check.detail]));
+    ctx.out.info(`Logs: ${ctx.paths.logFile}`);
+  }
+  return ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
+}
+
+async function onboard(ctx: Context): Promise<number> {
+  await ensureRunning(ctx);
+  const [health, projects, providers, models, presets] = await Promise.all([ctx.api().health(), ctx.api().listProjects(), ctx.api().listProviders(), ctx.api().listModels(), ctx.api().listPresets()]);
+  const summary = { service: health.service, projects: projects.length, configuredProviders: providers.filter((provider) => provider.configured).map((provider) => provider.id), availableModels: models.filter((model) => model.available).map((model) => model.model.id), availablePresets: presets.filter((preset) => preset.available).map((preset) => preset.preset.id) };
+  if (ctx.out.json) ctx.out.data(summary);
+  else {
+    ctx.out.heading("Morrow onboarding");
+    ctx.out.print("Morrow keeps data local, uses only configured providers, and exposes read-only tools with evidence.");
+    ctx.out.keyValue([["projects", String(summary.projects)], ["configured providers", summary.configuredProviders.join(", ") || "none"], ["available models", String(summary.availableModels.length)], ["available presets", summary.availablePresets.join(", ") || "none"]]);
+    ctx.out.print("Next: morrow projects add .; morrow providers configure <provider>; morrow models select; morrow presets select; morrow chat");
+  }
+  return EXIT.OK;
+}
+
+async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
+async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
+async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }
+
+async function configCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
+  const scope = flagString(ctx.flags, "scope") === "project" ? "project" : "user";
+  if (!sub || sub === "list") { const values = ctx.config.flat(); if (ctx.out.json) ctx.out.data(values); else ctx.out.table(["key", "value", "source"], values.map((value) => [value.key, value.value, value.source])); return EXIT.OK; }
+  if (sub === "path") { const paths = { user: ctx.paths.userConfigFile, project: ctx.paths.projectConfigFile }; if (ctx.out.json) ctx.out.data(paths); else ctx.out.keyValue([["user", paths.user], ["project", paths.project ?? "not in project"]]); return EXIT.OK; }
+  const key = args[0];
+  if (!key) throw usageError(`Usage: morrow config ${sub} <key>${sub === "set" ? " <value>" : ""}`);
+  if (sub === "get") { const value = ctx.config.get(key); if (value === undefined) throw new CliError(`Config key is not set: ${key}`, { exitCode: EXIT.NOT_FOUND }); if (ctx.out.json) ctx.out.data({ key, value }); else ctx.out.print(String(value)); return EXIT.OK; }
+  if (sub === "set") { const value = args.slice(1).join(" ") || flagString(ctx.flags, "value"); if (!value) throw usageError("Usage: morrow config set <key> <value>"); ctx.config.set(key, value, scope); if (ctx.out.json) ctx.out.data({ key, value, scope }); else ctx.out.success(`Set ${key}.`); return EXIT.OK; }
+  if (sub === "unset") { ctx.config.unset(key, scope); if (ctx.out.json) ctx.out.data({ key, unset: true, scope }); else ctx.out.success(`Unset ${key}.`); return EXIT.OK; }
+  throw usageError(`Unknown config subcommand: ${sub}`, "Try: list, get, set, unset, path");
+}
