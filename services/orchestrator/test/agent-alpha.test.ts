@@ -220,6 +220,7 @@ describe("Agent Alpha", () => {
       });
 
       writeFileSync(join(tempDir, "readme.md"), "Morrow Architecture");
+      writeFileSync(join(tempDir, "config.ts"), "export const product = 'Morrow';\n");
 
       const conversation = convs.createConversation({
         id: "c1",
@@ -266,8 +267,14 @@ describe("Agent Alpha", () => {
               type: "tool_call",
               toolCalls: [
                 {
-                  id: "call-1",
+                  id: "search-call",
                   index: 0,
+                  type: "function",
+                  function: { name: "search_text", arguments: JSON.stringify({ query: "Morrow" }) }
+                },
+                {
+                  id: "call-1",
+                  index: 1,
                   type: "function",
                   function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) }
                 }
@@ -311,9 +318,9 @@ describe("Agent Alpha", () => {
 
       // Assert tool calls and evidence are logged
       const toolCalls = convs.listToolCallsForMessage("msg-assistant");
-      expect(toolCalls.length).toBe(1);
-      expect(toolCalls[0]?.toolName).toBe("read_file");
-      expect(toolCalls[0]?.status).toBe("completed");
+      expect(toolCalls).toHaveLength(2);
+      expect(toolCalls.map((call) => call.toolName)).toEqual(["search_text", "read_file"]);
+      expect(toolCalls.every((call) => call.status === "completed")).toBe(true);
 
       const evidence = taskRecordsRepository(db).listEvidence("task-1");
       expect(evidence.length).toBe(1);

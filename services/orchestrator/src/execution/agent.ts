@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
+import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
+import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js";
 import { projectRepository } from "../repositories/projects.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
@@ -183,6 +185,48 @@ export async function executeAgentChatTask({
           path: { type: "string", description: "Relative file path (e.g. 'package.json')" }
         },
         required: ["path"]
+      }
+    },
+    {
+      name: "search_text",
+      description: "Searches safe text files for a literal query. Secret, binary, and oversized files are skipped; output is bounded.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Literal text to find" },
+          path: { type: "string", description: "Optional relative directory" }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "search_files",
+      description: "Finds safe workspace file paths containing a literal query. Secret paths are skipped and output is bounded.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Literal filename text to find" },
+          path: { type: "string", description: "Optional relative directory" }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "git_status",
+      description: "Inspects concise Git status in the current project without changing Git state.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      name: "git_diff",
+      description: "Inspects current unstaged unified diffs for safe repository paths without changing Git state.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      name: "git_log",
+      description: "Inspects recent Git commit metadata without changing Git state.",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number", description: "Maximum recent commits, up to 20" } }
       }
     }
   ];
@@ -449,12 +493,59 @@ You are forbidden from writing files, executing shell commands, or accessing ext
             });
 
             event("evidence.persisted", { path: fileData.path, size: fileData.size });
+          } else if (tc.name === "search_text") {
+            if (typeof args.query !== "string") throw new Error("Missing required argument: query");
+            const result = searchText(project.workspacePath, args.query, {
+              ...(typeof args.path === "string" ? { path: args.path } : {}),
+              caseSensitive: args.caseSensitive === true,
+              maxResults: 100,
+              maxFiles: 500,
+              maxFileBytes: Math.min(fileBytesLimit, 64 * 1024),
+              timeoutMs: 1_000,
+              ...(abortSignal ? { signal: abortSignal } : {}),
+            });
+            resultStr = JSON.stringify(result);
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "search_text", query: args.query, resultCount: result.matches.length, truncated: result.truncatedByCount || result.truncatedByTimeout });
+          } else if (tc.name === "search_files") {
+            if (typeof args.query !== "string") throw new Error("Missing required argument: query");
+            const result = searchFiles(project.workspacePath, args.query, {
+              ...(typeof args.path === "string" ? { path: args.path } : {}),
+              caseSensitive: args.caseSensitive === true,
+              maxResults: 100,
+              maxFiles: 500,
+              timeoutMs: 1_000,
+              ...(abortSignal ? { signal: abortSignal } : {}),
+            });
+            resultStr = JSON.stringify(result);
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "search_files", query: args.query, resultCount: result.matches.length, truncated: result.truncatedByCount || result.truncatedByTimeout });
+          } else if (tc.name === "git_status") {
+            const result = await gitStatus(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+            resultStr = JSON.stringify(result);
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "git_status", resultCount: result.lines.length, truncated: result.truncated || result.timedOut });
+          } else if (tc.name === "git_diff") {
+            const result = await gitDiff(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+            resultStr = JSON.stringify(result);
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "git_diff", resultCount: result.files.length, truncated: result.truncated || result.timedOut });
+          } else if (tc.name === "git_log") {
+            const result = await gitLog(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, limit: typeof args.limit === "number" ? Math.min(Math.max(Math.floor(args.limit), 1), 20) : 20, ...(abortSignal ? { signal: abortSignal } : {}) });
+            resultStr = JSON.stringify(result);
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "git_log", resultCount: result.commits.length, truncated: result.truncated || result.timedOut });
           } else {
             throw new Error(`Forbidden tool: ${tc.name}`);
           }
         } catch (err: any) {
           isSuccess = false;
-          errorType = err instanceof SafeReadError ? "safe_read_rejected" : "tool_failed";
+          errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
           errorMessage = err.message || "Unknown error";
           resultStr = JSON.stringify({ error: errorMessage });
           event("task.failed", { toolName: tc.name, message: errorMessage });

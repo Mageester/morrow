@@ -839,6 +839,11 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
               <tr><td>inspect_workspace</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>list_files</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>read_file</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>search_text</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>search_files</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_status</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_diff</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_log</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>write_file</td><td>requires approval, diff, rollback</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
               <tr><td>run_command</td><td>requires approval, sandbox</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
             </tbody></table>

@@ -17,6 +17,15 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties", ""
 ]);
 
+function isDeniedName(name: string): boolean {
+  const value = name.toLowerCase();
+  return value === ".morrow" || value.startsWith(".env") || value.includes("secret") || value.includes("credential") || value.includes("password") || value.includes("key") || value.includes("token") || value.startsWith("id_");
+}
+
+export function isDeniedWorkspacePath(requested: string): boolean {
+  return requested.split(/[\\/]+/).filter(Boolean).some(isDeniedName);
+}
+
 export function validateSafeReadPath(root: string, requested: string): string {
   if (isAbsolute(requested)) {
     throw new SafeReadError("Absolute paths are rejected");
@@ -24,6 +33,9 @@ export function validateSafeReadPath(root: string, requested: string): string {
   const parts = requested.split(/[\\/]+/);
   if (parts.includes("..") || parts.includes(".morrow")) {
     throw new SafeReadError("Traversal and .morrow directory are rejected");
+  }
+  if (isDeniedWorkspacePath(requested)) {
+    throw new SafeReadError("Access to secret or credential files is forbidden");
   }
 
   // Resolve candidate absolute path
@@ -50,18 +62,6 @@ export function validateSafeReadPath(root: string, requested: string): string {
     throw new SafeReadError("Invalid path");
   }
   const nameOnly = lastPart.toLowerCase();
-  
-  if (
-    nameOnly.startsWith(".env") ||
-    nameOnly.includes("secret") ||
-    nameOnly.includes("credential") ||
-    nameOnly.includes("password") ||
-    nameOnly.includes("key") ||
-    nameOnly.includes("token") ||
-    nameOnly.startsWith("id_") // e.g. id_rsa
-  ) {
-    throw new SafeReadError("Access to secret or credential files is forbidden");
-  }
 
   // Enforce supported text extensions
   const ext = extname(nameOnly);
