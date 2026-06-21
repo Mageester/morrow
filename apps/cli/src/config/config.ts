@@ -28,6 +28,7 @@ export interface MorrowConfig {
     provider?: string;
     model?: string;
     useMemory?: boolean;
+    mode?: string;
   };
   service?: {
     host?: string;
@@ -37,6 +38,11 @@ export interface MorrowConfig {
   };
   ui?: {
     color?: boolean;
+    unicode?: boolean;
+  };
+  /** Local-only personalization (stored under MORROW_HOME, never a secret). */
+  user?: {
+    name?: string;
   };
   presets?: CustomPreset[];
 }
@@ -47,11 +53,14 @@ const ALLOWED_KEYS = new Set([
   "defaults.provider",
   "defaults.model",
   "defaults.useMemory",
+  "defaults.mode",
   "service.host",
   "service.port",
   "service.dbPath",
   "service.baseUrl",
   "ui.color",
+  "ui.unicode",
+  "user.name",
 ]);
 
 function readJson(path: string): MorrowConfig {
@@ -68,6 +77,7 @@ function deepMerge(base: MorrowConfig, over: MorrowConfig): MorrowConfig {
     defaults: { ...base.defaults, ...over.defaults },
     service: { ...base.service, ...over.service },
     ui: { ...base.ui, ...over.ui },
+    user: { ...base.user, ...over.user },
     ...((over.presets ?? base.presets) !== undefined ? { presets: over.presets ?? base.presets } : {}),
   };
 }
@@ -178,10 +188,14 @@ function coerce(key: string, value: string): unknown {
     }
     return n;
   }
-  if (key === "ui.color" || key === "defaults.useMemory") {
+  if (key === "ui.color" || key === "ui.unicode" || key === "defaults.useMemory") {
     if (value === "true") return true;
     if (value === "false") return false;
     throw new CliError(`${key} must be "true" or "false" (got "${value}")`, { code: "CONFIG_INVALID_VALUE", exitCode: EXIT.USAGE });
+  }
+  if (key === "defaults.mode") {
+    if (["agent", "read-only", "plan-only"].includes(value)) return value;
+    throw new CliError(`defaults.mode must be agent | read-only | plan-only (got "${value}")`, { code: "CONFIG_INVALID_VALUE", exitCode: EXIT.USAGE });
   }
   return value;
 }

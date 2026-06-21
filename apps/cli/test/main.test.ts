@@ -10,15 +10,18 @@ describe("morrow root command", () => {
     stderr.mockClear();
   });
 
-  it("prints only implemented command groups in help", async () => {
+  it("prints a product-oriented help surface", async () => {
     await expect(run(["--help"])).resolves.toBe(0);
     const help = stdout.mock.calls.map(([value]) => String(value)).join("");
-    expect(help).toContain("morrow run");
-    expect(help).toContain("morrow sessions");
-    expect(help).toContain("morrow session show");
-    expect(help).toContain("morrow status");
-    expect(help).toContain("morrow projects list");
-    expect(help).toContain("morrow presets list");
+    // Primary product commands lead.
+    expect(help).toContain("morrow ask");
+    expect(help).toContain("morrow plan");
+    expect(help).toContain("morrow fix");
+    expect(help).toContain("morrow resume");
+    expect(help).toContain("morrow onboard");
+    expect(help).toContain("morrow auth");
+    // Advanced/admin commands are de-emphasized but discoverable.
+    expect(help).toContain("projects");
     expect(help).not.toContain("completion");
   });
 

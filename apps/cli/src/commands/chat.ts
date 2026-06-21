@@ -7,6 +7,23 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
+import { compactWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
+import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
+
+/** Capability mode: flag > config default > agent (the primary product). */
+export function resolveMode(ctx: Context): AgentMode {
+  if (flagBool(ctx.flags, "plan")) return "plan-only";
+  if (flagBool(ctx.flags, "read-only") || flagBool(ctx.flags, "inspect")) return "read-only";
+  const configured = ctx.config.get("defaults.mode") as AgentMode | undefined;
+  return configured ?? "agent";
+}
+
+/** Whether to use Unicode glyphs: config > MORROW_ASCII env > on by default. */
+export function resolveUnicode(ctx: Context): boolean {
+  const cfg = ctx.config.get("ui.unicode") as boolean | undefined;
+  if (cfg !== undefined) return cfg;
+  return process.env.MORROW_ASCII !== "1";
+}
 
 interface SessionState {
   preset: string;
@@ -26,7 +43,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
-    mode: flagBool(ctx.flags, "plan") ? "plan-only" : "read-only",
+    mode: resolveMode(ctx),
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
   };
 
@@ -100,31 +117,36 @@ async function runOneShot(ctx: Context, api: MorrowApi, conversation: Conversati
 async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial: Conversation, session: SessionState): Promise<number> {
   let conversation = initial;
   const out = ctx.out;
+  const unicode = resolveUnicode(ctx);
   const project = await api.getProject(projectId);
   const providerStatus = await api.providerStatus().catch(() => null);
-  const modelLine = session.model
-    ? `${session.provider ?? "auto"} / ${session.model}`
-    : session.provider
-      ? `${session.provider} / auto`
-      : providerStatus?.configured
-        ? `${providerStatus.provider} / ${providerStatus.model || "auto"}`
-        : "auto / auto";
 
-  out.print(out.bold("MORROW"));
-  out.print(out.gray("Private intelligence, built around you."));
+  const providerName = session.provider ?? providerStatus?.provider ?? "auto";
+  const modelName = session.model ?? providerStatus?.model ?? "auto";
+  const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
+  const git = gitSummary(project.workspacePath);
+  const name = (ctx.config.get("user.name") as string | undefined)?.trim();
+  const history = await api.listMessages(conversation.id);
+  const resuming = history.length > 0;
+
+  out.print();
+  out.print("  " + compactWordmark(out, unicode));
+  out.print();
+  out.print("  " + greeting(new Date()) + (name ? `, ${name}.` : "."));
+  out.print();
   out.keyValue([
-    ["Project", project.workspacePath],
-    ["Model", modelLine],
-    ["Preset", session.preset],
-    ["Mode", session.mode],
-    ["Memory", session.useMemory ? "project enabled" : "disabled"],
+    ["Project", `${projectName}  ${out.gray(project.workspacePath)}`],
+    ["Branch", gitSummaryText(git)],
+    ["Model", `${modelName}  ${out.gray("·")}  ${privacyLabel(providerName)}`],
+    ["Mode", modeLabel(session.mode)],
+    ["Memory", session.useMemory ? "project context on" : "off"],
+    ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
-  out.print(out.gray(`Session ${conversation.title} (${shortId(conversation.id)})`));
-  out.print(out.gray("Type message, or /help for commands. /exit quits."));
+  out.print();
+  out.print("  " + out.gray("What should we work on?  ") + out.gray("(/help for commands, /exit to quit)"));
 
   // Replay existing history for context continuity.
-  const history = await api.listMessages(conversation.id);
-  if (history.length > 0) {
+  if (resuming) {
     out.print();
     for (const m of history.slice(-6)) renderHistoryMessage(ctx, m.role, m.content, m.streamingState);
   }
@@ -249,15 +271,16 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     }
     case "mode": {
       if (!arg) {
-        out.info(`Mode: ${session.mode}`);
+        out.info(`Mode: ${modeLabel(session.mode)}`);
         return {};
       }
-      if (arg !== "read-only" && arg !== "plan-only") {
-        out.warn("Usage: /mode [read-only|plan-only]");
+      const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
+      if (next !== "agent" && next !== "read-only" && next !== "plan-only") {
+        out.warn("Usage: /mode [agent|inspect|plan]");
         return {};
       }
-      session.mode = arg;
-      out.success(`Mode set to ${arg}.`);
+      session.mode = next as AgentMode;
+      out.success(`Mode set to ${modeLabel(session.mode)}.`);
       return {};
     }
     case "tools": {
@@ -287,7 +310,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         ["preset", session.preset],
         ["provider", session.provider ?? "auto"],
         ["model", session.model ?? "auto"],
-        ["mode", session.mode],
+        ["mode", modeLabel(session.mode)],
         ["memory", session.useMemory ? "on" : "off"],
       ]);
       return {};
@@ -450,7 +473,7 @@ function printReplHelp(ctx: Context) {
     ["/provider [id]", "show providers or set the active provider"],
     ["/model [id]", "show models or set the active model"],
     ["/preset [id]", "show presets or set the active preset"],
-    ["/mode [kind]", "show or set read-only vs plan-only"],
+    ["/mode [kind]", "show or set agent | inspect | plan"],
     ["/tools", "list available read-only tools"],
     ["/permissions", "show the permission profile"],
     ["/status", "show service and session status"],

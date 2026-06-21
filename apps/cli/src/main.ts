@@ -18,7 +18,7 @@ export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory"]);
 
 type Invocation =
   | { kind: "interactive" }
@@ -55,7 +55,19 @@ export async function run(argv: string[]): Promise<number> {
         break;
     }
     const { root, sub, args = [] } = invocation;
+    // Primary product surface: ask (inspect), fix (agent), plan (plan-only),
+    // new (fresh agent session). A trailing prompt makes them one-shot.
+    const promptOf = () => [sub, ...args].filter((v): v is string => Boolean(v)).join(" ");
+    const chatWith = (extra: Record<string, string | boolean>) =>
+      chatCommand(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
+      case "ask": { const p = promptOf(); return chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
+      case "fix": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
+      case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
+      case "new": return chatWith({ new: true });
+      case "model": return modelsCommand(ctx, sub ?? "", args);
+      case "settings": return configCommand(ctx, sub ?? "list", args);
+      case "auth": return providersCommand(ctx, authSub(sub), args);
       case "status": return status(ctx);
       case "doctor": return doctor(ctx);
       case "onboard": return onboard(ctx);
@@ -95,9 +107,42 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
+/** Map the friendly `morrow auth …` verbs onto the providers command. */
+function authSub(sub: string | undefined): string {
+  if (sub === "login") return "configure";
+  if (sub === "logout") return "logout";
+  if (sub === "status" || sub === undefined) return "status";
+  return sub;
+}
+
 function printVersion(out: Output): number { if (out.json) out.data({ version: VERSION }); else out.print(VERSION); return EXIT.OK; }
 function printHelp(out: Output): number {
-  const help = `Morrow CLI ${VERSION}\n\nUsage:\n  morrow\n  morrow "Explain this repository"\n  morrow --resume [id]\n  morrow run "Return a JSON repository overview" --json\n  morrow <command> [options]\n\nCommands:\n  morrow status | morrow doctor | morrow onboard\n  morrow serve [--detach] | morrow stop | morrow restart | morrow logs\n  morrow config list|get|set|unset|path\n  morrow projects list|add|select|inspect|remove | morrow init [path]\n  morrow chat [--new|--resume <id>|--message <prompt>]\n  morrow conversations list|show|rename|archive|export\n  morrow sessions | morrow resume [id]\n  morrow session show|rename|archive|export <id>\n  morrow providers list|status|test|configure\n  morrow models list|info|select\n  morrow presets list|show|select\n  morrow tools list|info | morrow permissions show | morrow audit list|show\n  morrow memory list|add|remove|status\n\nGlobal options: --json --quiet --no-color --project --provider --model --preset --timeout --resume --plan --read-only`;
+  const b = (s: string) => out.bold(s);
+  const g = (s: string) => out.gray(s);
+  const help = [
+    `${b("MORROW")} ${g("· private intelligence, built around you")}`,
+    "",
+    b("Start here"),
+    `  morrow                       ${g("open an interactive agent session")}`,
+    `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
+    `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
+    `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow resume                ${g("resume the most recent session")}`,
+    `  morrow new                   ${g("start a fresh session")}`,
+    "",
+    b("Setup"),
+    `  morrow onboard               ${g("guided first-run setup")}`,
+    `  morrow auth login|status     ${g("connect a model provider")}`,
+    `  morrow model                 ${g("choose a model")}`,
+    `  morrow settings              ${g("view or change preferences")}`,
+    `  morrow doctor                ${g("check your environment")}`,
+    "",
+    b("In a session"),
+    `  ${g("/help /mode /model /diff /undo /status /memory /permissions /resume /exit")}`,
+    "",
+    g("More: morrow projects | conversations | presets | tools | audit | serve | logs"),
+    g("Options: --json --no-color --project --provider --model --preset --plan --read-only"),
+  ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;
 }
