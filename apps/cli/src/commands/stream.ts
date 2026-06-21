@@ -3,6 +3,7 @@ import type { Context } from "../cli/context.js";
 import type { MorrowApi, TaskAggregate } from "../client/api.js";
 import { streamTaskEvents } from "../client/sse.js";
 import { EXIT } from "../cli/errors.js";
+import { ask } from "./common.js";
 
 export interface StreamResult {
   status: string;
@@ -96,6 +97,109 @@ export async function streamChatTask(
               }
               out.diag(out.gray(`  ◦ read ${payload.path} (${payload.size ?? "?"} bytes) — evidence`));
             }
+          }
+          break;
+        }
+        case "approval.requested": {
+          if (wroteText) {
+            out.write("\n");
+            wroteText = false;
+          }
+          const payload = event.payload as any;
+          const approvalId = payload.approvalId;
+          const kind = payload.kind;
+
+          try {
+            const approval = await api.getApproval(approvalId);
+
+            if (kind === "command") {
+              const details = approval.details as any;
+              out.print();
+              out.heading("Command Approval Request");
+              out.keyValue([
+                ["Command", `${details.executable} ${details.args.join(" ")}`],
+                ["Cwd", details.cwd || "(workspace root)"],
+                ["Purpose", details.purpose || "(not specified)"],
+                ["Risk", details.risk],
+              ]);
+              out.print();
+
+              let decision: string | null = null;
+              while (!decision) {
+                const answer = (await ask("Approve command? [y]es / [n]o / [t]rust pattern: ")).trim().toLowerCase();
+                if (answer === "y" || answer === "yes") {
+                  decision = "allow_once";
+                } else if (answer === "n" || answer === "no") {
+                  decision = "deny";
+                } else if (answer === "t" || answer === "trust") {
+                  decision = "trust_project";
+                }
+              }
+
+              const trustPattern = decision === "trust_project" ? details.pattern : undefined;
+
+              await api.resolveApproval(approvalId, {
+                projectId: approval.projectId,
+                decision: decision as any,
+                trustPattern,
+              });
+
+              if (decision === "deny") {
+                out.error("Command denied.");
+              } else {
+                out.success(`Command approved (${decision}). Resuming task…`);
+              }
+            } else if (kind === "change_set") {
+              const details = approval.details as any;
+              // The exact proposed diff lives in the approval details; the
+              // /diff endpoint only reports *applied* change sets, so we render
+              // straight from the pending approval here.
+              const proposedDiff: string | undefined = typeof details.diff === "string" ? details.diff : undefined;
+              out.print();
+              out.heading("Patch Proposal Approval Request");
+              out.print(`${out.bold("Explanation:")} ${details.explanation}`);
+              out.print(`${out.bold("Files to change:")} ${details.files.join(", ")}`);
+              out.print();
+              out.print(out.bold("Unified Diff:"));
+              if (proposedDiff) {
+                const diffLines = proposedDiff.split("\n");
+                for (const line of diffLines) {
+                  if (line.startsWith("+") && !line.startsWith("+++")) {
+                    out.print(out.green(line));
+                  } else if (line.startsWith("-") && !line.startsWith("---")) {
+                    out.print(out.red(line));
+                  } else {
+                    out.print(line);
+                  }
+                }
+              } else {
+                out.print("(no diff returned)");
+              }
+              out.print();
+
+              let decision: string | null = null;
+              while (!decision) {
+                const answer = (await ask("Apply this patch? [y]es / [n]o: ")).trim().toLowerCase();
+                if (answer === "y" || answer === "yes") {
+                  decision = "allow_once";
+                } else if (answer === "n" || answer === "no") {
+                  decision = "deny";
+                }
+              }
+
+              await api.resolveApproval(approvalId, {
+                projectId: approval.projectId,
+                decision: decision as any,
+              });
+
+              if (decision === "deny") {
+                out.error("Patch denied.");
+              } else {
+                out.success("Patch approved. Applying changes and resuming task…");
+              }
+            }
+          } catch (err: any) {
+            out.error(`Error resolving approval: ${err.message || err}`);
           }
           break;
         }

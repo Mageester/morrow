@@ -128,11 +128,16 @@ export class MorrowApi {
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
+  getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
+  undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
 
   // ── Approvals and project-scoped command trust ────────────────────────────
   listApprovals(projectId: string, status?: "pending" | "approved" | "denied" | "cancelled") {
     const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
     return this.req<Approval[]>("GET", `/api/projects/${projectId}/approvals${suffix}`);
+  }
+  getApproval(id: string) {
+    return this.req<Approval>("GET", `/api/approvals/${id}`);
   }
   resolveApproval(id: string, input: { projectId: string; decision: ApprovalDecision; trustPattern?: string; note?: string }) {
     return this.req<Approval>("POST", `/api/approvals/${id}/resolve`, input);

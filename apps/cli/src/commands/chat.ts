@@ -307,6 +307,86 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "diff": {
+      const msgs = await api.listMessages(conversation.id);
+      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
+      taskIds.reverse();
+
+      let latestDiff: any = null;
+      let latestTaskId: string | null = null;
+
+      for (const tid of taskIds) {
+        const diffData = await api.getTaskDiff(tid);
+        if (diffData && diffData.diff) {
+          latestDiff = diffData;
+          latestTaskId = tid;
+          break;
+        }
+      }
+
+      if (!latestDiff) {
+        out.info("No Morrow-owned changes exist for this session.");
+        return {};
+      }
+
+      out.print();
+      out.heading(`Latest applied change (Task ${shortId(latestTaskId!)}, state: ${latestDiff.state})`);
+      out.print(`${out.bold("Files changed:")} ${latestDiff.files.join(", ")}`);
+      out.print();
+      out.print(out.bold("Unified Diff:"));
+      const diffLines = latestDiff.diff.split("\n");
+      for (const line of diffLines) {
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+          out.print(out.green(line));
+        } else if (line.startsWith("-") && !line.startsWith("---")) {
+          out.print(out.red(line));
+        } else {
+          out.print(line);
+        }
+      }
+      return {};
+    }
+    case "undo": {
+      const msgs = await api.listMessages(conversation.id);
+      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
+      taskIds.reverse();
+
+      let targetTaskId: string | null = null;
+      let targetDiff: any = null;
+
+      for (const tid of taskIds) {
+        const diffData = await api.getTaskDiff(tid);
+        if (diffData && diffData.diff && diffData.state === "applied") {
+          targetTaskId = tid;
+          targetDiff = diffData;
+          break;
+        }
+      }
+
+      if (!targetTaskId) {
+        out.info("No applicable Morrow-owned change set found to undo.");
+        return {};
+      }
+
+      out.print();
+      out.heading("Rollback Morrow-Owned Change Set");
+      out.print(`${out.bold("Task:")} ${shortId(targetTaskId)}`);
+      out.print(`${out.bold("Files to restore:")} ${targetDiff.files.join(", ")}`);
+      out.print();
+
+      const answer = (await ask("Confirm targeted rollback of these changes? [y/N]: ")).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") {
+        try {
+          const res = await api.undoTask(targetTaskId);
+          out.success(`Successfully rolled back changes. Restored/removed files: ${res.restoredFiles.join(", ")}`);
+        } catch (e: any) {
+          out.error(`Rollback failed: ${e.message}`);
+        }
+      } else {
+        out.info("Rollback cancelled.");
+      }
+      return {};
+    }
     case "cancel":
       out.info("Nothing is currently streaming (cancel works during a response with Ctrl+C).");
       return {};
@@ -376,6 +456,8 @@ function printReplHelp(ctx: Context) {
     ["/status", "show service and session status"],
     ["/history", "show full conversation history"],
     ["/inspect", "run a safe workspace inspection"],
+    ["/diff", "show the current session's latest Morrow-owned applied change"],
+    ["/undo", "rollback the latest Morrow-owned change in the session"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],
