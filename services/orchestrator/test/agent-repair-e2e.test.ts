@@ -128,6 +128,11 @@ describe("Agent Repair E2E Vertical Slice", () => {
     const convs = conversationsRepository(db);
     const { project, task } = seedAgentTask(db, tempWorkspace);
 
+    // An unrelated dirty file that the workflow must never touch.
+    const unrelated = join(tempWorkspace, "src", "unrelated.mjs");
+    const unrelatedContent = "export const untouched = true; // dirty\n";
+    writeFileSync(unrelated, unrelatedContent, "utf8");
+
     const provider = new MockProvider({
       delayMs: 5,
       chunks: [
@@ -202,7 +207,11 @@ describe("Agent Repair E2E Vertical Slice", () => {
     // (17) /undo restores the original file.
     const undo = (await app.inject({ method: "POST", url: `/api/tasks/${task.id}/undo` })).json();
     expect(undo.status).toBe("success");
+    expect(undo.restoredFiles).toEqual(["src/math.mjs"]);
     expect(readFileSync(join(tempWorkspace, "src", "math.mjs"), "utf8")).toContain("return a - b;");
+
+    // (16) The unrelated dirty file was never read, written, or restored.
+    expect(readFileSync(unrelated, "utf8")).toBe(unrelatedContent);
 
     // (18) The original (failing) test fails again after undo.
     let restoredFails = false;

@@ -94,6 +94,11 @@ Binary files a/img.png and b/img.png differ
       validatePatchPaths("C:\\workspace", secretPatches, ["*secret*"]);
     }).toThrow(/denied path pattern/);
   });
+
+  it("rejects file creation and deletion patches", () => {
+    expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "/dev/null", newPath: "new.txt", chunks: [] }], [])).toThrow(/creation is not supported/i);
+    expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "gone.txt", newPath: "/dev/null", chunks: [] }], [])).toThrow(/deletion is not supported/i);
+  });
 });
 
 describe("assertContainedRealPath (symlink-aware containment)", () => {

@@ -158,6 +158,14 @@ export function validatePatchPaths(
   };
 
   for (const file of files) {
+    // File creation (--- /dev/null) and deletion (+++ /dev/null) are not yet
+    // implemented or tested; reject them rather than half-applying.
+    if (file.oldPath === "/dev/null") {
+      throw new Error("File creation is not supported yet");
+    }
+    if (file.newPath === "/dev/null") {
+      throw new Error("File deletion is not supported yet");
+    }
     check(file.oldPath);
     check(file.newPath);
   }

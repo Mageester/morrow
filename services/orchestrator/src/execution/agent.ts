@@ -16,7 +16,7 @@ import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
-import { classifyCommand } from "../tools/command-policy.js";
+import { classifyCommand, canonicalCommandTrustKey } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath } from "../tools/diff-applier.js";
@@ -88,8 +88,9 @@ export async function executeAgentChatTask({
   if (!records.getAgentState(taskId)) transitionAgentState("idle");
   transitionAgentState("understanding");
 
-  // Define plan
-  const agentMode: AgentMode = routingRepo.get(taskId)?.decision.mode ?? "read-only";
+  // Define plan. Default to the full agent capability for an interactive
+  // session; ask/plan flows downgrade explicitly via the routing decision.
+  const agentMode: AgentMode = routingRepo.get(taskId)?.decision.mode ?? "agent";
   const plan = agentMode === "plan-only"
     ? [
         { id: randomUUID(), position: 1, title: "Understand Request", description: "Interpret the user request and decide what plan would best address it.", status: "pending" as const },
@@ -111,7 +112,9 @@ export async function executeAgentChatTask({
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
   const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
   const useMemory = routing?.useMemory ?? true;
-  const activeToolProfile: ToolProfile = routing?.decision.toolProfile ?? preset.toolProfile;
+  // Mode is the single source of truth for which tools are exposed. plan-only
+  // gets no tools, read-only (inspect) gets read-only tools, agent gets all.
+  const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
   const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
@@ -153,15 +156,18 @@ export async function executeAgentChatTask({
 
   const isLocalProvider = providerCapabilities(providerType)?.local ?? false;
 
-  // Enforce honest execution disclosure. Cost is reported as unknown for hosted
-  // providers because Morrow does not meter spend; local/mock are genuinely $0.
+  // Enforce honest execution disclosure. An agent-capable session can run
+  // approved commands and apply approved patches, so it must NOT report
+  // read-only / no-shell. Cost is reported as unknown for hosted providers
+  // because Morrow does not meter spend; local/mock are genuinely $0.
+  const canExecute = activeToolProfile === "agent";
   records.upsertDisclosure({
     taskId,
     executionMode: "agent-interactive",
     provider: providerType,
     networkAccess: providerType === "mock" ? "disabled" : "enabled",
-    filesystemAccess: "read-only",
-    shellExecution: false,
+    filesystemAccess: canExecute ? "workspace-write" : "read-only",
+    shellExecution: canExecute,
     modelInvocation: true,
     workspaceScope: workspacePath,
     estimatedCostUsd: providerType === "mock" || isLocalProvider ? "$0.00" : "unknown (not metered)",
@@ -274,6 +280,15 @@ export async function executeAgentChatTask({
       }
     }
   ];
+
+  // The exposed tool set is dictated by the mode. Inspect (read-only) never
+  // sees run_command/propose_patch; plan-only sees nothing; only agent mode
+  // exposes execution and write tools.
+  const READ_ONLY_TOOL_NAMES = new Set([
+    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log",
+  ]);
+  const exposedTools: ToolDefinition[] =
+    activeToolProfile === "none" ? [] : activeToolProfile === "agent" ? tools : tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name));
 
   // Load conversation messages before this task's assistant message
   const chatMessages: ChatMessage[] = [];
@@ -505,14 +520,14 @@ You must run test/verification commands using run_command, and propose file modi
             errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
             errorMessage = err.message || "Unknown error";
             resultStr = JSON.stringify({ error: errorMessage });
-            event("task.failed", { toolName: continuation.toolName, message: errorMessage });
+            event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
           }
         } else {
           isSuccess = false;
           errorType = "tool_failed";
           errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
           resultStr = JSON.stringify({ error: errorMessage });
-          event("task.failed", { toolName: continuation.toolName, message: errorMessage });
+          event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
         }
 
         convs.upsertToolCall({
@@ -616,7 +631,7 @@ You must run test/verification commands using run_command, and propose file modi
     try {
       const stream = activeProvider.streamChat(chatMessages, {
         ...(abortSignal ? { abortSignal } : {}),
-        tools: activeToolProfile === "none" ? [] : tools,
+        tools: exposedTools,
         model: resolvedModel || assistantMessageRow.model || undefined,
         timeoutMs: preset.timeoutMs,
         temperature: preset.temperature,
@@ -736,6 +751,13 @@ You must run test/verification commands using run_command, and propose file modi
             args = JSON.parse(tc.arguments || "{}");
           } catch {
             throw new Error("Invalid tool arguments format");
+          }
+
+          // Defense in depth: execution/write tools are only ever permitted in
+          // agent mode, even if a provider hallucinates a call the mode never
+          // exposed.
+          if ((tc.name === "run_command" || tc.name === "propose_patch") && activeToolProfile !== "agent") {
+            throw new Error(`Tool "${tc.name}" is not permitted in ${agentMode} mode`);
           }
 
           if (tc.name === "inspect_workspace") {
@@ -869,8 +891,10 @@ You must run test/verification commands using run_command, and propose file modi
             }
 
             if (!reuseApproval) {
-              // Not yet approved. Let's check project command trust!
-              const isTrusted = approvals.getCommandTrust(project.id, policy.pattern) !== undefined;
+              // Not yet approved. Check project command trust — bound to the
+              // exact (executable, argv, cwd), not the broad risk pattern.
+              const trustKey = canonicalCommandTrustKey(exec, cmdArgs, cmdCwd);
+              const isTrusted = approvals.getCommandTrust(project.id, trustKey) !== undefined;
               if (isTrusted) {
                 isApproved = true;
               } else {
@@ -945,7 +969,7 @@ You must run test/verification commands using run_command, and propose file modi
             const originalHashes: Record<string, string> = {};
             for (const pf of patchFiles) {
               if (pf.oldPath !== "/dev/null") {
-                const fullPath = resolve(project.workspacePath, pf.oldPath);
+                const fullPath = assertContainedRealPath(project.workspacePath, pf.oldPath);
                 if (existsSync(fullPath)) {
                   const content = readFileSync(fullPath, "utf8");
                   originalHashes[pf.oldPath] = hashString(content);
@@ -959,7 +983,7 @@ You must run test/verification commands using run_command, and propose file modi
 
             // 3. Dry-run verify it applies cleanly
             for (const pf of patchFiles) {
-              const fullPath = resolve(project.workspacePath, pf.oldPath);
+              const fullPath = assertContainedRealPath(project.workspacePath, pf.oldPath);
               let originalContent: string | null = null;
               if (pf.oldPath !== "/dev/null" && existsSync(fullPath)) {
                 originalContent = readFileSync(fullPath, "utf8");
@@ -1055,7 +1079,7 @@ You must run test/verification commands using run_command, and propose file modi
           errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
           errorMessage = err.message || "Unknown error";
           resultStr = JSON.stringify({ error: errorMessage });
-          event("task.failed", { toolName: tc.name, message: errorMessage });
+          event("tool.failed", { toolName: tc.name, message: errorMessage });
         }
 
         // Complete tool call record

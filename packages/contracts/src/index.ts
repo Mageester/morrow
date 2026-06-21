@@ -12,13 +12,13 @@ export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
 export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional()});
-export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
+export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.failed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
 export const CommandTrustSchema=z.object({version:SchemaVersionSchema,projectId:z.string(),pattern:z.string().min(1).max(240),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const TaskEvidenceSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),type:z.literal("file"),path:z.string(),metadata:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
-export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only","workspace-write"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
@@ -104,8 +104,8 @@ export const ModelStatusSchema=z.object({
 // ── Presets and provider routing ─────────────────────────────────────────────
 
 export const PresetIdSchema=z.enum(["best-quality","balanced","fast","cheap","coding","research","private-local"]);
-export const ToolProfileSchema=z.enum(["read-only","none"]);
-export const AgentModeSchema=z.enum(["read-only","plan-only"]);
+export const ToolProfileSchema=z.enum(["read-only","none","agent"]);
+export const AgentModeSchema=z.enum(["read-only","plan-only","agent"]);
 export const PresetPrivacySchema=z.enum(["local-only","prefers-local","cloud"]);
 export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
 export const PresetSchema=z.object({

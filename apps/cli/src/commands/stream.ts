@@ -203,6 +203,15 @@ export async function streamChatTask(
           }
           break;
         }
+        case "tool.failed": {
+          // Non-terminal: a single tool call failed but the agent continues.
+          if (wroteText) { out.write("\n"); wroteText = false; }
+          if (opts.showActivity) {
+            const p = event.payload as any;
+            out.diag(out.gray(`  ◦ ${p.toolName ?? "tool"} failed: ${p.message ?? "unknown error"}`));
+          }
+          break;
+        }
         case "task.failed": {
           if (wroteText) out.write("\n");
           out.error(`Task failed: ${(event.payload as any).message ?? "unknown error"}`);
