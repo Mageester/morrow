@@ -1,15 +1,16 @@
 import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
+export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama"]);
 export const TaskStatusSchema=z.enum(["queued","running","completed","verified","failed","cancelled","interrupted"]);
 export const PlanStepStatusSchema=z.enum(["pending","running","completed","failed","skipped"]);
 export const ProjectSchema=z.object({version:SchemaVersionSchema,id:z.string(),name:z.string().min(1),workspacePath:z.string().min(1),createdAt:z.string().datetime()}).strict();
 export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120),workspacePath:z.string().min(1)});
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
 export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.enum(["Balanced","Fast","Private Local"]).optional()});
+export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional()});
 export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","verification.completed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const TaskEvidenceSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),type:z.literal("file"),path:z.string(),metadata:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
-export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:z.enum(["deterministic-local","mock","openai"]),networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
@@ -28,4 +29,167 @@ export type PlanStepStatus=z.infer<typeof PlanStepStatusSchema>;
 export type StructuredApiError=z.infer<typeof StructuredApiErrorSchema>;
 export type Conversation=z.infer<typeof ConversationSchema>;
 export type ConversationMessage=z.infer<typeof ConversationMessageSchema>;
+
+// ── Provider runtime, capability matrix, and model registry ──────────────────
+
+export const ProviderKindSchema=z.enum(["api-key","local","oauth-disabled","mock"]);
+export const ProviderCapabilitiesSchema=z.object({
+  streaming:z.boolean(),
+  toolCalls:z.boolean(),
+  systemMessages:z.boolean(),
+  vision:z.boolean(),
+  customEndpoint:z.boolean(),
+  local:z.boolean(),
+}).strict();
+export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applicable","unavailable"]);
+export const ProviderStatusSchema=z.object({
+  version:SchemaVersionSchema,
+  id:ProviderIdSchema,
+  label:z.string(),
+  kind:ProviderKindSchema,
+  configured:z.boolean(),
+  available:z.boolean(),
+  endpointType:z.enum(["default","custom"]),
+  endpointHost:z.string().nullable(),
+  authStatus:ProviderAuthStatusSchema,
+  capabilities:ProviderCapabilitiesSchema,
+  models:z.array(z.string()),
+  defaultModel:z.string().nullable(),
+  note:z.string().nullable(),
+  setupHint:z.string().nullable(),
+}).strict();
+
+export const ModelSpeedClassSchema=z.enum(["fast","balanced","powerful","unknown"]);
+export const ModelCostClassSchema=z.enum(["free","low","medium","high","unknown"]);
+export const ModelPrivacyClassSchema=z.enum(["local","remote"]);
+export const ModelCapabilitiesSchema=z.object({
+  streaming:z.boolean(),
+  toolCalls:z.boolean(),
+  vision:z.boolean(),
+}).strict();
+export const ModelInfoSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  providerId:ProviderIdSchema,
+  label:z.string(),
+  contextWindow:z.number().int().positive().nullable(),
+  capabilities:ModelCapabilitiesSchema,
+  speedClass:ModelSpeedClassSchema,
+  costClass:ModelCostClassSchema,
+  privacy:ModelPrivacyClassSchema,
+  builtIn:z.boolean(),
+}).strict();
+export const ModelStatusSchema=z.object({
+  model:ModelInfoSchema,
+  available:z.boolean(),
+}).strict();
+
+// ── Presets and provider routing ─────────────────────────────────────────────
+
+export const PresetIdSchema=z.enum(["best-quality","balanced","fast","cheap","coding","research","private-local"]);
+export const ToolProfileSchema=z.enum(["read-only","none"]);
+export const PresetPrivacySchema=z.enum(["local-only","prefers-local","cloud"]);
+export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+export const PresetSchema=z.object({
+  version:SchemaVersionSchema,
+  id:PresetIdSchema,
+  label:z.string(),
+  description:z.string(),
+  providerOrder:z.array(ProviderIdSchema).min(1),
+  modelPreferences:z.record(z.string(),z.array(z.string())),
+  temperature:z.number().min(0).max(2).nullable(),
+  reasoningEffort:ReasoningEffortSchema.nullable(),
+  toolProfile:ToolProfileSchema,
+  contextBudgetBytes:z.number().int().positive(),
+  outputBudgetTokens:z.number().int().positive().nullable(),
+  timeoutMs:z.number().int().positive(),
+  maxAttempts:z.number().int().positive(),
+  maxToolIterations:z.number().int().positive(),
+  privacy:PresetPrivacySchema,
+  privacyDescription:z.string(),
+  costDescription:z.string(),
+  requiresLocal:z.boolean(),
+}).strict();
+export const PresetResolutionSchema=z.object({providerId:ProviderIdSchema,model:z.string()}).strict();
+export const PresetStatusSchema=z.object({
+  preset:PresetSchema,
+  available:z.boolean(),
+  unavailableReason:z.string().nullable(),
+  resolved:PresetResolutionSchema.nullable(),
+}).strict();
+
+export const RoutingCandidateSchema=z.object({providerId:ProviderIdSchema,configured:z.boolean(),reason:z.string()}).strict();
+export const RoutingDecisionSchema=z.object({
+  version:SchemaVersionSchema,
+  presetId:PresetIdSchema,
+  providerId:ProviderIdSchema,
+  model:z.string(),
+  reason:z.string(),
+  fallbackUsed:z.boolean(),
+  overridden:z.boolean(),
+  privacy:PresetPrivacySchema,
+  candidates:z.array(RoutingCandidateSchema),
+}).strict();
+
+export const SendMessageSchema=z.object({
+  content:z.string().trim().min(1).max(32000),
+  preset:PresetIdSchema.optional(),
+  providerId:ProviderIdSchema.optional(),
+  model:z.string().min(1).max(200).optional(),
+  useMemory:z.boolean().optional(),
+}).strict();
+
+// ── Memory foundation ────────────────────────────────────────────────────────
+
+export const MemoryScopeSchema=z.enum(["project","conversation","user"]);
+export const MemorySourceSchema=z.enum(["user","summary"]);
+export const MemoryEntrySchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  projectId:z.string(),
+  conversationId:z.string().nullable(),
+  scope:MemoryScopeSchema,
+  content:z.string().min(1),
+  source:MemorySourceSchema,
+  enabled:z.boolean(),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export const CreateMemoryEntrySchema=z.object({
+  scope:MemoryScopeSchema,
+  content:z.string().trim().min(1).max(4000),
+  conversationId:z.string().optional(),
+}).strict();
+
+export type ProviderId=z.infer<typeof ProviderIdSchema>;
+export type ProviderKind=z.infer<typeof ProviderKindSchema>;
+export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;
+export type ProviderStatus=z.infer<typeof ProviderStatusSchema>;
+export type ModelInfo=z.infer<typeof ModelInfoSchema>;
+export type ModelStatus=z.infer<typeof ModelStatusSchema>;
+export type ModelCapabilities=z.infer<typeof ModelCapabilitiesSchema>;
+export type PresetId=z.infer<typeof PresetIdSchema>;
+export type Preset=z.infer<typeof PresetSchema>;
+export type PresetStatus=z.infer<typeof PresetStatusSchema>;
+export type ToolProfile=z.infer<typeof ToolProfileSchema>;
+export type RoutingDecision=z.infer<typeof RoutingDecisionSchema>;
+export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
+export type SendMessageInput=z.infer<typeof SendMessageSchema>;
+export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
+export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
+
+// ── Honest OAuth integration findings ────────────────────────────────────────
+// Morrow only labels a flow "OAuth" when it is an officially supported, documented
+// third-party integration. Where no such flow exists for this class of application,
+// the entry is reported as unavailable with an honest explanation. No private
+// authentication is reverse-engineered, and no session tokens are reused.
+export const OAuthFindingSchema=z.object({
+  id:z.string(),
+  label:z.string(),
+  status:z.enum(["available","unavailable"]),
+  reason:z.string(),
+  recommendation:z.string(),
+  documentationUrl:z.string().nullable(),
+}).strict();
+export type OAuthFinding=z.infer<typeof OAuthFindingSchema>;
 
