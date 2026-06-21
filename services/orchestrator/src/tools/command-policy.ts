@@ -19,6 +19,17 @@ function decision(risk: CommandRisk, pattern: string, reason: string): CommandPo
   return { risk, pattern, reason };
 }
 
+/**
+ * Canonical key a "trust this command" decision binds to. Trust is exact: it
+ * covers only the same normalized executable, the same argument vector, and the
+ * same working directory. It deliberately does NOT cover a broad pattern such
+ * as "every pnpm test", and it is always derived server-side from the persisted
+ * approval, never from a value supplied by the client.
+ */
+export function canonicalCommandTrustKey(executable: string, args: string[], cwd: string): string {
+  return `cmd|${executableName(executable)}|${JSON.stringify(args)}|${cwd || "."}`;
+}
+
 export function classifyCommand(executable: string, args: string[]): CommandPolicyDecision {
   const command = executableName(executable);
   const normalizedArgs = args.map((arg) => arg.toLowerCase());

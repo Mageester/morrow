@@ -29,6 +29,7 @@ import { TaskRunner } from "./runner.js";
 import { changeSetsRepository } from "./repositories/change-sets.js";
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
+import { canonicalCommandTrustKey } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -334,8 +335,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const body = SendMessageSchema.parse(request.body);
 
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
-    const mode = body.mode ?? "read-only";
-    const toolProfile = mode === "plan-only" ? "none" : "read-only";
+    const mode = body.mode ?? "agent";
+    const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
 
     // Resolve the provider+model the agent will actually use, and report it.
     let decision: RoutingDecision;
@@ -438,7 +439,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/tasks/:taskId/diff", async (request) => {
     const { taskId } = request.params as { taskId: string };
     const csList = changeSets.listByTask(taskId);
-    const applied = csList.find(c => c.state === "applied" || c.state === "undone");
+    // Select the most recent applicable change set (listByTask is created-ASC).
+    const applied = [...csList].reverse().find(c => c.state === "applied" || c.state === "undone");
     if (!applied) {
       return { diff: null };
     }
@@ -455,7 +457,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/tasks/:taskId/undo", async (request) => {
     const { taskId } = request.params as { taskId: string };
     const csList = changeSets.listByTask(taskId);
-    const applied = csList.find(c => c.state === "applied");
+    // Undo the most recent applied change set (listByTask is created-ASC).
+    const applied = [...csList].reverse().find(c => c.state === "applied");
     if (!applied) throw new ApiError(404, "No applied change set found for this task", "NOT_FOUND");
 
     const project = projects.getProjectById(applied.projectId);
@@ -549,10 +552,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const approval = approvals.get(approvalId);
     if (!approval || approval.projectId !== body.projectId) throw new ApiError(404, "Approval not found in project", "NOT_FOUND");
 
+    // Derive the trust binding server-side from the persisted approval — never
+    // from a client-supplied pattern — and validate it BEFORE mutating state.
+    let trustKey: string | undefined;
+    if (body.decision === "trust_project") {
+      const d = approval.details as { executable?: unknown; args?: unknown; cwd?: unknown };
+      if (approval.kind !== "command" || typeof d.executable !== "string") {
+        throw new ApiError(400, "Only command approvals can be trusted", "INVALID_TRUST");
+      }
+      trustKey = canonicalCommandTrustKey(d.executable, Array.isArray(d.args) ? (d.args as string[]) : [], typeof d.cwd === "string" ? d.cwd : "");
+    }
+
     const resolved = approvals.resolve(approvalId, { decision: body.decision, ...(body.note ? { note: body.note } : {}), resolvedAt: new Date().toISOString() });
     if (!resolved) throw new ApiError(409, "Approval is no longer pending", "APPROVAL_ALREADY_RESOLVED");
-    if (body.decision === "trust_project") {
-      approvals.grantCommandTrust({ projectId: approval.projectId, pattern: body.trustPattern!, createdAt: resolved.resolvedAt! });
+    if (trustKey) {
+      approvals.grantCommandTrust({ projectId: approval.projectId, pattern: trustKey, createdAt: resolved.resolvedAt! });
     }
     records.appendEvent({
       id: crypto.randomUUID(),
@@ -563,11 +577,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
 
     const t = tasks.getTaskById(approval.taskId);
-    if (t && ["interrupted", "failed", "cancelled"].includes(t.status)) {
+    if (t && t.status === "interrupted") {
+      // Resume a task that a restart interrupted while it awaited this approval.
       deps.db.prepare("UPDATE tasks SET status='queued', updated_at=? WHERE id=?").run(new Date().toISOString(), approval.taskId);
       deps.runner.run(approval.taskId);
-    } else {
+    } else if (t && (t.status === "running" || t.status === "queued")) {
+      // Wake the live, in-process task.
       ApprovalContinuationRegistry.resolveApproval(approvalId, body.decision);
+    } else {
+      // Task already ended (failed/cancelled/completed). The decision is
+      // recorded, but a dead task is never revived; drop any latched wakeup.
+      ApprovalContinuationRegistry.clear(approvalId);
     }
 
     return resolved;
