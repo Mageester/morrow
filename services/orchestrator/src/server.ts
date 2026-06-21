@@ -7,6 +7,7 @@ import { realpathSync, existsSync, lstatSync } from "node:fs";
 import { projectRepository } from "./repositories/projects.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
+import { conversationsRepository } from "./repositories/conversations.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
 
@@ -36,6 +37,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const projects = projectRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
+  const convs = conversationsRepository(deps.db);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -135,7 +137,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { taskId } = request.params as { taskId: string };
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
-    return records.getAggregate(taskId);
+    const agg = records.getAggregate(taskId);
+    const toolCalls = convs.listToolCallsForTask(taskId);
+    return { ...agg, toolCalls };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -197,14 +201,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       for (const e of newEvents) {
         sendEvent(e);
         afterSeq = e.sequence;
-        if (["task.verified", "task.failed", "task.interrupted"].includes(e.type)) {
+        if (["task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"].includes(e.type)) {
           reply.raw.end();
           return;
         }
       }
 
       const currentTask = tasks.getTaskById(taskId);
-      if (currentTask && ["verified", "failed", "interrupted"].includes(currentTask.status) && newEvents.length === 0) {
+      if (currentTask && ["verified", "completed", "failed", "cancelled", "interrupted"].includes(currentTask.status) && newEvents.length === 0) {
         reply.raw.end();
         return;
       }
@@ -213,6 +217,116 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
 
     pollEvents();
+  });
+
+  app.get("/api/projects/:projectId/conversations", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return convs.listConversationsByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/conversations", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    
+    const body = request.body as { title?: string } | null;
+    const title = body?.title?.trim() || "New Conversation";
+    
+    const conversation = convs.createConversation({
+      id: crypto.randomUUID(),
+      projectId,
+      title,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    return conversation;
+  });
+
+  app.get("/api/conversations/:conversationId/messages", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    return convs.listMessages(conversationId);
+  });
+
+  app.post("/api/conversations/:conversationId/messages", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    
+    const body = request.body as { content: string; preset?: "Balanced" | "Fast" | "Private Local" } | null;
+    if (!body || !body.content?.trim()) {
+      throw new ApiError(400, "Message content is required", "VALIDATION_ERROR");
+    }
+
+    const preset = body.preset || "Balanced";
+    if (preset === "Private Local") {
+      throw new ApiError(400, "Private Local preset is not available because a local provider is not configured", "PRESET_UNAVAILABLE");
+    }
+
+    const timestamp = new Date().toISOString();
+    
+    const userMsg = convs.appendMessage({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "user",
+      content: body.content,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
+
+    const task = tasks.createTask({
+      id: crypto.randomUUID(),
+      projectId: conversation.projectId,
+      kind: "agent_chat",
+      status: "queued",
+      createdAt: timestamp
+    });
+
+    const assistantMsg = convs.appendMessage({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "assistant",
+      content: "",
+      taskId: task.id,
+      streamingState: "queued",
+      provider: "openai",
+      model: preset === "Fast" ? "gpt-4o-mini" : "gpt-4o-mini",
+      createdAt: new Date(Date.now() + 50).toISOString(),
+      updatedAt: new Date(Date.now() + 50).toISOString()
+    });
+
+    deps.runner.run(task.id);
+
+    reply.status(202);
+    return {
+      task,
+      userMessage: userMsg,
+      assistantMessage: assistantMsg,
+      aggregateUrl: `/api/tasks/${task.id}`,
+      sseUrl: `/api/tasks/${task.id}/events/stream`
+    };
+  });
+
+  app.post("/api/tasks/:taskId/cancel", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    
+    deps.runner.cancel(taskId);
+    reply.status(204).send();
+  });
+
+  app.get("/api/provider/status", async (request, reply) => {
+    const isMock = process.env.MOCK_PROVIDER === "true";
+    const hasKey = !!process.env.OPENAI_API_KEY;
+    return {
+      configured: isMock || hasKey,
+      provider: isMock ? "mock" : "openai",
+      model: isMock ? "mock-model" : "gpt-4o-mini"
+    };
   });
 
   return app;

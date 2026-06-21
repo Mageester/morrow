@@ -23,6 +23,7 @@ export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date()
   let activeStepId: string | undefined;
   try {
   const canonicalPath = project.workspacePath;
+  console.log("INSPECTING WORKSPACE PATH:", canonicalPath);
   records.upsertDisclosure({ taskId, executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: canonicalPath, estimatedCostUsd: "$0.00", createdAt: now(), updatedAt: now() });
   records.transitionTask(taskId, "running", { id: randomUUID(), createdAt: now(), payload: {} });
   const steps = records.listPlanSteps(taskId);
@@ -54,9 +55,10 @@ export function executeInspectWorkspaceTask({ db, taskId, now = () => new Date()
   })();
   activeStepId = undefined;
   return records.getAggregate(taskId);
-  } catch {
+  } catch (err: any) {
+    console.error("Workspace task execution error:", err);
     if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
-    if (tasks.getTaskById(taskId)?.status === "running" || tasks.getTaskById(taskId)?.status === "queued") records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: "Workspace task failed" } });
-    throw new Error("Workspace task failed");
+    if (tasks.getTaskById(taskId)?.status === "running" || tasks.getTaskById(taskId)?.status === "queued") records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: err.message || "Workspace task failed" } });
+    throw new Error(`Workspace task failed: ${err.message}`);
   }
 }

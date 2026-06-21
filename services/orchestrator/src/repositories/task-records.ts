@@ -24,15 +24,19 @@ type VerificationInput = Omit<VerificationResult, "version">;
 const eventTypes = {
   running: "task.running",
   verified: "task.verified",
+  completed: "task.completed",
   failed: "task.failed",
+  cancelled: "task.cancelled",
   interrupted: "task.interrupted",
 } as const;
 
 const allowedTransitions: Record<Task["status"], readonly Task["status"][]> = {
-  queued: ["running", "failed"],
-  running: ["verified", "failed", "interrupted"],
+  queued: ["running", "failed", "cancelled"],
+  running: ["verified", "completed", "failed", "cancelled", "interrupted"],
+  completed: [],
   verified: [],
   failed: [],
+  cancelled: [],
   interrupted: [],
 };
 
@@ -126,7 +130,7 @@ export function taskRecordsRepository(db: Database.Database) {
     },
     upsertDisclosure(input: DisclosureInput) {
       const value = ExecutionDisclosureSchema.parse({ ...input, version: 1 });
-      db.prepare("INSERT INTO execution_disclosures(task_id,schema_version,execution_mode,provider,network_access,workspace_scope,estimated_cost_usd,created_at,updated_at,filesystem_access,shell_execution,model_invocation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET execution_mode=excluded.execution_mode,provider=excluded.provider,network_access=excluded.network_access,filesystem_access=excluded.filesystem_access,shell_execution=excluded.shell_execution,model_invocation=excluded.model_invocation,workspace_scope=excluded.workspace_scope,estimated_cost_usd=excluded.estimated_cost_usd,updated_at=excluded.updated_at").run(value.taskId, 1, value.executionMode, value.provider, value.networkAccess, value.workspaceScope, value.estimatedCostUsd, value.createdAt, value.updatedAt, value.filesystemAccess, 0, 0);
+      db.prepare("INSERT INTO execution_disclosures(task_id,schema_version,execution_mode,provider,network_access,workspace_scope,estimated_cost_usd,created_at,updated_at,filesystem_access,shell_execution,model_invocation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET execution_mode=excluded.execution_mode,provider=excluded.provider,network_access=excluded.network_access,filesystem_access=excluded.filesystem_access,shell_execution=excluded.shell_execution,model_invocation=excluded.model_invocation,workspace_scope=excluded.workspace_scope,estimated_cost_usd=excluded.estimated_cost_usd,updated_at=excluded.updated_at").run(value.taskId, 1, value.executionMode, value.provider, value.networkAccess, value.workspaceScope, value.estimatedCostUsd, value.createdAt, value.updatedAt, value.filesystemAccess, value.shellExecution ? 1 : 0, value.modelInvocation ? 1 : 0);
       return this.getDisclosure(value.taskId)!;
     },
     getDisclosure(taskId: string) { const row = db.prepare("SELECT * FROM execution_disclosures WHERE task_id=?").get(taskId); return row ? mapDisclosure(row) : undefined; },

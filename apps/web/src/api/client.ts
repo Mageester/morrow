@@ -1,4 +1,4 @@
-import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult } from "@morrow/contracts";
+import type { Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage } from "@morrow/contracts";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -68,25 +68,23 @@ export const apiClient = {
         if (event.sequence <= highestSequence) return;
         highestSequence = event.sequence;
         onEvent(event);
-        if (["task.verified", "task.failed", "task.interrupted"].includes(event.type)) {
+        if (["task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"].includes(event.type)) {
           isClosed = true;
           eventSource?.close();
           onComplete();
         }
       };
 
-      const eventTypes = ["task.created", "plan.created", "step.started", "step.completed", "workspace.inspected", "evidence.persisted", "verification.completed", "task.running", "task.verified", "task.failed", "task.interrupted"];
+      const eventTypes = ["task.created", "plan.created", "step.started", "step.completed", "workspace.inspected", "evidence.persisted", "verification.completed", "task.running", "task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"];
       eventTypes.forEach(type => {
         eventSource!.addEventListener(type, handler);
       });
 
-      // Also listen to un-named messages just in case
       eventSource!.onmessage = handler;
 
       eventSource!.onerror = () => {
         eventSource?.close();
         if (!isClosed) {
-          // Attempt native reconnect via timeout
           setTimeout(connect, 1000);
         }
       };
@@ -98,5 +96,53 @@ export const apiClient = {
       isClosed = true;
       eventSource?.close();
     };
+  },
+
+  async listConversations(projectId: string): Promise<Conversation[]> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/conversations`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createConversation(projectId: string, title?: string): Promise<Conversation> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/conversations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listMessages(conversationId: string): Promise<ConversationMessage[]> {
+    const res = await fetch(`${BASE_URL}/api/conversations/${conversationId}/messages`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async sendMessage(conversationId: string, content: string, preset?: string): Promise<{ task: Task; userMessage: ConversationMessage; assistantMessage: ConversationMessage; aggregateUrl: string; sseUrl: string }> {
+    const res = await fetch(`${BASE_URL}/api/conversations/${conversationId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, preset })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error?.message || "Failed to send message");
+    }
+    return res.json();
+  },
+
+  async cancelTask(taskId: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/api/tasks/${taskId}/cancel`, {
+      method: "POST"
+    });
+    if (!res.ok) throw new Error(await res.text());
+  },
+
+  async getProviderStatus(): Promise<{ configured: boolean; provider: string; model: string }> {
+    const res = await fetch(`${BASE_URL}/api/provider/status`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 };

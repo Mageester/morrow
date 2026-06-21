@@ -11,12 +11,21 @@ vi.mock('../src/api/client', () => ({
     startInspectWorkspace: vi.fn(),
     getTaskAggregate: vi.fn(),
     subscribeToTaskEvents: vi.fn(),
+    getProviderStatus: vi.fn().mockResolvedValue({ configured: false, provider: 'none', model: 'none' }),
+    listConversations: vi.fn().mockResolvedValue([]),
+    listMessages: vi.fn().mockResolvedValue([]),
+    createConversation: vi.fn(),
+    sendMessage: vi.fn(),
+    cancelTask: vi.fn().mockResolvedValue(undefined),
   }
 }));
 
 describe('Morrow Web App', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    (apiClient.getProviderStatus as any).mockResolvedValue({ configured: false, provider: 'none', model: 'none' });
+    (apiClient.listConversations as any).mockResolvedValue([]);
+    (apiClient.listMessages as any).mockResolvedValue([]);
   });
 
   it('renders correctly and lists projects', async () => {
@@ -54,7 +63,9 @@ describe('Morrow Web App', () => {
         filesystemAccess: 'read-only',
         modelInvocation: false,
         shellExecution: false,
-        estimatedCostUsd: '$0.00'
+        estimatedCostUsd: '$0.00',
+        workspaceScope: '/test/path',
+        provider: 'none'
       },
       events: []
     });

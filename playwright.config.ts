@@ -27,7 +27,7 @@ export default defineConfig({
       command: 'pnpm --filter @morrow/orchestrator start',
       port: 4317,
       reuseExistingServer: false,
-      env: { ...process.env, DATABASE_URL: databasePath },
+      env: { ...process.env, DATABASE_URL: databasePath, MOCK_PROVIDER: 'true' },
     },
     {
       command: 'pnpm --filter @morrow/web dev',
