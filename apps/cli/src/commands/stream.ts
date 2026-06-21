@@ -36,7 +36,6 @@ export async function streamChatTask(
     );
   }
 
-  const planTitles = new Map<string, string>();
   let content = "";
   let wroteText = false;
   let cancelRequested = false;
@@ -57,29 +56,20 @@ export async function streamChatTask(
   try {
     for await (const event of streamTaskEvents(api.baseUrl, taskId, { signal: abort.signal })) {
       switch (event.type) {
-        case "plan.created": {
-          // Fetch plan titles once for nicer step labels.
-          try {
-            const agg = await api.getTask(taskId);
-            for (const step of agg.plan) planTitles.set(step.id, step.title);
-          } catch {
-            /* best effort */
-          }
-          break;
-        }
+        case "plan.created":
         case "step.started": {
-          if (opts.showActivity) {
-            const id = (event.payload as any).stepId as string | undefined;
-            const title = id ? planTitles.get(id) : undefined;
-            if (title) out.diag(out.gray(`  ▸ ${title}`));
-          }
+          // Internal plan-state churn ("Analyze & Plan", "Generate Answer", …)
+          // is deliberately NOT surfaced. Activity is shown from observable
+          // actions (inspecting, reading, running, patching) instead.
           break;
         }
         case "workspace.inspected": {
           if (opts.showActivity) {
             const count = (event.payload as any).resultCount;
             const path = (event.payload as any).path;
-            out.diag(out.gray(`  ◦ inspected ${path ? `${path} ` : "workspace "}(${count} entries)`));
+            const kind = (event.payload as any).kind;
+            const label = kind === "search_text" || kind === "search_files" ? "searching" : "inspecting";
+            out.diag(out.gray(`  ${label} ${path ? `${path} ` : "the project "}${out.gray(`· ${count} result${count === 1 ? "" : "s"}`)}`));
           }
           break;
         }
