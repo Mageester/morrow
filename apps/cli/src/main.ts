@@ -80,7 +80,8 @@ async function status(ctx: Context): Promise<number> {
 }
 
 async function doctor(ctx: Context): Promise<number> {
-  const pnpm = spawnSync("pnpm", ["--version"], { shell: process.platform === "win32", encoding: "utf8" });
+  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const pnpm = spawnSync(pnpmBin, ["--version"], { encoding: "utf8" });
   const checks: Array<{ name: string; ok: boolean; detail: string; critical: boolean }> = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.versions.node, critical: true },
     { name: "pnpm", ok: pnpm.status === 0, detail: (pnpm.stdout || pnpm.stderr || "not found").trim(), critical: true },

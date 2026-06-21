@@ -96,7 +96,7 @@ export async function memoryCommand(ctx: Context, sub: string | undefined, args:
   if (sub === "remove") {
     const id = args[0];
     if (!id) throw usageError("Usage: morrow memory remove <id>");
-    await api.deleteMemory(id);
+    await api.deleteMemory(project.id, id);
     if (ctx.out.json) ctx.out.data({ removed: id }); else ctx.out.success(`Memory removed (${shortId(id)}).`);
     return EXIT.OK;
   }

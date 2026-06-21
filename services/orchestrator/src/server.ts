@@ -549,12 +549,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { id } = request.params as { id: string };
     const existing = memory.get(id);
     if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
-    const body = z.object({ enabled: z.boolean() }).parse(request.body);
+    const body = z.object({ projectId: z.string().min(1), enabled: z.boolean() }).parse(request.body);
+    if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     return memory.setEnabled(id, body.enabled, new Date().toISOString());
   });
 
   app.delete("/api/memory/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    const existing = memory.get(id);
+    if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
+    if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     const removed = memory.delete(id);
     if (!removed) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
     reply.status(204).send();

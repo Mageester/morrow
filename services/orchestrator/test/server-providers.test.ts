@@ -87,15 +87,23 @@ describe("Provider / preset / memory API", () => {
     const created = await json("POST", `/api/projects/${project.id}/memory`, { scope: "conversation", content: "remember this", conversationId: conv.id });
     expect(created.status).toBe(201);
     const id = created.body.id;
+    const other = (await json("POST", "/api/projects", { name: "Other", workspacePath: process.cwd() })).body;
 
     expect((await json("GET", `/api/projects/${project.id}/memory`)).body.length).toBe(1);
     expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(1);
 
-    const disabled = await json("PATCH", `/api/memory/${id}`, { enabled: false });
+    const deniedPatch = await json("PATCH", `/api/memory/${id}`, { projectId: other.id, enabled: false });
+    expect(deniedPatch.status).toBe(404);
+    expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(1);
+
+    const disabled = await json("PATCH", `/api/memory/${id}`, { projectId: project.id, enabled: false });
     expect(disabled.body.enabled).toBe(false);
     expect((await json("GET", `/api/conversations/${conv.id}/memory`)).body.length).toBe(0);
 
-    expect((await json("DELETE", `/api/memory/${id}`)).status).toBe(204);
+    const deniedDelete = await json("DELETE", `/api/memory/${id}`, { projectId: other.id });
+    expect(deniedDelete.status).toBe(404);
+
+    expect((await json("DELETE", `/api/memory/${id}`, { projectId: project.id })).status).toBe(204);
     expect((await json("GET", `/api/projects/${project.id}/memory`)).body.length).toBe(0);
   });
 

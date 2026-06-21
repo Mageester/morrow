@@ -162,8 +162,12 @@ export class MorrowApi {
   addMemory(projectId: string, scope: MemoryScope, content: string, conversationId?: string) {
     return this.req<MemoryEntry>("POST", `/api/projects/${projectId}/memory`, { scope, content, conversationId });
   }
-  setMemoryEnabled(id: string, enabled: boolean) { return this.req<MemoryEntry>("PATCH", `/api/memory/${id}`, { enabled }); }
-  deleteMemory(id: string) { return this.req<void>("DELETE", `/api/memory/${id}`); }
+  setMemoryEnabled(projectId: string, id: string, enabled: boolean) {
+    return this.req<MemoryEntry>("PATCH", `/api/memory/${id}`, { projectId, enabled });
+  }
+  deleteMemory(projectId: string, id: string) {
+    return this.req<void>("DELETE", `/api/memory/${id}`, { projectId });
+  }
 }
 
 function safeJson(text: string): unknown {
