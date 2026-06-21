@@ -1,0 +1,10 @@
+{
+  "name": "agent-repair-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic broken-repo fixture for Morrow's agent repair workflow. Dependency-free: the test command runs under plain Node with no install or network.",
+  "scripts": {
+    "test": "node test/run.mjs"
+  }
+}
