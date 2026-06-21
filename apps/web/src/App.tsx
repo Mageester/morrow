@@ -171,12 +171,12 @@ export default function App() {
     if (!focusedTaskId) { setTaskState(null); if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; } return; }
     let live = true;
     const fetchAgg = () => {
-      apiClient.getTaskAggregate(focusedTaskId).then(agg => {
+      // The aggregate endpoint already includes toolCalls + routing; read them
+      // directly rather than racing a second fetch whose failure path dropped
+      // toolCalls (the cause of the empty tool-call panel).
+      apiClient.getTaskAggregate(focusedTaskId).then((agg: any) => {
         if (!live) return;
-        fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/api/tasks/${focusedTaskId}`)
-          .then(r => r.json())
-          .then((extra: any) => { if (live) setTaskState({ ...agg, toolCalls: extra.toolCalls || [], routing: extra.routing ?? null }); })
-          .catch(() => { if (live) setTaskState({ ...agg, routing: (agg as any).routing ?? null }); });
+        setTaskState({ ...agg, toolCalls: agg.toolCalls ?? [], routing: agg.routing ?? null });
       }).catch(console.error);
     };
     fetchAgg();

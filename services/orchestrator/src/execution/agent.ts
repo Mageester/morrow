@@ -127,10 +127,14 @@ export async function executeAgentChatTask({
     activeProvider = provider;
     providerType = ((provider as { id?: ProviderId }).id ?? "mock") as ProviderId;
   } else if (providerId === "mock" || process.env.MOCK_PROVIDER === "true") {
+    // Tool-call ids must be unique per task: upsertToolCall keys on the id and
+    // a fixed "call-1" would cross-update another task's row, leaving this
+    // task's tool calls invisible. Namespace it to this task.
+    const demoCallId = `demo-${taskId.slice(0, 8)}-read`;
     activeProvider = new MockProvider({
       chunks: [
         [
-          { type: "tool_call", toolCalls: [{ id: "call-1", index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) } }] },
+          { type: "tool_call", toolCalls: [{ id: demoCallId, index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) } }] },
           { type: "done" }
         ],
         [
