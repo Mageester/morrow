@@ -95,20 +95,20 @@ describe("task records repository", () => {
 
   it("stores ordered plans and rolls replacement back on failure", () => {
     const { db, records } = setup();
-    records.replacePlan("t1", [{ id: "s2", position: 2, title: "two", status: "pending" }, { id: "s1", position: 1, title: "one", status: "pending" }]);
+    records.replacePlan("t1", [{ id: "s2", position: 2, title: "two", description: "two", status: "pending" }, { id: "s1", position: 1, title: "one", description: "one", status: "pending" }]);
     expect(records.listPlanSteps("t1").map((step) => step.id)).toEqual(["s1", "s2"]);
     expect(records.updatePlanStepStatus("s1", "completed", updatedAt)?.status).toBe("completed");
-    expect(() => records.replacePlan("t1", [{ id: "x", position: 1, title: "x", status: "pending" }, { id: "y", position: 1, title: "y", status: "pending" }])).toThrow();
+    expect(() => records.replacePlan("t1", [{ id: "x", position: 1, title: "x", description: "x", status: "pending" }, { id: "y", position: 1, title: "y", description: "y", status: "pending" }])).toThrow();
     db.exec("CREATE TRIGGER fail_plan BEFORE INSERT ON plan_steps WHEN NEW.id = 'bad' BEGIN SELECT RAISE(ABORT, 'no plan'); END");
-    expect(() => records.replacePlan("t1", [{ id: "bad", position: 1, title: "bad", status: "pending" }])).toThrow("no plan");
+    expect(() => records.replacePlan("t1", [{ id: "bad", position: 1, title: "bad", description: "bad", status: "pending" }])).toThrow("no plan");
     expect(records.listPlanSteps("t1").map((step) => step.id)).toEqual(["s1", "s2"]);
     db.close();
   });
 
   it("upserts disclosure and verification, ordering isolated evidence", () => {
     const { db, records } = setup();
-    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt: createdAt });
-    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
+    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt: createdAt });
+    records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
     records.appendEvidence({ id: "b", taskId: "t1", type: "file", path: "b", metadata: {}, createdAt: updatedAt });
     records.appendEvidence({ id: "a", taskId: "t1", type: "file", path: "a", metadata: { size: 1 }, createdAt });
     records.appendEvidence({ id: "other", taskId: "t2", type: "file", path: "x", metadata: {}, createdAt });
@@ -127,15 +127,15 @@ describe("task records repository", () => {
     const file = join(dir, "records.db");
     const initial = setup(file);
     initial.records.appendEvent({ id: "event", taskId: "t1", type: "task.created", payload: {}, createdAt });
-    initial.records.replacePlan("t1", [{ id: "step", position: 1, title: "step", status: "pending" }]);
+    initial.records.replacePlan("t1", [{ id: "step", position: 1, title: "step", description: "step", status: "pending" }]);
     initial.records.appendEvidence({ id: "evidence", taskId: "t1", type: "file", path: "file", metadata: {}, createdAt });
-    initial.records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "built-in", networkAccess: "disabled", workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
+    initial.records.upsertDisclosure({ taskId: "t1", executionMode: "deterministic-local", provider: "deterministic-local", networkAccess: "disabled", filesystemAccess: "read-only", shellExecution: false, modelInvocation: false, workspaceScope: "C:/workspace", estimatedCostUsd: "$0.00", createdAt, updatedAt });
     initial.records.upsertVerification({ taskId: "t1", status: "verified", summary: "done", details: { truncated: false }, createdAt, updatedAt });
     initial.db.close();
     const reopened = openDatabase(file);
     const records = taskRecordsRepository(reopened);
     expect(records.getAggregate("t1").events).toHaveLength(1);
-    expect(records.getAggregate("t1").disclosure?.provider).toBe("built-in");
+    expect(records.getAggregate("t1").disclosure?.provider).toBe("deterministic-local");
     expect(records.getAggregate("t1").verification?.summary).toBe("done");
     expect(records.getAggregate("t2").disclosure).toBeUndefined();
     expect(records.getAggregate("t2").verification).toBeUndefined();

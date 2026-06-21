@@ -58,11 +58,11 @@ export function taskRecordsRepository(db: Database.Database) {
   };
   const mapPlan = (row: unknown): PlanStep => {
     const value = row as Record<string, unknown>;
-    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: value.title, status: value.status });
+    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: value.title, description: value.description, status: value.status });
   };
   const mapDisclosure = (row: unknown): ExecutionDisclosure => {
     const value = row as Record<string, unknown>;
-    return ExecutionDisclosureSchema.parse({ version: value.schema_version, taskId: value.task_id, executionMode: value.execution_mode, provider: value.provider, networkAccess: value.network_access, workspaceScope: value.workspace_scope, estimatedCostUsd: value.estimated_cost_usd, createdAt: value.created_at, updatedAt: value.updated_at });
+    return ExecutionDisclosureSchema.parse({ version: value.schema_version, taskId: value.task_id, executionMode: value.execution_mode, provider: value.provider, networkAccess: value.network_access, filesystemAccess: value.filesystem_access, shellExecution: Number(value.shell_execution) !== 0, modelInvocation: Number(value.model_invocation) !== 0, workspaceScope: value.workspace_scope, estimatedCostUsd: value.estimated_cost_usd, createdAt: value.created_at, updatedAt: value.updated_at });
   };
   const mapEvidence = (row: unknown): TaskEvidence => {
     const value = row as Record<string, unknown>;
@@ -114,7 +114,7 @@ export function taskRecordsRepository(db: Database.Database) {
         db.prepare("DELETE FROM plan_steps WHERE task_id=?").run(taskId);
         const insert = db.prepare("INSERT INTO plan_steps(id,schema_version,task_id,position,title,description,status,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?,?)");
         const timestamp = new Date().toISOString();
-        for (const step of steps) insert.run(step.id, taskId, step.position, step.title, null, step.status, timestamp, timestamp);
+        for (const step of steps) insert.run(step.id, taskId, step.position, step.title, step.description, step.status, timestamp, timestamp);
       })();
       return this.listPlanSteps(taskId);
     },
@@ -126,7 +126,7 @@ export function taskRecordsRepository(db: Database.Database) {
     },
     upsertDisclosure(input: DisclosureInput) {
       const value = ExecutionDisclosureSchema.parse({ ...input, version: 1 });
-      db.prepare("INSERT INTO execution_disclosures(task_id,schema_version,execution_mode,provider,network_access,workspace_scope,estimated_cost_usd,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET execution_mode=excluded.execution_mode,provider=excluded.provider,network_access=excluded.network_access,workspace_scope=excluded.workspace_scope,estimated_cost_usd=excluded.estimated_cost_usd,updated_at=excluded.updated_at").run(value.taskId, 1, value.executionMode, value.provider, value.networkAccess, value.workspaceScope, value.estimatedCostUsd, value.createdAt, value.updatedAt);
+      db.prepare("INSERT INTO execution_disclosures(task_id,schema_version,execution_mode,provider,network_access,workspace_scope,estimated_cost_usd,created_at,updated_at,filesystem_access,shell_execution,model_invocation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET execution_mode=excluded.execution_mode,provider=excluded.provider,network_access=excluded.network_access,filesystem_access=excluded.filesystem_access,shell_execution=excluded.shell_execution,model_invocation=excluded.model_invocation,workspace_scope=excluded.workspace_scope,estimated_cost_usd=excluded.estimated_cost_usd,updated_at=excluded.updated_at").run(value.taskId, 1, value.executionMode, value.provider, value.networkAccess, value.workspaceScope, value.estimatedCostUsd, value.createdAt, value.updatedAt, value.filesystemAccess, 0, 0);
       return this.getDisclosure(value.taskId)!;
     },
     getDisclosure(taskId: string) { const row = db.prepare("SELECT * FROM execution_disclosures WHERE task_id=?").get(taskId); return row ? mapDisclosure(row) : undefined; },

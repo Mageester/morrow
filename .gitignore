@@ -5,12 +5,13 @@ node_modules/
 __pycache__/
 *.py[cod]
 
-# Builds
+# Builds and caches
 .next/
 dist/
 build/
 target/
 *.tsbuildinfo
+.turbo/
 
 # Test and generated output
 coverage/
@@ -20,6 +21,7 @@ screenshots/
 *-screenshots/
 .generated/
 artifacts/
+.artifacts/
 
 # Local state
 .env
