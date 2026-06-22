@@ -12,54 +12,68 @@ pnpm install
 pnpm check && pnpm test && pnpm build   # expect green
 ```
 
-## Where we are
+## Where we are (all committed + pushed on feat/morrow-agent-terminal)
 
 - Durable docs maintained (parity matrix, master goal, backlog, status, this).
-- **B1 — Full-text search: DONE & VERIFIED.**
-- **B2 — Memory provenance + pin + tiers: DONE & VERIFIED.** `pinned`,
-  `originTaskId` (FK, migration 11), episodic/procedural/knowledge tiers,
-  pin-first ordering, PATCH `{pinned}`, CLI `memory pin/unpin`.
-- Baseline: orchestrator 173 tests, CLI 109, contracts 4, web 8 — all green.
+- **B1 — Full-text search: VERIFIED.**
+- **B2 — Memory provenance + pin + tiers: VERIFIED.**
+- **B3 — Loop detection: VERIFIED.**
+- **B22 (partial) — Security hard-blocks: VERIFIED** (force-push, network-exfil,
+  workspace-redirect escape, enforced before approval; YOLO cannot bypass).
+- Baseline: orchestrator 193 tests, CLI 109, contracts 4, web 8 — all green.
+  `pnpm check/test/build` green.
 
-## Exact next step — B3: Loop detection in the agent loop
+## Exact next step — B8: Idempotency keys + explicit retry
 
-Goal: detect when the agent repeats the same tool call (same tool + same args)
-without progress, and stop with a clear reason instead of burning the budget.
+Goal: a retried task-creation request must not spawn a duplicate task, and a
+failed/interrupted task must be retryable on demand.
 
-1. New pure module `services/orchestrator/src/execution/loop-detector.ts`:
-   - `createLoopDetector({ windowSize?: number; repeatThreshold?: number })`.
-   - `record(signature: string): { looping: boolean; count: number }` where
-     `signature = toolName + ":" + stableStringify(args)`.
-   - Looping when the same signature occurs `repeatThreshold` times within the
-     last `windowSize` calls (default window 6, threshold 3).
-   - Export a `toolCallSignature(toolName, args)` helper using a stable key
-     (sorted JSON) so arg order doesn't matter.
-2. Wire into `services/orchestrator/src/execution/agent.ts`: where tool calls are
-   dispatched (search for the tool-iteration loop / `maxToolIterations`), record
-   each signature; on `looping`, emit a `task.recovery_required` (or fail with a
-   descriptive state) — mirror how the adaptive budget currently aborts
-   (`adaptive-budget.ts`) so the transcript/UX stays consistent.
-3. Tests first (red): `services/orchestrator/test/loop-detector.test.ts`
-   - "flags repeated identical signatures past the threshold"
-   - "treats arg-order-different-but-equal calls as the same signature"
-   - "does not flag varied calls within the window"
-   - "resets/forgets calls outside the window".
-   Then an agent-level test (extend `test/agent-*`) proving a provider that keeps
-   requesting the same tool is stopped with the loop reason and does NOT mark a
-   false success.
-4. `pnpm check && pnpm test && pnpm build`. Update matrix §3 "Loop detection"
-   row → VERIFIED with evidence. Commit `feat(agent): loop detection` + push.
+1. `services/orchestrator/src/database.ts` — migration 12:
+   `ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;`
+   `CREATE UNIQUE INDEX tasks_idempotency_key_idx ON tasks(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;`
+   (Bump `database.test.ts` migration count 11 → 12.)
+2. `services/orchestrator/src/repositories/tasks.ts` — accept optional
+   `idempotencyKey` on `createTask`; add `findByIdempotencyKey(projectId, key)`.
+3. Task-creation routes in `server.ts` (`POST .../tasks/inspect-workspace` and the
+   message/agent-chat task creation path): read an `Idempotency-Key` header (or
+   body field); if a task with that (projectId,key) exists, return it (200) instead
+   of creating a new one.
+4. Explicit retry: `POST /api/tasks/:taskId/retry` — only valid for `failed` or
+   `interrupted` tasks; re-queue via the runner (mirror `/resume` wiring in
+   `server.ts`, but reset to a fresh attempt rather than continuing a saved
+   tool-call continuation). Distinguish from `/resume` (which continues a paused
+   tool call).
+5. Tests first (red):
+   - `test/tasks.test.ts` — "createTask with the same idempotency key returns the
+     existing task and does not insert a duplicate"; "different keys create
+     distinct tasks"; "null key is unconstrained".
+   - `test/api.test.ts` (or new `test/idempotency-api.test.ts`) — repeated POST
+     with the same `Idempotency-Key` yields one task; `/retry` re-queues a failed
+     task and rejects a non-failed one with 409.
+6. CLI: optional — add `--idempotency-key` to task creation and a `retry`
+   subcommand; can defer.
+7. `pnpm check && pnpm test && pnpm build`. Update matrix §3 rows
+   (Retry → VERIFIED, Idempotency → VERIFIED) + status. Commit
+   `feat(runtime): idempotent task creation and explicit retry` + push.
 
 ## Failing test to write first
 
-`test/loop-detector.test.ts` — "flags three identical tool-call signatures within
-a 6-call window as looping".
+`test/tasks.test.ts` — "createTask with a repeated idempotency key returns the
+existing task without inserting a duplicate".
 
 ## Open risks / notes
 
-- Read `execution/agent.ts` around the tool dispatch loop before wiring; match
-  the existing abort/event pattern (look at how `adaptive-budget` surfaces
-  `budget-reached`). The terminal already renders a `stalled` app-view case
-  (`app-view.ts`) — reuse that signal type if it fits so the TUI shows it.
-- Keep the detector pure and deterministic (no time-based logic) for testability.
-- Do not lower `maxToolIterations`; loop detection is an *earlier*, smarter stop.
+- The unique partial index must allow many NULL keys (existing tasks). SQLite
+  partial unique index `WHERE idempotency_key IS NOT NULL` does exactly this.
+- `/retry` must not resurrect a `cancelled` task (see existing
+  `agent-security.test.ts` "does not resurrect a cancelled task"). Restrict retry
+  to `failed`/`interrupted` only.
+- Keep `/resume` (continuation) and `/retry` (fresh attempt) clearly separate.
+
+## Broader remaining backlog (see MORROW_BACKLOG.md)
+
+Highest-value, CI-testable next: B10 live provider fallback-on-error, B4 skill
+usage tracking + skill→slash, B5 Skill Creator. Heavier/needs-environment: B7
+cron, B9 Docker/SSH backends, B11 MCP client, B15 browser, B16 desktop, B17
+messaging, B19 installers. Full Hermes parity is multi-session; this file is the
+handoff each time.

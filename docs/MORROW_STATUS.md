@@ -30,6 +30,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Security hard-blocks (B22, partial)** — `command-policy.ts` now denies
+  force-push (`git push --force/-f/--force-with-lease`), direct network-transfer
+  tools (curl/wget/nc/scp/ssh/rsync/…), and workspace-redirect escapes
+  (`git -C`, `--git-dir`, `--prefix`, …), without over-denying read-only flags
+  like `git log -C`. Enforced categorically in the agent before any approval, so
+  YOLO can never bypass. Tests: `command-policy.test.ts` (8) + end-to-end
+  YOLO-bypass cases in `agent-yolo.test.ts`. Orchestrator suite 193 green.
 - **Loop detection (B3)** — `execution/loop-detector.ts`: pure, deterministic
   sliding-window detector keyed on stable (arg-order-independent) tool-call
   signatures. Wired into `execution/agent.ts`; a repeated identical action is
@@ -50,6 +57,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Security hard-blocks (force-push, network-exfil,
+  workspace-redirect) landed. Matrix §2 hard-block row → VERIFIED.
 - 2026-06-22 — B3 loop detection landed. Matrix §3 "Loop detection" → VERIFIED.
 - 2026-06-22 — B2 memory provenance + pinning + tiers landed. Matrix §7 rows
   (Episodic/procedural/knowledge, Provenance, Pin) → VERIFIED.

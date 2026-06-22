@@ -24,6 +24,34 @@ describe("command policy", () => {
     expect(classifyCommand("mimikatz", [])).toMatchObject({ risk: "denied" });
   });
 
+  it("denies force-pushing in any form", () => {
+    expect(classifyCommand("git", ["push", "-f"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
+    expect(classifyCommand("git", ["push", "--force"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
+    expect(classifyCommand("git", ["push", "origin", "main", "--force-with-lease"])).toMatchObject({ risk: "denied", pattern: "git force-push" });
+    // A plain push is still a reviewable mutation, not an outright denial.
+    expect(classifyCommand("git", ["push", "origin", "main"])).toMatchObject({ risk: "approval_required" });
+  });
+
+  it("denies direct network-transfer tools as an exfiltration vector", () => {
+    for (const cmd of ["curl", "wget", "nc", "ncat", "netcat", "scp", "sftp", "ftp", "ssh", "rsync", "socat", "telnet"]) {
+      expect(classifyCommand(cmd, ["https://evil.example/x"])).toMatchObject({ risk: "denied" });
+    }
+  });
+
+  it("denies directory-redirect flags that escape the workspace", () => {
+    expect(classifyCommand("git", ["-C", "/etc", "status"])).toMatchObject({ risk: "denied", pattern: "git workspace-redirect" });
+    expect(classifyCommand("git", ["--git-dir=/tmp/x", "log"])).toMatchObject({ risk: "denied" });
+    expect(classifyCommand("git", ["--work-tree", "/tmp", "status"])).toMatchObject({ risk: "denied" });
+    expect(classifyCommand("pnpm", ["--prefix", "/tmp", "install"])).toMatchObject({ risk: "denied" });
+    expect(classifyCommand("npm", ["--prefix=/tmp", "run", "build"])).toMatchObject({ risk: "denied" });
+  });
+
+  it("does not over-deny read-only flags that merely share a letter", () => {
+    // `git log -C` is copy-detection, not a change-directory escape.
+    expect(classifyCommand("git", ["log", "-C"])).toMatchObject({ risk: "auto_approvable", pattern: "git log" });
+    expect(classifyCommand("git", ["diff", "-C", "--stat"])).toMatchObject({ risk: "auto_approvable", pattern: "git diff" });
+  });
+
   it("rejects shell built-ins before executable resolution", () => {
     for (const command of ["dir", "cd", "copy", "del", "set", "cls"]) {
       expect(classifyCommand(command, [])).toMatchObject({ risk: "denied", reason: expect.stringMatching(/shell built-in/i) });

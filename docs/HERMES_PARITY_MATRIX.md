@@ -59,7 +59,7 @@
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
 | Auto-approve within scopes | Hermes auto-approve | PARTIAL | `terminal/yolo.ts`, `command-policy.ts` | Scoped allow-lists per side-effect |
-| Hard-block secrets/escalation/destructive | `tool_guardrails.py`, `file_safety.py` | PARTIAL | `command-policy.ts` denied patterns | Workspace-escape + force-push + secret-exfil guards w/ tests |
+| Hard-block secrets/escalation/destructive | `tool_guardrails.py`, `file_safety.py` | VERIFIED | `command-policy.ts` denies shells/privilege-escalation/deletes, destructive git history, **force-push**, **network-exfil tools**, and **workspace-redirect escape** — enforced categorically before approval (YOLO cannot bypass). `command-policy.test.ts` (8) + `agent-yolo.test.ts` end-to-end deny cases | Append-only audit hardening (tracked in §2 audit row) |
 | Persistent audit log | Hermes trajectory/audit | PARTIAL | `/api/audit`, `AuditEntrySchema` | Append-only tamper-evident audit store |
 | `/panic` stop-all | Hermes interrupt | VERIFIED | `commands/panic.ts`, `panic.test.ts`, commit `2a06928` | — |
 

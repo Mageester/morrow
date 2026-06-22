@@ -44,8 +44,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [ ] **B20. Hermes import/migration tooling (`packages/hermes-compat`).**
 - [ ] **B21. TUI: live task tree, Ctrl+K palette, persisted history, resize
       reflow test, mid-stream reconnect dedup test.**
-- [ ] **B22. Append-only tamper-evident audit store + scoped YOLO allow-lists +
-      workspace-escape/force-push/secret-exfil guards with tests.**
+- [~] **B22. Security hard-blocks.** DONE: workspace-escape/force-push/network-
+      exfil guards enforced categorically before approval, with unit +
+      end-to-end (YOLO-bypass) tests. REMAINING: append-only tamper-evident
+      audit store + scoped YOLO allow-lists per side-effect.
 
 ## Cross-cutting acceptance suites to keep green
 
