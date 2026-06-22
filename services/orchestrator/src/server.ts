@@ -441,6 +441,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     reply.status(204).send();
   });
 
+  app.post("/api/tasks/:taskId/resume", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (task.status !== "interrupted") throw new ApiError(409, "Only interrupted tasks can be resumed", "TASK_NOT_RESUMABLE");
+    records.resumeInterruptedTask(taskId, { id: crypto.randomUUID(), createdAt: new Date().toISOString(), payload: { reason: "user_continue" } });
+    deps.runner.run(taskId);
+    reply.status(202);
+    return records.getAggregate(taskId).task;
+  });
+
   app.get("/api/tasks/:taskId/diff", async (request) => {
     const { taskId } = request.params as { taskId: string };
     const csList = changeSets.listByTask(taskId);

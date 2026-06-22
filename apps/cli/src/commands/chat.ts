@@ -138,6 +138,7 @@ async function runInteractiveSession(
     },
     subscribe: (taskId, signal) => streamTaskEvents(api.baseUrl, taskId, { signal }),
     cancel: (taskId) => api.cancelTask(taskId),
+    resume: (taskId) => api.resumeTask(taskId).then(() => undefined),
     async getApproval(id) {
       const a = await api.getApproval(id);
       return { id: a.id, kind: a.kind, details: a.details, projectId: a.projectId };

@@ -56,6 +56,7 @@ export interface SessionBackend {
   send(text: string, opts: SendOptions): Promise<{ taskId: string }>;
   subscribe(taskId: string, signal: AbortSignal): AsyncIterable<RawTaskEvent>;
   cancel(taskId: string): Promise<void>;
+  resume(taskId: string): Promise<void>;
   getApproval(id: string): Promise<ApprovalView>;
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
@@ -257,6 +258,9 @@ export class InteractiveSession {
         if (this.currentTaskId) void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
         this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
+      case "continue":
+        await this.continueTask();
+        return;
       case "model":
         if (arg) {
           this.settings.model = arg === "auto" ? undefined : arg;
@@ -354,6 +358,39 @@ export class InteractiveSession {
       this.applyEvent({ type: "assistant.end" });
     } catch (err) {
       this.applyEvent({ type: "task.failed", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      this.busy = false;
+      this.currentTaskId = null;
+      this.streamAbort = null;
+      this.requestPaint(true);
+    }
+  }
+
+  private async continueTask(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("warn", "No paused task is available to continue.");
+      return;
+    }
+    this.busy = true;
+    this.streamStart = this.now();
+    const abort = new AbortController();
+    this.streamAbort = abort;
+    this.currentTaskId = this.lastTaskId;
+    this.requestPaint(true);
+    try {
+      await this.deps.backend.resume(this.lastTaskId);
+      for await (const raw of this.deps.backend.subscribe(this.lastTaskId, abort.signal)) {
+        if (raw.type === "approval.requested") { await this.openApproval(raw); continue; }
+        if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") void this.refreshPlan(this.lastTaskId);
+        for (const te of mapTaskEvent(raw)) {
+          if (te.sourceEventId && this.seenSourceEvents.has(te.sourceEventId)) continue;
+          if (te.sourceEventId) this.seenSourceEvents.add(te.sourceEventId);
+          this.applyEvent(te);
+        }
+      }
+      this.applyEvent({ type: "assistant.end" });
+    } catch (error) {
+      this.pushNotice("error", `Could not continue task: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.busy = false;
       this.currentTaskId = null;

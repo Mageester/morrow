@@ -130,6 +130,7 @@ export class MorrowApi {
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
+  resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/resume`); }
   getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
 
