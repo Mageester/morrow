@@ -6,6 +6,7 @@ export type CommandPolicyDecision = { risk: CommandRisk; pattern: string; reason
 const PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn"]);
 const VERIFY_SCRIPTS = new Set(["test", "check", "typecheck", "lint", "build"]);
 const SHELLS = new Set(["cmd", "powershell", "pwsh", "bash", "sh", "zsh", "sudo", "runas", "su"]);
+const SHELL_BUILT_INS = new Set(["dir", "cd", "copy", "del", "set", "cls"]);
 const DELETE_COMMANDS = new Set(["rm", "del", "rmdir", "remove-item", "erase", "rd", "sdelete"]);
 const DENIED_COMMANDS = new Set(["mimikatz", "psexec", "shutdown", "reboot", "halt", "poweroff", "init", "format"]);
 
@@ -35,6 +36,9 @@ export function classifyCommand(executable: string, args: string[]): CommandPoli
   const normalizedArgs = args.map((arg) => arg.toLowerCase());
   const display = [command, ...args].join(" ").trim();
 
+  if (SHELL_BUILT_INS.has(command)) {
+    return decision("denied", command, "Shell built-in commands are unsupported. Use Morrow inspection tools or /project for workspace switching.");
+  }
   if (!command || SHELLS.has(command) || DELETE_COMMANDS.has(command) || DENIED_COMMANDS.has(command)) {
     return decision("denied", command || "unknown", "Shell invocation, privilege escalation, filesystem deletion, credential extraction, format, and shutdown are denied.");
   }

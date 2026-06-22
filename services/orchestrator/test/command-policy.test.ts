@@ -23,4 +23,10 @@ describe("command policy", () => {
     expect(classifyCommand("format", ["c:"])).toMatchObject({ risk: "denied" });
     expect(classifyCommand("mimikatz", [])).toMatchObject({ risk: "denied" });
   });
+
+  it("rejects shell built-ins before executable resolution", () => {
+    for (const command of ["dir", "cd", "copy", "del", "set", "cls"]) {
+      expect(classifyCommand(command, [])).toMatchObject({ risk: "denied", reason: expect.stringMatching(/shell built-in/i) });
+    }
+  });
 });
