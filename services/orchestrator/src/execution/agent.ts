@@ -25,6 +25,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provi
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
+import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 type Dependencies = {
@@ -131,6 +132,7 @@ export async function executeAgentChatTask({
   // gets no tools, read-only (inspect) gets read-only tools, agent gets all.
   const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
   const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
+  const turnCeiling = adaptiveTurnCeiling(turnsLimit);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
 
@@ -491,6 +493,8 @@ You must run test/verification commands using run_command, and propose file modi
   }
 
   let turn = 0;
+  let noProgressTurns = 0;
+  const seenToolSignatures = new Set<string>();
   let responseContent = assistantMessageRow.content || "";
 
   const continuation = continuationsRepo.get(taskId);
@@ -629,13 +633,16 @@ You must run test/verification commands using run_command, and propose file modi
     }
   };
 
-  while (turn < turnsLimit) {
+  while (turn < turnCeiling) {
     if (checkCancelled()) {
       handleCancellation();
       return;
     }
 
     turn++;
+    const responseLengthAtTurnStart = responseContent.length;
+    const completedToolSignatures: string[] = [];
+    const repeatedToolSignatures: string[] = [];
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
 
@@ -750,6 +757,10 @@ You must run test/verification commands using run_command, and propose file modi
           createdAt: now(),
           startedAt: now()
         });
+        const toolSignature = `${tc.name}:${tc.arguments}`;
+        const repeatedTool = seenToolSignatures.has(toolSignature);
+        if (repeatedTool) repeatedToolSignatures.push(toolSignature);
+        else seenToolSignatures.add(toolSignature);
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name });
 
@@ -1122,6 +1133,7 @@ You must run test/verification commands using run_command, and propose file modi
           errorMessage,
           completedAt: now()
         });
+        if (isSuccess) completedToolSignatures.push(toolSignature);
         let summary = isSuccess ? "completed" : "failed";
         try {
           const parsed = JSON.parse(resultStr) as { exitCode?: number | null; stdout?: string; stderr?: string; error?: string };
@@ -1151,6 +1163,21 @@ You must run test/verification commands using run_command, and propose file modi
       completedWithoutMoreTools = true;
       break;
     }
+
+    const madeProgress = turnMadeProgress({
+      responseChars: responseContent.length - responseLengthAtTurnStart,
+      completedToolSignatures,
+      repeatedToolSignatures,
+    });
+    noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
+    if (noProgressTurns >= 3) {
+      const message = "Task stalled after three turns without new observable progress.";
+      transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
+    }
   }
 
   if (checkCancelled()) {
@@ -1158,8 +1185,8 @@ You must run test/verification commands using run_command, and propose file modi
     return;
   }
 
-  if (!completedWithoutMoreTools && turn >= turnsLimit) {
-    const loopErrMsg = `Task turn budget reached (${turnsLimit}); continue the mission when ready.`;
+  if (!completedWithoutMoreTools && turn >= turnCeiling) {
+    const loopErrMsg = `Task adaptive turn budget reached (${turnCeiling}); continue the mission when ready.`;
     transitionAgentState("interrupted", { reason: "turn_budget_reached", message: loopErrMsg, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "turn_budget_reached", message: loopErrMsg, turns: turn } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${loopErrMsg}]`, "interrupted", now());

@@ -13,6 +13,12 @@ describe("task event adapter", () => {
     ]);
   });
 
+  it("renders a no-progress pause as stalled rather than failed", () => {
+    expect(mapTaskEvent({ type: "task.interrupted", payload: { reason: "stalled", message: "Task stalled" } })).toEqual([
+      { type: "task.stalled", message: "Task stalled" },
+    ]);
+  });
+
   it("maps streamed assistant text to a delta", () => {
     expect(mapTaskEvent({ type: "evidence.persisted", payload: { deltaText: "hi" } })).toEqual([{ type: "assistant.delta", text: "hi" }]);
   });

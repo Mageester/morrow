@@ -116,6 +116,8 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
       return out.yellow(term.status);
     case "budget-reached":
       return out.yellow("budget reached");
+    case "stalled":
+      return out.yellow("stalled");
     default:
       return out.gray("idle");
   }

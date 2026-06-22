@@ -8,7 +8,7 @@
  */
 import type { ActivityKind, ApprovalSource, SessionMeta, TerminalEvent } from "./events.js";
 
-export type SessionStatus = "idle" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted" | "budget-reached";
+export type SessionStatus = "idle" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted" | "budget-reached" | "stalled";
 
 export interface ToolCard {
   id: string;
@@ -255,6 +255,8 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return { ...state, status: "interrupted" };
     case "task.budget_reached":
       return { ...state, status: "budget-reached", lastError: event.message };
+    case "task.stalled":
+      return { ...state, status: "stalled", lastError: event.message };
 
     default: {
       // Exhaustiveness guard: a new event type must be handled here.

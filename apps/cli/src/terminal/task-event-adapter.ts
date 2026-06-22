@@ -107,6 +107,9 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       if (str(p.reason) === "turn_budget_reached") {
         return withSource([{ type: "task.budget_reached", message: str(p.message) ?? "Task budget reached" }]);
       }
+      if (str(p.reason) === "stalled") {
+        return withSource([{ type: "task.stalled", message: str(p.message) ?? "Task stalled" }]);
+      }
       return withSource([{ type: "task.interrupted" }]);
 
     // Internal plan/step/state churn is intentionally not surfaced.

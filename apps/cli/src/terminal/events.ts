@@ -88,6 +88,7 @@ export type TerminalEvent =
   | { type: "task.failed"; message: string }
   | { type: "task.cancelled" }
   | { type: "task.interrupted" }
-  | { type: "task.budget_reached"; message: string };
+  | { type: "task.budget_reached"; message: string }
+  | { type: "task.stalled"; message: string };
 
 export type TerminalEventType = TerminalEvent["type"];
