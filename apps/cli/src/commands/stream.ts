@@ -4,6 +4,9 @@ import type { MorrowApi, TaskAggregate } from "../client/api.js";
 import { streamTaskEvents } from "../client/sse.js";
 import { EXIT } from "../cli/errors.js";
 import { ask } from "./common.js";
+import { LineRenderer } from "../terminal/line-renderer.js";
+import { mapTaskEvent } from "../terminal/task-event-adapter.js";
+import { resolveUnicodeFlag } from "../terminal/capabilities.js";
 
 export interface StreamResult {
   status: string;
@@ -12,10 +15,15 @@ export interface StreamResult {
 }
 
 /**
- * Stream a chat task to completion. The assistant's answer text streams to
- * stdout; plan/tool/evidence activity streams to stderr (so stdout stays a clean
- * answer for piping). Honors Ctrl+C: first press cancels the task gracefully, a
- * second press force-exits.
+ * Stream a chat task to completion through the terminal runtime.
+ *
+ * The SSE task-event stream is normalized into TerminalEvents and rendered by
+ * the (non-interactive) LineRenderer, which owns visible output: the assistant
+ * answer streams to stdout, activity/tool/patch diagnostics to stderr. The only
+ * thing handled outside the renderer is `approval.requested`, which is an *input*
+ * event — it prompts the user, then resolves the approval so the agent resumes.
+ *
+ * Honors Ctrl+C: first press cancels the task gracefully, a second force-exits.
  */
 export async function streamChatTask(
   ctx: Context,
@@ -25,21 +33,22 @@ export async function streamChatTask(
   opts: { showActivity: boolean } = { showActivity: true }
 ): Promise<StreamResult> {
   const out = ctx.out;
+  const unicode = resolveUnicodeFlag(ctx.config.get("ui.unicode") as boolean | undefined, process.env);
+  const renderer = new LineRenderer(out, { unicode, showActivity: opts.showActivity, showSummary: false });
+
   if (opts.showActivity) {
-    out.diag(
-      out.gray(
-        `↳ ${routing.providerId} · ${routing.model} · preset ${routing.presetId}` +
-          (routing.fallbackUsed ? " · fallback" : "") +
-          (routing.overridden ? " · override" : "") +
-          ` · ${routing.privacy}`
-      )
-    );
+    renderer.apply({
+      type: "routing",
+      provider: routing.providerId,
+      model: routing.model,
+      preset: routing.presetId,
+      fallback: routing.fallbackUsed,
+      overridden: routing.overridden,
+      privacy: routing.privacy,
+    });
   }
 
-  let content = "";
-  let wroteText = false;
   let cancelRequested = false;
-
   const abort = new AbortController();
   const onSigint = () => {
     if (!cancelRequested) {
@@ -55,178 +64,97 @@ export async function streamChatTask(
 
   try {
     for await (const event of streamTaskEvents(api.baseUrl, taskId, { signal: abort.signal })) {
-      switch (event.type) {
-        case "plan.created":
-        case "step.started": {
-          // Internal plan-state churn ("Analyze & Plan", "Generate Answer", …)
-          // is deliberately NOT surfaced. Activity is shown from observable
-          // actions (inspecting, reading, running, patching) instead.
-          break;
-        }
-        case "workspace.inspected": {
-          if (opts.showActivity) {
-            const count = (event.payload as any).resultCount;
-            const path = (event.payload as any).path;
-            const kind = (event.payload as any).kind;
-            const label = kind === "search_text" || kind === "search_files" ? "searching" : "inspecting";
-            out.diag(out.gray(`  ${label} ${path ? `${path} ` : "the project "}${out.gray(`· ${count} result${count === 1 ? "" : "s"}`)}`));
-          }
-          break;
-        }
-        case "evidence.persisted": {
-          const payload = event.payload as any;
-          if (typeof payload.deltaText === "string") {
-            content += payload.deltaText;
-            out.write(payload.deltaText);
-            wroteText = true;
-          } else if (typeof payload.path === "string") {
-            if (opts.showActivity) {
-              if (wroteText) {
-                out.write("\n");
-                wroteText = false;
-              }
-              out.diag(out.gray(`  ◦ read ${payload.path} (${payload.size ?? "?"} bytes) — evidence`));
-            }
-          }
-          break;
-        }
-        case "approval.requested": {
-          if (wroteText) {
-            out.write("\n");
-            wroteText = false;
-          }
-          const payload = event.payload as any;
-          const approvalId = payload.approvalId;
-          const kind = payload.kind;
-
-          try {
-            const approval = await api.getApproval(approvalId);
-
-            if (kind === "command") {
-              const details = approval.details as any;
-              out.print();
-              out.heading("Command Approval Request");
-              out.keyValue([
-                ["Command", `${details.executable} ${details.args.join(" ")}`],
-                ["Cwd", details.cwd || "(workspace root)"],
-                ["Purpose", details.purpose || "(not specified)"],
-                ["Risk", details.risk],
-              ]);
-              out.print();
-
-              let decision: string | null = null;
-              while (!decision) {
-                const answer = (await ask("Approve command? [y]es / [n]o / [t]rust pattern: ")).trim().toLowerCase();
-                if (answer === "y" || answer === "yes") {
-                  decision = "allow_once";
-                } else if (answer === "n" || answer === "no") {
-                  decision = "deny";
-                } else if (answer === "t" || answer === "trust") {
-                  decision = "trust_project";
-                }
-              }
-
-              const trustPattern = decision === "trust_project" ? details.pattern : undefined;
-
-              await api.resolveApproval(approvalId, {
-                projectId: approval.projectId,
-                decision: decision as any,
-                trustPattern,
-              });
-
-              if (decision === "deny") {
-                out.error("Command denied.");
-              } else {
-                out.success(`Command approved (${decision}). Resuming task…`);
-              }
-            } else if (kind === "change_set") {
-              const details = approval.details as any;
-              // The exact proposed diff lives in the approval details; the
-              // /diff endpoint only reports *applied* change sets, so we render
-              // straight from the pending approval here.
-              const proposedDiff: string | undefined = typeof details.diff === "string" ? details.diff : undefined;
-              out.print();
-              out.heading("Patch Proposal Approval Request");
-              out.print(`${out.bold("Explanation:")} ${details.explanation}`);
-              out.print(`${out.bold("Files to change:")} ${details.files.join(", ")}`);
-              out.print();
-              out.print(out.bold("Unified Diff:"));
-              if (proposedDiff) {
-                const diffLines = proposedDiff.split("\n");
-                for (const line of diffLines) {
-                  if (line.startsWith("+") && !line.startsWith("+++")) {
-                    out.print(out.green(line));
-                  } else if (line.startsWith("-") && !line.startsWith("---")) {
-                    out.print(out.red(line));
-                  } else {
-                    out.print(line);
-                  }
-                }
-              } else {
-                out.print("(no diff returned)");
-              }
-              out.print();
-
-              let decision: string | null = null;
-              while (!decision) {
-                const answer = (await ask("Apply this patch? [y]es / [n]o: ")).trim().toLowerCase();
-                if (answer === "y" || answer === "yes") {
-                  decision = "allow_once";
-                } else if (answer === "n" || answer === "no") {
-                  decision = "deny";
-                }
-              }
-
-              await api.resolveApproval(approvalId, {
-                projectId: approval.projectId,
-                decision: decision as any,
-              });
-
-              if (decision === "deny") {
-                out.error("Patch denied.");
-              } else {
-                out.success("Patch approved. Applying changes and resuming task…");
-              }
-            }
-          } catch (err: any) {
-            out.error(`Error resolving approval: ${err.message || err}`);
-          }
-          break;
-        }
-        case "tool.failed": {
-          // Non-terminal: a single tool call failed but the agent continues.
-          if (wroteText) { out.write("\n"); wroteText = false; }
-          if (opts.showActivity) {
-            const p = event.payload as any;
-            out.diag(out.gray(`  ◦ ${p.toolName ?? "tool"} failed: ${p.message ?? "unknown error"}`));
-          }
-          break;
-        }
-        case "task.failed": {
-          if (wroteText) out.write("\n");
-          out.error(`Task failed: ${(event.payload as any).message ?? "unknown error"}`);
-          break;
-        }
-        case "task.cancelled": {
-          if (wroteText) out.write("\n");
-          out.warn("Response cancelled.");
-          break;
-        }
-        case "task.interrupted": {
-          if (wroteText) out.write("\n");
-          out.warn("Response interrupted.");
-          break;
-        }
-        default:
-          break;
+      if (event.type === "approval.requested") {
+        await handleApproval(api, out, renderer, event);
+        continue;
       }
+      for (const te of mapTaskEvent(event)) renderer.apply(te);
     }
   } finally {
     process.removeListener("SIGINT", onSigint);
   }
 
-  if (wroteText) out.write("\n");
-
+  const content = renderer.end();
   const aggregate = await api.getTask(taskId);
   return { status: aggregate.task.status, content, aggregate };
+}
+
+/**
+ * Interactive approval. This is deliberately outside the renderer: it reads from
+ * the user and writes a decision back to the orchestrator, which then resumes the
+ * blocked tool. In YOLO sessions the orchestrator never emits approval.requested,
+ * so this path is skipped entirely.
+ */
+async function handleApproval(
+  api: MorrowApi,
+  out: Context["out"],
+  renderer: LineRenderer,
+  event: { payload: Record<string, unknown> }
+): Promise<void> {
+  renderer.flush();
+  const payload = event.payload as any;
+  const approvalId = payload.approvalId as string;
+  const kind = payload.kind as string;
+
+  try {
+    const approval = await api.getApproval(approvalId);
+
+    if (kind === "command") {
+      const details = approval.details as any;
+      out.print();
+      out.heading("Command Approval Request");
+      out.keyValue([
+        ["Command", `${details.executable} ${details.args.join(" ")}`],
+        ["Cwd", details.cwd || "(workspace root)"],
+        ["Purpose", details.purpose || "(not specified)"],
+        ["Risk", details.risk],
+      ]);
+      out.print();
+
+      let decision: string | null = null;
+      while (!decision) {
+        const answer = (await ask("Approve command? [y]es / [n]o / [t]rust pattern: ")).trim().toLowerCase();
+        if (answer === "y" || answer === "yes") decision = "allow_once";
+        else if (answer === "n" || answer === "no") decision = "deny";
+        else if (answer === "t" || answer === "trust") decision = "trust_project";
+      }
+
+      const trustPattern = decision === "trust_project" ? details.pattern : undefined;
+      await api.resolveApproval(approvalId, { projectId: approval.projectId, decision: decision as any, trustPattern });
+      if (decision === "deny") out.error("Command denied.");
+      else out.success(`Command approved (${decision}). Resuming task…`);
+    } else if (kind === "change_set") {
+      const details = approval.details as any;
+      const proposedDiff: string | undefined = typeof details.diff === "string" ? details.diff : undefined;
+      out.print();
+      out.heading("Patch Proposal Approval Request");
+      out.print(`${out.bold("Explanation:")} ${details.explanation}`);
+      out.print(`${out.bold("Files to change:")} ${details.files.join(", ")}`);
+      out.print();
+      out.print(out.bold("Unified Diff:"));
+      if (proposedDiff) {
+        for (const line of proposedDiff.split("\n")) {
+          if (line.startsWith("+") && !line.startsWith("+++")) out.print(out.green(line));
+          else if (line.startsWith("-") && !line.startsWith("---")) out.print(out.red(line));
+          else out.print(line);
+        }
+      } else {
+        out.print("(no diff returned)");
+      }
+      out.print();
+
+      let decision: string | null = null;
+      while (!decision) {
+        const answer = (await ask("Apply this patch? [y]es / [n]o: ")).trim().toLowerCase();
+        if (answer === "y" || answer === "yes") decision = "allow_once";
+        else if (answer === "n" || answer === "no") decision = "deny";
+      }
+
+      await api.resolveApproval(approvalId, { projectId: approval.projectId, decision: decision as any });
+      if (decision === "deny") out.error("Patch denied.");
+      else out.success("Patch approved. Applying changes and resuming task…");
+    }
+  } catch (err: any) {
+    out.error(`Error resolving approval: ${err.message || err}`);
+  }
 }
