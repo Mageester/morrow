@@ -48,6 +48,15 @@ describe("task event adapter", () => {
     ]);
   });
 
+  it("maps durable tool lifecycle events into a rich tool card", () => {
+    expect(mapTaskEvent({ type: "tool.started", payload: { id: "call-1", toolName: "run_command", purpose: "run tests", scope: "apps/cli" } })).toEqual([
+      { type: "tool.start", id: "call-1", name: "run_command", purpose: "run tests", scope: "apps/cli" },
+    ]);
+    expect(mapTaskEvent({ type: "tool.completed", payload: { id: "call-1", toolName: "run_command", status: "completed", elapsedMs: 42, summary: "exit 0", outputRef: "call-1" } })).toEqual([
+      { type: "tool.end", id: "call-1", status: "completed", elapsedMs: 42, summary: "exit 0", outputRef: "call-1" },
+    ]);
+  });
+
   it("maps terminal task transitions", () => {
     expect(mapTaskEvent({ type: "task.completed", payload: {} })).toEqual([{ type: "task.completed" }]);
     expect(mapTaskEvent({ type: "task.failed", payload: { message: "boom" } })).toEqual([{ type: "task.failed", message: "boom" }]);

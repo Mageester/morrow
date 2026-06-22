@@ -71,6 +71,26 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       return [];
     }
 
+    case "tool.started": {
+      const id = str(p.id);
+      const name = str(p.toolName);
+      if (!id || !name) return [];
+      const purpose = str(p.purpose);
+      const scope = str(p.scope);
+      return withSource([{ type: "tool.start", id, name, ...(purpose ? { purpose } : {}), ...(scope ? { scope } : {}) }]);
+    }
+
+    case "tool.completed": {
+      const id = str(p.id);
+      if (!id) return [];
+      const status = p.status === "failed" ? "failed" : "completed";
+      const elapsedMs = num(p.elapsedMs);
+      const summary = str(p.summary);
+      const error = str(p.error);
+      const outputRef = str(p.outputRef);
+      return withSource([{ type: "tool.end", id, status, ...(elapsedMs !== undefined ? { elapsedMs } : {}), ...(summary ? { summary } : {}), ...(error ? { error } : {}), ...(outputRef ? { outputRef } : {}) }]);
+    }
+
     case "tool.failed": {
       const name = str(p.toolName) ?? "tool";
       const message = str(p.message) ?? "unknown error";

@@ -750,6 +750,8 @@ You must run test/verification commands using run_command, and propose file modi
           createdAt: now(),
           startedAt: now()
         });
+        const toolStartedAt = Date.now();
+        event("tool.started", { id: tc.id, toolName: tc.name });
 
         let resultStr = "";
         let isSuccess = true;
@@ -1119,6 +1121,21 @@ You must run test/verification commands using run_command, and propose file modi
           errorType,
           errorMessage,
           completedAt: now()
+        });
+        let summary = isSuccess ? "completed" : "failed";
+        try {
+          const parsed = JSON.parse(resultStr) as { exitCode?: number | null; stdout?: string; stderr?: string; error?: string };
+          if (parsed.exitCode !== undefined) summary = `exit ${parsed.exitCode ?? "unknown"}`;
+          else if (parsed.error) summary = parsed.error.slice(0, 160);
+          else if (parsed.stdout) summary = parsed.stdout.replace(/\s+/g, " ").slice(0, 160);
+        } catch { /* non-JSON tool result uses its status summary */ }
+        event("tool.completed", {
+          id: tc.id,
+          toolName: tc.name,
+          status: isSuccess ? "completed" : "failed",
+          elapsedMs: Date.now() - toolStartedAt,
+          summary,
+          ...(isSuccess ? { outputRef: tc.id } : { error: errorMessage ?? summary }),
         });
 
         chatMessages.push({
