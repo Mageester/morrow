@@ -55,6 +55,11 @@ export interface RoutingInfo {
   privacy: string;
 }
 
+export interface NoticeEntry {
+  level: "info" | "warn" | "error";
+  text: string;
+}
+
 export interface TerminalState {
   meta?: SessionMeta;
   routing?: RoutingInfo;
@@ -62,15 +67,17 @@ export interface TerminalState {
   activity: ActivityEntry[];
   tools: ToolCard[];
   patches: PatchEntry[];
+  notices: NoticeEntry[];
   status: SessionStatus;
   lastError?: string;
 }
 
 export const MAX_CONVERSATION = 200;
 export const MAX_ACTIVITY = 80;
+export const MAX_NOTICES = 6;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], status: "idle" };
+  return { conversation: [], activity: [], tools: [], patches: [], notices: [], status: "idle" };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -219,7 +226,11 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       };
 
     case "notice":
-      return event.level === "error" ? { ...state, lastError: event.text } : state;
+      return {
+        ...state,
+        notices: bounded([...state.notices, { level: event.level, text: event.text }], MAX_NOTICES),
+        ...(event.level === "error" ? { lastError: event.text } : {}),
+      };
 
     case "task.completed":
       return { ...state, status: "completed" };

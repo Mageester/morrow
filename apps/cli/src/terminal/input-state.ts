@@ -1,0 +1,305 @@
+/**
+ * The input editor as a pure state machine.
+ *
+ * All keystroke handling for the interactive session lives here so it is fully
+ * unit-testable without a TTY: `reduceKey(state, key, ctx)` returns the next
+ * `InputState` and an `InputAction` for the controller to act on (submit a line,
+ * exit, cancel/interrupt, repaint, clear the screen). The controller owns side
+ * effects; this module owns behavior.
+ */
+import type { SlashCommand } from "./commands.js";
+import { clampSelection, filterCommands } from "./completion.js";
+import { fuzzyPalette, type PaletteItem } from "./palette.js";
+
+export type Overlay = "none" | "palette";
+
+export interface InputState {
+  buffer: string;
+  cursor: number;
+  /** Submitted lines, oldest→newest, for ↑/↓ recall. */
+  history: string[];
+  /** -1 means "editing a fresh line"; otherwise an index into history. */
+  historyIndex: number;
+  /** Saved in-progress buffer while recalling history. */
+  draft: string;
+  overlay: Overlay;
+  completionSelected: number;
+  completionDismissed: boolean;
+  paletteQuery: string;
+  paletteSelected: number;
+  /** True once Ctrl+C was pressed on an empty idle line (press again to exit). */
+  confirmExit: boolean;
+}
+
+export interface KeyInput {
+  str?: string | undefined;
+  name?: string | undefined;
+  ctrl?: boolean | undefined;
+  meta?: boolean | undefined;
+  shift?: boolean | undefined;
+}
+
+export type InputAction =
+  | { type: "none" }
+  | { type: "repaint" }
+  | { type: "submit"; value: string }
+  | { type: "clear-screen" }
+  | { type: "exit" }
+  | { type: "interrupt" };
+
+export interface KeyContext {
+  commands: SlashCommand[];
+  paletteItems: PaletteItem[];
+}
+
+export function initialInputState(history: string[] = []): InputState {
+  return {
+    buffer: "",
+    cursor: 0,
+    history,
+    historyIndex: -1,
+    draft: "",
+    overlay: "none",
+    completionSelected: 0,
+    completionDismissed: false,
+    paletteQuery: "",
+    paletteSelected: 0,
+    confirmExit: false,
+  };
+}
+
+/** Whether the slash-completion menu is currently active. */
+export function completionActive(s: InputState): boolean {
+  return s.overlay === "none" && s.buffer.startsWith("/") && !s.buffer.includes(" ") && !s.completionDismissed;
+}
+
+export function completionMatches(s: InputState, ctx: KeyContext): SlashCommand[] {
+  return completionActive(s) ? filterCommands(s.buffer, ctx.commands) : [];
+}
+
+export function paletteMatches(s: InputState, ctx: KeyContext): PaletteItem[] {
+  return s.overlay === "palette" ? fuzzyPalette(s.paletteQuery, ctx.paletteItems) : [];
+}
+
+const r = (state: InputState, action: InputAction = { type: "repaint" }): { state: InputState; action: InputAction } => ({ state, action });
+
+/** Fold one keypress into the next state + an action for the controller. */
+export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { state: InputState; action: InputAction } {
+  const s: InputState = { ...state };
+  const name = key.name;
+
+  // Any key other than Ctrl+C cancels a pending exit confirmation.
+  if (!(key.ctrl && name === "c")) s.confirmExit = false;
+
+  // ── Control chords ────────────────────────────────────────────────────────
+  if (key.ctrl && name === "c") return handleInterrupt(s);
+  if (key.ctrl && name === "l") return r(s, { type: "clear-screen" });
+  if (key.ctrl && name === "k") {
+    s.overlay = s.overlay === "palette" ? "none" : "palette";
+    s.paletteQuery = "";
+    s.paletteSelected = 0;
+    return r(s);
+  }
+  if (key.ctrl && name === "u") {
+    if (s.overlay === "palette") {
+      s.paletteQuery = "";
+      s.paletteSelected = 0;
+    } else {
+      s.buffer = s.buffer.slice(s.cursor);
+      s.cursor = 0;
+    }
+    return r(s);
+  }
+
+  // ── Palette overlay ──────────────────────────────────────────────────────
+  if (s.overlay === "palette") return reducePalette(s, key, ctx);
+
+  // ── Editor + completion ──────────────────────────────────────────────────
+  switch (name) {
+    case "return":
+    case "enter": {
+      if (key.shift || key.meta) {
+        // Newline (multiline input).
+        s.buffer = s.buffer.slice(0, s.cursor) + "\n" + s.buffer.slice(s.cursor);
+        s.cursor++;
+        return r(s);
+      }
+      const ms = completionMatches(s, ctx);
+      const value = completionActive(s) && ms.length > 0 ? "/" + ms[clampSelection(s.completionSelected, ms.length)]!.name : s.buffer;
+      return r(commitHistory(s, value), { type: "submit", value });
+    }
+    case "tab": {
+      const ms = completionMatches(s, ctx);
+      if (ms.length > 0) {
+        const sel = clampSelection(s.completionSelected, ms.length);
+        const completed = "/" + ms[sel]!.name;
+        if (s.buffer !== completed) {
+          s.buffer = completed + " ";
+          s.cursor = s.buffer.length;
+          s.completionDismissed = true;
+        } else {
+          s.completionSelected = clampSelection(sel + 1, ms.length);
+        }
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    }
+    case "up":
+      if (completionActive(s)) {
+        s.completionSelected = clampSelection(s.completionSelected - 1, completionMatches(s, ctx).length);
+        return r(s);
+      }
+      return r(historyPrev(s));
+    case "down":
+      if (completionActive(s)) {
+        s.completionSelected = clampSelection(s.completionSelected + 1, completionMatches(s, ctx).length);
+        return r(s);
+      }
+      return r(historyNext(s));
+    case "escape":
+      if (completionActive(s)) {
+        s.completionDismissed = true;
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    case "backspace":
+      if (s.cursor > 0) {
+        s.buffer = s.buffer.slice(0, s.cursor - 1) + s.buffer.slice(s.cursor);
+        s.cursor--;
+        s.completionDismissed = false;
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    case "delete":
+      if (s.cursor < s.buffer.length) {
+        s.buffer = s.buffer.slice(0, s.cursor) + s.buffer.slice(s.cursor + 1);
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    case "left":
+      if (s.cursor > 0) {
+        s.cursor--;
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    case "right":
+      if (s.cursor < s.buffer.length) {
+        s.cursor++;
+        return r(s);
+      }
+      return r(s, { type: "none" });
+    case "home":
+      s.cursor = 0;
+      return r(s);
+    case "end":
+      s.cursor = s.buffer.length;
+      return r(s);
+    default:
+      break;
+  }
+
+  // Printable insertion (including pasted runs; control bytes are ignored).
+  if (key.str && !key.ctrl && !key.meta) {
+    const clean = sanitizePrintable(key.str);
+    if (clean.length > 0) {
+      s.buffer = s.buffer.slice(0, s.cursor) + clean + s.buffer.slice(s.cursor);
+      s.cursor += clean.length;
+      s.completionSelected = 0;
+      s.completionDismissed = false;
+      return r(s);
+    }
+  }
+  return r(s, { type: "none" });
+}
+
+function handleInterrupt(s: InputState): { state: InputState; action: InputAction } {
+  if (s.overlay === "palette") {
+    s.overlay = "none";
+    s.paletteQuery = "";
+    return r(s);
+  }
+  if (completionActive(s)) {
+    s.completionDismissed = true;
+    return r(s);
+  }
+  if (s.buffer.length > 0) {
+    s.buffer = "";
+    s.cursor = 0;
+    return r(s);
+  }
+  if (s.confirmExit) return r(s, { type: "exit" });
+  s.confirmExit = true;
+  return r(s);
+}
+
+function reducePalette(s: InputState, key: KeyInput, ctx: KeyContext): { state: InputState; action: InputAction } {
+  const items = fuzzyPalette(s.paletteQuery, ctx.paletteItems);
+  switch (key.name) {
+    case "escape":
+      s.overlay = "none";
+      s.paletteQuery = "";
+      return r(s);
+    case "return":
+    case "enter": {
+      if (items.length === 0) return r(s, { type: "none" });
+      const sel = clampSelection(s.paletteSelected, items.length);
+      const value = items[sel]!.run;
+      s.overlay = "none";
+      s.paletteQuery = "";
+      s.paletteSelected = 0;
+      return r(commitHistory(s, value), { type: "submit", value });
+    }
+    case "up":
+      s.paletteSelected = clampSelection(s.paletteSelected - 1, items.length);
+      return r(s);
+    case "down":
+    case "tab":
+      s.paletteSelected = clampSelection(s.paletteSelected + 1, items.length);
+      return r(s);
+    case "backspace":
+      s.paletteQuery = s.paletteQuery.slice(0, -1);
+      s.paletteSelected = 0;
+      return r(s);
+    default:
+      if (key.str && !key.ctrl && !key.meta) {
+        const clean = sanitizePrintable(key.str);
+        if (clean) {
+          s.paletteQuery += clean;
+          s.paletteSelected = 0;
+          return r(s);
+        }
+      }
+      return r(s, { type: "none" });
+  }
+}
+
+function commitHistory(s: InputState, value: string): InputState {
+  const next = { ...s, buffer: "", cursor: 0, historyIndex: -1, draft: "", completionDismissed: false, completionSelected: 0 };
+  const trimmed = value.trim();
+  if (trimmed && s.history[s.history.length - 1] !== trimmed) next.history = [...s.history, trimmed];
+  return next;
+}
+
+function historyPrev(s: InputState): InputState {
+  if (s.history.length === 0) return s;
+  const idx = s.historyIndex === -1 ? s.history.length - 1 : Math.max(0, s.historyIndex - 1);
+  const draft = s.historyIndex === -1 ? s.buffer : s.draft;
+  const buffer = s.history[idx]!;
+  return { ...s, historyIndex: idx, draft, buffer, cursor: buffer.length };
+}
+
+function historyNext(s: InputState): InputState {
+  if (s.historyIndex === -1) return s;
+  const idx = s.historyIndex + 1;
+  if (idx >= s.history.length) {
+    return { ...s, historyIndex: -1, buffer: s.draft, cursor: s.draft.length };
+  }
+  const buffer = s.history[idx]!;
+  return { ...s, historyIndex: idx, buffer, cursor: buffer.length };
+}
+
+/** Strip control characters from pasted/typed input but keep newlines/tabs out. */
+function sanitizePrintable(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/[\x00-\x1f\x7f]/g, "");
+}

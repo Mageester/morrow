@@ -9,6 +9,12 @@ import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
 import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
+import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
+import { nodeTermIO } from "../terminal/runtime.js";
+import { shouldUseInteractive } from "../terminal/capabilities.js";
+import { streamTaskEvents } from "../client/sse.js";
+import type { SessionMeta } from "../terminal/events.js";
+import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
@@ -76,6 +82,97 @@ export async function chatCommand(ctx: Context): Promise<number> {
   return runRepl(ctx, api, project.id, conversation, session);
 }
 
+/**
+ * The full-screen interactive session: one event-driven terminal application
+ * wired to the live orchestrator. Replaces the line REPL on capable terminals.
+ */
+async function runInteractiveSession(
+  ctx: Context,
+  api: MorrowApi,
+  projectId: string,
+  conversation: Conversation,
+  session: SessionState,
+  unicode: boolean
+): Promise<number> {
+  const project = await api.getProject(projectId);
+  const providerStatus = await api.providerStatus().catch(() => null);
+  const providerName = session.provider ?? providerStatus?.provider ?? "auto";
+  const modelName = session.model ?? providerStatus?.model ?? "auto";
+  const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
+  const git = gitSummary(project.workspacePath);
+  const name = (ctx.config.get("user.name") as string | undefined)?.trim();
+
+  const meta: SessionMeta = {
+    greeting: greeting(new Date()),
+    ...(name ? { name } : {}),
+    projectName,
+    workspacePath: project.workspacePath,
+    branch: gitSummaryText(git),
+    provider: providerName,
+    model: modelName,
+    privacy: privacyLabel(providerName),
+    mode: modeLabel(session.mode, session.autoApprove),
+    memory: session.useMemory,
+    autoApprove: session.autoApprove,
+  };
+  const settings: SessionSettings = {
+    mode: session.mode,
+    autoApprove: session.autoApprove,
+    ...(session.provider ? { provider: session.provider } : {}),
+    ...(session.model ? { model: session.model } : {}),
+    preset: session.preset,
+    useMemory: session.useMemory,
+  };
+
+  const backend: SessionBackend = {
+    async send(text, opts) {
+      const sent = await api.sendMessage(conversation.id, text, {
+        preset: opts.preset,
+        ...(opts.provider ? { providerId: opts.provider } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        mode: opts.mode,
+        useMemory: opts.useMemory,
+        ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
+      });
+      return { taskId: sent.task.id };
+    },
+    subscribe: (taskId, signal) => streamTaskEvents(api.baseUrl, taskId, { signal }),
+    cancel: (taskId) => api.cancelTask(taskId),
+    async getApproval(id) {
+      const a = await api.getApproval(id);
+      return { id: a.id, kind: a.kind, details: a.details, projectId: a.projectId };
+    },
+    resolveApproval: (id, decision, trustPattern) =>
+      api
+        .resolveApproval(id, { projectId: project.id, decision: decision as any, ...(trustPattern ? { trustPattern } : {}) })
+        .then(() => undefined),
+  };
+
+  // Real model data feeds the Ctrl+K palette (project/session search deferred).
+  const models = await api.listModels().catch(() => []);
+  const extraPaletteItems: PaletteItem[] = models
+    .filter((m) => m.available)
+    .slice(0, 40)
+    .map((m) => ({ kind: "model" as const, label: m.model.id, hint: m.model.label, run: `/model ${m.model.id}` }));
+
+  const app = new InteractiveSession({
+    io: nodeTermIO(process.stdout),
+    stdin: process.stdin,
+    out: ctx.out,
+    unicode,
+    meta,
+    settings,
+    backend,
+    extraPaletteItems,
+  });
+  try {
+    await app.run();
+  } finally {
+    app.teardown();
+  }
+  return EXIT.OK;
+}
+
 async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
   const resumeId = flagString(ctx.flags, "resume");
   if (resumeId !== undefined) {
@@ -136,6 +233,13 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   let conversation = initial;
   const out = ctx.out;
   const unicode = resolveUnicode(ctx);
+
+  // Capable interactive terminal → the full-screen event-driven session app.
+  // Everything else (redirected, CI, JSON, dumb, MORROW_TUI=0) → line renderer.
+  if (shouldUseInteractive({ json: out.json, isTTY: Boolean(process.stdout.isTTY), stdinIsTTY: Boolean(process.stdin.isTTY), env: process.env })) {
+    return runInteractiveSession(ctx, api, projectId, conversation, session, unicode);
+  }
+
   const project = await api.getProject(projectId);
   const providerStatus = await api.providerStatus().catch(() => null);
 
