@@ -149,6 +149,10 @@ async function runInteractiveSession(
         .then(() => undefined),
     getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
     getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
+    search: (query) =>
+      api
+        .search(project.id, query, { limit: 25 })
+        .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
   };
 
   // Real model data feeds the Ctrl+K palette (project/session search deferred).

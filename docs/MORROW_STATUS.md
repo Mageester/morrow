@@ -28,7 +28,18 @@ Snapshot of what is **verified working** right now, updated as slices land.
 
 See `CONTINUATION.md` for the exact next step.
 
+## Recently verified
+
+- **Full-text search (B1)** — project-scoped FTS5 over conversations, messages,
+  tasks, and memory. `search_index` virtual table + triggers (migration 10),
+  `searchRepository`, `GET /api/projects/:id/search`, CLI `/search` command +
+  `MorrowApi.search`. Tests: orchestrator 17 (`search.test.ts`,
+  `search-api.test.ts`), CLI 3 (`api-search.test.ts`). `pnpm check/test/build`
+  green.
+
 ## Changelog (newest first)
 
+- 2026-06-22 — B1 full-text session & memory search landed (FTS5). Matrix §3 +
+  §7 FTS rows → VERIFIED.
 - 2026-06-22 — Authored parity matrix, master goal, backlog, status, and
   continuation docs from first-hand inspection of both repos. Baseline captured.

@@ -9,44 +9,50 @@
 cd "C:/Users/aidan/OneDrive/Documents/PlaceHolder"
 git checkout feat/morrow-agent-terminal
 pnpm install
-pnpm test            # expect green baseline
+pnpm check && pnpm test && pnpm build   # expect green
 ```
 
 ## Where we are
 
-Durable docs written (parity matrix, master goal, backlog, status, this file).
-Baseline green: 105 tests. Beginning backlog item **B1 — Session & memory search
-(FTS)**.
+- Durable docs written and maintained (parity matrix, master goal, backlog,
+  status, this file).
+- **B1 — Full-text search: DONE & VERIFIED.** FTS5 `search_index` (migration 10)
+  over conversations/messages/tasks/memory; `searchRepository`;
+  `GET /api/projects/:id/search`; CLI `/search` + `MorrowApi.search`. 20
+  orchestrator + 3 CLI tests green. `pnpm check/test/build` green.
 
-## Exact next step
+## Exact next step — B2: Memory provenance + pin + tiers
 
-Implement **B1. Session & memory search (FTS5)**:
-
-1. `packages/contracts/src/index.ts` — add `SearchQuerySchema`,
-   `SearchHitSchema`, `SearchResponseSchema` (kinds: `conversation`, `message`,
-   `task`, `memory`).
-2. `services/orchestrator/src/repositories/search.ts` — new repo. Create FTS5
-   virtual tables + triggers in a migration in `database.ts`; expose
-   `search(projectId, query, opts)` returning ranked hits with snippets.
-3. `services/orchestrator/src/server.ts` — add
-   `GET /api/projects/:projectId/search?q=...&kind=...`.
-4. `services/orchestrator/src/repositories/search.test.ts` — index fixtures,
-   assert ranking, snippet, scope filter, and empty-query handling.
-5. `apps/cli` — add `/search` slash command + `search` subcommand using the API
-   client; render hits in the TUI.
-6. Run `pnpm check && pnpm test && pnpm build`. Update matrix §3/§7 rows + status.
-7. Commit `feat(search): full-text session and memory search` and push.
+1. `packages/contracts/src/index.ts` — extend `MemoryScopeSchema` with
+   `episodic`, `procedural`, `knowledge`; add `pinned: z.boolean()` and an
+   `originTaskId: z.string().nullable()` (or a `provenance` object) to
+   `MemoryEntrySchema`; extend `CreateMemoryEntrySchema` with optional `pinned`.
+2. `services/orchestrator/src/database.ts` — migration 11: `ALTER TABLE
+   memory_entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0; ADD COLUMN
+   origin_task_id TEXT;` (FTS triggers already key off `content`, no change
+   needed there — but update the `search_mem_*` body if scope label changes).
+3. `services/orchestrator/src/repositories/memory.ts` — map `pinned`/origin;
+   add `setPinned(id, pinned, updatedAt)`; make retrieval order pinned-first
+   (`ORDER BY pinned DESC, created_at ASC`).
+4. `services/orchestrator/src/server.ts` — extend `PATCH /api/memory/:id` to
+   accept `{ pinned?: boolean }`; allow new scopes in create.
+5. Tests: extend `test/memory.test.ts` — pinned ordering, new scopes round-trip,
+   origin provenance preserved. Update `database.test.ts` migration count to 11.
+6. CLI: surface pin in `/memory` flow (optional this slice; can defer to B-later).
+7. `pnpm check && pnpm test && pnpm build`. Update matrix §7 rows
+   (Episodic/procedural/knowledge, Provenance, Pin) + status. Commit
+   `feat(memory): provenance, pinning, and memory tiers` and push.
 
 ## Failing test to write first
 
-`services/orchestrator/src/repositories/search.test.ts` — "ranks an exact phrase
-match in a message above a partial match and returns a snippet" (write red, then
-implement to green).
+`test/memory.test.ts` — "returns pinned entries before unpinned ones regardless
+of creation order" (write red against current repo, then implement).
 
 ## Open risks / notes
 
-- `better-sqlite3` is already a dependency; confirm FTS5 is compiled in (it is in
-  the prebuilt binaries). Add a guard + clear error if `fts5` is unavailable.
-- Keep search **project-scoped**; never index across projects.
-- Do not index secrets: exclude memory entries flagged secret (none yet) and
-  redact obvious token patterns at index time.
+- Migration 11 changes `memory_entries`; the FTS `search_mem_au` trigger fires on
+  `UPDATE OF content` only — pin/origin updates won't touch the index, which is
+  correct (pin state isn't searchable). No trigger change required.
+- Bumping `MemoryScopeSchema` is a breaking enum widening; check every consumer
+  (`server.ts` create route conditionals, CLI memory command) compiles.
+- Keep memory strictly project-isolated (existing invariant + test).

@@ -14,6 +14,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "new", arg: "[title]", description: "start a new conversation" },
   { name: "resume", arg: "[id]", description: "list or resume a conversation" },
   { name: "sessions", description: "list recent conversations" },
+  { name: "search", arg: "<query>", description: "full-text search across this project" },
   { name: "project", description: "show the active project" },
   { name: "provider", arg: "[id]", description: "show or set the active provider" },
   { name: "model", arg: "[id]", description: "show or set the active model" },

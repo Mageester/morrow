@@ -21,6 +21,8 @@ import type {
   AuditEntry,
   ProviderTestResult,
   Health,
+  SearchResponse,
+  SearchKind,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
@@ -197,6 +199,16 @@ export class MorrowApi {
   }
   deleteMemory(projectId: string, id: string) {
     return this.req<void>("DELETE", `/api/memory/${id}`, { projectId });
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────────────
+  search(projectId: string, query: string, opts: { kinds?: SearchKind[]; conversationId?: string; limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    qs.set("q", query);
+    for (const k of opts.kinds ?? []) qs.append("kind", k);
+    if (opts.conversationId) qs.set("conversationId", opts.conversationId);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return this.req<SearchResponse>("GET", `/api/projects/${projectId}/search?${qs}`);
   }
 
   // ── Onboarding State ────────────────────────────────────────────────────────

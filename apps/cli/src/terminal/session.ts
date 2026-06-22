@@ -61,6 +61,7 @@ export interface SessionBackend {
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
   getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
+  search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
 }
 
 export interface SessionSettings {
@@ -288,6 +289,9 @@ export class InteractiveSession {
       case "status":
         this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
+      case "search":
+        await this.showSearch(arg);
+        return void this.requestPaint(false);
       case "output":
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
@@ -295,6 +299,29 @@ export class InteractiveSession {
         this.pushNotice("warn", `/${cmd} isn't available in the interactive view yet — run with MORROW_TUI=0 for the classic command.`);
         return void this.requestPaint(false);
     }
+  }
+
+  private async showSearch(query: string): Promise<void> {
+    if (!query.trim()) {
+      this.pushNotice("info", "Usage: /search <query>");
+      return;
+    }
+    if (!this.deps.backend.search) {
+      this.pushNotice("warn", "Search isn't available in this session.");
+      return;
+    }
+    const hits = await this.deps.backend.search(query).catch(() => null);
+    if (hits === null) {
+      this.pushNotice("warn", "Search failed — is the orchestrator reachable?");
+      return;
+    }
+    if (hits.length === 0) {
+      this.pushNotice("info", `No matches for "${query}".`);
+      return;
+    }
+    const lines = hits.map((h, i) => `${String(i + 1).padStart(3, " ")}  [${h.kind}] ${h.title}  —  ${h.snippet.replace(/\s+/g, " ").trim()}`);
+    this.outputViewer = { title: `search: ${query} (${hits.length})`, lines };
+    this.input = { ...this.input, overlay: "output" };
   }
 
   private async showOutput(toolId?: string): Promise<void> {

@@ -23,6 +23,8 @@ import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
+import { searchRepository } from "./repositories/search.js";
+import { SearchKindSchema } from "@morrow/contracts";
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
@@ -70,6 +72,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const convs = conversationsRepository(deps.db);
   const routingRepo = taskRoutingRepository(deps.db);
   const memory = memoryRepository(deps.db);
+  const search = searchRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
 
@@ -719,6 +722,26 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   // ── Memory ──────────────────────────────────────────────────────────────────
+
+  app.get("/api/projects/:projectId/search", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const q = z
+      .object({
+        q: z.string().max(500).optional().default(""),
+        kind: z.union([SearchKindSchema, z.array(SearchKindSchema)]).optional(),
+        conversationId: z.string().min(1).optional(),
+        limit: z.coerce.number().int().positive().max(100).optional(),
+      })
+      .parse(request.query);
+    const kinds = q.kind === undefined ? undefined : Array.isArray(q.kind) ? q.kind : [q.kind];
+    return search.search(projectId, q.q, {
+      ...(kinds ? { kinds } : {}),
+      ...(q.conversationId ? { conversationId: q.conversationId } : {}),
+      ...(q.limit ? { limit: q.limit } : {}),
+    });
+  });
 
   app.get("/api/projects/:projectId/memory", async (request) => {
     const { projectId } = request.params as { projectId: string };

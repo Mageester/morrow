@@ -184,6 +184,32 @@ export const CreateMemoryEntrySchema=z.object({
   conversationId:z.string().optional(),
 }).strict();
 
+// ── Full-text session & memory search ────────────────────────────────────────
+// Project-scoped FTS over conversations, messages, tasks, and memory. Search is
+// never cross-project; results carry a provenance kind and a highlighted snippet
+// so the user can see why a hit matched.
+export const SearchKindSchema=z.enum(["conversation","message","task","memory"]);
+export const SearchHitSchema=z.object({
+  kind:SearchKindSchema,
+  refId:z.string(),
+  projectId:z.string(),
+  conversationId:z.string().nullable(),
+  title:z.string(),
+  snippet:z.string(),
+  createdAt:z.string(),
+  score:z.number(),
+}).strict();
+export const SearchResponseSchema=z.object({
+  version:SchemaVersionSchema,
+  query:z.string(),
+  projectId:z.string(),
+  total:z.number().int().nonnegative(),
+  hits:z.array(SearchHitSchema),
+}).strict();
+export type SearchKind=z.infer<typeof SearchKindSchema>;
+export type SearchHit=z.infer<typeof SearchHitSchema>;
+export type SearchResponse=z.infer<typeof SearchResponseSchema>;
+
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;

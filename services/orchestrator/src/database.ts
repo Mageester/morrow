@@ -141,6 +141,88 @@ export const migrations:Migration[]=[
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+  `},
+  {id:10,name:"full_text_search_index",sql:`
+    CREATE VIRTUAL TABLE search_index USING fts5(
+      kind UNINDEXED,
+      ref_id UNINDEXED,
+      project_id UNINDEXED,
+      conversation_id UNINDEXED,
+      title,
+      body,
+      created_at UNINDEXED,
+      tokenize = 'porter unicode61'
+    );
+
+    -- Conversations: title is the searchable body.
+    CREATE TRIGGER search_conv_ai AFTER INSERT ON conversations BEGIN
+      INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      VALUES('conversation', new.id, new.project_id, new.id, new.title, new.title, new.created_at);
+    END;
+    CREATE TRIGGER search_conv_au AFTER UPDATE OF title ON conversations BEGIN
+      UPDATE search_index SET title=new.title, body=new.title
+      WHERE kind='conversation' AND ref_id=new.id;
+    END;
+    -- Deleting a conversation clears its own entry plus every message and
+    -- conversation-scoped memory entry sharing its id. This is robust whether or
+    -- not foreign-key cascades fire child triggers.
+    CREATE TRIGGER search_conv_ad AFTER DELETE ON conversations BEGIN
+      DELETE FROM search_index WHERE conversation_id=old.id;
+    END;
+
+    -- Messages: indexed by their content, project derived from the conversation.
+    CREATE TRIGGER search_msg_ai AFTER INSERT ON conversation_messages BEGIN
+      INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      VALUES('message', new.id,
+        (SELECT project_id FROM conversations WHERE id=new.conversation_id),
+        new.conversation_id, new.role, new.content, new.created_at);
+    END;
+    CREATE TRIGGER search_msg_au AFTER UPDATE OF content ON conversation_messages BEGIN
+      UPDATE search_index SET body=new.content WHERE kind='message' AND ref_id=new.id;
+    END;
+    CREATE TRIGGER search_msg_ad AFTER DELETE ON conversation_messages BEGIN
+      DELETE FROM search_index WHERE kind='message' AND ref_id=old.id;
+    END;
+
+    -- Tasks: searchable by kind/type and status.
+    CREATE TRIGGER search_task_ai AFTER INSERT ON tasks BEGIN
+      INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      VALUES('task', new.id, new.project_id, NULL, new.type, new.type||' '||new.status, new.created_at);
+    END;
+    CREATE TRIGGER search_task_au AFTER UPDATE OF status ON tasks BEGIN
+      UPDATE search_index SET body=new.type||' '||new.status WHERE kind='task' AND ref_id=new.id;
+    END;
+    CREATE TRIGGER search_task_ad AFTER DELETE ON tasks BEGIN
+      DELETE FROM search_index WHERE kind='task' AND ref_id=old.id;
+    END;
+
+    -- Memory: searchable by content; scope label kept as the title.
+    CREATE TRIGGER search_mem_ai AFTER INSERT ON memory_entries BEGIN
+      INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      VALUES('memory', new.id, new.project_id, new.conversation_id, new.scope, new.content, new.created_at);
+    END;
+    CREATE TRIGGER search_mem_au AFTER UPDATE OF content ON memory_entries BEGIN
+      UPDATE search_index SET body=new.content WHERE kind='memory' AND ref_id=new.id;
+    END;
+    CREATE TRIGGER search_mem_ad AFTER DELETE ON memory_entries BEGIN
+      DELETE FROM search_index WHERE kind='memory' AND ref_id=old.id;
+    END;
+
+    -- Safety net for project deletion: clears any remaining rows for the project.
+    CREATE TRIGGER search_project_ad AFTER DELETE ON projects BEGIN
+      DELETE FROM search_index WHERE project_id=old.id;
+    END;
+
+    -- Backfill existing rows so search works over historical data immediately.
+    INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      SELECT 'conversation', id, project_id, id, title, title, created_at FROM conversations;
+    INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      SELECT 'message', m.id, c.project_id, m.conversation_id, m.role, m.content, m.created_at
+      FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id;
+    INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      SELECT 'task', id, project_id, NULL, type, type||' '||status, created_at FROM tasks;
+    INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+      SELECT 'memory', id, project_id, conversation_id, scope, content, created_at FROM memory_entries;
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

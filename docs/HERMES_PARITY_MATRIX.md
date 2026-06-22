@@ -78,7 +78,7 @@
 | Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` | Reboot-survival integration test |
 | Scheduled jobs (cron) | `cron/` | MISSING | — | Scheduler + isolated runs |
 | Idempotency | Hermes | MISSING | — | Idempotency keys on task creation |
-| Session search (FTS) | `agent/memory_manager.py` FTS5 | MISSING | — | FTS over conversations/messages/tasks |
+| Session search (FTS) | `agent/memory_manager.py` FTS5 | VERIFIED | `repositories/search.ts`, migration 10 triggers, `/api/projects/:id/search`, `test/search.test.ts` (13) + `test/search-api.test.ts` (4) + CLI `test/api-search.test.ts` (3) | — |
 
 ## 4. Execution backends
 
@@ -118,7 +118,7 @@
 |---|---|---|---|---|
 | Working/project/user memory | `memory_manager.py` | VERIFIED | `repositories/memory.ts`, scopes project/conversation/user | — |
 | Episodic / procedural / knowledge | Hermes tiers | MISSING | — | Extra scopes + retrieval |
-| FTS session search | Hermes FTS5 | MISSING | — | See §3 |
+| FTS session search | Hermes FTS5 | VERIFIED | `repositories/search.ts` indexes the `memory` kind too; project-scoped; `test/search.test.ts` covers memory matching + project isolation | — |
 | Provenance | Hermes | PARTIAL | `source` field (user/summary) | Rich provenance (taskId, origin) |
 | Explain / edit / delete | Hermes | VERIFIED | `/api/memory/:id` PATCH/DELETE | — |
 | Pin | Hermes | MISSING | — | `pinned` flag + ordering |
