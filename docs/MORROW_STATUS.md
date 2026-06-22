@@ -2,12 +2,15 @@
 
 Snapshot of what is **verified working** right now, updated as slices land.
 
-## Build / test health (2026-06-22)
+## Build / test health (2026-06-22, latest)
 
-- `pnpm test`: **105 tests / 23 files green** (apps/cli). Contracts + orchestrator
-  suites green (turbo-cached).
-- Orchestrator HTTP routes: ~45 (`services/orchestrator/src/server.ts`).
-- Agent tools: 10. Built-in signed skills: 6.
+- `pnpm check`: green. `pnpm build`: green.
+- `pnpm test`: **orchestrator 215 · CLI 112 · contracts 4 · web 8 — all green**
+  (up from the 105-CLI baseline; ~90 new tests added this session).
+- Orchestrator smoke suites: `sqlite`, `vertical-slice`, `agent-alpha`,
+  `providers` — all pass.
+- `pnpm run test:e2e` (Playwright): 4 passed.
+- DB migrations: 13. Agent tools: 10. Built-in signed skills: 6.
 
 ## Verified capabilities (evidence in tree)
 
