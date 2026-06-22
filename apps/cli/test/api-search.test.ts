@@ -40,6 +40,26 @@ describe("MorrowApi.search", () => {
   });
 });
 
+describe("MorrowApi memory pin/add", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("PATCHes a pinned flag and POSTs pinned on add", async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: any) => {
+        bodies.push(init?.body ? JSON.parse(init.body) : null);
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      })
+    );
+    const api = new MorrowApi("http://127.0.0.1:9999");
+    await api.setMemoryPinned("p1", "m1", true);
+    await api.addMemory("p1", "knowledge", "fact", undefined, true);
+    expect(bodies[0]).toEqual({ projectId: "p1", pinned: true });
+    expect(bodies[1]).toMatchObject({ scope: "knowledge", content: "fact", pinned: true });
+  });
+});
+
 describe("slash command registry", () => {
   it("registers /search so help and completion stay in sync", () => {
     const search = SLASH_COMMANDS.find((c) => c.name === "search");

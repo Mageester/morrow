@@ -7,6 +7,7 @@ import {
   StructuredApiErrorSchema,
   SendMessageSchema,
   CreateMemoryEntrySchema,
+  UpdateMemoryEntrySchema,
   UpdateConversationSchema,
   ApprovalStatusSchema,
   ResolveApprovalSchema,
@@ -767,6 +768,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       scope: body.scope,
       content: body.content,
       source: "user",
+      ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
       createdAt: new Date().toISOString(),
     });
     reply.status(201);
@@ -784,9 +786,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { id } = request.params as { id: string };
     const existing = memory.get(id);
     if (!existing) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
-    const body = z.object({ projectId: z.string().min(1), enabled: z.boolean() }).parse(request.body);
+    const body = UpdateMemoryEntrySchema.parse(request.body);
     if (existing.projectId !== body.projectId) throw new ApiError(404, "Memory entry not found", "NOT_FOUND");
-    return memory.setEnabled(id, body.enabled, new Date().toISOString());
+    const now = new Date().toISOString();
+    let updated = existing;
+    if (body.enabled !== undefined) updated = memory.setEnabled(id, body.enabled, now)!;
+    if (body.pinned !== undefined) updated = memory.setPinned(id, body.pinned, now)!;
+    return updated;
   });
 
   app.delete("/api/memory/:id", async (request, reply) => {

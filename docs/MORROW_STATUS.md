@@ -30,6 +30,11 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Memory provenance, pinning, tiers (B2)** — `pinned` + `originTaskId` (FK to
+  tasks, migration 11); `episodic`/`procedural`/`knowledge` recall tiers;
+  pin-first ordering in `listActiveForConversation`/`listByProject`; PATCH
+  `{pinned}`; CLI `memory pin/unpin` + pinned column. Tests: orchestrator 173
+  green (memory + contracts updated), CLI 109 green.
 - **Full-text search (B1)** — project-scoped FTS5 over conversations, messages,
   tasks, and memory. `search_index` virtual table + triggers (migration 10),
   `searchRepository`, `GET /api/projects/:id/search`, CLI `/search` command +
@@ -39,6 +44,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — B2 memory provenance + pinning + tiers landed. Matrix §7 rows
+  (Episodic/procedural/knowledge, Provenance, Pin) → VERIFIED.
 - 2026-06-22 — B1 full-text session & memory search landed (FTS5). Matrix §3 +
   §7 FTS rows → VERIFIED.
 - 2026-06-22 — Authored parity matrix, master goal, backlog, status, and

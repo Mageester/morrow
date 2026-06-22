@@ -87,6 +87,8 @@ describe("Contract schemas", () => {
       scope: "project",
       content: "fact",
       source: "user",
+      originTaskId: null,
+      pinned: false,
       enabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

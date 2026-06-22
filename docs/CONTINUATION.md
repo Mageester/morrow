@@ -14,45 +14,52 @@ pnpm check && pnpm test && pnpm build   # expect green
 
 ## Where we are
 
-- Durable docs written and maintained (parity matrix, master goal, backlog,
-  status, this file).
-- **B1 — Full-text search: DONE & VERIFIED.** FTS5 `search_index` (migration 10)
-  over conversations/messages/tasks/memory; `searchRepository`;
-  `GET /api/projects/:id/search`; CLI `/search` + `MorrowApi.search`. 20
-  orchestrator + 3 CLI tests green. `pnpm check/test/build` green.
+- Durable docs maintained (parity matrix, master goal, backlog, status, this).
+- **B1 — Full-text search: DONE & VERIFIED.**
+- **B2 — Memory provenance + pin + tiers: DONE & VERIFIED.** `pinned`,
+  `originTaskId` (FK, migration 11), episodic/procedural/knowledge tiers,
+  pin-first ordering, PATCH `{pinned}`, CLI `memory pin/unpin`.
+- Baseline: orchestrator 173 tests, CLI 109, contracts 4, web 8 — all green.
 
-## Exact next step — B2: Memory provenance + pin + tiers
+## Exact next step — B3: Loop detection in the agent loop
 
-1. `packages/contracts/src/index.ts` — extend `MemoryScopeSchema` with
-   `episodic`, `procedural`, `knowledge`; add `pinned: z.boolean()` and an
-   `originTaskId: z.string().nullable()` (or a `provenance` object) to
-   `MemoryEntrySchema`; extend `CreateMemoryEntrySchema` with optional `pinned`.
-2. `services/orchestrator/src/database.ts` — migration 11: `ALTER TABLE
-   memory_entries ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0; ADD COLUMN
-   origin_task_id TEXT;` (FTS triggers already key off `content`, no change
-   needed there — but update the `search_mem_*` body if scope label changes).
-3. `services/orchestrator/src/repositories/memory.ts` — map `pinned`/origin;
-   add `setPinned(id, pinned, updatedAt)`; make retrieval order pinned-first
-   (`ORDER BY pinned DESC, created_at ASC`).
-4. `services/orchestrator/src/server.ts` — extend `PATCH /api/memory/:id` to
-   accept `{ pinned?: boolean }`; allow new scopes in create.
-5. Tests: extend `test/memory.test.ts` — pinned ordering, new scopes round-trip,
-   origin provenance preserved. Update `database.test.ts` migration count to 11.
-6. CLI: surface pin in `/memory` flow (optional this slice; can defer to B-later).
-7. `pnpm check && pnpm test && pnpm build`. Update matrix §7 rows
-   (Episodic/procedural/knowledge, Provenance, Pin) + status. Commit
-   `feat(memory): provenance, pinning, and memory tiers` and push.
+Goal: detect when the agent repeats the same tool call (same tool + same args)
+without progress, and stop with a clear reason instead of burning the budget.
+
+1. New pure module `services/orchestrator/src/execution/loop-detector.ts`:
+   - `createLoopDetector({ windowSize?: number; repeatThreshold?: number })`.
+   - `record(signature: string): { looping: boolean; count: number }` where
+     `signature = toolName + ":" + stableStringify(args)`.
+   - Looping when the same signature occurs `repeatThreshold` times within the
+     last `windowSize` calls (default window 6, threshold 3).
+   - Export a `toolCallSignature(toolName, args)` helper using a stable key
+     (sorted JSON) so arg order doesn't matter.
+2. Wire into `services/orchestrator/src/execution/agent.ts`: where tool calls are
+   dispatched (search for the tool-iteration loop / `maxToolIterations`), record
+   each signature; on `looping`, emit a `task.recovery_required` (or fail with a
+   descriptive state) — mirror how the adaptive budget currently aborts
+   (`adaptive-budget.ts`) so the transcript/UX stays consistent.
+3. Tests first (red): `services/orchestrator/test/loop-detector.test.ts`
+   - "flags repeated identical signatures past the threshold"
+   - "treats arg-order-different-but-equal calls as the same signature"
+   - "does not flag varied calls within the window"
+   - "resets/forgets calls outside the window".
+   Then an agent-level test (extend `test/agent-*`) proving a provider that keeps
+   requesting the same tool is stopped with the loop reason and does NOT mark a
+   false success.
+4. `pnpm check && pnpm test && pnpm build`. Update matrix §3 "Loop detection"
+   row → VERIFIED with evidence. Commit `feat(agent): loop detection` + push.
 
 ## Failing test to write first
 
-`test/memory.test.ts` — "returns pinned entries before unpinned ones regardless
-of creation order" (write red against current repo, then implement).
+`test/loop-detector.test.ts` — "flags three identical tool-call signatures within
+a 6-call window as looping".
 
 ## Open risks / notes
 
-- Migration 11 changes `memory_entries`; the FTS `search_mem_au` trigger fires on
-  `UPDATE OF content` only — pin/origin updates won't touch the index, which is
-  correct (pin state isn't searchable). No trigger change required.
-- Bumping `MemoryScopeSchema` is a breaking enum widening; check every consumer
-  (`server.ts` create route conditionals, CLI memory command) compiles.
-- Keep memory strictly project-isolated (existing invariant + test).
+- Read `execution/agent.ts` around the tool dispatch loop before wiring; match
+  the existing abort/event pattern (look at how `adaptive-budget` surfaces
+  `budget-reached`). The terminal already renders a `stalled` app-view case
+  (`app-view.ts`) — reuse that signal type if it fits so the TUI shows it.
+- Keep the detector pure and deterministic (no time-based logic) for testability.
+- Do not lower `maxToolIterations`; loop detection is an *earlier*, smarter stop.

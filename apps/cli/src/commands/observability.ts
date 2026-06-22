@@ -1,7 +1,7 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { EXIT, notFound, usageError } from "../cli/errors.js";
-import { flagString } from "../cli/args.js";
+import { flagString, flagBool } from "../cli/args.js";
 import { ask, resolveProject, shortId } from "./common.js";
 import { ensureRunning } from "../service/lifecycle.js";
 
@@ -80,17 +80,30 @@ export async function memoryCommand(ctx: Context, sub: string | undefined, args:
     else if (sub === "status") ctx.out.keyValue([["total", String(entries.length)], ["enabled", String(entries.filter((entry) => entry.enabled).length)]]);
     else {
       ctx.out.heading("Memory");
-      ctx.out.table(["id", "scope", "enabled", "content"], entries.map((entry) => [shortId(entry.id), entry.scope, String(entry.enabled), entry.content]));
+      ctx.out.table(
+        ["id", "scope", "pin", "enabled", "content"],
+        entries.map((entry) => [shortId(entry.id), entry.scope, entry.pinned ? "📌" : "", String(entry.enabled), entry.content])
+      );
     }
     return EXIT.OK;
   }
+  const MEMORY_SCOPES = ["project", "conversation", "user", "episodic", "procedural", "knowledge"] as const;
   if (sub === "add") {
     let content = args.join(" ") || flagString(ctx.flags, "content");
     if (!content && !ctx.out.json && process.stdin.isTTY) content = await ask("Memory: ");
-    if (!content) throw usageError("Usage: morrow memory add <content> [--scope project|conversation]");
-    const scope = flagString(ctx.flags, "scope") === "conversation" ? "conversation" : "project";
-    const created = await api.addMemory(project.id, scope, content);
-    if (ctx.out.json) ctx.out.data(created); else ctx.out.success(`Memory added (${shortId(created.id)}).`);
+    if (!content) throw usageError(`Usage: morrow memory add <content> [--scope ${MEMORY_SCOPES.join("|")}] [--pin]`);
+    const requested = flagString(ctx.flags, "scope");
+    const scope = (MEMORY_SCOPES as readonly string[]).includes(requested ?? "") ? (requested as (typeof MEMORY_SCOPES)[number]) : "project";
+    const pinned = flagBool(ctx.flags, "pin") || flagBool(ctx.flags, "pinned");
+    const created = await api.addMemory(project.id, scope, content, undefined, pinned);
+    if (ctx.out.json) ctx.out.data(created); else ctx.out.success(`Memory added (${shortId(created.id)})${pinned ? " · pinned" : ""}.`);
+    return EXIT.OK;
+  }
+  if (sub === "pin" || sub === "unpin") {
+    const id = args[0];
+    if (!id) throw usageError(`Usage: morrow memory ${sub} <id>`);
+    const updated = await api.setMemoryPinned(project.id, id, sub === "pin");
+    if (ctx.out.json) ctx.out.data(updated); else ctx.out.success(`Memory ${sub === "pin" ? "pinned" : "unpinned"} (${shortId(id)}).`);
     return EXIT.OK;
   }
   if (sub === "remove") {
@@ -100,5 +113,5 @@ export async function memoryCommand(ctx: Context, sub: string | undefined, args:
     if (ctx.out.json) ctx.out.data({ removed: id }); else ctx.out.success(`Memory removed (${shortId(id)}).`);
     return EXIT.OK;
   }
-  throw usageError(`Unknown memory subcommand: ${sub}`, "Try: list, add, remove, status");
+  throw usageError(`Unknown memory subcommand: ${sub}`, "Try: list, add, pin, unpin, remove, status");
 }

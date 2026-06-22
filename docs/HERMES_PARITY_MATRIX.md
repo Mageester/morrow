@@ -117,11 +117,11 @@
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
 | Working/project/user memory | `memory_manager.py` | VERIFIED | `repositories/memory.ts`, scopes project/conversation/user | — |
-| Episodic / procedural / knowledge | Hermes tiers | MISSING | — | Extra scopes + retrieval |
+| Episodic / procedural / knowledge | Hermes tiers | VERIFIED | `MemoryScopeSchema` tiers, `listActiveForConversation` includes all project-wide tiers, `test/memory.test.ts` "new project-wide tiers" | — |
 | FTS session search | Hermes FTS5 | VERIFIED | `repositories/search.ts` indexes the `memory` kind too; project-scoped; `test/search.test.ts` covers memory matching + project isolation | — |
-| Provenance | Hermes | PARTIAL | `source` field (user/summary) | Rich provenance (taskId, origin) |
+| Provenance | Hermes | VERIFIED | `originTaskId` FK to tasks (migration 11), `test/memory.test.ts` "stores task provenance" | — |
 | Explain / edit / delete | Hermes | VERIFIED | `/api/memory/:id` PATCH/DELETE | — |
-| Pin | Hermes | MISSING | — | `pinned` flag + ordering |
+| Pin | Hermes | VERIFIED | `pinned` column + pin-first ordering, `setPinned`, PATCH `{pinned}`, CLI `memory pin/unpin`, `test/memory.test.ts` + CLI `api-search.test.ts` | — |
 | Identity file / project instructions | `system_prompt.py`, AGENTS.md | PARTIAL | prompt builder reads project | Editable identity + personality overlay |
 
 ## 8. Coding intelligence

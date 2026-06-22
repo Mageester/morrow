@@ -4,6 +4,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { memoryRepository } from "../src/repositories/memory.js";
+import { taskRepository } from "../src/repositories/tasks.js";
 
 describe("Memory repository", () => {
   let db: Database.Database;
@@ -66,5 +67,34 @@ describe("Memory repository", () => {
     expect(mem.delete("m1")).toBe(true);
     expect(mem.get("m1")).toBeUndefined();
     expect(mem.delete("missing")).toBe(false);
+  });
+
+  it("returns pinned entries before unpinned ones regardless of creation order", () => {
+    const mem = memoryRepository(db);
+    mem.create({ id: "first", projectId: "p1", scope: "project", content: "older unpinned", source: "user", createdAt: "2026-01-01T00:00:00.000Z" });
+    mem.create({ id: "second", projectId: "p1", scope: "project", content: "newer pinned", source: "user", pinned: true, createdAt: "2026-01-02T00:00:00.000Z" });
+    expect(mem.listByProject("p1").map((e) => e.id)).toEqual(["second", "first"]);
+    expect(mem.listActiveForConversation("p1", "c1").map((e) => e.id)).toEqual(["second", "first"]);
+  });
+
+  it("pins and unpins an existing entry", () => {
+    const mem = memoryRepository(db);
+    const e = mem.create({ id: "m1", projectId: "p1", scope: "project", content: "fact", source: "user", createdAt: new Date().toISOString() });
+    expect(e.pinned).toBe(false);
+    expect(mem.setPinned("m1", true, new Date().toISOString())!.pinned).toBe(true);
+    expect(mem.setPinned("m1", false, new Date().toISOString())!.pinned).toBe(false);
+  });
+
+  it("stores task provenance and includes new project-wide tiers in the active set", () => {
+    const mem = memoryRepository(db);
+    const ts = new Date().toISOString();
+    taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "agent_chat", status: "completed", createdAt: ts });
+    const episodic = mem.create({ id: "ep", projectId: "p1", scope: "episodic", content: "deployed at 3pm", source: "summary", originTaskId: "t1", createdAt: ts });
+    mem.create({ id: "proc", projectId: "p1", scope: "procedural", content: "how to release", source: "user", createdAt: ts });
+    mem.create({ id: "know", projectId: "p1", scope: "knowledge", content: "api base url", source: "user", createdAt: ts });
+    expect(episodic.originTaskId).toBe("t1");
+    expect(episodic.scope).toBe("episodic");
+    const active = mem.listActiveForConversation("p1", "c1").map((e) => e.id);
+    expect(active).toEqual(expect.arrayContaining(["ep", "proc", "know"]));
   });
 });

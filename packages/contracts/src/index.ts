@@ -164,7 +164,11 @@ export const SendMessageSchema=z.object({
 
 // ── Memory foundation ────────────────────────────────────────────────────────
 
-export const MemoryScopeSchema=z.enum(["project","conversation","user"]);
+// Scopes are tiers of recall. project/user/conversation are the original
+// working tiers; episodic (time-stamped events), procedural (how-to/workflow),
+// and knowledge (durable facts) are project-wide recall tiers. Every tier except
+// conversation applies to all conversations in the project.
+export const MemoryScopeSchema=z.enum(["project","conversation","user","episodic","procedural","knowledge"]);
 export const MemorySourceSchema=z.enum(["user","summary"]);
 export const MemoryEntrySchema=z.object({
   version:SchemaVersionSchema,
@@ -174,6 +178,10 @@ export const MemoryEntrySchema=z.object({
   scope:MemoryScopeSchema,
   content:z.string().min(1),
   source:MemorySourceSchema,
+  // Provenance: the task that produced this entry, when known. user-authored
+  // entries have a null origin. Lets the user trace why a memory exists.
+  originTaskId:z.string().nullable(),
+  pinned:z.boolean(),
   enabled:z.boolean(),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
@@ -182,7 +190,14 @@ export const CreateMemoryEntrySchema=z.object({
   scope:MemoryScopeSchema,
   content:z.string().trim().min(1).max(4000),
   conversationId:z.string().optional(),
+  pinned:z.boolean().optional(),
 }).strict();
+export const UpdateMemoryEntrySchema=z.object({
+  projectId:z.string().min(1),
+  enabled:z.boolean().optional(),
+  pinned:z.boolean().optional(),
+}).strict().refine((v)=>v.enabled!==undefined||v.pinned!==undefined,{message:"Provide enabled or pinned"});
+export type UpdateMemoryEntryInput=z.infer<typeof UpdateMemoryEntrySchema>;
 
 // ── Full-text session & memory search ────────────────────────────────────────
 // Project-scoped FTS over conversations, messages, tasks, and memory. Search is
