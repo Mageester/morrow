@@ -11,6 +11,7 @@ import { modelsCommand } from "./commands/models.js";
 import { presetsCommand } from "./commands/presets.js";
 import { projectsCommand, initCommand } from "./commands/projects.js";
 import { panicCommand } from "./commands/panic.js";
+import { skillsCommand } from "./commands/skills.js";
 import { providersCommand } from "./commands/providers.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -19,7 +20,7 @@ export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills"]);
 
 type Invocation =
   | { kind: "interactive" }
@@ -97,6 +98,7 @@ export async function run(argv: string[]): Promise<number> {
       case "audit": return auditCommand(ctx, sub, args);
       case "memory": return memoryCommand(ctx, sub, args);
       case "panic": return panicCommand(ctx);
+      case "skills": return skillsCommand(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
     }
   } catch (error) {
@@ -144,7 +146,7 @@ function printHelp(out: Output): number {
     b("In a session"),
     `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
     "",
-    g("More: morrow projects | conversations | presets | tools | audit | serve | logs"),
+    g("More: morrow projects | conversations | presets | tools | audit | skills | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
