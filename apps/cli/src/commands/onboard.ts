@@ -105,12 +105,11 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
       // ignore
     }
 
-    ctx.out.print();
-    ctx.out.print(ctx.out.gray(`═ Horizon line ══════════════════════════════════════════════`));
+    ctx.out.print(ctx.out.gray(`─────────────────────────────────────────────────────────────`));
     ctx.out.print(
       ctx.out.bold(`Step ${currentStepIdx + 1} of ${STEPS.length}: ${step.toUpperCase()}`)
     );
-    ctx.out.print(ctx.out.gray(`═════════════════════════════════════════════════════════════`));
+    ctx.out.print(ctx.out.gray(`─────────────────────────────────────────────────────────────`));
     ctx.out.print();
 
     let success = false;
@@ -145,28 +144,36 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     // ignore
   }
 
+  ctx.out.print();
   ctx.out.success("Morrow setup complete! Welcome aboard.");
+  ctx.out.print();
+  ctx.out.print(ctx.out.bold("Start utilizing your companion with these commands:"));
+  ctx.out.print("  Launch interactive chat:       " + ctx.out.cyan("morrow"));
+  ctx.out.print("  Start with project autonomy:   " + ctx.out.cyan("morrow yolo"));
+  ctx.out.print("  Check setup status:            " + ctx.out.cyan("morrow onboard status"));
+  ctx.out.print("  Reset and rerun onboarding:    " + ctx.out.cyan("morrow onboard reset"));
+  ctx.out.print();
   return EXIT.OK;
 }
 
 async function runStep(step: string, ctx: Context): Promise<boolean> {
   switch (step) {
     case "welcome": {
-      ctx.out.print(ctx.out.cyan(`   __  ______  ___ ___  _____      __`));
-      ctx.out.print(ctx.out.cyan(`  /  |/  / __ \\/ _ \\ _ \\/ __ \\ \\    / /`));
-      ctx.out.print(ctx.out.cyan(` / /|_/ / /_/ / , _/ , _/ /_/ /\\ \\/\\/ / `));
+      ctx.out.print(ctx.out.cyan(`   __  ______  ___  ___  _____  _      __`));
+      ctx.out.print(ctx.out.cyan(`  /  |/  / __ \\/ _ \\/ _ \\/ __ \\| |    / /`));
+      ctx.out.print(ctx.out.cyan(` / /|_/ / /_/ / , _/ , _/ /_/ /| | /\\ / / `));
       ctx.out.print(ctx.out.cyan(`/_/  /_/\\____/_/|_/_/|_|\\____/  \\_/\\_/  `));
       ctx.out.print();
       ctx.out.print(ctx.out.bold("Private intelligence, built around you."));
       ctx.out.print();
       ctx.out.print(
-        "Morrow is a self-hosted, private-first AI agent. Your code indices,"
+        "Morrow is your private intelligence companion. Designed to run completely"
       );
       ctx.out.print(
-        "filesystem operations, and memories are kept locally on your machine."
+        "on your local hardware, it keeps your code, indices, and memories strictly"
       );
       ctx.out.print(
-        "Morrow connects directly to model providers using keys you control."
+        "confidential. Bring your own keys to access models directly, without intermediation."
       );
       ctx.out.print();
       ctx.out.print(ctx.out.gray("Estimated setup time: ~3 minutes"));
@@ -286,6 +293,11 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           }
         }
         ctx.out.print();
+
+        const another = await confirm("Configure another provider?", false);
+        if (!another) {
+          break;
+        }
       }
 
       ctx.out.info("Restarting service to load credentials…");
@@ -329,7 +341,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       if (choice.id === "yolo") {
         ctx.out.print();
         ctx.out.info(
-          "YOLO mode enabled. Run with `morrow yolo` or set default autoApprove flags in presets."
+          "YOLO mode enabled. Morrow will run with project-scoped autonomy. Hard safety denials protect your secrets and system, while full audit logs, diffs, and undo commands remain active."
         );
       }
       return true;
@@ -338,7 +350,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
     case "skills": {
       const skills = discoverSkills(localSkillsRoot());
       ctx.out.print("Skills are local scripts carrying out task operations on your files.");
-      ctx.out.print("All skills run 100% locally. Morrow does not support remote skills or hosted market-places.");
+      ctx.out.print("All skills run 100% locally. Morrow does not support remote skills or hosted marketplaces.");
       ctx.out.print();
 
       ctx.out.print(ctx.out.bold("Available Local Skills:"));
@@ -378,17 +390,22 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       await ensureRunning(ctx);
       const api = ctx.api();
 
+      const cwdPath = resolve(process.cwd());
+      const cwdName = basename(cwdPath) || "current-directory";
+
       ctx.out.print("Scanning home directory for projects and Git repositories…");
-      const repos = discoverLocalGitRepos();
+      const repos = discoverLocalGitRepos().filter((r) => resolve(r.path) !== cwdPath);
 
       ctx.out.print();
       ctx.out.print(ctx.out.bold("Discovered Local Repositories:"));
+      ctx.out.print(`  1. [Current Directory] ${cwdName} - ${cwdPath}`);
       repos.forEach((r, i) => {
-        ctx.out.print(`  ${ctx.out.cyan(String(i + 1))}. [Git] ${r.name} - ${r.path}`);
+        ctx.out.print(`  ${ctx.out.cyan(String(i + 2))}. [Git] ${r.name} - ${r.path}`);
       });
       ctx.out.print();
 
       const options = [
+        { type: "cwd", name: `${cwdName} (Current Directory)`, path: cwdPath },
         ...repos.map((r) => ({ type: "discovered", name: r.name, path: r.path })),
         { type: "custom", name: "Add a custom workspace path…", path: "" },
         { type: "skip", name: "Skip project registration", path: "" },
@@ -415,6 +432,8 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
             ctx.out.error(e.message);
           }
         }
+      } else if (choice.type === "cwd") {
+        name = cwdName;
       }
 
       ctx.out.info(`Registering project: ${name}…`);
@@ -425,17 +444,64 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
     }
 
     case "mission": {
-      const defaultProjId = ctx.config.get("defaults.project") as string;
-      if (!defaultProjId) {
-        ctx.out.info("No default project workspace registered. Skipping first mission launch.");
-        return true;
-      }
-
       await ensureRunning(ctx);
       const api = ctx.api();
-      const project = await api.getProject(defaultProjId);
+      let defaultProjId = ctx.config.get("defaults.project") as string;
 
-      ctx.out.print(`Morrow is ready to begin a mission inside: ${project.name}`);
+      if (!defaultProjId) {
+        ctx.out.warn("No default project workspace registered.");
+        ctx.out.print("Morrow works best when scoped to a project folder.");
+        ctx.out.print();
+
+        const noProjectOptions = [
+          "Register current directory",
+          "Enter a workspace path",
+          "Start without a project",
+          "Exit onboarding",
+        ];
+
+        const actionIdx = await select(ctx, "How would you like to proceed?", noProjectOptions, (item) => item);
+
+        if (actionIdx === 0) {
+          const cwdPath = resolve(process.cwd());
+          const name = basename(cwdPath) || "Current Directory";
+          ctx.out.info(`Registering project: ${name}…`);
+          const project = await api.createProject(name, cwdPath);
+          ctx.config.set("defaults.project", project.id, "user");
+          ctx.out.success(`Registered successfully! Scoped to: ${project.workspacePath}`);
+          defaultProjId = project.id;
+        } else if (actionIdx === 1) {
+          let workspacePath = "";
+          let name = "";
+          while (!workspacePath) {
+            const custom = await ask("Workspace folder path: ");
+            try {
+              workspacePath = validateDirectory(custom);
+              name = basename(workspacePath) || "Custom Workspace";
+            } catch (e: any) {
+              ctx.out.error(e.message);
+            }
+          }
+          ctx.out.info(`Registering project: ${name}…`);
+          const project = await api.createProject(name, workspacePath);
+          ctx.config.set("defaults.project", project.id, "user");
+          ctx.out.success(`Registered successfully! Scoped to: ${project.workspacePath}`);
+          defaultProjId = project.id;
+        } else if (actionIdx === 2) {
+          ctx.out.info("Starting without a project workspace scope.");
+        } else {
+          ctx.out.info("Exiting onboarding.");
+          return false;
+        }
+      }
+
+      let project: any = null;
+      if (defaultProjId) {
+        project = await api.getProject(defaultProjId);
+        ctx.out.print(`Morrow is ready to begin a mission inside: ${project.name}`);
+      } else {
+        ctx.out.print("Morrow is ready to begin a mission.");
+      }
       ctx.out.print("Provide a query, or choose an example mission below.");
       ctx.out.print();
 
@@ -458,6 +524,14 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         while (!missionText) {
           missionText = await ask("What would you like Morrow to help you with? ");
         }
+      }
+
+      if (!project) {
+        const cwdPath = resolve(process.cwd());
+        const name = basename(cwdPath) || "Current Directory";
+        ctx.out.info(`Auto-registering current directory: ${name} to launch mission…`);
+        project = await api.createProject(name, cwdPath);
+        ctx.config.set("defaults.project", project.id, "user");
       }
 
       ctx.out.info(`Starting mission: "${missionText}"…`);

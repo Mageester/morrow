@@ -122,9 +122,10 @@ describe("CLI Onboarding Command", () => {
     vi.mocked(select).mockResolvedValueOnce(2);
     // skills selection: select enable all (index 0)
     vi.mocked(select).mockResolvedValueOnce(0);
-    // project registration: select custom (index 0 for custom path if no repos, else skip/custom)
-    // Let's mock discovered repos list as empty, so choice 0 is Add custom, 1 is Skip
-    vi.mocked(select).mockResolvedValueOnce(1); // skip project
+    // project registration: select skip (index 2 because CWD is 0, custom is 1, skip is 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
+    // no-project Step 8 fallback: select Start without a project (index 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
     // mission: select finish (index 4)
     vi.mocked(select).mockResolvedValueOnce(4);
 
@@ -145,8 +146,10 @@ describe("CLI Onboarding Command", () => {
     vi.mocked(select).mockResolvedValueOnce(0);
     // skills selection: skip (index 2)
     vi.mocked(select).mockResolvedValueOnce(2);
-    // project registration: skip (index 1)
-    vi.mocked(select).mockResolvedValueOnce(1);
+    // project registration: skip (index 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
+    // no-project Step 8 fallback: select Start without a project (index 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
     // mission: finish (index 4)
     vi.mocked(select).mockResolvedValueOnce(4);
 
@@ -178,15 +181,17 @@ describe("CLI Onboarding Command", () => {
 
     // Prompted to keep key anyway? -> No
     vi.mocked(confirm).mockResolvedValueOnce(false);
-    // select Skip to exit provider loop (index 4)
-    vi.mocked(select).mockResolvedValueOnce(4);
+    // Configure another provider? -> No
+    vi.mocked(confirm).mockResolvedValueOnce(false);
 
     // mode selection: Plan-only (index 0)
     vi.mocked(select).mockResolvedValueOnce(0);
     // skills selection: skip (index 2)
     vi.mocked(select).mockResolvedValueOnce(2);
-    // project registration: skip (index 1)
-    vi.mocked(select).mockResolvedValueOnce(1);
+    // project registration: skip (index 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
+    // no-project Step 8 fallback: select Start without a project (index 2)
+    vi.mocked(select).mockResolvedValueOnce(2);
     // mission: finish (index 4)
     vi.mocked(select).mockResolvedValueOnce(4);
 
@@ -194,4 +199,58 @@ describe("CLI Onboarding Command", () => {
     expect(exitCode).toBe(EXIT.OK);
     expect(testMock).toHaveBeenCalledWith("openai");
   });
+
+  it("registers process.cwd() when choosing current-directory option", async () => {
+    config.set("user.onboardingStep", "project", "user");
+    // resume -> yes
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    // project selection: select CWD (index 0)
+    vi.mocked(select).mockResolvedValueOnce(0);
+
+    // mission: finish (index 4)
+    vi.mocked(select).mockResolvedValueOnce(4);
+
+    const createProjectMock = vi.fn().mockResolvedValue({ id: "cwd-proj", name: "mock-cwd", workspacePath: process.cwd() });
+    ctx.api = () => ({
+      health: vi.fn().mockResolvedValue({ ok: true }),
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: createProjectMock,
+      saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
+      getProject: vi.fn().mockResolvedValue({ id: "cwd-proj", name: "mock-cwd", workspacePath: process.cwd() }),
+    } as any);
+
+    const exitCode = await onboardCommand(ctx, "", []);
+    expect(exitCode).toBe(EXIT.OK);
+    expect(createProjectMock).toHaveBeenCalledWith(expect.any(String), process.cwd());
+    expect(config.get("defaults.project")).toBe("cwd-proj");
+  });
+
+  it("handles no-project Step 8 fallback and registers current-directory", async () => {
+    config.set("user.onboardingStep", "mission", "user");
+    // resume -> yes
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    // defaults.project is empty, so we trigger noProjectOptions.
+    // Select "Register current directory" (index 0)
+    vi.mocked(select).mockResolvedValueOnce(0);
+    // Select initial mission: "Finish setup without launching a mission" (index 4)
+    vi.mocked(select).mockResolvedValueOnce(4);
+
+    const createProjectMock = vi.fn().mockResolvedValue({ id: "fallback-cwd-proj", name: "mock-cwd", workspacePath: process.cwd() });
+    ctx.api = () => ({
+      health: vi.fn().mockResolvedValue({ ok: true }),
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: createProjectMock,
+      saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
+      getProject: vi.fn().mockResolvedValue({ id: "fallback-cwd-proj", name: "mock-cwd", workspacePath: process.cwd() }),
+    } as any);
+
+    const exitCode = await onboardCommand(ctx, "", []);
+    expect(exitCode).toBe(EXIT.OK);
+    expect(createProjectMock).toHaveBeenCalledWith(expect.any(String), process.cwd());
+    expect(config.get("defaults.project")).toBe("fallback-cwd-proj");
+  });
 });
+
+
