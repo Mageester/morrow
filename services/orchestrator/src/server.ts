@@ -25,6 +25,7 @@ import { conversationsRepository } from "./repositories/conversations.js";
 import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
+import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { SearchKindSchema } from "@morrow/contracts";
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
@@ -91,6 +92,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const routingRepo = taskRoutingRepository(deps.db);
   const memory = memoryRepository(deps.db);
   const search = searchRepository(deps.db);
+  const skillUsage = skillUsageRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
 
@@ -772,6 +774,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  app.get("/api/projects/:projectId/skills/usage", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return skillUsage.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/skills/:skillId/use", async (request, reply) => {
+    const { projectId, skillId } = request.params as { projectId: string; skillId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (!/^[A-Za-z0-9._-]{1,120}$/.test(skillId)) throw new ApiError(400, "Invalid skill id", "VALIDATION_ERROR");
+    reply.status(200);
+    return skillUsage.recordUse(projectId, skillId, new Date().toISOString());
   });
 
   app.get("/api/projects/:projectId/memory", async (request) => {

@@ -18,8 +18,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
 ## Next
 
-- [ ] **B4. Skill usage tracking + skill→slash commands.** Per-skill invocation
-      counters persisted; expose installed skills as slash commands.
+- [x] **B4. Skill usage tracking + skill→slash commands.** Per-project usage
+      counters (table + repo + API + CLI client); verified skills surface as
+      `/skill:<id>` commands wired into the session and invoke + record use.
 - [ ] **B5. Skill Creator (interview → generate → sandbox test → approve →
       install).** New `services/orchestrator/src/skills/creator.ts` + CLI flow.
 - [ ] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,

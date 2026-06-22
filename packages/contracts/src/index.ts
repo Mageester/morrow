@@ -225,6 +225,17 @@ export type SearchKind=z.infer<typeof SearchKindSchema>;
 export type SearchHit=z.infer<typeof SearchHitSchema>;
 export type SearchResponse=z.infer<typeof SearchResponseSchema>;
 
+// ── Skill usage tracking ─────────────────────────────────────────────────────
+// Per-project counters of how often each skill has been invoked, so the agent
+// can prefer proven skills and the user can see what is actually used.
+export const SkillUsageSchema=z.object({
+  skillId:z.string(),
+  projectId:z.string(),
+  count:z.number().int().nonnegative(),
+  lastUsedAt:z.string().nullable(),
+}).strict();
+export type SkillUsage=z.infer<typeof SkillUsageSchema>;
+
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;

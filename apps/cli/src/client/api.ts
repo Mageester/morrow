@@ -213,6 +213,9 @@ export class MorrowApi {
     if (opts.limit) qs.set("limit", String(opts.limit));
     return this.req<SearchResponse>("GET", `/api/projects/${projectId}/search?${qs}`);
   }
+  recordSkillUse(projectId: string, skillId: string) {
+    return this.req<{ skillId: string; count: number }>("POST", `/api/projects/${projectId}/skills/${encodeURIComponent(skillId)}/use`);
+  }
 
   // ── Onboarding State ────────────────────────────────────────────────────────
   getOnboardingState() {

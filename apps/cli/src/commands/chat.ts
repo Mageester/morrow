@@ -10,6 +10,9 @@ import { CliError, EXIT, usageError } from "../cli/errors.js";
 import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
+import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
+import { skillsAsSlashCommands } from "../skills/registry.js";
+import { localSkillsRoot } from "./skills.js";
 import { nodeTermIO } from "../terminal/runtime.js";
 import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { streamTaskEvents } from "../client/sse.js";
@@ -153,7 +156,14 @@ async function runInteractiveSession(
       api
         .search(project.id, query, { limit: 25 })
         .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
+    recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
   };
+
+  // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
+  const skillCommands: SlashCommand[] = skillsAsSlashCommands(localSkillsRoot()).map((c) => ({
+    name: c.name,
+    description: c.description,
+  }));
 
   // Real model data feeds the Ctrl+K palette (project/session search deferred).
   const models = await api.listModels().catch(() => []);
@@ -170,6 +180,7 @@ async function runInteractiveSession(
     meta,
     settings,
     backend,
+    commands: [...SLASH_COMMANDS, ...skillCommands],
     extraPaletteItems,
   });
   try {

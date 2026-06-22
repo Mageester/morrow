@@ -62,6 +62,7 @@ export interface SessionBackend {
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
   getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
   search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
+  recordSkillUse?(skillId: string): Promise<void>;
 }
 
 export interface SessionSettings {
@@ -296,6 +297,15 @@ export class InteractiveSession {
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
       default:
+        if (cmd && cmd.startsWith("skill:")) {
+          const skillId = cmd.slice("skill:".length);
+          void this.deps.backend.recordSkillUse?.(skillId).catch(() => {});
+          const prompt = arg
+            ? `Apply the ${skillId} skill: ${arg}`
+            : `Activate the ${skillId} skill and apply it to the current work.`;
+          await this.runTask(prompt);
+          return;
+        }
         this.pushNotice("warn", `/${cmd} isn't available in the interactive view yet — run with MORROW_TUI=0 for the classic command.`);
         return void this.requestPaint(false);
     }

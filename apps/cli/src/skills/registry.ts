@@ -27,6 +27,22 @@ export function discoverSkills(root: string): LocalSkill[] {
   }).sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/**
+ * Surface verified local skills as slash commands. Names are namespaced under
+ * `skill:` so they can never collide with a built-in command, and only skills
+ * that pass local verification are offered (a tampered skill is never runnable
+ * implicitly). The shape matches the terminal's SlashCommand contract.
+ */
+export function skillsAsSlashCommands(root: string): Array<{ name: string; arg?: string; description: string; skillId: string }> {
+  return discoverSkills(root)
+    .filter((skill) => verifySkill(skill.directory).ok)
+    .map((skill) => ({
+      name: `skill:${skill.id}`,
+      description: skill.manifest.description || `Run the ${skill.manifest.name} skill`,
+      skillId: skill.id,
+    }));
+}
+
 /** Verification is local-only: malformed or tampered skills can never be run implicitly. */
 export function verifySkill(directory: string): { ok: boolean; issues: string[] } {
   const manifest = readManifest(directory);

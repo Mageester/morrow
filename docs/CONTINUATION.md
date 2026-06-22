@@ -26,59 +26,53 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B10 (partial) — Live provider fallback: VERIFIED** (`openStreamWithFallback`,
   retryable-only, no mid-stream switch, `provider.fallback` event). REMAINING:
   explicit rate-limit guard/backoff.
-- Baseline: orchestrator 207 tests, CLI 109, contracts 4, web 8 — all green.
+- **B4 — Skill usage tracking + skill→slash: VERIFIED** (`skill_usage` table,
+  repo, API, CLI client; verified skills → `/skill:<id>` wired + invoked).
+- Baseline: orchestrator 211 tests, CLI 112, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — B4: skill usage tracking + skill→slash commands
+## Exact next step — finish B8 retry, then B5 Skill Creator
 
-Goal: persist how often each skill is used, and expose installed skills as slash
-commands so the user can invoke them by name.
+### Immediate (small, finishes an open partial) — `POST /api/tasks/:taskId/retry`
 
-1. `services/orchestrator/src/database.ts` — migration 13:
-   `CREATE TABLE skill_usage (skill_id TEXT NOT NULL, project_id TEXT NOT NULL
-   REFERENCES projects(id) ON DELETE CASCADE, count INTEGER NOT NULL DEFAULT 0,
-   last_used_at TEXT, PRIMARY KEY (project_id, skill_id));`
-   (Bump `database.test.ts` count 12 → 13.)
-2. `services/orchestrator/src/repositories/skill-usage.ts` — `recordUse(projectId,
-   skillId, at)` (upsert increment) + `listByProject(projectId)` returning
-   `{skillId,count,lastUsedAt}` sorted by count desc.
-3. Contracts — `SkillUsageSchema` ({skillId,count,lastUsedAt|null}). Route
-   `GET /api/projects/:projectId/skills/usage` and
-   `POST /api/projects/:projectId/skills/:skillId/use`.
-4. CLI — the skill registry (`apps/cli/src/skills/registry.ts`) already discovers
-   local skills; expose each discovered skill as a `/skill:<id>` (or `/<id>`)
-   slash command in the registry feeding `SLASH_COMMANDS`/completion, and call
-   the `use` endpoint when invoked. Keep it additive to the static command list.
-5. Tests first (red):
-   - `test/skill-usage.test.ts` — increments and orders by count; isolates by
-     project.
-   - api test — POST use then GET usage reflects the count.
-   - CLI — discovered skills surface as commands (extend `skills.test.ts`).
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §5 rows (Slash commands
-   from skills, Usage tracking) → VERIFIED + status. Commit
-   `feat(skills): usage tracking and skill slash commands` + push.
+1. Read the task status state-machine in
+   `services/orchestrator/src/repositories/task-records.ts` (`transitionTask`)
+   and `recovery.ts` to see valid transitions and how `resumeInterruptedTask`
+   re-queues.
+2. Add `retryTask(taskId)` to `task-records.ts` (or a small helper) that, only
+   for `failed`/`interrupted` tasks: resets status → `queued`, clears
+   `task_continuations` for the task, and resets the assistant message
+   (`streaming_state` → `queued`, content cleared) so the runner re-runs from a
+   clean slate. Must reject `cancelled`/`running`/`completed`/`verified` (409).
+3. `server.ts` — `POST /api/tasks/:taskId/retry`: 404 unknown, 409 wrong status,
+   else reset + `deps.runner.run(taskId)`, return the task (202).
+4. Tests: `test/api.test.ts` (or new `test/retry-api.test.ts`) — retry a failed
+   task re-runs it; retrying a `completed`/`cancelled` task → 409. Reuse the
+   `agent-security.test.ts` "does not resurrect a cancelled task" invariant.
+5. Update matrix §3 "Retry" row → VERIFIED. Commit `feat(runtime): explicit task
+   retry` + push.
 
-## Failing test to write first
+### Then (large, high value) — B5 Skill Creator
 
-`test/skill-usage.test.ts` — "recordUse increments the per-project counter and
-listByProject orders by count descending".
+Interview → generate skill (SKILL.md + manifest.json + permissions.json +
+entrypoint) → **sandbox verify** (reuse `apps/cli/src/skills/registry.ts`
+`verifySkill` + a dry-run) → permission review → install into the local skills
+dir on approval. New `services/orchestrator/src/skills/creator.ts` +
+`apps/cli` interview flow. Then B6 Curator (dedupe/improve/stale/pin/backup/
+rollback). See `MORROW_BACKLOG.md`.
 
 ## Deferred (pick up later)
 
-- **B8 retry:** `POST /api/tasks/:taskId/retry` — re-queue a `failed`/
-  `interrupted` task as a fresh attempt (NOT `cancelled`; separate from
-  `/resume`). Needs a task state-machine reset (status → queued, clear
-  `task_continuations`, reset assistant message).
 - **B8 idempotency** on the agent-chat creation path
   (`POST /api/conversations/:id/messages`) via the existing `readIdempotencyKey`.
 - **B10 rate-limit guard:** token-bucket/backoff before B10 is fully closed.
 
 ## Open risks / notes
 
-- Skill→slash must not collide with built-in commands; namespace (e.g.
-  `/skill:<id>`) or check against `SLASH_COMMANDS` before registering.
-- Recording a use is a write; gate it behind the same project resolution as other
-  routes (404 on unknown project).
+- `/retry` must NOT resurrect a `cancelled` task — restrict to
+  `failed`/`interrupted` and keep it distinct from `/resume` (continuation).
+- Clearing `task_continuations` is required so retry is a *fresh* attempt, not a
+  resumed tool call.
 
 ## Broader remaining backlog (see MORROW_BACKLOG.md)
 

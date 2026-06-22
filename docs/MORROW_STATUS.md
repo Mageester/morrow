@@ -30,6 +30,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Skill usage tracking + skill→slash commands (B4)** — per-project
+  `skill_usage` counters (migration 13, repo, `GET .../skills/usage` +
+  `POST .../skills/:id/use`, `MorrowApi.recordSkillUse`). Verified local skills
+  surface as `/skill:<id>` commands (namespaced, never colliding with built-ins),
+  wired into the interactive session and invoked via `onSlash`, recording use.
+  Tests: orchestrator `skill-usage.test.ts`, CLI `skills.test.ts` +
+  `api-search.test.ts`. Suites: orchestrator 211, CLI 112 green.
 - **Live provider fallback (B10, partial)** — `provider/fallback.ts`
   `openStreamWithFallback` retries the next configured candidate when the primary
   fails to *start* streaming with a retryable error (transport/timeout/429/5xx);
@@ -69,6 +76,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Skill usage tracking + skill→slash commands landed (B4). Matrix
+  §5 both rows → VERIFIED.
 - 2026-06-22 — Live provider fallback landed (B10 partial). Matrix §12 Fallback
   → VERIFIED. New `provider.fallback` task event.
 - 2026-06-22 — Idempotent task creation landed (B8 partial). Matrix §3

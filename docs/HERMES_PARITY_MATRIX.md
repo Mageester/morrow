@@ -98,8 +98,8 @@
 | Progressive disclosure | `skill_preprocessing.py` | PARTIAL | SKILL.md body | Lazy reference loading |
 | Scripts / references / templates / assets | Hermes skill bundles | PARTIAL | skill dirs | Bundle resource resolution |
 | Platforms | Hermes | VERIFIED | `supportedPlatforms` in manifest | — |
-| Slash commands from skills | `skill_commands.py` | MISSING | — | Skill→slash registration |
-| Usage tracking | Hermes | MISSING | — | Per-skill invocation counters |
+| Slash commands from skills | `skill_commands.py` | VERIFIED | `skillsAsSlashCommands` (verified skills → `/skill:<id>`), wired into the interactive session command list + `onSlash` `skill:` handler that records use and runs the skill. `apps/cli/test/skills.test.ts` | — |
+| Usage tracking | Hermes | VERIFIED | `skill_usage` table (migration 13), `skillUsageRepository`, `GET .../skills/usage` + `POST .../skills/:id/use`, CLI `MorrowApi.recordSkillUse`. `test/skill-usage.test.ts` + CLI `api-search.test.ts` | — |
 
 ## 6. Skill Creator & Curator
 

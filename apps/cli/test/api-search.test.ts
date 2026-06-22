@@ -60,6 +60,24 @@ describe("MorrowApi memory pin/add", () => {
   });
 });
 
+describe("MorrowApi.recordSkillUse", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("POSTs to the project-scoped skill use endpoint with an encoded id", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        return new Response(JSON.stringify({ skillId: "git-inspection", count: 3 }), { status: 200, headers: { "Content-Type": "application/json" } });
+      })
+    );
+    const api = new MorrowApi("http://127.0.0.1:9999");
+    const res = await api.recordSkillUse("p1", "git-inspection");
+    expect(res.count).toBe(3);
+    expect(new URL(calls[0]!).pathname).toBe("/api/projects/p1/skills/git-inspection/use");
+  });
+});
+
 describe("slash command registry", () => {
   it("registers /search so help and completion stay in sync", () => {
     const search = SLASH_COMMANDS.find((c) => c.name === "search");

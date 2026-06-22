@@ -30,3 +30,4 @@ export { routePreset, listPresetStatuses } from "./routing/router.js";
 export { listModels, getModel, listModelsForProvider, BUILT_IN_MODELS } from "./routing/models.js";
 export { TOOL_CATALOG, PERMISSION_PROFILE, IMPLEMENTED_TOOL_NAMES, getTool } from "./tools/catalog.js";
 export { searchRepository, buildMatchQuery, type SearchOptions } from "./repositories/search.js";
+export { skillUsageRepository } from "./repositories/skill-usage.js";
