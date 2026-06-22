@@ -375,14 +375,6 @@ You must run test/verification commands using run_command, and propose file modi
       const runOptions: Parameters<typeof runProcessSafe>[4] = {
         timeoutMs: 30000,
         maxOutputBytes: 65536,
-        onChunk: (chunk) => {
-          if (chunk.stdout) {
-            event("evidence.persisted", { deltaText: chunk.stdout });
-          }
-          if (chunk.stderr) {
-            event("evidence.persisted", { deltaText: chunk.stderr });
-          }
-        }
       };
       if (abortSignal) {
         runOptions.abortSignal = abortSignal;
