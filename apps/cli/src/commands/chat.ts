@@ -8,6 +8,7 @@ import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
 import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
+import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
@@ -163,7 +164,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     out.print("  " + out.gray("   Denied actions (shells, deletes, history rewrites) are still blocked. Toggle with /yolo."));
   }
   out.print();
-  out.print("  " + out.gray("What should we work on?  ") + out.gray("(/help for commands, /exit to quit)"));
+  out.print("  " + out.gray("What should we work on?  ") + out.gray("(type / for commands · Tab completes · /exit to quit)"));
 
   // Replay existing history for context continuity.
   if (resuming) {
@@ -172,7 +173,18 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   }
 
   while (true) {
-    const line = (await ask(out.green("\n› "))).trim();
+    out.print();
+    const result = await readLineWithCompletion({
+      out,
+      unicode,
+      label: out.green(unicode ? "› " : "> "),
+      labelWidth: 2,
+    });
+    if (result === PROMPT_EXIT) {
+      out.info("Goodbye.");
+      return EXIT.OK;
+    }
+    const line = result.trim();
     if (!line) continue;
 
     if (line.startsWith("/")) {

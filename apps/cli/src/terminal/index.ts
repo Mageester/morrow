@@ -36,3 +36,6 @@ export { LineRenderer, type LineRendererOptions } from "./line-renderer.js";
 export { InteractiveRenderer, nodeTermIO, type TermIO, type InteractiveOptions } from "./runtime.js";
 export { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 export { shouldUseInteractive, resolveUnicodeFlag, type CapabilityInput } from "./capabilities.js";
+export { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
+export { filterCommands, matchScore, renderMenu, clampSelection } from "./completion.js";
+export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./prompt.js";
