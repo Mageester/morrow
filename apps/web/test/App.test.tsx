@@ -25,6 +25,10 @@ vi.mock('../src/api/client', () => ({
     addMemory: vi.fn(),
     setMemoryEnabled: vi.fn(),
     deleteMemory: vi.fn(),
+    getOnboardingState: vi.fn(),
+    saveOnboardingState: vi.fn(),
+    resetOnboardingState: vi.fn(),
+    testProvider: vi.fn(),
   }
 }));
 
@@ -36,6 +40,11 @@ const PROVIDERS = [
 ];
 
 function defaults(providerConfigured = true) {
+  (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: true, onboardingStep: null, useCase: 'Software Development', name: 'Alex' });
+  (apiClient.listProjects as any).mockResolvedValue([]);
+  (apiClient.saveOnboardingState as any).mockResolvedValue({ success: true });
+  (apiClient.resetOnboardingState as any).mockResolvedValue({ success: true });
+  (apiClient.testProvider as any).mockResolvedValue({ ok: true, latencyMs: 100 });
   (apiClient.getProviderStatus as any).mockResolvedValue({ configured: providerConfigured, provider: providerConfigured ? 'openai' : 'none', model: providerConfigured ? 'gpt-4o-mini' : 'none' });
   (apiClient.listProjectTasks as any).mockResolvedValue([]);
   (apiClient.listConversations as any).mockResolvedValue([]);
@@ -111,5 +120,26 @@ describe('Morrow Web App (redesigned shell)', () => {
     fireEvent.click(screen.getByText('Settings', { selector: '.nav-item' }));
     expect(await screen.findByRole('tab', { name: 'Providers' })).toBeDefined();
     expect(await screen.findByText(/Model Providers/i)).toBeDefined();
+  });
+
+  it('renders the onboarding landing page when not onboarded', async () => {
+    (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: false, onboardingStep: 'welcome', useCase: null, name: null });
+    render(<App />);
+    expect(await screen.findByText('M O R R O W')).toBeDefined();
+    expect(screen.getByText('Private intelligence, built around you.')).toBeDefined();
+  });
+
+  it('navigates through the onboarding wizard and verifies truthful commands', async () => {
+    (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: false, onboardingStep: 'welcome', useCase: null, name: null });
+    render(<App />);
+    
+    // Welcome Page -> Install Page
+    fireEvent.click(await screen.findByText('Begin Onboarding'));
+    expect(await screen.findByText('Developer Preview Setup')).toBeDefined();
+    expect(screen.getByText(/git clone/)).toBeDefined(); // Verifies presence of developer preview setup git clone instruction
+
+    // Install Page -> Profile Page
+    fireEvent.click(screen.getByText('Next'));
+    expect(await screen.findByText('Profile & Setup')).toBeDefined();
   });
 });

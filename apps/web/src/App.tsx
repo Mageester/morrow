@@ -64,6 +64,7 @@ function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
 }
 
 export default function App() {
+  const [onboardState, setOnboardState] = useState<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null } | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectMeta, setProjectMeta] = useState<Record<string, ProjectMeta>>({});
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
@@ -123,6 +124,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    apiClient.getOnboardingState().then(setOnboardState).catch(console.error);
     apiClient.listProjects().then(p => { setProjects(p); loadProjectMeta(p); }).catch(console.error);
     apiClient.getProviderStatus().then(setProviderStatus).catch(console.error);
     apiClient.listPresets?.().then(setPresets).catch(console.error);
@@ -287,6 +289,40 @@ export default function App() {
 
   const focusedTask = taskState?.task;
   const planVerified = focusedTask?.status === "verified";
+
+  const handleResetOnboarding = async () => {
+    if (window.confirm("Are you sure you want to reset your onboarding status and rerun setup?")) {
+      try {
+        await apiClient.resetOnboardingState();
+        setOnboardState({ onboarded: false, onboardingStep: "welcome", useCase: null, name: null });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
+  if (onboardState && !onboardState.onboarded) {
+    return (
+      <OnboardingHub
+        state={onboardState}
+        providers={providers}
+        onRefreshProviders={async () => {
+          setProviders(await apiClient.listProviders());
+          setProviderStatus(await apiClient.getProviderStatus());
+        }}
+        onComplete={async (projectId?: string) => {
+          setOnboardState({ onboarded: true, onboardingStep: null, useCase: null, name: null });
+          const nextProjects = await apiClient.listProjects();
+          setProjects(nextProjects);
+          await loadProjectMeta(nextProjects);
+          if (projectId) {
+            setNav("projects");
+            await openProject(projectId, true);
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className={`morrow-app ${inspectorOpen ? "with-inspector" : ""}`}>
@@ -462,6 +498,7 @@ export default function App() {
             selectedProject={selectedProject} memoryEntries={memoryEntries}
             newMemoryContent={newMemoryContent} setNewMemoryContent={setNewMemoryContent}
             onAddMemory={handleAddMemory} onToggleMemory={handleToggleMemory} onDeleteMemory={handleDeleteMemory}
+            onResetOnboarding={handleResetOnboarding}
           />
         )}
 
@@ -741,8 +778,9 @@ function SettingsView(props: {
   selectedProject?: Project; memoryEntries: MemoryEntry[];
   newMemoryContent: string; setNewMemoryContent: (s: string) => void;
   onAddMemory: () => void; onToggleMemory: (id: string, e: boolean) => void; onDeleteMemory: (id: string) => void;
+  onResetOnboarding: () => void;
 }) {
-  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries } = props;
+  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries, onResetOnboarding } = props;
   return (
     <div className="placeholder-view">
       <div className="topbar"><h1>Settings</h1></div>
@@ -853,31 +891,384 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
         {tab === "data" && (
           <div className="settings-panel">
             <div className="card"><h3>Project Memory</h3><p className="muted">Deterministic, project-isolated memory for <strong>{selectedProject?.name ?? "the selected project"}</strong>. Each entry has a source and timestamp, can be disabled, and never crosses projects.</p>
-              {selectedProject ? (<>
-                <div className="memory-add"><input aria-label="New memory" value={props.newMemoryContent} onChange={e => props.setNewMemoryContent(e.target.value)} placeholder="Add a fact Morrow should remember…" /><button className="primary-btn" onClick={props.onAddMemory} disabled={!props.newMemoryContent.trim()}>Add</button></div>
-                {memoryEntries.length === 0 ? <p className="empty-state">No memory entries yet.</p> : (
-                  <ul className="memory-list">{memoryEntries.map(m => (
-                    <li key={m.id} className={`memory-item ${m.enabled ? "" : "disabled"}`}>
-                      <input type="checkbox" checked={m.enabled} onChange={e => props.onToggleMemory(m.id, e.target.checked)} aria-label="Toggle memory" />
-                      <div className="memory-body"><span className="memory-content">{m.content}</span><span className="memory-meta">{m.scope} · {m.source} · {new Date(m.createdAt).toLocaleDateString()}</span></div>
-                      <button className="icon-btn" aria-label="Delete memory" onClick={() => props.onDeleteMemory(m.id)}>✕</button>
-                    </li>
-                  ))}</ul>
-                )}
-              </>) : <p className="empty-state">Select a project (from Projects) to manage its memory.</p>}
+              {selectedProject ? (
+                <>
+                  <div className="memory-add">
+                    <input aria-label="New memory" value={props.newMemoryContent} onChange={e => props.setNewMemoryContent(e.target.value)} placeholder="Add a fact Morrow should remember…" />
+                    <button className="primary-btn" onClick={props.onAddMemory} disabled={!props.newMemoryContent.trim()}>Add</button>
+                  </div>
+                  {memoryEntries.length === 0 ? <p className="empty-state">No memory entries yet.</p> : (
+                    <ul className="memory-list">{memoryEntries.map(m => (
+                      <li key={m.id} className={`memory-item ${m.enabled ? "" : "disabled"}`}>
+                        <input type="checkbox" checked={m.enabled} onChange={e => props.onToggleMemory(m.id, e.target.checked)} aria-label="Toggle memory" />
+                        <div className="memory-body"><span className="memory-content">{m.content}</span><span className="memory-meta">{m.scope} · {m.source} · {new Date(m.createdAt).toLocaleDateString()}</span></div>
+                        <button className="icon-btn" aria-label="Delete memory" onClick={() => props.onDeleteMemory(m.id)}>✕</button>
+                      </li>
+                    ))}</ul>
+                  )}
+                </>
+              ) : <p className="empty-state">Select a project (from Projects) to manage its memory.</p>}
             </div>
             <div className="card"><h3>Storage</h3><p className="muted">Data is stored locally in SQLite at <span className="codeword">~/.morrow/morrow.db</span>. Project-local <span className="codeword">.morrow</span> remains available for workspace metadata. Test runs use isolated temporary databases.</p></div>
           </div>
         )}
 
         {tab === "diagnostics" && (
-          <div className="settings-panel"><div className="card"><h3>Diagnostics</h3><ul className="diag-list">
-            <li><span className="k">Default provider</span>{providerStatus?.configured ? `${providerStatus.provider} · ${providerStatus.model}` : "none configured"}</li>
-            <li><span className="k">Configured providers</span>{providers.filter(p => p.configured).map(p => p.id).join(", ") || "none"}</li>
-            <li><span className="k">Available presets</span>{presets.filter(p => p.available).map(p => p.preset.id).join(", ") || "none"}</li>
-            <li><span className="k">Known models</span>{models.length}</li>
-          </ul></div></div>
+          <div className="settings-panel">
+            <div className="card">
+              <h3>Diagnostics</h3>
+              <ul className="diag-list">
+                <li><span className="k">Default provider</span>{providerStatus?.configured ? `${providerStatus.provider} · ${providerStatus.model}` : "none configured"}</li>
+                <li><span className="k">Configured providers</span>{providers.filter(p => p.configured).map(p => p.id).join(", ") || "none"}</li>
+                <li><span className="k">Available presets</span>{presets.filter(p => p.available).map(p => p.preset.id).join(", ") || "none"}</li>
+                <li><span className="k">Known models</span>{models.length}</li>
+              </ul>
+            </div>
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3>Onboarding Setup</h3>
+              <p className="muted">Reset your onboarding status and rerun the guided Morrow setup wizard at any time.</p>
+              <button className="btn" onClick={onResetOnboarding} style={{ marginTop: 10 }}>Rerun Guided Onboarding</button>
+            </div>
+          </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Onboarding & Landing Hub ──────────────────────────────────────────────────
+interface OnboardingHubProps {
+  state: { onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null };
+  providers: ProviderStatus[];
+  onRefreshProviders: () => void;
+  onComplete: (projectId?: string) => void;
+}
+
+function OnboardingHub({ state, providers, onRefreshProviders, onComplete }: OnboardingHubProps) {
+  const [step, setStep] = useState<number>(0);
+  const [name, setName] = useState(state.name || "");
+  const [useCase, setUseCase] = useState(state.useCase || "");
+  const [activeProv, setActiveProv] = useState("");
+  const [testStatus, setTestStatus] = useState<{ status: "idle" | "testing" | "success" | "error"; message?: string }>({ status: "idle" });
+  const [selectedMode, setSelectedMode] = useState("agent");
+  const [projectName, setProjectName] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [projectError, setProjectError] = useState("");
+  const [projectSuccess, setProjectSuccess] = useState(false);
+  const [createdProjectId, setCreatedProjectId] = useState<string>("");
+
+  const [skills, setSkills] = useState<Record<string, boolean>>({
+    coding: true,
+    "git-inspection": true,
+    "repository-inspection": true,
+    documentation: true,
+    diagnostics: true,
+    testing: true
+  });
+
+  const nextStep = () => {
+    // Save onboarding state on backend dynamically
+    const stepNames = ["welcome", "install", "provider", "mode", "project", "skills", "complete"];
+    const currentStepName = stepNames[step] || "welcome";
+    apiClient.saveOnboardingState({
+      onboardingStep: currentStepName,
+      name: name || undefined,
+      useCase: useCase || undefined,
+    }).catch(console.error);
+
+    setStep(s => s + 1);
+  };
+  const prevStep = () => setStep(s => Math.max(0, s - 1));
+
+  const handleTestProvider = async (providerId: string) => {
+    setTestStatus({ status: "testing" });
+    try {
+      const result = await apiClient.testProvider(providerId);
+      if (result.ok) {
+        setTestStatus({ status: "success", message: `Reachable! Latency: ${result.latencyMs}ms` });
+        onRefreshProviders();
+      } else {
+        setTestStatus({ status: "error", message: `Failed: ${result.detail}` });
+      }
+    } catch (e: any) {
+      setTestStatus({ status: "error", message: e.message || "Failed to test connection." });
+    }
+  };
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProjectError("");
+    try {
+      const p = await apiClient.createProject(projectName, workspacePath);
+      setCreatedProjectId(p.id);
+      setProjectSuccess(true);
+    } catch (err: any) {
+      setProjectError(err.message || "Failed to create project");
+    }
+  };
+
+  const handleComplete = async () => {
+    try {
+      await apiClient.saveOnboardingState({
+        onboarded: true,
+        onboardingStep: null,
+        name: name,
+        useCase: useCase
+      });
+      onComplete(createdProjectId);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  if (step === 0) {
+    return (
+      <div className="onboard-landing">
+        <div className="brand-header">
+          <div className="brand-mark-large">M</div>
+          <h2>M O R R O W</h2>
+          <div className="horizon-line"></div>
+        </div>
+        <h1>Private intelligence, built around you.</h1>
+        <p className="onboard-desc">
+          Morrow is a self-hosted personal AI agent. All context, file indexing, and memory processing stay strictly local on your machine.
+        </p>
+        <div className="landing-principles">
+          <div className="principle">
+            <strong>Calm Power</strong>
+            <span>A silent, powerful engine that acts only when you authorize it.</span>
+          </div>
+          <div className="principle">
+            <strong>Local Control</strong>
+            <span>Your codebase never leaves your local containment boundaries.</span>
+          </div>
+        </div>
+        <button className="btn btn-primary btn-large" onClick={nextStep}>Begin Onboarding</button>
+      </div>
+    );
+  }
+
+  const stepsList = [
+    { num: 1, label: "Install" },
+    { num: 2, label: "Profile" },
+    { num: 3, label: "Provider" },
+    { num: 4, label: "Autonomy" },
+    { num: 5, label: "Workspace" },
+    { num: 6, label: "Skills" },
+    { num: 7, label: "Finish" }
+  ];
+
+  return (
+    <div className="onboard-wizard-container">
+      <div className="onboard-wizard-sidebar">
+        <div className="brand" style={{ padding: "0 0 20px" }}>
+          <div className="brand-mark">M</div>
+          <div className="brand-name">Morrow</div>
+        </div>
+        <ul className="onboard-wizard-steps">
+          {stepsList.map(s => {
+            const isActive = step === s.num;
+            const isCompleted = step > s.num;
+            return (
+              <li key={s.num} className={`onboard-wizard-step ${isActive ? "active" : ""} ${isCompleted ? "completed" : ""}`}>
+                <span className="onboard-wizard-step-num">{isCompleted ? "✓" : s.num}</span>
+                <span>{s.label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <div className="onboard-wizard-content">
+        {step === 1 && (
+          <div>
+            <h1>Developer Preview Setup</h1>
+            <p className="subtitle">Morrow is currently in developer preview. There are no automated installers. Simply clone the repository and run locally.</p>
+            <div className="card">
+              <h3>Setup Instructions</h3>
+              <p className="muted" style={{ marginBottom: 12 }}>To run the background orchestrator service locally on your machine:</p>
+              <pre className="code-block">
+                <code>{`# Clone the repository
+git clone https://github.com/Mageester/morrow.git
+cd morrow
+
+# Install dependencies and build
+pnpm install
+pnpm build
+
+# Start the background service
+pnpm dev`}</code>
+              </pre>
+            </div>
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3>Verification</h3>
+              <p className="muted" style={{ marginBottom: 12 }}>Confirm the CLI is functional and can connect to the orchestrator:</p>
+              <pre className="code-block">
+                <code>pnpm --filter @morrow/cli doctor</code>
+              </pre>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div>
+            <h1>Profile & Setup</h1>
+            <p className="subtitle">Let's customize your local Morrow instance.</p>
+            <div className="card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div className="field">
+                <label htmlFor="user-name-input">What is your name?</label>
+                <input id="user-name-input" value={name} onChange={e => setName(e.target.value)} placeholder="Aidan" />
+              </div>
+              <div className="field">
+                <label htmlFor="user-usecase-select">Primary Use Case</label>
+                <select id="user-usecase-select" value={useCase} onChange={e => setUseCase(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)" }}>
+                  <option value="">Select a usecase...</option>
+                  <option value="Software Development">Software Development</option>
+                  <option value="AI Research">AI Research</option>
+                  <option value="Business & Operations">Business & Operations</option>
+                  <option value="General Productivity">General Productivity</option>
+                  <option value="Custom">Custom / Personal</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div>
+            <h1>Provider Credentials</h1>
+            <p className="subtitle">Morrow connects directly to model endpoints. Credentials live on your local machine and never reach the browser.</p>
+            
+            <div className="card alert-warn" style={{ marginBottom: 16, borderLeft: "4px solid var(--amber)", padding: 12, background: "var(--bg-panel)" }}>
+              <strong>API-key Billing (Bring Your Own Key)</strong>
+              <p className="muted" style={{ margin: "4px 0 0" }}>Consumer subscriptions (e.g. ChatGPT Plus, Claude Pro) are NOT API credits. You must create billing keys directly on developer platforms.</p>
+            </div>
+
+            <div className="card alert-danger" style={{ marginBottom: 20, borderLeft: "4px solid var(--red)", padding: 12, background: "var(--bg-panel)" }}>
+              <strong>Plaintext Warning</strong>
+              <p className="muted" style={{ margin: "4px 0 0" }}>Credentials are stored in plaintext in the file <code>secrets.env</code> under your home directory. Lock down filesystem access to restrict read permissions.</p>
+            </div>
+
+            <div className="provider-grid">
+              {providers.map(p => {
+                if (!["openai", "anthropic", "deepseek", "openrouter"].includes(p.id)) return null;
+                const isSelected = activeProv === p.id;
+                return (
+                  <div key={p.id} className={`provider-card ${p.configured ? "ok" : ""} ${isSelected ? "selected" : ""}`} style={{ cursor: "pointer", border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)" }} onClick={() => { setActiveProv(p.id); setTestStatus({ status: "idle" }); }}>
+                    <div className="provider-card-head">
+                      <strong>{p.label}</strong>
+                      <span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>{p.configured ? "Configured" : "Not configured"}</span>
+                    </div>
+                    {isSelected && (
+                      <div className="provider-test-area" onClick={e => e.stopPropagation()} style={{ marginTop: 12 }}>
+                        <p className="muted">To test, make sure the API key is set in your environment (e.g. <code>secrets.env</code>) and the server has been restarted:</p>
+                        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                          <button type="button" className="btn btn-primary" onClick={() => handleTestProvider(p.id)} disabled={testStatus.status === "testing"}>
+                            {testStatus.status === "testing" ? "Testing..." : "Test Connection"}
+                          </button>
+                        </div>
+                        {testStatus.message && (
+                          <div className={`test-result-msg ${testStatus.status}`} style={{ marginTop: 10, fontSize: 12 }}>
+                            {testStatus.message}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {step === 4 && (
+          <div>
+            <h1>Autonomy & Security</h1>
+            <p className="subtitle">Select your default agent mode. Autonomy profile defines what actions the agent can perform without prompting.</p>
+            <div className="preset-grid">
+              {[
+                { id: "plan-only", title: "Plan Only", desc: "Designs step plans but NEVER writes files or runs commands." },
+                { id: "read-only", title: "Inspect (Read-Only)", desc: "Read-only access to files. Zero network or shell executions." },
+                { id: "agent", title: "Agent (Collaborative)", desc: "Auto-reads workspace, but prompts for confirmation before editing files or running terminal commands." },
+                { id: "yolo", title: "YOLO (Workspace Autonomy)", desc: "Autonomous inside approved workspace. Hard-denies dangerous operations (no escapes, no secret reads, no destructive git, no privilege escalation), logs everything to audit, and supports full diff/undo." }
+              ].map(m => (
+                <div key={m.id} className={`preset-card ${selectedMode === m.id ? "selected" : ""}`} onClick={() => setSelectedMode(m.id)} style={{ cursor: "pointer", border: selectedMode === m.id ? "1px solid var(--accent)" : "1px solid var(--border)", background: selectedMode === m.id ? "var(--accent-soft)" : "var(--bg-panel)" }}>
+                  <strong>{m.title}</strong>
+                  <p className="preset-desc" style={{ marginTop: 6 }}>{m.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {step === 5 && (
+          <div>
+            <h1>Register Workspace</h1>
+            <p className="subtitle">Point Morrow at a local folder. Tools will be bounded inside this workspace directory.</p>
+            <form onSubmit={handleCreateProject} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {projectError && <div className="error-message">{projectError}</div>}
+              {projectSuccess && <div className="badge-ok" style={{ padding: 10, borderRadius: 6, fontWeight: 600, background: "var(--green-soft)", color: "var(--green)" }}>Project registered successfully!</div>}
+              <div className="field">
+                <label>Project Name</label>
+                <input value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="My Project" required />
+              </div>
+              <div className="field">
+                <label>Local Directory Path</label>
+                <input value={workspacePath} onChange={e => setWorkspacePath(e.target.value)} placeholder="C:\Users\aidan\projects\code" required />
+                <span className="hint">An existing local directory. Path must be absolute.</span>
+              </div>
+              <button type="submit" className="primary-btn" style={{ alignSelf: "flex-start" }} disabled={projectSuccess}>Register Workspace</button>
+            </form>
+          </div>
+        )}
+
+        {step === 6 && (
+          <div>
+            <h1>Local Skills Toggles</h1>
+            <p className="subtitle">Enable local skills which provide Morrow with specific domain tools. There is no remote execution or hosted marketplaces.</p>
+            <div className="skills-list" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {[
+                { id: "coding", name: "Coding", desc: "Allows implementation and repair workflows.", permissions: "filesystem-read, filesystem-write, terminal" },
+                { id: "git-inspection", name: "Git", desc: "Allows examining repository status and history.", permissions: "filesystem-read, terminal" },
+                { id: "repository-inspection", name: "Research", desc: "Allows discovering files and project structures.", permissions: "filesystem-read" },
+                { id: "documentation", name: "Documentation", desc: "Allows maintaining project markdown files.", permissions: "filesystem-read, filesystem-write" },
+                { id: "diagnostics", name: "Diagnostics", desc: "Allows diagnosing environment issues.", permissions: "filesystem-read, terminal" },
+                { id: "testing", name: "Testing", desc: "Allows running regression and verification test commands.", permissions: "filesystem-read, terminal" }
+              ].map(s => (
+                <div key={s.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <strong style={{ fontSize: 14 }}>{s.name}</strong>
+                    <p className="muted" style={{ margin: "4px 0" }}>{s.desc}</p>
+                    <span className="cap" style={{ fontSize: 11 }}>Permissions: {s.permissions}</span>
+                  </div>
+                  <input type="checkbox" checked={skills[s.id]} onChange={e => setSkills({ ...skills, [s.id]: e.target.checked })} style={{ width: 20, height: 20, cursor: "pointer" }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {step === 7 && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 40, color: "var(--green)", marginBottom: 16 }}>✓</div>
+            <h2>Setup Complete</h2>
+            <p className="subtitle">Morrow is successfully configured and ready to execute your missions.</p>
+            <div className="card" style={{ maxWidth: 460, margin: "0 auto 30px", textAlign: "left" }}>
+              <strong>To launch your first mission:</strong>
+              <p className="muted" style={{ margin: "6px 0 0" }}>Open a terminal and run the interactive CLI command:</p>
+              <pre className="code-block" style={{ marginTop: 10 }}><code>morrow</code></pre>
+            </div>
+            <button className="btn btn-primary btn-large" onClick={handleComplete}>Launch Workspace Dashboard</button>
+          </div>
+        )}
+
+        <div className="onboard-wizard-actions">
+          {step > 1 && step < 7 && (
+            <button className="btn btn-ghost" onClick={prevStep}>Back</button>
+          )}
+          {step < 7 && (
+            <button className="btn btn-primary" onClick={nextStep} disabled={step === 2 && (!name || !useCase)}>Next</button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -8,6 +8,13 @@ function workspace(prefix: string) {
   return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
 }
 
+test.beforeEach(async ({ page }) => {
+  // Ensure onboarding is completed by default for existing vertical slice tests
+  await page.request.post('http://localhost:4317/api/onboarding', {
+    data: { onboarded: true }
+  });
+});
+
 async function createProject(page: Page, name: string, path: string) {
   await page.getByRole('button', { name: 'New Project' }).first().click();
   await page.fill('#new-project-name', name);
@@ -98,4 +105,58 @@ test('agent chat: tool calls, evidence, reload persistence, and cancellation', a
     await openProjectFromList(page, name);
     await expect(page.locator('.streaming-state.cancelled')).toBeVisible();
   } finally { item.remove(); }
+});
+
+test('onboarding E2E flow: welcomes user, configures name/usecase, lets user setup provider and workspace, then launches dashboard', async ({ page }) => {
+  // Reset onboarding status to show the landing page
+  await page.request.post('http://localhost:4317/api/onboarding/reset');
+
+  await page.goto('/');
+
+  // 1. Landing/Welcome page
+  await expect(page.locator('.brand-header h2')).toHaveText('M O R R O W');
+  await page.click('text=Begin Onboarding');
+
+  // 2. Install step (Developer Preview)
+  await expect(page.locator('h1')).toHaveText('Developer Preview Setup');
+  await page.click('text=Next');
+
+  // 3. Profile/Usecase step
+  await expect(page.locator('h1')).toHaveText('Profile & Setup');
+  await page.fill('#user-name-input', 'Aidan E2E');
+  await page.selectOption('#user-usecase-select', 'Software Development');
+  await page.click('text=Next');
+
+  // 4. Provider step
+  await expect(page.locator('h1')).toHaveText('Provider Credentials');
+  await page.click('text=Next');
+
+  // 5. Autonomy/Mode step
+  await expect(page.locator('h1')).toHaveText('Autonomy & Security');
+  await page.click('text=Next');
+
+  // 6. Workspace step (Register Project)
+  await expect(page.locator('h1')).toHaveText('Register Workspace');
+  
+  const item = workspace('morrow-e2e-onboard-');
+  try {
+    await page.fill('input[placeholder="My Project"]', 'E2E Onboard Project');
+    await page.fill('input[placeholder="C:\\\\Users\\\\aidan\\\\projects\\\\code"]', item.path);
+    await page.click('button:has-text("Register Workspace")');
+    await expect(page.locator('.badge-ok')).toBeVisible();
+    await page.click('text=Next');
+
+    // 7. Skills step
+    await expect(page.locator('h1')).toHaveText('Local Skills Toggles');
+    await page.click('text=Next');
+
+    // 8. Complete step
+    await expect(page.locator('h2')).toHaveText('Setup Complete');
+    await page.click('text=Launch Workspace Dashboard');
+
+    // Should redirect to Workspace Dashboard
+    await expect(page.locator('.workspace-header h3')).toHaveText('E2E Onboard Project Workspace');
+  } finally {
+    item.remove();
+  }
 });

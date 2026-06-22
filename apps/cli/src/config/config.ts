@@ -43,6 +43,9 @@ export interface MorrowConfig {
   /** Local-only personalization (stored under MORROW_HOME, never a secret). */
   user?: {
     name?: string;
+    onboarded?: boolean;
+    onboardingStep?: string;
+    useCase?: string;
   };
   presets?: CustomPreset[];
 }
@@ -61,6 +64,9 @@ const ALLOWED_KEYS = new Set([
   "ui.color",
   "ui.unicode",
   "user.name",
+  "user.onboarded",
+  "user.onboardingStep",
+  "user.useCase",
 ]);
 
 function readJson(path: string): MorrowConfig {
@@ -122,7 +128,22 @@ export class ConfigStore {
   /** Flattened, non-secret view for `config list`. */
   flat(): Array<{ key: string; value: string; source: "project" | "user" | "environment" | "default" }> {
     const out: Array<{ key: string; value: string; source: "project" | "user" | "environment" | "default" }> = [];
-    for (const key of ALLOWED_KEYS) {
+    const keys = new Set(ALLOWED_KEYS);
+    const collectSkillKeys = (obj: any, prefix = "") => {
+      if (!obj || typeof obj !== "object") return;
+      for (const k of Object.keys(obj)) {
+        const full = prefix ? `${prefix}.${k}` : k;
+        if (full.startsWith("skills.") && full.endsWith(".enabled")) {
+          keys.add(full);
+        } else if (typeof obj[k] === "object") {
+          collectSkillKeys(obj[k], full);
+        }
+      }
+    };
+    collectSkillKeys(this.user);
+    collectSkillKeys(this.project);
+
+    for (const key of keys) {
       const projectVal = getPath(this.project, key);
       const userVal = getPath(this.user, key);
       const environmentVal = getPath(this.environment, key);
@@ -138,7 +159,8 @@ export class ConfigStore {
   }
 
   set(key: string, value: string, scope: "user" | "project"): void {
-    if (!ALLOWED_KEYS.has(key)) {
+    const isSkillKey = key.startsWith("skills.") && key.endsWith(".enabled");
+    if (!ALLOWED_KEYS.has(key) && !isSkillKey) {
       throw new CliError(`Unknown config key: ${key}`, {
         code: "CONFIG_UNKNOWN_KEY",
         exitCode: EXIT.USAGE,
@@ -151,6 +173,10 @@ export class ConfigStore {
     const current = readJson(file);
     setPath(current, key, coerced);
     persist(file, current);
+
+    // Update in-memory state
+    setPath(scope === "project" ? this.project : this.user, key, coerced);
+    setPath(this.merged, key, coerced);
   }
 
   unset(key: string, scope: "user" | "project"): void {
@@ -159,6 +185,10 @@ export class ConfigStore {
     const current = readJson(file);
     deletePath(current, key);
     persist(file, current);
+
+    // Update in-memory state
+    deletePath(scope === "project" ? this.project : this.user, key);
+    deletePath(this.merged, key);
   }
 
   /** Custom presets (config-backed), merged project-over-user. */
@@ -188,9 +218,9 @@ function coerce(key: string, value: string): unknown {
     }
     return n;
   }
-  if (key === "ui.color" || key === "ui.unicode" || key === "defaults.useMemory") {
-    if (value === "true") return true;
-    if (value === "false") return false;
+  if (key === "ui.color" || key === "ui.unicode" || key === "defaults.useMemory" || key === "user.onboarded" || (key.startsWith("skills.") && key.endsWith(".enabled"))) {
+    if (value === "true" || value === true as any) return true;
+    if (value === "false" || value === false as any) return false;
     throw new CliError(`${key} must be "true" or "false" (got "${value}")`, { code: "CONFIG_INVALID_VALUE", exitCode: EXIT.USAGE });
   }
   if (key === "defaults.mode") {

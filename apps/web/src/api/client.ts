@@ -209,5 +209,35 @@ export const apiClient = {
   async deleteMemory(id: string): Promise<void> {
     const res = await fetch(`${BASE_URL}/api/memory/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error(await res.text());
+  },
+
+  async getOnboardingState(): Promise<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null }> {
+    const res = await fetch(`${BASE_URL}/api/onboarding`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async saveOnboardingState(data: { onboarded?: boolean; onboardingStep?: string | null; useCase?: string | null; name?: string | null }): Promise<{ success: boolean }> {
+    const res = await fetch(`${BASE_URL}/api/onboarding`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async resetOnboardingState(): Promise<{ success: boolean }> {
+    const res = await fetch(`${BASE_URL}/api/onboarding/reset`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async testProvider(providerId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/providers/${providerId}/test`, {
+      method: "POST"
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 };

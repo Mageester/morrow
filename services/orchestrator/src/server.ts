@@ -777,5 +777,54 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     reply.status(204).send();
   });
 
+  app.get("/api/onboarding", async () => {
+    try {
+      const rows = deps.db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
+      const state: Record<string, string> = {};
+      for (const r of rows) {
+        state[r.key] = r.value;
+      }
+      return {
+        onboarded: state["user.onboarded"] === "true",
+        onboardingStep: state["user.onboardingStep"] || null,
+        useCase: state["user.useCase"] || null,
+        name: state["user.name"] || null,
+      };
+    } catch {
+      return { onboarded: false, onboardingStep: null, useCase: null, name: null };
+    }
+  });
+
+  app.post("/api/onboarding", async (request) => {
+    const body = z.object({
+      onboarded: z.boolean().optional(),
+      onboardingStep: z.string().nullable().optional(),
+      useCase: z.string().nullable().optional(),
+      name: z.string().nullable().optional(),
+    }).parse(request.body);
+
+    deps.db.transaction(() => {
+      const upsert = deps.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
+      if (body.onboarded !== undefined) {
+        upsert.run("user.onboarded", String(body.onboarded));
+      }
+      if (body.onboardingStep !== undefined) {
+        upsert.run("user.onboardingStep", body.onboardingStep ?? "");
+      }
+      if (body.useCase !== undefined) {
+        upsert.run("user.useCase", body.useCase ?? "");
+      }
+      if (body.name !== undefined) {
+        upsert.run("user.name", body.name ?? "");
+      }
+    })();
+    return { success: true };
+  });
+
+  app.post("/api/onboarding/reset", async () => {
+    deps.db.prepare("DELETE FROM settings").run();
+    return { success: true };
+  });
+
   return app;
 }

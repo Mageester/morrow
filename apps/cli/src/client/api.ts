@@ -198,6 +198,17 @@ export class MorrowApi {
   deleteMemory(projectId: string, id: string) {
     return this.req<void>("DELETE", `/api/memory/${id}`, { projectId });
   }
+
+  // ── Onboarding State ────────────────────────────────────────────────────────
+  getOnboardingState() {
+    return this.req<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null }>("GET", "/api/onboarding");
+  }
+  saveOnboardingState(data: { onboarded?: boolean; onboardingStep?: string | null; useCase?: string | null; name?: string | null }) {
+    return this.req<{ success: boolean }>("POST", "/api/onboarding", data);
+  }
+  resetOnboardingState() {
+    return this.req<{ success: boolean }>("POST", "/api/onboarding/reset");
+  }
 }
 
 function safeJson(text: string): unknown {

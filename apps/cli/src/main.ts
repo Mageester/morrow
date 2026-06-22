@@ -13,6 +13,7 @@ import { projectsCommand, initCommand } from "./commands/projects.js";
 import { panicCommand } from "./commands/panic.js";
 import { skillsCommand } from "./commands/skills.js";
 import { providersCommand } from "./commands/providers.js";
+import { onboardCommand } from "./commands/onboard.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 
@@ -45,6 +46,31 @@ export async function run(argv: string[]): Promise<number> {
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
     const invocation = resolveInvocation(parsed.positionals);
+
+    // Auto-detect first launch
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "stop", "restart", "logs"].includes(invocation.root);
+    if (!isSetupCmd) {
+      let onboarded = config.get("user.onboarded") === true;
+      if (!onboarded) {
+        try {
+          const api = ctx.api();
+          const backendState = await api.getOnboardingState();
+          if (backendState.onboarded) {
+            config.set("user.onboarded", "true", "user");
+            if (backendState.name) config.set("user.name", backendState.name, "user");
+            if (backendState.useCase) config.set("user.useCase", backendState.useCase, "user");
+            onboarded = true;
+          }
+        } catch {
+          // Ignore backend lookup if service is down or fails
+        }
+      }
+      if (!onboarded) {
+        out.print(out.bold("Welcome to Morrow! Let's complete the quick setup guide first."));
+        out.print();
+        return onboardCommand(ctx, "", []);
+      }
+    }
     switch (invocation.kind) {
       case "interactive":
         return chatCommand(ctx);
@@ -73,7 +99,7 @@ export async function run(argv: string[]): Promise<number> {
       case "auth": return providersCommand(ctx, authSub(sub), args);
       case "status": return status(ctx);
       case "doctor": return doctor(ctx);
-      case "onboard": return onboard(ctx);
+      case "onboard": return onboardCommand(ctx, sub ?? "", args);
       case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
       case "stop": return serviceStop(ctx);
       case "restart": return restart(ctx);
@@ -195,19 +221,7 @@ async function doctor(ctx: Context): Promise<number> {
   return ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
 }
 
-async function onboard(ctx: Context): Promise<number> {
-  await ensureRunning(ctx);
-  const [health, projects, providers, models, presets] = await Promise.all([ctx.api().health(), ctx.api().listProjects(), ctx.api().listProviders(), ctx.api().listModels(), ctx.api().listPresets()]);
-  const summary = { service: health.service, projects: projects.length, configuredProviders: providers.filter((provider) => provider.configured).map((provider) => provider.id), availableModels: models.filter((model) => model.available).map((model) => model.model.id), availablePresets: presets.filter((preset) => preset.available).map((preset) => preset.preset.id) };
-  if (ctx.out.json) ctx.out.data(summary);
-  else {
-    ctx.out.heading("Morrow onboarding");
-    ctx.out.print("Morrow keeps data local, uses only configured providers, and exposes read-only tools with evidence.");
-    ctx.out.keyValue([["projects", String(summary.projects)], ["configured providers", summary.configuredProviders.join(", ") || "none"], ["available models", String(summary.availableModels.length)], ["available presets", summary.availablePresets.join(", ") || "none"]]);
-    ctx.out.print("Next: morrow providers configure <provider>; morrow models select; morrow presets select; morrow");
-  }
-  return EXIT.OK;
-}
+
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
