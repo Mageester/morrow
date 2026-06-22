@@ -73,7 +73,7 @@
 | Cancel | Hermes | VERIFIED | `/cancel`, `panic.test.ts` | — |
 | Retry | `retry_utils.py` | PARTIAL | `adaptive-budget.ts` attempts | Explicit retry endpoint + idempotency |
 | Adaptive budgets | `iteration_budget.py` | VERIFIED | `execution/adaptive-budget.ts`, commit `c2f74ca` | — |
-| Loop detection | Hermes | MISSING | — | Repeated-action detector + test |
+| Loop detection | Hermes | VERIFIED | `execution/loop-detector.ts` (stable-signature sliding window) wired into `execution/agent.ts`; interrupts with reason `loop_detected` before false success. Tests: `test/loop-detector.test.ts` (11) + `test/agent-loop.test.ts` (2) | — |
 | Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |
 | Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` | Reboot-survival integration test |
 | Scheduled jobs (cron) | `cron/` | MISSING | — | Scheduler + isolated runs |

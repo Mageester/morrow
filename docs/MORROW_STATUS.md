@@ -30,6 +30,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Loop detection (B3)** — `execution/loop-detector.ts`: pure, deterministic
+  sliding-window detector keyed on stable (arg-order-independent) tool-call
+  signatures. Wired into `execution/agent.ts`; a repeated identical action is
+  interrupted with reason `loop_detected` and never marked success. Tests:
+  `loop-detector.test.ts` (11) + `agent-loop.test.ts` (2). Orchestrator suite
+  186 green.
 - **Memory provenance, pinning, tiers (B2)** — `pinned` + `originTaskId` (FK to
   tasks, migration 11); `episodic`/`procedural`/`knowledge` recall tiers;
   pin-first ordering in `listActiveForConversation`/`listByProject`; PATCH
@@ -44,6 +50,7 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — B3 loop detection landed. Matrix §3 "Loop detection" → VERIFIED.
 - 2026-06-22 — B2 memory provenance + pinning + tiers landed. Matrix §7 rows
   (Episodic/procedural/knowledge, Provenance, Pin) → VERIFIED.
 - 2026-06-22 — B1 full-text session & memory search landed (FTS5). Matrix §3 +

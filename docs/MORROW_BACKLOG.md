@@ -12,9 +12,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [x] **B2. Memory provenance + pin + tiers.** Add `pinned`, richer `source`
       (origin taskId), and `episodic`/`procedural`/`knowledge` scopes; pin
       ordering in retrieval; explain endpoint. Extends `repositories/memory.ts`.
-- [ ] **B3. Loop detection.** Detect repeated tool-call signatures in the agent
-      loop; surface `task.recovery_required`/abort with reason. Unit-test the
-      detector deterministically.
+- [x] **B3. Loop detection.** Stable-signature sliding-window detector
+      (`loop-detector.ts`) wired into the agent loop; interrupts with reason
+      `loop_detected` before false success. 13 tests.
 
 ## Next
 

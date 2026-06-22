@@ -26,6 +26,7 @@ import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
+import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 type Dependencies = {
@@ -495,6 +496,9 @@ You must run test/verification commands using run_command, and propose file modi
   let turn = 0;
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
+  // Tight per-action loop detection: catches the same tool+args recurring within
+  // a short window, stopping a stuck model sooner than the turn-budget ceiling.
+  const loopDetector = createLoopDetector();
   let responseContent = assistantMessageRow.content || "";
 
   const continuation = continuationsRepo.get(taskId);
@@ -643,6 +647,7 @@ You must run test/verification commands using run_command, and propose file modi
     const responseLengthAtTurnStart = responseContent.length;
     const completedToolSignatures: string[] = [];
     const repeatedToolSignatures: string[] = [];
+    let loopDetected: { signature: string; count: number } | null = null;
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
 
@@ -761,6 +766,8 @@ You must run test/verification commands using run_command, and propose file modi
         const repeatedTool = seenToolSignatures.has(toolSignature);
         if (repeatedTool) repeatedToolSignatures.push(toolSignature);
         else seenToolSignatures.add(toolSignature);
+        const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
+        if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name });
 
@@ -1162,6 +1169,15 @@ You must run test/verification commands using run_command, and propose file modi
       // No more tool calls, we're done
       completedWithoutMoreTools = true;
       break;
+    }
+
+    if (loopDetected) {
+      const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
+      transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "loop_detected", message, turns: turn } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
     }
 
     const madeProgress = turnMadeProgress({
