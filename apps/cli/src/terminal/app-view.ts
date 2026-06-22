@@ -114,6 +114,8 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
     case "cancelled":
     case "interrupted":
       return out.yellow(term.status);
+    case "budget-reached":
+      return out.yellow("budget reached");
     default:
       return out.gray("idle");
   }

@@ -1150,14 +1150,13 @@ You must run test/verification commands using run_command, and propose file modi
   }
 
   if (!completedWithoutMoreTools && turn >= turnsLimit) {
-    const loopErrMsg = `Agent turn loop limit reached (${turnsLimit})`;
-    transitionAgentState("failed", { message: loopErrMsg });
-    records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: loopErrMsg } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${loopErrMsg}]`, "failed", now());
+    const loopErrMsg = `Task turn budget reached (${turnsLimit}); continue the mission when ready.`;
+    transitionAgentState("interrupted", { reason: "turn_budget_reached", message: loopErrMsg, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "turn_budget_reached", message: loopErrMsg, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${loopErrMsg}]`, "interrupted", now());
     if (activeStepId) {
-      records.updatePlanStepStatus(activeStepId, "failed", now());
+      records.updatePlanStepStatus(activeStepId, "skipped", now());
     }
-    event("task.failed", { message: loopErrMsg });
     return;
   }
 

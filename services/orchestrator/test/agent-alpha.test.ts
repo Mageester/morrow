@@ -148,6 +148,14 @@ describe("Agent Alpha", () => {
   });
 
   describe("Safe Workspace Containment", () => {
+    it("allows bounded reads of project log files", () => {
+      writeFileSync(join(tempDir, "test-run.log"), "line one\nline two\n");
+      expect(readWorkspaceFile(tempDir, "test-run.log")).toMatchObject({
+        path: "test-run.log",
+        content: "line one\nline two\n",
+      });
+    });
+
     it("rejects file reads outside project workspace", () => {
       expect(() => {
         validateSafeReadPath(tempDir, "../secrets.txt");

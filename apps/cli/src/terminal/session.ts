@@ -100,6 +100,8 @@ export class InteractiveSession {
   private confirmExitWhileBusy = false;
   private resolveDone: (() => void) | null = null;
   private readonly now: () => number;
+  /** Source event ids survive SSE reconnects; never fold the same event twice. */
+  private readonly seenSourceEvents = new Set<string>();
   private readonly minIntervalMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -301,7 +303,13 @@ export class InteractiveSession {
           await this.openApproval(raw);
           continue;
         }
-        for (const te of mapTaskEvent(raw)) this.applyEvent(te);
+        for (const te of mapTaskEvent(raw)) {
+          if (te.sourceEventId) {
+            if (this.seenSourceEvents.has(te.sourceEventId)) continue;
+            this.seenSourceEvents.add(te.sourceEventId);
+          }
+          this.applyEvent(te);
+        }
       }
       this.applyEvent({ type: "assistant.end" });
     } catch (err) {

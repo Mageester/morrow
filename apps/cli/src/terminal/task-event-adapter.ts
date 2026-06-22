@@ -13,9 +13,13 @@
 import type { TerminalEvent } from "./events.js";
 
 export interface RawTaskEvent {
+  id?: string;
+  sequence?: number;
   type: string;
   payload: Record<string, unknown>;
 }
+
+export type MappedTerminalEvent = TerminalEvent & { sourceEventId?: string };
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -25,16 +29,20 @@ function num(v: unknown): number | undefined {
 }
 
 /** Map one SSE task event to zero or more terminal events. */
-export function mapTaskEvent(event: RawTaskEvent): TerminalEvent[] {
+export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
   const p = event.payload ?? {};
+  const withSource = (events: TerminalEvent[]): MappedTerminalEvent[] => {
+    if (!event.id) return events;
+    return events.map((mapped) => ({ ...mapped, sourceEventId: event.id! }));
+  };
   switch (event.type) {
     case "evidence.persisted": {
       const delta = str(p.deltaText);
-      if (delta !== undefined) return [{ type: "assistant.delta", text: delta }];
+      if (delta !== undefined) return withSource([{ type: "assistant.delta", text: delta }]);
       const path = str(p.path);
       if (path !== undefined) {
         const size = num(p.size);
-        return [{ type: "activity", kind: "reading", detail: size !== undefined ? `${path} (${size} bytes)` : path }];
+        return withSource([{ type: "activity", kind: "reading", detail: size !== undefined ? `${path} (${size} bytes)` : path }]);
       }
       return [];
     }
@@ -44,21 +52,21 @@ export function mapTaskEvent(event: RawTaskEvent): TerminalEvent[] {
       const path = str(p.path);
       const count = num(p.resultCount);
       const activityKind = kind === "search_text" || kind === "search_files" ? "searching" : "inspecting";
-      return [
+      return withSource([
         {
           type: "activity",
           kind: activityKind,
           ...(path !== undefined ? { detail: path } : {}),
           ...(count !== undefined ? { count } : {}),
         },
-      ];
+      ]);
     }
 
     case "approval.resolved": {
       if (p.auto === true) {
         const id = str(p.approvalId) ?? "";
         const summary = str(p.decision) ?? "auto-approved";
-        return [{ type: "approval.auto", id, summary }];
+        return withSource([{ type: "approval.auto", id, summary }]);
       }
       return [];
     }
@@ -66,17 +74,20 @@ export function mapTaskEvent(event: RawTaskEvent): TerminalEvent[] {
     case "tool.failed": {
       const name = str(p.toolName) ?? "tool";
       const message = str(p.message) ?? "unknown error";
-      return [{ type: "notice", level: "warn", text: `${name} failed: ${message}` }];
+      return withSource([{ type: "notice", level: "warn", text: `${name} failed: ${message}` }]);
     }
 
     case "task.failed":
-      return [{ type: "task.failed", message: str(p.message) ?? "unknown error" }];
+      return withSource([{ type: "task.failed", message: str(p.message) ?? "unknown error" }]);
     case "task.completed":
-      return [{ type: "task.completed" }];
+      return withSource([{ type: "task.completed" }]);
     case "task.cancelled":
-      return [{ type: "task.cancelled" }];
+      return withSource([{ type: "task.cancelled" }]);
     case "task.interrupted":
-      return [{ type: "task.interrupted" }];
+      if (str(p.reason) === "turn_budget_reached") {
+        return withSource([{ type: "task.budget_reached", message: str(p.message) ?? "Task budget reached" }]);
+      }
+      return withSource([{ type: "task.interrupted" }]);
 
     // Internal plan/step/state churn is intentionally not surfaced.
     default:

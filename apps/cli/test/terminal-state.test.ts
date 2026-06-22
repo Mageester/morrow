@@ -66,6 +66,12 @@ describe("terminal state reducer", () => {
     expect(failed.lastError).toBe("boom");
   });
 
+  it("keeps a reached task budget distinct from failure", () => {
+    const state = fold([{ type: "task.budget_reached", message: "Task turn budget reached (10)" }]);
+    expect(state.status).toBe("budget-reached");
+    expect(state.lastError).toBe("Task turn budget reached (10)");
+  });
+
   it("bounds the activity log", () => {
     const events: TerminalEvent[] = Array.from({ length: MAX_ACTIVITY + 25 }, () => ({ type: "activity", kind: "reading" as const }));
     expect(fold(events).activity.length).toBe(MAX_ACTIVITY);

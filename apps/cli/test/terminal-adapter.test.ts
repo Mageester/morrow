@@ -2,6 +2,17 @@ import { describe, it, expect } from "vitest";
 import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
 
 describe("task event adapter", () => {
+  it("retains the source event identity for session-level de-duplication", () => {
+    const source = { id: "evt-1", sequence: 4, type: "evidence.persisted", payload: { deltaText: "hi" } };
+    expect(mapTaskEvent(source)).toEqual([{ type: "assistant.delta", text: "hi", sourceEventId: "evt-1" }]);
+  });
+
+  it("renders turn-budget exhaustion as a recoverable outcome", () => {
+    expect(mapTaskEvent({ type: "task.interrupted", payload: { reason: "turn_budget_reached", message: "Task turn budget reached (10)" } })).toEqual([
+      { type: "task.budget_reached", message: "Task turn budget reached (10)" },
+    ]);
+  });
+
   it("maps streamed assistant text to a delta", () => {
     expect(mapTaskEvent({ type: "evidence.persisted", payload: { deltaText: "hi" } })).toEqual([{ type: "assistant.delta", text: "hi" }]);
   });

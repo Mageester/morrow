@@ -16,7 +16,7 @@ function contained(root: string, target: string) {
 
 const SUPPORTED_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".html", ".css",
-  ".yaml", ".yml", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
+  ".yaml", ".yml", ".log", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
   ".sh", ".bat", ".ps1", ".py", ".go", ".rs", ".java", ".c", ".cpp",
   ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties", ""
 ]);
