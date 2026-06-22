@@ -47,6 +47,7 @@ export interface SessionMeta {
 
 export type TerminalEvent =
   | { type: "session.started"; meta: SessionMeta }
+  | { type: "plan.snapshot"; steps: Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "failed" | "skipped" }> }
   | {
       type: "routing";
       provider: string;

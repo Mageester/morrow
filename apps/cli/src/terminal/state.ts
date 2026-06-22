@@ -60,6 +60,12 @@ export interface NoticeEntry {
   text: string;
 }
 
+export interface PlanEntry {
+  id: string;
+  title: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+}
+
 export interface TerminalState {
   meta?: SessionMeta;
   routing?: RoutingInfo;
@@ -67,6 +73,7 @@ export interface TerminalState {
   activity: ActivityEntry[];
   tools: ToolCard[];
   patches: PatchEntry[];
+  plan: PlanEntry[];
   notices: NoticeEntry[];
   status: SessionStatus;
   lastError?: string;
@@ -77,7 +84,7 @@ export const MAX_ACTIVITY = 80;
 export const MAX_NOTICES = 6;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], notices: [], status: "idle" };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle" };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -89,6 +96,9 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
   switch (event.type) {
     case "session.started":
       return { ...state, meta: event.meta };
+
+    case "plan.snapshot":
+      return { ...state, plan: event.steps };
 
     case "routing":
       return {

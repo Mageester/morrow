@@ -57,6 +57,7 @@ export interface SessionBackend {
   cancel(taskId: string): Promise<void>;
   getApproval(id: string): Promise<ApprovalView>;
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
+  getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
 }
 
 export interface SessionSettings {
@@ -299,6 +300,9 @@ export class InteractiveSession {
       const { taskId } = await this.deps.backend.send(text, { ...this.settings });
       this.currentTaskId = taskId;
       for await (const raw of this.deps.backend.subscribe(taskId, abort.signal)) {
+        if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") {
+          void this.refreshPlan(taskId);
+        }
         if (raw.type === "approval.requested") {
           await this.openApproval(raw);
           continue;
@@ -319,6 +323,22 @@ export class InteractiveSession {
       this.currentTaskId = null;
       this.streamAbort = null;
       this.requestPaint(true);
+    }
+  }
+
+  private async refreshPlan(taskId: string): Promise<void> {
+    try {
+      const steps = await this.deps.backend.getPlan(taskId);
+      const known = new Set(["pending", "running", "completed", "failed", "skipped"]);
+      this.applyEvent({
+        type: "plan.snapshot",
+        steps: steps
+          .filter((step) => known.has(step.status))
+          .map((step) => ({ id: step.id, title: step.title, status: step.status as "pending" | "running" | "completed" | "failed" | "skipped" })),
+      });
+    } catch (error) {
+      this.pushNotice("warn", `Could not refresh task plan: ${error instanceof Error ? error.message : String(error)}`);
+      this.requestPaint(false);
     }
   }
 

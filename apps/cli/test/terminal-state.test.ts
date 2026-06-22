@@ -72,6 +72,17 @@ describe("terminal state reducer", () => {
     expect(state.lastError).toBe("Task turn budget reached (10)");
   });
 
+  it("stores the observable task plan for the interactive frame", () => {
+    const state = fold([{ type: "plan.snapshot", steps: [
+      { id: "p1", title: "Understand repository", status: "completed" },
+      { id: "p2", title: "Verify repair", status: "running" },
+    ] }]);
+    expect(state.plan).toEqual([
+      { id: "p1", title: "Understand repository", status: "completed" },
+      { id: "p2", title: "Verify repair", status: "running" },
+    ]);
+  });
+
   it("bounds the activity log", () => {
     const events: TerminalEvent[] = Array.from({ length: MAX_ACTIVITY + 25 }, () => ({ type: "activity", kind: "reading" as const }));
     expect(fold(events).activity.length).toBe(MAX_ACTIVITY);

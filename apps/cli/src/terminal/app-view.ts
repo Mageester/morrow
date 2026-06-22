@@ -123,6 +123,14 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
 
 function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
   const lines: string[] = [];
+  if (term.plan.length > 0) {
+    lines.push(out.bold("  Plan"));
+    for (const step of term.plan) {
+      const mark = step.status === "completed" ? out.green("✓") : step.status === "running" ? out.cyan("●") : step.status === "failed" ? out.red("×") : out.gray("○");
+      lines.push(`  ${mark} ${step.title}`);
+    }
+    lines.push("");
+  }
   for (const entry of term.conversation) {
     const label = entry.role === "user" ? out.green("you › ") : out.magenta("morrow › ");
     const body = entry.text.length ? entry.text : entry.streaming ? out.gray("…") : "";
