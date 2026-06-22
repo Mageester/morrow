@@ -23,16 +23,31 @@ export function compactWordmark(out: Output, unicode: boolean): string {
   return `${out.yellow(mark)} ${out.bold("MORROW")}  ${out.gray(sep)}  ${out.gray("private intelligence, awake here")}`;
 }
 
-/** Larger first-run / onboarding wordmark: a sunrise over a horizon line. */
+/**
+ * Larger first-run / session-start wordmark: block-letter ASCII art under a
+ * sunrise horizon. The art is pure ASCII so it renders identically with or
+ * without Unicode; the horizon + rays pick up Unicode glyphs when available.
+ * The spaced "M  O  R  R  O  W" caption and the tagline are always present.
+ */
 export function largeWordmark(out: Output, unicode: boolean): string[] {
   const rays = unicode ? "·  ✧  ·" : ".  *  ."; // ·  ✧  ·
-  const horizon = (unicode ? "─" : "-").repeat(30); // ─
+  const horizon = (unicode ? "─" : "-").repeat(48); // ─
+  // Pure-ASCII block letters (no non-ASCII glyphs, safe under --no-color/ASCII).
+  const art = [
+    String.raw`  __  __   ___   ____   ____    ___   _    _ `,
+    String.raw` |  \/  | / _ \ |  _ \ |  _ \  / _ \ | |  | |`,
+    String.raw` | |\/| || | | || |_) || |_) || | | || |  | |`,
+    String.raw` | |  | || |_| ||  _ < |  _ < | |_| || |/\| |`,
+    String.raw` |_|  |_| \___/ |_| \_\|_| \_\ \___/ |__/\__|`,
+  ];
   return [
     "",
-    `          ${out.gray(rays)}`,
-    `     ${out.yellow(horizon)}`,
-    `         ${out.bold("M  O  R  R  O  W")}`,
-    `       ${out.gray(TAGLINE)}`,
+    `      ${out.gray(rays)}`,
+    `   ${out.yellow(horizon)}`,
+    ...art.map((line) => `   ${out.yellow(line)}`),
+    "",
+    `              ${out.bold("M  O  R  R  O  W")}`,
+    `         ${out.gray(TAGLINE)}`,
     "",
   ];
 }
@@ -41,12 +56,13 @@ export type CapabilityMode = "agent" | "read-only" | "plan-only" | string;
 
 /**
  * Truthful, human mode label. Never describes an execution-capable session as
- * "read-only".
+ * "read-only". In agent mode, `autoApprove` flips the label to YOLO so the user
+ * is never misled into thinking approvals still gate execution.
  */
-export function modeLabel(mode: CapabilityMode): string {
+export function modeLabel(mode: CapabilityMode, autoApprove = false): string {
   switch (mode) {
     case "agent":
-      return "Agent · approvals required";
+      return autoApprove ? "Agent · YOLO (auto-approves edits & commands)" : "Agent · approvals required";
     case "read-only":
       return "Inspect · read-only";
     case "plan-only":

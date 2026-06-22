@@ -18,7 +18,7 @@ export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory"]);
 
 type Invocation =
   | { kind: "interactive" }
@@ -63,6 +63,7 @@ export async function run(argv: string[]): Promise<number> {
     switch (root) {
       case "ask": { const p = promptOf(); return chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
+      case "yolo": { const p = promptOf(); return chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return chatWith({ new: true });
       case "model": return modelsCommand(ctx, sub ?? "", args);
@@ -127,6 +128,7 @@ function printHelp(out: Output): number {
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
     `  morrow resume                ${g("resume the most recent session")}`,
     `  morrow new                   ${g("start a fresh session")}`,
     "",
@@ -138,10 +140,10 @@ function printHelp(out: Output): number {
     `  morrow doctor                ${g("check your environment")}`,
     "",
     b("In a session"),
-    `  ${g("/help /mode /model /diff /undo /status /memory /permissions /resume /exit")}`,
+    `  ${g("/help /mode /yolo /model /diff /undo /status /memory /permissions /resume /exit")}`,
     "",
     g("More: morrow projects | conversations | presets | tools | audit | serve | logs"),
-    g("Options: --json --no-color --project --provider --model --preset --plan --read-only"),
+    g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;

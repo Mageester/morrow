@@ -85,6 +85,18 @@ export async function executeAgentChatTask({
   const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) =>
     records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: now() });
 
+  // YOLO / auto-approve: resolve a freshly-created approval as approved without
+  // blocking on a human. The approval record is still created and persisted so
+  // the audit trail shows exactly what ran; we annotate the decision note so it
+  // is never mistaken for an explicit human grant. The categorical `denied`
+  // classification runs *before* any approval is created, so this can never run
+  // a denied command or apply a denied patch.
+  const autoResolveApproval = (approvalId: string): boolean => {
+    approvals.resolve(approvalId, { decision: "allow_once", note: "auto-approved (yolo mode)", resolvedAt: now() });
+    event("approval.resolved", { approvalId, decision: "allow_once", auto: true });
+    return approvals.get(approvalId)?.status === "approved";
+  };
+
   if (!records.getAgentState(taskId)) transitionAgentState("idle");
   transitionAgentState("understanding");
 
@@ -107,6 +119,9 @@ export async function executeAgentChatTask({
 
   // Resolve routing decision + preset-derived execution budgets
   const routing = routingRepo.get(taskId);
+  // Auto-approve is only ever honored in agent mode (double guard: the server
+  // already refuses to set it otherwise).
+  const autoApprove = agentMode === "agent" && (routing?.decision.autoApprove ?? false);
   const presetId = routing?.presetId ?? DEFAULT_PRESET_ID;
   const preset = getPreset(presetId as any) ?? getPreset(DEFAULT_PRESET_ID)!;
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
@@ -922,30 +937,39 @@ You must run test/verification commands using run_command, and propose file modi
                   }
                 });
 
-                // Persist continuation state
-                continuationsRepo.save({
-                  taskId,
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  args: args
-                });
-
-                // Transition state
-                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
-                event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
-
-                // Block in-process
-                const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
-                
-                // Clean up continuation record
-                continuationsRepo.delete(taskId);
-
-                // Reload approval record
-                const updatedApproval = approvals.get(approvalRecord.id)!;
-                if (updatedApproval.status === "approved") {
-                  isApproved = true;
+                if (autoApprove) {
+                  // YOLO: resolve immediately, no continuation/human wait. We do
+                  // NOT emit approval.requested (the CLI would prompt on it).
+                  isApproved = autoResolveApproval(approvalRecord.id);
+                  if (!isApproved) {
+                    throw new Error(`Command execution denied by user.`);
+                  }
                 } else {
-                  throw new Error(`Command execution denied by user.`);
+                  // Persist continuation state
+                  continuationsRepo.save({
+                    taskId,
+                    toolCallId: tc.id,
+                    toolName: tc.name,
+                    args: args
+                  });
+
+                  // Transition state
+                  transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                  event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+
+                  // Block in-process
+                  const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
+
+                  // Clean up continuation record
+                  continuationsRepo.delete(taskId);
+
+                  // Reload approval record
+                  const updatedApproval = approvals.get(approvalRecord.id)!;
+                  if (updatedApproval.status === "approved") {
+                    isApproved = true;
+                  } else {
+                    throw new Error(`Command execution denied by user.`);
+                  }
                 }
               }
             }
@@ -1045,30 +1069,39 @@ You must run test/verification commands using run_command, and propose file modi
                 originalHashes,
               });
 
-              // Persist continuation state
-              continuationsRepo.save({
-                taskId,
-                toolCallId: tc.id,
-                toolName: tc.name,
-                args: args
-              });
-
-              // Transition to waiting_for_approval
-              transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
-              event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
-
-              // Block in-process
-              const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
-              
-              // Clean up continuation
-              continuationsRepo.delete(taskId);
-
-              // Reload approval record
-              const updatedApproval = approvals.get(approvalRecord.id)!;
-              if (updatedApproval.status === "approved") {
-                isApproved = true;
+              if (autoApprove) {
+                // YOLO: resolve immediately, no continuation/human wait. We do
+                // NOT emit approval.requested (the CLI would prompt on it).
+                isApproved = autoResolveApproval(approvalRecord.id);
+                if (!isApproved) {
+                  throw new Error(`Patch application denied by user.`);
+                }
               } else {
-                throw new Error(`Patch application denied by user.`);
+                // Persist continuation state
+                continuationsRepo.save({
+                  taskId,
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  args: args
+                });
+
+                // Transition to waiting_for_approval
+                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
+
+                // Block in-process
+                const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
+
+                // Clean up continuation
+                continuationsRepo.delete(taskId);
+
+                // Reload approval record
+                const updatedApproval = approvals.get(approvalRecord.id)!;
+                if (updatedApproval.status === "approved") {
+                  isApproved = true;
+                } else {
+                  throw new Error(`Patch application denied by user.`);
+                }
               }
             }
 

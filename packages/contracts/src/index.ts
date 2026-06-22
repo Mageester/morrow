@@ -149,6 +149,7 @@ export const RoutingDecisionSchema=z.object({
   candidates:z.array(RoutingCandidateSchema),
   mode:AgentModeSchema.optional(),
   toolProfile:ToolProfileSchema.optional(),
+  autoApprove:z.boolean().optional(),
 }).strict();
 
 export const SendMessageSchema=z.object({
@@ -158,6 +159,7 @@ export const SendMessageSchema=z.object({
   model:z.string().min(1).max(200).optional(),
   mode:AgentModeSchema.optional(),
   useMemory:z.boolean().optional(),
+  autoApprove:z.boolean().optional(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────

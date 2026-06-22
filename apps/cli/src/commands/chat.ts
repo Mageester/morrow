@@ -7,7 +7,7 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
-import { compactWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
+import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
@@ -25,12 +25,24 @@ export function resolveUnicode(ctx: Context): boolean {
   return process.env.MORROW_ASCII !== "1";
 }
 
+/**
+ * Whether to auto-approve (YOLO): flag > config default > off. Only ever active
+ * in agent mode — inspect/plan never request approvals, so auto-approve there
+ * would be a meaningless (and misleading) label.
+ */
+export function resolveAutoApprove(ctx: Context, mode: AgentMode): boolean {
+  if (mode !== "agent") return false;
+  if (flagBool(ctx.flags, "yolo")) return true;
+  return (ctx.config.get("defaults.autoApprove") as boolean | undefined) ?? false;
+}
+
 interface SessionState {
   preset: string;
   provider: string | undefined;
   model: string | undefined;
   mode: AgentMode;
   useMemory: boolean;
+  autoApprove: boolean;
 }
 
 export async function chatCommand(ctx: Context): Promise<number> {
@@ -39,12 +51,14 @@ export async function chatCommand(ctx: Context): Promise<number> {
   const project = await resolveProject(ctx, api, { required: true, autoCreateMissing: true });
   if (!project) return EXIT.NOT_FOUND;
 
+  const mode = resolveMode(ctx);
   const session: SessionState = {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
-    mode: resolveMode(ctx),
+    mode,
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
+    autoApprove: resolveAutoApprove(ctx, mode),
   };
 
   const conversation = await resolveConversation(ctx, api, project.id);
@@ -93,6 +107,9 @@ function sendOptions(s: SessionState) {
     ...(s.model ? { model: s.model } : {}),
     mode: s.mode,
     useMemory: s.useMemory,
+    // Only send autoApprove when it is meaningfully on (agent mode); the server
+    // ignores it otherwise, but keeping the wire honest avoids confusion.
+    ...(s.autoApprove && s.mode === "agent" ? { autoApprove: true } : {}),
   };
 }
 
@@ -129,19 +146,22 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   const history = await api.listMessages(conversation.id);
   const resuming = history.length > 0;
 
-  out.print();
-  out.print("  " + compactWordmark(out, unicode));
-  out.print();
+  for (const line of largeWordmark(out, unicode)) out.print(line);
   out.print("  " + greeting(new Date()) + (name ? `, ${name}.` : "."));
   out.print();
   out.keyValue([
     ["Project", `${projectName}  ${out.gray(project.workspacePath)}`],
     ["Branch", gitSummaryText(git)],
     ["Model", `${modelName}  ${out.gray("·")}  ${privacyLabel(providerName)}`],
-    ["Mode", modeLabel(session.mode)],
+    ["Mode", modeLabel(session.mode, session.autoApprove)],
     ["Memory", session.useMemory ? "project context on" : "off"],
     ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
+  if (session.autoApprove) {
+    out.print();
+    out.print("  " + out.yellow(`${unicode ? "⚠" : "!"} YOLO is on: commands and patches run without asking.`));
+    out.print("  " + out.gray("   Denied actions (shells, deletes, history rewrites) are still blocked. Toggle with /yolo."));
+  }
   out.print();
   out.print("  " + out.gray("What should we work on?  ") + out.gray("(/help for commands, /exit to quit)"));
 
@@ -271,7 +291,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     }
     case "mode": {
       if (!arg) {
-        out.info(`Mode: ${modeLabel(session.mode)}`);
+        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}`);
         return {};
       }
       const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
@@ -280,7 +300,23 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         return {};
       }
       session.mode = next as AgentMode;
-      out.success(`Mode set to ${modeLabel(session.mode)}.`);
+      // Leaving agent mode makes auto-approve meaningless; turn it off so the
+      // label can never claim YOLO for a mode that does not execute.
+      if (session.mode !== "agent" && session.autoApprove) session.autoApprove = false;
+      out.success(`Mode set to ${modeLabel(session.mode, session.autoApprove)}.`);
+      return {};
+    }
+    case "yolo": {
+      if (session.mode !== "agent") {
+        out.warn(`YOLO only applies in agent mode (current: ${modeLabel(session.mode)}). Switch with /mode agent first.`);
+        return {};
+      }
+      session.autoApprove = arg === "on" ? true : arg === "off" ? false : !session.autoApprove;
+      if (session.autoApprove) {
+        out.warn("YOLO on: commands and patches will run without asking. Denied actions (shells, deletes, history rewrites) stay blocked.");
+      } else {
+        out.success("YOLO off: edits and commands require approval again.");
+      }
       return {};
     }
     case "tools": {
@@ -310,7 +346,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         ["preset", session.preset],
         ["provider", session.provider ?? "auto"],
         ["model", session.model ?? "auto"],
-        ["mode", modeLabel(session.mode)],
+        ["mode", modeLabel(session.mode, session.autoApprove)],
         ["memory", session.useMemory ? "on" : "off"],
       ]);
       return {};
@@ -474,6 +510,7 @@ function printReplHelp(ctx: Context) {
     ["/model [id]", "show models or set the active model"],
     ["/preset [id]", "show presets or set the active preset"],
     ["/mode [kind]", "show or set agent | inspect | plan"],
+    ["/yolo [on|off]", "toggle auto-approve (agent mode); denied actions stay blocked"],
     ["/tools", "list available read-only tools"],
     ["/permissions", "show the permission profile"],
     ["/status", "show service and session status"],

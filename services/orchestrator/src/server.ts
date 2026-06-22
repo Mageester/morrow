@@ -337,6 +337,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
+    // YOLO / auto-approve only has meaning when execution tools are exposed.
+    // Inspect (read-only) and plan-only never request approvals, so we refuse to
+    // record an auto-approve flag for them rather than imply it does something.
+    const autoApprove = mode === "agent" && body.autoApprove === true;
 
     // Resolve the provider+model the agent will actually use, and report it.
     let decision: RoutingDecision;
@@ -354,6 +358,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         candidates: [{ providerId: "mock", configured: true, reason: "mock enabled" }],
         mode,
         toolProfile,
+        autoApprove,
       };
     } else {
       const override = body.providerId
@@ -368,7 +373,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       if (body.model && !body.providerId) {
         decision = { ...decision, model: body.model, overridden: true };
       }
-      decision = { ...decision, mode, toolProfile };
+      decision = { ...decision, mode, toolProfile, autoApprove };
     }
 
     const timestamp = new Date().toISOString();

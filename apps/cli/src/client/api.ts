@@ -30,6 +30,7 @@ export interface SendMessageOptions {
   model?: string;
   mode?: AgentMode;
   useMemory?: boolean;
+  autoApprove?: boolean;
 }
 
 export interface SendMessageResult {
