@@ -23,6 +23,7 @@ import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, as
 import { resolveMorrowHome } from "../home.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
 import { createProvider, providerCapabilities } from "../provider/registry.js";
+import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
@@ -33,6 +34,8 @@ type Dependencies = {
   db: Database.Database;
   taskId: string;
   provider?: AiProvider;
+  /** Ordered fallback providers tried (in order) if the primary fails to start. */
+  fallbackProviders?: AiProvider[];
   now?: () => string;
   maxTurns?: number;
   maxFileBytes?: number;
@@ -44,6 +47,7 @@ export async function executeAgentChatTask({
   db,
   taskId,
   provider,
+  fallbackProviders,
   now = () => new Date().toISOString(),
   maxTurns,
   maxFileBytes,
@@ -173,6 +177,25 @@ export async function executeAgentChatTask({
       convs.updateMessageContentAndState(assistantMessageRow.id, `Provider not available: ${e.message || "not configured"}`, "failed", now());
       event("task.failed", { message: e.message || "Provider not configured" });
       return;
+    }
+  }
+
+  // Stream candidates for live fallback: the primary first, then any injected
+  // fallbacks (tests) or — on the real registry path — every other *configured*
+  // routing candidate, in order. A candidate we cannot construct is skipped.
+  const streamCandidates: FallbackCandidate[] = [{ id: providerType, provider: activeProvider }];
+  if (fallbackProviders && fallbackProviders.length > 0) {
+    fallbackProviders.forEach((fp, i) => {
+      streamCandidates.push({ id: ((fp as { id?: ProviderId }).id ?? `fallback-${i}`) as string, provider: fp });
+    });
+  } else if (!provider && providerType !== "mock") {
+    for (const cand of routing?.decision.candidates ?? []) {
+      if (!cand.configured || cand.providerId === providerType || cand.providerId === "mock") continue;
+      try {
+        streamCandidates.push({ id: cand.providerId, provider: createProvider(cand.providerId, process.env) });
+      } catch {
+        /* unconfigurable candidate (e.g. missing key) — skip it */
+      }
     }
   }
 
@@ -652,7 +675,7 @@ You must run test/verification commands using run_command, and propose file modi
     const currentToolCalls: any[] = [];
 
     try {
-      const stream = activeProvider.streamChat(chatMessages, {
+      const opened = await openStreamWithFallback(streamCandidates, chatMessages, {
         ...(abortSignal ? { abortSignal } : {}),
         tools: exposedTools,
         model: resolvedModel || assistantMessageRow.model || undefined,
@@ -660,6 +683,10 @@ You must run test/verification commands using run_command, and propose file modi
         temperature: preset.temperature,
         maxOutputTokens: preset.outputBudgetTokens
       });
+      if (opened.fellBackFrom.length > 0) {
+        event("provider.fallback", { from: opened.fellBackFrom, servedBy: opened.servedBy });
+      }
+      const stream = opened.stream;
 
       for await (const chunk of stream) {
         if (checkCancelled()) {
@@ -707,6 +734,12 @@ You must run test/verification commands using run_command, and propose file modi
         }
       }
     } catch (e: any) {
+      // A cancellation that surfaced as a thrown error (e.g. abort before the
+      // first chunk) is a cancel, not a provider failure.
+      if (checkCancelled() || abortSignal?.aborted) {
+        handleCancellation();
+        return;
+      }
       console.error("Provider stream error", e);
       const errMessage = e.message || "Failed to query AI provider";
       transitionAgentState("failed", { message: errMessage });

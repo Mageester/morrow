@@ -30,7 +30,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       inspect-workspace route). REMAINING: `/api/tasks/:id/retry` (needs task
       state-machine reset work) + extend idempotency to the agent-chat path.
 - [ ] **B9. Execution backend interface + Docker sandbox backend.** (SSH after.)
-- [ ] **B10. Provider rate-limit guard + live fallback-on-error.**
+- [~] **B10. Live provider fallback-on-error.** DONE: `openStreamWithFallback`
+      retries the next configured candidate on a retryable start error (never on
+      fatal request errors, never mid-stream), emits `provider.fallback`, wired
+      into the agent. 10 tests. REMAINING: explicit rate-limit guard/backoff.
 
 ## Later
 

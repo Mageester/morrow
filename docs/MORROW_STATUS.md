@@ -30,6 +30,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Live provider fallback (B10, partial)** — `provider/fallback.ts`
+  `openStreamWithFallback` retries the next configured candidate when the primary
+  fails to *start* streaming with a retryable error (transport/timeout/429/5xx);
+  fatal request errors and mid-stream errors are never masked; cancellation is
+  never a fallback trigger. Wired into `execution/agent.ts`, emits a
+  `provider.fallback` event. Tests: `provider-fallback.test.ts` (8) +
+  `agent-fallback.test.ts` (2). Orchestrator suite 207 green.
 - **Idempotent task creation (B8, partial)** — `tasks(project_id,
   idempotency_key)` partial unique index (migration 12); a repeated
   inspect-workspace request carrying the same `Idempotency-Key` (header or body)
@@ -62,6 +69,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Live provider fallback landed (B10 partial). Matrix §12 Fallback
+  → VERIFIED. New `provider.fallback` task event.
 - 2026-06-22 — Idempotent task creation landed (B8 partial). Matrix §3
   Idempotency → VERIFIED.
 - 2026-06-22 — Security hard-blocks (force-push, network-exfil,

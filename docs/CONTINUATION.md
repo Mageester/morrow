@@ -23,62 +23,62 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B8 (partial) — Idempotent task creation: VERIFIED** (partial unique index +
   `Idempotency-Key` replay on inspect-workspace). REMAINING: `/retry` route +
   agent-chat creation path.
-- Baseline: orchestrator 197 tests, CLI 109, contracts 4, web 8 — all green.
+- **B10 (partial) — Live provider fallback: VERIFIED** (`openStreamWithFallback`,
+  retryable-only, no mid-stream switch, `provider.fallback` event). REMAINING:
+  explicit rate-limit guard/backoff.
+- Baseline: orchestrator 207 tests, CLI 109, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — B10: live provider fallback-on-error
+## Exact next step — B4: skill usage tracking + skill→slash commands
 
-Today `routing/router.ts` sets `fallbackUsed` only from *static* config (an
-unconfigured preferred provider falls back to a configured one). The gap is a
-*live* fallback: when the chosen provider throws at stream start, retry the turn
-with the next configured candidate before failing the task.
+Goal: persist how often each skill is used, and expose installed skills as slash
+commands so the user can invoke them by name.
 
-1. Read `services/orchestrator/src/execution/agent.ts` around provider streaming
-   (search `streamChat` / `provider.`) and `routing/router.ts` `routePreset`
-   (it already produces an ordered `candidates` list).
-2. Add a thin helper, e.g. `services/orchestrator/src/provider/fallback.ts`:
-   `async function streamWithFallback(candidates, makeProvider, attempt)` that
-   tries each configured candidate in order, catching connection/stream-start
-   errors (use `provider/connectivity.ts` error classes / `error_classifier`
-   patterns) and moving to the next; throws only when all fail. Distinguish
-   *retryable* provider errors (network/5xx/429) from *fatal* ones (bad request)
-   — only fall back on retryable.
-3. Wire it where the agent first opens the stream. Record which provider actually
-   served the turn (update routing decision `providerId` + set a
-   `fallbackUsed`/`fallbackFrom` detail on an event) so the transcript is honest.
-4. Tests first (red) — `test/provider-fallback.test.ts`:
-   - "falls back to the next candidate when the first throws a retryable error"
-   - "does not fall back on a fatal (non-retryable) error"
-   - "throws when every candidate fails, with an aggregated reason".
-   Use two `MockProvider`s (extend MockProvider with a `throwAtStart` option or a
-   provider stub that throws) — the first throws, the second streams text.
-   Then an agent-level test: a task whose primary provider throws still completes
-   via the fallback and the served provider is recorded.
-5. `pnpm check && pnpm test && pnpm build`. Update matrix §12 "Fallback" row →
-   VERIFIED + status. Commit `feat(provider): live fallback on retryable errors`
-   + push.
+1. `services/orchestrator/src/database.ts` — migration 13:
+   `CREATE TABLE skill_usage (skill_id TEXT NOT NULL, project_id TEXT NOT NULL
+   REFERENCES projects(id) ON DELETE CASCADE, count INTEGER NOT NULL DEFAULT 0,
+   last_used_at TEXT, PRIMARY KEY (project_id, skill_id));`
+   (Bump `database.test.ts` count 12 → 13.)
+2. `services/orchestrator/src/repositories/skill-usage.ts` — `recordUse(projectId,
+   skillId, at)` (upsert increment) + `listByProject(projectId)` returning
+   `{skillId,count,lastUsedAt}` sorted by count desc.
+3. Contracts — `SkillUsageSchema` ({skillId,count,lastUsedAt|null}). Route
+   `GET /api/projects/:projectId/skills/usage` and
+   `POST /api/projects/:projectId/skills/:skillId/use`.
+4. CLI — the skill registry (`apps/cli/src/skills/registry.ts`) already discovers
+   local skills; expose each discovered skill as a `/skill:<id>` (or `/<id>`)
+   slash command in the registry feeding `SLASH_COMMANDS`/completion, and call
+   the `use` endpoint when invoked. Keep it additive to the static command list.
+5. Tests first (red):
+   - `test/skill-usage.test.ts` — increments and orders by count; isolates by
+     project.
+   - api test — POST use then GET usage reflects the count.
+   - CLI — discovered skills surface as commands (extend `skills.test.ts`).
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §5 rows (Slash commands
+   from skills, Usage tracking) → VERIFIED + status. Commit
+   `feat(skills): usage tracking and skill slash commands` + push.
 
 ## Failing test to write first
 
-`test/provider-fallback.test.ts` — "falls back to the next configured candidate
-when the first provider throws a retryable error".
+`test/skill-usage.test.ts` — "recordUse increments the per-project counter and
+listByProject orders by count descending".
 
-## Deferred from B8 (pick up later)
+## Deferred (pick up later)
 
-- `POST /api/tasks/:taskId/retry` — re-queue a `failed`/`interrupted` task as a
-  fresh attempt (must NOT resurrect `cancelled`; keep separate from `/resume`,
-  which continues a saved tool-call continuation). Needs a task state-machine
-  reset (status → queued, clear `task_continuations`, reset assistant message).
-- Extend `Idempotency-Key` handling to the agent-chat task-creation path
-  (`POST /api/conversations/:id/messages`) using the same `readIdempotencyKey`
-  helper already in `server.ts`.
+- **B8 retry:** `POST /api/tasks/:taskId/retry` — re-queue a `failed`/
+  `interrupted` task as a fresh attempt (NOT `cancelled`; separate from
+  `/resume`). Needs a task state-machine reset (status → queued, clear
+  `task_continuations`, reset assistant message).
+- **B8 idempotency** on the agent-chat creation path
+  (`POST /api/conversations/:id/messages`) via the existing `readIdempotencyKey`.
+- **B10 rate-limit guard:** token-bucket/backoff before B10 is fully closed.
 
 ## Open risks / notes
 
-- Don't fall back on a *fatal* request error (e.g. malformed tool schema) — that
-  would mask a real bug and waste every provider. Classify first.
-- Live fallback must re-check the abort signal between attempts so cancel/panic
-  still wins.
+- Skill→slash must not collide with built-in commands; namespace (e.g.
+  `/skill:<id>`) or check against `SLASH_COMMANDS` before registering.
+- Recording a use is a write; gate it behind the same project resolution as other
+  routes (404 on unknown project).
 
 ## Broader remaining backlog (see MORROW_BACKLOG.md)
 

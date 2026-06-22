@@ -169,7 +169,7 @@
 |---|---|---|---|---|
 | Multi-provider | `providers/`, `agent/*_adapter.py` | VERIFIED | `provider/{anthropic,openai,gemini,openai-compatible,mock}.ts` | — |
 | Health checks | Hermes | VERIFIED | `provider/connectivity.ts`, `/providers/:id/test` | — |
-| Fallback | Hermes | PARTIAL | `routing/router.ts` `fallbackUsed` | Live fallback-on-error test |
+| Fallback | Hermes | VERIFIED | `provider/fallback.ts` `openStreamWithFallback` (retryable-only, no mid-stream switch) wired into `execution/agent.ts`; primary failure falls back to the next configured candidate and emits `provider.fallback`. Tests: `provider-fallback.test.ts` (8) + `agent-fallback.test.ts` (2) | — |
 | Rate limits | `nous_rate_guard.py`, `rate_limit_tracker.py` | MISSING | — | Rate guard |
 | Local/cloud routing | Hermes | VERIFIED | `routing/presets.ts` privacy classes | — |
 | Context limits | `context_engine.py` | PARTIAL | preset `contextBudgetBytes` | Token-accurate trimming |
