@@ -21,10 +21,11 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [x] **B4. Skill usage tracking + skill→slash commands.** Per-project usage
       counters (table + repo + API + CLI client); verified skills surface as
       `/skill:<id>` commands wired into the session and invoke + record use.
-- [ ] **B5. Skill Creator (interview → generate → sandbox test → approve →
-      install).** New `services/orchestrator/src/skills/creator.ts` + CLI flow.
+- [x] **B5. Skill Creator (interview → generate → sandbox test → approve →
+      install).** `apps/cli/src/skills/creator.ts` (validate/generate/install) +
+      `skills create` interview/flag flow; generated bundles pass `verifySkill`.
 - [ ] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,
-      rollback).**
+      rollback).** Build on `creator.ts` `installSkill({overwrite})`.
 - [ ] **B7. Cron scheduler + isolated scheduled runs + notifications.**
 - [x] **B8. Idempotency keys + explicit retry.** DONE: idempotent task creation
       (partial unique index + `Idempotency-Key` replay) AND `POST /tasks/:id/retry`

@@ -33,6 +33,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Skill Creator (B5)** — `apps/cli/src/skills/creator.ts`: `validateSkillSpec`
+  (id/tool/secret safety), `generateSkillFiles` (checksum matches generated
+  SKILL.md so the bundle passes the same `verifySkill` gate as discovery),
+  `installSkill` (stages to temp, sandbox-verifies, moves into place, refuses to
+  overwrite). `skills create` is now a guided interview/flag flow with a
+  permission-review confirm. Tests: `test/skill-creator.test.ts` (7). CLI 119 green.
 - **Explicit task retry (B8 retry)** — `records.retryTask` resets a
   `failed`/`interrupted` task to a clean `queued` state (clears continuation +
   agent-state history + assistant message, preserves event audit);
@@ -85,6 +91,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Skill Creator landed (B5). Matrix §6 (interview→generate, sandbox
+  test, permission review+install) → VERIFIED.
 - 2026-06-22 — Explicit task retry landed (B8 retry). Matrix §3 Retry → VERIFIED.
 - 2026-06-22 — Skill usage tracking + skill→slash commands landed (B4). Matrix
   §5 both rows → VERIFIED.

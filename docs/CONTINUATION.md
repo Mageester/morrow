@@ -29,49 +29,47 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B4 — Skill usage tracking + skill→slash: VERIFIED** (`skill_usage` table,
   repo, API, CLI client; verified skills → `/skill:<id>` wired + invoked).
 - **B8 — Idempotency + retry: VERIFIED** (idempotent creation + `/retry`).
-- Baseline: orchestrator 215 tests, CLI 112, contracts 4, web 8 — all green.
+- **B5 — Skill Creator: VERIFIED** (`apps/cli/src/skills/creator.ts`,
+  `skills create` interview/flag flow; generated bundles pass `verifySkill`).
+- Baseline: orchestrator 215 tests, CLI 119, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — B5 Skill Creator (interview → generate → verify → install)
+## Exact next step — B6 Skill Curator (dedupe, improve, lifecycle, backup)
 
-Goal: let the user describe a skill in natural language and have Morrow generate,
-**sandbox-verify**, permission-review, and (on approval) install it into the
-local skills directory. This is the marquee remaining capability and unblocks B6
-(Curator: dedupe/improve/stale/pin/backup/rollback).
+Build on `apps/cli/src/skills/creator.ts` (`installSkill({overwrite})` already
+supports controlled replacement). Keep it CLI-side alongside the registry.
 
-1. New `services/orchestrator/src/skills/creator.ts` (pure, testable):
-   - `generateSkillFiles(spec)` → `{ "SKILL.md", "manifest.json",
-     "permissions.json", entrypoint }` content map. `spec` = `{ id, name,
-     description, instructions, requestedTools, requestedFilesystemScopes,
-     requestedNetworkDomains, requiredSecrets, supportedPlatforms, riskClass }`.
-     Compute `manifest.checksum = sha256(SKILL.md)` so the generated bundle
-     passes `verifySkill` (mirror the hash in `apps/cli/src/skills/registry.ts`).
-   - `validateSkillSpec(spec)` → list of issues (id kebab-case, non-empty
-     instructions, tools ⊆ a known allow-list, no secret values inlined).
-2. New `installSkill(root, files)` that writes the bundle to a temp dir, runs the
-   same verification as `verifySkill`, and only on success moves it into
-   `<root>/<id>` (refuse to overwrite an existing skill — that's a Curator
-   update, B6). Return `{ installed, directory, issues }`.
-3. Contracts: `CreateSkillSpecSchema` for the spec. Orchestrator route
-   `POST /api/skills/preview` (returns generated files + verification, no write)
-   and `POST /api/skills/install` (writes after a verified preview).
-4. CLI `apps/cli/src/commands/skills.ts` — extend the existing `skills create`
-   (currently a stub usage error) into an interview: prompt for name/description/
-   instructions/tools, show the generated permissions for review, then install on
-   confirm. Reuse `localSkillsRoot()`.
-5. Tests first (red) — `test/skill-creator.test.ts`:
-   - "generated bundle passes verifySkill (checksum matches)"
-   - "validateSkillSpec rejects a bad id / unknown tool / inlined secret"
-   - "installSkill writes a verified bundle and refuses to overwrite an existing
-     skill". Plus a CLI test that the generated files round-trip through
-     `discoverSkills`/`verifySkill`.
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §6 rows → VERIFIED +
-   status. Commit `feat(skills): skill creator (generate, verify, install)` + push.
+1. New `apps/cli/src/skills/curator.ts` (pure where possible):
+   - `findDuplicates(root, candidateSkillMd)` → list of installed skill ids whose
+     SKILL.md is "near-duplicate" of the candidate. Use a cheap deterministic
+     similarity: normalize whitespace/case, tokenize to a word set, Jaccard ≥ a
+     threshold (e.g. 0.8). No network, no LLM.
+   - `backupSkill(root, id)` → copy `<root>/<id>` to
+     `<root>/.backups/<id>/<ISO-timestamp>/`; `listBackups(root, id)`;
+     `rollbackSkill(root, id, timestamp)` → restore a backup over the live skill
+     (verify after restore; refuse if the backup fails verification).
+   - `markStale(root, id)` / `archiveSkill(root, id)` → move to
+     `<root>/.archive/<id>/` (out of discovery) and back.
+   - Pin: store pinned ids in config (`skills.<id>.pinned`) so the curator never
+     auto-archives a pinned skill; surface in `skills list`.
+2. CLI `apps/cli/src/commands/skills.ts` — add subcommands: `dedupe`,
+   `backup <id>`, `backups <id>`, `rollback <id> <timestamp>`,
+   `archive <id>`, `restore <id>`, `pin <id>`, `unpin <id>`. Wire `skills update
+   <id>` to back up then `installSkill({overwrite:true})` (the "improve" path).
+3. Tests first (red) — `apps/cli/test/skill-curator.test.ts`:
+   - "findDuplicates flags a near-identical SKILL.md and ignores unrelated ones"
+   - "backup → modify → rollback restores the original and re-verifies"
+   - "archive removes a skill from discovery; restore brings it back"
+   - "update backs up then overwrites, and the result still verifies".
+4. `pnpm check && pnpm test && pnpm build`. Update matrix §6 remaining rows
+   (Improve successful skills, Duplicate detection, Lifecycle) → VERIFIED +
+   status. Commit `feat(skills): skill curator (dedupe, backup, rollback, lifecycle)`
+   + push.
 
 ## Failing test to write first
 
-`test/skill-creator.test.ts` — "a generated skill bundle passes verifySkill
-because its manifest checksum matches the generated SKILL.md".
+`apps/cli/test/skill-curator.test.ts` — "backupSkill then rollbackSkill restores
+the original SKILL.md and the restored skill still passes verifySkill".
 
 ## Deferred (pick up later)
 
