@@ -27,6 +27,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "inspect", description: "run a safe workspace inspection" },
   { name: "diff", description: "show the latest Morrow-owned applied change" },
   { name: "undo", description: "roll back the latest Morrow-owned change" },
+  { name: "panic", description: "cancel active work and disable YOLO" },
   { name: "memory", description: "toggle memory for this session" },
   { name: "compact", description: "summarize history into a memory note" },
   { name: "export", arg: "[file]", description: "export the conversation as text" },

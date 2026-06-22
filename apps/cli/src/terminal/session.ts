@@ -242,6 +242,12 @@ export class InteractiveSession {
         }
         return void this.requestPaint(false);
       }
+      case "panic":
+        this.settings.autoApprove = false;
+        this.refreshModeLabel();
+        if (this.currentTaskId) void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
+        this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
+        return void this.requestPaint(true);
       case "model":
         if (arg) {
           this.settings.model = arg === "auto" ? undefined : arg;

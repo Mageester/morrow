@@ -125,6 +125,7 @@ export class MorrowApi {
   startInspectWorkspace(projectId: string) {
     return this.req<{ taskId: string; sseUrl: string }>("POST", `/api/projects/${projectId}/tasks/inspect-workspace`);
   }
+  listTasks(projectId: string) { return this.req<Task[]>("GET", `/api/projects/${projectId}/tasks`); }
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
