@@ -16,4 +16,10 @@ describe("local skills registry", () => {
     expect(discoverSkills(root).map((skill) => skill.id)).toEqual(["testing"]);
     expect(verifySkill(skill).ok).toBe(false);
   });
+
+  it("verifies the bundled local skills", () => {
+    const bundled = discoverSkills(join(process.cwd(), "../../skills"));
+    expect(bundled.map((skill) => skill.id)).toEqual(["coding", "diagnostics", "documentation", "git-inspection", "repository-inspection", "testing"]);
+    expect(bundled.map((skill) => verifySkill(skill.directory).ok)).toEqual([true, true, true, true, true, true]);
+  });
 });
