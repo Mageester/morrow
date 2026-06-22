@@ -30,6 +30,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Explicit task retry (B8 retry)** — `records.retryTask` resets a
+  `failed`/`interrupted` task to a clean `queued` state (clears continuation +
+  agent-state history + assistant message, preserves event audit);
+  `POST /api/tasks/:id/retry` (409 unless retryable; never resurrects
+  `cancelled`); CLI `MorrowApi.retryTask`. Tests: `test/retry.test.ts` (4).
+  Orchestrator 215 green.
 - **Skill usage tracking + skill→slash commands (B4)** — per-project
   `skill_usage` counters (migration 13, repo, `GET .../skills/usage` +
   `POST .../skills/:id/use`, `MorrowApi.recordSkillUse`). Verified local skills
@@ -76,6 +82,7 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Explicit task retry landed (B8 retry). Matrix §3 Retry → VERIFIED.
 - 2026-06-22 — Skill usage tracking + skill→slash commands landed (B4). Matrix
   §5 both rows → VERIFIED.
 - 2026-06-22 — Live provider fallback landed (B10 partial). Matrix §12 Fallback

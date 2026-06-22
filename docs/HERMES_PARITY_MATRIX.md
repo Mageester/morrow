@@ -71,7 +71,7 @@
 | Task graph / child tasks | Hermes subagents | MISSING | flat tasks | parent/child edges |
 | Pause / resume | Hermes | VERIFIED | `/resume`, `task-continuations.ts`, commit `8880dd3` | — |
 | Cancel | Hermes | VERIFIED | `/cancel`, `panic.test.ts` | — |
-| Retry | `retry_utils.py` | PARTIAL | `adaptive-budget.ts` attempts | Explicit retry endpoint + idempotency |
+| Retry | `retry_utils.py` | VERIFIED | `records.retryTask` (fresh attempt: resets to queued, clears continuation + agent state + assistant message; preserves event audit), `POST /api/tasks/:id/retry` (409 unless failed/interrupted; never resurrects cancelled), CLI `MorrowApi.retryTask`. `test/retry.test.ts` | — |
 | Adaptive budgets | `iteration_budget.py` | VERIFIED | `execution/adaptive-budget.ts`, commit `c2f74ca` | — |
 | Loop detection | Hermes | VERIFIED | `execution/loop-detector.ts` (stable-signature sliding window) wired into `execution/agent.ts`; interrupts with reason `loop_detected` before false success. Tests: `test/loop-detector.test.ts` (11) + `test/agent-loop.test.ts` (2) | — |
 | Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |

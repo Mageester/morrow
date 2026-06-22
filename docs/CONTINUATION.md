@@ -28,51 +28,66 @@ pnpm check && pnpm test && pnpm build   # expect green
   explicit rate-limit guard/backoff.
 - **B4 — Skill usage tracking + skill→slash: VERIFIED** (`skill_usage` table,
   repo, API, CLI client; verified skills → `/skill:<id>` wired + invoked).
-- Baseline: orchestrator 211 tests, CLI 112, contracts 4, web 8 — all green.
+- **B8 — Idempotency + retry: VERIFIED** (idempotent creation + `/retry`).
+- Baseline: orchestrator 215 tests, CLI 112, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — finish B8 retry, then B5 Skill Creator
+## Exact next step — B5 Skill Creator (interview → generate → verify → install)
 
-### Immediate (small, finishes an open partial) — `POST /api/tasks/:taskId/retry`
+Goal: let the user describe a skill in natural language and have Morrow generate,
+**sandbox-verify**, permission-review, and (on approval) install it into the
+local skills directory. This is the marquee remaining capability and unblocks B6
+(Curator: dedupe/improve/stale/pin/backup/rollback).
 
-1. Read the task status state-machine in
-   `services/orchestrator/src/repositories/task-records.ts` (`transitionTask`)
-   and `recovery.ts` to see valid transitions and how `resumeInterruptedTask`
-   re-queues.
-2. Add `retryTask(taskId)` to `task-records.ts` (or a small helper) that, only
-   for `failed`/`interrupted` tasks: resets status → `queued`, clears
-   `task_continuations` for the task, and resets the assistant message
-   (`streaming_state` → `queued`, content cleared) so the runner re-runs from a
-   clean slate. Must reject `cancelled`/`running`/`completed`/`verified` (409).
-3. `server.ts` — `POST /api/tasks/:taskId/retry`: 404 unknown, 409 wrong status,
-   else reset + `deps.runner.run(taskId)`, return the task (202).
-4. Tests: `test/api.test.ts` (or new `test/retry-api.test.ts`) — retry a failed
-   task re-runs it; retrying a `completed`/`cancelled` task → 409. Reuse the
-   `agent-security.test.ts` "does not resurrect a cancelled task" invariant.
-5. Update matrix §3 "Retry" row → VERIFIED. Commit `feat(runtime): explicit task
-   retry` + push.
+1. New `services/orchestrator/src/skills/creator.ts` (pure, testable):
+   - `generateSkillFiles(spec)` → `{ "SKILL.md", "manifest.json",
+     "permissions.json", entrypoint }` content map. `spec` = `{ id, name,
+     description, instructions, requestedTools, requestedFilesystemScopes,
+     requestedNetworkDomains, requiredSecrets, supportedPlatforms, riskClass }`.
+     Compute `manifest.checksum = sha256(SKILL.md)` so the generated bundle
+     passes `verifySkill` (mirror the hash in `apps/cli/src/skills/registry.ts`).
+   - `validateSkillSpec(spec)` → list of issues (id kebab-case, non-empty
+     instructions, tools ⊆ a known allow-list, no secret values inlined).
+2. New `installSkill(root, files)` that writes the bundle to a temp dir, runs the
+   same verification as `verifySkill`, and only on success moves it into
+   `<root>/<id>` (refuse to overwrite an existing skill — that's a Curator
+   update, B6). Return `{ installed, directory, issues }`.
+3. Contracts: `CreateSkillSpecSchema` for the spec. Orchestrator route
+   `POST /api/skills/preview` (returns generated files + verification, no write)
+   and `POST /api/skills/install` (writes after a verified preview).
+4. CLI `apps/cli/src/commands/skills.ts` — extend the existing `skills create`
+   (currently a stub usage error) into an interview: prompt for name/description/
+   instructions/tools, show the generated permissions for review, then install on
+   confirm. Reuse `localSkillsRoot()`.
+5. Tests first (red) — `test/skill-creator.test.ts`:
+   - "generated bundle passes verifySkill (checksum matches)"
+   - "validateSkillSpec rejects a bad id / unknown tool / inlined secret"
+   - "installSkill writes a verified bundle and refuses to overwrite an existing
+     skill". Plus a CLI test that the generated files round-trip through
+     `discoverSkills`/`verifySkill`.
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §6 rows → VERIFIED +
+   status. Commit `feat(skills): skill creator (generate, verify, install)` + push.
 
-### Then (large, high value) — B5 Skill Creator
+## Failing test to write first
 
-Interview → generate skill (SKILL.md + manifest.json + permissions.json +
-entrypoint) → **sandbox verify** (reuse `apps/cli/src/skills/registry.ts`
-`verifySkill` + a dry-run) → permission review → install into the local skills
-dir on approval. New `services/orchestrator/src/skills/creator.ts` +
-`apps/cli` interview flow. Then B6 Curator (dedupe/improve/stale/pin/backup/
-rollback). See `MORROW_BACKLOG.md`.
+`test/skill-creator.test.ts` — "a generated skill bundle passes verifySkill
+because its manifest checksum matches the generated SKILL.md".
 
 ## Deferred (pick up later)
 
 - **B8 idempotency** on the agent-chat creation path
   (`POST /api/conversations/:id/messages`) via the existing `readIdempotencyKey`.
 - **B10 rate-limit guard:** token-bucket/backoff before B10 is fully closed.
+- **B6 Curator** follows B5: dedupe (similarity over installed SKILL.md),
+  improve successful skills, stale/archive lifecycle, pin, backup, rollback.
 
-## Open risks / notes
+## Bigger remaining (multi-session)
 
-- `/retry` must NOT resurrect a `cancelled` task — restrict to
-  `failed`/`interrupted` and keep it distinct from `/resume` (continuation).
-- Clearing `task_continuations` is required so retry is a *fresh* attempt, not a
-  resumed tool call.
+B7 cron/scheduler + isolated runs + notifications; B9 execution backend interface
++ Docker/SSH; B11 MCP client; B13 LSP diagnostics; B14 worktrees + subagents;
+B15 browser; B16 desktop; B17 messaging adapters; B18 doctor/updater/uninstall;
+B19 Windows/Ubuntu installers; B20 Hermes import; B21 TUI live task tree/Ctrl+K/
+persisted history. Full Hermes parity is multi-session — this file is the handoff.
 
 ## Broader remaining backlog (see MORROW_BACKLOG.md)
 

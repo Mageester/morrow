@@ -488,6 +488,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return records.getAggregate(taskId).task;
   });
 
+  app.post("/api/tasks/:taskId/retry", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (task.status !== "failed" && task.status !== "interrupted") {
+      throw new ApiError(409, "Only failed or interrupted tasks can be retried", "TASK_NOT_RETRYABLE");
+    }
+    records.retryTask(taskId);
+    deps.runner.run(taskId);
+    reply.status(202);
+    return records.getAggregate(taskId).task;
+  });
+
   app.get("/api/tasks/:taskId/diff", async (request) => {
     const { taskId } = request.params as { taskId: string };
     const csList = changeSets.listByTask(taskId);

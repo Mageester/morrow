@@ -162,6 +162,30 @@ export function taskRecordsRepository(db: Database.Database) {
     },
     transitionTask(id: string, target: Task["status"], event: TransitionEvent) { return transition(id, target, event); },
     resumeInterruptedTask(id: string, event: TransitionEvent) { return transition(id, "running", event, true); },
+    /**
+     * Reset a failed or interrupted task to a clean `queued` state for a *fresh*
+     * attempt. Unlike `resumeInterruptedTask` (which continues a saved tool
+     * call), retry discards any continuation and prior agent-state history and
+     * clears the assistant message so the runner re-executes from the start. A
+     * `cancelled`/`completed`/`verified`/`running` task is never retryable.
+     * Task events are preserved as an audit trail of the prior attempt.
+     */
+    retryTask(id: string): Task {
+      return db.transaction(() => {
+        const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+        if (!row) throw new Error(`Task not found: ${id}`);
+        const current = mapTask(row);
+        if (current.status !== "failed" && current.status !== "interrupted") {
+          throw new Error(`Only failed or interrupted tasks can be retried (status: ${current.status})`);
+        }
+        const ts = new Date().toISOString();
+        db.prepare("UPDATE tasks SET status='queued', started_at=NULL, completed_at=NULL, updated_at=? WHERE id=?").run(ts, id);
+        db.prepare("DELETE FROM task_continuations WHERE task_id=?").run(id);
+        db.prepare("DELETE FROM agent_state_transitions WHERE task_id=?").run(id);
+        db.prepare("UPDATE conversation_messages SET content='', streaming_state='queued', updated_at=? WHERE task_id=?").run(ts, id);
+        return mapTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));
+      })();
+    },
     transitionAgentState,
     listAgentStates,
     getAgentState,
