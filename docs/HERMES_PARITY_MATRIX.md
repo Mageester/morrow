@@ -108,9 +108,9 @@
 | Interview → generate skill | `curator.py` | VERIFIED | `apps/cli/src/skills/creator.ts` (`validateSkillSpec`/`generateSkillFiles`) + `skills create` interview/flag flow; generated bundle's checksum matches SKILL.md so it passes `verifySkill`. `test/skill-creator.test.ts` (7) | — |
 | Sandbox test before install | Hermes | VERIFIED | `installSkill` stages to a temp dir and runs `verifySkill` before moving into place; failure leaves nothing installed. `test/skill-creator.test.ts` | — |
 | Permission review + install | Hermes | VERIFIED | `skills create` prints requested tools/fs/network/secrets and gates install behind a confirm; refuses to overwrite an existing skill (curator-only). | — |
-| Improve successful skills | Hermes self-improve | MISSING | — | Improvement loop |
-| Duplicate detection | Hermes | MISSING | — | Similarity check |
-| Lifecycle: stale/archive/pin/backup/rollback | `curator_backup.py` | MISSING | — | Lifecycle mgr |
+| Improve successful skills | Hermes self-improve | VERIFIED | `skills update <id>` backs up then overwrites + re-verifies (`curator.ts` + `creator.installSkill({overwrite})`). `test/skill-curator.test.ts` "improve (update) path" | — |
+| Duplicate detection | Hermes | VERIFIED | `curator.findDuplicates` (deterministic Jaccard over SKILL.md tokens), CLI `skills dedupe`. `test/skill-curator.test.ts` | — |
+| Lifecycle: stale/archive/pin/backup/rollback | `curator_backup.py` | VERIFIED | `curator.ts` `backupSkill`/`listBackups`/`rollbackSkill` (re-verified restore), `archiveSkill`/`restoreArchived` (out of discovery), pin via config; CLI `backup/backups/rollback/archive/restore/archived/pin/unpin`. `test/skill-curator.test.ts` (5) | — |
 
 ## 7. Memory & identity
 

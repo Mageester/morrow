@@ -24,8 +24,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [x] **B5. Skill Creator (interview → generate → sandbox test → approve →
       install).** `apps/cli/src/skills/creator.ts` (validate/generate/install) +
       `skills create` interview/flag flow; generated bundles pass `verifySkill`.
-- [ ] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,
-      rollback).** Build on `creator.ts` `installSkill({overwrite})`.
+- [x] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,
+      rollback).** `apps/cli/src/skills/curator.ts` + `skills` subcommands
+      (dedupe/update/backup/backups/rollback/archive/restore/archived/pin/unpin).
 - [ ] **B7. Cron scheduler + isolated scheduled runs + notifications.**
 - [x] **B8. Idempotency keys + explicit retry.** DONE: idempotent task creation
       (partial unique index + `Idempotency-Key` replay) AND `POST /tasks/:id/retry`

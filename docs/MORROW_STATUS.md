@@ -33,6 +33,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Skill Curator (B6)** — `apps/cli/src/skills/curator.ts`: deterministic
+  duplicate detection (`findDuplicates`, Jaccard over SKILL.md), backup/rollback
+  (re-verified restore + safety backup), archive/restore (out of discovery),
+  pin (config), and an "improve" path (`skills update` = backup → overwrite →
+  re-verify). CLI subcommands: dedupe/update/backup/backups/rollback/archive/
+  restore/archived/pin/unpin. Tests: `test/skill-curator.test.ts` (5). CLI 124 green.
 - **Skill Creator (B5)** — `apps/cli/src/skills/creator.ts`: `validateSkillSpec`
   (id/tool/secret safety), `generateSkillFiles` (checksum matches generated
   SKILL.md so the bundle passes the same `verifySkill` gate as discovery),
@@ -91,6 +97,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Skill Curator landed (B6). Matrix §6 fully VERIFIED (Creator +
+  Curator).
 - 2026-06-22 — Skill Creator landed (B5). Matrix §6 (interview→generate, sandbox
   test, permission review+install) → VERIFIED.
 - 2026-06-22 — Explicit task retry landed (B8 retry). Matrix §3 Retry → VERIFIED.
