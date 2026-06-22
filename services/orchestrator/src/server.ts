@@ -51,6 +51,23 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * An idempotency key lets a client safely retry a creation request (e.g. after a
+ * dropped connection) without spawning a duplicate task. Accepted from the
+ * `Idempotency-Key` header or an `idempotencyKey` body field. Bounded and
+ * trimmed; anything empty or oversized is treated as absent.
+ */
+function readIdempotencyKey(request: { headers?: Record<string, unknown>; body?: unknown }): string | undefined {
+  const header = request.headers?.["idempotency-key"];
+  const fromHeader = Array.isArray(header) ? header[0] : header;
+  const body = request.body as { idempotencyKey?: unknown } | undefined;
+  const fromBody = typeof body?.idempotencyKey === "string" ? body.idempotencyKey : undefined;
+  const raw = (typeof fromHeader === "string" ? fromHeader : undefined) ?? fromBody;
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 200 ? trimmed : undefined;
+}
+
 function parseEventCursor(value: string): number {
   if (!/^(0|[1-9]\d*)$/.test(value)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
   const cursor = Number(value);
@@ -167,24 +184,37 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
 
+    const idempotencyKey = readIdempotencyKey(request);
+    const links = (id: string) => ({
+      taskId: id,
+      projectId,
+      aggregateUrl: `/api/tasks/${id}`,
+      eventHistoryUrl: `/api/tasks/${id}/events`,
+      sseUrl: `/api/tasks/${id}/events/stream`,
+    });
+
+    // Idempotent replay: a repeated request with the same key returns the
+    // original task (200) instead of starting a second inspection.
+    if (idempotencyKey) {
+      const existing = tasks.findByIdempotencyKey(projectId, idempotencyKey);
+      if (existing) {
+        reply.status(200);
+        return { ...links(existing.id), status: existing.status, replayed: true };
+      }
+    }
+
     const task = tasks.createTask({
       id: crypto.randomUUID(),
       projectId,
       kind: "inspect_workspace",
       status: "queued",
-      createdAt: new Date().toISOString()
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      createdAt: new Date().toISOString(),
     });
 
     deps.runner.run(task.id);
     reply.status(202);
-    return {
-      taskId: task.id,
-      projectId,
-      status: task.status,
-      aggregateUrl: `/api/tasks/${task.id}`,
-      eventHistoryUrl: `/api/tasks/${task.id}/events`,
-      sseUrl: `/api/tasks/${task.id}/events/stream`
-    };
+    return { ...links(task.id), status: task.status };
   });
 
   app.get("/api/projects/:projectId/tasks", async (request, reply) => {

@@ -20,55 +20,65 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B3 — Loop detection: VERIFIED.**
 - **B22 (partial) — Security hard-blocks: VERIFIED** (force-push, network-exfil,
   workspace-redirect escape, enforced before approval; YOLO cannot bypass).
-- Baseline: orchestrator 193 tests, CLI 109, contracts 4, web 8 — all green.
+- **B8 (partial) — Idempotent task creation: VERIFIED** (partial unique index +
+  `Idempotency-Key` replay on inspect-workspace). REMAINING: `/retry` route +
+  agent-chat creation path.
+- Baseline: orchestrator 197 tests, CLI 109, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — B8: Idempotency keys + explicit retry
+## Exact next step — B10: live provider fallback-on-error
 
-Goal: a retried task-creation request must not spawn a duplicate task, and a
-failed/interrupted task must be retryable on demand.
+Today `routing/router.ts` sets `fallbackUsed` only from *static* config (an
+unconfigured preferred provider falls back to a configured one). The gap is a
+*live* fallback: when the chosen provider throws at stream start, retry the turn
+with the next configured candidate before failing the task.
 
-1. `services/orchestrator/src/database.ts` — migration 12:
-   `ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;`
-   `CREATE UNIQUE INDEX tasks_idempotency_key_idx ON tasks(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;`
-   (Bump `database.test.ts` migration count 11 → 12.)
-2. `services/orchestrator/src/repositories/tasks.ts` — accept optional
-   `idempotencyKey` on `createTask`; add `findByIdempotencyKey(projectId, key)`.
-3. Task-creation routes in `server.ts` (`POST .../tasks/inspect-workspace` and the
-   message/agent-chat task creation path): read an `Idempotency-Key` header (or
-   body field); if a task with that (projectId,key) exists, return it (200) instead
-   of creating a new one.
-4. Explicit retry: `POST /api/tasks/:taskId/retry` — only valid for `failed` or
-   `interrupted` tasks; re-queue via the runner (mirror `/resume` wiring in
-   `server.ts`, but reset to a fresh attempt rather than continuing a saved
-   tool-call continuation). Distinguish from `/resume` (which continues a paused
-   tool call).
-5. Tests first (red):
-   - `test/tasks.test.ts` — "createTask with the same idempotency key returns the
-     existing task and does not insert a duplicate"; "different keys create
-     distinct tasks"; "null key is unconstrained".
-   - `test/api.test.ts` (or new `test/idempotency-api.test.ts`) — repeated POST
-     with the same `Idempotency-Key` yields one task; `/retry` re-queues a failed
-     task and rejects a non-failed one with 409.
-6. CLI: optional — add `--idempotency-key` to task creation and a `retry`
-   subcommand; can defer.
-7. `pnpm check && pnpm test && pnpm build`. Update matrix §3 rows
-   (Retry → VERIFIED, Idempotency → VERIFIED) + status. Commit
-   `feat(runtime): idempotent task creation and explicit retry` + push.
+1. Read `services/orchestrator/src/execution/agent.ts` around provider streaming
+   (search `streamChat` / `provider.`) and `routing/router.ts` `routePreset`
+   (it already produces an ordered `candidates` list).
+2. Add a thin helper, e.g. `services/orchestrator/src/provider/fallback.ts`:
+   `async function streamWithFallback(candidates, makeProvider, attempt)` that
+   tries each configured candidate in order, catching connection/stream-start
+   errors (use `provider/connectivity.ts` error classes / `error_classifier`
+   patterns) and moving to the next; throws only when all fail. Distinguish
+   *retryable* provider errors (network/5xx/429) from *fatal* ones (bad request)
+   — only fall back on retryable.
+3. Wire it where the agent first opens the stream. Record which provider actually
+   served the turn (update routing decision `providerId` + set a
+   `fallbackUsed`/`fallbackFrom` detail on an event) so the transcript is honest.
+4. Tests first (red) — `test/provider-fallback.test.ts`:
+   - "falls back to the next candidate when the first throws a retryable error"
+   - "does not fall back on a fatal (non-retryable) error"
+   - "throws when every candidate fails, with an aggregated reason".
+   Use two `MockProvider`s (extend MockProvider with a `throwAtStart` option or a
+   provider stub that throws) — the first throws, the second streams text.
+   Then an agent-level test: a task whose primary provider throws still completes
+   via the fallback and the served provider is recorded.
+5. `pnpm check && pnpm test && pnpm build`. Update matrix §12 "Fallback" row →
+   VERIFIED + status. Commit `feat(provider): live fallback on retryable errors`
+   + push.
 
 ## Failing test to write first
 
-`test/tasks.test.ts` — "createTask with a repeated idempotency key returns the
-existing task without inserting a duplicate".
+`test/provider-fallback.test.ts` — "falls back to the next configured candidate
+when the first provider throws a retryable error".
+
+## Deferred from B8 (pick up later)
+
+- `POST /api/tasks/:taskId/retry` — re-queue a `failed`/`interrupted` task as a
+  fresh attempt (must NOT resurrect `cancelled`; keep separate from `/resume`,
+  which continues a saved tool-call continuation). Needs a task state-machine
+  reset (status → queued, clear `task_continuations`, reset assistant message).
+- Extend `Idempotency-Key` handling to the agent-chat task-creation path
+  (`POST /api/conversations/:id/messages`) using the same `readIdempotencyKey`
+  helper already in `server.ts`.
 
 ## Open risks / notes
 
-- The unique partial index must allow many NULL keys (existing tasks). SQLite
-  partial unique index `WHERE idempotency_key IS NOT NULL` does exactly this.
-- `/retry` must not resurrect a `cancelled` task (see existing
-  `agent-security.test.ts` "does not resurrect a cancelled task"). Restrict retry
-  to `failed`/`interrupted` only.
-- Keep `/resume` (continuation) and `/retry` (fresh attempt) clearly separate.
+- Don't fall back on a *fatal* request error (e.g. malformed tool schema) — that
+  would mask a real bug and waste every provider. Classify first.
+- Live fallback must re-check the abort signal between attempts so cancel/panic
+  still wins.
 
 ## Broader remaining backlog (see MORROW_BACKLOG.md)
 

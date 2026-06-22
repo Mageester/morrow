@@ -77,7 +77,7 @@
 | Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |
 | Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` | Reboot-survival integration test |
 | Scheduled jobs (cron) | `cron/` | MISSING | — | Scheduler + isolated runs |
-| Idempotency | Hermes | MISSING | — | Idempotency keys on task creation |
+| Idempotency | Hermes | VERIFIED | `tasks(project_id, idempotency_key)` partial unique index (migration 12), `findByIdempotencyKey`, `Idempotency-Key` header/body on task creation returns the original task. `test/tasks.test.ts` + `test/idempotency-api.test.ts` | Extend to the agent-chat creation path |
 | Session search (FTS) | `agent/memory_manager.py` FTS5 | VERIFIED | `repositories/search.ts`, migration 10 triggers, `/api/projects/:id/search`, `test/search.test.ts` (13) + `test/search-api.test.ts` (4) + CLI `test/api-search.test.ts` (3) | — |
 
 ## 4. Execution backends

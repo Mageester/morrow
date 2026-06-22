@@ -30,6 +30,11 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Idempotent task creation (B8, partial)** — `tasks(project_id,
+  idempotency_key)` partial unique index (migration 12); a repeated
+  inspect-workspace request carrying the same `Idempotency-Key` (header or body)
+  returns the original task instead of spawning a duplicate. Tests:
+  `tasks.test.ts` + `idempotency-api.test.ts`. Orchestrator suite 197 green.
 - **Security hard-blocks (B22, partial)** — `command-policy.ts` now denies
   force-push (`git push --force/-f/--force-with-lease`), direct network-transfer
   tools (curl/wget/nc/scp/ssh/rsync/…), and workspace-redirect escapes
@@ -57,6 +62,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-22 — Idempotent task creation landed (B8 partial). Matrix §3
+  Idempotency → VERIFIED.
 - 2026-06-22 — Security hard-blocks (force-push, network-exfil,
   workspace-redirect) landed. Matrix §2 hard-block row → VERIFIED.
 - 2026-06-22 — B3 loop detection landed. Matrix §3 "Loop detection" → VERIFIED.

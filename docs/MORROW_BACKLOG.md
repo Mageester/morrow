@@ -25,7 +25,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [ ] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,
       rollback).**
 - [ ] **B7. Cron scheduler + isolated scheduled runs + notifications.**
-- [ ] **B8. Idempotency keys + explicit retry endpoint.**
+- [~] **B8. Idempotency keys + explicit retry.** DONE: idempotent task creation
+      (partial unique index + `Idempotency-Key` header/body replay on the
+      inspect-workspace route). REMAINING: `/api/tasks/:id/retry` (needs task
+      state-machine reset work) + extend idempotency to the agent-chat path.
 - [ ] **B9. Execution backend interface + Docker sandbox backend.** (SSH after.)
 - [ ] **B10. Provider rate-limit guard + live fallback-on-error.**
 
