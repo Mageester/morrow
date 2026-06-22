@@ -113,6 +113,13 @@ async function configure(ctx: Context, args: string[]): Promise<number> {
   if (!key) throw new CliError("No API key provided.", { code: "NO_KEY", exitCode: EXIT.USAGE });
   const res = writeSecret(ctx.paths.secretsFile, keyEnv, key);
   reportSaved(ctx, keyEnv, res.securePermissions);
+  if (process.env[keyEnv] !== undefined && process.env[keyEnv] !== key) {
+    ctx.out.warn(
+      `A ${keyEnv} is already set in your environment and will override this saved value — ` +
+        `the key you just entered will NOT be used until you unset it. ` +
+        `PowerShell: \`[Environment]::SetEnvironmentVariable('${keyEnv}', $null, 'User'); Remove-Item Env:${keyEnv}\`.`
+    );
+  }
   ctx.out.info("Restart the service so the new credential is loaded: `morrow restart`.");
   if (ctx.out.json) ctx.out.data({ configured: id, env: keyEnv, securePermissions: res.securePermissions });
   return EXIT.OK;

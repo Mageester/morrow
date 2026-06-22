@@ -31,18 +31,24 @@ function readEnvFileSafe(path: string): Record<string, string> {
 /**
  * Layer Morrow's dedicated secrets file into process.env WITHOUT overriding values that
  * are already present (the real shell environment always wins). Returns the
- * names (never the values) of keys that were applied.
+ * names (never the values) of keys that were `applied`, and the names that were
+ * `shadowed` — present in the file but skipped because the environment already
+ * defines them (so the saved value is silently NOT in effect).
  */
-export function loadSecretsIntoEnv(opts: { secretsFile: string }): string[] {
+export function loadSecretsIntoEnv(opts: { secretsFile: string }): { applied: string[]; shadowed: string[] } {
   const applied: string[] = [];
+  const shadowed: string[] = [];
   const parsed = readEnvFileSafe(opts.secretsFile);
   for (const [k, v] of Object.entries(parsed)) {
     if (process.env[k] === undefined) {
       process.env[k] = v;
       applied.push(k);
+    } else if (process.env[k] !== v) {
+      // The environment overrides this saved secret with a different value.
+      shadowed.push(k);
     }
   }
-  return applied;
+  return { applied, shadowed };
 }
 
 /**

@@ -42,7 +42,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const { openDatabase, buildServer, TaskRunner, recoverRunningTasks } = await import("@morrow/orchestrator");
   const { loadSecretsIntoEnv } = await import("../config/env.js");
 
-  const applied = loadSecretsIntoEnv({
+  const { applied, shadowed } = loadSecretsIntoEnv({
     secretsFile: ctx.paths.secretsFile,
   });
 
@@ -65,6 +65,12 @@ export async function serveForeground(ctx: Context): Promise<number> {
   }
   if (recovered > 0) ctx.out.warn(`Recovered ${recovered} interrupted task(s) from a prior run.`);
   if (applied.length > 0) ctx.out.info(`Loaded credentials from secrets/.env: ${applied.join(", ")}`);
+  if (shadowed.length > 0) {
+    ctx.out.warn(
+      `Environment variables override saved credentials, so the configured value is NOT in effect: ${shadowed.join(", ")}. ` +
+        `Unset them in your shell (e.g. PowerShell: \`[Environment]::SetEnvironmentVariable('${shadowed[0]}', $null, 'User')\`) and restart for the saved key to take effect.`
+    );
+  }
   ctx.out.info("Press Ctrl+C to stop.");
 
   let shuttingDown = false;
