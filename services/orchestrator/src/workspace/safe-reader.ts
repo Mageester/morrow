@@ -1,9 +1,13 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep, extname } from "node:path";
+import { posix, win32, relative, resolve, sep, extname } from "node:path";
 
 export class SafeReadError extends Error {
   readonly code = "safe_read_rejected";
   constructor(message: string) { super(message); }
+}
+
+function isAnyAbsolutePath(candidate: string): boolean {
+  return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 
 function contained(root: string, target: string) {
@@ -27,7 +31,7 @@ export function isDeniedWorkspacePath(requested: string): boolean {
 }
 
 export function validateSafeReadPath(root: string, requested: string): string {
-  if (isAbsolute(requested)) {
+  if (isAnyAbsolutePath(requested)) {
     throw new SafeReadError("Absolute paths are rejected");
   }
   const parts = requested.split(/[\\/]+/);

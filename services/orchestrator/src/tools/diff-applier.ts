@@ -1,4 +1,4 @@
-import { basename, dirname, join, resolve, relative, isAbsolute } from "node:path";
+import { basename, dirname, join, resolve, relative, posix, win32 } from "node:path";
 import { existsSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 
@@ -18,6 +18,16 @@ export interface PatchChunk {
 
 export function hashString(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/**
+ * Model and user supplied paths can use either path dialect regardless of the
+ * host Morrow is running on. `path.isAbsolute` only understands the host
+ * dialect, so it would accept `C:\\Windows\\...` when the service runs on
+ * Linux/WSL. Reject both forms before any containment calculation.
+ */
+function isAnyAbsolutePath(candidate: string): boolean {
+  return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 
 export function parseUnifiedDiff(diffStr: string): PatchFile[] {
@@ -133,7 +143,7 @@ export function validatePatchPaths(
 ): void {
   const check = (relPath: string) => {
     if (relPath === "/dev/null") return;
-    if (isAbsolute(relPath)) {
+    if (isAnyAbsolutePath(relPath)) {
       throw new Error(`Absolute paths are rejected: ${relPath}`);
     }
     const normalized = relPath.replace(/\\/g, "/");
@@ -143,7 +153,7 @@ export function validatePatchPaths(
     }
     const resolved = resolve(workspacePath, relPath);
     const rel = relative(workspacePath, resolved);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
+    if (rel.startsWith("..") || isAnyAbsolutePath(rel)) {
       throw new Error(`Path is outside workspace containment: ${relPath}`);
     }
 
@@ -186,7 +196,7 @@ export function validatePatchPaths(
  * @returns the resolved absolute path (against the real workspace root).
  */
 export function assertContainedRealPath(workspaceRoot: string, relPath: string): string {
-  if (isAbsolute(relPath)) {
+  if (isAnyAbsolutePath(relPath)) {
     throw new Error(`Absolute paths are rejected: ${relPath}`);
   }
   const normalized = relPath.replace(/\\/g, "/");
@@ -218,7 +228,7 @@ export function assertContainedRealPath(workspaceRoot: string, relPath: string):
   }
 
   const rel = relative(realRoot, realProbe);
-  if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
+  if (rel !== "" && (rel.startsWith("..") || isAnyAbsolutePath(rel))) {
     throw new Error(`Path escapes the workspace via symlink or traversal: ${relPath}`);
   }
   return candidate;
