@@ -22,6 +22,7 @@ import { composeApp } from "./app-view.js";
 import { completionActive, initialInputState, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
+import { yoloPolicyText, yoloStatusText } from "./yolo.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 
@@ -236,9 +237,17 @@ export class InteractiveSession {
         if (this.settings.mode !== "agent") {
           this.pushNotice("warn", "YOLO only applies in agent mode. Use /mode agent first.");
         } else {
+          if (arg === "status") {
+            this.pushNotice("info", yoloStatusText(this.settings.autoApprove));
+            return void this.requestPaint(false);
+          }
+          if (arg === "policy") {
+            this.pushNotice("info", yoloPolicyText());
+            return void this.requestPaint(false);
+          }
           this.settings.autoApprove = arg === "on" ? true : arg === "off" ? false : !this.settings.autoApprove;
           this.refreshModeLabel();
-          this.pushNotice(this.settings.autoApprove ? "warn" : "info", this.settings.autoApprove ? "YOLO on: edits & commands run without asking. Denied actions stay blocked." : "YOLO off: approvals required again.");
+          this.pushNotice(this.settings.autoApprove ? "warn" : "info", yoloStatusText(this.settings.autoApprove));
         }
         return void this.requestPaint(false);
       }
