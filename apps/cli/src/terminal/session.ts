@@ -58,6 +58,7 @@ export interface SessionBackend {
   getApproval(id: string): Promise<ApprovalView>;
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
+  getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
 }
 
 export interface SessionSettings {
@@ -97,6 +98,8 @@ export class InteractiveSession {
   private streamStart = 0;
   private streamAbort: AbortController | null = null;
   private currentTaskId: string | null = null;
+  private lastTaskId: string | null = null;
+  private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
   private confirmExitWhileBusy = false;
   private resolveDone: (() => void) | null = null;
@@ -267,7 +270,7 @@ export class InteractiveSession {
         this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
       case "output":
-        this.showOutput();
+        await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
       default:
         this.pushNotice("warn", `/${cmd} isn't available in the interactive view yet — run with MORROW_TUI=0 for the classic command.`);
@@ -275,10 +278,27 @@ export class InteractiveSession {
     }
   }
 
-  private showOutput(): void {
-    const last = [...this.term.tools].reverse().find((t) => t.name === "run_command");
-    if (!last) this.pushNotice("info", "No command output yet in this session.");
-    else this.pushNotice("info", `Last command: ${last.purpose ?? last.name} — ${last.summary ?? last.error ?? "(no captured summary)"}`);
+  private async showOutput(toolId?: string): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No command output yet in this session.");
+      return;
+    }
+    const toolCalls = await this.deps.backend.getOutput(this.lastTaskId, toolId);
+    const selected = toolId ? toolCalls.find((call) => call.id === toolId) : [...toolCalls].reverse().find((call) => call.toolName === "run_command");
+    if (!selected) {
+      this.pushNotice("info", toolId ? `No output for tool ${toolId}.` : "No command output yet in this session.");
+      return;
+    }
+    let raw = selected.errorMessage ?? selected.resultJson ?? "(no output captured)";
+    try {
+      const parsed = JSON.parse(raw) as { stdout?: string; stderr?: string; error?: string; exitCode?: number | null };
+      raw = [parsed.exitCode !== undefined ? `exit ${parsed.exitCode ?? "unknown"}` : "", parsed.stdout ?? "", parsed.stderr ?? "", parsed.error ?? ""].filter(Boolean).join("\n");
+    } catch { /* retained output may be plain text */ }
+    const allLines = raw.split(/\r?\n/);
+    const lines = allLines.slice(0, 200).map((line, i) => `${String(i + 1).padStart(4, " ")}  ${line}`);
+    if (allLines.length > lines.length) lines.push("… output capped at 200 lines");
+    this.outputViewer = { title: `${selected.toolName} · ${selected.id}`, lines };
+    this.input = { ...this.input, overlay: "output" };
   }
 
   private refreshModeLabel(): void {
@@ -299,6 +319,7 @@ export class InteractiveSession {
     try {
       const { taskId } = await this.deps.backend.send(text, { ...this.settings });
       this.currentTaskId = taskId;
+      this.lastTaskId = taskId;
       for await (const raw of this.deps.backend.subscribe(taskId, abort.signal)) {
         if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") {
           void this.refreshPlan(taskId);
@@ -421,7 +442,7 @@ export class InteractiveSession {
       promptWidth: 2,
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : frame.lines;
+    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "output" ? this.outputFrameLines() : frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;
@@ -455,6 +476,14 @@ export class InteractiveSession {
       lines.push(out.yellow("  [y] apply   [n] deny"));
     }
     return lines;
+  }
+
+  private outputFrameLines(): string[] {
+    const out = this.deps.out;
+    const viewer = this.outputViewer;
+    if (!viewer) return this.composeBaseLines();
+    const limit = Math.max(4, this.deps.io.rows - 6);
+    return [out.bold(`  Output · ${viewer.title}`), out.gray("  Esc closes · output retained in task record"), "", ...viewer.lines.slice(-limit)];
   }
 
   private composeBaseLines(): string[] {

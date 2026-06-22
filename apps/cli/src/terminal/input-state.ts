@@ -11,7 +11,7 @@ import type { SlashCommand } from "./commands.js";
 import { clampSelection, filterCommands } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
 
-export type Overlay = "none" | "palette";
+export type Overlay = "none" | "palette" | "output";
 
 export interface InputState {
   buffer: string;
@@ -113,6 +113,13 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
 
   // ── Palette overlay ──────────────────────────────────────────────────────
   if (s.overlay === "palette") return reducePalette(s, key, ctx);
+  if (s.overlay === "output") {
+    if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+      s.overlay = "none";
+      return r(s);
+    }
+    return r(s, { type: "none" });
+  }
 
   // ── Editor + completion ──────────────────────────────────────────────────
   switch (name) {

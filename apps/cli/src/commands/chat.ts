@@ -147,6 +147,7 @@ async function runInteractiveSession(
         .resolveApproval(id, { projectId: project.id, decision: decision as any, ...(trustPattern ? { trustPattern } : {}) })
         .then(() => undefined),
     getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
+    getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
   };
 
   // Real model data feeds the Ctrl+K palette (project/session search deferred).
