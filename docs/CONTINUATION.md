@@ -51,44 +51,46 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B13 (partial) — Diagnostics + baseline: VERIFIED.**
 - **B14 (partial) — Subagent delegation + task graph: VERIFIED.** Worktrees pending.
 - **B17 (partial) — Messaging adapters + notifications: VERIFIED.**
-- **B11 (partial) — MCP client: VERIFIED** (stdio JSON-RPC client, framing,
-  spawn transport, tool filtering, trust). HTTP/routes/OAuth pending.
+- **B11 (partial) — MCP client: VERIFIED** (stdio client, framing, transport,
+  tool filtering, trust).
+- **B18 (partial) — Doctor + updater: VERIFIED** (`aggregateDoctor`, `morrow
+  update` semver check). Apply-update/rollback/uninstall pending.
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 259 tests, CLI 124, contracts 4, web 8 — all green.
+- Baseline: orchestrator 259 tests, CLI 130, contracts 4, web 8 — all green.
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B18 doctor + updater foundations (Distribution)
+## Exact next step — B20 Hermes import (`packages/hermes-compat`)
 
-CLI-side, testable, advances §13 Distribution. `apps/cli` already has a `doctor`
-stub (`main.ts` `case "doctor"`).
+Isolated package (currently README-only), testable with fixtures. Advances §13
+Migration/import (SCAFFOLD → PARTIAL) and the overall "import from Hermes" goal.
 
-1. `apps/cli/src/commands/doctor.ts` (extract from wherever `doctor` lives): run
-   a set of pure-ish **checks** returning `{ name, status: 'ok'|'warn'|'fail',
-   detail, fix? }`: node version ≥22, pnpm present, Morrow home writable, DB
-   migrations up to date (call `/api/health` → `migrations.latest`), provider
-   configured (call `/api/provider/status`), service reachable. Each check is a
-   function `() => Promise<CheckResult>` so they unit-test with injected probes.
-2. `runDoctor(checks)` aggregates; exit non-zero if any `fail`. JSON + table out.
-3. `apps/cli/src/service/update.ts`: `checkForUpdate(currentVersion, fetchImpl?)`
-   that compares the local version to a source (e.g. the package.json on the
-   remote/git tag) — keep the source injectable; return `{ current, latest,
-   updateAvailable }`. (Actual self-update of a pnpm monorepo is `git pull` +
-   `pnpm install` + rebuild — wire a `morrow update` that runs those via the
-   service lifecycle, guarded.)
-4. Tests: `apps/cli/test/doctor.test.ts` — `runDoctor` aggregates ok/warn/fail
-   and sets exit code; a failing check surfaces its fix hint.
-   `apps/cli/test/update.test.ts` — `checkForUpdate` reports updateAvailable when
-   latest>current (injected fetch), and false when equal.
-5. `pnpm check && pnpm test && pnpm build`. Update matrix §13 (Doctor, Update/
-   rollback) → VERIFIED/PARTIAL + status. Commit + push.
+1. Make `packages/hermes-compat` a real workspace package: `package.json`
+   (name `@morrow/hermes-compat`, type module, check/test/build scripts mirroring
+   `@morrow/contracts`), `tsconfig.json` + `tsconfig.build.json`, `src/index.ts`.
+2. `src/import-config.ts` (pure): `parseHermesEnv(text)` → key/value map from a
+   Hermes `.env`/`cli-config.yaml.example`-style file (simple `KEY=VALUE` and
+   `key: value` lines; ignore comments/blanks). `mapToMorrow(hermesConfig)` →
+   a Morrow-shaped `{ provider?, model?, settings: Record<string,string> }`
+   honest mapping (only map keys we truly understand: e.g. `OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`, model/provider selection). Unknown keys go to an
+   `unmapped` list — never silently dropped, never invented.
+3. NEVER emit secret *values* into logs or the mapped output's human summary —
+   map the presence/!env-name, not the value (the user keeps their own secrets).
+4. Tests `packages/hermes-compat/test/import.test.ts`: parse a fixture with
+   comments/blanks/both syntaxes; map known keys; collect unknown keys in
+   `unmapped`; assert no secret value leaks into the summary string.
+5. Add the package to the root `pnpm-workspace.yaml`/turbo if needed (it's under
+   `packages/*` which is likely already globbed — verify).
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §13 Migration/import →
+   PARTIAL + status. Commit + push.
 
 ## Failing test to write first
 
-`apps/cli/test/doctor.test.ts` — "runDoctor returns a non-zero exit code when any
-check reports fail, and zero when all pass/warn".
+`packages/hermes-compat/test/import.test.ts` — "parseHermesEnv ignores comments
+and blank lines and returns KEY=VALUE pairs".
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 

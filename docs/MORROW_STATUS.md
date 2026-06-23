@@ -33,6 +33,11 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Doctor + updater (B18, partial)** — `morrow doctor` now aggregates checks via
+  the testable `service/doctor-checks.ts` `aggregateDoctor` (critical vs warning);
+  new `morrow update` reports availability via `service/update.ts`
+  (`compareSemver`, `checkForUpdate`, injectable `fetchLatestVersion`). Tests:
+  `doctor-update.test.ts` (6). CLI 130 green.
 - **MCP client (B11, partial)** — `mcp/client.ts`: a transport-agnostic JSON-RPC
   2.0 MCP client (initialize / tools/list / tools/call) with an allow-list that
   filters discovered tools and refuses disallowed calls; `mcp/framing.ts`
@@ -131,6 +136,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Doctor aggregation + updater landed (B18 partial). Matrix §13
+  Doctor → VERIFIED, Update → PARTIAL.
 - 2026-06-23 — MCP client landed (B11 partial). Matrix §10 MCP stdio client →
   VERIFIED; tool filtering + trust → PARTIAL.
 - 2026-06-23 — Messaging adapters + notifications landed (B17 partial). Matrix

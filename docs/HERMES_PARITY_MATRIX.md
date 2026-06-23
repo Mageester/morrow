@@ -183,10 +183,10 @@
 | Ubuntu install | `install.sh` | MISSING | — | One-command installer |
 | Onboarding | `agent/onboarding.py` | VERIFIED | `commands/onboard.ts`, `onboard.test.ts`, commit `bf8ae79` | — |
 | Provider setup wizard | `hermes setup` | PARTIAL | onboarding provider step | — |
-| Update / rollback | `hermes update` | MISSING | — | Updater |
+| Update / rollback | `hermes update` | PARTIAL | `service/update.ts` (`compareSemver`, `checkForUpdate`, injectable `fetchLatestVersion`) + `morrow update` command. `test/doctor-update.test.ts` | Apply-update (git pull+install) automation + rollback |
 | Uninstall | Hermes | MISSING | — | — |
 | Service management | Hermes | VERIFIED | `service/lifecycle.ts`, `service-lifecycle.test.ts` | — |
-| Doctor | `hermes doctor` | MISSING | — | Diagnostics command |
+| Doctor | `hermes doctor` | VERIFIED | `morrow doctor` (node/pnpm/home/migrations/providers checks) with testable `service/doctor-checks.ts` `aggregateDoctor`. `test/doctor-update.test.ts` | — |
 | Migration / import | `hermes claw migrate`, `hermes-compat` | SCAFFOLD | `packages/hermes-compat` (README only) | Import tooling |
 
 ## 14. Cross-cutting

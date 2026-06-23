@@ -17,12 +17,14 @@ import { providersCommand } from "./commands/providers.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
+import { aggregateDoctor } from "./service/doctor-checks.js";
+import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/update.js";
 
 export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "update", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
 
 type Invocation =
   | { kind: "interactive" }
@@ -100,6 +102,7 @@ export async function run(argv: string[]): Promise<number> {
       case "auth": return providersCommand(ctx, authSub(sub), args);
       case "status": return status(ctx);
       case "doctor": return doctor(ctx);
+      case "update": return update(ctx);
       case "onboard": return onboardCommand(ctx, sub ?? "", args);
       case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
       case "stop": return serviceStop(ctx);
@@ -205,7 +208,7 @@ async function doctor(ctx: Context): Promise<number> {
   } catch (error) {
     checks.push({ name: "orchestrator", ok: false, detail: error instanceof Error ? error.message : String(error), critical: true });
   }
-  const ok = checks.every((check) => !check.critical || check.ok);
+  const ok = aggregateDoctor(checks).ok;
   if (ctx.out.json) ctx.out.data({ ok, checks, pnpm, logPath: ctx.paths.logFile });
   else {
     ctx.out.heading("Morrow doctor");
@@ -225,6 +228,25 @@ async function doctor(ctx: Context): Promise<number> {
 }
 
 
+
+async function update(ctx: Context): Promise<number> {
+  const latest = await fetchLatestVersion();
+  if (!latest) {
+    if (ctx.out.json) ctx.out.data({ current: MORROW_VERSION, latest: null, updateAvailable: false });
+    else ctx.out.warn("Could not check for updates (offline or source unavailable).");
+    return EXIT.OK;
+  }
+  const status = checkForUpdate(MORROW_VERSION, latest);
+  if (ctx.out.json) ctx.out.data(status);
+  else if (status.updateAvailable) {
+    ctx.out.heading("Update available");
+    ctx.out.keyValue([["current", status.current], ["latest", status.latest]]);
+    ctx.out.info("Apply with: git pull && pnpm install && pnpm build");
+  } else {
+    ctx.out.success(`Morrow is up to date (${status.current}).`);
+  }
+  return EXIT.OK;
+}
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }

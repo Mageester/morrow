@@ -61,7 +61,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       (covers Slack/Discord incoming webhooks) + telegram (token-redacted),
       `POST /api/notify`, scheduler notifications. REMAINING: native Slack/Discord
       apps + SMTP email.
-- [ ] **B18. Doctor command + updater + rollback + uninstall.**
+- [~] **B18. Doctor + updater.** DONE: `morrow doctor` (testable
+      `aggregateDoctor`), `morrow update` (semver check via injectable source).
+      REMAINING: apply-update automation, rollback, uninstall.
 - [ ] **B19. Windows + Ubuntu one-command installers.**
 - [ ] **B20. Hermes import/migration tooling (`packages/hermes-compat`).**
 - [ ] **B21. TUI: live task tree, Ctrl+K palette, persisted history, resize
