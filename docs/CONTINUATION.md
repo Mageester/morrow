@@ -66,7 +66,32 @@ pnpm check && pnpm test && pnpm build   # expect green
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B15 browser control (interface + prompt-injection guard)
+## Exact next step — B12 plugin manager
+
+B15 is implemented as a real local Playwright/CDP vertical slice. The current
+working tree contains its source, tests, dependency manifest/lockfile, and durable
+documentation updates; commit and push this coherent slice before starting B12.
+Managed/cloud browser backends are intentionally still missing.
+
+1. Run `pnpm check && pnpm test && pnpm build && pnpm run test:e2e` and inspect
+   `git diff --check`.
+2. Commit the B15 files with `feat(browser): add safe local Playwright control`
+   and push `feat/morrow-agent-terminal` (PR #13 remains draft and unchanged).
+3. Start B12 at `services/orchestrator/src/plugins/manifest.ts`: write the
+   failing manifest-validation test first, then implement a local-only plugin
+   manifest registry with enable/disable state and no implicit code loading.
+
+## B15 evidence
+
+- `services/orchestrator/test/browser-injection.test.ts` launches Chromium against
+  a local controlled page; it verifies semantic refs, navigation, type/key/select,
+  screenshot, dialog, console evidence, scoped upload/download, injection
+  containment, SSRF rejection, cancellation, persistent profiles, CDP attach,
+  pause/resume/panic, cleanup and sanitized append-only audit records.
+- `pnpm --filter @morrow/orchestrator test -- browser-injection.test.ts` → 278
+  orchestrator tests green before final workspace verification.
+
+## Historical B15 design notes (superseded)
 
 Browser automation needs Playwright/a real browser (CI-untestable here), so build
 the *testable* parts honestly: a `BrowserController` interface, a Playwright-backed

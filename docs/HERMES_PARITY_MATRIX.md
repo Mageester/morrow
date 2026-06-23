@@ -140,9 +140,9 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Playwright/CDP browser | `agent/browser_provider.py`, `agent-browser` | MISSING | — | Browser tool w/ DOM refs |
-| Sessions/screenshots/uploads | Hermes | MISSING | — | — |
-| Prompt-injection protection | Hermes | MISSING | — | Injection guard |
+| Playwright/CDP browser | `agent/browser_provider.py`, `agent-browser` | VERIFIED | `browser/playwright.ts`: real Playwright Chromium lifecycle, CDP attach, semantic DOM refs, navigation, click/fill/key/select, dialogs, bounded evidence, timeout/cancellation, explicit pause/resume/panic and owned-process cleanup. `test/browser-injection.test.ts` launches Chromium and attaches over CDP. Chrome/Edge channels are supported where installed. | Managed/cloud browser backends remain missing. |
+| Sessions/screenshots/uploads | Hermes | VERIFIED | Isolated and profile-backed persistent sessions; bounded PNG screenshots; explicit download/upload roots with containment; console/page-error evidence; `browser/audit.ts` writes sanitized task-scoped records into the append-only audit log. Browser E2E test covers upload/download, screenshot, console, dialog, persistence and cleanup. | Cloud-session import/export is missing. |
+| Prompt-injection protection | Hermes | VERIFIED | `browser/injection-guard.ts` neutralizes instruction/role/system-prompt/exfiltration payloads; URL policy rejects unsupported schemes, metadata and private-network targets unless explicitly allowed; audit output redacts secrets. `test/browser-injection.test.ts` (9). | — |
 | Desktop control (UIA/AX/AT-SPI) | Hermes computer-use | MISSING | — | Desktop layer |
 
 ## 10. MCP & plugins

@@ -44,4 +44,8 @@ export { localBackend } from "./backends/local.js";
 export { dockerBackend, sshBackend } from "./backends/remote.js";
 export type { ExecutionBackend, BackendCommand, BackendResult } from "./backends/types.js";
 export { auditLogRepository } from "./repositories/audit-log.js";
+export { scanForInjection, sanitizeForModel, type InjectionFinding } from "./browser/injection-guard.js";
+export { playwrightController, assertDomainAllowed, assertBrowserUrlAllowed, hostnameOf } from "./browser/playwright.js";
+export { browserAuditSink, type BrowserAuditLog, type BrowserAuditContext } from "./browser/audit.js";
+export type { BrowserController, PageSnapshot, DomRef, BrowserEvidence, BrowserAuditEntry, BrowserAuditSink, BrowserActionOptions, BrowserDownload, BrowserDialogResponse } from "./browser/types.js";
 export { chainEntry, verifyChain, computeHash, GENESIS_HASH, type ChainedAuditEntry, type AuditEntryInput } from "./audit/log.js";

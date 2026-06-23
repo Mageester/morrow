@@ -57,7 +57,14 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       `listChildren`, `POST /tasks/:id/subagents`, `GET /tasks/:id/tree`;
       composes with persistent named agents (`feat(agents)`). REMAINING: git
       worktrees for parallel isolated agent workspaces.
-- [ ] **B15. Browser control (Playwright/CDP) + prompt-injection guard.**
+- [~] **B15. Browser control (Playwright/CDP) + prompt-injection guard.** DONE:
+      real local Playwright lifecycle + Chromium/Chrome/Edge channel support,
+      CDP attach, semantic refs/actions, isolated/persistent sessions, bounded
+      screenshots/content/evidence, dialogs, console/page errors, explicit
+      upload/download roots, cancellation, pause/resume/panic, SSRF/scheme
+      protections, injection containment, and task-scoped append-only audit
+      sink. REMAINING: managed/cloud browser backends and a UI surface for live
+      browser evidence.
 - [ ] **B16. Desktop control layer (UIA / AX / AT-SPI).**
 - [~] **B17. Messaging adapters.** DONE: `MessageAdapter` contract + webhook
       (covers Slack/Discord incoming webhooks) + telegram (token-redacted),

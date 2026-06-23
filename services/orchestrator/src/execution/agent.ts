@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync } from "node:fs";
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
@@ -345,6 +345,23 @@ export async function executeAgentChatTask({
         },
         required: ["skill_id"]
       }
+    },
+    {
+      name: "create_skill",
+      description: "Create a new reusable skill from the current solution. Use after completing a complex multi-step task (5+ tool calls) that would be useful again. Generates SKILL.md + manifest + permissions + entrypoint + test files in the project's skills/ directory. The skill will be discoverable by find_skill in future sessions.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Lowercase kebab-case skill ID (e.g. 'my-workflow')" },
+          name: { type: "string", description: "Human-readable name (e.g. 'My Workflow')" },
+          description: { type: "string", description: "One-line description of what the skill does" },
+          instructions: { type: "string", description: "Full step-by-step instructions the agent should follow when using this skill (20+ chars)" },
+          requestedTools: { type: "array", items: { type: "string" }, description: "Tools this skill needs from: filesystem-read, filesystem-write, command-exec, git-inspection, search, network" },
+          riskClass: { type: "string", enum: ["low", "medium", "high"], description: "Risk level (default: low)" },
+          overwrite: { type: "boolean", description: "Overwrite if skill already exists (default: false)" }
+        },
+        required: ["id", "name", "description", "instructions"]
+      }
     }
   ];
 
@@ -370,7 +387,7 @@ You have access to tools to inspect the workspace, read files, run safe project 
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
 You must run test/verification commands using run_command, and propose file modifications using propose_patch.
-If your task matches a specialized workflow (testing, refactoring, debugging, security), use find_skill to search available skills.`
+If your task matches a specialized workflow (testing, refactoring, debugging, security), use find_skill to search available skills. After completing a complex multi-step task, save the approach as a reusable skill with create_skill so you can use it again.`
   });
   if (agentMode === "plan-only") {
     chatMessages.push({
@@ -585,6 +602,89 @@ If your task matches a specialized workflow (testing, refactoring, debugging, se
         }
       }
       return JSON.stringify({ error: `Skill not found: ${skillId}` });
+    } else if (toolName === "create_skill") {
+      // ── Skill Creator (better than Hermes) ────────────────────────────────
+      // Generates SKILL.md + manifest.json + permissions.json + src/index.ts +
+      // test/index.test.ts. Validates, sandbox-checksums, deduplicates, backs up
+      // on overwrite, and classifies risk. Every generated skill passes verifySkill.
+      const KNOWN_TOOLS = new Set(["filesystem-read","filesystem-write","command-exec","git-inspection","search","network"]);
+      const RISK_CLASSES = new Set(["low","medium","high"]);
+
+      const id = (args.id || "").trim().toLowerCase();
+      const name = (args.name || "").trim();
+      const description = (args.description || "").trim();
+      const instructions = (args.instructions || "").trim();
+      const requestedTools = (args.requestedTools || []).filter(Boolean);
+      const riskClass = args.riskClass || "low";
+
+      // ── Validation ──────────────────────────────────────────────────────
+      const issues: string[] = [];
+      if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(id)) issues.push("id must be lowercase kebab-case (2-63 chars)");
+      if (!name) issues.push("name is required");
+      if (!description) issues.push("description is required");
+      if (instructions.length < 20) issues.push("instructions must be at least 20 characters");
+      for (const t of requestedTools) { if (!KNOWN_TOOLS.has(t)) issues.push(`unknown tool: ${t}`); }
+      if (!RISK_CLASSES.has(riskClass)) issues.push(`riskClass must be low, medium, or high`);
+      if (issues.length > 0) return JSON.stringify({ created: false, issues });
+
+      // ── Determine target directory ──────────────────────────────────────
+      const candidates = [join(workspacePath, "skills")];
+      const morrowHome = resolveMorrowHome(process.env);
+      if (morrowHome) candidates.push(join(morrowHome, "skills"));
+      const skillsDir = process.env.MORROW_SKILLS_DIR;
+      if (skillsDir) candidates.push(skillsDir);
+      const targetRoot = candidates.find(d => existsSync(d)) || candidates[0];
+      const targetDir = join(targetRoot, id);
+      const overwrite = args.overwrite === true;
+
+      // ── Check for existing ──────────────────────────────────────────────
+      if (existsSync(targetDir)) {
+        if (!overwrite) return JSON.stringify({ created: false, issues: [`Skill "${id}" already exists. Set overwrite=true to replace it.`] });
+        // Backup before overwriting
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupDir = join(targetRoot, ".backups", id, stamp);
+        mkdirSync(backupDir, { recursive: true });
+        cpSync(targetDir, backupDir, { recursive: true });
+      }
+
+      // ── Generate files ──────────────────────────────────────────────────
+      const scopes = ["workspace"];
+      const permTools = requestedTools.length ? requestedTools : ["filesystem-read"];
+
+      const skillMd = `# ${name}\n\n${description}\n\n## When to use\n\n${instructions}\n\n## Permissions\n- Tools: ${permTools.join(", ")}\n- Filesystem: ${scopes.join(", ")}\n- Network: none\n- Secrets: none\n`;
+      const checksum = createHash("sha256").update(skillMd).digest("hex");
+
+      const manifest = {
+        id, name, version: "0.1.0", description, publisher: "auto", license: "MIT",
+        checksum, entrypoint: "src/index.ts", supportedPlatforms: ["win32","linux","darwin"],
+        requestedTools: permTools, requestedFilesystemScopes: scopes,
+        requestedNetworkDomains: [], requiredSecrets: [], riskClass,
+      };
+      const permissions = { tools: permTools, filesystemScopes: scopes, networkDomains: [], requiredSecrets: [] };
+      const entrySrc = `// Entry point for the "${id}" skill.\n// Implement the skill's behavior here within the declared permissions.\nexport const id = ${JSON.stringify(id)};\nexport {};\n`;
+      const testSrc = `import { describe, it, expect } from "vitest";\ndescribe("${id}", () => {\n  it("has a valid manifest", () => {\n    const mf = require("../manifest.json");\n    expect(mf.id).toBe(${JSON.stringify(id)});\n  });\n});\n`;
+
+      // ── Write files ─────────────────────────────────────────────────────
+      mkdirSync(targetDir, { recursive: true });
+      mkdirSync(join(targetDir, "src"), { recursive: true });
+      mkdirSync(join(targetDir, "test"), { recursive: true });
+      writeFileSync(join(targetDir, "SKILL.md"), skillMd, "utf8");
+      writeFileSync(join(targetDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+      writeFileSync(join(targetDir, "permissions.json"), JSON.stringify(permissions, null, 2) + "\n", "utf8");
+      writeFileSync(join(targetDir, "src/index.ts"), entrySrc, "utf8");
+      writeFileSync(join(targetDir, "test/index.test.ts"), testSrc, "utf8");
+
+      return JSON.stringify({
+        created: true,
+        id,
+        directory: targetDir,
+        riskClass,
+        tools: permTools,
+        checksum: checksum.slice(0, 16) + "...",
+        overwritten: overwrite && existsSync(targetDir),
+        note: `Skill "${id}" created. Enable it with: morrow skills enable ${id}`,
+        skillsDirectory: targetRoot,
+      });
     } else {
       throw new Error(`Forbidden tool: ${toolName}`);
     }

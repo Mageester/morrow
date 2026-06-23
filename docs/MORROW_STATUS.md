@@ -2,7 +2,7 @@
 
 Snapshot of what is **verified working** right now, updated as slices land.
 
-## Build / test health (2026-06-22, latest)
+## Build / test health (2026-06-23, latest)
 
 - `pnpm check`: green. `pnpm build`: green.
 - `pnpm test`: **orchestrator 215 · CLI 112 · contracts 4 · web 8 — all green**
@@ -32,6 +32,16 @@ Snapshot of what is **verified working** right now, updated as slices land.
 See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
+
+- **Local browser control (B15, partial)** — `browser/playwright.ts` launches a
+  real Playwright Chromium session (visible unless explicitly headless), attaches
+  to Chrome/Chromium/Edge CDP endpoints, and supports isolated or persistent
+  sessions, semantic refs, navigation/click/fill/key/select, dialogs, bounded
+  screenshots, scoped uploads/downloads, console/page-error evidence, timeout,
+  cancellation, pause/resume/panic and owned-process cleanup. `browser/audit.ts`
+  persists sanitized task-scoped records through the append-only audit log.
+  `browser-injection.test.ts` launches a local controlled page and proves the
+  full safety path; managed/cloud browsers remain unsupported.
 
 - **Tamper-evident audit store (B22b)** — `audit/log.ts` hash-chains each entry
   (`hash = sha256(prevHash + canonical(entry))`); `repositories/audit-log.ts` is
@@ -157,6 +167,9 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — B15 local Playwright/CDP browser slice landed. Matrix §9 browser,
+  sessions/screenshots/uploads, and prompt-injection protection → VERIFIED;
+  managed/cloud browser providers remain missing.
 - 2026-06-23 — Tamper-evident hash-chained audit store landed (B22b). Matrix §2
   Persistent audit log → VERIFIED.
 - 2026-06-23 — Persisted command history landed (B21 partial). Matrix §1 Command
