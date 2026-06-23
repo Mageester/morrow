@@ -33,6 +33,11 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Code diagnostics + baseline (B13, partial)** — `workspace/diagnostics.ts`:
+  tsc + eslint output parsers → normalized `Diagnostic[]`, and `compareBaseline`
+  (error-count-aware, tolerant of line shifts) to prove a change didn't regress.
+  `GET /api/projects/:id/diagnostics` (injectable runner). Tests:
+  `diagnostics.test.ts` (9) + `diagnostics-api.test.ts` (3). Orchestrator 239 green.
 - **Cron scheduler (B7)** — pure UTC cron engine (`schedule/cron.ts`:
   parse/nextRun, leap-day + weekday correct), `schedules` table (migration 14) +
   repo, `SchedulerTicker` (injectable clock) firing isolated task runs through
@@ -104,6 +109,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Code diagnostics + baseline comparison landed (B13 partial).
+  Matrix §8 LSP diagnostics → VERIFIED.
 - 2026-06-23 — Cron scheduler landed (B7). Matrix §3 Scheduled jobs + §11 Cron
   scheduler/Isolated runs → VERIFIED. (Also: bundled-skills tests relaxed to a
   subset assertion now that the skill creator writes into the live skills dir.)

@@ -259,6 +259,29 @@ export const CreateScheduleSchema=z.object({
 export type Schedule=z.infer<typeof ScheduleSchema>;
 export type ScheduleTaskKind=z.infer<typeof ScheduleTaskKindSchema>;
 
+// ── Code diagnostics (LSP-style) ─────────────────────────────────────────────
+// Normalized diagnostics from the project's own tools (tsc, eslint), plus a
+// baseline comparison so a change can be proven not to regress error counts.
+export const DiagnosticToolSchema=z.enum(["tsc","eslint"]);
+export const DiagnosticSchema=z.object({
+  file:z.string(),
+  line:z.number().int().nonnegative(),
+  column:z.number().int().nonnegative(),
+  severity:z.enum(["error","warning"]),
+  code:z.string(),
+  message:z.string(),
+}).strict();
+export const DiagnosticsReportSchema=z.object({
+  tool:DiagnosticToolSchema,
+  count:z.number().int().nonnegative(),
+  errorCount:z.number().int().nonnegative(),
+  warningCount:z.number().int().nonnegative(),
+  diagnostics:z.array(DiagnosticSchema),
+}).strict();
+export type DiagnosticTool=z.infer<typeof DiagnosticToolSchema>;
+export type Diagnostic=z.infer<typeof DiagnosticSchema>;
+export type DiagnosticsReport=z.infer<typeof DiagnosticsReportSchema>;
+
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;

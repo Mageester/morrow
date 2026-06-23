@@ -44,7 +44,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
 - [ ] **B11. MCP client (stdio first, then HTTP) + tool filtering + trust.**
 - [ ] **B12. Plugin manager (manifests, hooks, enable/disable/update/remove).**
-- [ ] **B13. LSP diagnostics client + baseline-before-write verification.**
+- [~] **B13. Diagnostics + baseline.** DONE: provider-agnostic diagnostics
+      (`workspace/diagnostics.ts` tsc/eslint parsers + `compareBaseline`) +
+      `GET /diagnostics` route. REMAINING: wire `compareBaseline` into the agent
+      write path; real LSP stdio client.
 - [ ] **B14. Git worktrees + subagent delegation + parallel agents.**
 - [ ] **B15. Browser control (Playwright/CDP) + prompt-injection guard.**
 - [ ] **B16. Desktop control layer (UIA / AX / AT-SPI).**

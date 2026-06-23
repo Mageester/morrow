@@ -34,3 +34,4 @@ export { skillUsageRepository } from "./repositories/skill-usage.js";
 export { schedulesRepository } from "./repositories/schedules.js";
 export { SchedulerTicker, type FiredSchedule } from "./schedule/ticker.js";
 export { parseCron, nextRun, assertValidCron, type CronFields } from "./schedule/cron.js";
+export { parseTscDiagnostics, parseEslintDiagnostics, compareBaseline, summarizeDiagnostics, type Diagnostic, type BaselineComparison, type DiagnosticsReport } from "./workspace/diagnostics.js";

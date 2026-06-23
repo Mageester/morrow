@@ -28,7 +28,18 @@ import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
-import { SearchKindSchema, CreateScheduleSchema } from "@morrow/contracts";
+import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
+import { runProcessSafe } from "./tools/command-executor.js";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema } from "@morrow/contracts";
+
+export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
+export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
+
+const defaultDiagnosticsRunner: DiagnosticsRunner = async (tool, cwd) => {
+  const args = tool === "tsc" ? ["tsc", "--noEmit", "--pretty", "false"] : ["eslint", ".", "-f", "json"];
+  const result = await runProcessSafe("npx", args, cwd, process.env, { timeoutMs: 120000, maxOutputBytes: 4_000_000 });
+  return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+};
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
@@ -82,6 +93,8 @@ export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
   sseIntervalMs?: number;
+  /** Injectable so the diagnostics route is fast and deterministic in tests. */
+  diagnosticsRunner?: DiagnosticsRunner;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -790,6 +803,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  const diagnosticsRunner = deps.diagnosticsRunner ?? defaultDiagnosticsRunner;
+  app.get("/api/projects/:projectId/diagnostics", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { tool } = z.object({ tool: DiagnosticToolSchema.default("tsc") }).parse(request.query);
+    const result = await diagnosticsRunner(tool, project.workspacePath);
+    const text = tool === "tsc" ? `${result.stdout}\n${result.stderr}` : result.stdout;
+    const diagnostics = tool === "tsc" ? parseTscDiagnostics(text) : parseEslintDiagnostics(result.stdout);
+    return summarizeDiagnostics(tool, diagnostics);
   });
 
   app.get("/api/projects/:projectId/schedules", async (request) => {

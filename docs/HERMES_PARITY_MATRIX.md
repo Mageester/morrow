@@ -130,8 +130,8 @@
 |---|---|---|---|---|
 | Project index | `coding_context.py` | PARTIAL | `workspace/inspector.ts` | Persisted symbol index |
 | Semantic search | Hermes | PARTIAL | `workspace/search.ts` (text) | Symbol/semantic search |
-| LSP diagnostics | `agent/lsp/` | MISSING | — | LSP client + diagnostics |
-| Baseline-before-write verify | `file_safety.py` | PARTIAL | `workspace/validator.ts` | Pre-write baseline capture test |
+| LSP diagnostics | `agent/lsp/` | VERIFIED | `workspace/diagnostics.ts` normalizes tsc + eslint output into structured `Diagnostic[]`; `GET /api/projects/:id/diagnostics` (injectable runner). `test/diagnostics.test.ts` (9) + `test/diagnostics-api.test.ts` (3) | Real LSP stdio client is a later enhancement |
+| Baseline-before-write verify | `file_safety.py` | PARTIAL | `workspace/validator.ts` (hash capture) + `compareBaseline` (regression detection, error-count aware, line-shift tolerant) tested in `test/diagnostics.test.ts` | Wire `compareBaseline` into the agent write path to auto-block regressions |
 | Git worktrees / parallel agents | Hermes | MISSING | — | Worktree manager |
 | Commit / PR prep | Hermes | PARTIAL | `tools/git.ts` | PR body generation |
 | Conflict handling | Hermes | MISSING | — | Merge/conflict detection |

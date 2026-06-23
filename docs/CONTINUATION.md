@@ -31,49 +31,54 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B8 — Idempotency + retry: VERIFIED** (idempotent creation + `/retry`).
 - **B5 — Skill Creator: VERIFIED.** **B6 — Skill Curator: VERIFIED.**
   §6 Skills fully VERIFIED.
-- **B7 — Cron scheduler: VERIFIED** (pure cron engine, schedules repo,
-  `SchedulerTicker`, API + CLI). Isolated runs verified.
-- Baseline: orchestrator 227 tests, CLI 124, contracts 4, web 8 — all green.
+- **B7 — Cron scheduler: VERIFIED.**
+- **B13 (partial) — Diagnostics + baseline: VERIFIED** (tsc/eslint parsers,
+  `compareBaseline`, `/diagnostics` route). Agent auto-gate pending.
+- Baseline: orchestrator 239 tests, CLI 124, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
 > NOTE: the live `skills/` directory may contain extra skills created by the user
 > or a concurrent agent (untracked). Do NOT commit or delete them — they are
 > unrelated changes. Tests assert the 6 built-ins as a subset, not an exact list.
 
-## Exact next step — B13 LSP diagnostics + baseline-before-write verification
+## Exact next step — B14 subagent delegation + task graph (parent/child tasks)
 
-Two coding-intelligence rows (§8). Keep it provider-agnostic and testable.
+Advances §14 "Subagents / delegation" and §3 "Task graph / child tasks" — a
+subagent is just a child task with its own scope. A top completion criterion.
 
-1. Baseline-before-write (smaller, do first): in the agent's write path
-   (`execution/agent.ts` around `propose_patch`/diff apply, and
-   `workspace/validator.ts`), capture a "baseline" check result (e.g. run the
-   project's verify command or a targeted type/lint check) BEFORE applying a
-   change, then compare AFTER, so the agent never reports success when it made
-   things worse. Add `services/orchestrator/src/workspace/baseline.ts`
-   (`captureBaseline(runner, cwd)` / `compareBaseline(before, after)` — pure
-   diff of error counts). Unit-test the comparison with synthetic before/after.
-2. LSP diagnostics client: new `services/orchestrator/src/lsp/diagnostics.ts`.
-   Start narrow and deterministic — wrap `tsc --noEmit` / `eslint -f json` as a
-   "diagnostics provider" returning structured `{file,line,severity,message}`
-   (a real LSP stdio client can come later; the contract is what matters).
-   Add a `GET /api/projects/:id/diagnostics` route that runs the configured
-   provider in the workspace (respecting command policy + timeouts).
-3. Tests: `test/baseline.test.ts` (compareBaseline: improved/worse/same),
-   `test/diagnostics.test.ts` (parse a known tsc/eslint output fixture into
-   structured diagnostics; never throws on empty).
-4. `pnpm check && pnpm test && pnpm build`. Update matrix §8 (LSP diagnostics,
-   Baseline-before-write) → VERIFIED + status. Commit + push.
+1. `services/orchestrator/src/database.ts` — migration 15:
+   `ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id) ON
+   DELETE CASCADE;` + `CREATE INDEX tasks_parent_idx ON tasks(parent_task_id);`
+   (bump `database.test.ts` 14 → 15; update `runner.test.ts` manual schema +
+   `tasks.ts` map/insert to carry `parentTaskId`).
+2. `repositories/tasks.ts` — accept optional `parentTaskId` on createTask; add
+   `listChildren(parentId)` and a `taskTree(rootId)` helper (or build the tree in
+   the route from `listByProject`).
+3. Contracts: extend `TaskSchema` with `parentTaskId: z.string().nullable()`
+   (update every consumer/fixture). Add `SpawnSubagentSchema` `{ projectId,
+   parentTaskId, kind, label? }`.
+4. Route `POST /api/tasks/:taskId/subagents` → create a child task (same project,
+   `parentTaskId` set) and run it; `GET /api/tasks/:taskId/tree` → the task and
+   its descendants. Guard: child kind limited to `inspect_workspace` for now
+   (agent_chat children need a conversation — defer).
+5. Tests first (red): `test/subagents.test.ts` — createTask with parent links;
+   `listChildren`; API spawns a child and the tree includes it; cascade delete
+   removes children. `test/tasks.test.ts` — parentTaskId round-trips.
+6. CLI: optional `morrow tasks tree <id>` over `/tree`.
+7. `pnpm check && pnpm test && pnpm build`. Update matrix §14 (Subagents) + §3
+   (Task graph / child tasks) → VERIFIED + status. Commit + push.
 
 ## Failing test to write first
 
-`test/baseline.test.ts` — "compareBaseline reports a regression when the after
-count exceeds the before count for the same file".
+`test/subagents.test.ts` — "POST /api/tasks/:id/subagents creates a child task
+whose parentTaskId is the parent and which appears in the parent's tree".
 
-## Bigger remaining (multi-session, see MORROW_BACKLOG.md)
+## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 
-B9 Docker/SSH backends; B11 MCP client; B14 worktrees + subagents; B15 browser;
-B16 desktop; B17 messaging adapters (+ notification delivery); B18 doctor/
-updater/uninstall; B19 installers; B20 Hermes import; B21 TUI live tree/Ctrl+K.
+Wire `compareBaseline` into the agent write path (finish B13). B9 Docker/SSH
+backends; B11 MCP client; B15 browser; B16 desktop; B17 messaging adapters (+
+notification delivery); B18 doctor/updater/uninstall; B19 installers; B20 Hermes
+import; B21 TUI live tree/Ctrl+K.
 
 ## Deferred (pick up later)
 
