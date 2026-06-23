@@ -59,6 +59,19 @@ describe("SchedulerTicker", () => {
     expect(ticker.tick()).toHaveLength(1);
     expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(2);
   });
+
+  it("notifies configured adapters when a schedule fires", async () => {
+    const repo = schedulesRepository(db);
+    repo.create({ id: "s1", projectId: "p1", cron: "* * * * *", taskKind: "inspect_workspace", nextRunAt: "2026-01-01T00:00:00.000Z", createdAt: "2026-01-01T00:00:00.000Z" });
+    const sent: Array<{ text: string }> = [];
+    const adapter = { id: "fake", channel: "webhook" as const, send: async (m: { text: string }) => { sent.push(m); return { ok: true, detail: "ok" }; } };
+    const ticker = new SchedulerTicker({ db, runner: new TaskRunner(db, async () => {}), now: () => new Date("2026-01-01T00:01:00.000Z"), adapters: [adapter] });
+    ticker.tick();
+    // Notification is fire-and-forget; allow the microtask to settle.
+    await Promise.resolve();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toMatch(/scheduled task/i);
+  });
 });
 
 describe("schedules API", () => {

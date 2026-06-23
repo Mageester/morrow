@@ -314,6 +314,25 @@ export const SkillUsageSchema=z.object({
 }).strict();
 export type SkillUsage=z.infer<typeof SkillUsageSchema>;
 
+// ── Outbound messaging / notifications ───────────────────────────────────────
+export const NotificationChannelSchema=z.enum(["webhook","telegram"]);
+export const NotifyRequestSchema=z.object({
+  text:z.string().trim().min(1).max(4000),
+  subject:z.string().trim().max(200).optional(),
+}).strict();
+export const NotifyOutcomeSchema=z.object({
+  channel:z.string(),
+  ok:z.boolean(),
+  detail:z.string(),
+}).strict();
+export const NotifyResultSchema=z.object({
+  sent:z.number().int().nonnegative(),
+  results:z.array(NotifyOutcomeSchema),
+}).strict();
+export type NotificationChannel=z.infer<typeof NotificationChannelSchema>;
+export type NotifyRequest=z.infer<typeof NotifyRequestSchema>;
+export type NotifyResult=z.infer<typeof NotifyResultSchema>;
+
 // ── Scheduled jobs (cron) ────────────────────────────────────────────────────
 // A schedule fires isolated task runs on a UTC cron expression. Scheduled work
 // is project-scoped and uses the same task runner + containment as interactive

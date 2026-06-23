@@ -54,8 +54,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       worktrees for parallel isolated agent workspaces.
 - [ ] **B15. Browser control (Playwright/CDP) + prompt-injection guard.**
 - [ ] **B16. Desktop control layer (UIA / AX / AT-SPI).**
-- [ ] **B17. Messaging adapters (Telegram/Discord/Slack/email) behind one
-      contract.**
+- [~] **B17. Messaging adapters.** DONE: `MessageAdapter` contract + webhook
+      (covers Slack/Discord incoming webhooks) + telegram (token-redacted),
+      `POST /api/notify`, scheduler notifications. REMAINING: native Slack/Discord
+      apps + SMTP email.
 - [ ] **B18. Doctor command + updater + rollback + uninstall.**
 - [ ] **B19. Windows + Ubuntu one-command installers.**
 - [ ] **B20. Hermes import/migration tooling (`packages/hermes-compat`).**

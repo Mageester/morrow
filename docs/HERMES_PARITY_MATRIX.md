@@ -160,8 +160,8 @@
 |---|---|---|---|---|
 | Cron scheduler | `cron/` | VERIFIED | `schedule/cron.ts` + `schedule/ticker.ts` (`SchedulerTicker.start/tick`, injectable clock), started in `index.ts`. Tests as above | — |
 | Isolated scheduled runs | Hermes | VERIFIED | ticker creates a fresh task per due schedule via the same runner + containment; `test/schedules.test.ts` "fires one isolated task per due schedule" | — |
-| Notifications | Hermes | PARTIAL | scheduled runs emit task events the CLI/web can surface | External delivery via messaging adapters (next row) |
-| Telegram/Discord/Slack/email adapters | `gateway/` | MISSING | — | Adapter contract + ≥1 impl |
+| Notifications | Hermes | VERIFIED | `POST /api/notify` fans out to configured adapters; the scheduler ticker notifies on a fired schedule (best-effort, never fails the task). `test/messaging.test.ts` + `test/schedules.test.ts` "notifies configured adapters" | — |
+| Telegram/Discord/Slack/email adapters | `gateway/` | PARTIAL | `messaging/adapter.ts`: `MessageAdapter` contract + `webhookAdapter` (covers Slack/Discord *incoming webhooks*) + `telegramAdapter` (token-redacted), `loadAdaptersFromEnv`. `test/messaging.test.ts` (8) | Native Slack/Discord apps + SMTP email |
 
 ## 12. Provider orchestration
 

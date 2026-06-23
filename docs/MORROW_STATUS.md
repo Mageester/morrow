@@ -33,6 +33,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Messaging adapters + notifications (B17, partial)** —
+  `messaging/adapter.ts`: a `MessageAdapter` contract with a generic
+  `webhookAdapter` (works for Slack/Discord incoming webhooks) and a
+  `telegramAdapter` (bot token redacted from any error), `loadAdaptersFromEnv`,
+  and `notifyAll` fan-out. `POST /api/notify` (injectable adapters seam) and the
+  scheduler ticker now notify on a fired schedule (best-effort). Tests:
+  `messaging.test.ts` (8) + `schedules.test.ts` notification case. Orchestrator 253.
 - **Subagent delegation + task graph (B14, partial)** — `parent_task_id`
   (migration 16) + `tasks.listChildren`; `POST /api/tasks/:id/subagents` spawns
   an isolated child task through the normal runner; `GET /api/tasks/:id/tree`
@@ -117,6 +124,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Messaging adapters + notifications landed (B17 partial). Matrix
+  §11 Notifications → VERIFIED, adapters → PARTIAL.
 - 2026-06-23 — Subagent delegation + task graph landed (B14 partial). Matrix §3
   Task graph + §14 Subagents → VERIFIED. Persistent named agents feature also
   landed in the tree (concurrent `feat(agents)` commit, integrated).

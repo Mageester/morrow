@@ -4,6 +4,7 @@ import type { TaskRunner } from "../runner.js";
 import { schedulesRepository } from "../repositories/schedules.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { nextRun } from "./cron.js";
+import { notifyAll, type MessageAdapter } from "../messaging/adapter.js";
 
 export interface FiredSchedule {
   scheduleId: string;
@@ -22,7 +23,7 @@ export class SchedulerTicker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => Date;
 
-  constructor(private readonly deps: { db: Database.Database; runner: TaskRunner; now?: () => Date }) {
+  constructor(private readonly deps: { db: Database.Database; runner: TaskRunner; now?: () => Date; adapters?: MessageAdapter[] }) {
     this.now = deps.now ?? (() => new Date());
   }
 
@@ -41,6 +42,12 @@ export class SchedulerTicker {
       const next = nextRun(schedule.cron, now).toISOString();
       schedules.markRan(schedule.id, nowIso, next);
       fired.push({ scheduleId: schedule.id, taskId, nextRunAt: next });
+    }
+    // Best-effort notification of what fired; a delivery failure never affects
+    // the scheduled work itself.
+    if (fired.length > 0 && this.deps.adapters && this.deps.adapters.length > 0) {
+      const summary = `Morrow ran ${fired.length} scheduled task(s) at ${nowIso}.`;
+      void notifyAll(this.deps.adapters, { subject: "Scheduled run", text: summary }).catch(() => {});
     }
     return fired;
   }

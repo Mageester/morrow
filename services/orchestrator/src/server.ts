@@ -35,7 +35,8 @@ import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema } from "@morrow/contracts";
+import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -100,6 +101,8 @@ export type ServerDependencies = {
   sseIntervalMs?: number;
   /** Injectable so the diagnostics route is fast and deterministic in tests. */
   diagnosticsRunner?: DiagnosticsRunner;
+  /** Injectable messaging adapters; defaults to env-configured ones. */
+  messageAdapters?: MessageAdapter[];
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -929,6 +932,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  const messageAdapters = deps.messageAdapters ?? loadAdaptersFromEnv(process.env);
+  app.post("/api/notify", async (request) => {
+    const body = NotifyRequestSchema.parse(request.body);
+    const results = await notifyAll(messageAdapters, { text: body.text, ...(body.subject ? { subject: body.subject } : {}) });
+    return { sent: results.filter((r) => r.ok).length, results };
   });
 
   const diagnosticsRunner = deps.diagnosticsRunner ?? defaultDiagnosticsRunner;

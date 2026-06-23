@@ -4,6 +4,7 @@ import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultD
 import { TaskRunner } from "./runner.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
+import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 
 const dbPath = resolveDefaultDatabasePath(process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
@@ -19,7 +20,7 @@ const app = buildServer({ db, runner });
 // is governed by each schedule's next_run_at, so a missed minute simply runs at
 // the next tick. Disabled when MORROW_DISABLE_SCHEDULER is set.
 if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
-  new SchedulerTicker({ db, runner }).start(30000);
+  new SchedulerTicker({ db, runner, adapters: loadAdaptersFromEnv(process.env) }).start(30000);
 }
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;

@@ -49,44 +49,47 @@ pnpm check && pnpm test && pnpm build   # expect green
   §6 Skills fully VERIFIED.
 - **B7 — Cron scheduler: VERIFIED.**
 - **B13 (partial) — Diagnostics + baseline: VERIFIED.**
-- **B14 (partial) — Subagent delegation + task graph: VERIFIED** (`parent_task_id`,
-  `listChildren`, `/subagents`, `/tree`). Worktrees pending.
+- **B14 (partial) — Subagent delegation + task graph: VERIFIED.** Worktrees pending.
+- **B17 (partial) — Messaging adapters + notifications: VERIFIED** (webhook +
+  telegram, `/api/notify`, scheduler notifications). SMTP/native Slack pending.
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 244 tests, CLI 124, contracts 4, web 8 — all green.
+- Baseline: orchestrator 253 tests, CLI 124, contracts 4, web 8 — all green.
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B17 messaging adapters (+ notification delivery)
+## Exact next step — B11 MCP client (stdio first) + trust records
 
-Closes a completion criterion ("run messaging tasks") and the cron "Notifications"
-gap. Keep the transport injectable so it is testable without network/secrets.
+Completion criterion: "use MCP/plugins". Start with a stdio JSON-RPC client; keep
+the process spawn injectable so it is testable with a fake server script.
 
-1. New `services/orchestrator/src/messaging/adapter.ts`:
-   - `MessageAdapter` interface `{ id; send({text, subject?}) => Promise<{ok,
-     detail}>}`.
-   - `webhookAdapter({ url, fetchImpl? })` POSTs `{text}` JSON (injectable fetch).
-   - `telegramAdapter({ botToken, chatId, fetchImpl? })` POSTs to the Bot API
-     sendMessage URL. Never log secrets; redact tokens in any error detail.
-   - `loadAdaptersFromEnv(env)` builds configured adapters (`MORROW_WEBHOOK_URL`,
-     `MORROW_TELEGRAM_BOT_TOKEN`+`MORROW_TELEGRAM_CHAT_ID`); `[]` when none.
-2. Contracts: `NotificationChannelSchema` (`webhook|telegram`), `NotifyResult`.
-3. Route `POST /api/notify {text, subject?}` fans out to configured adapters;
-   per-adapter results; never echo secrets. Add a
-   `ServerDependencies.messageAdapters?` seam (like `diagnosticsRunner`) so tests
-   inject fakes.
-4. Optional: scheduler ticker sends a short notification on a fired schedule
-   (try/catch; a failed notification never fails the task).
-5. Tests first (red) `test/messaging.test.ts`: webhook POST body/url (inject
-   fetch); telegram url + token redaction on error; `loadAdaptersFromEnv`
-   configured/empty; `/api/notify` fan-out aggregation via injected adapters.
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §11 → status. Commit+push.
+1. New `services/orchestrator/src/mcp/client.ts`:
+   - `McpClient` over a stdio transport (newline-delimited or
+     Content-Length-framed JSON-RPC 2.0). Methods: `initialize()`,
+     `listTools()`, `callTool(name, args)`, `close()`. Injectable spawn (a
+     `{ stdin, stdout, kill }` duplex) so tests use an in-process fake.
+   - Pure `framing.ts`: encode/decode JSON-RPC messages; unit-test round-trip.
+   - Tool filtering: an allow-list of tool names the client will expose.
+2. Trust records: `services/orchestrator/src/mcp/trust.ts` — a `settings`-table
+   (key `mcp.trust.<serverId>`) record of an approved server command+args hash;
+   `isTrusted`/`trust`/`revoke`. A server is only auto-startable once trusted.
+3. Contracts: `McpServerSchema`, `McpToolSchema`, `McpCallResultSchema`.
+4. A small registry `mcp/registry.ts` reading server configs from a JSON file
+   under the Morrow home (stdio command + args + env allow-list). Do NOT execute
+   an untrusted server.
+5. Routes (read-only first): `GET /api/mcp/servers`, `GET /api/mcp/:id/tools`
+   (spawns, initializes, lists, closes), `POST /api/mcp/:id/call`
+   (trust-gated). Spawn injectable via `ServerDependencies.mcpSpawn?`.
+6. Tests first (red) `test/mcp.test.ts`: framing round-trip; `McpClient` against
+   an in-process fake server (initialize → listTools → callTool → close);
+   tool-filtering hides disallowed tools; trust gate blocks an untrusted call.
+7. `pnpm check && pnpm test && pnpm build`. Update matrix §10 → status. Commit+push.
 
 ## Failing test to write first
 
-`test/messaging.test.ts` — "webhookAdapter.send POSTs {text} to the configured
-URL (injected fetch captures the call)".
+`test/mcp.test.ts` — "McpClient.listTools returns the fake server's tools after
+initialize (in-process stdio transport)".
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 
