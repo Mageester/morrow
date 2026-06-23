@@ -187,7 +187,7 @@
 | Uninstall | Hermes | MISSING | — | — |
 | Service management | Hermes | VERIFIED | `service/lifecycle.ts`, `service-lifecycle.test.ts` | — |
 | Doctor | `hermes doctor` | VERIFIED | `morrow doctor` (node/pnpm/home/migrations/providers checks) with testable `service/doctor-checks.ts` `aggregateDoctor`. `test/doctor-update.test.ts` | — |
-| Migration / import | `hermes claw migrate`, `hermes-compat` | SCAFFOLD | `packages/hermes-compat` (README only) | Import tooling |
+| Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` real package: `parseHermesEnv` + `mapToMorrow` (known keys only; unknowns → `unmapped`; secret *names* not values) + `summarizeImport` (no secret leak). `test/import.test.ts` (4) | CLI `morrow import` + session/skill import |
 
 ## 14. Cross-cutting
 

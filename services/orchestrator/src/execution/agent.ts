@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
@@ -323,6 +323,28 @@ export async function executeAgentChatTask({
         },
         required: ["patch", "explanation", "files"]
       }
+    },
+    {
+      name: "find_skill",
+      description: "Search available skills by keyword. Skills are reusable workflows for common tasks (testing, refactoring, debugging, security, etc.). Returns matching skill IDs and descriptions. Call this when you think a specialized workflow might help with the current task.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Keyword to search for (e.g. 'test', 'security', 'refactor')" }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "load_skill",
+      description: "Load the full instructions for a skill by ID. After finding a relevant skill with find_skill, call this to read its complete workflow and follow its instructions step by step.",
+      parameters: {
+        type: "object",
+        properties: {
+          skill_id: { type: "string", description: "The skill ID to load (e.g. 'code-review', 'test-writer')" }
+        },
+        required: ["skill_id"]
+      }
     }
   ];
 
@@ -330,7 +352,7 @@ export async function executeAgentChatTask({
   // sees run_command/propose_patch; plan-only sees nothing; only agent mode
   // exposes execution and write tools.
   const READ_ONLY_TOOL_NAMES = new Set([
-    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log",
+    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
   ]);
   const exposedTools: ToolDefinition[] =
     activeToolProfile === "none" ? [] : activeToolProfile === "agent" ? tools : tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name));
@@ -347,7 +369,8 @@ You are running in an environment scoped to the project: ${projectName} located 
 You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
-You must run test/verification commands using run_command, and propose file modifications using propose_patch.`
+You must run test/verification commands using run_command, and propose file modifications using propose_patch.
+If your task matches a specialized workflow (testing, refactoring, debugging, security), use find_skill to search available skills.`
   });
   if (agentMode === "plan-only") {
     chatMessages.push({
@@ -511,6 +534,57 @@ You must run test/verification commands using run_command, and propose file modi
         appliedFiles: files,
         diffHash
       });
+    } else if (toolName === "find_skill") {
+      const query = (args.query || "").toLowerCase().trim();
+      if (!query) return JSON.stringify({ skills: [] });
+      // Scan skills/ directories: project workspace + MORROW_HOME
+      const candidates = [join(workspacePath, "skills")];
+      const morrowHome = resolveMorrowHome(process.env);
+      if (morrowHome) candidates.push(join(morrowHome, "skills"));
+      const skillsDir = process.env.MORROW_SKILLS_DIR;
+      if (skillsDir) candidates.push(skillsDir);
+      const results: { id: string; name: string; description: string }[] = [];
+      const seen = new Set<string>();
+      for (const dir of candidates) {
+        if (!existsSync(dir)) continue;
+        for (const entry of readdirSync(dir)) {
+          const skillDir = join(dir, entry);
+          if (!statSync(skillDir).isDirectory() || !existsSync(join(skillDir, "SKILL.md"))) continue;
+          if (seen.has(entry)) continue;
+          seen.add(entry);
+          // Read the first few lines for name + description
+          const md = readFileSync(join(skillDir, "SKILL.md"), "utf8");
+          const lines = md.split("\n").filter(l => l.trim());
+          const name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
+          const desc = lines.slice(1).find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
+          // Match against query
+          const searchable = `${entry} ${name} ${desc}`.toLowerCase();
+          if (!query || searchable.includes(query)) {
+            results.push({ id: entry, name, description: desc });
+          }
+          if (results.length >= 10) break;
+        }
+        if (results.length >= 10) break;
+      }
+      return JSON.stringify({ skills: results });
+    } else if (toolName === "load_skill") {
+      const skillId = (args.skill_id || "").trim();
+      if (!skillId || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(skillId)) {
+        return JSON.stringify({ error: `Invalid skill ID: ${skillId}` });
+      }
+      // Try each candidate dir
+      const candidates = [join(workspacePath, "skills")];
+      const morrowHome = resolveMorrowHome(process.env);
+      if (morrowHome) candidates.push(join(morrowHome, "skills"));
+      const skillsDir = process.env.MORROW_SKILLS_DIR;
+      if (skillsDir) candidates.push(skillsDir);
+      for (const dir of candidates) {
+        const mdPath = join(dir, skillId, "SKILL.md");
+        if (existsSync(mdPath)) {
+          return readFileSync(mdPath, "utf8");
+        }
+      }
+      return JSON.stringify({ error: `Skill not found: ${skillId}` });
     } else {
       throw new Error(`Forbidden tool: ${toolName}`);
     }
