@@ -152,7 +152,7 @@
 | MCP stdio/HTTP client | `mcp_serve.py`, `optional-mcps/` | VERIFIED | `mcp/client.ts` (JSON-RPC 2.0, transport-agnostic) + `mcp/framing.ts` (newline-delimited) + `mcp/stdio-transport.ts` (env-filtered spawn). `test/mcp.test.ts` (6, in-process fake server) | HTTP transport is a thin add on the same client; orchestrator routes pending |
 | OAuth/PKCE | Hermes | PARTIAL | `provider/oauth.ts` (findings only) | Real PKCE for MCP |
 | Tool filtering / discovery / sampling limits | Hermes | PARTIAL | `McpClient` allow-list filtering + `tools/list` discovery (`test/mcp.test.ts`) | Sampling limits |
-| Plugin manifests/hooks/lifecycle/trust | `plugins/` | PARTIAL | `mcp/trust.ts` fingerprint trust (command+args, settings-backed); `test/mcp.test.ts` | Manifests/hooks/enable-disable lifecycle |
+| Plugin manifests/hooks/lifecycle/trust | `plugins/` | PARTIAL | `plugins/registry.ts`: local validated manifest registry, disabled-by-default install, persisted enable/disable/update/remove, and no code loading during discovery. `test/plugin-registry.test.ts` (2). Existing MCP command trust remains separate. | Signed bundles, sandboxed runtime hooks, permission approvals, API/CLI lifecycle and remote sources. |
 
 ## 11. Automation & messaging
 

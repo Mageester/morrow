@@ -66,20 +66,19 @@ pnpm check && pnpm test && pnpm build   # expect green
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B12 plugin manager
+## Exact next step — complete B12 plugin runtime boundary
 
-B15 is implemented in `7b5d99c` as a real local Playwright/CDP vertical slice.
-The only follow-up is the audit-persistence integration assertion and the strict
-null fix in `execution/agent.ts`; commit those after final verification, then push.
-Managed/cloud browser backends are intentionally still missing.
+B15 is implemented in `7b5d99c` and its follow-up in `f371f98`. B12 now has a
+local manifest/lifecycle registry in the working tree; it deliberately does not
+execute plugin code. Managed/cloud browser backends remain intentionally missing.
 
 1. Run `pnpm check && pnpm test && pnpm build && pnpm run test:e2e` and inspect
    `git diff --check`.
-2. Commit the B15 follow-up with `test(browser): persist browser audit evidence`
+2. Commit the B12 registry with `feat(plugins): add local manifest lifecycle`
    and push `feat/morrow-agent-terminal` (PR #13 remains draft and unchanged).
-3. Start B12 at `services/orchestrator/src/plugins/manifest.ts`: write the
-   failing manifest-validation test first, then implement a local-only plugin
-   manifest registry with enable/disable state and no implicit code loading.
+3. Start the next B12 slice with a failing test for an explicitly approved,
+   sandboxed hook invocation; do not dynamically import an enabled plugin until
+   the permission and sandbox boundary exists.
 
 ## B15 evidence
 

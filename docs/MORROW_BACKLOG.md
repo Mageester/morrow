@@ -48,7 +48,11 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       framing, env-filtered spawn transport, tool-filtering allow-list, and
       fingerprint trust store. REMAINING: HTTP transport, registry + routes,
       OAuth/PKCE, sampling limits.
-- [ ] **B12. Plugin manager (manifests, hooks, enable/disable/update/remove).**
+- [~] **B12. Plugin manager.** DONE: local-only `morrow.plugin.json` registry
+      with validated manifests, disabled-by-default install, persisted
+      enable/disable state, update/remove lifecycle, and a proof that discovery
+      never imports plugin code. REMAINING: signed bundles, runtime hook sandbox,
+      permission approvals, API/CLI routes, remote marketplace/update sources.
 - [~] **B13. Diagnostics + baseline.** DONE: provider-agnostic diagnostics
       (`workspace/diagnostics.ts` tsc/eslint parsers + `compareBaseline`) +
       `GET /diagnostics` route. REMAINING: wire `compareBaseline` into the agent

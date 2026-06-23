@@ -47,5 +47,6 @@ export { auditLogRepository } from "./repositories/audit-log.js";
 export { scanForInjection, sanitizeForModel, type InjectionFinding } from "./browser/injection-guard.js";
 export { playwrightController, assertDomainAllowed, assertBrowserUrlAllowed, hostnameOf } from "./browser/playwright.js";
 export { browserAuditSink, type BrowserAuditLog, type BrowserAuditContext } from "./browser/audit.js";
+export { pluginRegistry, type PluginManifest, type InstalledPlugin } from "./plugins/registry.js";
 export type { BrowserController, PageSnapshot, DomRef, BrowserEvidence, BrowserAuditEntry, BrowserAuditSink, BrowserActionOptions, BrowserDownload, BrowserDialogResponse } from "./browser/types.js";
 export { chainEntry, verifyChain, computeHash, GENESIS_HASH, type ChainedAuditEntry, type AuditEntryInput } from "./audit/log.js";
