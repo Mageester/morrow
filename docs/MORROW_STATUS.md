@@ -33,6 +33,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Hermes import (B20, partial)** — `@morrow/hermes-compat` is now a real
+  workspace package: `parseHermesEnv` (KEY=VALUE + key: value, comments/blanks/
+  export/quotes), `mapToMorrow` (maps only keys we understand; unknowns →
+  `unmapped`; secrets recorded as env *names* + presence, never values), and a
+  `summarizeImport` proven not to leak secret values. Tests: `import.test.ts`
+  (4). Workspace now 5 packages; all check/test/build green.
 - **Doctor + updater (B18, partial)** — `morrow doctor` now aggregates checks via
   the testable `service/doctor-checks.ts` `aggregateDoctor` (critical vs warning);
   new `morrow update` reports availability via `service/update.ts`
@@ -136,6 +142,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Hermes config import landed (B20 partial). Matrix §13
+  Migration/import → PARTIAL. `@morrow/hermes-compat` is now a real package.
 - 2026-06-23 — Doctor aggregation + updater landed (B18 partial). Matrix §13
   Doctor → VERIFIED, Update → PARTIAL.
 - 2026-06-23 — MCP client landed (B11 partial). Matrix §10 MCP stdio client →

@@ -53,44 +53,49 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B17 (partial) — Messaging adapters + notifications: VERIFIED.**
 - **B11 (partial) — MCP client: VERIFIED** (stdio client, framing, transport,
   tool filtering, trust).
-- **B18 (partial) — Doctor + updater: VERIFIED** (`aggregateDoctor`, `morrow
-  update` semver check). Apply-update/rollback/uninstall pending.
+- **B18 (partial) — Doctor + updater: VERIFIED.**
+- **B20 (partial) — Hermes import: VERIFIED** (`@morrow/hermes-compat` real
+  package: config parse + honest mapping, no secret leak). CLI wiring pending.
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 259 tests, CLI 130, contracts 4, web 8 — all green.
+- Baseline: orchestrator 259, CLI 130, contracts 4, web 8, **hermes-compat 4** —
+  all green (5 workspace packages).
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B20 Hermes import (`packages/hermes-compat`)
+## Exact next step — B9 execution backend interface + local backend
 
-Isolated package (currently README-only), testable with fixtures. Advances §13
-Migration/import (SCAFFOLD → PARTIAL) and the overall "import from Hermes" goal.
+Define one interface for command execution so Docker/SSH can slot in later. The
+local backend wraps the existing `runProcessSafe`; it is fully testable.
 
-1. Make `packages/hermes-compat` a real workspace package: `package.json`
-   (name `@morrow/hermes-compat`, type module, check/test/build scripts mirroring
-   `@morrow/contracts`), `tsconfig.json` + `tsconfig.build.json`, `src/index.ts`.
-2. `src/import-config.ts` (pure): `parseHermesEnv(text)` → key/value map from a
-   Hermes `.env`/`cli-config.yaml.example`-style file (simple `KEY=VALUE` and
-   `key: value` lines; ignore comments/blanks). `mapToMorrow(hermesConfig)` →
-   a Morrow-shaped `{ provider?, model?, settings: Record<string,string> }`
-   honest mapping (only map keys we truly understand: e.g. `OPENAI_API_KEY`,
-   `ANTHROPIC_API_KEY`, model/provider selection). Unknown keys go to an
-   `unmapped` list — never silently dropped, never invented.
-3. NEVER emit secret *values* into logs or the mapped output's human summary —
-   map the presence/!env-name, not the value (the user keeps their own secrets).
-4. Tests `packages/hermes-compat/test/import.test.ts`: parse a fixture with
-   comments/blanks/both syntaxes; map known keys; collect unknown keys in
-   `unmapped`; assert no secret value leaks into the summary string.
-5. Add the package to the root `pnpm-workspace.yaml`/turbo if needed (it's under
-   `packages/*` which is likely already globbed — verify).
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §13 Migration/import →
-   PARTIAL + status. Commit + push.
+1. New `services/orchestrator/src/backends/types.ts`: `ExecutionBackend`
+   interface `{ id: string; run(cmd: { executable; args; cwd; env?; timeoutMs?;
+   abortSignal? }) => Promise<{ exitCode; stdout; stderr; durationMs }>;
+   dispose?(): Promise<void> }`. Plus a `BackendCommand`/`BackendResult` type.
+2. `services/orchestrator/src/backends/local.ts`: `localBackend(opts?)` that
+   delegates to `runProcessSafe` (already env-filtered, ptree-killed on timeout).
+   Enforce an env allow-list and `no-new-privileges` posture is already in
+   `command-executor`; just surface it through the interface.
+3. (Docker/SSH stubs that throw "not configured" with a clear message are OK as
+   placeholders — do NOT fake execution. Their real impls need
+   docker/ssh and are CI-untestable; mark them MISSING/PARTIAL honestly.)
+4. Tests `test/backends.test.ts`: `localBackend.run` executes a trivial command
+   (`node -e "process.stdout.write('hi')"`) and returns stdout/exitCode; respects
+   a pre-aborted signal; times out a long command. Keep commands tiny + portable.
+5. Wire is optional this slice — the agent already calls `runProcessSafe`
+   directly; the interface is the architectural seam for B-later Docker/SSH.
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §4 (Unified backend
+   interface, Local) + status. Commit + push.
 
 ## Failing test to write first
 
-`packages/hermes-compat/test/import.test.ts` — "parseHermesEnv ignores comments
-and blank lines and returns KEY=VALUE pairs".
+`test/backends.test.ts` — "localBackend.run executes a command and returns its
+stdout and exit code".
+
+## Still remaining (multi-session): B9 Docker/SSH real impls, B15 browser, B16
+desktop, B19 installers, B21 TUI live tree/Ctrl+K; finish partials (compareBaseline
+agent wiring, MCP HTTP+routes, apply-update automation, CLI `morrow import`).
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 
