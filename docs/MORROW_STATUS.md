@@ -33,6 +33,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Cron scheduler (B7)** — pure UTC cron engine (`schedule/cron.ts`:
+  parse/nextRun, leap-day + weekday correct), `schedules` table (migration 14) +
+  repo, `SchedulerTicker` (injectable clock) firing isolated task runs through
+  the normal runner + containment, API (`GET/POST .../schedules`,
+  `DELETE/run`), CLI `schedule list|add|remove|run`, started in `index.ts`
+  (disable with `MORROW_DISABLE_SCHEDULER`). Tests: `cron.test.ts` (7) +
+  `schedules.test.ts` (8). Orchestrator 227 green.
 - **Skill Curator (B6)** — `apps/cli/src/skills/curator.ts`: deterministic
   duplicate detection (`findDuplicates`, Jaccard over SKILL.md), backup/rollback
   (re-verified restore + safety backup), archive/restore (out of discovery),
@@ -97,6 +104,9 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Cron scheduler landed (B7). Matrix §3 Scheduled jobs + §11 Cron
+  scheduler/Isolated runs → VERIFIED. (Also: bundled-skills tests relaxed to a
+  subset assertion now that the skill creator writes into the live skills dir.)
 - 2026-06-22 — Skill Curator landed (B6). Matrix §6 fully VERIFIED (Creator +
   Curator).
 - 2026-06-22 — Skill Creator landed (B5). Matrix §6 (interview→generate, sandbox

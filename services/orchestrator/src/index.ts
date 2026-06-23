@@ -3,6 +3,7 @@ import { buildServer } from "./server.js";
 import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot } from "./home.js";
 import { TaskRunner } from "./runner.js";
 import { recoverRunningTasks } from "./recovery.js";
+import { SchedulerTicker } from "./schedule/ticker.js";
 
 const dbPath = resolveDefaultDatabasePath(process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
@@ -13,6 +14,13 @@ recoverRunningTasks(db);
 
 const runner = new TaskRunner(db);
 const app = buildServer({ db, runner });
+
+// Fire due cron schedules unattended. The interval is short; the actual cadence
+// is governed by each schedule's next_run_at, so a missed minute simply runs at
+// the next tick. Disabled when MORROW_DISABLE_SCHEDULER is set.
+if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
+  new SchedulerTicker({ db, runner }).start(30000);
+}
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;
 

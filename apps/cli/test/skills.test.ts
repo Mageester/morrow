@@ -18,23 +18,26 @@ describe("local skills registry", () => {
     expect(verifySkill(skill).ok).toBe(false);
   });
 
+  // The built-in skills must ship and verify. The directory is user-writable
+  // (the skill creator installs here), so we assert the built-ins as a subset
+  // rather than an exact list that any created skill would break.
+  const BUILT_IN_SKILLS = ["coding", "diagnostics", "documentation", "git-inspection", "repository-inspection", "testing"];
+
   it("verifies the bundled local skills", () => {
     const bundled = discoverSkills(join(process.cwd(), "../../skills"));
-    expect(bundled.map((skill) => skill.id)).toEqual(["coding", "diagnostics", "documentation", "git-inspection", "repository-inspection", "testing"]);
-    expect(bundled.map((skill) => verifySkill(skill.directory).ok)).toEqual([true, true, true, true, true, true]);
+    const ids = bundled.map((skill) => skill.id);
+    for (const known of BUILT_IN_SKILLS) {
+      expect(ids).toContain(known);
+      const skill = bundled.find((s) => s.id === known)!;
+      expect(verifySkill(skill.directory).ok).toBe(true);
+    }
   });
 
   it("surfaces verified bundled skills as namespaced slash commands that never collide with built-ins", () => {
     const commands = skillsAsSlashCommands(join(process.cwd(), "../../skills"));
-    expect(commands.map((c) => c.name)).toEqual([
-      "skill:coding",
-      "skill:diagnostics",
-      "skill:documentation",
-      "skill:git-inspection",
-      "skill:repository-inspection",
-      "skill:testing",
-    ]);
-    expect(commands[0]).toMatchObject({ skillId: "coding" });
+    const names = commands.map((c) => c.name);
+    for (const known of BUILT_IN_SKILLS) expect(names).toContain(`skill:${known}`);
+    expect(commands.find((c) => c.name === "skill:coding")).toMatchObject({ skillId: "coding" });
     const builtinNames = new Set(SLASH_COMMANDS.map((c) => c.name));
     expect(commands.some((c) => builtinNames.has(c.name))).toBe(false);
   });

@@ -29,51 +29,51 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B4 — Skill usage tracking + skill→slash: VERIFIED** (`skill_usage` table,
   repo, API, CLI client; verified skills → `/skill:<id>` wired + invoked).
 - **B8 — Idempotency + retry: VERIFIED** (idempotent creation + `/retry`).
-- **B5 — Skill Creator: VERIFIED.**
-- **B6 — Skill Curator: VERIFIED** (dedupe/backup/rollback/archive/restore/pin/
-  update). §6 Skills is now fully VERIFIED.
-- Baseline: orchestrator 215 tests, CLI 124, contracts 4, web 8 — all green.
+- **B5 — Skill Creator: VERIFIED.** **B6 — Skill Curator: VERIFIED.**
+  §6 Skills fully VERIFIED.
+- **B7 — Cron scheduler: VERIFIED** (pure cron engine, schedules repo,
+  `SchedulerTicker`, API + CLI). Isolated runs verified.
+- Baseline: orchestrator 227 tests, CLI 124, contracts 4, web 8 — all green.
   `pnpm check/test/build` green.
 
-## Exact next step — B7 cron scheduler (isolated scheduled runs + notifications)
+> NOTE: the live `skills/` directory may contain extra skills created by the user
+> or a concurrent agent (untracked). Do NOT commit or delete them — they are
+> unrelated changes. Tests assert the 6 built-ins as a subset, not an exact list.
 
-Goal: schedule jobs (e.g. "every morning, inspect the workspace") that run
-unattended in isolated task runs. Keep the schedule math pure/deterministic.
+## Exact next step — B13 LSP diagnostics + baseline-before-write verification
 
-1. New `services/orchestrator/src/schedule/cron.ts` (pure, no clock inside):
-   - `parseCron(expr)` → structured fields (support 5-field `m h dom mon dow`
-     with `*`, ranges `a-b`, lists `a,b`, steps `*/n`). Throw on invalid.
-   - `nextRun(expr, fromDate)` → next `Date` strictly after `fromDate` (UTC).
-   Deterministic; unit-test against known expressions.
-2. `services/orchestrator/src/database.ts` — migration 14:
-   `CREATE TABLE schedules (id TEXT PRIMARY KEY, project_id TEXT NOT NULL
-   REFERENCES projects(id) ON DELETE CASCADE, cron TEXT NOT NULL, task_kind TEXT
-   NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, last_run_at TEXT, next_run_at
-   TEXT NOT NULL, created_at TEXT NOT NULL);` (bump `database.test.ts` 13 → 14.)
-3. `repositories/schedules.ts` — CRUD + `due(now)` (enabled && next_run_at<=now)
-   + `markRan(id, ranAt, nextAt)`.
-4. Contracts: `ScheduleSchema`, `CreateScheduleSchema` (validates cron via
-   `parseCron`). Routes: `GET/POST /api/projects/:id/schedules`,
-   `DELETE /api/schedules/:id`, `POST /api/schedules/:id/run` (run now).
-5. A `SchedulerTicker` (in orchestrator `index.ts`, injectable interval + clock)
-   that, on tick, finds `due` schedules, creates an **isolated** task per the
-   schedule (reuse `tasks.createTask` + `deps.runner.run`), then `markRan` with
-   the next `nextRun`. Notifications: emit a `task.created`/completion the CLI can
-   surface (defer external delivery to messaging, B17).
-6. Tests first (red):
-   - `test/cron.test.ts` — `parseCron`/`nextRun` against known cases (every
-     minute, `*/15`, `0 9 * * 1-5`, end-of-month rollover, invalid throws).
-   - `test/schedules.test.ts` — repo `due`/`markRan`; API create→list→run→delete;
-     a fake-clock ticker creates exactly one task when a schedule is due and
-     advances `next_run_at`.
-7. CLI: `morrow schedule list|add <cron> <kind>|remove <id>|run <id>` over the API.
-8. `pnpm check && pnpm test && pnpm build`. Update matrix §3 (Scheduled jobs) +
-   §11 (Cron scheduler, Isolated scheduled runs, Notifications) → VERIFIED +
-   status. Commit `feat(schedule): cron scheduler with isolated runs` + push.
+Two coding-intelligence rows (§8). Keep it provider-agnostic and testable.
+
+1. Baseline-before-write (smaller, do first): in the agent's write path
+   (`execution/agent.ts` around `propose_patch`/diff apply, and
+   `workspace/validator.ts`), capture a "baseline" check result (e.g. run the
+   project's verify command or a targeted type/lint check) BEFORE applying a
+   change, then compare AFTER, so the agent never reports success when it made
+   things worse. Add `services/orchestrator/src/workspace/baseline.ts`
+   (`captureBaseline(runner, cwd)` / `compareBaseline(before, after)` — pure
+   diff of error counts). Unit-test the comparison with synthetic before/after.
+2. LSP diagnostics client: new `services/orchestrator/src/lsp/diagnostics.ts`.
+   Start narrow and deterministic — wrap `tsc --noEmit` / `eslint -f json` as a
+   "diagnostics provider" returning structured `{file,line,severity,message}`
+   (a real LSP stdio client can come later; the contract is what matters).
+   Add a `GET /api/projects/:id/diagnostics` route that runs the configured
+   provider in the workspace (respecting command policy + timeouts).
+3. Tests: `test/baseline.test.ts` (compareBaseline: improved/worse/same),
+   `test/diagnostics.test.ts` (parse a known tsc/eslint output fixture into
+   structured diagnostics; never throws on empty).
+4. `pnpm check && pnpm test && pnpm build`. Update matrix §8 (LSP diagnostics,
+   Baseline-before-write) → VERIFIED + status. Commit + push.
 
 ## Failing test to write first
 
-`test/cron.test.ts` — "nextRun('*/15 * * * *', 2026-01-01T00:07:00Z) === 00:15:00Z".
+`test/baseline.test.ts` — "compareBaseline reports a regression when the after
+count exceeds the before count for the same file".
+
+## Bigger remaining (multi-session, see MORROW_BACKLOG.md)
+
+B9 Docker/SSH backends; B11 MCP client; B14 worktrees + subagents; B15 browser;
+B16 desktop; B17 messaging adapters (+ notification delivery); B18 doctor/
+updater/uninstall; B19 installers; B20 Hermes import; B21 TUI live tree/Ctrl+K.
 
 ## Deferred (pick up later)
 

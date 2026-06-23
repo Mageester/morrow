@@ -12,6 +12,7 @@ import { presetsCommand } from "./commands/presets.js";
 import { projectsCommand, initCommand } from "./commands/projects.js";
 import { panicCommand } from "./commands/panic.js";
 import { skillsCommand } from "./commands/skills.js";
+import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { probePnpm } from "./service/pnpm.js";
@@ -125,6 +126,8 @@ export async function run(argv: string[]): Promise<number> {
       case "memory": return memoryCommand(ctx, sub, args);
       case "panic": return panicCommand(ctx);
       case "skills": return skillsCommand(ctx, sub, args);
+      case "schedule":
+      case "schedules": return scheduleCommand(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
     }
   } catch (error) {

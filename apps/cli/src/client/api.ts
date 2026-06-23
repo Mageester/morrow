@@ -23,6 +23,8 @@ import type {
   Health,
   SearchResponse,
   SearchKind,
+  Schedule,
+  ScheduleTaskKind,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
@@ -217,6 +219,14 @@ export class MorrowApi {
   recordSkillUse(projectId: string, skillId: string) {
     return this.req<{ skillId: string; count: number }>("POST", `/api/projects/${projectId}/skills/${encodeURIComponent(skillId)}/use`);
   }
+
+  // ── Schedules ─────────────────────────────────────────────────────────────────
+  listSchedules(projectId: string) { return this.req<Schedule[]>("GET", `/api/projects/${projectId}/schedules`); }
+  createSchedule(projectId: string, cron: string, taskKind: ScheduleTaskKind = "inspect_workspace") {
+    return this.req<Schedule>("POST", `/api/projects/${projectId}/schedules`, { cron, taskKind });
+  }
+  deleteSchedule(scheduleId: string) { return this.req<void>("DELETE", `/api/schedules/${scheduleId}`); }
+  runSchedule(scheduleId: string) { return this.req<{ scheduleId: string; taskId: string }>("POST", `/api/schedules/${scheduleId}/run`); }
 
   // ── Onboarding State ────────────────────────────────────────────────────────
   getOnboardingState() {

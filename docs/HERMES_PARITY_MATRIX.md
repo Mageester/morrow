@@ -76,7 +76,7 @@
 | Loop detection | Hermes | VERIFIED | `execution/loop-detector.ts` (stable-signature sliding window) wired into `execution/agent.ts`; interrupts with reason `loop_detected` before false success. Tests: `test/loop-detector.test.ts` (11) + `test/agent-loop.test.ts` (2) | — |
 | Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |
 | Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` | Reboot-survival integration test |
-| Scheduled jobs (cron) | `cron/` | MISSING | — | Scheduler + isolated runs |
+| Scheduled jobs (cron) | `cron/` | VERIFIED | `schedule/cron.ts` (pure UTC engine) + `repositories/schedules.ts` + `schedule/ticker.ts` (isolated runs via the task runner) + API + CLI `schedule`. `test/cron.test.ts` (7) + `test/schedules.test.ts` (8) | — |
 | Idempotency | Hermes | VERIFIED | `tasks(project_id, idempotency_key)` partial unique index (migration 12), `findByIdempotencyKey`, `Idempotency-Key` header/body on task creation returns the original task. `test/tasks.test.ts` + `test/idempotency-api.test.ts` | Extend to the agent-chat creation path |
 | Session search (FTS) | `agent/memory_manager.py` FTS5 | VERIFIED | `repositories/search.ts`, migration 10 triggers, `/api/projects/:id/search`, `test/search.test.ts` (13) + `test/search-api.test.ts` (4) + CLI `test/api-search.test.ts` (3) | — |
 
@@ -158,9 +158,9 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Cron scheduler | `cron/` | MISSING | — | See §3 |
-| Isolated scheduled runs | Hermes | MISSING | — | — |
-| Notifications | Hermes | MISSING | — | — |
+| Cron scheduler | `cron/` | VERIFIED | `schedule/cron.ts` + `schedule/ticker.ts` (`SchedulerTicker.start/tick`, injectable clock), started in `index.ts`. Tests as above | — |
+| Isolated scheduled runs | Hermes | VERIFIED | ticker creates a fresh task per due schedule via the same runner + containment; `test/schedules.test.ts` "fires one isolated task per due schedule" | — |
+| Notifications | Hermes | PARTIAL | scheduled runs emit task events the CLI/web can surface | External delivery via messaging adapters (next row) |
 | Telegram/Discord/Slack/email adapters | `gateway/` | MISSING | — | Adapter contract + ≥1 impl |
 
 ## 12. Provider orchestration

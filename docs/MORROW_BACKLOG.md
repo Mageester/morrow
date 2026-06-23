@@ -27,7 +27,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [x] **B6. Skill Curator (dedupe, improve, stale/archive, pin, backup,
       rollback).** `apps/cli/src/skills/curator.ts` + `skills` subcommands
       (dedupe/update/backup/backups/rollback/archive/restore/archived/pin/unpin).
-- [ ] **B7. Cron scheduler + isolated scheduled runs + notifications.**
+- [x] **B7. Cron scheduler + isolated scheduled runs.** Pure UTC cron engine,
+      schedules repo, `SchedulerTicker`, API + CLI `schedule`. (Notifications:
+      events emitted; external delivery folded into B17 messaging.)
 - [x] **B8. Idempotency keys + explicit retry.** DONE: idempotent task creation
       (partial unique index + `Idempotency-Key` replay) AND `POST /tasks/:id/retry`
       (fresh attempt; 409 unless failed/interrupted; never resurrects cancelled).

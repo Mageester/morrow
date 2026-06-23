@@ -236,6 +236,29 @@ export const SkillUsageSchema=z.object({
 }).strict();
 export type SkillUsage=z.infer<typeof SkillUsageSchema>;
 
+// ── Scheduled jobs (cron) ────────────────────────────────────────────────────
+// A schedule fires isolated task runs on a UTC cron expression. Scheduled work
+// is project-scoped and uses the same task runner + containment as interactive
+// work — nothing runs with elevated privileges because it is unattended.
+export const ScheduleTaskKindSchema=z.enum(["inspect_workspace"]);
+export const ScheduleSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  projectId:z.string(),
+  cron:z.string(),
+  taskKind:ScheduleTaskKindSchema,
+  enabled:z.boolean(),
+  lastRunAt:z.string().nullable(),
+  nextRunAt:z.string(),
+  createdAt:z.string().datetime(),
+}).strict();
+export const CreateScheduleSchema=z.object({
+  cron:z.string().trim().min(1).max(120),
+  taskKind:ScheduleTaskKindSchema.default("inspect_workspace"),
+}).strict();
+export type Schedule=z.infer<typeof ScheduleSchema>;
+export type ScheduleTaskKind=z.infer<typeof ScheduleTaskKindSchema>;
+
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;

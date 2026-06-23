@@ -26,7 +26,9 @@ import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
-import { SearchKindSchema } from "@morrow/contracts";
+import { schedulesRepository } from "./repositories/schedules.js";
+import { assertValidCron, nextRun } from "./schedule/cron.js";
+import { SearchKindSchema, CreateScheduleSchema } from "@morrow/contracts";
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
@@ -93,6 +95,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const memory = memoryRepository(deps.db);
   const search = searchRepository(deps.db);
   const skillUsage = skillUsageRepository(deps.db);
+  const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
 
@@ -787,6 +790,51 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  app.get("/api/projects/:projectId/schedules", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return schedules.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/schedules", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateScheduleSchema.parse(request.body);
+    try {
+      assertValidCron(body.cron);
+    } catch (error) {
+      throw new ApiError(400, `Invalid cron expression: ${(error as Error).message}`, "VALIDATION_ERROR");
+    }
+    const created = schedules.create({
+      id: crypto.randomUUID(),
+      projectId,
+      cron: body.cron,
+      taskKind: body.taskKind,
+      nextRunAt: nextRun(body.cron, new Date()).toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+    reply.status(201);
+    return created;
+  });
+
+  app.delete("/api/schedules/:scheduleId", async (request, reply) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    if (!schedules.get(scheduleId)) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    schedules.delete(scheduleId);
+    reply.status(204).send();
+  });
+
+  app.post("/api/schedules/:scheduleId/run", async (request, reply) => {
+    const { scheduleId } = request.params as { scheduleId: string };
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw new ApiError(404, "Schedule not found", "NOT_FOUND");
+    const taskId = crypto.randomUUID();
+    tasks.createTask({ id: taskId, projectId: schedule.projectId, kind: schedule.taskKind, status: "queued", createdAt: new Date().toISOString() });
+    deps.runner.run(taskId);
+    reply.status(202);
+    return { scheduleId, taskId, aggregateUrl: `/api/tasks/${taskId}` };
   });
 
   app.get("/api/projects/:projectId/skills/usage", async (request) => {
