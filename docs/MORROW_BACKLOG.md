@@ -70,8 +70,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [~] **B20. Hermes import.** DONE: `@morrow/hermes-compat` real package —
       config parse + honest mapping (no invented keys, no leaked secrets).
       REMAINING: CLI `morrow import` wiring + session/skill import.
-- [ ] **B21. TUI: live task tree, Ctrl+K palette, persisted history, resize
-      reflow test, mid-stream reconnect dedup test.**
+- [~] **B21. TUI polish.** DONE: persisted cross-session command history
+      (`terminal/history.ts`, wired via `onHistory`). REMAINING: live task tree,
+      Ctrl+K palette completeness, resize-reflow test, reconnect-dedup test.
 - [~] **B22. Security hard-blocks.** DONE: workspace-escape/force-push/network-
       exfil guards enforced categorically before approval, with unit +
       end-to-end (YOLO-bypass) tests. REMAINING: append-only tamper-evident

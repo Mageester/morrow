@@ -41,7 +41,7 @@
 | Full-screen interactive TUI | `ui-tui/src`, `cli.py` curses loop | PARTIAL | `apps/cli/src/terminal/*` (events→reduce→state→view→renderer) | Alt-screen full-frame layout, live mission header |
 | Multiline input | TUI editor | PARTIAL | `terminal/input-state.ts`, `prompt.ts` | Verify soft-wrap + paste; tests |
 | Slash-command autocomplete | TUI | VERIFIED | `terminal/commands.ts`, `completion.ts`, `terminal-completion.test.ts` | — |
-| Command history | TUI | PARTIAL | `prompt.ts` history ring | Persisted cross-session history |
+| Command history | TUI | VERIFIED | in-session ring (`prompt.ts`) + persisted `terminal/history.ts` (load/append, dedup, trim, ignore noise) wired into the session via `onHistory`/`history`. `test/terminal-history.test.ts` (5) | — |
 | Streaming tool cards | TUI streaming | VERIFIED | `terminal/state.ts` ToolCard, `terminal-view.test.ts` | — |
 | Live task tree | Hermes plan view | MISSING | plan steps render flat | Nested child-task tree |
 | Bounded transcript | TUI scrollback cap | PARTIAL | `state.ts` transcript cap | Verify cap + `/output` overflow |

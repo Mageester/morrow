@@ -13,6 +13,8 @@ import { InteractiveSession, type SessionBackend, type SessionSettings } from ".
 import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
 import { skillsAsSlashCommands } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
+import { loadHistory, appendHistory } from "../terminal/history.js";
+import { join } from "node:path";
 import { nodeTermIO } from "../terminal/runtime.js";
 import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { streamTaskEvents } from "../client/sse.js";
@@ -165,6 +167,8 @@ async function runInteractiveSession(
     description: c.description,
   }));
 
+  const historyFile = join(ctx.paths.home, "history");
+
   // Real model data feeds the Ctrl+K palette (project/session search deferred).
   const models = await api.listModels().catch(() => []);
   const extraPaletteItems: PaletteItem[] = models
@@ -182,6 +186,8 @@ async function runInteractiveSession(
     backend,
     commands: [...SLASH_COMMANDS, ...skillCommands],
     extraPaletteItems,
+    history: loadHistory(historyFile),
+    onHistory: (line) => appendHistory(historyFile, line),
   });
   try {
     await app.run();

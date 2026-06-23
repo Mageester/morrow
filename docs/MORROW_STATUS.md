@@ -33,6 +33,10 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Persisted command history (B21, partial)** — `terminal/history.ts`
+  (load/append, consecutive-dedup, max-trim, ignore blank/exit noise), wired into
+  the interactive session via `history`/`onHistory` so up-arrow recall survives a
+  restart. Tests: `terminal-history.test.ts` (5). CLI 135 green.
 - **Execution backend interface (B9, partial)** — `backends/types.ts`
   `ExecutionBackend` contract + `backends/local.ts` (delegates to the contained
   `runProcessSafe`) + honest `dockerBackend`/`sshBackend` stubs that refuse until
@@ -148,6 +152,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Persisted command history landed (B21 partial). Matrix §1 Command
+  history → VERIFIED.
 - 2026-06-23 — Execution backend interface + local backend landed (B9 partial).
   Matrix §4 Unified interface + Local → VERIFIED; Docker/SSH → SCAFFOLD stubs.
 - 2026-06-23 — Hermes config import landed (B20 partial). Matrix §13

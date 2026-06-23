@@ -85,6 +85,8 @@ export interface SessionDeps {
   commands?: SlashCommand[];
   extraPaletteItems?: PaletteItem[];
   history?: string[];
+  /** Persist a submitted line (best-effort; called for non-empty input). */
+  onHistory?: (line: string) => void;
   now?: () => number;
   maxFps?: number;
 }
@@ -205,6 +207,7 @@ export class InteractiveSession {
   private async onSubmit(value: string): Promise<void> {
     const line = value.trim();
     if (!line) return void this.requestPaint(false);
+    this.deps.onHistory?.(line);
     if (line.startsWith("/")) return void this.onSlash(line);
     await this.runTask(line);
   }
