@@ -34,7 +34,9 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       (partial unique index + `Idempotency-Key` replay) AND `POST /tasks/:id/retry`
       (fresh attempt; 409 unless failed/interrupted; never resurrects cancelled).
       REMAINING (minor): extend idempotency to the agent-chat creation path.
-- [ ] **B9. Execution backend interface + Docker sandbox backend.** (SSH after.)
+- [~] **B9. Execution backend interface + local backend.** DONE: `ExecutionBackend`
+      interface + `localBackend` (over command-executor) + honest Docker/SSH
+      stubs that refuse until configured. REMAINING: real Docker + SSH impls.
 - [~] **B10. Live provider fallback-on-error.** DONE: `openStreamWithFallback`
       retries the next configured candidate on a retryable start error (never on
       fatal request errors, never mid-stream), emits `provider.fallback`, wired

@@ -40,3 +40,6 @@ export { McpClient, type RawTransport, type McpTool } from "./mcp/client.js";
 export { encodeMessage, createMessageDecoder } from "./mcp/framing.js";
 export { mcpTrustStore } from "./mcp/trust.js";
 export { spawnStdioTransport } from "./mcp/stdio-transport.js";
+export { localBackend } from "./backends/local.js";
+export { dockerBackend, sshBackend } from "./backends/remote.js";
+export type { ExecutionBackend, BackendCommand, BackendResult } from "./backends/types.js";

@@ -54,48 +54,48 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B11 (partial) — MCP client: VERIFIED** (stdio client, framing, transport,
   tool filtering, trust).
 - **B18 (partial) — Doctor + updater: VERIFIED.**
-- **B20 (partial) — Hermes import: VERIFIED** (`@morrow/hermes-compat` real
-  package: config parse + honest mapping, no secret leak). CLI wiring pending.
+- **B20 (partial) — Hermes import: VERIFIED.**
+- **B9 (partial) — Execution backend interface + local backend: VERIFIED.**
+  Docker/SSH are honest stubs (SCAFFOLD).
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 259, CLI 130, contracts 4, web 8, **hermes-compat 4** —
+- Baseline: orchestrator 264, CLI 130, contracts 4, web 8, hermes-compat 4 —
   all green (5 workspace packages).
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B9 execution backend interface + local backend
+## Exact next step — B21 TUI: persisted cross-session command history
 
-Define one interface for command execution so Docker/SSH can slot in later. The
-local backend wraps the existing `runProcessSafe`; it is fully testable.
+Small, CLI-only, testable. The terminal prompt has an in-memory history ring;
+persist it across sessions so up-arrow recall survives a restart.
 
-1. New `services/orchestrator/src/backends/types.ts`: `ExecutionBackend`
-   interface `{ id: string; run(cmd: { executable; args; cwd; env?; timeoutMs?;
-   abortSignal? }) => Promise<{ exitCode; stdout; stderr; durationMs }>;
-   dispose?(): Promise<void> }`. Plus a `BackendCommand`/`BackendResult` type.
-2. `services/orchestrator/src/backends/local.ts`: `localBackend(opts?)` that
-   delegates to `runProcessSafe` (already env-filtered, ptree-killed on timeout).
-   Enforce an env allow-list and `no-new-privileges` posture is already in
-   `command-executor`; just surface it through the interface.
-3. (Docker/SSH stubs that throw "not configured" with a clear message are OK as
-   placeholders — do NOT fake execution. Their real impls need
-   docker/ssh and are CI-untestable; mark them MISSING/PARTIAL honestly.)
-4. Tests `test/backends.test.ts`: `localBackend.run` executes a trivial command
-   (`node -e "process.stdout.write('hi')"`) and returns stdout/exitCode; respects
-   a pre-aborted signal; times out a long command. Keep commands tiny + portable.
-5. Wire is optional this slice — the agent already calls `runProcessSafe`
-   directly; the interface is the architectural seam for B-later Docker/SSH.
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §4 (Unified backend
-   interface, Local) + status. Commit + push.
+1. `apps/cli/src/terminal/history.ts` (pure I/O-light): `loadHistory(file,
+   max=500)` reads newline-delimited lines (returns [] if missing/unreadable);
+   `appendHistory(file, line)` appends de-duplicated-consecutive, trimming the
+   file to `max` lines; ignore blank/`/exit`-type noise per a small filter.
+2. Wire into `apps/cli/src/commands/chat.ts`: load history into the
+   `InteractiveSession` `history` option (already supported via SessionDeps);
+   on submit of a non-slash line, append to the history file under the Morrow
+   home (`ctx.paths` / `resolveMorrowHome`). Keep it best-effort (never throw).
+3. Tests `apps/cli/test/terminal-history.test.ts`: load missing→[]; append then
+   load round-trips; consecutive duplicates collapse; file trims to max; blank
+   lines ignored.
+4. `pnpm check && pnpm test && pnpm build`. Update matrix §1 (Command history) →
+   VERIFIED + status. Commit + push.
 
 ## Failing test to write first
 
-`test/backends.test.ts` — "localBackend.run executes a command and returns its
-stdout and exit code".
+`apps/cli/test/terminal-history.test.ts` — "appendHistory then loadHistory
+round-trips lines and collapses consecutive duplicates".
 
-## Still remaining (multi-session): B9 Docker/SSH real impls, B15 browser, B16
-desktop, B19 installers, B21 TUI live tree/Ctrl+K; finish partials (compareBaseline
-agent wiring, MCP HTTP+routes, apply-update automation, CLI `morrow import`).
+## Still remaining (multi-session)
+
+B9 Docker/SSH real impls; B15 browser (Playwright/CDP — CI-untestable here);
+B16 desktop (UIA/AX/AT-SPI); B19 installers (Windows/Ubuntu); finish partials:
+compareBaseline → agent write-path gate, MCP HTTP transport + routes,
+apply-update automation + rollback + uninstall, CLI `morrow import` over
+`@morrow/hermes-compat`, append-only tamper-evident audit store (B22).
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 

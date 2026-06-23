@@ -33,6 +33,12 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Execution backend interface (B9, partial)** — `backends/types.ts`
+  `ExecutionBackend` contract + `backends/local.ts` (delegates to the contained
+  `runProcessSafe`) + honest `dockerBackend`/`sshBackend` stubs that refuse until
+  configured (Morrow never fakes remote/sandboxed execution). Tests:
+  `backends.test.ts` (5: exec, exit code, pre-abort, timeout, stub refusal).
+  Orchestrator 264 green.
 - **Hermes import (B20, partial)** — `@morrow/hermes-compat` is now a real
   workspace package: `parseHermesEnv` (KEY=VALUE + key: value, comments/blanks/
   export/quotes), `mapToMorrow` (maps only keys we understand; unknowns →
@@ -142,6 +148,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Execution backend interface + local backend landed (B9 partial).
+  Matrix §4 Unified interface + Local → VERIFIED; Docker/SSH → SCAFFOLD stubs.
 - 2026-06-23 — Hermes config import landed (B20 partial). Matrix §13
   Migration/import → PARTIAL. `@morrow/hermes-compat` is now a real package.
 - 2026-06-23 — Doctor aggregation + updater landed (B18 partial). Matrix §13

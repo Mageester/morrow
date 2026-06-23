@@ -84,10 +84,10 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Local | Hermes local backend | VERIFIED | `tools/command-executor.ts`, `command-policy.ts` | — |
-| Docker sandbox | Hermes docker backend | MISSING | — | Container backend behind one interface |
-| SSH | Hermes ssh backend | MISSING | — | SSH backend |
-| Unified backend interface | Hermes `transports/` | MISSING | — | `ExecutionBackend` abstraction |
+| Local | Hermes local backend | VERIFIED | `backends/local.ts` (over `command-executor.ts`/`command-policy.ts`); `test/backends.test.ts` (exec, exit code, abort, timeout) | — |
+| Docker sandbox | Hermes docker backend | SCAFFOLD | `backends/remote.ts` `dockerBackend` honest stub (refuses until configured; never fakes) | Real container runtime impl |
+| SSH | Hermes ssh backend | SCAFFOLD | `backends/remote.ts` `sshBackend` honest stub | Real SSH impl |
+| Unified backend interface | Hermes `transports/` | VERIFIED | `backends/types.ts` `ExecutionBackend`; local + remote stubs implement it; `test/backends.test.ts` | — |
 | Limits / env filter / no-new-privs / process-tree kill | Hermes | PARTIAL | timeout + denied patterns | env allow-list, ptree kill |
 
 ## 5. Skills
