@@ -2,9 +2,21 @@
 
 **Private intelligence, built around you.**
 
-Morrow is a self-hosted, deeply customizable personal AI agent. The product goal is to match the practical capability surface of Hermes Agent, then exceed it in usability, privacy, reliability, memory, customization, and multi-agent work.
+Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** Pre-alpha. Morrow is currently in product-definition and architecture setup. No superiority claims are considered proven until they pass the benchmark suite.
+> **Status:** Early Access Beta. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+
+## Quick Install (Windows)
+
+Open **PowerShell** and run:
+
+```powershell
+iex (irm https://morrowproject.getaxiom.ca/install.ps1)
+```
+
+The installer handles Node.js, downloads, checksum verification, shortcuts, and launch automatically. No Git, pnpm, or manual steps required.
+
+**Official website:** https://morrowproject.getaxiom.ca
 
 ## Product principles
 
