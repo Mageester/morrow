@@ -48,7 +48,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
       (`workspace/diagnostics.ts` tsc/eslint parsers + `compareBaseline`) +
       `GET /diagnostics` route. REMAINING: wire `compareBaseline` into the agent
       write path; real LSP stdio client.
-- [ ] **B14. Git worktrees + subagent delegation + parallel agents.**
+- [~] **B14. Subagent delegation + task graph.** DONE: `parent_task_id` +
+      `listChildren`, `POST /tasks/:id/subagents`, `GET /tasks/:id/tree`;
+      composes with persistent named agents (`feat(agents)`). REMAINING: git
+      worktrees for parallel isolated agent workspaces.
 - [ ] **B15. Browser control (Playwright/CDP) + prompt-injection guard.**
 - [ ] **B16. Desktop control layer (UIA / AX / AT-SPI).**
 - [ ] **B17. Messaging adapters (Telegram/Discord/Slack/email) behind one

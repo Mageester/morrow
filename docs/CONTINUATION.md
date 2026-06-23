@@ -3,39 +3,21 @@
 > Always names the **exact** next step so any agent (or a fresh session) can
 > resume without re-deriving context. Update this at every interruption.
 
-## ⚠️ CONCURRENT-AGENT COLLISION (2026-06-23) — READ FIRST
+## Concurrent-agent collision (2026-06-23) — RESOLVED
 
-A second agent is editing this same branch/worktree, building a **persistent
-named agents** feature. As of this writing the working tree has **interleaved,
-uncommitted changes from both agents** in the core shared files:
-`packages/contracts/src/index.ts`, `services/orchestrator/src/database.ts`,
-`services/orchestrator/src/server.ts` (their new `repositories/agents.ts` is
-untracked). They also created many skill dirs under `skills/` via the new skill
-creator.
+A second agent built a **persistent named agents** feature on this same branch.
+Resolved cleanly:
+- The migration-id collision (both claimed `id:15`) was fixed by renumbering mine
+  to 16. The other agent then committed `feat(agents): persistent named agent
+  teams + granular permissions` (`2dc4362`), which **included** my task-graph data
+  model (migration 16 `task_parent_links`, `Task.parentTaskId`,
+  `tasks.listChildren`, `SpawnSubagentSchema`).
+- I then landed B14 subagent routes on top: `feat(tasks): subagent delegation`
+  (`6d8a23d`). The user authorized "take over fully"; the other agent is stopped.
+- Tree is GREEN: orchestrator 244, CLI 124, contracts 4, web 8.
 
-What was done to keep the tree safe:
-- **Resolved a migration-id collision**: both agents had claimed migration `id:15`
-  (theirs `agents_and_permissions`, mine `task_parent_links`). The second of two
-  duplicate ids is silently dropped by the runner. **Mine was renumbered to 16.**
-  `database.test.ts` was set to expect 16 migrations. The combined tree was GREEN
-  (`pnpm check/test/build`, orchestrator 239, CLI 124) at the moment of the fix —
-  but the other agent is editing rapidly, so re-run `pnpm check/test` before
-  trusting it. They are actively *integrating* the task-graph data model: their
-  `tasks.ts`/`task-records.ts` now carry both my `parentTaskId` (they kept
-  `listChildren`) and their new `agentId`.
-
-B14 (subagent delegation / task graph) is **partially staged but UNCOMMITTED**:
-`Task.parentTaskId` (contracts), migration 16 (database), `tasks.listChildren` +
-`parentTaskId` (tasks.ts/task-records.ts), `SpawnSubagentSchema`, and the
-runner-test/database-test fixups. These were **not committed** to avoid bundling
-the other agent's in-flight work into my commit. The subagent **routes** in
-`server.ts` were intentionally NOT added (server.ts is contended).
-
-**To resume B14 safely:** wait until the other agent has committed their agents
-feature (so contracts/database/server are clean again), then `pnpm check/test`,
-add the subagent routes to `server.ts`, write `test/subagents.test.ts`, and
-commit. The data-model changes above are already in the tree — verify they
-survived (`git diff` for `parentTaskId`/migration 16) before re-adding.
+The `skills/` directory contains ~20 extra skills created via the skill creator
+(by the user/other agent). They are untracked — do NOT commit or delete them.
 
 ## Resume command
 
@@ -66,46 +48,45 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B5 — Skill Creator: VERIFIED.** **B6 — Skill Curator: VERIFIED.**
   §6 Skills fully VERIFIED.
 - **B7 — Cron scheduler: VERIFIED.**
-- **B13 (partial) — Diagnostics + baseline: VERIFIED** (tsc/eslint parsers,
-  `compareBaseline`, `/diagnostics` route). Agent auto-gate pending.
-- Baseline: orchestrator 239 tests, CLI 124, contracts 4, web 8 — all green.
-  `pnpm check/test/build` green.
+- **B13 (partial) — Diagnostics + baseline: VERIFIED.**
+- **B14 (partial) — Subagent delegation + task graph: VERIFIED** (`parent_task_id`,
+  `listChildren`, `/subagents`, `/tree`). Worktrees pending.
+- **Persistent named agents** feature landed in the tree (`feat(agents)`).
+- Baseline: orchestrator 244 tests, CLI 124, contracts 4, web 8 — all green.
 
-> NOTE: the live `skills/` directory may contain extra skills created by the user
-> or a concurrent agent (untracked). Do NOT commit or delete them — they are
-> unrelated changes. Tests assert the 6 built-ins as a subset, not an exact list.
+> NOTE: the live `skills/` directory contains ~20 extra skills created via the
+> skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
+> built-ins as a subset, not an exact list.
 
-## Exact next step — B14 subagent delegation + task graph (parent/child tasks)
+## Exact next step — B17 messaging adapters (+ notification delivery)
 
-Advances §14 "Subagents / delegation" and §3 "Task graph / child tasks" — a
-subagent is just a child task with its own scope. A top completion criterion.
+Closes a completion criterion ("run messaging tasks") and the cron "Notifications"
+gap. Keep the transport injectable so it is testable without network/secrets.
 
-1. `services/orchestrator/src/database.ts` — migration 15:
-   `ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id) ON
-   DELETE CASCADE;` + `CREATE INDEX tasks_parent_idx ON tasks(parent_task_id);`
-   (bump `database.test.ts` 14 → 15; update `runner.test.ts` manual schema +
-   `tasks.ts` map/insert to carry `parentTaskId`).
-2. `repositories/tasks.ts` — accept optional `parentTaskId` on createTask; add
-   `listChildren(parentId)` and a `taskTree(rootId)` helper (or build the tree in
-   the route from `listByProject`).
-3. Contracts: extend `TaskSchema` with `parentTaskId: z.string().nullable()`
-   (update every consumer/fixture). Add `SpawnSubagentSchema` `{ projectId,
-   parentTaskId, kind, label? }`.
-4. Route `POST /api/tasks/:taskId/subagents` → create a child task (same project,
-   `parentTaskId` set) and run it; `GET /api/tasks/:taskId/tree` → the task and
-   its descendants. Guard: child kind limited to `inspect_workspace` for now
-   (agent_chat children need a conversation — defer).
-5. Tests first (red): `test/subagents.test.ts` — createTask with parent links;
-   `listChildren`; API spawns a child and the tree includes it; cascade delete
-   removes children. `test/tasks.test.ts` — parentTaskId round-trips.
-6. CLI: optional `morrow tasks tree <id>` over `/tree`.
-7. `pnpm check && pnpm test && pnpm build`. Update matrix §14 (Subagents) + §3
-   (Task graph / child tasks) → VERIFIED + status. Commit + push.
+1. New `services/orchestrator/src/messaging/adapter.ts`:
+   - `MessageAdapter` interface `{ id; send({text, subject?}) => Promise<{ok,
+     detail}>}`.
+   - `webhookAdapter({ url, fetchImpl? })` POSTs `{text}` JSON (injectable fetch).
+   - `telegramAdapter({ botToken, chatId, fetchImpl? })` POSTs to the Bot API
+     sendMessage URL. Never log secrets; redact tokens in any error detail.
+   - `loadAdaptersFromEnv(env)` builds configured adapters (`MORROW_WEBHOOK_URL`,
+     `MORROW_TELEGRAM_BOT_TOKEN`+`MORROW_TELEGRAM_CHAT_ID`); `[]` when none.
+2. Contracts: `NotificationChannelSchema` (`webhook|telegram`), `NotifyResult`.
+3. Route `POST /api/notify {text, subject?}` fans out to configured adapters;
+   per-adapter results; never echo secrets. Add a
+   `ServerDependencies.messageAdapters?` seam (like `diagnosticsRunner`) so tests
+   inject fakes.
+4. Optional: scheduler ticker sends a short notification on a fired schedule
+   (try/catch; a failed notification never fails the task).
+5. Tests first (red) `test/messaging.test.ts`: webhook POST body/url (inject
+   fetch); telegram url + token redaction on error; `loadAdaptersFromEnv`
+   configured/empty; `/api/notify` fan-out aggregation via injected adapters.
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §11 → status. Commit+push.
 
 ## Failing test to write first
 
-`test/subagents.test.ts` — "POST /api/tasks/:id/subagents creates a child task
-whose parentTaskId is the parent and which appears in the parent's tree".
+`test/messaging.test.ts` — "webhookAdapter.send POSTs {text} to the configured
+URL (injected fetch captures the call)".
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 

@@ -33,6 +33,14 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Subagent delegation + task graph (B14, partial)** — `parent_task_id`
+  (migration 16) + `tasks.listChildren`; `POST /api/tasks/:id/subagents` spawns
+  an isolated child task through the normal runner; `GET /api/tasks/:id/tree`
+  returns the recursive descendant tree. Composes with the persistent named
+  agents feature now in the tree (`repositories/agents.ts`, `feat(agents)`).
+  Tests: `subagents.test.ts` (6). Orchestrator 244 green. (NOTE: my task-graph
+  data model was committed inside the concurrent `feat(agents)` commit; my
+  subagent routes are in `feat(tasks): subagent delegation`.)
 - **Code diagnostics + baseline (B13, partial)** — `workspace/diagnostics.ts`:
   tsc + eslint output parsers → normalized `Diagnostic[]`, and `compareBaseline`
   (error-count-aware, tolerant of line shifts) to prove a change didn't regress.
@@ -109,6 +117,9 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Subagent delegation + task graph landed (B14 partial). Matrix §3
+  Task graph + §14 Subagents → VERIFIED. Persistent named agents feature also
+  landed in the tree (concurrent `feat(agents)` commit, integrated).
 - 2026-06-23 — Code diagnostics + baseline comparison landed (B13 partial).
   Matrix §8 LSP diagnostics → VERIFIED.
 - 2026-06-23 — Cron scheduler landed (B7). Matrix §3 Scheduled jobs + §11 Cron

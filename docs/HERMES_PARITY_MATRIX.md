@@ -68,7 +68,7 @@
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
 | Persistent missions/tasks | `hermes_state.py` sqlite | VERIFIED | `repositories/tasks.ts`, `database.ts` | — |
-| Task graph / child tasks | Hermes subagents | MISSING | flat tasks | parent/child edges |
+| Task graph / child tasks | Hermes subagents | VERIFIED | `tasks.parent_task_id` (migration 16) + `tasks.listChildren`; `GET /api/tasks/:id/tree` builds the descendant tree. `test/subagents.test.ts` | — |
 | Pause / resume | Hermes | VERIFIED | `/resume`, `task-continuations.ts`, commit `8880dd3` | — |
 | Cancel | Hermes | VERIFIED | `/cancel`, `panic.test.ts` | — |
 | Retry | `retry_utils.py` | VERIFIED | `records.retryTask` (fresh attempt: resets to queued, clears continuation + agent state + assistant message; preserves event audit), `POST /api/tasks/:id/retry` (409 unless failed/interrupted; never resurrects cancelled), CLI `MorrowApi.retryTask`. `test/retry.test.ts` | — |
@@ -193,7 +193,7 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Subagents / delegation | Hermes spawn | MISSING | — | Subagent runner |
+| Subagents / delegation | Hermes spawn | VERIFIED | `POST /api/tasks/:id/subagents` spawns an isolated child task run via the normal runner; composes with persistent named agents (`repositories/agents.ts`, committed `feat(agents)`). `test/subagents.test.ts` (6) | — |
 | Model routing | Hermes | VERIFIED | `routing/router.ts`, `models.ts` | — |
 | Checkpoints | Hermes | PARTIAL | `change-sets.ts` | Named checkpoints + restore |
 | Diff / undo | Hermes | VERIFIED | server diff/undo + integration test | — |
