@@ -1,0 +1,63 @@
+name: Deploy Public Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/landing/**'
+      - '.github/workflows/deploy-landing.yml'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [release-published]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Landing Site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      # Fetch latest release manifest for download links
+      - name: Fetch release manifest
+        run: |
+          mkdir -p apps/landing/public
+          curl -sL https://github.com/Mageester/morrow/releases/latest/download/release-manifest.json -o apps/landing/public/release-manifest.json || echo '{"version":"0.1.0-beta.1","artifacts":[]}' > apps/landing/public/release-manifest.json
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @morrow/landing build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'apps/landing/dist'
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

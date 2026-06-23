@@ -37,6 +37,31 @@ importers:
         specifier: 4.1.9
         version: 4.1.9(@types/node@24.10.1)(jsdom@29.1.1)(vite@8.0.16(@types/node@24.10.1)(tsx@4.20.6))
 
+  apps/landing:
+    dependencies:
+      react:
+        specifier: ^19.2.6
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.2.6
+        version: 19.2.7(react@19.2.7)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      '@vitejs/plugin-react':
+        specifier: ^6.0.1
+        version: 6.0.2(vite@8.0.16(@types/node@26.0.0)(tsx@4.20.6))
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.12
+        version: 8.0.16(@types/node@26.0.0)(tsx@4.20.6)
+
   apps/web:
     dependencies:
       '@morrow/contracts':
@@ -2452,6 +2477,11 @@ snapshots:
     dependencies:
       '@rolldown/pluginutils': 1.0.1
       vite: 8.0.16(@types/node@24.13.2)(tsx@4.20.6)
+
+  '@vitejs/plugin-react@6.0.2(vite@8.0.16(@types/node@26.0.0)(tsx@4.20.6))':
+    dependencies:
+      '@rolldown/pluginutils': 1.0.1
+      vite: 8.0.16(@types/node@26.0.0)(tsx@4.20.6)
 
   '@vitest/expect@4.1.9':
     dependencies:
