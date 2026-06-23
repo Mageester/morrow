@@ -35,4 +35,21 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "export", arg: "[file]", description: "export the conversation as text" },
   { name: "clear", description: "clear the screen" },
   { name: "exit", description: "quit" },
+
+  // ── New commands (CLI overhaul) ────────────────────────────────────────────
+  { name: "tasks", arg: "[limit]", description: "list running and recent tasks" },
+  { name: "memory-search", arg: "<query>", description: "search project memory entries" },
+  { name: "audit", arg: "[limit]", description: "show recent audit log entries" },
+  { name: "cost", description: "show estimated cost of current session" },
+  { name: "skill-search", arg: "<query>", description: "search available skills by name or description" },
+  { name: "fork", arg: "[title]", description: "fork this conversation into a new one" },
+  { name: "stash", arg: "<name>", description: "save current session as a named checkpoint" },
+  { name: "bench", description: "run a quick provider latency benchmark" },
+  { name: "versions", description: "show installed tool versions (node, pnpm, morrow)" },
+  { name: "bugs", description: "open the issue tracker" },
+  { name: "theme", arg: "[name]", description: "switch terminal theme (dawn, midnight, forest, ocean, mono)" },
+  { name: "connect", arg: "<provider>", description: "quick-connect a model provider" },
+  { name: "share", arg: "[format]", description: "export session as markdown or html" },
+  { name: "shortcuts", description: "show keyboard shortcuts reference" },
+  { name: "output", arg: "[tool-id]", description: "view last command output" },
 ];

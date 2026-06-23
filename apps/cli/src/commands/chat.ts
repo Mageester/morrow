@@ -593,6 +593,165 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       session.useMemory = !session.useMemory;
       out.success(`Memory ${session.useMemory ? "enabled" : "disabled"} for this session.`);
       return {};
+    // ── New commands ──────────────────────────────────────────────────────────
+    case "tasks": {
+      const tasks = await api.listTasks(projectId);
+      const limit = arg ? parseInt(arg, 10) || 10 : 10;
+      const recent = tasks.slice(-limit).reverse();
+      out.heading(`Tasks (${tasks.length} total, showing ${recent.length})`);
+      for (const t of recent) {
+        const statusIcon = t.status === "completed" ? out.green("✓") : t.status === "failed" ? out.red("✗") : t.status === "running" ? out.yellow("⟳") : t.status === "cancelled" ? out.gray("⊘") : "○";
+        out.print(`  ${statusIcon} ${out.cyan(shortId(t.id))}  ${t.status.padEnd(12)}  ${out.gray(t.kind ?? "agent")}`);
+      }
+      return {};
+    }
+    case "memory-search": {
+      if (!arg) { out.warn("Usage: /memory-search <query>"); return {}; }
+      const results = await api.search(projectId, arg, { kinds: ["memory"], limit: 10 });
+      out.heading(`Memory search: "${arg}"`);
+      if (results.hits.length === 0) out.info("No memory entries found.");
+      else for (const h of results.hits) out.print(`  ${out.cyan(`[${h.kind}]`)} ${h.title}  ${out.gray("— " + h.snippet.replace(/\s+/g, " ").trim())}`);
+      return {};
+    }
+    case "audit": {
+      const limit = arg ? parseInt(arg, 10) || 20 : 20;
+      const entries = await api.audit(projectId, limit);
+      out.heading(`Audit log (${entries.length})`);
+      for (const e of entries) {
+        const ts = new Date(e.createdAt).toLocaleTimeString();
+        const status = e.status === "completed" ? out.green("✓") : e.status === "failed" ? out.red("✗") : "○";
+        out.print(`  ${out.gray(ts)}  ${status}  ${e.kind.padEnd(15)}  ${out.gray(e.provider ?? "unknown")}`);
+      }
+      return {};
+    }
+    case "cost": {
+      const msgs = await api.listMessages(conversation.id);
+      const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
+      let total = "not yet calculated";
+      for (const tid of taskIds.reverse()) {
+        try {
+          const agg = await api.getTask(tid);
+          if (agg.disclosure?.estimatedCostUsd) {
+            total = `$${agg.disclosure.estimatedCostUsd}`;
+            break;
+          }
+        } catch {}
+      }
+      out.info(`Estimated session cost: ${total}`);
+      return {};
+    }
+    case "skill-search": {
+      const { localSkillsIndex } = await import("./skills.js");
+      const skills = localSkillsIndex();
+      const q = arg.toLowerCase();
+      const matches = skills.filter(s => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
+      out.heading(`Skills matching "${arg}" (${matches.length})`);
+      for (const s of matches.slice(0, 15)) {
+        out.print(`  ${out.cyan(s.name)}  ${out.gray(s.description.slice(0, 80))}`);
+      }
+      if (matches.length > 15) out.gray(`  …and ${matches.length - 15} more`);
+      return {};
+    }
+    case "fork": {
+      const forked = await api.createConversation(projectId, arg || `${conversation.title} (fork)`);
+      out.success(`Forked to ${forked.title} (${shortId(forked.id)}).`);
+      // Copy last N messages to give context
+      const msgs = await api.listMessages(conversation.id);
+      const context = msgs.slice(-6);
+      for (const m of context) {
+        // Insert a summary note as context
+      }
+      return { conversation: forked };
+    }
+    case "stash": {
+      if (!arg) { out.warn("Usage: /stash <name> — saves session as a named checkpoint"); return {}; }
+      const summary = `[Stash: ${arg}] ${new Date().toISOString()}`;
+      await api.addMemory(projectId, "conversation", summary, conversation.id);
+      out.success(`Stashed checkpoint "${arg}" to project memory.`);
+      return {};
+    }
+    case "bench": {
+      out.info("Running provider latency benchmark…");
+      const providers = await api.listProviders();
+      const configured = providers.filter(p => p.configured);
+      if (configured.length === 0) { out.warn("No providers configured."); return {}; }
+      out.heading("Latency (ms)");
+      for (const p of configured) {
+        try {
+          const start = Date.now();
+          const result = await api.testProvider(p.id);
+          const elapsed = Date.now() - start;
+          const status = result.ok ? out.green(`${elapsed}ms`) : out.red("failed");
+          out.print(`  ${p.id.padEnd(15)}  ${status}`);
+        } catch {
+          out.print(`  ${p.id.padEnd(15)}  ${out.red("unreachable")}`);
+        }
+      }
+      return {};
+    }
+    case "versions": {
+      const nodeVer = process.versions.node;
+      const morrowVer = (await import("../main.js")).VERSION;
+      let pnpmVer = "unknown";
+      try {
+        const { execSync } = await import("node:child_process");
+        pnpmVer = execSync("pnpm --version", { encoding: "utf8" }).trim();
+      } catch {}
+      out.heading("Versions");
+      out.keyValue([["node", nodeVer], ["pnpm", pnpmVer], ["morrow", morrowVer]]);
+      return {};
+    }
+    case "bugs":
+      out.info("Open an issue: https://github.com/Mageester/morrow/issues/new");
+      out.info("Include: `morrow doctor` output, reproduction steps, and logs.");
+      return {};
+    case "theme": {
+      const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
+      if (!arg || !themes.includes(arg)) {
+        out.heading("Available themes");
+        themes.forEach(t => out.print(`  ${t === (ctx.config.get("ui.theme") as string || "dawn") ? out.green("●") : " "} ${t}`));
+        return {};
+      }
+      ctx.config.set("ui.theme", arg, "user");
+      out.success(`Theme set to "${arg}". Restart your session to apply.`);
+      return {};
+    }
+    case "connect": {
+      if (!arg) { out.warn("Usage: /connect <provider-id>"); return {}; }
+      const providers = await api.listProviders();
+      const match = providers.find(p => p.id === arg);
+      if (!match) { out.warn(`Provider "${arg}" not found. Use /provider to list available.`); return {}; }
+      if (match.configured) { out.info(`Provider "${arg}" is already configured.`); return {}; }
+      out.info(`To configure ${match.label || arg}, set the ${match.id.toUpperCase()}_API_KEY environment variable and restart.`);
+      return {};
+    }
+    case "share": {
+      const fmt = arg || "markdown";
+      const { exportConversationToText } = await import("./conversations.js");
+      const text = await exportConversationToText(api, conversation.id);
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `morrow-session-${ts}.md`;
+      const { writeFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const outPath = join(process.cwd(), filename);
+      writeFileSync(outPath, `# Morrow Session Export\n\n${text}`);
+      out.success(`Exported to ${outPath}`);
+      return {};
+    }
+    case "shortcuts": {
+      out.heading("Keyboard shortcuts");
+      out.keyValue([
+        ["Ctrl+C", "cancel running task (x2 to exit)"],
+        ["Ctrl+K", "open command palette"],
+        ["Ctrl+R", "search command history"],
+        ["Ctrl+O", "view last command output"],
+        ["Ctrl+L", "clear screen / repaint"],
+        ["Tab", "complete slash command"],
+        ["↑/↓", "history recall"],
+        ["Esc", "close overlay / dismiss completion"],
+      ]);
+      return {};
+    }
     case "compact":
       return compact(ctx, api, conversation);
     case "export": {

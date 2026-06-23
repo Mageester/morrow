@@ -299,6 +299,56 @@ export class InteractiveSession {
       case "output":
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
+      // ── New commands ──────────────────────────────────────────────────────
+      case "tasks":
+        this.pushNotice("info", "Use /tasks in line mode (MORROW_TUI=0) — coming to interactive view soon.");
+        return void this.requestPaint(false);
+      case "memory-search":
+        if (!arg) { this.pushNotice("warn", "Usage: /memory-search <query>"); return void this.requestPaint(false); }
+        if (this.deps.backend.search) {
+          const hits = await this.deps.backend.search(arg).catch(() => null);
+          if (hits && hits.length > 0) {
+            const lines = hits.map((h, i) => `${String(i + 1).padStart(3, " ")}  [${h.kind}] ${h.title}  —  ${h.snippet.replace(/\s+/g, " ").trim()}`);
+            this.outputViewer = { title: `memory: ${arg} (${hits.length})`, lines };
+            this.input = { ...this.input, overlay: "output" };
+          } else {
+            this.pushNotice("info", `No memory matches for "${arg}".`);
+          }
+        } else {
+          this.pushNotice("warn", "Memory search isn't available in this session.");
+        }
+        return void this.requestPaint(false);
+      case "audit":
+      case "cost":
+      case "bench":
+      case "bugs":
+      case "versions":
+      case "connect":
+        this.pushNotice("info", `/${cmd} is available in line mode (MORROW_TUI=0).`);
+        return void this.requestPaint(false);
+      case "skill-search":
+        this.pushNotice("info", `Search local skills with: morrow skills search ${arg || ""}`);
+        return void this.requestPaint(false);
+      case "fork":
+        this.pushNotice("info", "Use /fork in line mode to fork the current conversation.");
+        return void this.requestPaint(false);
+      case "stash": {
+        if (!arg) { this.pushNotice("warn", "Usage: /stash <name>"); return void this.requestPaint(false); }
+        this.pushNotice("info", `Stash "${arg}": use /stash in line mode to save to project memory.`);
+        return void this.requestPaint(false);
+      }
+      case "theme": {
+        const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
+        if (!arg || !themes.includes(arg)) { this.pushNotice("info", `Available: ${themes.join(", ")}. Current: dawn`); return void this.requestPaint(false); }
+        this.pushNotice("info", `Theme "${arg}" — set with morrow config set ui.theme ${arg}`);
+        return void this.requestPaint(false);
+      }
+      case "shortcuts":
+        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
+        return void this.requestPaint(false);
+      case "share":
+        this.pushNotice("info", "Use /share in line mode to export the session.");
+        return void this.requestPaint(false);
       default:
         if (cmd && cmd.startsWith("skill:")) {
           const skillId = cmd.slice("skill:".length);

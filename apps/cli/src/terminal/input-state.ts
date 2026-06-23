@@ -11,7 +11,7 @@ import type { SlashCommand } from "./commands.js";
 import { clampSelection, filterCommands } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
 
-export type Overlay = "none" | "palette" | "output";
+export type Overlay = "none" | "palette" | "output" | "history";
 
 export interface InputState {
   buffer: string;
@@ -100,6 +100,18 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
     s.paletteSelected = 0;
     return r(s);
   }
+  if (key.ctrl && name === "r") {
+    // Ctrl+R: toggle history search overlay
+    s.overlay = s.overlay === "history" ? "none" : "history";
+    s.paletteQuery = "";
+    s.paletteSelected = 0;
+    return r(s);
+  }
+  if (key.ctrl && name === "o") {
+    // Ctrl+O: toggle output overlay (view last command output)
+    s.overlay = s.overlay === "output" ? "none" : "output";
+    return r(s);
+  }
   if (key.ctrl && name === "u") {
     if (s.overlay === "palette") {
       s.paletteQuery = "";
@@ -120,6 +132,7 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
     }
     return r(s, { type: "none" });
   }
+  if (s.overlay === "history") return reduceHistorySearch(s, key);
 
   // ── Editor + completion ──────────────────────────────────────────────────
   switch (name) {
@@ -275,6 +288,34 @@ function reducePalette(s: InputState, key: KeyInput, ctx: KeyContext): { state: 
           s.paletteSelected = 0;
           return r(s);
         }
+      }
+      return r(s, { type: "none" });
+  }
+}
+
+function reduceHistorySearch(s: InputState, key: KeyInput): { state: InputState; action: InputAction } {
+  switch (key.name) {
+    case "escape":
+    case "c": if (key.ctrl) { s.overlay = "none"; s.paletteQuery = ""; return r(s); }
+      s.overlay = "none"; s.paletteQuery = ""; return r(s);
+    case "return":
+    case "enter": {
+      const matches = s.history.filter(h => h.toLowerCase().includes(s.paletteQuery.toLowerCase()));
+      if (matches.length > 0) {
+        const value = matches[matches.length - 1]!; // most recent match
+        s.overlay = "none";
+        s.paletteQuery = "";
+        return r(commitHistory(s, value), { type: "submit", value });
+      }
+      return r(s, { type: "none" });
+    }
+    case "backspace":
+      s.paletteQuery = s.paletteQuery.slice(0, -1);
+      return r(s);
+    default:
+      if (key.str && !key.ctrl && !key.meta) {
+        const clean = sanitizePrintable(key.str);
+        if (clean) { s.paletteQuery += clean; return r(s); }
       }
       return r(s, { type: "none" });
   }

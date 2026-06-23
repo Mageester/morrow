@@ -12,6 +12,14 @@ import { flagString, flagBool } from "../cli/args.js";
 const builtInRoot = resolve(fileURLToPath(new URL("../../../../skills", import.meta.url)));
 export function localSkillsRoot(): string { return process.env.MORROW_SKILLS_DIR ?? (existsSync(resolve(process.cwd(), "skills")) ? resolve(process.cwd(), "skills") : builtInRoot); }
 
+/** Lightweight index for /skill-search: { name, description } only, no filesystem reads beyond discovery. */
+export function localSkillsIndex(): Array<{ name: string; description: string }> {
+  return discoverSkills(localSkillsRoot()).map((skill) => ({
+    name: skill.id,
+    description: skill.manifest.name + " — " + skill.manifest.description,
+  }));
+}
+
 function findSkill(id: string): LocalSkill {
   const skill = discoverSkills(localSkillsRoot()).find((item) => item.id === id);
   if (!skill) throw notFound(`No local skill named "${id}".`);
