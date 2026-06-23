@@ -68,14 +68,14 @@ pnpm check && pnpm test && pnpm build   # expect green
 
 ## Exact next step — B12 plugin manager
 
-B15 is implemented as a real local Playwright/CDP vertical slice. The current
-working tree contains its source, tests, dependency manifest/lockfile, and durable
-documentation updates; commit and push this coherent slice before starting B12.
+B15 is implemented in `7b5d99c` as a real local Playwright/CDP vertical slice.
+The only follow-up is the audit-persistence integration assertion and the strict
+null fix in `execution/agent.ts`; commit those after final verification, then push.
 Managed/cloud browser backends are intentionally still missing.
 
 1. Run `pnpm check && pnpm test && pnpm build && pnpm run test:e2e` and inspect
    `git diff --check`.
-2. Commit the B15 files with `feat(browser): add safe local Playwright control`
+2. Commit the B15 follow-up with `test(browser): persist browser audit evidence`
    and push `feat/morrow-agent-terminal` (PR #13 remains draft and unchanged).
 3. Start B12 at `services/orchestrator/src/plugins/manifest.ts`: write the
    failing manifest-validation test first, then implement a local-only plugin
@@ -129,8 +129,8 @@ instructions' payload and leaves benign page text unflagged".
 
 ## Still remaining (multi-session)
 
-B9 Docker/SSH real impls; B15 browser (Playwright/CDP — CI-untestable here);
-B16 desktop (UIA/AX/AT-SPI); B19 installers (Windows/Ubuntu); finish partials:
+B9 Docker/SSH real impls; B16 desktop (UIA/AX/AT-SPI); B19 installers
+(Windows/Ubuntu); finish partials:
 compareBaseline → agent write-path gate, MCP HTTP transport + routes,
 apply-update automation + rollback + uninstall, CLI `morrow import` over
 `@morrow/hermes-compat`, append-only tamper-evident audit store (B22).
@@ -138,7 +138,7 @@ apply-update automation + rollback + uninstall, CLI `morrow import` over
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 
 Wire `compareBaseline` into the agent write path (finish B13). B9 Docker/SSH
-backends; B11 MCP client; B15 browser; B16 desktop; B17 messaging adapters (+
+backends; B11 MCP client; B16 desktop; B17 messaging adapters (+
 notification delivery); B18 doctor/updater/uninstall; B19 installers; B20 Hermes
 import; B21 TUI live tree/Ctrl+K.
 
@@ -154,7 +154,7 @@ import; B21 TUI live tree/Ctrl+K.
 
 B7 cron/scheduler + isolated runs + notifications; B9 execution backend interface
 + Docker/SSH; B11 MCP client; B13 LSP diagnostics; B14 worktrees + subagents;
-B15 browser; B16 desktop; B17 messaging adapters; B18 doctor/updater/uninstall;
+B16 desktop; B17 messaging adapters; B18 doctor/updater/uninstall;
 B19 Windows/Ubuntu installers; B20 Hermes import; B21 TUI live task tree/Ctrl+K/
 persisted history. Full Hermes parity is multi-session — this file is the handoff.
 
@@ -162,6 +162,6 @@ persisted history. Full Hermes parity is multi-session — this file is the hand
 
 Highest-value, CI-testable next: B10 live provider fallback-on-error, B4 skill
 usage tracking + skill→slash, B5 Skill Creator. Heavier/needs-environment: B7
-cron, B9 Docker/SSH backends, B11 MCP client, B15 browser, B16 desktop, B17
+cron, B9 Docker/SSH backends, B11 MCP client, B16 desktop, B17
 messaging, B19 installers. Full Hermes parity is multi-session; this file is the
 handoff each time.

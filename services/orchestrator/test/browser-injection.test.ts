@@ -119,13 +119,14 @@ describe("Playwright browser controller", () => {
     const downloads = await mkdtemp(join(tmpdir(), "morrow-download-"));
     const uploadPath = join(uploads, "note.txt");
     await writeFile(uploadPath, "upload evidence");
-    const audit: Array<{ action: string; detail: Record<string, unknown> }> = [];
+    const auditDb = openDatabase(":memory:");
+    const auditLog = auditLogRepository(auditDb);
     const controller = playwrightController({
       allowedDomains: ["127.0.0.1"],
       allowPrivateNetwork: true,
       uploadRoot: uploads,
       downloadRoot: downloads,
-      audit: (entry) => { audit.push(entry); },
+      audit: browserAuditSink(auditLog, { projectId: "project-1", taskId: "task-1" }),
       timeoutMs: 2_000,
       headless: true,
     });
@@ -151,9 +152,11 @@ describe("Playwright browser controller", () => {
       await controller.click(refFor("Go next"));
       expect((await controller.snapshot()).url).toBe(`${baseUrl}/next`);
       expect(controller.evidence().some((event) => event.kind === "console" && event.message.includes("navigating"))).toBe(true);
-      expect(audit.some((entry) => entry.action === "browser.download")).toBe(true);
+      expect(auditLog.list().some((entry) => entry.kind === "browser.download")).toBe(true);
+      expect(auditLog.verify()).toEqual({ ok: true });
     } finally {
       await controller.close();
+      auditDb.close();
     }
     await expect(controller.snapshot()).rejects.toThrow(/closed/i);
   });

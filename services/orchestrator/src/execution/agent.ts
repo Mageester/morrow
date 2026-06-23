@@ -633,7 +633,7 @@ If your task matches a specialized workflow (testing, refactoring, debugging, se
       if (morrowHome) candidates.push(join(morrowHome, "skills"));
       const skillsDir = process.env.MORROW_SKILLS_DIR;
       if (skillsDir) candidates.push(skillsDir);
-      const targetRoot = candidates.find(d => existsSync(d)) || candidates[0];
+      const targetRoot = candidates.find(d => existsSync(d)) || candidates[0]!;
       const targetDir = join(targetRoot, id);
       const overwrite = args.overwrite === true;
 
