@@ -3,6 +3,40 @@
 > Always names the **exact** next step so any agent (or a fresh session) can
 > resume without re-deriving context. Update this at every interruption.
 
+## ⚠️ CONCURRENT-AGENT COLLISION (2026-06-23) — READ FIRST
+
+A second agent is editing this same branch/worktree, building a **persistent
+named agents** feature. As of this writing the working tree has **interleaved,
+uncommitted changes from both agents** in the core shared files:
+`packages/contracts/src/index.ts`, `services/orchestrator/src/database.ts`,
+`services/orchestrator/src/server.ts` (their new `repositories/agents.ts` is
+untracked). They also created many skill dirs under `skills/` via the new skill
+creator.
+
+What was done to keep the tree safe:
+- **Resolved a migration-id collision**: both agents had claimed migration `id:15`
+  (theirs `agents_and_permissions`, mine `task_parent_links`). The second of two
+  duplicate ids is silently dropped by the runner. **Mine was renumbered to 16.**
+  `database.test.ts` was set to expect 16 migrations. The combined tree was GREEN
+  (`pnpm check/test/build`, orchestrator 239, CLI 124) at the moment of the fix —
+  but the other agent is editing rapidly, so re-run `pnpm check/test` before
+  trusting it. They are actively *integrating* the task-graph data model: their
+  `tasks.ts`/`task-records.ts` now carry both my `parentTaskId` (they kept
+  `listChildren`) and their new `agentId`.
+
+B14 (subagent delegation / task graph) is **partially staged but UNCOMMITTED**:
+`Task.parentTaskId` (contracts), migration 16 (database), `tasks.listChildren` +
+`parentTaskId` (tasks.ts/task-records.ts), `SpawnSubagentSchema`, and the
+runner-test/database-test fixups. These were **not committed** to avoid bundling
+the other agent's in-flight work into my commit. The subagent **routes** in
+`server.ts` were intentionally NOT added (server.ts is contended).
+
+**To resume B14 safely:** wait until the other agent has committed their agents
+feature (so contracts/database/server are clean again), then `pnpm check/test`,
+add the subagent routes to `server.ts`, write `test/subagents.test.ts`, and
+commit. The data-model changes above are already in the tree — verify they
+survived (`git diff` for `parentTaskId`/migration 16) before re-adding.
+
 ## Resume command
 
 ```bash
