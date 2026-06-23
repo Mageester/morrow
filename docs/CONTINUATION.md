@@ -56,47 +56,51 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B18 (partial) — Doctor + updater: VERIFIED.**
 - **B20 (partial) — Hermes import: VERIFIED.**
 - **B9 (partial) — Execution backend interface + local backend: VERIFIED.**
-- **B21 (partial) — Persisted command history: VERIFIED.** Live tree/Ctrl+K/
-  reflow tests pending.
+- **B21 (partial) — Persisted command history: VERIFIED.**
+- **B22b — Tamper-evident audit store: VERIFIED** (hash-chained append-only log).
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 264, CLI 135, contracts 4, web 8, hermes-compat 4 —
+- Baseline: orchestrator 269, CLI 135, contracts 4, web 8, hermes-compat 4 —
   all green (5 workspace packages).
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B22 append-only tamper-evident audit store
+## Exact next step — B15 browser control (interface + prompt-injection guard)
 
-Finish the security audit row (§2). Make the audit trail tamper-evident with a
-hash chain. Isolated + testable.
+Browser automation needs Playwright/a real browser (CI-untestable here), so build
+the *testable* parts honestly: a `BrowserController` interface, a Playwright-backed
+impl behind it that refuses until a browser is available (like the Docker/SSH
+stubs — never fake it), and a **pure prompt-injection guard** that IS testable.
 
-1. `services/orchestrator/src/audit/log.ts` (pure): `chainEntry(prevHash, entry)`
-   → `{ ...entry, prevHash, hash }` where `hash = sha256(prevHash + canonical
-   JSON of entry)`. `verifyChain(entries[])` → `{ ok, brokenAt? }` recomputing
-   each hash and checking linkage. Genesis prevHash = "" (or a fixed seed).
-2. Migration: `CREATE TABLE audit_log (seq INTEGER PRIMARY KEY AUTOINCREMENT,
-   project_id TEXT, task_id TEXT, kind TEXT NOT NULL, detail_json TEXT NOT NULL,
-   prev_hash TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL);`
-   (bump database.test count; remember another agent may have added migrations —
-   re-check the highest id first and take the next free one).
-3. `repositories/audit-log.ts`: `append(entry)` reads the last hash, chains, and
-   inserts in a transaction; `list(opts)`; `verify()` over stored rows.
-4. Emit an audit entry on security-relevant events (denied command, approval
-   resolved, patch applied/undone) — reuse existing hook points in `agent.ts`/
-   server; keep additive.
-5. Tests `test/audit-log.test.ts`: chain/verify pure functions detect a tampered
-   entry; repo append builds a valid chain; mutating a row makes `verify()` fail.
-6. `pnpm check && pnpm test && pnpm build`. Update matrix §2 audit row → VERIFIED
-   + status. Commit + push.
+1. `services/orchestrator/src/browser/types.ts`: `BrowserController` interface
+   `{ id; open(url); snapshot(); click(ref); type(ref, text); screenshot();
+   close() }` with `DomRef`/`PageSnapshot` types.
+2. `services/orchestrator/src/browser/injection-guard.ts` (PURE, testable):
+   `scanForInjection(pageText)` → findings for known prompt-injection patterns
+   ("ignore previous instructions", "system prompt", hidden-instruction markers,
+   data-exfil URLs). `sanitizeForModel(pageText)` → text with injection spans
+   neutralized + a findings list. This protects the agent from malicious page
+   content.
+3. `services/orchestrator/src/browser/playwright.ts`: a controller that
+   `import("playwright")`s lazily and throws a clear "browser not available"
+   error if the dep/browser is missing — do NOT add a heavy hard dependency;
+   never fake navigation.
+4. Domain allow-list + no credential capture: guard `open()` against
+   non-allowlisted domains when an allow-list is configured.
+5. Tests `test/browser-injection.test.ts`: `scanForInjection` flags known
+   patterns and ignores benign text; `sanitizeForModel` neutralizes an injected
+   instruction while preserving normal content; the Playwright controller throws
+   "not available" when the dep is absent (or skip that case if present).
+6. `pnpm check && pnpm test && pnpm build`. Update matrix §9 (prompt-injection
+   protection VERIFIED; browser controller SCAFFOLD) + status. Commit + push.
 
 ## Failing test to write first
 
-`test/audit-log.test.ts` — "verifyChain detects a tampered entry by reporting the
-broken sequence index".
+`test/browser-injection.test.ts` — "scanForInjection flags an 'ignore previous
+instructions' payload and leaves benign page text unflagged".
 
-> Re-check `database.ts` for the current highest migration id before adding one —
-> a concurrent agent previously added migrations; take the next free id.
+> Re-check `database.ts` for the current highest migration id before adding one.
 
 ## Still remaining (multi-session)
 

@@ -73,6 +73,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 - [~] **B21. TUI polish.** DONE: persisted cross-session command history
       (`terminal/history.ts`, wired via `onHistory`). REMAINING: live task tree,
       Ctrl+K palette completeness, resize-reflow test, reconnect-dedup test.
+- [~] **B22b. Tamper-evident audit store.** DONE: hash-chained append-only
+      `audit_log` (`audit/log.ts` + `repositories/audit-log.ts`, migration 18);
+      `verify()` detects tampering/reorder/drop. REMAINING: emit from more hooks
+      + scoped YOLO allow-lists per side-effect.
 - [~] **B22. Security hard-blocks.** DONE: workspace-escape/force-push/network-
       exfil guards enforced categorically before approval, with unit +
       end-to-end (YOLO-bypass) tests. REMAINING: append-only tamper-evident

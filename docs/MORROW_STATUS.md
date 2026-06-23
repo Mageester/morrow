@@ -33,6 +33,11 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **Tamper-evident audit store (B22b)** — `audit/log.ts` hash-chains each entry
+  (`hash = sha256(prevHash + canonical(entry))`); `repositories/audit-log.ts` is
+  append-only (no update/delete) and `verify()` recomputes the chain to detect
+  any edit, reorder, or drop, reporting the first broken `seq`. Migration 18.
+  Tests: `audit-log.test.ts` (5). Orchestrator 269 green.
 - **Persisted command history (B21, partial)** — `terminal/history.ts`
   (load/append, consecutive-dedup, max-trim, ignore blank/exit noise), wired into
   the interactive session via `history`/`onHistory` so up-arrow recall survives a
@@ -152,6 +157,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — Tamper-evident hash-chained audit store landed (B22b). Matrix §2
+  Persistent audit log → VERIFIED.
 - 2026-06-23 — Persisted command history landed (B21 partial). Matrix §1 Command
   history → VERIFIED.
 - 2026-06-23 — Execution backend interface + local backend landed (B9 partial).

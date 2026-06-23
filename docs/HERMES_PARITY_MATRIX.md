@@ -60,7 +60,7 @@
 |---|---|---|---|---|
 | Auto-approve within scopes | Hermes auto-approve | PARTIAL | `terminal/yolo.ts`, `command-policy.ts` | Scoped allow-lists per side-effect |
 | Hard-block secrets/escalation/destructive | `tool_guardrails.py`, `file_safety.py` | VERIFIED | `command-policy.ts` denies shells/privilege-escalation/deletes, destructive git history, **force-push**, **network-exfil tools**, and **workspace-redirect escape** — enforced categorically before approval (YOLO cannot bypass). `command-policy.test.ts` (8) + `agent-yolo.test.ts` end-to-end deny cases | Append-only audit hardening (tracked in §2 audit row) |
-| Persistent audit log | Hermes trajectory/audit | PARTIAL | `/api/audit`, `AuditEntrySchema` | Append-only tamper-evident audit store |
+| Persistent audit log | Hermes trajectory/audit | VERIFIED | `audit/log.ts` hash-chain (`chainEntry`/`verifyChain`) + append-only `repositories/audit-log.ts` (migration 18); tampering or dropping a row fails `verify()`. `test/audit-log.test.ts` (5). Plus the existing `/api/audit` task summary | Emit entries from more event hooks |
 | `/panic` stop-all | Hermes interrupt | VERIFIED | `commands/panic.ts`, `panic.test.ts`, commit `2a06928` | — |
 
 ## 3. Durable runtime

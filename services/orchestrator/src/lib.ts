@@ -43,3 +43,5 @@ export { spawnStdioTransport } from "./mcp/stdio-transport.js";
 export { localBackend } from "./backends/local.js";
 export { dockerBackend, sshBackend } from "./backends/remote.js";
 export type { ExecutionBackend, BackendCommand, BackendResult } from "./backends/types.js";
+export { auditLogRepository } from "./repositories/audit-log.js";
+export { chainEntry, verifyChain, computeHash, GENESIS_HASH, type ChainedAuditEntry, type AuditEntryInput } from "./audit/log.js";
