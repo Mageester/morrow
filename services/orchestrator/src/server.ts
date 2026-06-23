@@ -35,7 +35,7 @@ import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema } from "@morrow/contracts";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -578,11 +578,43 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
   });
 
+  // Subagent delegation: a subagent is a child task with its own scope, linked
+  // to its parent via parent_task_id. This builds the task graph.
+  app.post("/api/tasks/:taskId/subagents", async (request, reply) => {
+    const { taskId } = request.params as { taskId: string };
+    const parent = tasks.getTaskById(taskId);
+    if (!parent) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    const body = SpawnSubagentSchema.parse(request.body ?? {});
+    const child = tasks.createTask({
+      id: crypto.randomUUID(),
+      projectId: parent.projectId,
+      kind: body.kind,
+      status: "queued",
+      parentTaskId: parent.id,
+      createdAt: new Date().toISOString(),
+    });
+    deps.runner.run(child.id);
+    reply.status(202);
+    return { parentTaskId: parent.id, taskId: child.id, aggregateUrl: `/api/tasks/${child.id}` };
+  });
+
+  app.get("/api/tasks/:taskId/tree", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const root = tasks.getTaskById(taskId);
+    if (!root) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    type Node = { task: typeof root; children: Node[] };
+    const build = (node: NonNullable<typeof root>): Node => ({
+      task: node,
+      children: tasks.listChildren(node.id).map(build),
+    });
+    return build(root);
+  });
+
   app.post("/api/tasks/:taskId/cancel", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
-    
+
     deps.runner.cancel(taskId);
     reply.status(204).send();
   });
