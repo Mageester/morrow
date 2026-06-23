@@ -42,7 +42,10 @@ slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
 ## Later
 
-- [ ] **B11. MCP client (stdio first, then HTTP) + tool filtering + trust.**
+- [~] **B11. MCP client.** DONE: JSON-RPC stdio client (`mcp/client.ts`),
+      framing, env-filtered spawn transport, tool-filtering allow-list, and
+      fingerprint trust store. REMAINING: HTTP transport, registry + routes,
+      OAuth/PKCE, sampling limits.
 - [ ] **B12. Plugin manager (manifests, hooks, enable/disable/update/remove).**
 - [~] **B13. Diagnostics + baseline.** DONE: provider-agnostic diagnostics
       (`workspace/diagnostics.ts` tsc/eslint parsers + `compareBaseline`) +

@@ -33,6 +33,13 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
 
+- **MCP client (B11, partial)** — `mcp/client.ts`: a transport-agnostic JSON-RPC
+  2.0 MCP client (initialize / tools/list / tools/call) with an allow-list that
+  filters discovered tools and refuses disallowed calls; `mcp/framing.ts`
+  (newline-delimited, malformed-line-tolerant); `mcp/stdio-transport.ts` (spawns
+  a server with a filtered env); `mcp/trust.ts` (command+args fingerprint trust,
+  settings-backed, no new migration). Tests: `mcp.test.ts` (6, in-process fake
+  server). Orchestrator 259 green.
 - **Messaging adapters + notifications (B17, partial)** —
   `messaging/adapter.ts`: a `MessageAdapter` contract with a generic
   `webhookAdapter` (works for Slack/Discord incoming webhooks) and a
@@ -124,6 +131,8 @@ See `CONTINUATION.md` for the exact next step.
 
 ## Changelog (newest first)
 
+- 2026-06-23 — MCP client landed (B11 partial). Matrix §10 MCP stdio client →
+  VERIFIED; tool filtering + trust → PARTIAL.
 - 2026-06-23 — Messaging adapters + notifications landed (B17 partial). Matrix
   §11 Notifications → VERIFIED, adapters → PARTIAL.
 - 2026-06-23 — Subagent delegation + task graph landed (B14 partial). Matrix §3

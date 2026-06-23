@@ -50,46 +50,45 @@ pnpm check && pnpm test && pnpm build   # expect green
 - **B7 — Cron scheduler: VERIFIED.**
 - **B13 (partial) — Diagnostics + baseline: VERIFIED.**
 - **B14 (partial) — Subagent delegation + task graph: VERIFIED.** Worktrees pending.
-- **B17 (partial) — Messaging adapters + notifications: VERIFIED** (webhook +
-  telegram, `/api/notify`, scheduler notifications). SMTP/native Slack pending.
+- **B17 (partial) — Messaging adapters + notifications: VERIFIED.**
+- **B11 (partial) — MCP client: VERIFIED** (stdio JSON-RPC client, framing,
+  spawn transport, tool filtering, trust). HTTP/routes/OAuth pending.
 - **Persistent named agents** feature landed in the tree (`feat(agents)`).
-- Baseline: orchestrator 253 tests, CLI 124, contracts 4, web 8 — all green.
+- Baseline: orchestrator 259 tests, CLI 124, contracts 4, web 8 — all green.
 
 > NOTE: the live `skills/` directory contains ~20 extra skills created via the
 > skill creator (untracked). Do NOT commit or delete them. Tests assert the 6
 > built-ins as a subset, not an exact list.
 
-## Exact next step — B11 MCP client (stdio first) + trust records
+## Exact next step — B18 doctor + updater foundations (Distribution)
 
-Completion criterion: "use MCP/plugins". Start with a stdio JSON-RPC client; keep
-the process spawn injectable so it is testable with a fake server script.
+CLI-side, testable, advances §13 Distribution. `apps/cli` already has a `doctor`
+stub (`main.ts` `case "doctor"`).
 
-1. New `services/orchestrator/src/mcp/client.ts`:
-   - `McpClient` over a stdio transport (newline-delimited or
-     Content-Length-framed JSON-RPC 2.0). Methods: `initialize()`,
-     `listTools()`, `callTool(name, args)`, `close()`. Injectable spawn (a
-     `{ stdin, stdout, kill }` duplex) so tests use an in-process fake.
-   - Pure `framing.ts`: encode/decode JSON-RPC messages; unit-test round-trip.
-   - Tool filtering: an allow-list of tool names the client will expose.
-2. Trust records: `services/orchestrator/src/mcp/trust.ts` — a `settings`-table
-   (key `mcp.trust.<serverId>`) record of an approved server command+args hash;
-   `isTrusted`/`trust`/`revoke`. A server is only auto-startable once trusted.
-3. Contracts: `McpServerSchema`, `McpToolSchema`, `McpCallResultSchema`.
-4. A small registry `mcp/registry.ts` reading server configs from a JSON file
-   under the Morrow home (stdio command + args + env allow-list). Do NOT execute
-   an untrusted server.
-5. Routes (read-only first): `GET /api/mcp/servers`, `GET /api/mcp/:id/tools`
-   (spawns, initializes, lists, closes), `POST /api/mcp/:id/call`
-   (trust-gated). Spawn injectable via `ServerDependencies.mcpSpawn?`.
-6. Tests first (red) `test/mcp.test.ts`: framing round-trip; `McpClient` against
-   an in-process fake server (initialize → listTools → callTool → close);
-   tool-filtering hides disallowed tools; trust gate blocks an untrusted call.
-7. `pnpm check && pnpm test && pnpm build`. Update matrix §10 → status. Commit+push.
+1. `apps/cli/src/commands/doctor.ts` (extract from wherever `doctor` lives): run
+   a set of pure-ish **checks** returning `{ name, status: 'ok'|'warn'|'fail',
+   detail, fix? }`: node version ≥22, pnpm present, Morrow home writable, DB
+   migrations up to date (call `/api/health` → `migrations.latest`), provider
+   configured (call `/api/provider/status`), service reachable. Each check is a
+   function `() => Promise<CheckResult>` so they unit-test with injected probes.
+2. `runDoctor(checks)` aggregates; exit non-zero if any `fail`. JSON + table out.
+3. `apps/cli/src/service/update.ts`: `checkForUpdate(currentVersion, fetchImpl?)`
+   that compares the local version to a source (e.g. the package.json on the
+   remote/git tag) — keep the source injectable; return `{ current, latest,
+   updateAvailable }`. (Actual self-update of a pnpm monorepo is `git pull` +
+   `pnpm install` + rebuild — wire a `morrow update` that runs those via the
+   service lifecycle, guarded.)
+4. Tests: `apps/cli/test/doctor.test.ts` — `runDoctor` aggregates ok/warn/fail
+   and sets exit code; a failing check surfaces its fix hint.
+   `apps/cli/test/update.test.ts` — `checkForUpdate` reports updateAvailable when
+   latest>current (injected fetch), and false when equal.
+5. `pnpm check && pnpm test && pnpm build`. Update matrix §13 (Doctor, Update/
+   rollback) → VERIFIED/PARTIAL + status. Commit + push.
 
 ## Failing test to write first
 
-`test/mcp.test.ts` — "McpClient.listTools returns the fake server's tools after
-initialize (in-process stdio transport)".
+`apps/cli/test/doctor.test.ts` — "runDoctor returns a non-zero exit code when any
+check reports fail, and zero when all pass/warn".
 
 ## Deferred / bigger remaining (multi-session, see MORROW_BACKLOG.md)
 
