@@ -1,0 +1,1 @@
+{"tools": ["filesystem-read", "filesystem-write"], "filesystemScopes": ["workspace"], "networkDomains": [], "requiredSecrets": []}

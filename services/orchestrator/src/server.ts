@@ -12,6 +12,10 @@ import {
   ApprovalStatusSchema,
   ResolveApprovalSchema,
   ProviderIdSchema,
+  CreateAgentSchema,
+  UpdateAgentSchema,
+  UpsertToolPermissionSchema,
+  UpsertSkillAccessSchema,
   type PresetId,
   type ProviderId,
   type RoutingDecision,
@@ -19,6 +23,7 @@ import {
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync } from "node:fs";
 import { projectRepository } from "./repositories/projects.js";
+import { agentsRepository } from "./repositories/agents.js";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
@@ -101,6 +106,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const app = Fastify({ logger: false });
 
   const projects = projectRepository(deps.db);
+  const agents = agentsRepository(deps.db);
   const tasks = taskRepository(deps.db);
   const records = taskRecordsRepository(deps.db);
   const convs = conversationsRepository(deps.db);
@@ -195,6 +201,94 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return project;
+  });
+
+  // ── Agents ─────────────────────────────────────────────────────────────────
+
+  app.get("/api/projects/:projectId/agents", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return agents.listByProject(projectId);
+  });
+
+  app.post("/api/projects/:projectId/agents", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateAgentSchema.parse(request.body);
+    const agent = agents.create({ id: crypto.randomUUID(), projectId, ...body, role: body.role ?? "assistant" });
+    reply.status(201);
+    return agent;
+  });
+
+  app.get("/api/agents/:agentId", async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const agent = agents.get(agentId);
+    if (!agent) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    return agent;
+  });
+
+  app.put("/api/agents/:agentId", async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const agent = agents.get(agentId);
+    if (!agent) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    // Read projectId from body to authorize the update.
+    const body = z.object({ projectId: z.string().min(1), ...UpdateAgentSchema.shape }).parse(request.body);
+    const updated = agents.update(agentId, body.projectId, body);
+    if (!updated) throw new ApiError(404, "Agent not found in project", "NOT_FOUND");
+    return updated;
+  });
+
+  app.delete("/api/agents/:agentId", async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body);
+    if (!agents.delete(agentId, body.projectId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    reply.status(204).send();
+  });
+
+  // ── Agent Tool Permissions ─────────────────────────────────────────────────
+
+  app.get("/api/agents/:agentId/tool-permissions", async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    return agents.listToolPermissions(agentId);
+  });
+
+  app.put("/api/agents/:agentId/tool-permissions", async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const body = UpsertToolPermissionSchema.parse(request.body);
+    reply.status(200);
+    return agents.upsertToolPermission(agentId, body);
+  });
+
+  app.delete("/api/agents/:agentId/tool-permissions/:toolName", async (request, reply) => {
+    const { agentId, toolName } = request.params as { agentId: string; toolName: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    if (!agents.deleteToolPermission(agentId, toolName)) throw new ApiError(404, "Tool permission not found", "NOT_FOUND");
+    reply.status(204).send();
+  });
+
+  // ── Agent Skill Access ─────────────────────────────────────────────────────
+
+  app.get("/api/agents/:agentId/skill-access", async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    return agents.listSkillAccess(agentId);
+  });
+
+  app.put("/api/agents/:agentId/skill-access", async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    const body = UpsertSkillAccessSchema.parse(request.body);
+    reply.status(200);
+    return agents.upsertSkillAccess(agentId, body);
+  });
+
+  app.delete("/api/agents/:agentId/skill-access/:skillId", async (request, reply) => {
+    const { agentId, skillId } = request.params as { agentId: string; skillId: string };
+    if (!agents.get(agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    if (!agents.deleteSkillAccess(agentId, skillId)) throw new ApiError(404, "Skill access not found", "NOT_FOUND");
+    reply.status(204).send();
   });
 
   app.post("/api/projects/:projectId/tasks/inspect-workspace", async (request, reply) => {

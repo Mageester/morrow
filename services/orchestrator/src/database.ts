@@ -255,6 +255,51 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX schedules_due_idx ON schedules(enabled, next_run_at);
     CREATE INDEX schedules_project_idx ON schedules(project_id);
+  `},
+  {id:15,name:"agents_and_permissions",sql:`
+    CREATE TABLE agents (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      instructions TEXT,
+      provider_override TEXT,
+      model_override TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX agents_project_id_idx ON agents(project_id);
+    CREATE TABLE agent_tool_permissions (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      tool_name TEXT NOT NULL,
+      effect TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      UNIQUE(agent_id, tool_name)
+    );
+    CREATE INDEX agent_tool_permissions_agent_idx ON agent_tool_permissions(agent_id);
+    CREATE TABLE agent_skill_access (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      skill_id TEXT NOT NULL,
+      allowed INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      UNIQUE(agent_id, skill_id)
+    );
+    CREATE INDEX agent_skill_access_agent_idx ON agent_skill_access(agent_id);
+  `},
+  {id:16,name:"task_parent_links",sql:`
+    ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE;
+    CREATE INDEX tasks_parent_idx ON tasks(parent_task_id);
+  `},
+  {id:17,name:"task_agent_links",sql:`
+    ALTER TABLE tasks ADD COLUMN agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL;
+    CREATE INDEX tasks_agent_idx ON tasks(agent_id);
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

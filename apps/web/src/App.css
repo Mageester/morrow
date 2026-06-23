@@ -511,6 +511,24 @@ button { font: inherit; color: inherit; }
   * { scroll-behavior: auto !important; }
 }
 
+/* ── Agents Panel ── */
+.agents-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.agents-panel .ptable col.c-name { width: auto; }
+.agents-panel .ptable col.c-role { width: 130px; }
+.agents-panel .ptable col.c-tools { width: 140px; }
+.agents-panel .ptable col.c-skills { width: 120px; }
+.agents-panel .ptable col.c-status { width: 100px; }
+.agents-panel .ptable col.c-menu { width: 240px; }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+.agents-panel .ptable td { padding: 10px 12px; }
+
+/* Tool permission modal */
+.perm-table input[type="radio"] { accent-color: var(--accent); cursor: pointer; width: 16px; height: 16px; }
+.perm-table td code { font-family: var(--mono); font-size: 12px; background: var(--bg-elev-2); padding: 1px 5px; border-radius: 4px; }
+
+/* Skill access toggle checkboxes */
+.toggle-label input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+
 /* ── Onboarding and Landing ── */
 .onboard-landing {
   max-width: 640px;

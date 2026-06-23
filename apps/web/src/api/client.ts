@@ -1,4 +1,4 @@
-import type { AgentStateTransition, Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope } from "@morrow/contracts";
+import type { AgentStateTransition, Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope, Agent, AgentToolPermission, AgentSkillAccess, CreateAgentInput, UpdateAgentInput, UpsertToolPermissionInput, UpsertSkillAccessInput } from "@morrow/contracts";
 
 export interface SendMessageOptions {
   preset?: string;
@@ -239,5 +239,88 @@ export const apiClient = {
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  },
+
+  // ── Agents ─────────────────────────────────────────────────────────────────
+
+  async listProjectAgents(projectId: string): Promise<Agent[]> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/agents`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createAgent(projectId: string, input: CreateAgentInput): Promise<Agent> {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async updateAgent(agentId: string, projectId: string, input: UpdateAgentInput): Promise<Agent> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, ...input }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteAgent(agentId: string, projectId: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  },
+
+  async listAgentToolPermissions(agentId: string): Promise<AgentToolPermission[]> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async upsertToolPermission(agentId: string, input: UpsertToolPermissionInput): Promise<AgentToolPermission> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteToolPermission(agentId: string, toolName: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions/${encodeURIComponent(toolName)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(await res.text());
+  },
+
+  async listAgentSkillAccess(agentId: string): Promise<AgentSkillAccess[]> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async upsertSkillAccess(agentId: string, input: UpsertSkillAccessInput): Promise<AgentSkillAccess> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteSkillAccess(agentId: string, skillId: string): Promise<void> {
+    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access/${encodeURIComponent(skillId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(await res.text());
   }
 };

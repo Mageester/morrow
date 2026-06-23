@@ -76,7 +76,7 @@ function parseJson(value: unknown, label: string): Record<string, unknown> {
 export function taskRecordsRepository(db: Database.Database) {
   const mapTask = (row: unknown): Task => {
     const value = row as Record<string, unknown>;
-    return TaskSchema.parse({ version: value.schema_version, id: value.id, projectId: value.project_id, kind: value.type, status: value.status, createdAt: value.created_at, updatedAt: value.updated_at });
+    return TaskSchema.parse({ version: value.schema_version, id: value.id, projectId: value.project_id, kind: value.type, status: value.status, parentTaskId: (value.parent_task_id ?? null) as string | null, agentId: (value.agent_id ?? null) as string | null, createdAt: value.created_at, updatedAt: value.updated_at });
   };
   const mapEvent = (row: unknown): TaskEvent => {
     const value = row as Record<string, unknown>;

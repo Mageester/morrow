@@ -10,8 +10,10 @@ export const PlanStepStatusSchema=z.enum(["pending","running","completed","faile
 export const ProjectSchema=z.object({version:SchemaVersionSchema,id:z.string(),name:z.string().min(1),workspacePath:z.string().min(1),createdAt:z.string().datetime()}).strict();
 export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120),workspacePath:z.string().min(1)});
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
-export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
-export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional()});
+export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace"]).default("inspect_workspace"),label:z.string().trim().max(120).optional()}).strict();
+export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
+export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
 export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required","provider.fallback"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
@@ -160,6 +162,7 @@ export const SendMessageSchema=z.object({
   mode:AgentModeSchema.optional(),
   useMemory:z.boolean().optional(),
   autoApprove:z.boolean().optional(),
+  agentId:z.string().optional(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────
@@ -198,6 +201,81 @@ export const UpdateMemoryEntrySchema=z.object({
   pinned:z.boolean().optional(),
 }).strict().refine((v)=>v.enabled!==undefined||v.pinned!==undefined,{message:"Provide enabled or pinned"});
 export type UpdateMemoryEntryInput=z.infer<typeof UpdateMemoryEntrySchema>;
+
+// ── Persistent Named Agents + Granular Permissions ─────────────────────────
+// Each agent is a named entity with a role, optional instructions, optional
+// provider/model override, tool allow/deny lists, and skill access controls.
+// Agents are project-scoped so teams of agents can collaborate on one project.
+export const AgentRoleSchema=z.enum(["assistant","code-reviewer","researcher","writer","architect","tester","devops","security","custom"]);
+export const AgentSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  projectId:z.string(),
+  name:z.string().min(1).max(100),
+  role:AgentRoleSchema,
+  instructions:z.string().max(8000).nullable(),
+  providerOverride:z.string().nullable(),
+  modelOverride:z.string().nullable(),
+  enabled:z.boolean(),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export const CreateAgentSchema=z.object({
+  name:z.string().trim().min(1).max(100),
+  role:AgentRoleSchema.default("assistant"),
+  instructions:z.string().max(8000).nullable().optional(),
+  providerOverride:z.string().nullable().optional(),
+  modelOverride:z.string().nullable().optional(),
+}).strict();
+export const UpdateAgentSchema=z.object({
+  name:z.string().trim().min(1).max(100).optional(),
+  role:AgentRoleSchema.optional(),
+  instructions:z.string().max(8000).nullable().optional(),
+  providerOverride:z.string().nullable().optional(),
+  modelOverride:z.string().nullable().optional(),
+  enabled:z.boolean().optional(),
+}).strict();
+
+// Per-agent tool permission: each entry allows or denies a specific tool.
+export const ToolPermissionEffectSchema=z.enum(["allow","deny"]);
+export const AgentToolPermissionSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  agentId:z.string(),
+  toolName:z.string().min(1).max(120),
+  effect:ToolPermissionEffectSchema,
+  priority:z.number().int().default(0),
+  createdAt:z.string().datetime(),
+}).strict();
+export const UpsertToolPermissionSchema=z.object({
+  toolName:z.string().trim().min(1).max(120),
+  effect:ToolPermissionEffectSchema,
+  priority:z.number().int().optional(),
+}).strict();
+
+// Per-agent skill access: which skills this agent is allowed to use.
+export const AgentSkillAccessSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  agentId:z.string(),
+  skillId:z.string().min(1).max(120),
+  allowed:z.boolean(),
+  createdAt:z.string().datetime(),
+}).strict();
+export const UpsertSkillAccessSchema=z.object({
+  skillId:z.string().trim().min(1).max(120),
+  allowed:z.boolean(),
+}).strict();
+
+export type AgentRole=z.infer<typeof AgentRoleSchema>;
+export type Agent=z.infer<typeof AgentSchema>;
+export type CreateAgentInput=z.infer<typeof CreateAgentSchema>;
+export type UpdateAgentInput=z.infer<typeof UpdateAgentSchema>;
+export type ToolPermissionEffect=z.infer<typeof ToolPermissionEffectSchema>;
+export type AgentToolPermission=z.infer<typeof AgentToolPermissionSchema>;
+export type UpsertToolPermissionInput=z.infer<typeof UpsertToolPermissionSchema>;
+export type AgentSkillAccess=z.infer<typeof AgentSkillAccessSchema>;
+export type UpsertSkillAccessInput=z.infer<typeof UpsertSkillAccessSchema>;
 
 // ── Full-text session & memory search ────────────────────────────────────────
 // Project-scoped FTS over conversations, messages, tasks, and memory. Search is

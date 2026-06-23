@@ -3,7 +3,8 @@ import { apiClient } from "./api/client";
 import type {
   Project, Task, TaskEvent, PlanStep, TaskEvidence, ExecutionDisclosure,
   ConversationMessage, VerificationResult,
-  PresetStatus, ProviderStatus, ModelStatus, OAuthFinding, MemoryEntry, RoutingDecision
+  PresetStatus, ProviderStatus, ModelStatus, OAuthFinding, MemoryEntry, RoutingDecision,
+  Agent, AgentToolPermission, AgentSkillAccess,
 } from "@morrow/contracts";
 import { Markdown } from "./Markdown";
 import * as I from "./icons";
@@ -502,7 +503,15 @@ export default function App() {
           />
         )}
 
-        {["agents", "knowledge", "mcp", "tools", "stores", "audit", "billing", "help"].includes(nav) && (
+        {nav === "agents" && (
+          <AgentsPanel
+            selectedProject={selectedProject}
+            projects={projects}
+            onNavigateToProject={(id) => { setSelectedProjectId(id); setNav("projects"); setView("list"); }}
+          />
+        )}
+
+        {["knowledge", "mcp", "tools", "stores", "audit", "billing", "help"].includes(nav) && (
           <PlaceholderView nav={nav} />
         )}
       </div>
@@ -1270,6 +1279,445 @@ pnpm dev`}</code>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Agents Panel ──────────────────────────────────────────────────────────────
+const AGENT_ROLES = ["assistant", "code-reviewer", "researcher", "writer", "architect", "tester", "devops", "security", "custom"] as const;
+const ROLE_LABELS: Record<string, string> = {
+  assistant: "Assistant", "code-reviewer": "Code Reviewer", researcher: "Researcher",
+  writer: "Writer", architect: "Architect", tester: "Tester",
+  devops: "DevOps", security: "Security", custom: "Custom",
+};
+const AVAILABLE_TOOLS = [
+  "filesystem-read", "filesystem-write", "command-exec", "search",
+  "network", "git-inspection", "vision", "image-gen", "browser", "terminal",
+];
+
+interface AgentsPanelProps {
+  selectedProject?: Project;
+  projects: Project[];
+  onNavigateToProject: (id: string) => void;
+}
+
+function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
+  const [projectFilter, setProjectFilter] = useState<string>(selectedProject?.id || "all");
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Modal state
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [showPermissions, setShowPermissions] = useState<Agent | null>(null);
+  const [showSkills, setShowSkills] = useState<Agent | null>(null);
+
+  // Form state
+  const [formName, setFormName] = useState("");
+  const [formRole, setFormRole] = useState<string>("assistant");
+  const [formInstructions, setFormInstructions] = useState("");
+  const [formProviderOverride, setFormProviderOverride] = useState("");
+  const [formModelOverride, setFormModelOverride] = useState("");
+  const [formError, setFormError] = useState("");
+
+  // Permission / skill state
+  const [agentPerms, setAgentPerms] = useState<AgentToolPermission[]>([]);
+  const [agentSkills, setAgentSkills] = useState<AgentSkillAccess[]>([]);
+
+  const loadAgents = async (projectId: string) => {
+    if (!projectId || projectId === "all") { setAgents([]); return; }
+    setLoading(true); setError("");
+    try {
+      const list = await apiClient.listProjectAgents(projectId);
+      setAgents(list);
+    } catch (e: any) {
+      setError(e.message || "Failed to load agents");
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    const pid = projectFilter === "all" ? selectedProject?.id ?? "" : projectFilter;
+    if (pid) loadAgents(pid);
+    else setAgents([]);
+  }, [projectFilter]);
+
+  const projectForAgent = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const a of agents) { map[a.id] = a.projectId; }
+    return map;
+  }, [agents]);
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault(); setFormError("");
+    const pid = projectFilter === "all" ? selectedProject?.id : projectFilter;
+    if (!pid) { setFormError("Select a project first"); return; }
+    try {
+      const agent = await apiClient.createAgent(pid, {
+        name: formName.trim(),
+        role: formRole as any,
+        instructions: formInstructions.trim() || undefined,
+        providerOverride: formProviderOverride.trim() || undefined,
+        modelOverride: formModelOverride.trim() || undefined,
+      });
+      setAgents(prev => [...prev, agent]);
+      setShowCreate(false); resetForm();
+    } catch (e: any) { setFormError(e.message || "Failed to create agent"); }
+  };
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault(); setFormError("");
+    if (!editingAgent) return;
+    const pid = projectForAgent[editingAgent.id];
+    if (!pid) { setFormError("Cannot determine project"); return; }
+    try {
+      const updated = await apiClient.updateAgent(editingAgent.id, pid, {
+        name: formName.trim() || undefined,
+        role: formRole as any,
+        instructions: formInstructions.trim() || null,
+        providerOverride: formProviderOverride.trim() || null,
+        modelOverride: formModelOverride.trim() || null,
+      });
+      setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
+      setEditingAgent(null); resetForm();
+    } catch (e: any) { setFormError(e.message || "Failed to update agent"); }
+  };
+
+  const handleDelete = async (agent: Agent) => {
+    if (!window.confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) return;
+    const pid = projectForAgent[agent.id];
+    if (!pid) return;
+    try {
+      await apiClient.deleteAgent(agent.id, pid);
+      setAgents(prev => prev.filter(a => a.id !== agent.id));
+    } catch (e: any) { setError(e.message || "Failed to delete agent"); }
+  };
+
+  const handleToggleEnabled = async (agent: Agent) => {
+    const pid = projectForAgent[agent.id];
+    if (!pid) return;
+    try {
+      const updated = await apiClient.updateAgent(agent.id, pid, { enabled: !agent.enabled });
+      setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
+    } catch (e: any) { setError(e.message || "Failed to toggle agent"); }
+  };
+
+  const startEdit = (agent: Agent) => {
+    setEditingAgent(agent);
+    setFormName(agent.name);
+    setFormRole(agent.role);
+    setFormInstructions(agent.instructions || "");
+    setFormProviderOverride(agent.providerOverride || "");
+    setFormModelOverride(agent.modelOverride || "");
+    setFormError("");
+  };
+
+  const resetForm = () => {
+    setFormName(""); setFormRole("assistant"); setFormInstructions("");
+    setFormProviderOverride(""); setFormModelOverride(""); setFormError("");
+  };
+
+  // ── Permission management ──────────────────────────────────────────────────
+  const openPermissions = async (agent: Agent) => {
+    setShowPermissions(agent);
+    try {
+      const perms = await apiClient.listAgentToolPermissions(agent.id);
+      setAgentPerms(perms);
+    } catch { setAgentPerms([]); }
+  };
+
+  const toggleToolPermission = async (toolName: string, effect: "allow" | "deny") => {
+    if (!showPermissions) return;
+    // Remove existing permission for this tool first, then add the new one
+    const existing = agentPerms.find(p => p.toolName === toolName);
+    try {
+      if (existing && existing.effect === effect) {
+        // Toggle off: remove permission
+        await apiClient.deleteToolPermission(showPermissions.id, toolName);
+        setAgentPerms(prev => prev.filter(p => p.toolName !== toolName));
+      } else {
+        const perm = await apiClient.upsertToolPermission(showPermissions.id, { toolName, effect, priority: 1 });
+        setAgentPerms(prev => [...prev.filter(p => p.toolName !== toolName), perm]);
+      }
+    } catch (e: any) { setError(e.message || "Failed to set permission"); }
+  };
+
+  const getToolEffect = (toolName: string): "allow" | "deny" | "unset" => {
+    const p = agentPerms.find(p => p.toolName === toolName);
+    return p?.effect || "unset";
+  };
+
+  // ── Skill access management ────────────────────────────────────────────────
+  const openSkills = async (agent: Agent) => {
+    setShowSkills(agent);
+    try {
+      const skills = await apiClient.listAgentSkillAccess(agent.id);
+      setAgentSkills(skills);
+    } catch { setAgentSkills([]); }
+  };
+
+  const toggleSkillAccess = async (skillId: string) => {
+    if (!showSkills) return;
+    const existing = agentSkills.find(s => s.skillId === skillId);
+    const newAllowed = existing ? !existing.allowed : false;
+    try {
+      const sa = await apiClient.upsertSkillAccess(showSkills.id, { skillId, allowed: newAllowed });
+      setAgentSkills(prev => [...prev.filter(s => s.skillId !== skillId), sa]);
+    } catch (e: any) { setError(e.message || "Failed to set skill access"); }
+  };
+
+  const isSkillAllowed = (skillId: string): boolean => {
+    const s = agentSkills.find(s => s.skillId === skillId);
+    return s ? s.allowed : true; // default: allowed
+  };
+
+  // ── Skills list ────────────────────────────────────────────────────────────
+  const ALL_SKILL_IDS = [
+    "accessibility", "api-integration", "architecture-review", "ci-cd",
+    "code-refactor", "code-review", "coding", "config-management",
+    "data-analysis", "database", "dependency-audit", "diagnostics",
+    "documentation", "file-ops", "git-inspection", "input-validation",
+    "linting", "migration-planner", "performance", "repository-inspection",
+    "secrets-scan", "shell-automation", "task-management", "template-generator",
+    "testing", "web-search",
+  ];
+
+  const SKILL_LABELS: Record<string, string> = {
+    accessibility: "Accessibility", "api-integration": "API Integration",
+    "architecture-review": "Architecture Review", "ci-cd": "CI/CD Pipeline",
+    "code-refactor": "Code Refactor", "code-review": "Code Review",
+    coding: "Coding", "config-management": "Config Management",
+    "data-analysis": "Data Analysis", database: "Database",
+    "dependency-audit": "Dependency Audit", diagnostics: "Diagnostics",
+    documentation: "Documentation", "file-ops": "File Operations",
+    "git-inspection": "Git Inspection", "input-validation": "Input Validation",
+    linting: "Linting", "migration-planner": "Migration Planner",
+    performance: "Performance", "repository-inspection": "Repository Inspection",
+    "secrets-scan": "Secrets Scan", "shell-automation": "Shell Automation",
+    "task-management": "Task Management", "template-generator": "Template Generator",
+    testing: "Testing", "web-search": "Web Search",
+  };
+
+  const pid = projectFilter === "all" ? selectedProject?.id : projectFilter;
+
+  return (
+    <div className="agents-panel">
+      <div className="topbar">
+        <h1>Agents</h1>
+        <div className="spacer" />
+        <div className="toolbar" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label className="select" style={{ minWidth: 180 }}>
+            <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} aria-label="Filter by project">
+              <option value="all">{selectedProject ? selectedProject.name : "All Projects"}</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          <button className="btn btn-primary" onClick={() => { resetForm(); setShowCreate(true); }} disabled={!pid}>
+            <I.IconPlus className="ico" /> New Agent
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="error-message" role="alert" style={{ margin: "10px 22px" }}>{error}</div>}
+
+      {!pid ? (
+        <div className="empty">
+          <I.IconAgents className="empty-ico" />
+          <h3>Select a project</h3>
+          <p>Agents are scoped to a project. Select a project above to manage its agent team.</p>
+        </div>
+      ) : loading ? (
+        <div className="empty"><p>Loading agents...</p></div>
+      ) : agents.length === 0 ? (
+        <div className="empty">
+          <I.IconAgents className="empty-ico" />
+          <h3>No agents yet</h3>
+          <p>Create named agents with specific roles, tool permissions, and skill access. Agents can be assigned to tasks for focused work.</p>
+          <button className="btn btn-primary" onClick={() => { resetForm(); setShowCreate(true); }}><I.IconPlus className="ico" /> New Agent</button>
+        </div>
+      ) : (
+        <div className="table-wrap">
+          <table className="ptable">
+            <colgroup><col className="c-name" /><col className="c-role" /><col className="c-tools" /><col className="c-skills" /><col className="c-status" /><col className="c-menu" /></colgroup>
+            <thead><tr><th>Name</th><th>Role</th><th>Tool Permissions</th><th>Skills</th><th>Status</th><th /></tr></thead>
+            <tbody>
+              {agents.map(agent => (
+                <tr key={agent.id}>
+                  <td>
+                    <div className="cell-name">
+                      <I.IconAgentFace className="file-ico" />
+                      <div>
+                        <div className="name-main">{agent.name}</div>
+                        {agent.instructions && <div className="name-sub" style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.instructions}</div>}
+                      </div>
+                    </div>
+                  </td>
+                  <td><span className="cap">{ROLE_LABELS[agent.role] || agent.role}</span></td>
+                  <td>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openPermissions(agent)}>
+                      {(agentPerms.length > 0 && showPermissions?.id === agent.id) ? `${agentPerms.length} rules` : "Configure"}
+                    </button>
+                  </td>
+                  <td>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openSkills(agent)}>
+                      {(agentSkills.length > 0 && showSkills?.id === agent.id) ? `${agentSkills.length} rules` : "Configure"}
+                    </button>
+                  </td>
+                  <td>
+                    <span className={`status ${agent.enabled ? "completed" : "draft"}`}>
+                      <span className="dot" />{agent.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleToggleEnabled(agent)}>{agent.enabled ? "Disable" : "Enable"}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => startEdit(agent)}>Edit</button>
+                      <button className="btn btn-ghost btn-sm" style={{ color: "var(--red)" }} onClick={() => handleDelete(agent)}>Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Create Agent Modal */}
+      {showCreate && (
+        <div className="modal-overlay" onClick={() => setShowCreate(false)}>
+          <form className="modal" onClick={e => e.stopPropagation()} onSubmit={handleCreate} style={{ maxWidth: 520 }}>
+            <h2>New Agent</h2>
+            {formError && <div className="error-message" role="alert">{formError}</div>}
+            <div className="field">
+              <label>Name</label>
+              <input value={formName} onChange={e => setFormName(e.target.value)} placeholder="Backend Engineer" required autoFocus />
+            </div>
+            <div className="field">
+              <label>Role</label>
+              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+                {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Instructions (system prompt)</label>
+              <textarea value={formInstructions} onChange={e => setFormInstructions(e.target.value)} placeholder="You are a backend engineer focused on API design and database performance..." rows={3} style={{ width: "100%", background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", resize: "vertical" }} />
+            </div>
+            <div className="field">
+              <label>Provider Override (optional)</label>
+              <input value={formProviderOverride} onChange={e => setFormProviderOverride(e.target.value)} placeholder="anthropic, openai, deepseek..." />
+            </div>
+            <div className="field">
+              <label>Model Override (optional)</label>
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="claude-sonnet-4, gpt-4o..." />
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={!formName.trim()}>Create Agent</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Agent Modal */}
+      {editingAgent && (
+        <div className="modal-overlay" onClick={() => { setEditingAgent(null); resetForm(); }}>
+          <form className="modal" onClick={e => e.stopPropagation()} onSubmit={handleUpdate} style={{ maxWidth: 520 }}>
+            <h2>Edit Agent</h2>
+            {formError && <div className="error-message" role="alert">{formError}</div>}
+            <div className="field">
+              <label>Name</label>
+              <input value={formName} onChange={e => setFormName(e.target.value)} placeholder="Backend Engineer" required autoFocus />
+            </div>
+            <div className="field">
+              <label>Role</label>
+              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+                {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Instructions (system prompt)</label>
+              <textarea value={formInstructions} onChange={e => setFormInstructions(e.target.value)} rows={3} style={{ width: "100%", background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", resize: "vertical" }} />
+            </div>
+            <div className="field">
+              <label>Provider Override</label>
+              <input value={formProviderOverride} onChange={e => setFormProviderOverride(e.target.value)} placeholder="Leave empty to use project default" />
+            </div>
+            <div className="field">
+              <label>Model Override</label>
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="Leave empty to use project default" />
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => { setEditingAgent(null); resetForm(); }}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={!formName.trim()}>Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Tool Permissions Modal */}
+      {showPermissions && (
+        <div className="modal-overlay" onClick={() => setShowPermissions(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "80vh", overflow: "auto" }}>
+            <h2>Tool Permissions: {showPermissions.name}</h2>
+            <p className="muted" style={{ marginBottom: 16 }}>Set per-tool allow/deny rules. Deny overrides allow at the same priority level.</p>
+            <table className="perm-table" style={{ width: "100%" }}>
+              <thead><tr><th>Tool</th><th style={{ textAlign: "center" }}>Allow</th><th style={{ textAlign: "center" }}>Deny</th><th style={{ textAlign: "center" }}>Unset</th></tr></thead>
+              <tbody>
+                {AVAILABLE_TOOLS.map(tool => {
+                  const effect = getToolEffect(tool);
+                  return (
+                    <tr key={tool}>
+                      <td><code>{tool}</code></td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "allow"} onChange={() => toggleToolPermission(tool, "allow")} />
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "deny"} onChange={() => toggleToolPermission(tool, "deny")} />
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "unset"} onChange={() => {
+                          if (effect !== "unset") apiClient.deleteToolPermission(showPermissions.id, tool).then(() => {
+                            setAgentPerms(prev => prev.filter(p => p.toolName !== tool));
+                          }).catch(console.error);
+                        }} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button type="button" className="btn btn-primary" onClick={() => setShowPermissions(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Access Modal */}
+      {showSkills && (
+        <div className="modal-overlay" onClick={() => setShowSkills(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "80vh", overflow: "auto" }}>
+            <h2>Skill Access: {showSkills.name}</h2>
+            <p className="muted" style={{ marginBottom: 16 }}>Toggle which skills this agent is allowed to use. Disabled skills are hidden from the agent's skill list.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+              {ALL_SKILL_IDS.map(skillId => (
+                <div key={skillId} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px" }}>
+                  <span style={{ fontSize: 13 }}>{SKILL_LABELS[skillId] || skillId}</span>
+                  <label className="toggle-label" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                    <input type="checkbox" checked={isSkillAllowed(skillId)} onChange={() => toggleSkillAccess(skillId)} />
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{isSkillAllowed(skillId) ? "on" : "off"}</span>
+                  </label>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button type="button" className="btn btn-primary" onClick={() => setShowSkills(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
