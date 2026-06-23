@@ -9,8 +9,13 @@ import type {
 import { Markdown } from "./Markdown";
 import * as I from "./icons";
 import "./App.css";
+import { OnboardingHub } from "./components/OnboardingWizard";
+import { SkillsControlCenter } from "./components/SkillsControlCenter";
+import { MissionControl } from "./components/MissionControl";
+import { SystemHealth } from "./components/SystemHealth";
+import { DownloadPage } from "./components/DownloadPage";
 
-type Nav = "projects" | "runs" | "agents" | "knowledge" | "mcp" | "tools" | "stores" | "audit" | "settings" | "billing" | "help";
+type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
 type InspTab = "overview" | "files" | "notes" | "settings";
 
@@ -331,17 +336,22 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <NavItem id="projects" label="Projects" icon={I.IconProjects} />
+          <NavItem id="missions" label="New Mission" icon={I.IconSend} />
+          <NavItem id="projects" label="Missions" icon={I.IconRuns} />
           <NavItem id="agents" label="Agents" icon={I.IconAgents} />
-          <NavItem id="knowledge" label="Knowledge" icon={I.IconKnowledge} />
-          <NavItem id="mcp" label="MCP Servers" icon={I.IconMcp} />
-          <NavItem id="tools" label="Tools" icon={I.IconTools} />
-          <NavItem id="stores" label="Stores" icon={I.IconStores} />
+          <NavItem id="skills" label="Skills" icon={I.IconTools} />
+          <div className="nav-divider" />
+          <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
+          <NavItem id="files" label="Files" icon={I.IconFile} />
+          <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
           <NavItem id="runs" label="Runs" icon={I.IconRuns} />
-          <NavItem id="audit" label="Audit Log" icon={I.IconAudit} />
+          <div className="nav-divider" />
+          <NavItem id="automations" label="Automations" icon={I.IconSettings} />
+          <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
+          <NavItem id="system" label="System Health" icon={I.IconSettings} />
           <div className="nav-divider" />
           <NavItem id="settings" label="Settings" icon={I.IconSettings} />
-          <NavItem id="billing" label="Billing" icon={I.IconBilling} />
+          <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
           <NavItem id="help" label="Help" icon={I.IconHelp} />
         </nav>
         <div className="nav-spacer" />
@@ -357,14 +367,14 @@ export default function App() {
         {nav === "projects" && view === "list" && (
           <>
             <div className="topbar">
-              <h1>Projects</h1>
+              <h1>Missions</h1>
               <div className="spacer" />
               <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
             </div>
             <div className="toolbar">
               <div className="search">
                 <I.IconSearch className="ico" />
-                <input placeholder="Search projects…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search projects" />
+                <input placeholder="Search missions…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search missions" />
                 <span className="kbd">⌘K</span>
               </div>
               <label className="select">
@@ -382,8 +392,8 @@ export default function App() {
             {projects.length === 0 ? (
               <div className="empty">
                 <I.IconProjects className="empty-ico" />
-                <h3>No projects yet</h3>
-                <p>Create a local project pointed at a folder. Morrow runs a read-only agent over the workspace you choose.</p>
+                <h3>No missions yet</h3>
+                <p>Create a mission by pointing Morrow at a local folder. The agent will run within your workspace and report evidence.</p>
                 <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
               </div>
             ) : (
@@ -411,7 +421,7 @@ export default function App() {
                     })}
                   </tbody>
                 </table>
-                <div className="table-footer">{filteredProjects.length} of {projects.length} project{projects.length === 1 ? "" : "s"}</div>
+                <div className="table-footer">{filteredProjects.length} of {projects.length} mission{projects.length === 1 ? "" : "s"}</div>
               </div>
             )}
           </>
@@ -511,7 +521,12 @@ export default function App() {
           />
         )}
 
-        {["knowledge", "mcp", "tools", "stores", "audit", "billing", "help"].includes(nav) && (
+        {nav === "skills" && <SkillsControlCenter />}
+        {nav === "missions" && <MissionControl />}
+        {nav === "system" && <SystemHealth />}
+        {nav === "download" && <DownloadPage />}
+
+        {["browser", "files", "memory", "automations", "approvals", "help"].includes(nav) && (
           <PlaceholderView nav={nav} />
         )}
       </div>
@@ -761,14 +776,12 @@ function RunsView({ projects, projectMeta, onOpen }: { projects: Project[]; proj
 // ── Placeholder views ──────────────────────────────────────────────────────────
 function PlaceholderView({ nav }: { nav: string }) {
   const copy: Record<string, { title: string; body: string; icon: (p: any) => React.ReactElement }> = {
-    agents: { title: "Agents", body: "Named agents with their own role, tools, and memory are on the roadmap. Today, presets act as agent profiles — configure them in Settings → Presets.", icon: I.IconAgents },
-    knowledge: { title: "Knowledge", body: "Project knowledge and document stores will live here. The deterministic memory foundation is available in Settings → Data & Memory.", icon: I.IconKnowledge },
-    mcp: { title: "MCP Servers", body: "Model Context Protocol server connections will be managed here once the tool runtime is opened beyond the read-only workspace tools.", icon: I.IconMcp },
-    tools: { title: "Tools", body: "The alpha ships read-only workspace tools (inspect, list, read) behind a shared containment layer. Write and terminal tools are gated until their safety boundaries ship.", icon: I.IconTools },
-    stores: { title: "Stores", body: "Local data stores and connectors will appear here. All data is currently kept in a local SQLite database.", icon: I.IconStores },
-    audit: { title: "Audit Log", body: "A full audit trail of tool calls and external data flow will live here. Per-run evidence and disclosures are already visible in the inspector.", icon: I.IconAudit },
-    billing: { title: "Billing", body: "Morrow is local-first and self-hosted. There is nothing to bill — you bring your own provider keys.", icon: I.IconBilling },
-    help: { title: "Help", body: "See the README and docs/providers.md for setup, the capability matrix, and manual verification steps.", icon: I.IconHelp },
+    browser: { title: "Browser", body: "Web automation and research via Playwright/CDP. Real Chromium browser sessions with semantic actions, navigation, downloads, screenshots, and persisted audit records (B15). Open a project and use browser tools from the conversation.", icon: I.IconKnowledge },
+    files: { title: "Files", body: "File operations are scoped to your project workspace. Every read and write is logged to the audit trail. Secret files (.env, keys, credentials) are automatically rejected.", icon: I.IconFile },
+    memory: { title: "Memory", body: "Deterministic, project-isolated memory. Each entry has a source and timestamp. Memory never crosses projects and can be disabled or deleted. Manage memory from Settings → Data & Memory.", icon: I.IconKnowledge },
+    automations: { title: "Automations", body: "Scheduled tasks, cron jobs, and automated workflows are on the roadmap. The cron scheduler foundation is implemented — automations UI is coming in a future release.", icon: I.IconSettings },
+    approvals: { title: "Approvals", body: "Approval requests appear when an agent needs to run a command, write a file, or perform an action that requires confirmation. You can approve once, trust the pattern, or deny.", icon: I.IconShield },
+    help: { title: "Help", body: "See the README and docs/providers.md for setup, the capability matrix, and manual verification steps. Use the System Health page to diagnose issues.", icon: I.IconHelp },
   };
   const c = copy[nav] || copy.help;
   return (
@@ -940,344 +953,6 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
             </div>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-// ── Onboarding & Landing Hub ──────────────────────────────────────────────────
-interface OnboardingHubProps {
-  state: { onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null };
-  providers: ProviderStatus[];
-  onRefreshProviders: () => void;
-  onComplete: (projectId?: string) => void;
-}
-
-function OnboardingHub({ state, providers, onRefreshProviders, onComplete }: OnboardingHubProps) {
-  const [step, setStep] = useState<number>(0);
-  const [name, setName] = useState(state.name || "");
-  const [useCase, setUseCase] = useState(state.useCase || "");
-  const [activeProv, setActiveProv] = useState("");
-  const [testStatus, setTestStatus] = useState<{ status: "idle" | "testing" | "success" | "error"; message?: string }>({ status: "idle" });
-  const [selectedMode, setSelectedMode] = useState("agent");
-  const [projectName, setProjectName] = useState("");
-  const [workspacePath, setWorkspacePath] = useState("");
-  const [projectError, setProjectError] = useState("");
-  const [projectSuccess, setProjectSuccess] = useState(false);
-  const [createdProjectId, setCreatedProjectId] = useState<string>("");
-
-  const [skills, setSkills] = useState<Record<string, boolean>>({
-    coding: true,
-    "git-inspection": true,
-    "repository-inspection": true,
-    documentation: true,
-    diagnostics: true,
-    testing: true
-  });
-
-  const nextStep = () => {
-    // Save onboarding state on backend dynamically
-    const stepNames = ["welcome", "install", "provider", "mode", "project", "skills", "complete"];
-    const currentStepName = stepNames[step] || "welcome";
-    apiClient.saveOnboardingState({
-      onboardingStep: currentStepName,
-      name: name || undefined,
-      useCase: useCase || undefined,
-    }).catch(console.error);
-
-    setStep(s => s + 1);
-  };
-  const prevStep = () => setStep(s => Math.max(0, s - 1));
-
-  const handleTestProvider = async (providerId: string) => {
-    setTestStatus({ status: "testing" });
-    try {
-      const result = await apiClient.testProvider(providerId);
-      if (result.ok) {
-        setTestStatus({ status: "success", message: `Reachable! Latency: ${result.latencyMs}ms` });
-        onRefreshProviders();
-      } else {
-        setTestStatus({ status: "error", message: `Failed: ${result.detail}` });
-      }
-    } catch (e: any) {
-      setTestStatus({ status: "error", message: e.message || "Failed to test connection." });
-    }
-  };
-
-  const handleCreateProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setProjectError("");
-    try {
-      const p = await apiClient.createProject(projectName, workspacePath);
-      setCreatedProjectId(p.id);
-      setProjectSuccess(true);
-    } catch (err: any) {
-      setProjectError(err.message || "Failed to create project");
-    }
-  };
-
-  const handleComplete = async () => {
-    try {
-      await apiClient.saveOnboardingState({
-        onboarded: true,
-        onboardingStep: null,
-        name: name,
-        useCase: useCase
-      });
-      onComplete(createdProjectId);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  if (step === 0) {
-    return (
-      <div className="onboard-landing">
-        <div className="brand-header">
-          <div className="brand-mark-large">M</div>
-          <h2>M O R R O W</h2>
-          <div className="horizon-line"></div>
-        </div>
-        <h1>Private intelligence, built around you.</h1>
-        <p className="onboard-desc">
-          Morrow is a self-hosted personal AI agent. All context, file indexing, and memory processing stay strictly local on your machine.
-        </p>
-        <div className="landing-principles">
-          <div className="principle">
-            <strong>Calm Power</strong>
-            <span>A silent, powerful engine that acts only when you authorize it.</span>
-          </div>
-          <div className="principle">
-            <strong>Local Control</strong>
-            <span>Your codebase never leaves your local containment boundaries.</span>
-          </div>
-        </div>
-        <button className="btn btn-primary btn-large" onClick={nextStep}>Begin Onboarding</button>
-      </div>
-    );
-  }
-
-  const stepsList = [
-    { num: 1, label: "Install" },
-    { num: 2, label: "Profile" },
-    { num: 3, label: "Provider" },
-    { num: 4, label: "Autonomy" },
-    { num: 5, label: "Workspace" },
-    { num: 6, label: "Skills" },
-    { num: 7, label: "Finish" }
-  ];
-
-  return (
-    <div className="onboard-wizard-container">
-      <div className="onboard-wizard-sidebar">
-        <div className="brand" style={{ padding: "0 0 20px" }}>
-          <div className="brand-mark">M</div>
-          <div className="brand-name">Morrow</div>
-        </div>
-        <ul className="onboard-wizard-steps">
-          {stepsList.map(s => {
-            const isActive = step === s.num;
-            const isCompleted = step > s.num;
-            return (
-              <li key={s.num} className={`onboard-wizard-step ${isActive ? "active" : ""} ${isCompleted ? "completed" : ""}`}>
-                <span className="onboard-wizard-step-num">{isCompleted ? "✓" : s.num}</span>
-                <span>{s.label}</span>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-      <div className="onboard-wizard-content">
-        {step === 1 && (
-          <div>
-            <h1>Developer Preview Setup</h1>
-            <p className="subtitle">Morrow is currently in developer preview. There are no automated installers. Simply clone the repository and run locally.</p>
-            <div className="card">
-              <h3>Setup Instructions</h3>
-              <p className="muted" style={{ marginBottom: 12 }}>To run the background orchestrator service locally on your machine:</p>
-              <pre className="code-block">
-                <code>{`# Clone the repository
-git clone https://github.com/Mageester/morrow.git
-cd morrow
-
-# Install dependencies and build
-pnpm install
-pnpm build
-
-# Start the background service
-pnpm dev`}</code>
-              </pre>
-            </div>
-            <div className="card" style={{ marginTop: 16 }}>
-              <h3>Verification</h3>
-              <p className="muted" style={{ marginBottom: 12 }}>Confirm the CLI is functional and can connect to the orchestrator:</p>
-              <pre className="code-block">
-                <code>pnpm --filter @morrow/cli doctor</code>
-              </pre>
-            </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div>
-            <h1>Profile & Setup</h1>
-            <p className="subtitle">Let's customize your local Morrow instance.</p>
-            <div className="card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div className="field">
-                <label htmlFor="user-name-input">What is your name?</label>
-                <input id="user-name-input" value={name} onChange={e => setName(e.target.value)} placeholder="Aidan" />
-              </div>
-              <div className="field">
-                <label htmlFor="user-usecase-select">Primary Use Case</label>
-                <select id="user-usecase-select" value={useCase} onChange={e => setUseCase(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)" }}>
-                  <option value="">Select a usecase...</option>
-                  <option value="Software Development">Software Development</option>
-                  <option value="AI Research">AI Research</option>
-                  <option value="Business & Operations">Business & Operations</option>
-                  <option value="General Productivity">General Productivity</option>
-                  <option value="Custom">Custom / Personal</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div>
-            <h1>Provider Credentials</h1>
-            <p className="subtitle">Morrow connects directly to model endpoints. Credentials live on your local machine and never reach the browser.</p>
-            
-            <div className="card alert-warn" style={{ marginBottom: 16, borderLeft: "4px solid var(--amber)", padding: 12, background: "var(--bg-panel)" }}>
-              <strong>API-key Billing (Bring Your Own Key)</strong>
-              <p className="muted" style={{ margin: "4px 0 0" }}>Consumer subscriptions (e.g. ChatGPT Plus, Claude Pro) are NOT API credits. You must create billing keys directly on developer platforms.</p>
-            </div>
-
-            <div className="card alert-danger" style={{ marginBottom: 20, borderLeft: "4px solid var(--red)", padding: 12, background: "var(--bg-panel)" }}>
-              <strong>Plaintext Warning</strong>
-              <p className="muted" style={{ margin: "4px 0 0" }}>Credentials are stored in plaintext in the file <code>secrets.env</code> under your home directory. Lock down filesystem access to restrict read permissions.</p>
-            </div>
-
-            <div className="provider-grid">
-              {providers.map(p => {
-                if (!["openai", "anthropic", "deepseek", "openrouter"].includes(p.id)) return null;
-                const isSelected = activeProv === p.id;
-                return (
-                  <div key={p.id} className={`provider-card ${p.configured ? "ok" : ""} ${isSelected ? "selected" : ""}`} style={{ cursor: "pointer", border: isSelected ? "1px solid var(--accent)" : "1px solid var(--border)" }} onClick={() => { setActiveProv(p.id); setTestStatus({ status: "idle" }); }}>
-                    <div className="provider-card-head">
-                      <strong>{p.label}</strong>
-                      <span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>{p.configured ? "Configured" : "Not configured"}</span>
-                    </div>
-                    {isSelected && (
-                      <div className="provider-test-area" onClick={e => e.stopPropagation()} style={{ marginTop: 12 }}>
-                        <p className="muted">To test, make sure the API key is set in your environment (e.g. <code>secrets.env</code>) and the server has been restarted:</p>
-                        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                          <button type="button" className="btn btn-primary" onClick={() => handleTestProvider(p.id)} disabled={testStatus.status === "testing"}>
-                            {testStatus.status === "testing" ? "Testing..." : "Test Connection"}
-                          </button>
-                        </div>
-                        {testStatus.message && (
-                          <div className={`test-result-msg ${testStatus.status}`} style={{ marginTop: 10, fontSize: 12 }}>
-                            {testStatus.message}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div>
-            <h1>Autonomy & Security</h1>
-            <p className="subtitle">Select your default agent mode. Autonomy profile defines what actions the agent can perform without prompting.</p>
-            <div className="preset-grid">
-              {[
-                { id: "plan-only", title: "Plan Only", desc: "Designs step plans but NEVER writes files or runs commands." },
-                { id: "read-only", title: "Inspect (Read-Only)", desc: "Read-only access to files. Zero network or shell executions." },
-                { id: "agent", title: "Agent (Collaborative)", desc: "Auto-reads workspace, but prompts for confirmation before editing files or running terminal commands." },
-                { id: "yolo", title: "YOLO (Workspace Autonomy)", desc: "Autonomous inside approved workspace. Hard-denies dangerous operations (no escapes, no secret reads, no destructive git, no privilege escalation), logs everything to audit, and supports full diff/undo." }
-              ].map(m => (
-                <div key={m.id} className={`preset-card ${selectedMode === m.id ? "selected" : ""}`} onClick={() => setSelectedMode(m.id)} style={{ cursor: "pointer", border: selectedMode === m.id ? "1px solid var(--accent)" : "1px solid var(--border)", background: selectedMode === m.id ? "var(--accent-soft)" : "var(--bg-panel)" }}>
-                  <strong>{m.title}</strong>
-                  <p className="preset-desc" style={{ marginTop: 6 }}>{m.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {step === 5 && (
-          <div>
-            <h1>Register Workspace</h1>
-            <p className="subtitle">Point Morrow at a local folder. Tools will be bounded inside this workspace directory.</p>
-            <form onSubmit={handleCreateProject} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {projectError && <div className="error-message">{projectError}</div>}
-              {projectSuccess && <div className="badge-ok" style={{ padding: 10, borderRadius: 6, fontWeight: 600, background: "var(--green-soft)", color: "var(--green)" }}>Project registered successfully!</div>}
-              <div className="field">
-                <label>Project Name</label>
-                <input value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="My Project" required />
-              </div>
-              <div className="field">
-                <label>Local Directory Path</label>
-                <input value={workspacePath} onChange={e => setWorkspacePath(e.target.value)} placeholder="C:\Users\aidan\projects\code" required />
-                <span className="hint">An existing local directory. Path must be absolute.</span>
-              </div>
-              <button type="submit" className="primary-btn" style={{ alignSelf: "flex-start" }} disabled={projectSuccess}>Register Workspace</button>
-            </form>
-          </div>
-        )}
-
-        {step === 6 && (
-          <div>
-            <h1>Local Skills Toggles</h1>
-            <p className="subtitle">Enable local skills which provide Morrow with specific domain tools. There is no remote execution or hosted marketplaces.</p>
-            <div className="skills-list" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {[
-                { id: "coding", name: "Coding", desc: "Allows implementation and repair workflows.", permissions: "filesystem-read, filesystem-write, terminal" },
-                { id: "git-inspection", name: "Git", desc: "Allows examining repository status and history.", permissions: "filesystem-read, terminal" },
-                { id: "repository-inspection", name: "Research", desc: "Allows discovering files and project structures.", permissions: "filesystem-read" },
-                { id: "documentation", name: "Documentation", desc: "Allows maintaining project markdown files.", permissions: "filesystem-read, filesystem-write" },
-                { id: "diagnostics", name: "Diagnostics", desc: "Allows diagnosing environment issues.", permissions: "filesystem-read, terminal" },
-                { id: "testing", name: "Testing", desc: "Allows running regression and verification test commands.", permissions: "filesystem-read, terminal" }
-              ].map(s => (
-                <div key={s.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <strong style={{ fontSize: 14 }}>{s.name}</strong>
-                    <p className="muted" style={{ margin: "4px 0" }}>{s.desc}</p>
-                    <span className="cap" style={{ fontSize: 11 }}>Permissions: {s.permissions}</span>
-                  </div>
-                  <input type="checkbox" checked={skills[s.id]} onChange={e => setSkills({ ...skills, [s.id]: e.target.checked })} style={{ width: 20, height: 20, cursor: "pointer" }} />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {step === 7 && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 40, color: "var(--green)", marginBottom: 16 }}>✓</div>
-            <h2>Setup Complete</h2>
-            <p className="subtitle">Morrow is successfully configured and ready to execute your missions.</p>
-            <div className="card" style={{ maxWidth: 460, margin: "0 auto 30px", textAlign: "left" }}>
-              <strong>To launch your first mission:</strong>
-              <p className="muted" style={{ margin: "6px 0 0" }}>Open a terminal and run the interactive CLI command:</p>
-              <pre className="code-block" style={{ marginTop: 10 }}><code>morrow</code></pre>
-            </div>
-            <button className="btn btn-primary btn-large" onClick={handleComplete}>Launch Workspace Dashboard</button>
-          </div>
-        )}
-
-        <div className="onboard-wizard-actions">
-          {step > 1 && step < 7 && (
-            <button className="btn btn-ghost" onClick={prevStep}>Back</button>
-          )}
-          {step < 7 && (
-            <button className="btn btn-primary" onClick={nextStep} disabled={step === 2 && (!name || !useCase)}>Next</button>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -1472,16 +1147,6 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
   };
 
   // ── Skills list ────────────────────────────────────────────────────────────
-  const ALL_SKILL_IDS = [
-    "accessibility", "api-integration", "architecture-review", "ci-cd",
-    "code-refactor", "code-review", "coding", "config-management",
-    "data-analysis", "database", "dependency-audit", "diagnostics",
-    "documentation", "file-ops", "git-inspection", "input-validation",
-    "linting", "migration-planner", "performance", "repository-inspection",
-    "secrets-scan", "shell-automation", "task-management", "template-generator",
-    "testing", "web-search",
-  ];
-
   const SKILL_LABELS: Record<string, string> = {
     accessibility: "Accessibility", "api-integration": "API Integration",
     "architecture-review": "Architecture Review", "ci-cd": "CI/CD Pipeline",
@@ -1497,6 +1162,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     "task-management": "Task Management", "template-generator": "Template Generator",
     testing: "Testing", "web-search": "Web Search",
   };
+  const SKILL_IDS = Object.keys(SKILL_LABELS);
 
   const pid = projectFilter === "all" ? selectedProject?.id : projectFilter;
 
@@ -1702,7 +1368,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
             <h2>Skill Access: {showSkills.name}</h2>
             <p className="muted" style={{ marginBottom: 16 }}>Toggle which skills this agent is allowed to use. Disabled skills are hidden from the agent's skill list.</p>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
-              {ALL_SKILL_IDS.map(skillId => (
+              {SKILL_IDS.map(skillId => (
                 <div key={skillId} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px" }}>
                   <span style={{ fontSize: 13 }}>{SKILL_LABELS[skillId] || skillId}</span>
                   <label className="toggle-label" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>

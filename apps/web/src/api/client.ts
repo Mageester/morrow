@@ -5,51 +5,46 @@ export interface SendMessageOptions {
   providerId?: string;
   model?: string;
   useMemory?: boolean;
+  agentId?: string;
 }
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
+// ── Typed response wrapper ──────────────────────────────────────────────────
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE_URL}${url}`, init);
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.error?.message || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export const apiClient = {
   async listProjects(): Promise<Project[]> {
-    const res = await fetch(`${BASE_URL}/api/projects`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/projects");
   },
 
   async createProject(name: string, workspacePath: string): Promise<Project> {
-    const res = await fetch(`${BASE_URL}/api/projects`, {
+    return request("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, workspacePath }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.error?.message || "Failed to create project");
-    }
-    return res.json();
   },
 
   async listProjectTasks(projectId: string): Promise<Task[]> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/tasks`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/projects/${projectId}/tasks`);
   },
 
   async startInspectWorkspace(projectId: string): Promise<{ taskId: string }> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/tasks/inspect-workspace`, {
+    return request(`/api/projects/${projectId}/tasks/inspect-workspace`, {
       method: "POST",
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.error?.message || "Failed to start inspection");
-    }
-    return res.json();
   },
 
-  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult }> {
-    const res = await fetch(`${BASE_URL}/api/tasks/${taskId}`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; toolCalls?: any[]; routing?: RoutingDecision | null }> {
+    return request(`/api/tasks/${taskId}`);
   },
 
   async getEventHistory(taskId: string, after?: number): Promise<TaskEvent[]> {
@@ -106,221 +101,185 @@ export const apiClient = {
   },
 
   async listConversations(projectId: string): Promise<Conversation[]> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/conversations`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/projects/${projectId}/conversations`);
   },
 
   async createConversation(projectId: string, title?: string): Promise<Conversation> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/conversations`, {
+    return request(`/api/projects/${projectId}/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title })
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async listMessages(conversationId: string): Promise<ConversationMessage[]> {
-    const res = await fetch(`${BASE_URL}/api/conversations/${conversationId}/messages`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/conversations/${conversationId}/messages`);
   },
 
   async sendMessage(conversationId: string, content: string, options: SendMessageOptions = {}): Promise<{ task: Task; userMessage: ConversationMessage; assistantMessage: ConversationMessage; routing: RoutingDecision; aggregateUrl: string; sseUrl: string }> {
-    const res = await fetch(`${BASE_URL}/api/conversations/${conversationId}/messages`, {
+    return request(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, ...options })
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.error?.message || "Failed to send message");
-    }
-    return res.json();
   },
 
   async cancelTask(taskId: string): Promise<void> {
-    const res = await fetch(`${BASE_URL}/api/tasks/${taskId}/cancel`, {
-      method: "POST"
-    });
-    if (!res.ok) throw new Error(await res.text());
+    return request(`/api/tasks/${taskId}/cancel`, { method: "POST" });
   },
 
   async getProviderStatus(): Promise<{ configured: boolean; provider: string; model: string }> {
-    const res = await fetch(`${BASE_URL}/api/provider/status`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/provider/status");
   },
 
   async listProviders(): Promise<ProviderStatus[]> {
-    const res = await fetch(`${BASE_URL}/api/providers`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/providers");
   },
 
   async listOAuthFindings(): Promise<OAuthFinding[]> {
-    const res = await fetch(`${BASE_URL}/api/providers/oauth`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/providers/oauth");
   },
 
   async listModels(): Promise<ModelStatus[]> {
-    const res = await fetch(`${BASE_URL}/api/models`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/models");
   },
 
   async listPresets(): Promise<PresetStatus[]> {
-    const res = await fetch(`${BASE_URL}/api/presets`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/presets");
   },
 
+  async testProvider(providerId: string): Promise<any> {
+    return request(`/api/providers/${providerId}/test`, { method: "POST" });
+  },
+
+  // ── System health ─────────────────────────────────────────────────────────
+  async getHealth(): Promise<{ ok: boolean; service: string; apiVersion: number; mockProvider: boolean; time: string }> {
+    return request("/api/health");
+  },
+
+  // ── Skills (adapter layer — connects to real APIs when available) ─────────
+  async listSkills(): Promise<any[]> {
+    // Try real endpoint first
+    try {
+      return await request("/api/skills");
+    } catch {
+      // Return empty — backend API is being built by Codex
+      return [];
+    }
+  },
+
+  async validateSkill(skillId: string): Promise<any> {
+    return request(`/api/skills/${skillId}/validate`, { method: "POST" });
+  },
+
+  async runSkillDoctor(skillId: string): Promise<any> {
+    return request(`/api/skills/${skillId}/doctor`, { method: "POST" });
+  },
+
+  // ── Memory ────────────────────────────────────────────────────────────────
   async listProjectMemory(projectId: string): Promise<MemoryEntry[]> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/memory`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/projects/${projectId}/memory`);
   },
 
   async addMemory(projectId: string, scope: MemoryScope, content: string, conversationId?: string): Promise<MemoryEntry> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/memory`, {
+    return request(`/api/projects/${projectId}/memory`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scope, content, conversationId })
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.error?.message || "Failed to add memory");
-    }
-    return res.json();
   },
 
   async setMemoryEnabled(id: string, enabled: boolean): Promise<MemoryEntry> {
-    const res = await fetch(`${BASE_URL}/api/memory/${id}`, {
+    return request(`/api/memory/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled })
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async deleteMemory(id: string): Promise<void> {
-    const res = await fetch(`${BASE_URL}/api/memory/${id}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(await res.text());
+    return request(`/api/memory/${id}`, { method: "DELETE" });
   },
 
+  // ── Onboarding ────────────────────────────────────────────────────────────
   async getOnboardingState(): Promise<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null }> {
-    const res = await fetch(`${BASE_URL}/api/onboarding`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/onboarding");
   },
 
   async saveOnboardingState(data: { onboarded?: boolean; onboardingStep?: string | null; useCase?: string | null; name?: string | null }): Promise<{ success: boolean }> {
-    const res = await fetch(`${BASE_URL}/api/onboarding`, {
+    return request("/api/onboarding", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async resetOnboardingState(): Promise<{ success: boolean }> {
-    const res = await fetch(`${BASE_URL}/api/onboarding/reset`, { method: "POST" });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request("/api/onboarding/reset", { method: "POST" });
   },
 
-  async testProvider(providerId: string): Promise<any> {
-    const res = await fetch(`${BASE_URL}/api/providers/${providerId}/test`, {
-      method: "POST"
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  },
-
-  // ── Agents ─────────────────────────────────────────────────────────────────
-
+  // ── Agents ────────────────────────────────────────────────────────────────
   async listProjectAgents(projectId: string): Promise<Agent[]> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/agents`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/projects/${projectId}/agents`);
   },
 
   async createAgent(projectId: string, input: CreateAgentInput): Promise<Agent> {
-    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/agents`, {
+    return request(`/api/projects/${projectId}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async updateAgent(agentId: string, projectId: string, input: UpdateAgentInput): Promise<Agent> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}`, {
+    return request(`/api/agents/${agentId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId, ...input }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async deleteAgent(agentId: string, projectId: string): Promise<void> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}`, {
+    return request(`/api/agents/${agentId}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId }),
     });
-    if (!res.ok) throw new Error(await res.text());
   },
 
   async listAgentToolPermissions(agentId: string): Promise<AgentToolPermission[]> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/agents/${agentId}/tool-permissions`);
   },
 
   async upsertToolPermission(agentId: string, input: UpsertToolPermissionInput): Promise<AgentToolPermission> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions`, {
+    return request(`/api/agents/${agentId}/tool-permissions`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async deleteToolPermission(agentId: string, toolName: string): Promise<void> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/tool-permissions/${encodeURIComponent(toolName)}`, {
+    return request(`/api/agents/${agentId}/tool-permissions/${encodeURIComponent(toolName)}`, {
       method: "DELETE",
     });
-    if (!res.ok) throw new Error(await res.text());
   },
 
   async listAgentSkillAccess(agentId: string): Promise<AgentSkillAccess[]> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return request(`/api/agents/${agentId}/skill-access`);
   },
 
   async upsertSkillAccess(agentId: string, input: UpsertSkillAccessInput): Promise<AgentSkillAccess> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access`, {
+    return request(`/api/agents/${agentId}/skill-access`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async deleteSkillAccess(agentId: string, skillId: string): Promise<void> {
-    const res = await fetch(`${BASE_URL}/api/agents/${agentId}/skill-access/${encodeURIComponent(skillId)}`, {
+    return request(`/api/agents/${agentId}/skill-access/${encodeURIComponent(skillId)}`, {
       method: "DELETE",
     });
-    if (!res.ok) throw new Error(await res.text());
   }
 };
