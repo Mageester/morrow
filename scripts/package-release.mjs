@@ -1,299 +1,134 @@
 #!/usr/bin/env node
-/**
- * Morrow Release Packager
- * Builds a distributable Windows portable package.
- *
- * Usage: node scripts/package-release.mjs [version]
- * Example: node scripts/package-release.mjs 0.1.0-beta.1
- */
-
-import { execSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+/** Build the self-contained Windows Early Access archive. */
 import { createHash } from "node:crypto";
-import { join, dirname } from "node:path";
+import { execFileSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmSync, cpSync, readdirSync, statSync } from "node:fs";
-import { arch as _arch } from "node:os";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, "..");
-const DIST = join(ROOT, "dist");
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
+const dist = join(root, "dist");
+const NODE_VERSION = "22.15.0";
+const NODE_ARCHIVE = `node-v${NODE_VERSION}-win-x64.zip`;
+const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/${NODE_ARCHIVE}`;
+const NODE_SHA256 = "06067d4f0d463f90ed803d5eca5b039a05dec5d70fc7b7cc254803a59bd0e27c";
 
-const VERSION = process.argv[2] || "0.1.0-beta.1";
-const PLATFORM = "windows-x64";
-const PKG_NAME = `Morrow-v${VERSION}-${PLATFORM}`;
-const PKG_DIR = join(DIST, PKG_NAME);
-const ZIP_NAME = `${PKG_NAME}.zip`;
-const ZIP_PATH = join(DIST, ZIP_NAME);
-
-function sh(cmd, opts = {}) {
-  console.log(`  $ ${cmd}`);
-  return execSync(cmd, { stdio: "inherit", cwd: ROOT, ...opts });
+function run(file, args, cwd = root) {
+  console.log(`$ ${file} ${args.join(" ")}`);
+  execFileSync(file, args, { cwd, stdio: "inherit", shell: process.platform === "win32" && file.endsWith(".cmd") });
 }
 
-function ensure(dir) {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+function ensure(path) { mkdirSync(path, { recursive: true }); }
+function sha256(path) { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
+function size(path) { return statSync(path).size; }
+function psLiteral(path) { return `'${path.replaceAll("'", "''")}'`; }
+
+async function download(url, destination) {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}) for ${url}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  writeFileSync(destination, bytes);
 }
 
-function sha256(filePath) {
-  const hash = createHash("sha256");
-  hash.update(readFileSync(filePath));
-  return hash.digest("hex");
-}
-
-function fileSize(filePath) {
-  return statSync(filePath).size;
-}
-
-// ── Step 1: Validate ────────────────────────────────────────────────────
-console.log("\n[1/8] Running validation...");
-sh("pnpm check");
-sh("pnpm test");
-
-// ── Step 2: Build ───────────────────────────────────────────────────────
-console.log("\n[2/8] Building all packages...");
-sh("pnpm build");
-
-// ── Step 3: Prepare package directory ───────────────────────────────────
-console.log(`\n[3/8] Preparing package: ${PKG_DIR}`);
-if (existsSync(PKG_DIR)) rmSync(PKG_DIR, { recursive: true });
-ensure(PKG_DIR);
-
-// ── Step 4: Copy orchestrator ───────────────────────────────────────────
-console.log("\n[4/8] Bundling orchestrator...");
-const orchSrc = join(ROOT, "services", "orchestrator");
-const orchDst = join(PKG_DIR, "orchestrator");
-ensure(orchDst);
-// Copy dist
-cpSync(join(orchSrc, "dist"), join(orchDst, "dist"), { recursive: true });
-// Copy package.json
-const orchPkg = JSON.parse(readFileSync(join(orchSrc, "package.json"), "utf8"));
-const slimPkg = { name: orchPkg.name, version: orchPkg.version, type: "module", dependencies: orchPkg.dependencies };
-writeFileSync(join(orchDst, "package.json"), JSON.stringify(slimPkg, null, 2));
-// Install production deps
-console.log("  Installing orchestrator dependencies...");
-sh("pnpm install --prod --filter @morrow/orchestrator", { cwd: ROOT });
-// Copy node_modules
-const orchNodeMods = join(orchSrc, "node_modules");
-if (existsSync(orchNodeMods)) {
-  cpSync(orchNodeMods, join(orchDst, "node_modules"), { recursive: true });
-}
-
-// ── Step 5: Copy web app ────────────────────────────────────────────────
-console.log("\n[5/8] Bundling web app...");
-const webSrc = join(ROOT, "apps", "web");
-const webDst = join(PKG_DIR, "web");
-ensure(webDst);
-if (existsSync(join(webSrc, "dist"))) {
-  cpSync(join(webSrc, "dist"), webDst, { recursive: true });
-}
-
-// ── Step 6: Copy CLI ────────────────────────────────────────────────────
-console.log("\n[6/8] Bundling CLI...");
-const cliSrc = join(ROOT, "apps", "cli");
-const cliDst = join(PKG_DIR, "cli");
-ensure(cliDst);
-if (existsSync(join(cliSrc, "bin"))) {
-  cpSync(join(cliSrc, "bin"), join(cliDst, "bin"), { recursive: true });
-}
-if (existsSync(join(cliSrc, "dist"))) {
-  cpSync(join(cliSrc, "dist"), join(cliDst, "dist"), { recursive: true });
-}
-const cliPkg = JSON.parse(readFileSync(join(cliSrc, "package.json"), "utf8"));
-const slimCliPkg = { name: cliPkg.name, version: cliPkg.version, type: "module", dependencies: cliPkg.dependencies };
-writeFileSync(join(cliDst, "package.json"), JSON.stringify(slimCliPkg, null, 2));
-
-// ── Step 7: Create launcher scripts ─────────────────────────────────────
-console.log("\n[7/8] Creating launcher scripts...");
-
-// Morrow launcher (Node.js script)
-const launcher = `#!/usr/bin/env node
-/**
- * Morrow v${VERSION} — Launcher
- * Starts the orchestrator and opens the web UI.
- */
-import { spawn, execSync } from "node:child_process";
-import { join, dirname } from "node:path";
+function launcherSource(version) {
+  return `import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync } from "node:fs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PKG_ROOT = __dirname;
-const MORROW_HOME = process.env.MORROW_HOME || join(process.env.USERPROFILE || process.env.HOME, ".morrow");
-if (!existsSync(MORROW_HOME)) mkdirSync(MORROW_HOME, { recursive: true });
+const app = dirname(fileURLToPath(import.meta.url));
+const install = dirname(app);
+const data = join(install, "data");
+const runtime = join(app, "runtime", "node.exe");
+const entry = join(app, "orchestrator", "dist", "src", "index.js");
+const pidFile = join(data, "morrow.pid");
+const url = "http://127.0.0.1:4317";
+for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
 
-const orchDir = join(PKG_ROOT, "orchestrator");
-const webDir = join(PKG_ROOT, "web");
+function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { return 0; } }
+async function healthy() { try { return (await fetch(url + "/api/health")).ok; } catch { return false; } }
+async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
+function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
 
-// Start orchestrator
-console.log("Starting Morrow orchestrator...");
-const orch = spawn("node", [join(orchDir, "dist", "src", "index.js")], {
-  cwd: orchDir,
-  env: { ...process.env, MORROW_HOME, NODE_ENV: "production" },
-  stdio: "inherit",
-});
+async function start() {
+  if (await healthy()) return console.log("Morrow is already running at " + url);
+  if (!existsSync(runtime)) throw new Error("Bundled Node runtime is missing. Run the installer again.");
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: "ignore", env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), NODE_ENV: "production" } });
+  child.unref(); writeFileSync(pidFile, String(child.pid));
+  if (!await waitForHealth()) throw new Error("Morrow did not become healthy. See " + join(install, "logs") + ".");
+  console.log("Morrow is ready at " + url);
+}
+async function stop() { const current = pid(); if (!current) return console.log("Morrow is not running."); try { process.kill(current); } catch {} try { unlinkSync(pidFile); } catch {} console.log("Morrow stopped."); }
+async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
+async function doctor() { const checks = [["bundled Node", existsSync(runtime)], ["orchestrator", existsSync(entry)], ["data", existsSync(data)], ["web UI", existsSync(join(app, "web", "index.html"))], ["health", await healthy()]]; for (const [name, ok] of checks) console.log((ok ? "OK   " : "FAIL ") + name); process.exitCode = checks.slice(0, 4).every(([, ok]) => ok) ? 0 : 1; }
+async function uninstall() { await stop(); const script = join(install, "uninstall.ps1"); if (!existsSync(script)) throw new Error("Uninstaller is missing."); execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { stdio: "inherit" }); }
 
-orch.on("error", (err) => {
-  console.error("Failed to start orchestrator:", err.message);
-  process.exit(1);
-});
-
-// Wait for API to be ready, then open browser
-const waitAndOpen = async () => {
-  const url = process.env.MORROW_URL || "http://127.0.0.1:4317";
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res = await fetch(url + "/api/health");
-      if (res.ok) {
-        console.log("Morrow is ready at", url);
-        // Open default browser
-        const { execSync } = await import("node:child_process");
-        if (process.platform === "win32") {
-          execSync("start " + url, { shell: true });
-        } else if (process.platform === "darwin") {
-          execSync("open " + url);
-        } else {
-          execSync("xdg-open " + url);
-        }
-        return;
-      }
-    } catch {}
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  console.log("Orchestrator may still be starting. Open", url, "in your browser.");
-};
-
-setTimeout(waitAndOpen, 2000);
-
-// Handle shutdown
-process.on("SIGINT", () => { orch.kill(); process.exit(0); });
-process.on("SIGTERM", () => { orch.kill(); process.exit(0); });
+const command = process.argv[2] ?? "start";
+switch (command) {
+  case "start": await start(); break;
+  case "stop": await stop(); break;
+  case "restart": await stop(); await start(); break;
+  case "status": await status(); break;
+  case "open": if (!await healthy()) await start(); open(); break;
+  case "doctor": await doctor(); break;
+  case "uninstall": await uninstall(); break;
+  default: console.error("Usage: morrow [start|stop|restart|status|open|doctor|uninstall]"); process.exitCode = 2;
+}
 `;
+}
 
-writeFileSync(join(PKG_DIR, "morrow.mjs"), launcher);
-
-// Windows batch launcher
-const batchLauncher = `@echo off
-setlocal
-set "MORROW_HOME=%USERPROFILE%\\.morrow"
-if not exist "%MORROW_HOME%" mkdir "%MORROW_HOME%"
-
-echo Morrow v${VERSION}
-echo Starting Morrow...
-echo.
-node "%~dp0morrow.mjs" %*
+function uninstallerSource() {
+  return `$ErrorActionPreference = "Stop"
+$Install = Split-Path -Parent $PSScriptRoot
+$Shortcut = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs\\Morrow.lnk"
+if (Test-Path $Shortcut) { Remove-Item -Force $Shortcut }
+[Environment]::SetEnvironmentVariable("Path", (($env:Path -split ';' | Where-Object { $_ -ne (Join-Path $Install 'bin') }) -join ';'), "User")
+Write-Host "Morrow application files remain at $Install until this process exits. Remove them with: Remove-Item -Recurse -Force '$Install'"
 `;
-writeFileSync(join(PKG_DIR, "morrow.bat"), batchLauncher);
-
-// PowerShell setup script
-const setupPs1 = `# Morrow Setup Script v${VERSION}
-param(
-  [switch]$Uninstall,
-  [switch]$Repair
-)
-
-$ErrorActionPreference = "Stop"
-$MorrowHome = "$env:USERPROFILE\\.morrow"
-$StartMenu = "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs"
-$ShortcutPath = "$StartMenu\\Morrow.lnk"
-
-if ($Uninstall) {
-  Write-Host "Uninstalling Morrow v${VERSION}..."
-  if (Test-Path $ShortcutPath) { Remove-Item $ShortcutPath -Force }
-  Write-Host "Morrow shortcuts removed."
-  Write-Host "Your data at $MorrowHome has been preserved."
-  Write-Host "To remove all data, delete: $MorrowHome"
-  exit 0
 }
 
-if ($Repair) {
-  Write-Host "Repairing Morrow v${VERSION}..."
-  if (!(Test-Path $MorrowHome)) { New-Item -ItemType Directory -Path $MorrowHome -Force | Out-Null }
-  Write-Host "Data directory verified."
-  exit 0
+async function bundleRuntime(packageDir) {
+  ensure(dist);
+  const archive = join(dist, NODE_ARCHIVE);
+  if (!existsSync(archive)) await download(NODE_URL, archive);
+  const actual = sha256(archive);
+  if (actual !== NODE_SHA256) throw new Error(`Bundled Node checksum mismatch: expected ${NODE_SHA256}, got ${actual}`);
+  const expanded = join(dist, `.node-${NODE_VERSION}`);
+  rmSync(expanded, { recursive: true, force: true }); ensure(expanded);
+  run("powershell.exe", ["-NoProfile", "-Command", `Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(expanded)} -Force`]);
+  cpSync(join(expanded, `node-v${NODE_VERSION}-win-x64`), join(packageDir, "runtime"), { recursive: true });
+  rmSync(expanded, { recursive: true, force: true });
 }
 
-# Create data directories
-foreach ($dir in @("$MorrowHome", "$MorrowHome\\logs", "$MorrowHome\\skills", "$MorrowHome\\plugins", "$MorrowHome\\config")) {
-  if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+async function main() {
+  const version = process.argv[2] ?? "0.1.0-beta.3";
+  if (!/^\d+\.\d+\.\d+-beta\.\d+$/.test(version)) throw new Error("Use a prerelease version such as 0.1.0-beta.3.");
+  const name = `Morrow-v${version}-windows-x64`;
+  const packageDir = join(dist, name);
+  const archive = join(dist, `${name}.zip`);
+  rmSync(packageDir, { recursive: true, force: true }); rmSync(archive, { force: true }); ensure(packageDir);
+
+  run(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["--filter", "@morrow/orchestrator", "--legacy", "--prod", "deploy", join(packageDir, "orchestrator")]);
+  cpSync(join(root, "apps", "web", "dist"), join(packageDir, "web"), { recursive: true });
+  await bundleRuntime(packageDir);
+  writeFileSync(join(packageDir, "morrow.mjs"), launcherSource(version));
+  writeFileSync(join(packageDir, "morrow.cmd"), `@echo off\r\n"%~dp0runtime\\node.exe" "%~dp0morrow.mjs" %*\r\n`);
+  writeFileSync(join(packageDir, "uninstall.ps1"), uninstallerSource());
+  writeFileSync(join(packageDir, "VERSION"), version + "\n");
+  writeFileSync(join(packageDir, "THIRD_PARTY_NOTICES.txt"), "Morrow includes Node.js " + NODE_VERSION + ". See runtime/LICENSE and dependency package licenses.\n");
+
+  // Compress-Archive cannot reliably walk pnpm's nested virtual-store links.
+  run("tar.exe", ["-a", "-c", "-f", archive, "-C", dist, name]);
+  const hash = sha256(archive);
+  const manifest = {
+    schemaVersion: 1, version, channel: "beta", publishedAt: new Date().toISOString(), unsignedBeta: true,
+    bundledNodeVersion: NODE_VERSION, minimumWindowsVersion: "10", releaseNotes: `https://github.com/Mageester/morrow/releases/tag/v${version}`,
+    artifacts: [{ platform: "windows-x64", filename: `${name}.zip`, url: `https://github.com/Mageester/morrow/releases/download/v${version}/${name}.zip`, size: size(archive), sha256: hash }],
+  };
+  writeFileSync(join(dist, `morrow-v${version}-checksums.txt`), `${hash}  ${name}.zip\n`);
+  writeFileSync(join(dist, "release-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+  console.log(JSON.stringify({ archive, sha256: hash, manifest }, null, 2));
 }
 
-# Create Start Menu shortcut
-$WScriptShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WScriptShell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = "node.exe"
-$Shortcut.Arguments = """$PSScriptRoot\\morrow.mjs"""
-$Shortcut.WorkingDirectory = $PSScriptRoot
-$Shortcut.Description = "Morrow AI Agent"
-$Shortcut.Save()
-Write-Host "Morrow v${VERSION} setup complete."
-Write-Host "Launch Morrow from the Start Menu or run: node $PSScriptRoot\\morrow.mjs"
-`;
-writeFileSync(join(PKG_DIR, "setup.ps1"), setupPs1);
-
-// Version file
-writeFileSync(join(PKG_DIR, "VERSION"), VERSION);
-writeFileSync(join(PKG_DIR, "CHANNEL"), "beta");
-
-// ── Step 8: Package and checksum ────────────────────────────────────────
-console.log("\n[8/8] Packaging...");
-
-// Create zip
-try {
-  sh(`powershell -Command "Compress-Archive -Path '${PKG_DIR}' -DestinationPath '${ZIP_PATH}' -Force"`);
-} catch {
-  // Fallback: use tar if zip fails
-  console.log("  zip failed, trying tar...");
-  sh(`tar -czf "${ZIP_PATH.replace('.zip', '.tar.gz')}" -C "${DIST}" "${PKG_NAME}"`);
-}
-
-const checksums = {};
-if (existsSync(ZIP_PATH)) {
-  checksums[ZIP_NAME] = sha256(ZIP_PATH);
-  console.log(`\n  ${ZIP_NAME}`);
-  console.log(`  Size: ${(fileSize(ZIP_PATH) / 1024 / 1024).toFixed(1)} MB`);
-  console.log(`  SHA-256: ${checksums[ZIP_NAME]}`);
-}
-
-// Write checksums file
-let checksumContent = "";
-for (const [name, hash] of Object.entries(checksums)) {
-  checksumContent += `${hash}  ${name}\n`;
-}
-const checksumPath = join(DIST, `morrow-v${VERSION}-checksums.txt`);
-writeFileSync(checksumPath, checksumContent);
-console.log(`\nChecksums written to: ${checksumPath}`);
-
-// Write release manifest
-const manifest = {
-  version: VERSION,
-  channel: "beta",
-  releasedAt: new Date().toISOString(),
-  repository: "https://github.com/Mageester/morrow",
-  artifacts: Object.entries(checksums).map(([name, hash]) => ({
-    platform: PLATFORM,
-    type: "portable",
-    filename: name,
-    size: fileSize(join(DIST, name)),
-    sha256: hash,
-    url: `https://github.com/Mageester/morrow/releases/download/v${VERSION}/${name}`
-  })),
-  releaseNotes: `https://github.com/Mageester/morrow/releases/tag/v${VERSION}`,
-  minimumNodeVersion: "22.0.0",
-  installInstructions: {
-    windows: [
-      `1. Download ${ZIP_NAME}`,
-      "2. Extract to a permanent location (e.g., %LOCALAPPDATA%\\Morrow)",
-      "3. Run setup.ps1 in PowerShell: .\\setup.ps1",
-      "4. Launch Morrow from the Start Menu or run: node morrow.mjs"
-    ]
-  }
-};
-const manifestPath = join(DIST, "release-manifest.json");
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-console.log(`Release manifest written to: ${manifestPath}`);
-
-console.log("\n✓ Release package complete!");
-console.log(`  Package: ${PKG_DIR}`);
-if (existsSync(ZIP_PATH)) console.log(`  Archive: ${ZIP_PATH}`);
-console.log(`  Manifest: ${manifestPath}`);
+main().catch(error => { console.error(error instanceof Error ? error.stack : error); process.exitCode = 1; });

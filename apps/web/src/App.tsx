@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { apiClient } from "./api/client";
+import type { ToolCallSummary } from "./api/client";
 import type {
   Project, Task, TaskEvent, PlanStep, TaskEvidence, ExecutionDisclosure,
   ConversationMessage, VerificationResult,
   PresetStatus, ProviderStatus, ModelStatus, OAuthFinding, MemoryEntry, RoutingDecision,
-  Agent, AgentToolPermission, AgentSkillAccess,
+  Agent, AgentRole, AgentToolPermission, AgentSkillAccess,
 } from "@morrow/contracts";
 import { Markdown } from "./Markdown";
 import * as I from "./icons";
@@ -20,6 +21,29 @@ type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions
 type InspTab = "overview" | "files" | "notes" | "settings";
 
 interface ProjectMeta { status: string; agent: string; updatedAt: string; latestTaskId: string | null; }
+
+type IconComponent = React.ComponentType<React.SVGProps<SVGSVGElement>>;
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function metadataSize(metadata: Record<string, unknown>) {
+  const size = metadata.size;
+  return typeof size === "number" ? size : undefined;
+}
+
+function NavItem({ id, label, icon: Icon, active, onNavigate }: { id: Nav; label: string; icon: IconComponent; active: boolean; onNavigate: (id: Nav) => void }) {
+  return (
+    <button className={`nav-item ${active ? "active" : ""}`} onClick={() => onNavigate(id)}>
+      <Icon className="ico" /> {label}
+    </button>
+  );
+}
+
+function Status({ s }: { s: string }) {
+  return <span className={`status ${s}`}><span className="dot" />{STATUS_LABEL[s] || s}</span>;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued", running: "Running", completed: "Completed", verified: "Verified",
@@ -50,17 +74,19 @@ function fmtBytes(n?: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
-  const p: any = ev.payload || {};
+  const p = ev.payload;
+  const numberValue = (key: string) => typeof p[key] === "number" ? p[key] : undefined;
+  const stringValue = (key: string) => typeof p[key] === "string" ? p[key] : undefined;
   switch (ev.type) {
     case "task.created": return { label: "Run started" };
     case "task.running": return null;
-    case "plan.created": return { label: "Plan created", desc: p.stepCount ? `${p.stepCount} steps` : undefined };
-    case "workspace.inspected": return { label: "Inspected workspace", desc: p.resultCount !== undefined ? `${p.resultCount} entries` : undefined };
-    case "evidence.persisted": return p.path ? { label: `Read ${p.path}`, desc: p.size ? fmtBytes(p.size) : undefined } : null;
+    case "plan.created": return { label: "Plan created", desc: numberValue("stepCount") ? `${numberValue("stepCount")} steps` : undefined };
+    case "workspace.inspected": return { label: "Inspected workspace", desc: numberValue("resultCount") !== undefined ? `${numberValue("resultCount")} entries` : undefined };
+    case "evidence.persisted": return stringValue("path") ? { label: `Read ${stringValue("path")}`, desc: numberValue("size") ? fmtBytes(numberValue("size")) : undefined } : null;
     case "verification.completed":
     case "task.verified": return { label: "Verified", desc: "Deterministic inspection verified" };
     case "task.completed": return { label: "Completed" };
-    case "task.failed": return { label: "Failed", desc: p.message };
+    case "task.failed": return { label: "Failed", desc: stringValue("message") };
     case "task.cancelled": return { label: "Cancelled" };
     case "task.interrupted": return { label: "Interrupted" };
     case "step.started": return null;
@@ -105,7 +131,7 @@ export default function App() {
   const [activeTaskId, setActiveTaskId] = useState<string>("");
   const [taskState, setTaskState] = useState<{
     task?: Task; plan?: PlanStep[]; events?: TaskEvent[]; evidence?: TaskEvidence[];
-    disclosure?: ExecutionDisclosure; toolCalls?: any[]; verification?: VerificationResult; routing?: RoutingDecision | null;
+    disclosure?: ExecutionDisclosure; toolCalls?: ToolCallSummary[]; verification?: VerificationResult; routing?: RoutingDecision | null;
   } | null>(null);
 
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -140,9 +166,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let active = true;
     if (selectedProjectId && apiClient.listProjectMemory) {
-      apiClient.listProjectMemory(selectedProjectId).then(setMemoryEntries).catch(console.error);
-    } else setMemoryEntries([]);
+      apiClient.listProjectMemory(selectedProjectId).then(entries => {
+        if (active) setMemoryEntries(entries);
+      }).catch(console.error);
+    } else {
+      void Promise.resolve().then(() => {
+        if (active) setMemoryEntries([]);
+      });
+    }
+    return () => { active = false; };
   }, [selectedProjectId]);
 
   // Load conversation + messages for the selected project
@@ -176,13 +210,17 @@ export default function App() {
 
   // Aggregate + SSE for the focused task
   useEffect(() => {
-    if (!focusedTaskId) { setTaskState(null); if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; } return; }
+    if (!focusedTaskId) {
+      if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; }
+      void Promise.resolve().then(() => setTaskState(null));
+      return;
+    }
     let live = true;
     const fetchAgg = () => {
       // The aggregate endpoint already includes toolCalls + routing; read them
       // directly rather than racing a second fetch whose failure path dropped
       // toolCalls (the cause of the empty tool-call panel).
-      apiClient.getTaskAggregate(focusedTaskId).then((agg: any) => {
+      apiClient.getTaskAggregate(focusedTaskId).then((agg) => {
         if (!live) return;
         setTaskState({ ...agg, toolCalls: agg.toolCalls ?? [], routing: agg.routing ?? null });
       }).catch(console.error);
@@ -215,7 +253,7 @@ export default function App() {
       setNewProjectName(""); setNewWorkspacePath(""); setNewProjectOpen(false);
       setNav("projects");
       await openProject(p.id, true);
-    } catch (err: any) { setProjectError(err.message || "Failed to create project"); }
+    } catch (err: unknown) { setProjectError(errorMessage(err, "Failed to create project")); }
   };
 
   const ensureConversation = async (): Promise<string> => {
@@ -238,7 +276,7 @@ export default function App() {
       setMessages(prev => [...prev, res.userMessage, res.assistantMessage]);
       setActiveTaskId(res.task.id);
       setFocusedTaskId(res.task.id);
-    } catch (err: any) { setComposerError(err.message || "Failed to send message"); }
+    } catch (err: unknown) { setComposerError(errorMessage(err, "Failed to send message")); }
   };
 
   const handleStop = async () => {
@@ -257,7 +295,7 @@ export default function App() {
       const res = await apiClient.startInspectWorkspace(selectedProjectId);
       setActiveTaskId(""); setFocusedTaskId(res.taskId);
       loadProjectMeta(projects);
-    } catch (err: any) { setTaskError(err.message || "Failed to start inspection"); }
+    } catch (err: unknown) { setTaskError(errorMessage(err, "Failed to start inspection")); }
   };
 
   const handleAddMemory = async () => {
@@ -286,12 +324,10 @@ export default function App() {
   const inspectorOpen = nav === "projects" && !!selectedProjectId;
 
   // ── Render helpers ────────────────────────────────────────────────────────────
-  const NavItem = ({ id, label, icon: Icon }: { id: Nav; label: string; icon: (p: any) => React.ReactElement }) => (
-    <button className={`nav-item ${nav === id ? "active" : ""}`} onClick={() => { setNav(id); if (id === "projects") setView("list"); }}>
-      <Icon className="ico" /> {label}
-    </button>
-  );
-  const Status = ({ s }: { s: string }) => (<span className={`status ${s}`}><span className="dot" />{STATUS_LABEL[s] || s}</span>);
+  const handleNavigation = (id: Nav) => {
+    setNav(id);
+    if (id === "projects") setView("list");
+  };
 
   const focusedTask = taskState?.task;
   const planVerified = focusedTask?.status === "verified";
@@ -336,23 +372,23 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <NavItem id="missions" label="New Mission" icon={I.IconSend} />
-          <NavItem id="projects" label="Missions" icon={I.IconRuns} />
-          <NavItem id="agents" label="Agents" icon={I.IconAgents} />
-          <NavItem id="skills" label="Skills" icon={I.IconTools} />
+          <NavItem id="missions" label="New Mission" icon={I.IconSend} active={nav === "missions"} onNavigate={handleNavigation} />
+          <NavItem id="projects" label="Missions" icon={I.IconRuns} active={nav === "projects"} onNavigate={handleNavigation} />
+          <NavItem id="agents" label="Agents" icon={I.IconAgents} active={nav === "agents"} onNavigate={handleNavigation} />
+          <NavItem id="skills" label="Skills (Preview)" icon={I.IconTools} active={nav === "skills"} onNavigate={handleNavigation} />
           <div className="nav-divider" />
-          <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
-          <NavItem id="files" label="Files" icon={I.IconFile} />
-          <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
-          <NavItem id="runs" label="Runs" icon={I.IconRuns} />
+          <NavItem id="browser" label="Browser" icon={I.IconKnowledge} active={nav === "browser"} onNavigate={handleNavigation} />
+          <NavItem id="files" label="Files" icon={I.IconFile} active={nav === "files"} onNavigate={handleNavigation} />
+          <NavItem id="memory" label="Memory" icon={I.IconKnowledge} active={nav === "memory"} onNavigate={handleNavigation} />
+          <NavItem id="runs" label="Runs" icon={I.IconRuns} active={nav === "runs"} onNavigate={handleNavigation} />
           <div className="nav-divider" />
-          <NavItem id="automations" label="Automations" icon={I.IconSettings} />
-          <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
-          <NavItem id="system" label="System Health" icon={I.IconSettings} />
+          <NavItem id="automations" label="Automations" icon={I.IconSettings} active={nav === "automations"} onNavigate={handleNavigation} />
+          <NavItem id="approvals" label="Approvals" icon={I.IconShield} active={nav === "approvals"} onNavigate={handleNavigation} />
+          <NavItem id="system" label="System Health" icon={I.IconSettings} active={nav === "system"} onNavigate={handleNavigation} />
           <div className="nav-divider" />
-          <NavItem id="settings" label="Settings" icon={I.IconSettings} />
-          <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
-          <NavItem id="help" label="Help" icon={I.IconHelp} />
+          <NavItem id="settings" label="Settings" icon={I.IconSettings} active={nav === "settings"} onNavigate={handleNavigation} />
+          <NavItem id="download" label="Install from Source" icon={I.IconHelp} active={nav === "download"} onNavigate={handleNavigation} />
+          <NavItem id="help" label="Help" icon={I.IconHelp} active={nav === "help"} onNavigate={handleNavigation} />
         </nav>
         <div className="nav-spacer" />
         <div className="account">
@@ -619,7 +655,7 @@ export default function App() {
                         <li key={ev.id} className="evidence-item">
                           <I.IconFile className="file-ico" />
                           <span className="ev-name" title={ev.path}>{ev.path}</span>
-                          <span className="ev-size">{fmtBytes((ev.metadata as any)?.size)}</span>
+                          <span className="ev-size">{fmtBytes(metadataSize(ev.metadata))}</span>
                         </li>
                       ))}
                     </ul>
@@ -629,7 +665,7 @@ export default function App() {
                   <div className="insp-block tools-section">
                     <h4>Tool calls ({taskState.toolCalls.length})</h4>
                     <ul className="kv-list">
-                      {taskState.toolCalls.map((tc: any) => (
+                      {taskState.toolCalls.map((tc) => (
                         <li key={tc.id}><span className="kk">{tc.toolName}</span><span className={`vv ${tc.status === "failed" ? "flag" : ""}`}>{tc.status}</span></li>
                       ))}
                     </ul>
@@ -660,7 +696,7 @@ export default function App() {
                 <h4>Files accessed</h4>
                 {taskState?.evidence && taskState.evidence.length > 0 ? (
                   <ul className="evidence-list">{taskState.evidence.map(ev => (
-                    <li key={ev.id} className="evidence-item"><I.IconFile className="file-ico" /><span className="ev-name">{ev.path}</span><span className="ev-size">{fmtBytes((ev.metadata as any)?.size)}</span></li>
+                    <li key={ev.id} className="evidence-item"><I.IconFile className="file-ico" /><span className="ev-name">{ev.path}</span><span className="ev-size">{fmtBytes(metadataSize(ev.metadata))}</span></li>
                   ))}</ul>
                 ) : <div className="insp-empty">No files have been read in this run.</div>}
               </div>
@@ -775,7 +811,7 @@ function RunsView({ projects, projectMeta, onOpen }: { projects: Project[]; proj
 
 // ── Placeholder views ──────────────────────────────────────────────────────────
 function PlaceholderView({ nav }: { nav: string }) {
-  const copy: Record<string, { title: string; body: string; icon: (p: any) => React.ReactElement }> = {
+  const copy: Record<string, { title: string; body: string; icon: IconComponent }> = {
     browser: { title: "Browser", body: "Web automation and research via Playwright/CDP. Real Chromium browser sessions with semantic actions, navigation, downloads, screenshots, and persisted audit records (B15). Open a project and use browser tools from the conversation.", icon: I.IconKnowledge },
     files: { title: "Files", body: "File operations are scoped to your project workspace. Every read and write is logged to the audit trail. Secret files (.env, keys, credentials) are automatically rejected.", icon: I.IconFile },
     memory: { title: "Memory", body: "Deterministic, project-isolated memory. Each entry has a source and timestamp. Memory never crosses projects and can be disabled or deleted. Manage memory from Settings → Data & Memory.", icon: I.IconKnowledge },
@@ -990,7 +1026,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
 
   // Form state
   const [formName, setFormName] = useState("");
-  const [formRole, setFormRole] = useState<string>("assistant");
+  const [formRole, setFormRole] = useState<AgentRole>("assistant");
   const [formInstructions, setFormInstructions] = useState("");
   const [formProviderOverride, setFormProviderOverride] = useState("");
   const [formModelOverride, setFormModelOverride] = useState("");
@@ -1006,16 +1042,16 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       const list = await apiClient.listProjectAgents(projectId);
       setAgents(list);
-    } catch (e: any) {
-      setError(e.message || "Failed to load agents");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Failed to load agents"));
     } finally { setLoading(false); }
   };
 
   useEffect(() => {
     const pid = projectFilter === "all" ? selectedProject?.id ?? "" : projectFilter;
-    if (pid) loadAgents(pid);
-    else setAgents([]);
-  }, [projectFilter]);
+    if (pid) void Promise.resolve().then(() => loadAgents(pid));
+    else void Promise.resolve().then(() => setAgents([]));
+  }, [projectFilter, selectedProject?.id]);
 
   const projectForAgent = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1030,14 +1066,14 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       const agent = await apiClient.createAgent(pid, {
         name: formName.trim(),
-        role: formRole as any,
+        role: formRole,
         instructions: formInstructions.trim() || undefined,
         providerOverride: formProviderOverride.trim() || undefined,
         modelOverride: formModelOverride.trim() || undefined,
       });
       setAgents(prev => [...prev, agent]);
       setShowCreate(false); resetForm();
-    } catch (e: any) { setFormError(e.message || "Failed to create agent"); }
+    } catch (e: unknown) { setFormError(errorMessage(e, "Failed to create agent")); }
   };
 
   const handleUpdate = async (e: React.FormEvent) => {
@@ -1048,14 +1084,14 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       const updated = await apiClient.updateAgent(editingAgent.id, pid, {
         name: formName.trim() || undefined,
-        role: formRole as any,
+        role: formRole,
         instructions: formInstructions.trim() || null,
         providerOverride: formProviderOverride.trim() || null,
         modelOverride: formModelOverride.trim() || null,
       });
       setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
       setEditingAgent(null); resetForm();
-    } catch (e: any) { setFormError(e.message || "Failed to update agent"); }
+    } catch (e: unknown) { setFormError(errorMessage(e, "Failed to update agent")); }
   };
 
   const handleDelete = async (agent: Agent) => {
@@ -1065,7 +1101,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       await apiClient.deleteAgent(agent.id, pid);
       setAgents(prev => prev.filter(a => a.id !== agent.id));
-    } catch (e: any) { setError(e.message || "Failed to delete agent"); }
+    } catch (e: unknown) { setError(errorMessage(e, "Failed to delete agent")); }
   };
 
   const handleToggleEnabled = async (agent: Agent) => {
@@ -1074,7 +1110,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       const updated = await apiClient.updateAgent(agent.id, pid, { enabled: !agent.enabled });
       setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
-    } catch (e: any) { setError(e.message || "Failed to toggle agent"); }
+    } catch (e: unknown) { setError(errorMessage(e, "Failed to toggle agent")); }
   };
 
   const startEdit = (agent: Agent) => {
@@ -1114,7 +1150,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
         const perm = await apiClient.upsertToolPermission(showPermissions.id, { toolName, effect, priority: 1 });
         setAgentPerms(prev => [...prev.filter(p => p.toolName !== toolName), perm]);
       }
-    } catch (e: any) { setError(e.message || "Failed to set permission"); }
+    } catch (e: unknown) { setError(errorMessage(e, "Failed to set permission")); }
   };
 
   const getToolEffect = (toolName: string): "allow" | "deny" | "unset" => {
@@ -1138,7 +1174,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
     try {
       const sa = await apiClient.upsertSkillAccess(showSkills.id, { skillId, allowed: newAllowed });
       setAgentSkills(prev => [...prev.filter(s => s.skillId !== skillId), sa]);
-    } catch (e: any) { setError(e.message || "Failed to set skill access"); }
+    } catch (e: unknown) { setError(errorMessage(e, "Failed to set skill access")); }
   };
 
   const isSkillAllowed = (skillId: string): boolean => {
@@ -1262,7 +1298,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
             </div>
             <div className="field">
               <label>Role</label>
-              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+              <select value={formRole} onChange={e => setFormRole(e.target.value as AgentRole)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
                 {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
               </select>
             </div>
@@ -1298,7 +1334,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
             </div>
             <div className="field">
               <label>Role</label>
-              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+              <select value={formRole} onChange={e => setFormRole(e.target.value as AgentRole)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
                 {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
               </select>
             </div>

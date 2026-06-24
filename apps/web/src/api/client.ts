@@ -1,5 +1,37 @@
 import type { AgentStateTransition, Project, Task, TaskEvent, TaskEvidence, PlanStep, ExecutionDisclosure, VerificationResult, Conversation, ConversationMessage, ProviderStatus, ModelStatus, PresetStatus, RoutingDecision, MemoryEntry, OAuthFinding, MemoryScope, Agent, AgentToolPermission, AgentSkillAccess, CreateAgentInput, UpdateAgentInput, UpsertToolPermissionInput, UpsertSkillAccessInput } from "@morrow/contracts";
 
+export interface ToolCallSummary {
+  id: string;
+  toolName: string;
+  status: string;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  detail?: string;
+}
+
+export interface SkillRecord {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  trustTier: "core" | "controlled" | "experimental";
+  enabled: boolean;
+  validation: "healthy" | "warning" | "invalid" | "incompatible" | "disabled" | "unavailable" | "permission_blocked";
+  validationMessage?: string;
+  tools: string[];
+  permissions: string[];
+  dependencies: string[];
+  source: string;
+}
+
+export interface SkillOperationResult {
+  ok: boolean;
+  detail?: string;
+}
+
 export interface SendMessageOptions {
   preset?: string;
   providerId?: string;
@@ -43,7 +75,7 @@ export const apiClient = {
     });
   },
 
-  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; toolCalls?: any[]; routing?: RoutingDecision | null }> {
+  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; toolCalls?: ToolCallSummary[]; routing?: RoutingDecision | null }> {
     return request(`/api/tasks/${taskId}`);
   },
 
@@ -148,7 +180,7 @@ export const apiClient = {
     return request("/api/presets");
   },
 
-  async testProvider(providerId: string): Promise<any> {
+  async testProvider(providerId: string): Promise<ProviderTestResult> {
     return request(`/api/providers/${providerId}/test`, { method: "POST" });
   },
 
@@ -158,7 +190,7 @@ export const apiClient = {
   },
 
   // ── Skills (adapter layer — connects to real APIs when available) ─────────
-  async listSkills(): Promise<any[]> {
+  async listSkills(): Promise<SkillRecord[]> {
     // Try real endpoint first
     try {
       return await request("/api/skills");
@@ -168,11 +200,11 @@ export const apiClient = {
     }
   },
 
-  async validateSkill(skillId: string): Promise<any> {
+  async validateSkill(skillId: string): Promise<SkillOperationResult> {
     return request(`/api/skills/${skillId}/validate`, { method: "POST" });
   },
 
-  async runSkillDoctor(skillId: string): Promise<any> {
+  async runSkillDoctor(skillId: string): Promise<SkillOperationResult> {
     return request(`/api/skills/${skillId}/doctor`, { method: "POST" });
   },
 

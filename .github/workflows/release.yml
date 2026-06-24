@@ -22,8 +22,11 @@ jobs:
           node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @morrow/web lint
       - run: pnpm check
       - run: pnpm test
+      - run: pnpm build
+      - run: pnpm run test:e2e
 
   build-windows:
     name: Build Windows Release
@@ -39,11 +42,21 @@ jobs:
           node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @morrow/web lint
+      - run: pnpm check
+      - run: pnpm test
       - run: pnpm build
+      - run: pnpm run test:e2e
 
       - name: Package Release
         run: node scripts/package-release.mjs ${{ github.ref_name }}
-        shell: bash
+        shell: pwsh
+
+      - name: Smoke-test the packaged runtime
+        shell: pwsh
+        run: |
+          $package = "dist/Morrow-${{ github.ref_name }}-windows-x64"
+          & "$package/runtime/node.exe" "$package/morrow.mjs" doctor
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -64,20 +77,20 @@ jobs:
             This is an Early Access beta release. Expect breaking changes and incomplete features.
 
             ### Windows
-            Download the portable package, extract, and run `setup.ps1` in PowerShell.
+            Windows 10/11 x64 is supported. The installer verifies the published SHA-256 checksum and bundles Node 22.15.0, so it does not require Git, pnpm, Node, or a source checkout.
 
             ### Install
-            1. Download `Morrow-${{ github.ref_name }}-windows-x64.zip`
-            2. Extract to a permanent location
-            3. Run `.\setup.ps1` in PowerShell
-            4. Launch Morrow from the Start Menu or run `node morrow.mjs`
+            ```powershell
+            irm https://morrowproject.getaxiom.ca/install.ps1 | iex
+            ```
+
+            Alternatively, download `Morrow-${{ github.ref_name }}-windows-x64.zip`, extract it, and run `morrow.cmd`.
 
             ### Known Limitations
-            - No native installer — portable package only
+            - Unsigned beta release
             - macOS and Docker support not yet available
-            - Managed cloud browser not yet available
             - Write and terminal tools gated until safety boundaries ship
-            - Sandboxed plugin runtime hooks incomplete
+            - Skills Control Center is a preview; it shows only registry records returned by the local service
 
             See [RELEASE.md](https://github.com/Mageester/morrow/blob/main/docs/RELEASE.md) for full details.
           prerelease: true

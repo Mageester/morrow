@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as I from "../icons";
 import { apiClient } from "../api/client";
 
@@ -29,17 +29,13 @@ export function SystemHealth() {
     { id: "data-dir", label: "Writable Data Directory", description: "~/.morrow/ permissions", state: "checking" },
     { id: "browser", label: "Browser Availability", description: "Playwright / CDP support", state: "checking" },
     { id: "version", label: "Installed Version", description: "Current Morrow release", state: "checking" },
-    { id: "skills", label: "Skill Registry", description: "Skill discovery and validation", state: "checking" },
-    { id: "dependencies", label: "Required Dependencies", description: "Node, pnpm, git", state: "checking" },
+    { id: "skills", label: "Skills Control Center (Preview)", description: "Registry discovery and validation", state: "checking" },
+    { id: "dependencies", label: "Packaged Runtime", description: "Bundled runtime integrity", state: "checking" },
     { id: "plugins", label: "Plugin Subsystem", description: "Local manifest lifecycle", state: "checking" },
   ]);
   const [overallHealth, setOverallHealth] = useState<"checking" | "healthy" | "degraded" | "unhealthy">("checking");
 
-  useEffect(() => {
-    runChecks();
-  }, []);
-
-  const runChecks = async () => {
+  const runChecks = useCallback(async () => {
     // Reset all to checking
     setChecks(prev => prev.map(c => ({ ...c, state: "checking" as CheckState })));
 
@@ -120,30 +116,30 @@ export function SystemHealth() {
       const skills = await apiClient.listSkills();
       results.push({
         id: "skills",
-        label: "Skill Registry",
-        description: "Skill discovery and validation",
-        state: skills.length > 0 ? "healthy" : "warning",
-        detail: skills.length > 0 ? `${skills.length} skills registered` : "Backend skill API in development",
-        action: skills.length === 0 ? "Skills are available locally via the Skills Control Center" : undefined,
+        label: "Skills Control Center (Preview)",
+        description: "Registry discovery and validation",
+        state: skills.length > 0 ? "healthy" : "unavailable",
+        detail: skills.length > 0 ? `${skills.length} registry records reported` : "No registry records are available",
+        action: skills.length === 0 ? "The Skills Control Center remains a preview until a local registry reports records." : undefined,
       });
     } catch {
       results.push({
         id: "skills",
-        label: "Skill Registry",
-        description: "Skill discovery and validation",
+        label: "Skills Control Center (Preview)",
+        description: "Registry discovery and validation",
         state: "unavailable",
         detail: "Skill registry API not yet available — Codex is building this endpoint",
-        action: "Skills are available through the local Skills Control Center",
+        action: "The Skills Control Center is a preview; no skill availability is claimed.",
       });
     }
 
     // Dependencies
     results.push({
       id: "dependencies",
-      label: "Required Dependencies",
-      description: "Node, pnpm, git",
-      state: "healthy",
-      detail: "Node >= 22, pnpm 10, git available",
+      label: "Packaged Runtime",
+      description: "Bundled runtime integrity",
+      state: "unavailable",
+      detail: "Runtime integrity is verified during installation; this screen cannot re-verify it.",
     });
 
     // Plugins
@@ -160,7 +156,11 @@ export function SystemHealth() {
     const failed = results.filter(r => r.state === "failed" || r.state === "disconnected");
     const warnings = results.filter(r => r.state === "warning");
     setOverallHealth(failed.length > 0 ? "unhealthy" : warnings.length > 0 ? "degraded" : "healthy");
-  };
+  }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(runChecks);
+  }, [runChecks]);
 
   const healthyCount = checks.filter(c => c.state === "healthy").length;
   const issueCount = checks.filter(c => ["warning", "failed", "disconnected"].includes(c.state)).length;

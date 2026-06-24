@@ -14,7 +14,7 @@ const db = openDatabase(dbPath);
 recoverRunningTasks(db);
 
 const runner = new TaskRunner(db);
-const app = buildServer({ db, runner });
+const app = buildServer({ db, runner, ...(process.env.MORROW_WEB_DIR ? { webDir: process.env.MORROW_WEB_DIR } : {}) });
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence
 // is governed by each schedule's next_run_at, so a missed minute simply runs at

@@ -1,24 +1,11 @@
 import { useState, useEffect } from "react";
 import * as I from "../icons";
 import { apiClient } from "../api/client";
+import type { SkillRecord } from "../api/client";
 
 type TrustTier = "core" | "controlled" | "experimental";
-type ValidationState = "healthy" | "warning" | "invalid" | "incompatible" | "disabled" | "unavailable" | "permission_blocked";
 
-interface Skill {
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-  trustTier: TrustTier;
-  enabled: boolean;
-  validation: ValidationState;
-  validationMessage?: string;
-  tools: string[];
-  permissions: string[];
-  dependencies: string[];
-  source: string;
-}
+type Skill = SkillRecord;
 
 const TRUST_TIER_LABELS: Record<string, string> = { core: "Core", controlled: "Controlled", experimental: "Experimental" };
 const TRUST_TIER_COLORS: Record<string, string> = { core: "var(--green)", controlled: "var(--accent)", experimental: "var(--amber)" };
@@ -54,14 +41,14 @@ export function SkillsControlCenter() {
         if (cancelled) return;
         if (data.length > 0) {
           setSkills(data);
-          setSkillStates(new Map(data.map((s: Skill) => [s.id, s.enabled])));
+          setSkillStates(new Map(data.map(s => [s.id, s.enabled])));
         } else {
           // Backend returned empty — registry unavailable
-          setLoadError("Skill registry backend is not yet available. Skills are discoverable through the agent at runtime via find_skill.");
+          setLoadError("The local skill registry has not reported any records. The Skills Control Center is a preview.");
         }
       } catch {
         if (!cancelled) {
-          setLoadError("Cannot reach skill registry. The backend API is being built by Codex. Skills are available through the agent at runtime.");
+          setLoadError("Cannot reach the local skill registry. The Skills Control Center is a preview.");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -104,7 +91,7 @@ export function SkillsControlCenter() {
   if (loading) {
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div className="topbar"><h1>Skills Control Center</h1></div>
+        <div className="topbar"><h1>Skills Control Center (Preview)</h1></div>
         <div className="empty" style={{ minHeight: 300 }}>
           <p className="loading-pulse">Loading skill registry…</p>
         </div>
@@ -115,20 +102,18 @@ export function SkillsControlCenter() {
   if (loadError || skills.length === 0) {
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div className="topbar"><h1>Skills Control Center</h1></div>
+        <div className="topbar"><h1>Skills Control Center (Preview)</h1></div>
         <div style={{ flex: 1, overflow: "auto", padding: "0 22px 22px" }}>
           <div className="card" style={{ marginBottom: 20, borderColor: "rgba(240,180,41,0.3)", background: "var(--amber-soft)", maxWidth: 680, margin: "0 auto" }}>
-            <h3 style={{ margin: "0 0 8px", fontSize: 15, color: "var(--amber)" }}>Skill Registry Unavailable</h3>
+            <h3 style={{ margin: "0 0 8px", fontSize: 15, color: "var(--amber)" }}>Skill Registry Preview</h3>
             <p style={{ margin: 0, fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
-              {loadError || "The skill registry backend API has not been deployed yet. Codex is building this endpoint."}
+              {loadError || "No local skill registry records are available."}
             </p>
             <div style={{ marginTop: 16, padding: "12px 14px", background: "var(--bg-elev)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-              <h4 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>What's Available Now</h4>
+              <h4 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.04em" }}>What this means</h4>
               <ul className="bullet-list" style={{ gap: 4 }}>
-                <li>Skills are discoverable by the agent at runtime via <code>find_skill</code> and <code>load_skill</code> tools.</li>
-                <li>Skills live in the <code>skills/</code> directory of the repository and are loaded on demand.</li>
-                <li>Agent-created skills (via <code>create_skill</code>) are written to the workspace skills directory.</li>
-                <li>Use the conversation interface to ask an agent to search available skills.</li>
+                <li>No installed, enabled, healthy, or live skills are assumed.</li>
+                <li>When available, this screen will display only records returned by the local registry.</li>
               </ul>
             </div>
             <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => {
@@ -152,10 +137,10 @@ export function SkillsControlCenter() {
   return (
     <div className="skills-cc" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div className="topbar">
-        <h1>Skills Control Center</h1>
+        <h1>Skills Control Center (Preview)</h1>
         <div className="spacer" />
         <span className="meta-chip" style={{ color: "var(--text-3)", fontSize: 12 }}>
-          {skills.length} skills from backend registry
+          {skills.length} registry record{skills.length === 1 ? "" : "s"}
         </span>
       </div>
 

@@ -143,7 +143,7 @@ test('onboarding E2E flow: welcomes user, selects setup route, configures permis
     await page.click('.onboard-wizard-actions button:has-text("Next")');
 
     // 6. Skills step
-    await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Choose Your Skills');
+    await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Skills Control Center Preview');
     await page.click('.onboard-wizard-actions button:has-text("Next")');
 
     // 7. Readiness / Final step

@@ -2,6 +2,10 @@ import { useState } from "react";
 import * as I from "../icons";
 import { apiClient } from "../api/client";
 
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export function MissionControl() {
   const [goal, setGoal] = useState("");
   const [projectName, setProjectName] = useState("");
@@ -26,8 +30,8 @@ export function MissionControl() {
       // 3. Send the first message to start a real agent task
       await apiClient.sendMessage(conv.id, goal.trim(), { useMemory: true });
       setSubmitted(true);
-    } catch (err: any) {
-      setError(err.message || "Failed to start mission");
+    } catch (err: unknown) {
+      setError(errorMessage(err, "Failed to start mission"));
     } finally {
       setCreating(false);
     }

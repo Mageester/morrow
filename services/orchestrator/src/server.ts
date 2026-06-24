@@ -55,7 +55,7 @@ import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { listModels } from "./routing/models.js";
@@ -103,10 +103,24 @@ export type ServerDependencies = {
   diagnosticsRunner?: DiagnosticsRunner;
   /** Injectable messaging adapters; defaults to env-configured ones. */
   messageAdapters?: MessageAdapter[];
+  /** Absolute directory containing the production web build for packaged runs. */
+  webDir?: string;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
   const app = Fastify({ logger: false });
+  const webRoot = deps.webDir ? resolve(deps.webDir) : undefined;
+  const contentType = (file: string) => ({
+    ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml", ".woff2": "font/woff2",
+  }[extname(file)] ?? "application/octet-stream");
+  const bundledWebFile = (path: string) => {
+    if (!webRoot) return undefined;
+    const candidate = resolve(webRoot, path || "index.html");
+    if (candidate !== webRoot && !candidate.startsWith(webRoot + sep)) return undefined;
+    return existsSync(candidate) ? candidate : undefined;
+  };
 
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
@@ -146,12 +160,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Liveness + schema probe. Used by the CLI to detect a running service and by
   // `morrow doctor` to report migration state. Exposes no secrets.
-  app.get("/", async () => ({
-    name: "morrow-orchestrator",
-    status: "healthy",
-    ui: "http://127.0.0.1:5173",
-    health: "/api/health",
-  }));
+  app.get("/", async (_request, reply) => {
+    const index = bundledWebFile("index.html");
+    if (index) return reply.type(contentType(index)).send(readFileSync(index));
+    return { name: "morrow-orchestrator", status: "healthy", ui: "http://127.0.0.1:5173", health: "/api/health" };
+  });
 
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
@@ -1123,6 +1136,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/onboarding/reset", async () => {
     deps.db.prepare("DELETE FROM settings").run();
     return { success: true };
+  });
+
+  // The packaged Windows application serves the Vite build from the same
+  // localhost origin as the API. API routes are registered above, so this SPA
+  // fallback cannot shadow them.
+  app.get("/*", async (request, reply) => {
+    const requested = (request.params as { "*"?: string })["*"] ?? "";
+    const file = bundledWebFile(requested);
+    if (file) return reply.type(contentType(file)).send(readFileSync(file));
+    const index = bundledWebFile("index.html");
+    if (index) return reply.type(contentType(index)).send(readFileSync(index));
+    return reply.code(404).send({ version: 1, error: { code: "NOT_FOUND", message: "Route not found" } });
   });
 
   return app;

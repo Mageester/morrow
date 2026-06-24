@@ -14,16 +14,6 @@ interface OnboardingHubProps {
 }
 
 // ── Skill packs ───────────────────────────────────────────────────────────
-const SKILL_PACKS = [
-  { id: "dev", name: "Software Development", desc: "Coding, reviews, testing, debugging, git, refactoring", skills: ["coding", "code-review", "testing", "debugging", "git-inspection", "repository-inspection", "diagnostics", "linting", "documentation"] },
-  { id: "browser", name: "Browser & Research", desc: "Web automation, search, academic papers, data extraction", skills: ["browser-automation", "browser-audit", "web-search", "arxiv"] },
-  { id: "web", name: "Website Building", desc: "Astro sites, HTML/CSS prototyping, design systems, PDFs", skills: ["astro-site-dev", "claude-design", "popular-web-designs", "pdf-generation"] },
-  { id: "files", name: "Files & Documents", desc: "File operations, OCR, templates, validation", skills: ["file-ops", "input-validation", "template-generator", "ocr"] },
-  { id: "writing", name: "Writing & Content", desc: "Text humanization, PowerPoint, presentations", skills: ["humanizer", "powerpoint"] },
-  { id: "security", name: "Security & Auditing", desc: "Secrets scanning, dependency audits, architecture review", skills: ["secrets-scan", "dependency-audit", "architecture-review", "config-management"] },
-  { id: "productivity", name: "Personal Productivity", desc: "Obsidian notes, task management, email", skills: ["obsidian", "task-management", "file-ops"] },
-];
-
 export function OnboardingHub({ state, providers, onRefreshProviders, onComplete }: OnboardingHubProps) {
   const [step, setStep] = useState(0);
   const [route, setRoute] = useState<SetupRoute>(null);
@@ -46,9 +36,6 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
   const [projectSuccess, setProjectSuccess] = useState(false);
   const [createdProjectId, setCreatedProjectId] = useState<string>("");
   
-  // Skills
-  const [enabledPacks, setEnabledPacks] = useState<Set<string>>(new Set(["dev", "browser", "files"]));
-
   // Health checks
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
 
@@ -81,8 +68,8 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
       } else {
         setTestStatus({ status: "error", message: result.detail || "Connection failed" });
       }
-    } catch (e: any) {
-      setTestStatus({ status: "error", message: e.message || "Failed to test connection." });
+    } catch (e: unknown) {
+      setTestStatus({ status: "error", message: e instanceof Error && e.message ? e.message : "Failed to test connection." });
     }
   };
 
@@ -93,8 +80,8 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
       const p = await apiClient.createProject(projectName, workspacePath);
       setCreatedProjectId(p.id);
       setProjectSuccess(true);
-    } catch (err: any) {
-      setProjectError(err.message || "Failed to create project");
+    } catch (err: unknown) {
+      setProjectError(err instanceof Error && err.message ? err.message : "Failed to create project");
     }
   };
 
@@ -103,14 +90,6 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
       await apiClient.saveOnboardingState({ onboarded: true, onboardingStep: null, name, useCase });
       onComplete(createdProjectId);
     } catch { onComplete(createdProjectId); }
-  };
-
-  const togglePack = (packId: string) => {
-    setEnabledPacks(prev => {
-      const next = new Set(prev);
-      if (next.has(packId)) next.delete(packId); else next.add(packId);
-      return next;
-    });
   };
 
   // ── Render steps ────────────────────────────────────────────────────────
@@ -472,49 +451,17 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
           </div>
         )}
 
-        {/* Step 5: Skills Packs */}
+        {/* Step 5: Skills */}
         {step === 5 && (
           <div>
-            <h1>Choose Your Skills</h1>
-            <p className="subtitle">Skills give Morrow domain-specific capabilities. You can add or remove skills anytime.</p>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {SKILL_PACKS.map(pack => {
-                const isEnabled = enabledPacks.has(pack.id);
-                return (
-                  <button
-                    key={pack.id}
-                    className="card"
-                    onClick={() => togglePack(pack.id)}
-                    style={{
-                      cursor: "pointer", textAlign: "left", padding: "16px 18px",
-                      border: isEnabled ? "1px solid var(--accent)" : "1px solid var(--border)",
-                      background: isEnabled ? "var(--accent-soft)" : "var(--bg-panel)",
-                      display: "flex", alignItems: "center", gap: 14,
-                    }}
-                  >
-                    <input 
-                      type="checkbox" 
-                      checked={isEnabled} 
-                      onChange={() => togglePack(pack.id)}
-                      style={{ width: 18, height: 18, accentColor: "var(--accent)", cursor: "pointer" }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <strong style={{ fontSize: 14 }}>{pack.name}</strong>
-                      <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--text-3)" }}>{pack.desc}</p>
-                      <div className="cap-row" style={{ marginTop: 6 }}>
-                        {pack.skills.slice(0, 4).map(s => <span key={s} className="cap" style={{ fontSize: 10 }}>{s}</span>)}
-                        {pack.skills.length > 4 && <span className="cap" style={{ fontSize: 10 }}>+{pack.skills.length - 4} more</span>}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+            <h1>Skills Control Center Preview</h1>
+            <p className="subtitle">The registry is still in preview. Morrow does not claim that skills are installed, enabled, healthy, or available until the local registry reports them.</p>
+            <div className="card" style={{ borderColor: "rgba(240,180,41,0.3)", background: "var(--amber-soft)" }}>
+              <strong style={{ fontSize: 13, color: "var(--amber)" }}>Registry status: preview</strong>
+              <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
+                Continue setup without selecting skills. When the registry endpoint is available, the Skills Control Center will show only discovered records and their reported validation state.
+              </p>
             </div>
-
-            <p style={{ marginTop: 16, fontSize: 12, color: "var(--text-3)", textAlign: "center" }}>
-              You can manage all {enabledPacks.size > 0 ? `${[...enabledPacks].reduce((sum, id) => sum + (SKILL_PACKS.find(p => p.id === id)?.skills.length || 0), 0)}` : "0"} enabled skills in the Skills Control Center after setup.
-            </p>
           </div>
         )}
 
@@ -532,7 +479,7 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
                 <li><span className="kk">Provider</span><span className="vv">{testStatus.status === "success" ? `${activeProv} — Verified` : providers.filter(p => p.configured).length > 0 ? "Configured" : "Not configured yet"}</span></li>
                 <li><span className="kk">Workspace</span><span className="vv">{projectSuccess ? projectName : "Not set"}</span></li>
                 <li><span className="kk">Permissions</span><span className="vv" style={{ textTransform: "capitalize" }}>{permissionPreset}</span></li>
-                <li><span className="kk">Skills</span><span className="vv">{enabledPacks.size} pack{enabledPacks.size !== 1 ? "s" : ""} enabled</span></li>
+                <li><span className="kk">Skills</span><span className="vv">Registry preview</span></li>
               </ul>
             </div>
 
