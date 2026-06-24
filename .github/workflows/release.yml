@@ -1,9 +1,16 @@
 name: Release
 
+# Releases are published deliberately, not automatically from a tag push.
+# A previous tag-triggered pipeline shipped non-functional bundles (the
+# orchestrator could not start). Publication now requires an explicit dispatch
+# and only proceeds after the package contract is validated.
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.1.0-beta.5 (no leading v)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,7 +33,7 @@ jobs:
       - run: pnpm test
 
   build-windows:
-    name: Build Windows Release
+    name: Build and Publish Windows Release
     runs-on: windows-latest
     needs: validate
     steps:
@@ -41,49 +48,37 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      - name: Package Release
-        run: node scripts/package-release.mjs ${{ github.ref_name }}
+      - name: Package release
+        run: node scripts/package-release.mjs ${{ inputs.version }} --skip-build
         shell: bash
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: morrow-windows-release
-          path: |
-            dist/Morrow-*.zip
-            dist/release-manifest.json
-            dist/morrow-*-checksums.txt
+      - name: Validate package contract and installer integration
+        env:
+          MORROW_ARTIFACT: dist/Morrow-v${{ inputs.version }}-windows-x64.zip
+          MORROW_RUN_INSTALL_ITEST: '1'
+        run: node --test scripts/package-release.test.mjs scripts/install-integration.test.mjs
+        shell: bash
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Morrow ${{ github.ref_name }}
-          body: |
-            ## Morrow ${{ github.ref_name }} (Beta)
-
-            This is an Early Access beta release. Expect breaking changes and incomplete features.
-
-            ### Windows
-            Download the portable package, extract, and run `setup.ps1` in PowerShell.
-
-            ### Install
-            1. Download `Morrow-${{ github.ref_name }}-windows-x64.zip`
-            2. Extract to a permanent location
-            3. Run `.\setup.ps1` in PowerShell
-            4. Launch Morrow from the Start Menu or run `node morrow.mjs`
-
-            ### Known Limitations
-            - No native installer — portable package only
-            - macOS and Docker support not yet available
-            - Managed cloud browser not yet available
-            - Write and terminal tools gated until safety boundaries ship
-            - Sandboxed plugin runtime hooks incomplete
-
-            See [RELEASE.md](https://github.com/Mageester/morrow/blob/main/docs/RELEASE.md) for full details.
+          tag_name: v${{ inputs.version }}
+          name: Morrow v${{ inputs.version }}
           prerelease: true
+          body: |
+            ## Morrow v${{ inputs.version }} (Beta)
+
+            Unsigned Early Access beta for Windows 10/11 x64. Install:
+
+            ```powershell
+            irm https://morrowproject.getaxiom.ca/install.ps1 | iex
+            ```
+
+            The installer downloads this artifact, verifies its SHA-256, and
+            launches the local service. Expect breaking changes.
           files: |
             dist/Morrow-*.zip
-            dist/release-manifest.json
+            dist/latest.json
             dist/morrow-*-checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
