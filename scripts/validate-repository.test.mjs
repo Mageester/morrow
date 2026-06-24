@@ -8,8 +8,22 @@ test("package is private and unlicensed", async () => {
   assert.equal(packageJson.license, "UNLICENSED");
 });
 
-test("README does not claim Morrow is production ready", async () => {
+test("README identifies the product as Early Access and documents limitations", async () => {
   const readme = await readFile("README.md", "utf8");
-  assert.match(readme, /Pre-alpha/i);
-  assert.match(readme, /No superiority claims are considered proven/i);
+  assert.match(readme, /Early Access Beta/i);
+  assert.match(readme, /Current alpha limitations/i);
+});
+
+test("GitHub workflows use the pnpm version declared by the repository", async () => {
+  const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+  const expectedVersion = packageJson.packageManager.replace(/^pnpm@/, "");
+  const workflows = await Promise.all([
+    readFile(".github/workflows/ci.yml", "utf8"),
+    readFile(".github/workflows/release.yml", "utf8"),
+    readFile(".github/workflows/deploy-landing.yml", "utf8"),
+  ]);
+
+  for (const workflow of workflows) {
+    assert.match(workflow, new RegExp(`version: ${expectedVersion.replaceAll(".", "\\.")}`));
+  }
 });

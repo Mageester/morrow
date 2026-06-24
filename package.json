@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "turbo dev --parallel",
     "build": "turbo build",
-    "check": "turbo check && node scripts/validate-repository.mjs",
+    "check": "turbo check && node --test scripts/validate-repository.test.mjs && node scripts/validate-repository.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "test": "turbo run test",
     "test:watch": "turbo run test --watch",
