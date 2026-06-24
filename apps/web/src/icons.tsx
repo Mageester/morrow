@@ -35,3 +35,4 @@ export const IconBack = (p: P) => (<S {...p}><path d="M15 18l-6-6 6-6" /></S>);
 export const IconExternal = (p: P) => (<S {...p}><path d="M14 4h6v6" /><path d="M20 4 10 14" /><path d="M19 14v5H5V5h5" /></S>);
 export const IconInbox = (p: P) => (<S {...p}><path d="M3 13h5l2 3h4l2-3h5" /><path d="M5 5h14l2 8v6H3v-6z" /></S>);
 export const IconAgentFace = (p: P) => (<S {...p}><rect x="4" y="6" width="16" height="12" rx="3" /><path d="M9 11h.01M15 11h.01M12 3v3" /></S>);
+export const IconRefresh = (p: P) => (<S {...p}><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.5 2.5L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.5-2.5L3 16" /><path d="M3 21v-5h5" /></S>);

@@ -6,8 +6,14 @@
 
 ```powershell
 pnpm install --frozen-lockfile
-pnpm --filter @morrow/cli build
-pnpm --filter @morrow/cli link --global
+pnpm setup
+```
+
+Restart PowerShell, then:
+
+```powershell
+cd apps\cli
+pnpm link
 morrow --version
 morrow doctor
 ```
@@ -18,11 +24,10 @@ If dependencies change locally, refresh the lockfile first with `pnpm install --
 
 ```powershell
 morrow onboard
-morrow projects add .
 morrow providers configure openai
 morrow models select
 morrow presets select Coding
-morrow chat
+morrow
 ```
 
 `morrow serve --detach` starts a background local orchestrator. `morrow status`, `morrow doctor`, and `morrow logs` report its actual health, diagnostics, and log file. Most API-backed commands auto-start a local service unless `service.baseUrl` points to an external service.
@@ -38,7 +43,7 @@ Provider credentials are stored only in Morrow's dedicated `secrets.env` file un
 Use `--json --no-color --quiet` for scripts. JSON is emitted to stdout; diagnostics use stderr. Example:
 
 ```powershell
-morrow chat --project . --preset Coding --message "Explain this repository" --json --no-color
+morrow run "Explain this repository" --project . --preset Coding --json --no-color
 ```
 
 ## Safety boundaries

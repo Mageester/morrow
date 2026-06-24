@@ -8,6 +8,12 @@ function workspace(prefix: string) {
   return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.request.post('http://localhost:4317/api/onboarding', {
+    data: { onboarded: true }
+  });
+});
+
 async function createProject(page: Page, name: string, path: string) {
   await page.getByRole('button', { name: 'New Project' }).first().click();
   await page.fill('#new-project-name', name);
@@ -82,13 +88,11 @@ test('agent chat: tool calls, evidence, reload persistence, and cancellation', a
     await expect(page.locator('.message-bubble.assistant .msg-text')).toContainText('Based on the evidence');
     await expect(page.locator('.insp-sub .status.completed')).toBeVisible();
 
-    // Reload, reopen the conversation, verify persistence
     await page.reload();
     await openProjectFromList(page, name);
     await expect(page.locator('.message-bubble.user .msg-text')).toHaveText('Explain this repository');
     await expect(page.locator('.message-bubble.assistant .msg-text')).toContainText('Based on the evidence');
 
-    // Follow-up then cancel
     await page.locator('.composer-input').fill('Follow-up query to cancel');
     await page.locator('.composer-form button[type="submit"]').click();
     await page.locator('.stop-btn').click();
@@ -98,4 +102,58 @@ test('agent chat: tool calls, evidence, reload persistence, and cancellation', a
     await openProjectFromList(page, name);
     await expect(page.locator('.streaming-state.cancelled')).toBeVisible();
   } finally { item.remove(); }
+});
+
+test('onboarding E2E flow: welcomes user, selects setup route, configures permissions and workspace, then launches dashboard', async ({ page }) => {
+  await page.request.post('http://localhost:4317/api/onboarding/reset');
+
+  await page.goto('/');
+
+  // 1. Welcome page — verify branding and setup route options
+  await expect(page.locator('.brand-header h2')).toHaveText('M O R R O W');
+  await expect(page.locator('h1')).toHaveText('Private intelligence, built around you.');
+  await expect(page.locator('text=Simple Setup')).toBeVisible();
+  await expect(page.locator('text=Advanced Setup')).toBeVisible();
+  // Choose Simple Setup
+  await page.click('text=Simple Setup');
+
+  // 2. System Check step
+  await expect(page.locator('.onboard-wizard-content h1')).toHaveText('System Check');
+  await expect(page.locator('text=Verifying your Morrow installation')).toBeVisible();
+  await page.click('.onboard-wizard-actions button:has-text("Next")');
+
+  // 3. Provider step — skip for now
+  await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Connect a Model Provider');
+  await page.click('.onboard-wizard-actions button:has-text("Skip for now")');
+
+  // 4. Permissions step — select Balanced
+  await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Choose Your Permission Mode');
+  await page.click('text=Balanced');
+  await page.click('.onboard-wizard-actions button:has-text("Next")');
+
+  // 5. Workspace step — register a project
+  await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Select Your Workspace');
+
+  const item = workspace('morrow-e2e-onboard-');
+  try {
+    await page.fill('input[placeholder*="My Project"]', 'E2E Onboard Project');
+    await page.fill('input[placeholder*="projects"]', item.path);
+    await page.click('button:has-text("Register Workspace")');
+    await expect(page.locator('text=Workspace registered successfully')).toBeVisible();
+    await page.click('.onboard-wizard-actions button:has-text("Next")');
+
+    // 6. Skills step
+    await expect(page.locator('.onboard-wizard-content h1')).toHaveText('Choose Your Skills');
+    await page.click('.onboard-wizard-actions button:has-text("Next")');
+
+    // 7. Readiness / Final step
+    await expect(page.locator('.onboard-wizard-content h2')).toHaveText("You're Ready");
+    await expect(page.locator('text=Start Your First Mission')).toBeVisible();
+    await page.click('text=Start Your First Mission');
+
+    // Should redirect to the dashboard with the created project loaded
+    await expect(page.locator('.workspace-header h3')).toHaveText('E2E Onboard Project Workspace');
+  } finally {
+    item.remove();
+  }
 });

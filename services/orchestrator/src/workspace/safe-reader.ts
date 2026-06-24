@@ -1,9 +1,13 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep, extname } from "node:path";
+import { posix, win32, relative, resolve, sep, extname } from "node:path";
 
 export class SafeReadError extends Error {
   readonly code = "safe_read_rejected";
   constructor(message: string) { super(message); }
+}
+
+function isAnyAbsolutePath(candidate: string): boolean {
+  return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 
 function contained(root: string, target: string) {
@@ -12,18 +16,30 @@ function contained(root: string, target: string) {
 
 const SUPPORTED_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".html", ".css",
-  ".yaml", ".yml", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
+  ".yaml", ".yml", ".log", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
   ".sh", ".bat", ".ps1", ".py", ".go", ".rs", ".java", ".c", ".cpp",
   ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties", ""
 ]);
 
+function isDeniedName(name: string): boolean {
+  const value = name.toLowerCase();
+  return value === ".morrow" || value.startsWith(".env") || value.includes("secret") || value.includes("credential") || value.includes("password") || value.includes("key") || value.includes("token") || value.startsWith("id_");
+}
+
+export function isDeniedWorkspacePath(requested: string): boolean {
+  return requested.split(/[\\/]+/).filter(Boolean).some(isDeniedName);
+}
+
 export function validateSafeReadPath(root: string, requested: string): string {
-  if (isAbsolute(requested)) {
+  if (isAnyAbsolutePath(requested)) {
     throw new SafeReadError("Absolute paths are rejected");
   }
   const parts = requested.split(/[\\/]+/);
   if (parts.includes("..") || parts.includes(".morrow")) {
     throw new SafeReadError("Traversal and .morrow directory are rejected");
+  }
+  if (isDeniedWorkspacePath(requested)) {
+    throw new SafeReadError("Access to secret or credential files is forbidden");
   }
 
   // Resolve candidate absolute path
@@ -50,18 +66,6 @@ export function validateSafeReadPath(root: string, requested: string): string {
     throw new SafeReadError("Invalid path");
   }
   const nameOnly = lastPart.toLowerCase();
-  
-  if (
-    nameOnly.startsWith(".env") ||
-    nameOnly.includes("secret") ||
-    nameOnly.includes("credential") ||
-    nameOnly.includes("password") ||
-    nameOnly.includes("key") ||
-    nameOnly.includes("token") ||
-    nameOnly.startsWith("id_") // e.g. id_rsa
-  ) {
-    throw new SafeReadError("Access to secret or credential files is forbidden");
-  }
 
   // Enforce supported text extensions
   const ext = extname(nameOnly);

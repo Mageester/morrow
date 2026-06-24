@@ -1,5 +1,5 @@
 import { readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { posix, win32, relative, resolve, sep } from "node:path";
 
 export class WorkspaceInspectionError extends Error {
   readonly code = "workspace_inspection_rejected";
@@ -12,12 +12,13 @@ export type WorkspaceInspectionOptions = { startPath?: string; maxDepth: number;
 
 function contained(root: string, target: string) { return target === root || target.startsWith(`${root}${sep}`); }
 function normalized(root: string, target: string) { return relative(root, target).split(sep).join("/"); }
+function isAnyAbsolutePath(candidate: string) { return posix.isAbsolute(candidate) || win32.isAbsolute(candidate); }
 
 export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspectionOptions): WorkspaceInspection {
   if (!Number.isInteger(options.maxDepth) || options.maxDepth < 0 || !Number.isInteger(options.maxResults) || options.maxResults < 1) throw new WorkspaceInspectionError("Workspace inspection limits are invalid");
   const root = realpathSync(canonicalRoot);
   const requested = options.startPath ?? "";
-  if (isAbsolute(requested) || requested.split(/[\\/]+/).includes("..")) throw new WorkspaceInspectionError();
+  if (isAnyAbsolutePath(requested) || requested.split(/[\\/]+/).includes("..")) throw new WorkspaceInspectionError();
   const start = realpathSync(resolve(root, requested));
   if (!contained(root, start)) throw new WorkspaceInspectionError();
   const entries: WorkspaceEntry[] = [];

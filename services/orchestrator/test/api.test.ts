@@ -27,6 +27,17 @@ describe("REST API and Task Runner Vertical Slice", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("returns a truthful API root summary", async () => {
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      name: "morrow-orchestrator",
+      status: "healthy",
+      ui: "http://127.0.0.1:5173",
+      health: "/api/health",
+    });
+  });
+
   it("returns 404 for missing resources", async () => {
     const res1 = await app.inject({ method: "GET", url: "/api/projects/unknown" });
     expect(res1.statusCode).toBe(404);

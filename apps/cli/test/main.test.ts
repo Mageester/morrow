@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { run } from "../src/main.js";
+import { resolveInvocation, run } from "../src/main.js";
 
 describe("morrow root command", () => {
   const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -10,17 +10,68 @@ describe("morrow root command", () => {
     stderr.mockClear();
   });
 
-  it("prints only implemented command groups in help", async () => {
+  it("prints a product-oriented help surface", async () => {
     await expect(run(["--help"])).resolves.toBe(0);
     const help = stdout.mock.calls.map(([value]) => String(value)).join("");
-    expect(help).toContain("morrow status");
-    expect(help).toContain("morrow projects list");
-    expect(help).toContain("morrow presets list");
+    // Primary product commands lead.
+    expect(help).toContain("morrow ask");
+    expect(help).toContain("morrow plan");
+    expect(help).toContain("morrow fix");
+    expect(help).toContain("morrow resume");
+    expect(help).toContain("morrow onboard");
+    expect(help).toContain("morrow auth");
+    // Advanced/admin commands are de-emphasized but discoverable.
+    expect(help).toContain("projects");
     expect(help).not.toContain("completion");
   });
 
   it("prints package version without contacting service", async () => {
     await expect(run(["--version"])).resolves.toBe(0);
     expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0");
+  });
+
+  it("treats plain text input as an implicit one-shot prompt", () => {
+    expect(resolveInvocation(["Explain", "this", "repository"])).toEqual({
+      kind: "prompt",
+      prompt: "Explain this repository",
+    });
+  });
+
+  it("treats bare morrow as interactive chat entry", () => {
+    expect(resolveInvocation([])).toEqual({ kind: "interactive" });
+  });
+
+  it("treats run as an explicit one-shot alias", () => {
+    expect(resolveInvocation(["run", "Return", "JSON"])).toEqual({
+      kind: "prompt",
+      prompt: "Return JSON",
+    });
+  });
+
+  it("treats sessions as a top-level command alias", () => {
+    expect(resolveInvocation(["sessions"])).toEqual({
+      kind: "command",
+      root: "sessions",
+      sub: undefined,
+      args: [],
+    });
+  });
+
+  it("treats session subcommands as a top-level alias", () => {
+    expect(resolveInvocation(["session", "show", "abc123"])).toEqual({
+      kind: "command",
+      root: "session",
+      sub: "show",
+      args: ["abc123"],
+    });
+  });
+
+  it("treats resume as a top-level command alias", () => {
+    expect(resolveInvocation(["resume", "abc123"])).toEqual({
+      kind: "command",
+      root: "resume",
+      sub: "abc123",
+      args: [],
+    });
   });
 });

@@ -5,6 +5,9 @@ import {
   RoutingDecisionSchema,
   MemoryEntrySchema,
   ExecutionDisclosureSchema,
+  AgentExecutionStateSchema,
+  ApprovalSchema,
+  ResolveApprovalSchema,
   TaskStatusSchema,
   SendMessageSchema,
   ModelInfoSchema,
@@ -25,6 +28,20 @@ describe("Contract schemas", () => {
 
   it("enforces the full set of truthful task states", () => {
     expect(TaskStatusSchema.options).toEqual(["queued", "running", "completed", "verified", "failed", "cancelled", "interrupted"]);
+  });
+
+  it("enforces the persisted agent state machine vocabulary", () => {
+    expect(AgentExecutionStateSchema.options).toEqual([
+      "idle", "understanding", "planning", "waiting_for_approval", "executing_tool", "observing",
+      "proposing_changes", "applying_changes", "verifying", "completed", "failed", "cancelled", "interrupted",
+    ]);
+  });
+
+  it("requires an explicit project trust pattern", () => {
+    const approval = { version: 1, id: "approval", taskId: "task", projectId: "project", kind: "command", status: "pending", summary: "pnpm test", details: {}, decision: null, decisionNote: null, createdAt: new Date().toISOString(), resolvedAt: null };
+    expect(() => ApprovalSchema.parse(approval)).not.toThrow();
+    expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project" })).toThrow();
+    expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project", trustPattern: "pnpm test" })).not.toThrow();
   });
 
   it("accepts every provider id in the disclosure schema", () => {
@@ -70,6 +87,8 @@ describe("Contract schemas", () => {
       scope: "project",
       content: "fact",
       source: "user",
+      originTaskId: null,
+      pinned: false,
       enabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

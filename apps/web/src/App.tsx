@@ -3,13 +3,19 @@ import { apiClient } from "./api/client";
 import type {
   Project, Task, TaskEvent, PlanStep, TaskEvidence, ExecutionDisclosure,
   ConversationMessage, VerificationResult,
-  PresetStatus, ProviderStatus, ModelStatus, OAuthFinding, MemoryEntry, RoutingDecision
+  PresetStatus, ProviderStatus, ModelStatus, OAuthFinding, MemoryEntry, RoutingDecision,
+  Agent, AgentToolPermission, AgentSkillAccess,
 } from "@morrow/contracts";
 import { Markdown } from "./Markdown";
 import * as I from "./icons";
 import "./App.css";
+import { OnboardingHub } from "./components/OnboardingWizard";
+import { SkillsControlCenter } from "./components/SkillsControlCenter";
+import { MissionControl } from "./components/MissionControl";
+import { SystemHealth } from "./components/SystemHealth";
+import { DownloadPage } from "./components/DownloadPage";
 
-type Nav = "projects" | "runs" | "agents" | "knowledge" | "mcp" | "tools" | "stores" | "audit" | "settings" | "billing" | "help";
+type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
 type InspTab = "overview" | "files" | "notes" | "settings";
 
@@ -64,6 +70,7 @@ function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
 }
 
 export default function App() {
+  const [onboardState, setOnboardState] = useState<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null } | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectMeta, setProjectMeta] = useState<Record<string, ProjectMeta>>({});
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
@@ -123,6 +130,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    apiClient.getOnboardingState().then(setOnboardState).catch(console.error);
     apiClient.listProjects().then(p => { setProjects(p); loadProjectMeta(p); }).catch(console.error);
     apiClient.getProviderStatus().then(setProviderStatus).catch(console.error);
     apiClient.listPresets?.().then(setPresets).catch(console.error);
@@ -171,12 +179,12 @@ export default function App() {
     if (!focusedTaskId) { setTaskState(null); if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; } return; }
     let live = true;
     const fetchAgg = () => {
-      apiClient.getTaskAggregate(focusedTaskId).then(agg => {
+      // The aggregate endpoint already includes toolCalls + routing; read them
+      // directly rather than racing a second fetch whose failure path dropped
+      // toolCalls (the cause of the empty tool-call panel).
+      apiClient.getTaskAggregate(focusedTaskId).then((agg: any) => {
         if (!live) return;
-        fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/api/tasks/${focusedTaskId}`)
-          .then(r => r.json())
-          .then((extra: any) => { if (live) setTaskState({ ...agg, toolCalls: extra.toolCalls || [], routing: extra.routing ?? null }); })
-          .catch(() => { if (live) setTaskState({ ...agg, routing: (agg as any).routing ?? null }); });
+        setTaskState({ ...agg, toolCalls: agg.toolCalls ?? [], routing: agg.routing ?? null });
       }).catch(console.error);
     };
     fetchAgg();
@@ -288,23 +296,62 @@ export default function App() {
   const focusedTask = taskState?.task;
   const planVerified = focusedTask?.status === "verified";
 
+  const handleResetOnboarding = async () => {
+    if (window.confirm("Are you sure you want to reset your onboarding status and rerun setup?")) {
+      try {
+        await apiClient.resetOnboardingState();
+        setOnboardState({ onboarded: false, onboardingStep: "welcome", useCase: null, name: null });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
+  if (onboardState && !onboardState.onboarded) {
+    return (
+      <OnboardingHub
+        state={onboardState}
+        providers={providers}
+        onRefreshProviders={async () => {
+          setProviders(await apiClient.listProviders());
+          setProviderStatus(await apiClient.getProviderStatus());
+        }}
+        onComplete={async (projectId?: string) => {
+          setOnboardState({ onboarded: true, onboardingStep: null, useCase: null, name: null });
+          const nextProjects = await apiClient.listProjects();
+          setProjects(nextProjects);
+          await loadProjectMeta(nextProjects);
+          if (projectId) {
+            setNav("projects");
+            await openProject(projectId, true);
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <div className={`morrow-app ${inspectorOpen ? "with-inspector" : ""}`}>
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <NavItem id="projects" label="Projects" icon={I.IconProjects} />
+          <NavItem id="missions" label="New Mission" icon={I.IconSend} />
+          <NavItem id="projects" label="Missions" icon={I.IconRuns} />
           <NavItem id="agents" label="Agents" icon={I.IconAgents} />
-          <NavItem id="knowledge" label="Knowledge" icon={I.IconKnowledge} />
-          <NavItem id="mcp" label="MCP Servers" icon={I.IconMcp} />
-          <NavItem id="tools" label="Tools" icon={I.IconTools} />
-          <NavItem id="stores" label="Stores" icon={I.IconStores} />
+          <NavItem id="skills" label="Skills" icon={I.IconTools} />
+          <div className="nav-divider" />
+          <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
+          <NavItem id="files" label="Files" icon={I.IconFile} />
+          <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
           <NavItem id="runs" label="Runs" icon={I.IconRuns} />
-          <NavItem id="audit" label="Audit Log" icon={I.IconAudit} />
+          <div className="nav-divider" />
+          <NavItem id="automations" label="Automations" icon={I.IconSettings} />
+          <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
+          <NavItem id="system" label="System Health" icon={I.IconSettings} />
           <div className="nav-divider" />
           <NavItem id="settings" label="Settings" icon={I.IconSettings} />
-          <NavItem id="billing" label="Billing" icon={I.IconBilling} />
+          <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
           <NavItem id="help" label="Help" icon={I.IconHelp} />
         </nav>
         <div className="nav-spacer" />
@@ -320,14 +367,14 @@ export default function App() {
         {nav === "projects" && view === "list" && (
           <>
             <div className="topbar">
-              <h1>Projects</h1>
+              <h1>Missions</h1>
               <div className="spacer" />
               <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
             </div>
             <div className="toolbar">
               <div className="search">
                 <I.IconSearch className="ico" />
-                <input placeholder="Search projects…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search projects" />
+                <input placeholder="Search missions…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search missions" />
                 <span className="kbd">⌘K</span>
               </div>
               <label className="select">
@@ -345,8 +392,8 @@ export default function App() {
             {projects.length === 0 ? (
               <div className="empty">
                 <I.IconProjects className="empty-ico" />
-                <h3>No projects yet</h3>
-                <p>Create a local project pointed at a folder. Morrow runs a read-only agent over the workspace you choose.</p>
+                <h3>No missions yet</h3>
+                <p>Create a mission by pointing Morrow at a local folder. The agent will run within your workspace and report evidence.</p>
                 <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
               </div>
             ) : (
@@ -374,7 +421,7 @@ export default function App() {
                     })}
                   </tbody>
                 </table>
-                <div className="table-footer">{filteredProjects.length} of {projects.length} project{projects.length === 1 ? "" : "s"}</div>
+                <div className="table-footer">{filteredProjects.length} of {projects.length} mission{projects.length === 1 ? "" : "s"}</div>
               </div>
             )}
           </>
@@ -462,10 +509,24 @@ export default function App() {
             selectedProject={selectedProject} memoryEntries={memoryEntries}
             newMemoryContent={newMemoryContent} setNewMemoryContent={setNewMemoryContent}
             onAddMemory={handleAddMemory} onToggleMemory={handleToggleMemory} onDeleteMemory={handleDeleteMemory}
+            onResetOnboarding={handleResetOnboarding}
           />
         )}
 
-        {["agents", "knowledge", "mcp", "tools", "stores", "audit", "billing", "help"].includes(nav) && (
+        {nav === "agents" && (
+          <AgentsPanel
+            selectedProject={selectedProject}
+            projects={projects}
+            onNavigateToProject={(id) => { setSelectedProjectId(id); setNav("projects"); setView("list"); }}
+          />
+        )}
+
+        {nav === "skills" && <SkillsControlCenter />}
+        {nav === "missions" && <MissionControl />}
+        {nav === "system" && <SystemHealth />}
+        {nav === "download" && <DownloadPage />}
+
+        {["browser", "files", "memory", "automations", "approvals", "help"].includes(nav) && (
           <PlaceholderView nav={nav} />
         )}
       </div>
@@ -715,14 +776,12 @@ function RunsView({ projects, projectMeta, onOpen }: { projects: Project[]; proj
 // ── Placeholder views ──────────────────────────────────────────────────────────
 function PlaceholderView({ nav }: { nav: string }) {
   const copy: Record<string, { title: string; body: string; icon: (p: any) => React.ReactElement }> = {
-    agents: { title: "Agents", body: "Named agents with their own role, tools, and memory are on the roadmap. Today, presets act as agent profiles — configure them in Settings → Presets.", icon: I.IconAgents },
-    knowledge: { title: "Knowledge", body: "Project knowledge and document stores will live here. The deterministic memory foundation is available in Settings → Data & Memory.", icon: I.IconKnowledge },
-    mcp: { title: "MCP Servers", body: "Model Context Protocol server connections will be managed here once the tool runtime is opened beyond the read-only workspace tools.", icon: I.IconMcp },
-    tools: { title: "Tools", body: "The alpha ships read-only workspace tools (inspect, list, read) behind a shared containment layer. Write and terminal tools are gated until their safety boundaries ship.", icon: I.IconTools },
-    stores: { title: "Stores", body: "Local data stores and connectors will appear here. All data is currently kept in a local SQLite database.", icon: I.IconStores },
-    audit: { title: "Audit Log", body: "A full audit trail of tool calls and external data flow will live here. Per-run evidence and disclosures are already visible in the inspector.", icon: I.IconAudit },
-    billing: { title: "Billing", body: "Morrow is local-first and self-hosted. There is nothing to bill — you bring your own provider keys.", icon: I.IconBilling },
-    help: { title: "Help", body: "See the README and docs/providers.md for setup, the capability matrix, and manual verification steps.", icon: I.IconHelp },
+    browser: { title: "Browser", body: "Web automation and research via Playwright/CDP. Real Chromium browser sessions with semantic actions, navigation, downloads, screenshots, and persisted audit records (B15). Open a project and use browser tools from the conversation.", icon: I.IconKnowledge },
+    files: { title: "Files", body: "File operations are scoped to your project workspace. Every read and write is logged to the audit trail. Secret files (.env, keys, credentials) are automatically rejected.", icon: I.IconFile },
+    memory: { title: "Memory", body: "Deterministic, project-isolated memory. Each entry has a source and timestamp. Memory never crosses projects and can be disabled or deleted. Manage memory from Settings → Data & Memory.", icon: I.IconKnowledge },
+    automations: { title: "Automations", body: "Scheduled tasks, cron jobs, and automated workflows are on the roadmap. The cron scheduler foundation is implemented — automations UI is coming in a future release.", icon: I.IconSettings },
+    approvals: { title: "Approvals", body: "Approval requests appear when an agent needs to run a command, write a file, or perform an action that requires confirmation. You can approve once, trust the pattern, or deny.", icon: I.IconShield },
+    help: { title: "Help", body: "See the README and docs/providers.md for setup, the capability matrix, and manual verification steps. Use the System Health page to diagnose issues.", icon: I.IconHelp },
   };
   const c = copy[nav] || copy.help;
   return (
@@ -741,8 +800,9 @@ function SettingsView(props: {
   selectedProject?: Project; memoryEntries: MemoryEntry[];
   newMemoryContent: string; setNewMemoryContent: (s: string) => void;
   onAddMemory: () => void; onToggleMemory: (id: string, e: boolean) => void; onDeleteMemory: (id: string) => void;
+  onResetOnboarding: () => void;
 }) {
-  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries } = props;
+  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries, onResetOnboarding } = props;
   return (
     <div className="placeholder-view">
       <div className="topbar"><h1>Settings</h1></div>
@@ -839,6 +899,11 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
               <tr><td>inspect_workspace</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>list_files</td><td>read-only</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>read_file</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>search_text</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>search_files</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_status</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_diff</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
+              <tr><td>git_log</td><td>read-only, bounded</td><td><span className="badge-ok">enabled</span></td></tr>
               <tr><td>write_file</td><td>requires approval, diff, rollback</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
               <tr><td>run_command</td><td>requires approval, sandbox</td><td><span className="badge-muted">not enabled (future)</span></td></tr>
             </tbody></table>
@@ -848,32 +913,477 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
         {tab === "data" && (
           <div className="settings-panel">
             <div className="card"><h3>Project Memory</h3><p className="muted">Deterministic, project-isolated memory for <strong>{selectedProject?.name ?? "the selected project"}</strong>. Each entry has a source and timestamp, can be disabled, and never crosses projects.</p>
-              {selectedProject ? (<>
-                <div className="memory-add"><input aria-label="New memory" value={props.newMemoryContent} onChange={e => props.setNewMemoryContent(e.target.value)} placeholder="Add a fact Morrow should remember…" /><button className="primary-btn" onClick={props.onAddMemory} disabled={!props.newMemoryContent.trim()}>Add</button></div>
-                {memoryEntries.length === 0 ? <p className="empty-state">No memory entries yet.</p> : (
-                  <ul className="memory-list">{memoryEntries.map(m => (
-                    <li key={m.id} className={`memory-item ${m.enabled ? "" : "disabled"}`}>
-                      <input type="checkbox" checked={m.enabled} onChange={e => props.onToggleMemory(m.id, e.target.checked)} aria-label="Toggle memory" />
-                      <div className="memory-body"><span className="memory-content">{m.content}</span><span className="memory-meta">{m.scope} · {m.source} · {new Date(m.createdAt).toLocaleDateString()}</span></div>
-                      <button className="icon-btn" aria-label="Delete memory" onClick={() => props.onDeleteMemory(m.id)}>✕</button>
-                    </li>
-                  ))}</ul>
-                )}
-              </>) : <p className="empty-state">Select a project (from Projects) to manage its memory.</p>}
+              {selectedProject ? (
+                <>
+                  <div className="memory-add">
+                    <input aria-label="New memory" value={props.newMemoryContent} onChange={e => props.setNewMemoryContent(e.target.value)} placeholder="Add a fact Morrow should remember…" />
+                    <button className="primary-btn" onClick={props.onAddMemory} disabled={!props.newMemoryContent.trim()}>Add</button>
+                  </div>
+                  {memoryEntries.length === 0 ? <p className="empty-state">No memory entries yet.</p> : (
+                    <ul className="memory-list">{memoryEntries.map(m => (
+                      <li key={m.id} className={`memory-item ${m.enabled ? "" : "disabled"}`}>
+                        <input type="checkbox" checked={m.enabled} onChange={e => props.onToggleMemory(m.id, e.target.checked)} aria-label="Toggle memory" />
+                        <div className="memory-body"><span className="memory-content">{m.content}</span><span className="memory-meta">{m.scope} · {m.source} · {new Date(m.createdAt).toLocaleDateString()}</span></div>
+                        <button className="icon-btn" aria-label="Delete memory" onClick={() => props.onDeleteMemory(m.id)}>✕</button>
+                      </li>
+                    ))}</ul>
+                  )}
+                </>
+              ) : <p className="empty-state">Select a project (from Projects) to manage its memory.</p>}
             </div>
-            <div className="card"><h3>Storage</h3><p className="muted">Data is stored locally in SQLite at <span className="codeword">.morrow/morrow.db</span>. Test runs use isolated temporary databases.</p></div>
+            <div className="card"><h3>Storage</h3><p className="muted">Data is stored locally in SQLite at <span className="codeword">~/.morrow/morrow.db</span>. Project-local <span className="codeword">.morrow</span> remains available for workspace metadata. Test runs use isolated temporary databases.</p></div>
           </div>
         )}
 
         {tab === "diagnostics" && (
-          <div className="settings-panel"><div className="card"><h3>Diagnostics</h3><ul className="diag-list">
-            <li><span className="k">Default provider</span>{providerStatus?.configured ? `${providerStatus.provider} · ${providerStatus.model}` : "none configured"}</li>
-            <li><span className="k">Configured providers</span>{providers.filter(p => p.configured).map(p => p.id).join(", ") || "none"}</li>
-            <li><span className="k">Available presets</span>{presets.filter(p => p.available).map(p => p.preset.id).join(", ") || "none"}</li>
-            <li><span className="k">Known models</span>{models.length}</li>
-          </ul></div></div>
+          <div className="settings-panel">
+            <div className="card">
+              <h3>Diagnostics</h3>
+              <ul className="diag-list">
+                <li><span className="k">Default provider</span>{providerStatus?.configured ? `${providerStatus.provider} · ${providerStatus.model}` : "none configured"}</li>
+                <li><span className="k">Configured providers</span>{providers.filter(p => p.configured).map(p => p.id).join(", ") || "none"}</li>
+                <li><span className="k">Available presets</span>{presets.filter(p => p.available).map(p => p.preset.id).join(", ") || "none"}</li>
+                <li><span className="k">Known models</span>{models.length}</li>
+              </ul>
+            </div>
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3>Onboarding Setup</h3>
+              <p className="muted">Reset your onboarding status and rerun the guided Morrow setup wizard at any time.</p>
+              <button className="btn" onClick={onResetOnboarding} style={{ marginTop: 10 }}>Rerun Guided Onboarding</button>
+            </div>
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Agents Panel ──────────────────────────────────────────────────────────────
+const AGENT_ROLES = ["assistant", "code-reviewer", "researcher", "writer", "architect", "tester", "devops", "security", "custom"] as const;
+const ROLE_LABELS: Record<string, string> = {
+  assistant: "Assistant", "code-reviewer": "Code Reviewer", researcher: "Researcher",
+  writer: "Writer", architect: "Architect", tester: "Tester",
+  devops: "DevOps", security: "Security", custom: "Custom",
+};
+const AVAILABLE_TOOLS = [
+  "filesystem-read", "filesystem-write", "command-exec", "search",
+  "network", "git-inspection", "vision", "image-gen", "browser", "terminal",
+];
+
+interface AgentsPanelProps {
+  selectedProject?: Project;
+  projects: Project[];
+  onNavigateToProject: (id: string) => void;
+}
+
+function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
+  const [projectFilter, setProjectFilter] = useState<string>(selectedProject?.id || "all");
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Modal state
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [showPermissions, setShowPermissions] = useState<Agent | null>(null);
+  const [showSkills, setShowSkills] = useState<Agent | null>(null);
+
+  // Form state
+  const [formName, setFormName] = useState("");
+  const [formRole, setFormRole] = useState<string>("assistant");
+  const [formInstructions, setFormInstructions] = useState("");
+  const [formProviderOverride, setFormProviderOverride] = useState("");
+  const [formModelOverride, setFormModelOverride] = useState("");
+  const [formError, setFormError] = useState("");
+
+  // Permission / skill state
+  const [agentPerms, setAgentPerms] = useState<AgentToolPermission[]>([]);
+  const [agentSkills, setAgentSkills] = useState<AgentSkillAccess[]>([]);
+
+  const loadAgents = async (projectId: string) => {
+    if (!projectId || projectId === "all") { setAgents([]); return; }
+    setLoading(true); setError("");
+    try {
+      const list = await apiClient.listProjectAgents(projectId);
+      setAgents(list);
+    } catch (e: any) {
+      setError(e.message || "Failed to load agents");
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    const pid = projectFilter === "all" ? selectedProject?.id ?? "" : projectFilter;
+    if (pid) loadAgents(pid);
+    else setAgents([]);
+  }, [projectFilter]);
+
+  const projectForAgent = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const a of agents) { map[a.id] = a.projectId; }
+    return map;
+  }, [agents]);
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault(); setFormError("");
+    const pid = projectFilter === "all" ? selectedProject?.id : projectFilter;
+    if (!pid) { setFormError("Select a project first"); return; }
+    try {
+      const agent = await apiClient.createAgent(pid, {
+        name: formName.trim(),
+        role: formRole as any,
+        instructions: formInstructions.trim() || undefined,
+        providerOverride: formProviderOverride.trim() || undefined,
+        modelOverride: formModelOverride.trim() || undefined,
+      });
+      setAgents(prev => [...prev, agent]);
+      setShowCreate(false); resetForm();
+    } catch (e: any) { setFormError(e.message || "Failed to create agent"); }
+  };
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault(); setFormError("");
+    if (!editingAgent) return;
+    const pid = projectForAgent[editingAgent.id];
+    if (!pid) { setFormError("Cannot determine project"); return; }
+    try {
+      const updated = await apiClient.updateAgent(editingAgent.id, pid, {
+        name: formName.trim() || undefined,
+        role: formRole as any,
+        instructions: formInstructions.trim() || null,
+        providerOverride: formProviderOverride.trim() || null,
+        modelOverride: formModelOverride.trim() || null,
+      });
+      setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
+      setEditingAgent(null); resetForm();
+    } catch (e: any) { setFormError(e.message || "Failed to update agent"); }
+  };
+
+  const handleDelete = async (agent: Agent) => {
+    if (!window.confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) return;
+    const pid = projectForAgent[agent.id];
+    if (!pid) return;
+    try {
+      await apiClient.deleteAgent(agent.id, pid);
+      setAgents(prev => prev.filter(a => a.id !== agent.id));
+    } catch (e: any) { setError(e.message || "Failed to delete agent"); }
+  };
+
+  const handleToggleEnabled = async (agent: Agent) => {
+    const pid = projectForAgent[agent.id];
+    if (!pid) return;
+    try {
+      const updated = await apiClient.updateAgent(agent.id, pid, { enabled: !agent.enabled });
+      setAgents(prev => prev.map(a => a.id === updated.id ? updated : a));
+    } catch (e: any) { setError(e.message || "Failed to toggle agent"); }
+  };
+
+  const startEdit = (agent: Agent) => {
+    setEditingAgent(agent);
+    setFormName(agent.name);
+    setFormRole(agent.role);
+    setFormInstructions(agent.instructions || "");
+    setFormProviderOverride(agent.providerOverride || "");
+    setFormModelOverride(agent.modelOverride || "");
+    setFormError("");
+  };
+
+  const resetForm = () => {
+    setFormName(""); setFormRole("assistant"); setFormInstructions("");
+    setFormProviderOverride(""); setFormModelOverride(""); setFormError("");
+  };
+
+  // ── Permission management ──────────────────────────────────────────────────
+  const openPermissions = async (agent: Agent) => {
+    setShowPermissions(agent);
+    try {
+      const perms = await apiClient.listAgentToolPermissions(agent.id);
+      setAgentPerms(perms);
+    } catch { setAgentPerms([]); }
+  };
+
+  const toggleToolPermission = async (toolName: string, effect: "allow" | "deny") => {
+    if (!showPermissions) return;
+    // Remove existing permission for this tool first, then add the new one
+    const existing = agentPerms.find(p => p.toolName === toolName);
+    try {
+      if (existing && existing.effect === effect) {
+        // Toggle off: remove permission
+        await apiClient.deleteToolPermission(showPermissions.id, toolName);
+        setAgentPerms(prev => prev.filter(p => p.toolName !== toolName));
+      } else {
+        const perm = await apiClient.upsertToolPermission(showPermissions.id, { toolName, effect, priority: 1 });
+        setAgentPerms(prev => [...prev.filter(p => p.toolName !== toolName), perm]);
+      }
+    } catch (e: any) { setError(e.message || "Failed to set permission"); }
+  };
+
+  const getToolEffect = (toolName: string): "allow" | "deny" | "unset" => {
+    const p = agentPerms.find(p => p.toolName === toolName);
+    return p?.effect || "unset";
+  };
+
+  // ── Skill access management ────────────────────────────────────────────────
+  const openSkills = async (agent: Agent) => {
+    setShowSkills(agent);
+    try {
+      const skills = await apiClient.listAgentSkillAccess(agent.id);
+      setAgentSkills(skills);
+    } catch { setAgentSkills([]); }
+  };
+
+  const toggleSkillAccess = async (skillId: string) => {
+    if (!showSkills) return;
+    const existing = agentSkills.find(s => s.skillId === skillId);
+    const newAllowed = existing ? !existing.allowed : false;
+    try {
+      const sa = await apiClient.upsertSkillAccess(showSkills.id, { skillId, allowed: newAllowed });
+      setAgentSkills(prev => [...prev.filter(s => s.skillId !== skillId), sa]);
+    } catch (e: any) { setError(e.message || "Failed to set skill access"); }
+  };
+
+  const isSkillAllowed = (skillId: string): boolean => {
+    const s = agentSkills.find(s => s.skillId === skillId);
+    return s ? s.allowed : true; // default: allowed
+  };
+
+  // ── Skills list ────────────────────────────────────────────────────────────
+  const SKILL_LABELS: Record<string, string> = {
+    accessibility: "Accessibility", "api-integration": "API Integration",
+    "architecture-review": "Architecture Review", "ci-cd": "CI/CD Pipeline",
+    "code-refactor": "Code Refactor", "code-review": "Code Review",
+    coding: "Coding", "config-management": "Config Management",
+    "data-analysis": "Data Analysis", database: "Database",
+    "dependency-audit": "Dependency Audit", diagnostics: "Diagnostics",
+    documentation: "Documentation", "file-ops": "File Operations",
+    "git-inspection": "Git Inspection", "input-validation": "Input Validation",
+    linting: "Linting", "migration-planner": "Migration Planner",
+    performance: "Performance", "repository-inspection": "Repository Inspection",
+    "secrets-scan": "Secrets Scan", "shell-automation": "Shell Automation",
+    "task-management": "Task Management", "template-generator": "Template Generator",
+    testing: "Testing", "web-search": "Web Search",
+  };
+  const SKILL_IDS = Object.keys(SKILL_LABELS);
+
+  const pid = projectFilter === "all" ? selectedProject?.id : projectFilter;
+
+  return (
+    <div className="agents-panel">
+      <div className="topbar">
+        <h1>Agents</h1>
+        <div className="spacer" />
+        <div className="toolbar" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label className="select" style={{ minWidth: 180 }}>
+            <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} aria-label="Filter by project">
+              <option value="all">{selectedProject ? selectedProject.name : "All Projects"}</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+          <button className="btn btn-primary" onClick={() => { resetForm(); setShowCreate(true); }} disabled={!pid}>
+            <I.IconPlus className="ico" /> New Agent
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="error-message" role="alert" style={{ margin: "10px 22px" }}>{error}</div>}
+
+      {!pid ? (
+        <div className="empty">
+          <I.IconAgents className="empty-ico" />
+          <h3>Select a project</h3>
+          <p>Agents are scoped to a project. Select a project above to manage its agent team.</p>
+        </div>
+      ) : loading ? (
+        <div className="empty"><p>Loading agents...</p></div>
+      ) : agents.length === 0 ? (
+        <div className="empty">
+          <I.IconAgents className="empty-ico" />
+          <h3>No agents yet</h3>
+          <p>Create named agents with specific roles, tool permissions, and skill access. Agents can be assigned to tasks for focused work.</p>
+          <button className="btn btn-primary" onClick={() => { resetForm(); setShowCreate(true); }}><I.IconPlus className="ico" /> New Agent</button>
+        </div>
+      ) : (
+        <div className="table-wrap">
+          <table className="ptable">
+            <colgroup><col className="c-name" /><col className="c-role" /><col className="c-tools" /><col className="c-skills" /><col className="c-status" /><col className="c-menu" /></colgroup>
+            <thead><tr><th>Name</th><th>Role</th><th>Tool Permissions</th><th>Skills</th><th>Status</th><th /></tr></thead>
+            <tbody>
+              {agents.map(agent => (
+                <tr key={agent.id}>
+                  <td>
+                    <div className="cell-name">
+                      <I.IconAgentFace className="file-ico" />
+                      <div>
+                        <div className="name-main">{agent.name}</div>
+                        {agent.instructions && <div className="name-sub" style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.instructions}</div>}
+                      </div>
+                    </div>
+                  </td>
+                  <td><span className="cap">{ROLE_LABELS[agent.role] || agent.role}</span></td>
+                  <td>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openPermissions(agent)}>
+                      {(agentPerms.length > 0 && showPermissions?.id === agent.id) ? `${agentPerms.length} rules` : "Configure"}
+                    </button>
+                  </td>
+                  <td>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openSkills(agent)}>
+                      {(agentSkills.length > 0 && showSkills?.id === agent.id) ? `${agentSkills.length} rules` : "Configure"}
+                    </button>
+                  </td>
+                  <td>
+                    <span className={`status ${agent.enabled ? "completed" : "draft"}`}>
+                      <span className="dot" />{agent.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleToggleEnabled(agent)}>{agent.enabled ? "Disable" : "Enable"}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => startEdit(agent)}>Edit</button>
+                      <button className="btn btn-ghost btn-sm" style={{ color: "var(--red)" }} onClick={() => handleDelete(agent)}>Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Create Agent Modal */}
+      {showCreate && (
+        <div className="modal-overlay" onClick={() => setShowCreate(false)}>
+          <form className="modal" onClick={e => e.stopPropagation()} onSubmit={handleCreate} style={{ maxWidth: 520 }}>
+            <h2>New Agent</h2>
+            {formError && <div className="error-message" role="alert">{formError}</div>}
+            <div className="field">
+              <label>Name</label>
+              <input value={formName} onChange={e => setFormName(e.target.value)} placeholder="Backend Engineer" required autoFocus />
+            </div>
+            <div className="field">
+              <label>Role</label>
+              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+                {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Instructions (system prompt)</label>
+              <textarea value={formInstructions} onChange={e => setFormInstructions(e.target.value)} placeholder="You are a backend engineer focused on API design and database performance..." rows={3} style={{ width: "100%", background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", resize: "vertical" }} />
+            </div>
+            <div className="field">
+              <label>Provider Override (optional)</label>
+              <input value={formProviderOverride} onChange={e => setFormProviderOverride(e.target.value)} placeholder="anthropic, openai, deepseek..." />
+            </div>
+            <div className="field">
+              <label>Model Override (optional)</label>
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="claude-sonnet-4, gpt-4o..." />
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={!formName.trim()}>Create Agent</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Agent Modal */}
+      {editingAgent && (
+        <div className="modal-overlay" onClick={() => { setEditingAgent(null); resetForm(); }}>
+          <form className="modal" onClick={e => e.stopPropagation()} onSubmit={handleUpdate} style={{ maxWidth: 520 }}>
+            <h2>Edit Agent</h2>
+            {formError && <div className="error-message" role="alert">{formError}</div>}
+            <div className="field">
+              <label>Name</label>
+              <input value={formName} onChange={e => setFormName(e.target.value)} placeholder="Backend Engineer" required autoFocus />
+            </div>
+            <div className="field">
+              <label>Role</label>
+              <select value={formRole} onChange={e => setFormRole(e.target.value)} style={{ background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", width: "100%" }}>
+                {AGENT_ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>Instructions (system prompt)</label>
+              <textarea value={formInstructions} onChange={e => setFormInstructions(e.target.value)} rows={3} style={{ width: "100%", background: "var(--bg-panel)", border: "1px solid var(--border-2)", color: "var(--text)", padding: 9, borderRadius: "var(--radius-sm)", resize: "vertical" }} />
+            </div>
+            <div className="field">
+              <label>Provider Override</label>
+              <input value={formProviderOverride} onChange={e => setFormProviderOverride(e.target.value)} placeholder="Leave empty to use project default" />
+            </div>
+            <div className="field">
+              <label>Model Override</label>
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="Leave empty to use project default" />
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => { setEditingAgent(null); resetForm(); }}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={!formName.trim()}>Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Tool Permissions Modal */}
+      {showPermissions && (
+        <div className="modal-overlay" onClick={() => setShowPermissions(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "80vh", overflow: "auto" }}>
+            <h2>Tool Permissions: {showPermissions.name}</h2>
+            <p className="muted" style={{ marginBottom: 16 }}>Set per-tool allow/deny rules. Deny overrides allow at the same priority level.</p>
+            <table className="perm-table" style={{ width: "100%" }}>
+              <thead><tr><th>Tool</th><th style={{ textAlign: "center" }}>Allow</th><th style={{ textAlign: "center" }}>Deny</th><th style={{ textAlign: "center" }}>Unset</th></tr></thead>
+              <tbody>
+                {AVAILABLE_TOOLS.map(tool => {
+                  const effect = getToolEffect(tool);
+                  return (
+                    <tr key={tool}>
+                      <td><code>{tool}</code></td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "allow"} onChange={() => toggleToolPermission(tool, "allow")} />
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "deny"} onChange={() => toggleToolPermission(tool, "deny")} />
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        <input type="radio" name={`perm-${tool}`} checked={effect === "unset"} onChange={() => {
+                          if (effect !== "unset") apiClient.deleteToolPermission(showPermissions.id, tool).then(() => {
+                            setAgentPerms(prev => prev.filter(p => p.toolName !== tool));
+                          }).catch(console.error);
+                        }} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button type="button" className="btn btn-primary" onClick={() => setShowPermissions(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Access Modal */}
+      {showSkills && (
+        <div className="modal-overlay" onClick={() => setShowSkills(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "80vh", overflow: "auto" }}>
+            <h2>Skill Access: {showSkills.name}</h2>
+            <p className="muted" style={{ marginBottom: 16 }}>Toggle which skills this agent is allowed to use. Disabled skills are hidden from the agent's skill list.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+              {SKILL_IDS.map(skillId => (
+                <div key={skillId} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px" }}>
+                  <span style={{ fontSize: 13 }}>{SKILL_LABELS[skillId] || skillId}</span>
+                  <label className="toggle-label" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                    <input type="checkbox" checked={isSkillAllowed(skillId)} onChange={() => toggleSkillAccess(skillId)} />
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{isSkillAllowed(skillId) ? "on" : "off"}</span>
+                  </label>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button type="button" className="btn btn-primary" onClick={() => setShowSkills(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

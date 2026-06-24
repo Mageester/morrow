@@ -25,6 +25,14 @@ vi.mock('../src/api/client', () => ({
     addMemory: vi.fn(),
     setMemoryEnabled: vi.fn(),
     deleteMemory: vi.fn(),
+    getOnboardingState: vi.fn(),
+    saveOnboardingState: vi.fn(),
+    resetOnboardingState: vi.fn(),
+    testProvider: vi.fn(),
+    getHealth: vi.fn(),
+    listSkills: vi.fn(),
+    validateSkill: vi.fn(),
+    runSkillDoctor: vi.fn(),
   }
 }));
 
@@ -36,6 +44,11 @@ const PROVIDERS = [
 ];
 
 function defaults(providerConfigured = true) {
+  (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: true, onboardingStep: null, useCase: 'Software Development', name: 'Alex' });
+  (apiClient.listProjects as any).mockResolvedValue([]);
+  (apiClient.saveOnboardingState as any).mockResolvedValue({ success: true });
+  (apiClient.resetOnboardingState as any).mockResolvedValue({ success: true });
+  (apiClient.testProvider as any).mockResolvedValue({ ok: true, latencyMs: 100 });
   (apiClient.getProviderStatus as any).mockResolvedValue({ configured: providerConfigured, provider: providerConfigured ? 'openai' : 'none', model: providerConfigured ? 'gpt-4o-mini' : 'none' });
   (apiClient.listProjectTasks as any).mockResolvedValue([]);
   (apiClient.listConversations as any).mockResolvedValue([]);
@@ -47,6 +60,8 @@ function defaults(providerConfigured = true) {
   (apiClient.listProjectMemory as any).mockResolvedValue([]);
   (apiClient.subscribeToTaskEvents as any).mockReturnValue(() => {});
   (apiClient.getTaskAggregate as any).mockResolvedValue({ task: { id: 't', status: 'running' }, plan: [], events: [], evidence: [], routing: null });
+  (apiClient.getHealth as any).mockResolvedValue({ ok: true, service: 'morrow-orchestrator', apiVersion: 1, mockProvider: false, time: new Date().toISOString() });
+  (apiClient.listSkills as any).mockResolvedValue([]);
   (global.fetch as any) = vi.fn().mockResolvedValue({ json: async () => ({ toolCalls: [], routing: null }) });
 }
 
@@ -58,13 +73,13 @@ describe('Morrow Web App (redesigned shell)', () => {
     render(<App />);
     expect(await screen.findByText('Morrow')).toBeDefined();
     expect(await screen.findByText('Feedback Analysis')).toBeDefined();
-    expect(screen.getAllByText(/Projects/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Mission/i).length).toBeGreaterThan(0);
   });
 
-  it('shows an empty state with no projects', async () => {
+  it('shows an empty state with no missions', async () => {
     (apiClient.listProjects as any).mockResolvedValue([]);
     render(<App />);
-    expect(await screen.findByText(/No projects yet/i)).toBeDefined();
+    expect(await screen.findByText(/No missions yet/i)).toBeDefined();
   });
 
   it('opens the New Project modal with workspace inputs', async () => {
@@ -107,9 +122,33 @@ describe('Morrow Web App (redesigned shell)', () => {
   it('renders the providers settings tab', async () => {
     (apiClient.listProjects as any).mockResolvedValue([]);
     render(<App />);
-    await screen.findByText(/No projects yet/i);
+    await screen.findByText(/No missions yet/i);
     fireEvent.click(screen.getByText('Settings', { selector: '.nav-item' }));
     expect(await screen.findByRole('tab', { name: 'Providers' })).toBeDefined();
     expect(await screen.findByText(/Model Providers/i)).toBeDefined();
+  });
+
+  it('renders the onboarding landing page when not onboarded', async () => {
+    (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: false, onboardingStep: 'welcome', useCase: null, name: null });
+    render(<App />);
+    expect(await screen.findByText('M O R R O W')).toBeDefined();
+    expect(screen.getByText('Private intelligence, built around you.')).toBeDefined();
+    expect(screen.getByText('Simple Setup')).toBeDefined();
+    expect(screen.getByText('Advanced Setup')).toBeDefined();
+  });
+
+  it('navigates through the onboarding wizard and verifies system checks', async () => {
+    (apiClient.getOnboardingState as any).mockResolvedValue({ onboarded: false, onboardingStep: 'welcome', useCase: null, name: null });
+    render(<App />);
+    
+    // Welcome Page -> System Check
+    fireEvent.click(await screen.findByText('Simple Setup'));
+    expect(await screen.findByRole('heading', { name: 'System Check' })).toBeDefined();
+    expect(screen.getByText(/Verifying your Morrow installation/)).toBeDefined();
+
+    // System Check -> Provider
+    fireEvent.click(screen.getByText('Next'));
+    expect(await screen.findByRole('heading', { name: 'Connect a Model Provider' })).toBeDefined();
+    expect(screen.getByText(/Bring Your Own Key/)).toBeDefined();
   });
 });

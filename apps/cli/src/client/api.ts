@@ -10,12 +10,21 @@ import type {
   RoutingDecision,
   MemoryEntry,
   MemoryScope,
+  AgentMode,
+  AgentStateTransition,
+  Approval,
+  ApprovalDecision,
+  CommandTrust,
   OAuthFinding,
   ToolSpec,
   PermissionProfile,
   AuditEntry,
   ProviderTestResult,
   Health,
+  SearchResponse,
+  SearchKind,
+  Schedule,
+  ScheduleTaskKind,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
@@ -23,7 +32,9 @@ export interface SendMessageOptions {
   preset?: string;
   providerId?: string;
   model?: string;
+  mode?: AgentMode;
   useMemory?: boolean;
+  autoApprove?: boolean;
 }
 
 export interface SendMessageResult {
@@ -39,6 +50,9 @@ export interface TaskAggregate {
   task: Task;
   plan: Array<{ id: string; position: number; title: string; description: string; status: string }>;
   events: TaskEvent[];
+  agentState?: AgentStateTransition;
+  agentStates: AgentStateTransition[];
+  approvals: Approval[];
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
   disclosure?: {
     provider: string;
@@ -115,10 +129,31 @@ export class MorrowApi {
   startInspectWorkspace(projectId: string) {
     return this.req<{ taskId: string; sseUrl: string }>("POST", `/api/projects/${projectId}/tasks/inspect-workspace`);
   }
+  listTasks(projectId: string) { return this.req<Task[]>("GET", `/api/projects/${projectId}/tasks`); }
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
+  resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/resume`); }
+  retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }
+  getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
+  undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
+
+  // ── Approvals and project-scoped command trust ────────────────────────────
+  listApprovals(projectId: string, status?: "pending" | "approved" | "denied" | "cancelled") {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<Approval[]>("GET", `/api/projects/${projectId}/approvals${suffix}`);
+  }
+  getApproval(id: string) {
+    return this.req<Approval>("GET", `/api/approvals/${id}`);
+  }
+  resolveApproval(id: string, input: { projectId: string; decision: ApprovalDecision; trustPattern?: string; note?: string }) {
+    return this.req<Approval>("POST", `/api/approvals/${id}/resolve`, input);
+  }
+  listCommandTrusts(projectId: string) { return this.req<CommandTrust[]>("GET", `/api/projects/${projectId}/command-trusts`); }
+  revokeCommandTrust(projectId: string, pattern: string) {
+    return this.req<void>("DELETE", `/api/projects/${projectId}/command-trusts`, { pattern });
+  }
 
   // ── Conversations ───────────────────────────────────────────────────────────
   listConversations(projectId: string, includeArchived = false) {
@@ -159,14 +194,49 @@ export class MorrowApi {
 
   // ── Memory ──────────────────────────────────────────────────────────────────
   listProjectMemory(projectId: string) { return this.req<MemoryEntry[]>("GET", `/api/projects/${projectId}/memory`); }
-  addMemory(projectId: string, scope: MemoryScope, content: string, conversationId?: string) {
-    return this.req<MemoryEntry>("POST", `/api/projects/${projectId}/memory`, { scope, content, conversationId });
+  addMemory(projectId: string, scope: MemoryScope, content: string, conversationId?: string, pinned?: boolean) {
+    return this.req<MemoryEntry>("POST", `/api/projects/${projectId}/memory`, { scope, content, conversationId, ...(pinned ? { pinned: true } : {}) });
   }
   setMemoryEnabled(projectId: string, id: string, enabled: boolean) {
     return this.req<MemoryEntry>("PATCH", `/api/memory/${id}`, { projectId, enabled });
   }
+  setMemoryPinned(projectId: string, id: string, pinned: boolean) {
+    return this.req<MemoryEntry>("PATCH", `/api/memory/${id}`, { projectId, pinned });
+  }
   deleteMemory(projectId: string, id: string) {
     return this.req<void>("DELETE", `/api/memory/${id}`, { projectId });
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────────────
+  search(projectId: string, query: string, opts: { kinds?: SearchKind[]; conversationId?: string; limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    qs.set("q", query);
+    for (const k of opts.kinds ?? []) qs.append("kind", k);
+    if (opts.conversationId) qs.set("conversationId", opts.conversationId);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return this.req<SearchResponse>("GET", `/api/projects/${projectId}/search?${qs}`);
+  }
+  recordSkillUse(projectId: string, skillId: string) {
+    return this.req<{ skillId: string; count: number }>("POST", `/api/projects/${projectId}/skills/${encodeURIComponent(skillId)}/use`);
+  }
+
+  // ── Schedules ─────────────────────────────────────────────────────────────────
+  listSchedules(projectId: string) { return this.req<Schedule[]>("GET", `/api/projects/${projectId}/schedules`); }
+  createSchedule(projectId: string, cron: string, taskKind: ScheduleTaskKind = "inspect_workspace") {
+    return this.req<Schedule>("POST", `/api/projects/${projectId}/schedules`, { cron, taskKind });
+  }
+  deleteSchedule(scheduleId: string) { return this.req<void>("DELETE", `/api/schedules/${scheduleId}`); }
+  runSchedule(scheduleId: string) { return this.req<{ scheduleId: string; taskId: string }>("POST", `/api/schedules/${scheduleId}/run`); }
+
+  // ── Onboarding State ────────────────────────────────────────────────────────
+  getOnboardingState() {
+    return this.req<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null }>("GET", "/api/onboarding");
+  }
+  saveOnboardingState(data: { onboarded?: boolean; onboardingStep?: string | null; useCase?: string | null; name?: string | null }) {
+    return this.req<{ success: boolean }>("POST", "/api/onboarding", data);
+  }
+  resetOnboardingState() {
+    return this.req<{ success: boolean }>("POST", "/api/onboarding/reset");
   }
 }
 

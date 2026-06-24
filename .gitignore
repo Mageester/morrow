@@ -33,6 +33,7 @@ artifacts/
 *.db-wal
 .morrow/
 .hermes/
+MEMORY/
 
 # Editors and OS
 .DS_Store
@@ -49,3 +50,5 @@ logs/
 # Recovery artifacts (local-only safety copies)
 first-agent-alpha-recovery.patch
 *.recovery.patch
+*-recovery-*.patch
+morrow-cli-recovery-*.patch

@@ -1,0 +1,1 @@
+{"tools": ["filesystem-read", "git-inspection", "search"], "filesystemScopes": ["workspace"], "networkDomains": [], "requiredSecrets": []}

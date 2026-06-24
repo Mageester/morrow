@@ -1,6 +1,4 @@
-import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { spawnSync } from "node:child_process";
 import { parseArgs, flagBool, flagString } from "./cli/args.js";
 import { Context } from "./cli/context.js";
 import { CliError, EXIT, usageError } from "./cli/errors.js";
@@ -12,13 +10,34 @@ import { memoryCommand, auditCommand, permissionsCommand, toolsCommand } from ".
 import { modelsCommand } from "./commands/models.js";
 import { presetsCommand } from "./commands/presets.js";
 import { projectsCommand, initCommand } from "./commands/projects.js";
+import { panicCommand } from "./commands/panic.js";
+import { skillsCommand } from "./commands/skills.js";
+import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
+import { onboardCommand } from "./commands/onboard.js";
+import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
+import { aggregateDoctor } from "./service/doctor-checks.js";
+import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/update.js";
 
 export const VERSION = "0.1.0";
 
-const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value"];
+const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "update", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
+
+type Invocation =
+  | { kind: "interactive" }
+  | { kind: "prompt"; prompt: string }
+  | { kind: "command"; root: string; sub: string | undefined; args: string[] };
+
+export function resolveInvocation(positionals: string[]): Invocation {
+  const [root, sub, ...args] = positionals;
+  if (!root) return { kind: "interactive" };
+  if (root === "run") return { kind: "prompt", prompt: [sub, ...args].filter((value): value is string => Boolean(value)).join(" ") };
+  if (COMMANDS.has(root)) return { kind: "command", root, sub, args };
+  return { kind: "prompt", prompt: positionals.join(" ") };
+}
 
 export async function run(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv, { valueFlags: VALUE_FLAGS, aliases: ALIASES });
@@ -29,12 +48,62 @@ export async function run(argv: string[]): Promise<number> {
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
-    const [root, sub, ...args] = parsed.positionals;
+    const invocation = resolveInvocation(parsed.positionals);
+
+    // Auto-detect first launch
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "stop", "restart", "logs"].includes(invocation.root);
+    if (!isSetupCmd) {
+      let onboarded = config.get("user.onboarded") === true;
+      if (!onboarded) {
+        try {
+          const api = ctx.api();
+          const backendState = await api.getOnboardingState();
+          if (backendState.onboarded) {
+            config.set("user.onboarded", "true", "user");
+            if (backendState.name) config.set("user.name", backendState.name, "user");
+            if (backendState.useCase) config.set("user.useCase", backendState.useCase, "user");
+            onboarded = true;
+          }
+        } catch {
+          // Ignore backend lookup if service is down or fails
+        }
+      }
+      if (!onboarded) {
+        out.print(out.bold("Welcome to Morrow! Let's complete the quick setup guide first."));
+        out.print();
+        return onboardCommand(ctx, "", []);
+      }
+    }
+    switch (invocation.kind) {
+      case "interactive":
+        return chatCommand(ctx);
+      case "prompt": {
+        if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
+        const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });
+        return chatCommand(promptCtx);
+      }
+      case "command":
+        break;
+    }
+    const { root, sub, args = [] } = invocation;
+    // Primary product surface: ask (inspect), fix (agent), plan (plan-only),
+    // new (fresh agent session). A trailing prompt makes them one-shot.
+    const promptOf = () => [sub, ...args].filter((v): v is string => Boolean(v)).join(" ");
+    const chatWith = (extra: Record<string, string | boolean>) =>
+      chatCommand(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
-      case undefined: return printHelp(out);
+      case "ask": { const p = promptOf(); return chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
+      case "fix": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
+      case "yolo": { const p = promptOf(); return chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
+      case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
+      case "new": return chatWith({ new: true });
+      case "model": return modelsCommand(ctx, sub ?? "", args);
+      case "settings": return configCommand(ctx, sub ?? "list", args);
+      case "auth": return providersCommand(ctx, authSub(sub), args);
       case "status": return status(ctx);
       case "doctor": return doctor(ctx);
-      case "onboard": return onboard(ctx);
+      case "update": return update(ctx);
+      case "onboard": return onboardCommand(ctx, sub ?? "", args);
       case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
       case "stop": return serviceStop(ctx);
       case "restart": return restart(ctx);
@@ -44,6 +113,13 @@ export async function run(argv: string[]): Promise<number> {
       case "init": return initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "chat": return chatCommand(ctx);
       case "conversations": return conversationsCommand(ctx, sub ?? "", args);
+      case "conversation": return conversationsCommand(ctx, sub ?? "", args);
+      case "sessions": return conversationsCommand(ctx, "list", []);
+      case "session": return conversationsCommand(ctx, sub ?? "list", args);
+      case "resume": {
+        const resumeCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, resume: sub ?? "" } });
+        return chatCommand(resumeCtx);
+      }
       case "providers": return providersCommand(ctx, sub ?? "", args);
       case "models": return modelsCommand(ctx, sub ?? "", args);
       case "presets": return presetsCommand(ctx, sub, args);
@@ -51,6 +127,10 @@ export async function run(argv: string[]): Promise<number> {
       case "permissions": return permissionsCommand(ctx, sub);
       case "audit": return auditCommand(ctx, sub, args);
       case "memory": return memoryCommand(ctx, sub, args);
+      case "panic": return panicCommand(ctx);
+      case "skills": return skillsCommand(ctx, sub, args);
+      case "schedule":
+      case "schedules": return scheduleCommand(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
     }
   } catch (error) {
@@ -64,9 +144,43 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
+/** Map the friendly `morrow auth …` verbs onto the providers command. */
+function authSub(sub: string | undefined): string {
+  if (sub === "login") return "configure";
+  if (sub === "logout") return "logout";
+  if (sub === "status" || sub === undefined) return "status";
+  return sub;
+}
+
 function printVersion(out: Output): number { if (out.json) out.data({ version: VERSION }); else out.print(VERSION); return EXIT.OK; }
 function printHelp(out: Output): number {
-  const help = `Morrow CLI ${VERSION}\n\nUsage: morrow <command> [options]\n\nCommands:\n  morrow status | morrow doctor | morrow onboard\n  morrow serve [--detach] | morrow stop | morrow restart | morrow logs\n  morrow config list|get|set|unset|path\n  morrow projects list|add|select|inspect|remove | morrow init [path]\n  morrow chat [--new|--resume <id>|--message <prompt>]\n  morrow conversations list|show|rename|archive|export\n  morrow providers list|status|test|configure\n  morrow models list|info|select\n  morrow presets list|show|select\n  morrow tools list|info | morrow permissions show | morrow audit list|show\n  morrow memory list|add|remove|status\n\nGlobal options: --json --quiet --no-color --project --provider --model --preset --timeout`;
+  const b = (s: string) => out.bold(s);
+  const g = (s: string) => out.gray(s);
+  const help = [
+    `${b("MORROW")} ${g("· private intelligence, built around you")}`,
+    "",
+    b("Start here"),
+    `  morrow                       ${g("open an interactive agent session")}`,
+    `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
+    `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
+    `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
+    `  morrow resume                ${g("resume the most recent session")}`,
+    `  morrow new                   ${g("start a fresh session")}`,
+    "",
+    b("Setup"),
+    `  morrow onboard               ${g("guided first-run setup")}`,
+    `  morrow auth login|status     ${g("connect a model provider")}`,
+    `  morrow model                 ${g("choose a model")}`,
+    `  morrow settings              ${g("view or change preferences")}`,
+    `  morrow doctor                ${g("check your environment")}`,
+    "",
+    b("In a session"),
+    `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
+    "",
+    g("More: morrow projects | conversations | presets | tools | audit | skills | serve | logs"),
+    g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
+  ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;
 }
@@ -80,12 +194,11 @@ async function status(ctx: Context): Promise<number> {
 }
 
 async function doctor(ctx: Context): Promise<number> {
-  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const pnpm = spawnSync(pnpmBin, ["--version"], { encoding: "utf8" });
+  const pnpm = probePnpm(process.env);
   const checks: Array<{ name: string; ok: boolean; detail: string; critical: boolean }> = [
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.versions.node, critical: true },
-    { name: "pnpm", ok: pnpm.status === 0, detail: (pnpm.stdout || pnpm.stderr || "not found").trim(), critical: true },
-    { name: "data directory", ok: existsSync(dirname(ctx.service.dbPath)), detail: dirname(ctx.service.dbPath), critical: false },
+    { name: "pnpm", ok: pnpm.ok, detail: pnpm.executable ? `${pnpm.detail} (${pnpm.executable})` : pnpm.detail, critical: true },
+    { name: "data directory", ok: true, detail: dirname(ctx.service.dbPath), critical: false },
   ];
   try {
     const health = await ctx.api().health();
@@ -95,26 +208,42 @@ async function doctor(ctx: Context): Promise<number> {
   } catch (error) {
     checks.push({ name: "orchestrator", ok: false, detail: error instanceof Error ? error.message : String(error), critical: true });
   }
-  const ok = checks.every((check) => !check.critical || check.ok);
-  if (ctx.out.json) ctx.out.data({ ok, checks, logPath: ctx.paths.logFile });
+  const ok = aggregateDoctor(checks).ok;
+  if (ctx.out.json) ctx.out.data({ ok, checks, pnpm, logPath: ctx.paths.logFile });
   else {
     ctx.out.heading("Morrow doctor");
     ctx.out.table(["check", "status", "detail"], checks.map((check) => [check.name, check.ok ? ctx.out.green("ok") : ctx.out.red("fail"), check.detail]));
+    // When pnpm resolution fails, surface every ranked candidate we tried so the
+    // user can see why each was rejected (rather than a single opaque error).
+    if (!pnpm.ok && pnpm.tried && pnpm.tried.length > 0) {
+      ctx.out.print();
+      ctx.out.heading("pnpm candidates checked");
+      for (const attempt of pnpm.tried) {
+        ctx.out.print(`  ${ctx.out.gray(`[${attempt.source}]`)} ${attempt.path} ${ctx.out.gray(`→ ${attempt.reason}`)}`);
+      }
+    }
     ctx.out.info(`Logs: ${ctx.paths.logFile}`);
   }
   return ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
 }
 
-async function onboard(ctx: Context): Promise<number> {
-  await ensureRunning(ctx);
-  const [health, projects, providers, models, presets] = await Promise.all([ctx.api().health(), ctx.api().listProjects(), ctx.api().listProviders(), ctx.api().listModels(), ctx.api().listPresets()]);
-  const summary = { service: health.service, projects: projects.length, configuredProviders: providers.filter((provider) => provider.configured).map((provider) => provider.id), availableModels: models.filter((model) => model.available).map((model) => model.model.id), availablePresets: presets.filter((preset) => preset.available).map((preset) => preset.preset.id) };
-  if (ctx.out.json) ctx.out.data(summary);
-  else {
-    ctx.out.heading("Morrow onboarding");
-    ctx.out.print("Morrow keeps data local, uses only configured providers, and exposes read-only tools with evidence.");
-    ctx.out.keyValue([["projects", String(summary.projects)], ["configured providers", summary.configuredProviders.join(", ") || "none"], ["available models", String(summary.availableModels.length)], ["available presets", summary.availablePresets.join(", ") || "none"]]);
-    ctx.out.print("Next: morrow projects add .; morrow providers configure <provider>; morrow models select; morrow presets select; morrow chat");
+
+
+async function update(ctx: Context): Promise<number> {
+  const latest = await fetchLatestVersion();
+  if (!latest) {
+    if (ctx.out.json) ctx.out.data({ current: MORROW_VERSION, latest: null, updateAvailable: false });
+    else ctx.out.warn("Could not check for updates (offline or source unavailable).");
+    return EXIT.OK;
+  }
+  const status = checkForUpdate(MORROW_VERSION, latest);
+  if (ctx.out.json) ctx.out.data(status);
+  else if (status.updateAvailable) {
+    ctx.out.heading("Update available");
+    ctx.out.keyValue([["current", status.current], ["latest", status.latest]]);
+    ctx.out.info("Apply with: git pull && pnpm install && pnpm build");
+  } else {
+    ctx.out.success(`Morrow is up to date (${status.current}).`);
   }
   return EXIT.OK;
 }

@@ -1,0 +1,84 @@
+name: Release
+
+# Releases are published deliberately, not automatically from a tag push.
+# A previous tag-triggered pipeline shipped non-functional bundles (the
+# orchestrator could not start). Publication now requires an explicit dispatch
+# and only proceeds after the package contract is validated.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.1.0-beta.5 (no leading v)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+
+  build-windows:
+    name: Build and Publish Windows Release
+    runs-on: windows-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Package release
+        run: node scripts/package-release.mjs ${{ inputs.version }} --skip-build
+        shell: bash
+
+      - name: Validate package contract and installer integration
+        env:
+          MORROW_ARTIFACT: dist/Morrow-v${{ inputs.version }}-windows-x64.zip
+          MORROW_RUN_INSTALL_ITEST: '1'
+        run: node --test scripts/package-release.test.mjs scripts/install-integration.test.mjs
+        shell: bash
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Morrow v${{ inputs.version }}
+          prerelease: true
+          body: |
+            ## Morrow v${{ inputs.version }} (Beta)
+
+            Unsigned Early Access beta for Windows 10/11 x64. Install:
+
+            ```powershell
+            irm https://morrowproject.getaxiom.ca/install.ps1 | iex
+            ```
+
+            The installer downloads this artifact, verifies its SHA-256, and
+            launches the local service. Expect breaking changes.
+          files: |
+            dist/Morrow-*.zip
+            dist/latest.json
+            dist/morrow-*-checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
