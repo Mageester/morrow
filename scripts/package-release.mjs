@@ -102,7 +102,7 @@ async function bundleRuntime(packageDir) {
 }
 
 async function main() {
-  const version = process.argv[2] ?? "0.1.0-beta.3";
+  const version = (process.argv[2] ?? "0.1.0-beta.3").replace(/^v/, "");
   if (!/^\d+\.\d+\.\d+-beta\.\d+$/.test(version)) throw new Error("Use a prerelease version such as 0.1.0-beta.3.");
   const name = `Morrow-v${version}-windows-x64`;
   const packageDir = join(dist, name);

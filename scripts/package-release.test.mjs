@@ -36,3 +36,8 @@ test("PowerShell archive commands quote concrete paths instead of relying on com
   assert.match(source, /function psLiteral/);
   assert.match(source, /run\("tar\.exe", \["-a", "-c", "-f"/);
 });
+
+test("packaging accepts the v-prefixed tag names emitted by the release workflow", async () => {
+  const source = await readFile(packageScript, "utf8");
+  assert.match(source, /replace\(\/\^v\/, ""\)/);
+});
