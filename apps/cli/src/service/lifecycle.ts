@@ -51,7 +51,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const db = openDatabase(ctx.service.dbPath);
   const recovered = recoverRunningTasks(db);
   const runner = new TaskRunner(db);
-  const app = buildServer({ db, runner });
+  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 

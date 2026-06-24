@@ -178,6 +178,16 @@ export class MorrowApi {
   listProviders() { return this.req<ProviderStatus[]>("GET", "/api/providers"); }
   listOAuth() { return this.req<OAuthFinding[]>("GET", "/api/providers/oauth"); }
   testProvider(id: string) { return this.req<ProviderTestResult>("POST", `/api/providers/${id}/test`, undefined, { timeoutMs: 15000 }); }
+  configureProvider(id: string, input: { apiKey?: string; baseUrl?: string; model?: string }) {
+    return this.req<{ ok: boolean; provider: string; written: string[]; cleared: string[]; securePermissions: boolean; shadowedByEnv: string[]; status: ProviderStatus | null }>(
+      "POST", `/api/providers/${id}/configure`, input
+    );
+  }
+  removeProviderCredentials(id: string) {
+    return this.req<{ ok: boolean; provider: string; removed: string[]; status: ProviderStatus | null }>(
+      "DELETE", `/api/providers/${id}/credentials`
+    );
+  }
   listModels() { return this.req<ModelStatus[]>("GET", "/api/models"); }
   listPresets() { return this.req<PresetStatus[]>("GET", "/api/presets"); }
 

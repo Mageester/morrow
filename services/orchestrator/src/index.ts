@@ -1,6 +1,7 @@
 import { openDatabase } from "./database.js";
 import { buildServer } from "./server.js";
-import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot } from "./home.js";
+import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultDatabasePath, resolveMorrowDevelopmentRoot, resolveMorrowHome } from "./home.js";
+import { join } from "node:path";
 import { TaskRunner } from "./runner.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
@@ -14,7 +15,7 @@ const db = openDatabase(dbPath);
 recoverRunningTasks(db);
 
 const runner = new TaskRunner(db);
-const app = buildServer({ db, runner });
+const app = buildServer({ db, runner, secretsFile: join(resolveMorrowHome(process.env), "secrets.env") });
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence
 // is governed by each schedule's next_run_at, so a missed minute simply runs at

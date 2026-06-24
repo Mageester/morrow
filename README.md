@@ -138,10 +138,20 @@ Morrow runs a conversation-first agent through a provider-neutral runtime:
 - **Memory:** a deterministic, project-isolated, user-controlled SQLite memory
   layer (no hidden capture, no cross-project leakage).
 
-Secrets are resolved server-side from environment variables and never reach the
-browser, database, logs, or task events. See [docs/providers.md](docs/providers.md)
-for the capability matrix, credential reference, honest OAuth findings, and
-manual verification steps.
+**Configuring a provider** takes about a minute and never requires PowerShell,
+environment variables, or a service restart:
+
+- **In the app:** Settings → Providers → *Configure*. Paste an API key, save,
+  *Test connection*, pick a default model. The change applies to the running
+  service immediately.
+- **From the CLI:** `morrow providers configure deepseek --key <KEY>` (add
+  `--model <id>` to set a default), then `morrow providers test deepseek`.
+  Remove a key with `morrow providers remove deepseek`.
+
+Keys are stored server-side in Morrow's owner-readable secrets file and are
+never written to the browser (no `localStorage`), the database, logs, or task
+events. See [docs/providers.md](docs/providers.md) for the capability matrix,
+credential reference, honest OAuth findings, and manual verification steps.
 
 ## Current alpha limitations
 - Live model discovery is not implemented; the model registry is built-in plus

@@ -152,6 +152,28 @@ export const apiClient = {
     return request(`/api/providers/${providerId}/test`, { method: "POST" });
   },
 
+  /**
+   * Save provider credentials from the app. The key is stored server-side and
+   * applied to the running service immediately — no restart. The key is sent
+   * once over the local loopback connection and never persisted in the browser.
+   */
+  async configureProvider(
+    providerId: string,
+    input: { apiKey?: string; baseUrl?: string; model?: string }
+  ): Promise<{ ok: boolean; provider: string; written: string[]; cleared: string[]; securePermissions: boolean; shadowedByEnv: string[]; status: ProviderStatus | null }> {
+    return request(`/api/providers/${providerId}/configure`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async removeProviderCredentials(
+    providerId: string
+  ): Promise<{ ok: boolean; provider: string; removed: string[]; status: ProviderStatus | null }> {
+    return request(`/api/providers/${providerId}/credentials`, { method: "DELETE" });
+  },
+
   // ── System health ─────────────────────────────────────────────────────────
   async getHealth(): Promise<{ ok: boolean; service: string; apiVersion: number; mockProvider: boolean; time: string }> {
     return request("/api/health");

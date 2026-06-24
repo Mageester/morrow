@@ -62,6 +62,7 @@ import { listModels } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
+import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 
 export class ApiError extends Error {
@@ -103,6 +104,13 @@ export type ServerDependencies = {
   diagnosticsRunner?: DiagnosticsRunner;
   /** Injectable messaging adapters; defaults to env-configured ones. */
   messageAdapters?: MessageAdapter[];
+  /**
+   * Absolute path to the Morrow secrets file. When provided, the
+   * provider-configuration endpoints can persist credentials and hot-apply them
+   * to the running process. When absent, those endpoints report that in-app
+   * configuration is unavailable (e.g. in tests) rather than failing obscurely.
+   */
+  secretsFile?: string;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -858,6 +866,70 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
     return testProviderConnectivity(parsed.data, process.env);
+  });
+
+  // Save provider credentials from the app (no PowerShell / env vars / restart).
+  // The key is written to the server-side secrets file AND hot-applied to the
+  // running process so it takes effect immediately. The response never echoes
+  // the secret — only the refreshed, non-secret provider status.
+  app.post("/api/providers/:providerId/configure", async (request, reply) => {
+    const { providerId } = request.params as { providerId: string };
+    const parsed = ProviderIdSchema.safeParse(providerId);
+    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+    const id = parsed.data;
+    if (!providerEnvMapping(id)) {
+      throw new ApiError(400, `Provider "${id}" cannot be configured in-app.`, "PROVIDER_NOT_CONFIGURABLE");
+    }
+    if (!deps.secretsFile) {
+      throw new ApiError(503, "In-app provider configuration is unavailable on this server.", "SECRETS_UNAVAILABLE");
+    }
+    const body = z
+      .object({
+        apiKey: z.string().max(8192).optional(),
+        baseUrl: z.string().max(2048).optional(),
+        model: z.string().max(256).optional(),
+      })
+      .strict()
+      .parse((request.body ?? {}) as unknown);
+    if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined) {
+      throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, or model).", "EMPTY_CONFIGURE");
+    }
+    if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
+      try {
+        const u = new URL(body.baseUrl.trim());
+        if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("scheme");
+      } catch {
+        throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
+      }
+    }
+    const result = configureProvider(deps.secretsFile, id, body, process.env);
+    const status = listProviderStatuses().find((s) => s.id === id) ?? null;
+    reply.send({
+      ok: true,
+      provider: id,
+      written: result.written,
+      cleared: result.cleared,
+      securePermissions: result.securePermissions,
+      shadowedByEnv: result.shadowedByEnv,
+      status,
+    });
+  });
+
+  // Remove all stored credentials for a provider (file + running process).
+  app.delete("/api/providers/:providerId/credentials", async (request, reply) => {
+    const { providerId } = request.params as { providerId: string };
+    const parsed = ProviderIdSchema.safeParse(providerId);
+    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+    const id = parsed.data;
+    if (!providerEnvMapping(id)) {
+      throw new ApiError(400, `Provider "${id}" has no stored credentials.`, "PROVIDER_NOT_CONFIGURABLE");
+    }
+    if (!deps.secretsFile) {
+      throw new ApiError(503, "In-app provider configuration is unavailable on this server.", "SECRETS_UNAVAILABLE");
+    }
+    const { removed } = removeProviderCredentials(deps.secretsFile, id, process.env);
+    const status = listProviderStatuses().find((s) => s.id === id) ?? null;
+    reply.send({ ok: true, provider: id, removed, status });
   });
 
   // Safe read-only tool catalog and the enforced permission profile.

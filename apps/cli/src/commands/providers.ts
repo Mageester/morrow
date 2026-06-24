@@ -2,7 +2,6 @@ import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
 import { askSecret, isInteractive } from "./common.js";
-import { writeSecret } from "../config/env.js";
 import { flagString } from "../cli/args.js";
 import { usageError, CliError, EXIT } from "../cli/errors.js";
 
@@ -26,11 +25,13 @@ export async function providersCommand(ctx: Context, sub: string, args: string[]
     case "status":
       return status(ctx, api);
     case "configure":
-      return configure(ctx, args);
+      return configure(ctx, api, args);
+    case "remove":
+      return remove(ctx, api, args);
     case "test":
       return test(ctx, api, args);
     default:
-      throw usageError(`Unknown providers subcommand: ${sub}`, "Try: list, status, configure, test");
+      throw usageError(`Unknown providers subcommand: ${sub}`, "Try: list, status, configure, remove, test");
   }
 }
 
@@ -80,13 +81,15 @@ async function status(ctx: Context, api: MorrowApi): Promise<number> {
   return EXIT.OK;
 }
 
-async function configure(ctx: Context, args: string[]): Promise<number> {
+async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
   const id = args[0];
-  if (!id) throw usageError("Usage: morrow providers configure <provider>", `Providers: ${Object.keys(KEY_ENV).join(", ")}, ollama`);
+  const ALL = [...Object.keys(KEY_ENV), "ollama"];
+  if (!id) throw usageError("Usage: morrow providers configure <provider> [--key <key>] [--url <url>] [--model <id>]", `Providers: ${ALL.join(", ")}`);
+
+  const input: { apiKey?: string; baseUrl?: string; model?: string } = {};
 
   if (id === "ollama" || id === "openai-compatible") {
-    // These are configured by base URL, not a key.
-    const urlEnv = id === "ollama" ? "OLLAMA_BASE_URL" : "OPENAI_COMPAT_BASE_URL";
+    // URL-configured providers (Ollama is local; the compat endpoint is generic).
     const def = id === "ollama" ? "http://127.0.0.1:11434/v1" : "";
     let url = flagString(ctx.flags, "url");
     if (!url && isInteractive(ctx)) {
@@ -94,44 +97,52 @@ async function configure(ctx: Context, args: string[]): Promise<number> {
       url = await ask(`Base URL${def ? ` [${def}]` : ""}: `);
       if (!url && def) url = def;
     }
-    if (!url) throw usageError(`A base URL is required (set ${urlEnv}).`);
-    const res = writeSecret(ctx.paths.secretsFile, urlEnv, url);
-    reportSaved(ctx, urlEnv, res.securePermissions);
+    if (!url) throw usageError(`A base URL is required for ${id} (pass --url).`);
+    input.baseUrl = url;
     if (id === "openai-compatible") {
       let key = flagString(ctx.flags, "key");
       if (key === undefined && isInteractive(ctx)) key = await askSecret("API key (optional, blank to skip): ");
-      if (key) writeSecret(ctx.paths.secretsFile, "OPENAI_COMPAT_API_KEY", key);
+      if (key) input.apiKey = key;
     }
-    ctx.out.info("Restart the service for changes to take effect: `morrow restart`.");
-    return EXIT.OK;
+  } else {
+    const keyEnv = KEY_ENV[id];
+    if (!keyEnv) throw usageError(`Unknown or non-key provider: ${id}`, `Providers: ${ALL.join(", ")}`);
+    let key = flagString(ctx.flags, "key");
+    if (!key && isInteractive(ctx)) key = await askSecret(`${id} API key: `);
+    if (!key) throw new CliError("No API key provided.", { code: "NO_KEY", exitCode: EXIT.USAGE });
+    input.apiKey = key;
   }
 
-  const keyEnv = KEY_ENV[id];
-  if (!keyEnv) throw usageError(`Unknown or non-key provider: ${id}`);
-  let key = flagString(ctx.flags, "key");
-  if (!key && isInteractive(ctx)) key = await askSecret(`${id} API key: `);
-  if (!key) throw new CliError("No API key provided.", { code: "NO_KEY", exitCode: EXIT.USAGE });
-  const res = writeSecret(ctx.paths.secretsFile, keyEnv, key);
-  reportSaved(ctx, keyEnv, res.securePermissions);
-  if (process.env[keyEnv] !== undefined && process.env[keyEnv] !== key) {
+  const model = flagString(ctx.flags, "model");
+  if (model) input.model = model;
+
+  // Persist + hot-apply through the running service — no restart required.
+  const res = await api.configureProvider(id, input);
+  ctx.out.success(`Saved credentials for ${id} — applied immediately, no restart needed.`);
+  if (!res.securePermissions && process.platform !== "win32") {
+    ctx.out.warn("The secrets file is plaintext; access is restricted via filesystem permissions where supported.");
+  }
+  if (res.shadowedByEnv.length > 0) {
     ctx.out.warn(
-      `A ${keyEnv} is already set in your environment and will override this saved value — ` +
-        `the key you just entered will NOT be used until you unset it. ` +
-        `PowerShell: \`[Environment]::SetEnvironmentVariable('${keyEnv}', $null, 'User'); Remove-Item Env:${keyEnv}\`.`
+      `${res.shadowedByEnv.join(", ")} is also set in your shell environment and will override the saved value on the next restart. ` +
+        `Unset it there to make the saved key permanent.`
     );
   }
-  ctx.out.info("Restart the service so the new credential is loaded: `morrow restart`.");
-  if (ctx.out.json) ctx.out.data({ configured: id, env: keyEnv, securePermissions: res.securePermissions });
+  if (res.status) {
+    ctx.out.info(`${id} is now ${res.status.configured ? "configured" : "not configured"}${res.status.defaultModel ? ` (default model: ${res.status.defaultModel})` : ""}.`);
+  }
+  ctx.out.info(`Verify it works: \`morrow providers test ${id}\`.`);
+  if (ctx.out.json) ctx.out.data({ configured: id, written: res.written, status: res.status });
   return EXIT.OK;
 }
 
-function reportSaved(ctx: Context, envName: string, secure: boolean) {
-  ctx.out.success(`Saved ${envName} to ${ctx.paths.secretsFile}.`);
-  if (!secure) {
-    ctx.out.warn("This file is plaintext and not encrypted. Restrict access via filesystem permissions.");
-  } else {
-    ctx.out.info("File permissions set to owner-only (0600).");
-  }
+async function remove(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
+  const id = args[0];
+  if (!id) throw usageError("Usage: morrow providers remove <provider>");
+  const res = await api.removeProviderCredentials(id);
+  ctx.out.success(`Removed stored credentials for ${id}${res.removed.length ? ` (${res.removed.join(", ")})` : " (nothing was stored)"}.`);
+  if (ctx.out.json) ctx.out.data(res);
+  return EXIT.OK;
 }
 
 async function test(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {

@@ -20,11 +20,30 @@ All adapters normalize to the same streaming chunk shape and the same typed
 error classification (`auth`, `rate_limit`, `timeout`, `network`, `cancelled`,
 `invalid_request`, `provider`).
 
-## Credentials (server-side only)
+## Configuring a provider
 
-Secrets are read from the environment by the orchestrator and never reach the
-browser, the database, logs, errors, or task events. Provider status exposes
-only `configured` and the endpoint *host*.
+There are three ways to give Morrow a provider credential. None require
+PowerShell, manually setting environment variables, or restarting the service.
+
+1. **In the app (recommended).** Settings → Providers → *Configure*. Paste the
+   API key, optionally set a custom endpoint and default model, then *Save*. The
+   key is sent once to the local orchestrator, persisted to the secrets file, and
+   applied to the running process immediately. *Test connection* verifies it.
+2. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
+   (optionally `--url <endpoint>` and `--model <id>`). This goes through the same
+   running-service endpoint, so it also takes effect with no restart. Use
+   `morrow providers test <provider>` to verify and `morrow providers remove
+   <provider>` to delete the credential.
+3. **Pre-seeded environment.** Any of the env vars below set in the shell *before*
+   the service starts are honored as well. A shell-set variable takes precedence
+   over a saved one; the app and CLI warn you when that shadowing happens.
+
+Keys are stored server-side in the owner-readable secrets file and never reach
+the browser (no `localStorage`), the database, logs, errors, or task events.
+Provider status exposes only `configured`, the default model, and the endpoint
+*host*.
+
+## Credential reference
 
 | Provider | API key env | Base URL env (optional) | Default endpoint |
 |----------|-------------|-------------------------|------------------|
@@ -38,6 +57,10 @@ only `configured` and the endpoint *host*.
 
 Ollama is an explicit opt-in: Morrow does not claim a local server exists unless
 `OLLAMA_BASE_URL` is set.
+
+Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
+`OPENAI_MODEL`) that sets the default model. Setting a default model in the app
+or via `--model` writes this value.
 
 ## Presets
 

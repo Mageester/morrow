@@ -14,6 +14,7 @@ import { SkillsControlCenter } from "./components/SkillsControlCenter";
 import { MissionControl } from "./components/MissionControl";
 import { SystemHealth } from "./components/SystemHealth";
 import { DownloadPage } from "./components/DownloadPage";
+import { ProviderManager } from "./components/ProviderManager";
 
 type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
@@ -510,6 +511,11 @@ export default function App() {
             newMemoryContent={newMemoryContent} setNewMemoryContent={setNewMemoryContent}
             onAddMemory={handleAddMemory} onToggleMemory={handleToggleMemory} onDeleteMemory={handleDeleteMemory}
             onResetOnboarding={handleResetOnboarding}
+            onProvidersChanged={async () => {
+              setProviders(await apiClient.listProviders());
+              setModels(await apiClient.listModels());
+              setProviderStatus(await apiClient.getProviderStatus());
+            }}
           />
         )}
 
@@ -801,8 +807,9 @@ function SettingsView(props: {
   newMemoryContent: string; setNewMemoryContent: (s: string) => void;
   onAddMemory: () => void; onToggleMemory: (id: string, e: boolean) => void; onDeleteMemory: (id: string) => void;
   onResetOnboarding: () => void;
+  onProvidersChanged: () => Promise<void>;
 }) {
-  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries, onResetOnboarding } = props;
+  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries, onResetOnboarding, onProvidersChanged } = props;
   return (
     <div className="placeholder-view">
       <div className="topbar"><h1>Settings</h1></div>
@@ -817,37 +824,8 @@ function SettingsView(props: {
           <div className="settings-panel">
             <div className="card">
               <h3>Model Providers</h3>
-              <p className="muted">Secrets are resolved server-side from environment variables and never reach the browser. Status shows only whether a provider is configured and which host it targets.</p>
-              <div className="provider-grid">
-                {providers.map(p => (
-                  <div key={p.id} className={`provider-card ${p.configured ? "ok" : ""}`}>
-                    <div className="provider-card-head"><strong>{p.label}</strong><span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>{p.configured ? "Configured" : "Not configured"}</span></div>
-                    <div className="provider-card-meta">
-                      <span className="kv"><span className="k">Kind</span>{p.kind}</span>
-                      <span className="kv"><span className="k">Endpoint</span>{p.endpointHost ?? p.endpointType}</span>
-                      <span className="kv"><span className="k">Auth</span>{p.authStatus}</span>
-                    </div>
-                    <div className="cap-row">
-                      {p.capabilities.toolCalls && <span className="cap">tools</span>}
-                      {p.capabilities.vision && <span className="cap">vision</span>}
-                      {p.capabilities.systemMessages && <span className="cap">system</span>}
-                      {p.capabilities.local && <span className="cap local">local</span>}
-                    </div>
-                    {!p.configured && p.setupHint && <p className="setup-hint">{p.setupHint}</p>}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="card">
-              <h3>API Key Setup</h3>
-              <p className="muted">Add keys to the orchestrator environment, then restart it. Keys are never entered in the browser.</p>
-              <pre className="code-block"><code>{`OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GEMINI_API_KEY=...
-OPENROUTER_API_KEY=...
-DEEPSEEK_API_KEY=...
-# Local, fully private (opt-in):
-OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`}</code></pre>
+              <p className="muted">Paste an API key, save, and test — no PowerShell, no environment variables, no restart. Keys are stored on this machine in Morrow's secrets file (owner-readable) and are never kept in the browser.</p>
+              <ProviderManager providers={providers} onChanged={onProvidersChanged} />
             </div>
             <div className="card">
               <h3>Subscription OAuth (Codex / Claude / Gemini)</h3>

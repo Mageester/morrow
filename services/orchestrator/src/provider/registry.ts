@@ -9,6 +9,19 @@ import {
   resolveLocalCredential,
   safeHost,
 } from "./credentials.js";
+import { providerEnvMapping } from "./secrets.js";
+
+/** Persisted default-model override for a provider, if the operator set one. */
+function modelOverride(env: ProviderEnv, id: ProviderId): string | undefined {
+  const modelEnv = providerEnvMapping(id)?.modelEnv;
+  const value = modelEnv ? env[modelEnv] : undefined;
+  return value && value.trim() ? value.trim() : undefined;
+}
+
+/** Resolve the effective model: explicit override → persisted default → built-in. */
+function resolveModel(env: ProviderEnv, id: ProviderId, explicit: string | undefined, fallback: string): string {
+  return explicit || modelOverride(env, id) || fallback;
+}
 
 interface ProviderDescriptor {
   id: ProviderId;
@@ -37,8 +50,12 @@ const caps = (over: Partial<ProviderCapabilities>): ProviderCapabilities => ({
 
 function apiKeyStatus(
   d: Pick<ProviderDescriptor, "id" | "label" | "kind" | "capabilities" | "defaultModel" | "models" | "setupHint" | "note">,
-  cred: { configured: boolean; endpointType: "default" | "custom"; host: string | null }
+  cred: { configured: boolean; endpointType: "default" | "custom"; host: string | null },
+  env: ProviderEnv
 ): ProviderStatus {
+  const override = modelOverride(env, d.id);
+  const defaultModel = override || d.defaultModel || null;
+  const models = override && !d.models.includes(override) ? [override, ...d.models] : d.models;
   return {
     version: 1,
     id: d.id,
@@ -50,8 +67,8 @@ function apiKeyStatus(
     endpointHost: cred.host,
     authStatus: cred.configured ? "configured" : "missing",
     capabilities: d.capabilities,
-    models: d.models,
-    defaultModel: d.defaultModel || null,
+    models,
+    defaultModel,
     note: d.note,
     setupHint: d.setupHint,
   };
@@ -69,12 +86,12 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
-      return apiKeyStatus(this, c);
+      return apiKeyStatus(this, c, env);
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
       if (!c.configured) throw new ProviderError("not_configured", "OpenAI is not configured (OPENAI_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: model || this.defaultModel, includeUsage: true });
+      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
     },
   },
   {
@@ -88,12 +105,12 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
-      return apiKeyStatus(this, c);
+      return apiKeyStatus(this, c, env);
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
       if (!c.configured) throw new ProviderError("not_configured", "Anthropic is not configured (ANTHROPIC_API_KEY missing)", { kind: "auth" });
-      return new AnthropicProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: model || this.defaultModel });
+      return new AnthropicProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel) });
     },
   },
   {
@@ -107,12 +124,12 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "GEMINI_API_KEY", fallbackApiKeyEnv: "GOOGLE_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", defaultBaseUrl: "https://generativelanguage.googleapis.com" });
-      return apiKeyStatus(this, c);
+      return apiKeyStatus(this, c, env);
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "GEMINI_API_KEY", fallbackApiKeyEnv: "GOOGLE_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", defaultBaseUrl: "https://generativelanguage.googleapis.com" });
       if (!c.configured) throw new ProviderError("not_configured", "Gemini is not configured (GEMINI_API_KEY missing)", { kind: "auth" });
-      return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: model || this.defaultModel });
+      return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel) });
     },
   },
   {
@@ -126,7 +143,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      return apiKeyStatus(this, c);
+      return apiKeyStatus(this, c, env);
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
@@ -135,7 +152,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         id: "openrouter",
         apiKey: c.apiKey!,
         baseUrl: c.baseUrl,
-        defaultModel: model || this.defaultModel,
+        defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         includeUsage: true,
         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
       });
@@ -152,12 +169,12 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" });
-      return apiKeyStatus(this, c);
+      return apiKeyStatus(this, c, env);
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" });
       if (!c.configured) throw new ProviderError("not_configured", "DeepSeek is not configured (DEEPSEEK_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "deepseek", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: model || this.defaultModel, includeUsage: true });
+      return new OpenAiCompatibleProvider({ id: "deepseek", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
     },
   },
   {
