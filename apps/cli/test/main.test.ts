@@ -41,6 +41,12 @@ describe("morrow root command", () => {
     expect(resolveInvocation([])).toEqual({ kind: "interactive" });
   });
 
+  it("recognizes lifecycle commands instead of routing them into chat", () => {
+    for (const command of ["start", "stop", "restart", "status", "open", "doctor", "uninstall"]) {
+      expect(resolveInvocation([command])).toEqual({ kind: "command", root: command, sub: undefined, args: [] });
+    }
+  });
+
   it("treats run as an explicit one-shot alias", () => {
     expect(resolveInvocation(["run", "Return", "JSON"])).toEqual({
       kind: "prompt",

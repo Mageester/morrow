@@ -1,6 +1,16 @@
-# Morrow Developer Preview Setup
+# Morrow Installation
 
-Morrow is currently in pre-alpha developer preview. There is no public installer executable or hosted SaaS. To run Morrow, you must clone the source code and run the services locally.
+Morrow v0.1.0-beta.6 is an unsigned Windows 10/11 x64 Early Access release.
+Install with PowerShell:
+
+```powershell
+iex (irm https://morrowproject.getaxiom.ca/install.ps1)
+```
+
+The installer verifies the release checksum, creates the `morrow` command and
+Start Menu shortcut, starts the local service, and opens the GUI. Configure an
+API key in **Settings → Providers**; no environment variables or restart are
+needed. Linux remains source-build only and macOS is not available.
 
 ## Prerequisites
 

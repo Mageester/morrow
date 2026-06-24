@@ -195,6 +195,9 @@ const manifest = {
   }],
 };
 writeFileSync(join(DIST, "latest.json"), JSON.stringify(manifest, null, 2));
+// GitHub's release download URL and the landing page use this canonical name;
+// keep latest.json for the existing installer/CDN contract.
+writeFileSync(join(DIST, "release-manifest.json"), JSON.stringify(manifest, null, 2));
 
 console.log("\n✓ Release package complete.");
 console.log(`  Archive:   ${ZIP_PATH}`);

@@ -479,6 +479,9 @@ export const HealthSchema=z.object({
   service:z.literal("morrow-orchestrator"),
   apiVersion:z.number().int(),
   mockProvider:z.boolean(),
+  // The CLI uses this only for a local service to recover an interrupted or
+  // deleted pid file. It is intentionally not a credential or user identifier.
+  ownerPid:z.number().int().positive().optional(),
   migrations:z.object({applied:z.number().int(),latest:z.number().int().nullable()}).strict(),
   time:z.string(),
 }).strict();

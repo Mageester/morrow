@@ -51,7 +51,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const db = openDatabase(ctx.service.dbPath);
   const recovered = recoverRunningTasks(db);
   const runner = new TaskRunner(db);
-  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile });
+  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile, webDir: process.env.MORROW_WEB_DIR });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 
@@ -177,8 +177,17 @@ export async function ensureRunning(ctx: Context): Promise<void> {
 }
 
 export async function stop(ctx: Context): Promise<boolean> {
-  const pid = readPid(ctx.paths.pidFile);
+  let pid = readPid(ctx.paths.pidFile);
   const running = await isRunning(ctx);
+  if ((!pid || !processAlive(pid)) && running) {
+    const health = await new MorrowApi(ctx.service.baseUrl).health();
+    pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl));
+    if (pid) {
+      mkdirSync(dirname(ctx.paths.pidFile), { recursive: true });
+      writeFileSync(ctx.paths.pidFile, String(pid));
+      ctx.out.info(`Recovered the local service pid (${pid}).`);
+    }
+  }
   if (!pid || !processAlive(pid)) {
     if (!running) {
       rmSync(ctx.paths.pidFile, { force: true });
@@ -212,6 +221,13 @@ export async function stop(ctx: Context): Promise<boolean> {
   return true;
 }
 
+/** Adopt a process only when the health response came from a loopback service. */
+export function recoverReachableServicePid(pid: number | null, health: { ownerPid?: number | undefined }, local: boolean): number | null {
+  if (pid && processAlive(pid)) return pid;
+  if (!local || !Number.isSafeInteger(health.ownerPid) || (health.ownerPid ?? 0) <= 0) return null;
+  return health.ownerPid!;
+}
+
 export function tailLog(ctx: Context, lines: number): string {
   if (!existsSync(ctx.paths.logFile)) return "";
   const content = readFileSync(ctx.paths.logFile, "utf-8");
@@ -229,5 +245,14 @@ function displayUrl(input: string): string {
     return `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
   } catch {
     return input;
+  }
+}
+
+function isLocalService(input: string): boolean {
+  try {
+    const host = new URL(input).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "::1" || host === "localhost";
+  } catch {
+    return false;
   }
 }

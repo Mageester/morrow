@@ -6,6 +6,25 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.6] - 2026-06-24
+
+### Fixed
+
+- `morrow`, `morrow start`, `stop`, `restart`, `status`, `open`, `doctor`, and
+  `uninstall` now use the lifecycle surface instead of accidentally entering a
+  chat prompt. A reachable local service recovers from a missing PID file.
+- The portable package serves the built GUI itself, so its browser shortcut and
+  `morrow open` load the application rather than a JSON health endpoint.
+- Normal packaged CLI failures now render a short Morrow error instead of a
+  Node stack trace.
+
+### Known limitations
+
+- This unsigned Windows beta supports read-only agent tools. Terminal and file
+  write execution remain intentionally gated pending their safety boundary.
+- Live provider model discovery is not available; choose a listed or custom
+  model ID in Settings → Providers.
+
 ### Added
 
 - **In-app provider configuration.** Settings → Providers now lets you paste an

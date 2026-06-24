@@ -79,6 +79,7 @@ jobs:
           files: |
             dist/Morrow-*.zip
             dist/latest.json
+            dist/release-manifest.json
             dist/morrow-*-checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -38,6 +38,23 @@ describe("REST API and Task Runner Vertical Slice", () => {
     });
   });
 
+  it("serves the packaged web app for app routes without intercepting APIs", async () => {
+    const webDir = join(tempDir, "web");
+    mkdirSync(webDir);
+    writeFileSync(join(webDir, "index.html"), "<main>Morrow app</main>");
+    const packaged = buildServer({ db, runner, webDir });
+    try {
+      const appRoute = await packaged.inject({ method: "GET", url: "/onboarding" });
+      expect(appRoute.statusCode).toBe(200);
+      expect(appRoute.body).toContain("Morrow app");
+      const apiRoute = await packaged.inject({ method: "GET", url: "/api/health" });
+      expect(apiRoute.statusCode).toBe(200);
+      expect(apiRoute.json().ok).toBe(true);
+    } finally {
+      await packaged.close();
+    }
+  });
+
   it("returns 404 for missing resources", async () => {
     const res1 = await app.inject({ method: "GET", url: "/api/projects/unknown" });
     expect(res1.statusCode).toBe(404);

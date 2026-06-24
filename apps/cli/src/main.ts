@@ -24,7 +24,7 @@ export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "status", "doctor", "update", "onboard", "serve", "stop", "restart", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
 
 type Invocation =
   | { kind: "interactive" }
@@ -51,7 +51,7 @@ export async function run(argv: string[]): Promise<number> {
     const invocation = resolveInvocation(parsed.positionals);
 
     // Auto-detect first launch
-    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "stop", "restart", "logs"].includes(invocation.root);
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "open", "doctor", "uninstall", "logs"].includes(invocation.root);
     if (!isSetupCmd) {
       let onboarded = config.get("user.onboarded") === true;
       if (!onboarded) {
@@ -76,7 +76,7 @@ export async function run(argv: string[]): Promise<number> {
     }
     switch (invocation.kind) {
       case "interactive":
-        return chatCommand(ctx);
+        return open(ctx);
       case "prompt": {
         if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
         const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });
@@ -105,8 +105,11 @@ export async function run(argv: string[]): Promise<number> {
       case "update": return update(ctx);
       case "onboard": return onboardCommand(ctx, sub ?? "", args);
       case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
+      case "start": await serveDetached(ctx); return EXIT.OK;
       case "stop": return serviceStop(ctx);
       case "restart": return restart(ctx);
+      case "open": return open(ctx);
+      case "uninstall": return uninstall(ctx);
       case "logs": return logs(ctx);
       case "config": return configCommand(ctx, sub, args);
       case "projects": return projectsCommand(ctx, sub ?? "", args);
@@ -160,7 +163,7 @@ function printHelp(out: Output): number {
     `${b("MORROW")} ${g("· private intelligence, built around you")}`,
     "",
     b("Start here"),
-    `  morrow                       ${g("open an interactive agent session")}`,
+    `  morrow                       ${g("start Morrow and open the app")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
@@ -174,6 +177,9 @@ function printHelp(out: Output): number {
     `  morrow model                 ${g("choose a model")}`,
     `  morrow settings              ${g("view or change preferences")}`,
     `  morrow doctor                ${g("check your environment")}`,
+    `  morrow start|stop|restart    ${g("manage the local service")}`,
+    `  morrow open                  ${g("open the local app in your browser")}`,
+    `  morrow uninstall             ${g("stop Morrow and show safe uninstall guidance")}`,
     "",
     b("In a session"),
     `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
@@ -250,6 +256,23 @@ async function update(ctx: Context): Promise<number> {
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
+async function open(ctx: Context): Promise<number> {
+  await ensureRunning(ctx);
+  const url = ctx.service.baseUrl;
+  const { spawn } = await import("node:child_process");
+  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+  child.unref();
+  if (ctx.out.json) ctx.out.data({ opened: url }); else ctx.out.success(`Opened ${url}`);
+  return EXIT.OK;
+}
+async function uninstall(ctx: Context): Promise<number> {
+  await stop(ctx);
+  if (ctx.out.json) ctx.out.data({ stopped: true, dataDirectory: ctx.paths.home, removed: false });
+  else ctx.out.info(`Morrow is stopped. Your local data is preserved at ${ctx.paths.home}. Run the packaged uninstall script to remove the app and optionally its data.`);
+  return EXIT.OK;
+}
 async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }
 
 async function configCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {

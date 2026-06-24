@@ -21,7 +21,8 @@ import {
   type RoutingDecision,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
-import { realpathSync, existsSync, lstatSync } from "node:fs";
+import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
+import { extname, relative, resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
 import { agentsRepository } from "./repositories/agents.js";
 import { taskRepository } from "./repositories/tasks.js";
@@ -54,7 +55,7 @@ import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
-import { unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
@@ -111,6 +112,8 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
+  /** Directory containing the built single-page web application for packaged installs. */
+  webDir?: string | undefined;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -168,6 +171,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       service: "morrow-orchestrator",
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
+      ownerPid: process.pid,
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };
@@ -1197,5 +1201,30 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { success: true };
   });
 
+  // The portable Windows package is a single local service: it owns both the
+  // API and the built SPA. Development keeps using Vite, so this is opt-in.
+  // API paths never fall back to HTML; a typo remains a truthful API 404.
+  if (deps.webDir) {
+    const webRoot = resolve(deps.webDir);
+    const indexFile = resolve(webRoot, "index.html");
+    app.get("/*", async (request, reply) => {
+      const pathname = decodeURIComponent(request.url.split("?", 1)[0] ?? "/");
+      if (pathname.startsWith("/api/")) {
+        reply.status(404).send({ version: 1, error: { code: "NOT_FOUND", message: "API route not found" } });
+        return;
+      }
+      const requested = resolve(webRoot, `.${pathname}`);
+      const contained = relative(webRoot, requested) && !relative(webRoot, requested).startsWith("..");
+      const file = contained && existsSync(requested) && lstatSync(requested).isFile() ? requested : indexFile;
+      if (!existsSync(file)) throw new ApiError(503, "The bundled web interface is missing.", "WEB_UI_UNAVAILABLE");
+      const type = contentType(extname(file));
+      reply.type(type).send(readFileSync(file));
+    });
+  }
+
   return app;
+}
+
+function contentType(extension: string): string {
+  return ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon" } as Record<string, string>)[extension] ?? "application/octet-stream";
 }

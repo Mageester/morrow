@@ -46,8 +46,8 @@ function App() {
           Private intelligence,<br />built around you.
         </h1>
         <p style={{ fontSize: 17, color: "#a6a7af", lineHeight: 1.65, margin: "0 auto 32px", maxWidth: 520 }}>
-          Morrow is a self-hosted AI agent that runs locally on your machine. 
-          Your code, files, and conversations never leave your control.
+          Morrow is a local-first AI agent. Configure your own provider inside
+          the app; Morrow keeps keys on your machine and shows what it reads.
         </p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <a href="#download" style={{ background: "#3d7bfd", color: "#fff", border: "none", padding: "14px 28px", borderRadius: 9, fontWeight: 600, fontSize: 15, textDecoration: "none", boxShadow: "0 2px 12px rgba(61,123,253,0.35)" }}>
@@ -68,11 +68,11 @@ function App() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 }}>
           {[
             { title: "Code & Develop", desc: "Read, search, and understand codebases. Plan refactors. Review pull requests. Debug issues with full context." },
-            { title: "Research & Browse", desc: "Search the web, extract page content, take screenshots. Real Chromium browser automation with audit trails." },
-            { title: "Automate Workflows", desc: "Schedule recurring tasks. Chain agents together. Trigger on webhooks. Cron-based unattended execution." },
+            { title: "Research & Browse", desc: "Read-only workspace inspection and provider-backed conversations show their evidence and routing." },
+            { title: "Provider Setup", desc: "Paste an API key in Settings → Providers, test it, then choose a default model. No shell setup or restart." },
             { title: "Stay Private", desc: "Everything runs locally. Your API keys never leave your machine. No telemetry. No cloud dependency." },
-            { title: "Control Permissions", desc: "Granular tool permissions per agent. Approval gates for dangerous actions. Full audit log of every operation." },
-            { title: "Extend with Skills", desc: "55+ built-in skills. Create your own. Community-contributed workflows. Plugins with local manifest lifecycle." },
+            { title: "Control Permissions", desc: "Read-only tools are visible and scoped. Write and terminal tools remain gated in this beta." },
+            { title: "Skills Preview", desc: "Browse available skills and their compatibility before enabling broader integrations." },
           ].map(item => (
             <div key={item.title} style={{ background: "#131317", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 11, padding: "22px 20px" }}>
               <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600 }}>{item.title}</h3>

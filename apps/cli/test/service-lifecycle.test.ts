@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ConfigStore } from "../src/config/config.js";
 import { Output } from "../src/cli/output.js";
 import { Context } from "../src/cli/context.js";
-import { readPid, stop } from "../src/service/lifecycle.js";
+import { readPid, recoverReachableServicePid, stop } from "../src/service/lifecycle.js";
 
 describe("service lifecycle", () => {
   const tempDirs: string[] = [];
@@ -60,5 +60,13 @@ describe("service lifecycle", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("recovers a missing pid from a local Morrow health response", () => {
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true)).toBe(12345);
+  });
+
+  it("never adopts a pid supplied by a non-local service", () => {
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, false)).toBeNull();
   });
 });
