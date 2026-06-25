@@ -68,8 +68,13 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
   mkdirSync(staging, { recursive: true });
 
   try {
-    // 1. extract
-    ps(`Expand-Archive -LiteralPath '${artifact}' -DestinationPath '${staging}' -Force`);
+    // 1. extract. Expand-Archive is very slow for many small files (this package
+    // has thousands), exceeding a normal step budget on CI disks; use the .NET
+    // ZipFile extractor, which is dramatically faster, with a generous timeout.
+    ps(
+      `Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${artifact.replace(/'/g, "''")}', '${staging.replace(/'/g, "''")}')`,
+      300_000,
+    );
 
     // 2. resolve package root + locate morrow.cmd (relative to where it extracted on disk)
     const entries = listZipEntries(artifact);
