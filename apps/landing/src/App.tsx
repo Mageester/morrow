@@ -34,7 +34,7 @@ function App() {
         <div style={{ display: "flex", gap: 20, fontSize: 13, color: "#a6a7af" }}>
           <a href="#download" style={{ color: "inherit", textDecoration: "none" }}>Download</a>
           <a href="#setup" style={{ color: "inherit", textDecoration: "none" }}>Setup</a>
-          <a href="#docs" style={{ color: "inherit", textDecoration: "none" }}>Docs</a>
+          <a href="https://github.com/Mageester/morrow/blob/main/docs/INSTALLATION.md" target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "none" }}>Docs</a>
           <a href="https://github.com/Mageester/morrow" target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "none" }}>GitHub</a>
         </div>
       </nav>
@@ -154,7 +154,7 @@ function App() {
               Download for Windows
             </a>
             <div style={{ marginTop: 12, fontSize: 12, color: "#6d6e78", textAlign: "center" }}>
-              Requires Windows 10+ x64 · Node.js 22+ included
+              Requires Windows 10+ x64 · Node.js runtime included
             </div>
           </div>
         )}
@@ -181,15 +181,21 @@ function App() {
 
       {/* Setup */}
       <section id="setup" style={{ maxWidth: 800, margin: "0 auto", padding: "60px 24px" }}>
-        <h2 style={{ textAlign: "center", fontSize: 28, fontWeight: 650, margin: "0 0 40px" }}>Simple Setup</h2>
+        <h2 style={{ textAlign: "center", fontSize: 28, fontWeight: 650, margin: "0 0 12px" }}>One-Command Install</h2>
+        <p style={{ textAlign: "center", color: "#a6a7af", fontSize: 15, margin: "0 auto 28px", maxWidth: 540 }}>
+          Open <strong>PowerShell</strong> and paste this. It downloads Morrow,
+          verifies the checksum, adds the <code style={{ background: "#1d1d23", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>morrow</code> command
+          and a Start Menu shortcut, starts the local service, and opens the app.
+          No Git, Node, or manual steps.
+        </p>
+        <div style={{ maxWidth: 560, margin: "0 auto 36px", background: "#0f0f13", border: "1px solid rgba(61,123,253,0.25)", borderRadius: 10, padding: "16px 18px", fontFamily: "monospace", fontSize: 13.5, color: "#edeef1", overflowX: "auto" }}>
+          irm https://morrowproject.getaxiom.ca/install.ps1 | iex
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 540, margin: "0 auto" }}>
           {[
-            { step: "1", title: "Download", desc: "Download the Windows portable package from the link above." },
-            { step: "2", title: "Extract", desc: "Extract the zip to a permanent location like %LOCALAPPDATA%\\Morrow." },
-            { step: "3", title: "Setup", desc: "Open PowerShell in the extracted folder and run .\\setup.ps1. This creates data directories and a Start Menu shortcut." },
-            { step: "4", title: "Launch", desc: "Launch Morrow from the Start Menu or run node morrow.mjs. Your browser opens automatically." },
-            { step: "5", title: "Configure", desc: "Follow the onboarding wizard: choose a provider, select a workspace, set permissions, pick skills." },
-            { step: "6", title: "Start", desc: "Start your first mission — ask Morrow to inspect your code, research a topic, or automate a task." },
+            { step: "1", title: "Install", desc: "Paste the command above. When it finishes, Morrow opens in your browser at http://127.0.0.1:4317." },
+            { step: "2", title: "Configure a provider", desc: "In Settings → Providers, paste an API key (e.g. DeepSeek), test the connection, and pick a default model. No restart needed." },
+            { step: "3", title: "Run a mission", desc: "Open a workspace and start your first mission — inspect your code, research a topic, or automate a task. Plans, tools, and evidence are visible." },
           ].map(item => (
             <div key={item.step} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(61,123,253,0.15)", color: "#3d7bfd", display: "grid", placeItems: "center", fontWeight: 700, fontSize: 14, flex: "none" }}>{item.step}</div>
@@ -200,6 +206,10 @@ function App() {
             </div>
           ))}
         </div>
+        <p style={{ textAlign: "center", color: "#6d6e78", fontSize: 12.5, margin: "20px auto 0", maxWidth: 540 }}>
+          Prefer the files directly? Use the Download button above to grab the
+          portable ZIP. To remove Morrow later, run <code style={{ background: "#1d1d23", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>morrow uninstall</code>.
+        </p>
       </section>
 
       {/* Advanced Setup */}

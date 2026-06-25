@@ -91,6 +91,19 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     }
     assert.ok(health && health.ok === true, "GET /api/health returned ok:true");
     assert.equal(health.service, "morrow-orchestrator");
+    // Regression (beta.8): health must advertise the real served origin, never
+    // the Vite dev server, and must declare that it is serving the UI itself.
+    assert.equal(health.ui, "http://127.0.0.1:4317", "health advertises the packaged UI origin");
+    assert.equal(health.uiServed, true, "health declares the bundled UI is served");
+
+    // Regression (beta.8): the bare origin -- what `morrow open` launches -- must
+    // render the app (HTML), not a raw JSON probe pointing at a dead dev URL.
+    const rootRes = await fetch("http://127.0.0.1:4317/");
+    assert.equal(rootRes.status, 200, "GET / is 200");
+    assert.match(rootRes.headers.get("content-type") || "", /text\/html/, "GET / serves HTML");
+    const rootBody = await rootRes.text();
+    assert.match(rootBody, /<html|<!doctype html/i, "GET / returns an HTML document");
+    assert.doesNotMatch(rootBody, /127\.0\.0\.1:5173/, "GET / must not reference the dev server");
 
     const onboarding = await fetch("http://127.0.0.1:4317/onboarding");
     assert.equal(onboarding.status, 200, "GET /onboarding is 200");
@@ -99,13 +112,18 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     ps(`& '${installedCmd}' stop`);
   } finally {
     // Force-stop the service, then kill any process still running from inside
-    // the work tree so Windows lets us delete it.
+    // the work tree so Windows lets us delete it. The packaged service is
+    // detached, so a single `stop` can race the directory delete; kill by
+    // command-line AND by whoever still holds the port before removing the tree.
     try { ps(`& '${join(installRoot, "app", "morrow.cmd")}' stop`); } catch {}
     try {
       const esc = work.replace(/\\/g, "\\\\");
       ps(`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${esc}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`);
     } catch {}
-    await sleep(1500);
-    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    try {
+      ps(`$c = Get-NetTCPConnection -LocalPort 4317 -State Listen -ErrorAction SilentlyContinue; if ($c) { Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }`);
+    } catch {}
+    await sleep(2000);
+    rmSync(work, { recursive: true, force: true, maxRetries: 15, retryDelay: 500 });
   }
 });

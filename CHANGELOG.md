@@ -6,6 +6,38 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.9] - 2026-06-25
+
+### Fixed
+
+- **The packaged UI now loads at the service origin.** Opening
+  `http://127.0.0.1:4317/` (what `morrow open` and the installer launch) renders
+  the application instead of a raw JSON probe. Earlier betas kept an explicit
+  `/` route that returned JSON and advertised a Vite dev URL
+  (`http://127.0.0.1:5173`) that does not exist in an installed build, producing
+  `ERR_CONNECTION_REFUSED`. The dev JSON probe now only exists when no UI bundle
+  is present.
+- **`/api/health` advertises the real UI origin.** It now reports
+  `ui: http://127.0.0.1:<port>` and `uiServed: true` for packaged installs, so
+  the installer and `morrow doctor` validate a URL that actually serves the app.
+- **`morrow doctor` validates the live UI endpoint.** When the service is
+  running it confirms the root path returns HTML, not JSON; it stays green and
+  reports a skip when the service is intentionally stopped.
+- **Installer renders cleanly on PowerShell 5.1.** `install.ps1` and
+  `uninstall.ps1` force UTF-8 console output and are guarded to stay ASCII-only,
+  eliminating the legacy-code-page mojibake on Windows PowerShell 5.1 while
+  remaining correct on PowerShell 7.
+
+### Known limitations
+
+- The public installer and release manifest hosted at
+  `morrowproject.getaxiom.ca` are served by a deployment outside this
+  repository; updating them to this release requires that external pipeline.
+- This unsigned Windows beta supports read-only agent tools. Terminal and file
+  write execution remain intentionally gated pending their safety boundary.
+- Live provider model discovery is not available; choose a listed or custom
+  model ID in Settings -> Providers.
+
 ## [0.1.0-beta.6] - 2026-06-24
 
 ### Fixed

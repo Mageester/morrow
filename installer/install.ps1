@@ -2,6 +2,14 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Windows PowerShell 5.1 defaults the console to a legacy OEM code page (437/850),
+# which renders any UTF-8 output from this script or its child processes as
+# mojibake (garbled box-drawing/punctuation). Force UTF-8 for both our output and child-process pipes so
+# the installer reads cleanly on PowerShell 5.1 and 7 alike. Best-effort: a
+# redirected or non-interactive host may reject the assignment, which is fine.
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+try { $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+
 $BaseUrl = 'https://morrowproject.getaxiom.ca'
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'Morrow'
 $ManifestUrl = "$BaseUrl/releases/latest.json"

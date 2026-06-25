@@ -3,6 +3,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Render cleanly on Windows PowerShell 5.1's legacy console code page.
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $App = $PSScriptRoot
 $Install = Split-Path -Parent $App
 $Bin = Join-Path $Install 'bin'

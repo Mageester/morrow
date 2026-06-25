@@ -1,6 +1,6 @@
 # Morrow Installation
 
-Morrow v0.1.0-beta.6 is an unsigned Windows 10/11 x64 Early Access release.
+Morrow v0.1.0-beta.9 is an unsigned Windows 10/11 x64 Early Access release.
 Install with PowerShell:
 
 ```powershell

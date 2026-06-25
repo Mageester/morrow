@@ -17,6 +17,16 @@ for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkd
 function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { return 0; } }
 async function health() { try { const response = await fetch(url + "/api/health"); return response.ok ? await response.json() : null; } catch { return null; } }
 async function healthy() { return Boolean(await health()); }
+// Confirm the bare origin renders the web app (HTML), not a JSON probe. This is
+// the exact URL `morrow open` launches, so a green here means the user lands on
+// a real UI rather than a connection error or raw JSON.
+async function uiServesHtml() {
+  try {
+    const response = await fetch(url + "/");
+    if (!response.ok) return false;
+    return (response.headers.get("content-type") || "").includes("text/html");
+  } catch { return false; }
+}
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
 function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
 function printHelp() {
@@ -51,7 +61,26 @@ async function stop() {
 }
 function processAlive(value) { try { process.kill(value, 0); return true; } catch { return false; } }
 async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
-async function doctor() { const checks = [["bundled Node", existsSync(runtime)], ["orchestrator", existsSync(entry)], ["data", existsSync(data)], ["web UI", existsSync(join(app, "web", "index.html"))], ["health", await healthy()]]; for (const [name, ok] of checks) console.log((ok ? "OK   " : "FAIL ") + name); process.exitCode = checks.slice(0, 4).every(([, ok]) => ok) ? 0 : 1; }
+async function doctor() {
+  // Offline file checks first -- these decide the exit code so `doctor` is a
+  // reliable post-install gate even when the service is intentionally stopped.
+  const files = [
+    ["bundled Node", existsSync(runtime)],
+    ["orchestrator", existsSync(entry)],
+    ["data", existsSync(data)],
+    ["web UI files", existsSync(join(app, "web", "index.html"))],
+  ];
+  const running = await healthy();
+  // The UI-serving check only applies while the service is up. When stopped it is
+  // reported as a skip, not a failure, so doctor stays green on a healthy install.
+  const uiOk = running ? await uiServesHtml() : null;
+  for (const [name, ok] of files) console.log((ok ? "OK   " : "FAIL ") + name);
+  console.log((running ? "OK   " : "SKIP ") + "service running" + (running ? "" : " (run 'morrow start')"));
+  console.log(uiOk === null ? "SKIP web UI serving (service stopped)" : (uiOk ? "OK   web UI serving at " + url : "FAIL web UI serving at " + url));
+  const filesOk = files.every(([, ok]) => ok);
+  // Fail only on missing files, or a running service that cannot serve the UI.
+  process.exitCode = filesOk && uiOk !== false ? 0 : 1;
+}
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   const purgeData = process.argv.includes("--purge-data");

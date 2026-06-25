@@ -1,5 +1,5 @@
 import { z } from "zod";
-import Fastify, { FastifyInstance } from "fastify";
+import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type Database from "better-sqlite3";
 import {
   CreateProjectSchema,
@@ -119,6 +119,13 @@ export type ServerDependencies = {
 export function buildServer(deps: ServerDependencies): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  // The single origin this service is reachable on. When a packaged web bundle
+  // is present the UI is served from this same process/port (default 4317), so
+  // the advertised UI URL must point here -- never at the Vite dev server
+  // (5173), which does not exist in an installed build.
+  const servicePort = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 4317;
+  const uiUrl = deps.webDir ? `http://127.0.0.1:${servicePort}` : "http://127.0.0.1:5173";
+
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
   const tasks = taskRepository(deps.db);
@@ -156,13 +163,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   // Liveness + schema probe. Used by the CLI to detect a running service and by
-  // `morrow doctor` to report migration state. Exposes no secrets.
-  app.get("/", async () => ({
-    name: "morrow-orchestrator",
-    status: "healthy",
-    ui: "http://127.0.0.1:5173",
-    health: "/api/health",
-  }));
+  // `morrow doctor` to report migration state. Exposes no secrets. In a packaged
+  // build the web bundle owns "/" (see the SPA handler below), so this JSON probe
+  // is only registered in dev/test where there is no bundled UI to serve.
+  if (!deps.webDir) {
+    app.get("/", async () => ({
+      name: "morrow-orchestrator",
+      status: "healthy",
+      ui: uiUrl,
+      health: "/api/health",
+    }));
+  }
 
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
@@ -172,6 +183,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
       ownerPid: process.pid,
+      // The reachable web UI origin. Doctor and the installer validate this URL,
+      // so it must reflect where the UI is actually served, not a dev default.
+      ui: uiUrl,
+      uiServed: Boolean(deps.webDir),
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };
@@ -1207,7 +1222,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   if (deps.webDir) {
     const webRoot = resolve(deps.webDir);
     const indexFile = resolve(webRoot, "index.html");
-    app.get("/*", async (request, reply) => {
+    const serveSpa = async (request: FastifyRequest, reply: FastifyReply) => {
       const pathname = decodeURIComponent(request.url.split("?", 1)[0] ?? "/");
       if (pathname.startsWith("/api/")) {
         reply.status(404).send({ version: 1, error: { code: "NOT_FOUND", message: "API route not found" } });
@@ -1219,7 +1234,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       if (!existsSync(file)) throw new ApiError(503, "The bundled web interface is missing.", "WEB_UI_UNAVAILABLE");
       const type = contentType(extname(file));
       reply.type(type).send(readFileSync(file));
-    });
+    };
+    // Serve the SPA at the root and for every non-API path. Registering "/"
+    // explicitly guarantees that opening the bare origin (what `morrow open`
+    // does) renders the app instead of a raw JSON probe.
+    app.get("/", serveSpa);
+    app.get("/*", serveSpa);
   }
 
   return app;

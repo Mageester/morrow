@@ -22,6 +22,16 @@ const forbiddenPatterns = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g
 ];
 
+// PowerShell scripts a user runs (especially via `irm | iex`) must be pure
+// ASCII. Windows PowerShell 5.1 decodes non-ASCII against the legacy OEM code
+// page, turning UTF-8 punctuation/box-drawing into mojibake (e.g. "â–ˆ"). These
+// scripts must also force UTF-8 console output so any child-process text renders
+// cleanly. Both are asserted here so the mojibake class can never regress.
+const asciiOnlyShellScripts = [
+  "installer/install.ps1",
+  "installer/templates/uninstall.ps1",
+];
+
 const failures = [];
 
 for (const path of requiredFiles) {
@@ -29,6 +39,22 @@ for (const path of requiredFiles) {
     await access(path);
   } catch {
     failures.push(`Missing required file: ${path}`);
+  }
+}
+
+for (const path of asciiOnlyShellScripts) {
+  try {
+    const bytes = await readFile(path);
+    const offending = [...bytes].findIndex((b) => b > 127);
+    if (offending !== -1) {
+      failures.push(`${path} contains a non-ASCII byte (0x${bytes[offending].toString(16)} at offset ${offending}); PowerShell 5.1 will render it as mojibake.`);
+    }
+    const text = bytes.toString("utf8");
+    if (!/\[Console\]::OutputEncoding\s*=\s*\[Text\.Encoding\]::UTF8/.test(text)) {
+      failures.push(`${path} must force UTF-8 console output ([Console]::OutputEncoding = [Text.Encoding]::UTF8) for PowerShell 5.1 compatibility.`);
+    }
+  } catch {
+    failures.push(`Missing or unreadable installer script: ${path}`);
   }
 }
 

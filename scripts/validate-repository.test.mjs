@@ -8,8 +8,17 @@ test("package is private and unlicensed", async () => {
   assert.equal(packageJson.license, "UNLICENSED");
 });
 
-test("README does not claim Morrow is production ready", async () => {
+test("README is honest about beta status and makes no production claims", async () => {
   const readme = await readFile("README.md", "utf8");
-  assert.match(readme, /Pre-alpha/i);
-  assert.match(readme, /No superiority claims are considered proven/i);
+  assert.match(readme, /Early Access/i);
+  assert.match(readme, /beta/i);
+  assert.doesNotMatch(readme, /production[ -]ready/i);
+});
+
+test("installer scripts are ASCII-only and force UTF-8 console output", async () => {
+  for (const path of ["installer/install.ps1", "installer/templates/uninstall.ps1"]) {
+    const bytes = await readFile(path);
+    assert.equal([...bytes].findIndex((b) => b > 127), -1, `${path} has a non-ASCII byte that PowerShell 5.1 would render as mojibake`);
+    assert.match(bytes.toString("utf8"), /\[Console\]::OutputEncoding\s*=\s*\[Text\.Encoding\]::UTF8/, `${path} must force UTF-8 console output`);
+  }
 });

@@ -27,7 +27,7 @@ describe("REST API and Task Runner Vertical Slice", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("returns a truthful API root summary", async () => {
+  it("returns a truthful API root summary in dev (no bundled UI)", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
@@ -38,20 +38,42 @@ describe("REST API and Task Runner Vertical Slice", () => {
     });
   });
 
-  it("serves the packaged web app for app routes without intercepting APIs", async () => {
+  it("health advertises the dev UI URL when no bundle is present", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ui).toBe("http://127.0.0.1:5173");
+    expect(res.json().uiServed).toBe(false);
+  });
+
+  it("serves the packaged web app at the root and app routes, advertising its own origin", async () => {
     const webDir = join(tempDir, "web");
     mkdirSync(webDir);
     writeFileSync(join(webDir, "index.html"), "<main>Morrow app</main>");
+    const prevPort = process.env.PORT;
+    process.env.PORT = "4317";
     const packaged = buildServer({ db, runner, webDir });
     try {
+      // Regression: opening the bare origin (what `morrow open` does) must render
+      // the SPA, never a raw JSON probe advertising a non-existent dev server.
+      const rootRoute = await packaged.inject({ method: "GET", url: "/" });
+      expect(rootRoute.statusCode).toBe(200);
+      expect(rootRoute.body).toContain("Morrow app");
+      expect(rootRoute.headers["content-type"]).toContain("text/html");
+
       const appRoute = await packaged.inject({ method: "GET", url: "/onboarding" });
       expect(appRoute.statusCode).toBe(200);
       expect(appRoute.body).toContain("Morrow app");
+
       const apiRoute = await packaged.inject({ method: "GET", url: "/api/health" });
       expect(apiRoute.statusCode).toBe(200);
       expect(apiRoute.json().ok).toBe(true);
+      // Regression for beta.8: health must advertise the real served origin, not 5173.
+      expect(apiRoute.json().ui).toBe("http://127.0.0.1:4317");
+      expect(apiRoute.json().uiServed).toBe(true);
     } finally {
       await packaged.close();
+      if (prevPort === undefined) delete process.env.PORT;
+      else process.env.PORT = prevPort;
     }
   });
 
