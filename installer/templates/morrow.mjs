@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 const app = dirname(fileURLToPath(import.meta.url));
 const install = dirname(app);
 const data = join(install, "data");
+const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
 const pidFile = join(data, "morrow.pid");
+const logFile = join(logs, "orchestrator.log");
 const url = "http://127.0.0.1:4317";
 const commands = new Set(["start", "stop", "restart", "status", "open", "doctor", "uninstall", "help"]);
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
@@ -39,10 +41,24 @@ function printUninstallHelp() {
 async function start() {
   if (await healthy()) return console.log("Morrow is already running at " + url);
   if (!existsSync(runtime)) throw new Error("Bundled Node runtime is missing. Run the installer again.");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: "ignore", env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), NODE_ENV: "production" } });
+  // Capture the service's stdout/stderr to a real log file. Discarding it
+  // (stdio: "ignore") left users -- and a failing start -- with no way to see
+  // why the orchestrator did not come up.
+  const log = openSync(logFile, "a");
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
-  if (!await waitForHealth()) throw new Error("Morrow did not become healthy. See " + join(install, "logs") + ".");
+  if (!await waitForHealth()) {
+    throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
+  }
   console.log("Morrow is ready at " + url);
+}
+function tailLog() {
+  try {
+    const lines = readFileSync(logFile, "utf8").split(/\r?\n/).filter(Boolean);
+    return lines.slice(-20).join("\n") || "(service log is empty)";
+  } catch {
+    return "(no service log was written)";
+  }
 }
 async function stop() {
   let current = pid();

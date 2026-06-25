@@ -16,7 +16,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -79,8 +79,15 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     assert.ok(existsSync(installedCmd), "morrow.cmd exists in final installation");
     assert.ok(existsSync(join(installRoot, "app", "runtime", "node.exe")), "bundled runtime present");
 
-    // 4 + 5. launch and reach health
-    ps(`& '${installedCmd}' start`);
+    // 4 + 5. launch and reach health. If start fails, surface the service log so
+    // a packaging/startup regression is diagnosable from CI output, not silent.
+    try {
+      ps(`& '${installedCmd}' start`);
+    } catch (e) {
+      const logPath = join(installRoot, "logs", "orchestrator.log");
+      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "(no orchestrator.log written)";
+      throw new Error(`morrow start failed.\n--- start stderr ---\n${e.stderr || e.message}\n--- orchestrator.log ---\n${log}`);
+    }
     let health = null;
     for (let i = 0; i < 45; i++) {
       try {
@@ -88,6 +95,11 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
         if (res.ok) { health = await res.json(); break; }
       } catch {}
       await sleep(1000);
+    }
+    if (!health) {
+      const logPath = join(installRoot, "logs", "orchestrator.log");
+      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "(no orchestrator.log written)";
+      throw new Error(`service never became healthy.\n--- orchestrator.log ---\n${log}`);
     }
     assert.ok(health && health.ok === true, "GET /api/health returned ok:true");
     assert.equal(health.service, "morrow-orchestrator");
