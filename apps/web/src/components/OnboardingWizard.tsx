@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { ProviderStatus } from "@morrow/contracts";
 import { apiClient } from "../api/client";
+import { ProviderManager } from "./ProviderManager";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 type SetupRoute = "simple" | "advanced" | null;
@@ -31,10 +32,6 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
   // Profile
   const name = state.name || "";
   const useCase = state.useCase || "";
-  
-  // Provider
-  const [activeProv, setActiveProv] = useState("");
-  const [testStatus, setTestStatus] = useState<{ status: "idle" | "testing" | "success" | "error"; message?: string; latencyMs?: number }>({ status: "idle" });
   
   // Permission
   const [permissionPreset, setPermissionPreset] = useState<PermissionPreset>("balanced");
@@ -70,21 +67,6 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
     setStep(s => s + 1);
   };
   const prevStep = () => setStep(s => Math.max(0, s - 1));
-
-  const handleTestProvider = async (providerId: string) => {
-    setTestStatus({ status: "testing" });
-    try {
-      const result = await apiClient.testProvider(providerId);
-      if (result.ok) {
-        setTestStatus({ status: "success", message: `Reachable! Latency: ${result.latencyMs}ms`, latencyMs: result.latencyMs });
-        await onRefreshProviders();
-      } else {
-        setTestStatus({ status: "error", message: result.detail || "Connection failed" });
-      }
-    } catch (e: any) {
-      setTestStatus({ status: "error", message: e.message || "Failed to test connection." });
-    }
-  };
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -274,111 +256,29 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
           <div>
             <h1>Connect a Model Provider</h1>
             <p className="subtitle">
-              Morrow connects directly to model endpoints. Your API keys stay on your machine — never in the browser, database, or logs.
+              Paste an API key below — Morrow saves it on this machine and applies
+              it to the running service immediately. No environment variables, no
+              restart. Your key never goes to the browser, database, or logs.
             </p>
 
-            {route === "simple" ? (
-              <>
-                <div className="card alert-warn" style={{ marginBottom: 16, borderLeft: "4px solid var(--amber)", padding: 12, background: "var(--bg-panel)" }}>
-                  <strong>Bring Your Own Key</strong>
-                  <p className="muted" style={{ margin: "4px 0 0", fontSize: 12.5 }}>
-                    Consumer subscriptions (ChatGPT Plus, Claude Pro) are NOT API credits. Create API keys at each provider's developer console.
-                  </p>
-                </div>
-                <div className="provider-grid">
-                  {providers.filter(p => ["openai", "anthropic", "deepseek", "openrouter"].includes(p.id)).map(p => {
-                    const isSelected = activeProv === p.id;
-                    return (
-                      <div key={p.id} 
-                        className={`provider-card ${p.configured ? "ok" : ""} ${isSelected ? "selected" : ""}`}
-                        style={{ cursor: "pointer", border: isSelected ? "1px solid var(--accent)" : undefined }}
-                        onClick={() => { setActiveProv(p.id); setTestStatus({ status: "idle" }); }}
-                      >
-                        <div className="provider-card-head">
-                          <strong>{p.label}</strong>
-                          <span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>
-                            {p.configured ? "Configured" : "Not configured"}
-                          </span>
-                        </div>
-                        <div className="cap-row">
-                          {p.capabilities.toolCalls && <span className="cap">tools</span>}
-                          {p.capabilities.vision && <span className="cap">vision</span>}
-                          {p.capabilities.local && <span className="cap local">local</span>}
-                        </div>
-                        {isSelected && (
-                          <div className="provider-test-area" onClick={e => e.stopPropagation()} style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
-                            <p className="muted" style={{ fontSize: 11.5 }}>
-                              Set <code style={{ fontSize: 11 }}>{p.id.toUpperCase()}_API_KEY</code> in your environment:
-                            </p>
-                            <pre className="code-block" style={{ marginTop: 8, padding: "8px 10px" }}>
-                              <code style={{ fontSize: 11.5 }}>{p.id.toUpperCase()}_API_KEY=sk-...</code>
-                            </pre>
-                            <button type="button" className="btn btn-primary" style={{ marginTop: 10, width: "100%", justifyContent: "center" }}
-                              onClick={() => handleTestProvider(p.id)} disabled={testStatus.status === "testing"}>
-                              {testStatus.status === "testing" ? "Testing…" : "Test Connection"}
-                            </button>
-                            {testStatus.message && (
-                              <div className={`test-result-msg ${testStatus.status}`} style={{ marginTop: 8, fontSize: 12 }}>
-                                {testStatus.message}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+            <div className="card alert-warn" style={{ marginBottom: 16, borderLeft: "4px solid var(--amber)", padding: 12, background: "var(--bg-panel)" }}>
+              <strong>Bring Your Own Key</strong>
+              <p className="muted" style={{ margin: "4px 0 0", fontSize: 12.5 }}>
+                Consumer subscriptions (ChatGPT Plus, Claude Pro) are NOT API
+                credits. Create an API key in each provider's developer console,
+                then paste it here. For a fully local setup, run Ollama and set
+                its endpoint below — your data never leaves your machine.
+              </p>
+            </div>
 
-                {/* Local option */}
-                <div className="card" style={{ marginTop: 16 }}>
-                  <h4 style={{ margin: "0 0 6px", fontSize: 13 }}>
-                    <span className="cap local" style={{ marginRight: 8 }}>local</span> 
-                    Use a Local Model
-                  </h4>
-                  <p className="muted" style={{ fontSize: 12.5 }}>
-                    Install <span className="codeword">ollama</span> and run a local model. Your data never leaves your machine. 
-                    Set <code>OLLAMA_BASE_URL</code> if not running on the default port.
-                  </p>
-                </div>
-              </>
-            ) : (
-              /* Advanced provider setup */
-              <div>
-                <p className="muted">All available providers. Configure any provider by setting its environment variable.</p>
-                <div className="provider-grid" style={{ marginTop: 12 }}>
-                  {providers.map(p => (
-                    <div key={p.id} className={`provider-card ${p.configured ? "ok" : ""}`}>
-                      <div className="provider-card-head">
-                        <strong>{p.label}</strong>
-                        <span className={`badge ${p.configured ? "badge-ok" : "badge-muted"}`}>
-                          {p.configured ? "Configured" : p.authStatus}
-                        </span>
-                      </div>
-                      <div className="provider-card-meta">
-                        <span className="kv"><span className="k">Kind</span>{p.kind}</span>
-                        <span className="kv"><span className="k">Endpoint</span>{p.endpointHost ?? p.endpointType}</span>
-                      </div>
-                      <div className="cap-row">
-                        {p.capabilities.toolCalls && <span className="cap">tools</span>}
-                        {p.capabilities.vision && <span className="cap">vision</span>}
-                        {p.capabilities.streaming && <span className="cap">streaming</span>}
-                        {p.capabilities.local && <span className="cap local">local</span>}
-                      </div>
-                      {p.setupHint && <p className="setup-hint">{p.setupHint}</p>}
-                      <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }}
-                        onClick={() => { setActiveProv(p.id); handleTestProvider(p.id); }}>
-                        Test
-                      </button>
-                      {activeProv === p.id && testStatus.message && (
-                        <div className={`test-result-msg ${testStatus.status}`} style={{ fontSize: 12, marginTop: 6 }}>
-                          {testStatus.message}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <ProviderManager
+              providers={
+                route === "simple"
+                  ? providers.filter(p => ["openai", "anthropic", "deepseek", "openrouter", "ollama"].includes(p.id))
+                  : providers
+              }
+              onChanged={onRefreshProviders}
+            />
           </div>
         )}
 
@@ -529,7 +429,7 @@ export function OnboardingHub({ state, providers, onRefreshProviders, onComplete
               <h4 style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Setup Summary</h4>
               <ul className="kv-list" style={{ gap: 8 }}>
                 <li><span className="kk">Runtime</span><span className="vv" style={{ color: healthOk ? "var(--green)" : "var(--amber)" }}>{healthOk ? "Connected" : "Pending"}</span></li>
-                <li><span className="kk">Provider</span><span className="vv">{testStatus.status === "success" ? `${activeProv} — Verified` : providers.filter(p => p.configured).length > 0 ? "Configured" : "Not configured yet"}</span></li>
+                <li><span className="kk">Provider</span><span className="vv">{providers.filter(p => p.configured).length > 0 ? `${providers.filter(p => p.configured).map(p => p.label).join(", ")} configured` : "Not configured yet"}</span></li>
                 <li><span className="kk">Workspace</span><span className="vv">{projectSuccess ? projectName : "Not set"}</span></li>
                 <li><span className="kk">Permissions</span><span className="vv" style={{ textTransform: "capitalize" }}>{permissionPreset}</span></li>
                 <li><span className="kk">Skills</span><span className="vv">{enabledPacks.size} pack{enabledPacks.size !== 1 ? "s" : ""} enabled</span></li>

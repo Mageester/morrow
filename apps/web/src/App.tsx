@@ -179,6 +179,7 @@ export default function App() {
   useEffect(() => {
     if (!focusedTaskId) { setTaskState(null); if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; } return; }
     let live = true;
+    const TERMINAL_STATUS = ["completed", "verified", "failed", "cancelled", "interrupted"];
     const fetchAgg = () => {
       // The aggregate endpoint already includes toolCalls + routing; read them
       // directly rather than racing a second fetch whose failure path dropped
@@ -186,6 +187,12 @@ export default function App() {
       apiClient.getTaskAggregate(focusedTaskId).then((agg: any) => {
         if (!live) return;
         setTaskState({ ...agg, toolCalls: agg.toolCalls ?? [], routing: agg.routing ?? null });
+        // Release the composer lock as soon as the focused task is terminal, even
+        // if the terminal SSE event was missed (e.g. the run finished before the
+        // stream attached). Keeps the input from sticking on "Morrow is working...".
+        if (TERMINAL_STATUS.includes(agg?.task?.status)) {
+          setActiveTaskId(prev => (prev === focusedTaskId ? "" : prev));
+        }
       }).catch(console.error);
     };
     fetchAgg();
@@ -199,6 +206,11 @@ export default function App() {
       if (!live) return;
       if (activeConversationId) apiClient.listMessages(activeConversationId).then(setMessages).catch(() => {});
       if (selectedProjectId) loadProjectMeta(projects);
+      // The focused task reached a terminal state (the SSE stream closes on a
+      // task.completed/verified/failed/cancelled/interrupted event). Release the
+      // composer lock so the user can type the next message; without this the UI
+      // stays stuck on "Morrow is working..." after the answer finishes.
+      setActiveTaskId(prev => (prev === focusedTaskId ? "" : prev));
     });
     eventUnsubRef.current = unsub;
     return () => { live = false; unsub(); if (eventUnsubRef.current === unsub) eventUnsubRef.current = null; };
