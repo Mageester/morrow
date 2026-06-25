@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,7 +47,29 @@ async function stop() {
 function processAlive(value) { try { process.kill(value, 0); return true; } catch { return false; } }
 async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
 async function doctor() { const checks = [["bundled Node", existsSync(runtime)], ["orchestrator", existsSync(entry)], ["data", existsSync(data)], ["web UI", existsSync(join(app, "web", "index.html"))], ["health", await healthy()]]; for (const [name, ok] of checks) console.log((ok ? "OK   " : "FAIL ") + name); process.exitCode = checks.slice(0, 4).every(([, ok]) => ok) ? 0 : 1; }
-async function uninstall() { await stop(); const script = join(install, "uninstall.ps1"); if (!existsSync(script)) throw new Error("Uninstaller is missing."); execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { stdio: "inherit" }); }
+async function uninstall() {
+  const purgeData = process.argv.includes("--purge-data");
+  const yes = process.argv.includes("--yes") || process.argv.includes("--force");
+  console.log("Morrow uninstall");
+  console.log("  Removes: running service, launcher/shim, shortcuts, app/runtime files");
+  console.log(purgeData ? "  Data:    DELETE local user data" : "  Data:    preserve local user data (default)");
+  if (!yes) {
+    if (!process.stdin.isTTY) throw new Error("Uninstall requires confirmation. Re-run with --yes, or use --purge-data --yes to delete data too.");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await rl.question("Continue? [y/N] ")).trim().toLowerCase();
+      if (answer !== "y" && answer !== "yes") { console.log("Uninstall cancelled."); return; }
+    } finally {
+      rl.close();
+    }
+  }
+  await stop();
+  const script = join(app, "uninstall.ps1");
+  if (!existsSync(script)) throw new Error("Uninstaller is missing.");
+  const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script];
+  if (purgeData) args.push("-PurgeData");
+  execFileSync("powershell.exe", args, { stdio: "inherit" });
+}
 
 try {
   const command = process.argv[2] ?? "start";
