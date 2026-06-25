@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { posix as pathPosix, win32 as pathWin32 } from "node:path";
 
 export interface PnpmCandidate {
   path: string;
@@ -48,9 +48,16 @@ export function buildPnpmCandidates(
   platform: NodeJS.Platform = process.platform,
   execPath: string = process.execPath,
 ): PnpmCandidate[] {
+  // Resolve paths with the *target* platform's rules, not the host's, so the
+  // ranking is deterministic regardless of where it runs (e.g. Linux CI probing
+  // a simulated win32 environment). On Linux, node:path defaults to POSIX, which
+  // would mangle Windows drive paths and split PATH on ":" instead of ";".
+  const p = platform === "win32" ? pathWin32 : pathPosix;
+  const delim = platform === "win32" ? ";" : ":";
+
   if (platform !== "win32") {
     const out: PnpmCandidate[] = [];
-    if (env.PNPM_HOME) out.push({ path: join(env.PNPM_HOME, "pnpm"), source: "PNPM_HOME" });
+    if (env.PNPM_HOME) out.push({ path: p.join(env.PNPM_HOME, "pnpm"), source: "PNPM_HOME" });
     out.push({ path: "pnpm", source: "PATH" });
     return out;
   }
@@ -66,21 +73,21 @@ export function buildPnpmCandidates(
   };
 
   // 1. Corepack-managed pnpm: shims are installed alongside the node binary.
-  const nodeDir = dirname(execPath);
-  for (const name of PNPM_NAMES_WIN) push(join(nodeDir, name), "corepack");
+  const nodeDir = p.dirname(execPath);
+  for (const name of PNPM_NAMES_WIN) push(p.join(nodeDir, name), "corepack");
 
   // 2. pnpm home (standalone installer / `pnpm setup`).
-  if (env.PNPM_HOME) for (const name of PNPM_NAMES_WIN) push(join(env.PNPM_HOME, name), "PNPM_HOME");
+  if (env.PNPM_HOME) for (const name of PNPM_NAMES_WIN) push(p.join(env.PNPM_HOME, name), "PNPM_HOME");
 
   // 3. npm global binary directory (Windows: %APPDATA%\npm).
-  if (env.APPDATA) for (const name of PNPM_NAMES_WIN) push(join(env.APPDATA, "npm", name), "npm-global");
+  if (env.APPDATA) for (const name of PNPM_NAMES_WIN) push(p.join(env.APPDATA, "npm", name), "npm-global");
 
   // 4. Known user installation directories.
-  if (env.LOCALAPPDATA) for (const name of PNPM_NAMES_WIN) push(join(env.LOCALAPPDATA, "pnpm", name), "user-install");
+  if (env.LOCALAPPDATA) for (const name of PNPM_NAMES_WIN) push(p.join(env.LOCALAPPDATA, "pnpm", name), "user-install");
 
   // 5. Valid PATH candidates (lowest priority).
-  for (const dir of (env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    for (const name of PNPM_NAMES_WIN) push(join(dir, name), "PATH");
+  for (const dir of (env.PATH ?? "").split(delim).filter(Boolean)) {
+    for (const name of PNPM_NAMES_WIN) push(p.join(dir, name), "PATH");
   }
 
   return out;
