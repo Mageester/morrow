@@ -32,9 +32,14 @@ function run(command, options = {}) {
   });
 }
 
-function runMorrow(cmd, args = []) {
+function runMorrow(cmd, args = [], options = {}) {
   const psArgs = args.map(psQuote).join(" ");
-  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `& ${psQuote(cmd)} ${psArgs}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `& ${psQuote(cmd)} ${psArgs}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    if (options.allowFailure && typeof error.stdout === "string") return error.stdout;
+    throw error;
+  }
 }
 
 function expandArtifact(artifact, appDir) {
@@ -101,7 +106,7 @@ test("packaged morrow.cmd handles uninstall before any prompt/chat fallback", {
     assert.match(uninstallHelp, /preserves user data by default/);
     assert.doesNotMatch(uninstallHelp, /provider\/model|inspect_workspace|git_status|Traceback|at file:/i);
 
-    const status = runMorrow(installed.cmd, ["status"]);
+    const status = runMorrow(installed.cmd, ["status"], { allowFailure: true });
     assert.match(status, /Morrow is (running|stopped)/);
 
     runMorrow(installed.cmd, ["uninstall", "--yes"]);
