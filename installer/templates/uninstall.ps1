@@ -31,6 +31,9 @@ $quotedTargets = ($targets | ForEach-Object { "'" + ($_.Replace("'", "''")) + "'
 $body = @"
 `$ErrorActionPreference = 'SilentlyContinue'
 Start-Sleep -Seconds 2
+`$appRoot = '$($App.Replace("'", "''"))'
+Get-Process -Name node | Where-Object { `$_.Path -like "`$appRoot*" } | Stop-Process -Force
+Start-Sleep -Seconds 1
 foreach (`$target in @($quotedTargets)) {
   Remove-Item -LiteralPath `$target -Recurse -Force
 }

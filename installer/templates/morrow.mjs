@@ -45,7 +45,7 @@ async function stop() {
     }
   }
   if (!current || !processAlive(current)) return console.log("Morrow is not running.");
-  try { process.kill(current); } catch {}
+  try { execFileSync("taskkill.exe", ["/PID", String(current), "/T", "/F"], { stdio: "ignore" }); } catch { try { process.kill(current); } catch {} }
   try { unlinkSync(pidFile); } catch {}
   console.log("Morrow stopped.");
 }
