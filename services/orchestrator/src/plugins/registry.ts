@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface PluginManifest {
   id: string;
@@ -39,7 +39,13 @@ function readManifest(directory: string): PluginManifest {
 function inside(root: string, path: string): string {
   const absoluteRoot = resolve(root);
   const absolutePath = resolve(path);
-  if (!absolutePath.startsWith(`${absoluteRoot}\\`) && absolutePath !== absoluteRoot) throw new Error("Plugin path escapes the configured local plugin directory");
+  // Containment must be checked with the OS path separator, not a hard-coded
+  // backslash: relative() yields "" for the root itself and a ".."-prefixed or
+  // absolute path when the target escapes, on every platform.
+  const rel = relative(absoluteRoot, absolutePath);
+  if (rel !== "" && (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))) {
+    throw new Error("Plugin path escapes the configured local plugin directory");
+  }
   return absolutePath;
 }
 
