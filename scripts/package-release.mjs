@@ -123,11 +123,37 @@ writeFileSync(join(orchDst, "package.json"), JSON.stringify({
 const installPkg = join(orchDst, ".install");
 ensure(installPkg);
 writeFileSync(join(installPkg, "package.json"), JSON.stringify({ name: "morrow-orch-runtime", private: true, type: "module", dependencies: externalDeps }, null, 2));
-const npmEnv = { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1", PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1", Path: `${RUNTIME_DIR};${process.env.Path || process.env.PATH || ""}` };
+// Force prebuild-install (better-sqlite3) to fetch the binary for the BUNDLED
+// Node ABI, not the host's. Without this, building on a runner whose Node ABI
+// differs from the bundled runtime (e.g. Node 22 host packaging a Node 24
+// runtime) bundles a native module that fails to load at startup with
+// NODE_MODULE_VERSION mismatch. Targeting the bundled version makes the result
+// independent of whatever Node the build host happens to use.
+const npmEnv = {
+  ...process.env,
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
+  PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1",
+  npm_config_runtime: "node",
+  npm_config_target: NODE_VERSION,
+  npm_config_arch: "x64",
+  npm_config_target_arch: "x64",
+  Path: `${RUNTIME_DIR};${process.env.Path || process.env.PATH || ""}`,
+};
 execFileSync(BUNDLED_NODE, [BUNDLED_NPM, "install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: installPkg, stdio: "inherit", env: npmEnv });
 rmSync(join(orchDst, "node_modules"), { recursive: true, force: true });
 cpSync(join(installPkg, "node_modules"), join(orchDst, "node_modules"), { recursive: true });
 rmSync(installPkg, { recursive: true, force: true });
+
+// Hard gate: load the bundled native module with the bundled runtime. This
+// turns a startup-time NODE_MODULE_VERSION crash into a build-time failure, so
+// an ABI-mismatched package can never be archived or published.
+console.log("  Verifying better-sqlite3 loads under the bundled runtime...");
+const sqliteProbe = "const D=require('better-sqlite3');const db=new D(':memory:');db.prepare('select 1 as ok').get();db.close();console.log('better-sqlite3 OK');";
+try {
+  execFileSync(BUNDLED_NODE, ["-e", sqliteProbe], { cwd: orchDst, stdio: "inherit" });
+} catch {
+  throw new Error(`Bundled better-sqlite3 failed to load under Node ${NODE_VERSION}. The native ABI does not match the bundled runtime.`);
+}
 
 // Inject compiled workspace deps (never TypeScript source).
 for (const dep of Object.keys(orchPkg.dependencies || {}).filter((n) => n.startsWith("@morrow/"))) {
