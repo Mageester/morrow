@@ -1,10 +1,23 @@
 import { createServer, type Server } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { describe, it, expect, afterEach } from "vitest";
 import { chromium } from "playwright";
+
+// These tests drive a real browser. The bundled Chromium is absent on minimal
+// CI runners (the release/CI jobs skip the Playwright browser download), so
+// detect availability and skip rather than fail where no browser exists. Pure
+// logic tests (injection scanning, URL policy, audit) below always run.
+const chromiumAvailable = (() => {
+  try {
+    return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+})();
 import { scanForInjection, sanitizeForModel } from "../src/browser/injection-guard.js";
 import { assertBrowserUrlAllowed, playwrightController } from "../src/browser/playwright.js";
 import { browserAuditSink } from "../src/browser/audit.js";
@@ -112,7 +125,7 @@ describe("browser audit evidence", () => {
   });
 });
 
-describe("Playwright browser controller", () => {
+describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
   it("controls a local isolated browser session semantically and preserves bounded evidence", async () => {
     const baseUrl = await controlledBrowserServer();
     const uploads = await mkdtemp(join(tmpdir(), "morrow-upload-"));
