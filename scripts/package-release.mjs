@@ -39,7 +39,7 @@ const ROOT = join(__dirname, "..");
 const DIST = join(ROOT, "dist");
 const TEMPLATES = join(ROOT, "installer", "templates");
 
-const NODE_VERSION = "22.15.0"; // bundled runtime; native deps are built against this ABI
+const NODE_VERSION = "24.13.1"; // bundled runtime; native deps are built against this ABI
 const PLATFORM = "windows-x64";
 
 const RAW_VERSION = (process.argv[2] || "").replace(/^v/, "");
