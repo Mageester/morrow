@@ -48,6 +48,8 @@ describe("morrow root command", () => {
     for (const command of ["start", "stop", "restart", "status", "open", "doctor", "uninstall"]) {
       expect(resolveInvocation([command])).toEqual({ kind: "command", root: command, sub: undefined, args: [] });
     }
+    expect(resolveInvocation(["install-now"])).toEqual({ kind: "command", root: "install-now", sub: undefined, args: [] });
+    expect(resolveInvocation(["repair:paths"])).toEqual({ kind: "command", root: "repair:paths", sub: undefined, args: [] });
   });
 
   it("treats run as an explicit one-shot alias", () => {
@@ -82,6 +84,14 @@ describe("morrow root command", () => {
       sub: "abc123",
       args: [],
     });
+  });
+
+  it("exposes uninstall help without starting chat", async () => {
+    await expect(run(["uninstall", "--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    expect(help).toContain("Morrow uninstall");
+    expect(help).toContain("--purge-data");
+    expect(help).not.toContain("provider/model");
   });
 
   it("exposes a dry-run uninstall that removes launcher/app surfaces while preserving data by default", async () => {

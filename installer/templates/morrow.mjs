@@ -11,6 +11,7 @@ const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
 const pidFile = join(data, "morrow.pid");
 const url = "http://127.0.0.1:4317";
+const commands = new Set(["start", "stop", "restart", "status", "open", "doctor", "uninstall", "help"]);
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
 
 function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { return 0; } }
@@ -18,6 +19,12 @@ async function health() { try { const response = await fetch(url + "/api/health"
 async function healthy() { return Boolean(await health()); }
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
 function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
+function printHelp() {
+  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow start\n  morrow stop\n  morrow restart\n  morrow status\n  morrow open\n  morrow doctor\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
+}
+function printUninstallHelp() {
+  console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt for confirmation\n  --purge-data  delete local user data as well`);
+}
 
 async function start() {
   if (await healthy()) return console.log("Morrow is already running at " + url);
@@ -31,8 +38,6 @@ async function stop() {
   let current = pid();
   if (!current || !processAlive(current)) {
     const state = await health();
-    // Only this fixed loopback endpoint can provide a recovery pid. This keeps
-    // a missing pid file from making the installed service impossible to stop.
     if (Number.isSafeInteger(state?.ownerPid) && state.ownerPid > 0) {
       current = state.ownerPid;
       writeFileSync(pidFile, String(current));
@@ -48,6 +53,7 @@ function processAlive(value) { try { process.kill(value, 0); return true; } catc
 async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
 async function doctor() { const checks = [["bundled Node", existsSync(runtime)], ["orchestrator", existsSync(entry)], ["data", existsSync(data)], ["web UI", existsSync(join(app, "web", "index.html"))], ["health", await healthy()]]; for (const [name, ok] of checks) console.log((ok ? "OK   " : "FAIL ") + name); process.exitCode = checks.slice(0, 4).every(([, ok]) => ok) ? 0 : 1; }
 async function uninstall() {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   const purgeData = process.argv.includes("--purge-data");
   const yes = process.argv.includes("--yes") || process.argv.includes("--force");
   console.log("Morrow uninstall");
@@ -73,15 +79,18 @@ async function uninstall() {
 
 try {
   const command = process.argv[2] ?? "start";
-  switch (command) {
-    case "start": await start(); break;
-    case "stop": await stop(); break;
-    case "restart": await stop(); await start(); break;
-    case "status": await status(); break;
-    case "open": if (!await healthy()) await start(); open(); break;
-    case "doctor": await doctor(); break;
-    case "uninstall": await uninstall(); break;
-    default: console.error("Usage: morrow [start|stop|restart|status|open|doctor|uninstall]"); process.exitCode = 2;
+  if (command === "--help" || command === "-h" || command === "help") { printHelp(); }
+  else if (!commands.has(command)) { console.error("Unknown command: " + command); printHelp(); process.exitCode = 2; }
+  else {
+    switch (command) {
+      case "start": await start(); break;
+      case "stop": await stop(); break;
+      case "restart": await stop(); await start(); break;
+      case "status": await status(); break;
+      case "open": if (!await healthy()) await start(); open(); break;
+      case "doctor": await doctor(); break;
+      case "uninstall": await uninstall(); break;
+    }
   }
 } catch (error) {
   console.error("Morrow: " + (error instanceof Error ? error.message : String(error)));

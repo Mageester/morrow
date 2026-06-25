@@ -26,6 +26,7 @@ export const VERSION = "0.1.0";
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
 const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
+const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
   | { kind: "interactive" }
@@ -36,8 +37,13 @@ export function resolveInvocation(positionals: string[]): Invocation {
   const [root, sub, ...args] = positionals;
   if (!root) return { kind: "interactive" };
   if (root === "run") return { kind: "prompt", prompt: [sub, ...args].filter((value): value is string => Boolean(value)).join(" ") };
-  if (COMMANDS.has(root)) return { kind: "command", root, sub, args };
+  if (COMMANDS.has(root) || looksLifecycleCommand(root)) return { kind: "command", root, sub, args };
   return { kind: "prompt", prompt: positionals.join(" ") };
+}
+
+function looksLifecycleCommand(root: string): boolean {
+  const normalized = root.toLowerCase();
+  return LIFECYCLE_COMMANDS.some((command) => normalized === command || normalized.startsWith(`${command}-`) || normalized.startsWith(`${command}:`));
 }
 
 export async function run(argv: string[]): Promise<number> {
@@ -45,7 +51,7 @@ export async function run(argv: string[]): Promise<number> {
   const noColor = parsed.flags.color === false || flagBool(parsed.flags, "no-color");
   const out = new Output({ json: flagBool(parsed.flags, "json"), quiet: flagBool(parsed.flags, "quiet"), color: resolveColor({ noColorFlag: noColor, json: flagBool(parsed.flags, "json"), env: process.env, isTTY: Boolean(process.stdout.isTTY) }) });
   try {
-    if (flagBool(parsed.flags, "help") || parsed.positionals[0] === "help") return printHelp(out);
+    if ((flagBool(parsed.flags, "help") && parsed.positionals.length === 0) || parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });

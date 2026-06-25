@@ -27,6 +27,12 @@ interface UninstallTarget {
 }
 
 export async function uninstallCommand(ctx: Context): Promise<number> {
+  if (flagBool(ctx.flags, "help")) {
+    if (ctx.out.json) ctx.out.data({ command: "uninstall", usage: "morrow uninstall [--yes] [--purge-data] [--dry-run]" });
+    else printUninstallHelp(ctx);
+    return EXIT.OK;
+  }
+
   const installRoot = resolveInstallRoot();
   const binPath = join(installRoot, "bin");
   const choices = await resolveChoices(ctx);
@@ -73,6 +79,10 @@ export async function uninstallCommand(ctx: Context): Promise<number> {
   removeSelectedNow(ctx, installRoot, choices);
   if (!ctx.out.json) ctx.out.success("Morrow uninstall complete.");
   return EXIT.OK;
+}
+
+function printUninstallHelp(ctx: Context): void {
+  ctx.out.print(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data] [--dry-run]\n\nBehavior:\n  - asks for confirmation unless --yes is passed\n  - stops the running Morrow service\n  - removes launcher/shim, shortcuts, and app/runtime files\n  - preserves user data by default\n  - removes user data only with --purge-data\n\nOptions:\n  --yes         do not prompt for confirmation\n  --purge-data  remove local user data too\n  --dry-run     show what would be removed without changing files`);
 }
 
 async function resolveChoices(ctx: Context): Promise<UninstallChoices> {
