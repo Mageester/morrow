@@ -42,10 +42,23 @@ const skip = !process.env.MORROW_RUN_INSTALL_ITEST
     ? "requires Windows"
     : artifact ? false : "no artifact (set MORROW_ARTIFACT or build dist/Morrow-*.zip)";
 
-function ps(script) {
-  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8",
-  });
+// Every PowerShell call is bounded so a single blocking invocation can never
+// hang the whole suite (which node --test's async per-test timeout cannot
+// interrupt, since execFileSync blocks the event loop). On timeout the child is
+// killed and the error names the script, so the hang point is visible.
+function ps(script, timeoutMs = 90_000) {
+  try {
+    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (e) {
+    if (e.killed || e.signal) {
+      throw new Error(`PowerShell step timed out after ${timeoutMs}ms: ${script.slice(0, 80)}`);
+    }
+    throw e;
+  }
 }
 
 test("published artifact installs, launches, and serves /api/health", { skip, timeout: 180000 }, async () => {
@@ -79,14 +92,16 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     assert.ok(existsSync(installedCmd), "morrow.cmd exists in final installation");
     assert.ok(existsSync(join(installRoot, "app", "runtime", "node.exe")), "bundled runtime present");
 
-    // 4 + 5. launch and reach health. If start fails, surface the service log so
-    // a packaging/startup regression is diagnosable from CI output, not silent.
+    // 4 + 5. launch and reach health. The launcher detaches the service; capture
+    // its stdio to a pipe and execFileSync blocks until that pipe EOFs, which the
+    // detached child can delay under a non-interactive shell. Launch with
+    // stdio:"ignore" (no pipe to await) and bound it; the independent health poll
+    // below is the real gate, mirroring how install.ps1 polls after starting.
     try {
-      ps(`& '${installedCmd}' start`);
-    } catch (e) {
-      const logPath = join(installRoot, "logs", "orchestrator.log");
-      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "(no orchestrator.log written)";
-      throw new Error(`morrow start failed.\n--- start stderr ---\n${e.stderr || e.message}\n--- orchestrator.log ---\n${log}`);
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `& '${installedCmd}' start`], { stdio: "ignore", timeout: 60_000 });
+    } catch {
+      // A blocked/slow launcher return is tolerated; only a service that never
+      // becomes healthy (checked next, with the log surfaced) is a failure.
     }
     let health = null;
     for (let i = 0; i < 45; i++) {

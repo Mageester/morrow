@@ -52,10 +52,15 @@ jobs:
         shell: bash
 
       - name: Validate package contract and installer integration
+        timeout-minutes: 15
         env:
           MORROW_ARTIFACT: dist/Morrow-v${{ inputs.version }}-windows-x64.zip
           MORROW_RUN_INSTALL_ITEST: '1'
-        run: node --test scripts/package-release.test.mjs scripts/install-integration.test.mjs
+        # --test-force-exit: these tests launch the detached packaged service,
+        # which keeps the event loop alive after assertions finish. Without
+        # forcing exit the runner waited the full 6h job timeout. The step
+        # timeout is a hard backstop so a hang fails fast instead of hanging CI.
+        run: node --test --test-force-exit scripts/package-release.test.mjs scripts/install-integration.test.mjs
         shell: bash
 
       - name: Create GitHub Release
