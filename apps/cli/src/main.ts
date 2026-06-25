@@ -15,6 +15,7 @@ import { skillsCommand } from "./commands/skills.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
 import { onboardCommand } from "./commands/onboard.js";
+import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 import { aggregateDoctor } from "./service/doctor-checks.js";
@@ -109,7 +110,7 @@ export async function run(argv: string[]): Promise<number> {
       case "stop": return serviceStop(ctx);
       case "restart": return restart(ctx);
       case "open": return open(ctx);
-      case "uninstall": return uninstall(ctx);
+      case "uninstall": return uninstallCommand(ctx);
       case "logs": return logs(ctx);
       case "config": return configCommand(ctx, sub, args);
       case "projects": return projectsCommand(ctx, sub ?? "", args);
@@ -179,7 +180,7 @@ function printHelp(out: Output): number {
     `  morrow doctor                ${g("check your environment")}`,
     `  morrow start|stop|restart    ${g("manage the local service")}`,
     `  morrow open                  ${g("open the local app in your browser")}`,
-    `  morrow uninstall             ${g("stop Morrow and show safe uninstall guidance")}`,
+    `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
     `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
@@ -265,12 +266,6 @@ async function open(ctx: Context): Promise<number> {
   const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
   child.unref();
   if (ctx.out.json) ctx.out.data({ opened: url }); else ctx.out.success(`Opened ${url}`);
-  return EXIT.OK;
-}
-async function uninstall(ctx: Context): Promise<number> {
-  await stop(ctx);
-  if (ctx.out.json) ctx.out.data({ stopped: true, dataDirectory: ctx.paths.home, removed: false });
-  else ctx.out.info(`Morrow is stopped. Your local data is preserved at ${ctx.paths.home}. Run the packaged uninstall script to remove the app and optionally its data.`);
   return EXIT.OK;
 }
 async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }

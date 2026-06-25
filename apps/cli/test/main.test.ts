@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveInvocation, run } from "../src/main.js";
 
@@ -79,5 +82,32 @@ describe("morrow root command", () => {
       sub: "abc123",
       args: [],
     });
+  });
+
+  it("exposes a dry-run uninstall that removes launcher/app surfaces while preserving data by default", async () => {
+    const oldHome = process.env.MORROW_HOME;
+    const home = mkdtempSync(join(tmpdir(), "morrow-uninstall-test-"));
+    process.env.MORROW_HOME = home;
+    try {
+      await expect(run(["uninstall", "--dry-run", "--json"])).resolves.toBe(0);
+      const payload = JSON.parse(stdout.mock.calls.map(([value]) => String(value)).join(""));
+      expect(payload.choices).toMatchObject({
+        removeApp: true,
+        removePath: true,
+        removeShortcuts: true,
+        removeConfig: false,
+        removeDatabase: false,
+        removeLogs: false,
+        removeCache: false,
+        removeBackups: false,
+        dryRun: true,
+      });
+      expect(payload.dataDirectory).toBe(home);
+      expect(payload.targets.map((target: { label: string }) => target.label)).toContain("Application files");
+    } finally {
+      if (oldHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
