@@ -30,6 +30,54 @@ import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
+/**
+ * Find installed skills relevant to a prompt by scoring each skill's
+ * id/name/description against the prompt's keywords. Scans the same directories
+ * the find_skill tool uses (workspace, MORROW_HOME, bundled MORROW_SKILLS_DIR)
+ * and handles both metadata formats (# heading + body, or YAML frontmatter).
+ * Used to deterministically surface skills into the agent prompt so skill use
+ * doesn't depend on the model choosing to call find_skill.
+ */
+function discoverRelevantSkills(prompt: string, workspacePath: string, env: NodeJS.ProcessEnv): { id: string; name: string; description: string }[] {
+  const dirs = [join(workspacePath, "skills")];
+  const home = resolveMorrowHome(env);
+  if (home) dirs.push(join(home, "skills"));
+  if (env.MORROW_SKILLS_DIR) dirs.push(env.MORROW_SKILLS_DIR);
+  const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []));
+  if (promptTokens.size === 0) return [];
+  const seen = new Set<string>();
+  const scored: { id: string; name: string; description: string; score: number }[] = [];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { continue; }
+    for (const entry of entries) {
+      const sd = join(dir, entry);
+      const mdPath = join(sd, "SKILL.md");
+      if (seen.has(entry)) continue;
+      try { if (!statSync(sd).isDirectory() || !existsSync(mdPath)) continue; } catch { continue; }
+      seen.add(entry);
+      const md = readFileSync(mdPath, "utf8");
+      let name = entry, desc = "";
+      if (md.startsWith("---") && md.indexOf("\n---", 3) !== -1) {
+        const fm = md.slice(3, md.indexOf("\n---", 3));
+        name = (fm.match(/^name:\s*(.*)$/m)?.[1] ?? entry).trim().replace(/^["']|["']$/g, "");
+        desc = (fm.match(/^description:\s*(.*)$/m)?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      } else {
+        const lines = md.split("\n").filter((l) => l.trim());
+        name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
+        desc = lines.slice(1).find((l) => l.trim() && !l.startsWith("#"))?.trim() || "";
+      }
+      const hayTokens = `${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? [];
+      let score = 0;
+      for (const t of new Set(hayTokens)) if (promptTokens.has(t)) score++;
+      if (score > 0) scored.push({ id: entry, name, description: desc, score });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
+}
+
 type Dependencies = {
   db: Database.Database;
   taskId: string;
@@ -387,8 +435,24 @@ You have access to tools to inspect the workspace, read files, run safe project 
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
 You must run test/verification commands using run_command, and propose file modifications using propose_patch.
-If your task matches a specialized workflow (testing, refactoring, debugging, security), use find_skill to search available skills. After completing a complex multi-step task, save the approach as a reusable skill with create_skill so you can use it again.`
+Morrow ships installed skills (reusable expert workflows). They ARE available — never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
+
+  // Deterministically surface installed skills relevant to this request so the
+  // agent reliably uses them, rather than depending on the model deciding to
+  // call find_skill. The model is told to load the best match first; that
+  // produces a visible load_skill tool call and grounds it in a real workflow.
+  if (agentMode !== "plan-only" && activeToolProfile !== "none") {
+    const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+    const relevantSkills = discoverRelevantSkills(latestUserPrompt, workspacePath, process.env);
+    if (relevantSkills.length > 0) {
+      const list = relevantSkills.map((s) => `- ${s.id}: ${s.description || s.name}`).join("\n");
+      chatMessages.push({
+        role: "system",
+        content: `Installed skills relevant to this request (these are installed and ready — do NOT claim skills are unavailable):\n${list}\n\nBefore doing other work, call load_skill with the single most relevant skill id above, then follow its instructions. You may also call find_skill to look for others.`,
+      });
+    }
+  }
   if (agentMode === "plan-only") {
     chatMessages.push({
       role: "system",
