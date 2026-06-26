@@ -313,6 +313,16 @@ export default function App() {
     stickToBottomRef.current = true;
     try {
       const qc = await apiClient.quickChat();
+      // quickChat may have just created the scratch project. The conversation
+      // view only renders once selectedProject resolves from `projects`, so make
+      // sure the project is in state before switching to it — otherwise the
+      // first-ever New Chat lands on a blank screen.
+      let list = projects;
+      if (!list.some(p => p.id === qc.projectId)) {
+        list = await apiClient.listProjects();
+        setProjects(list);
+        loadProjectMeta(list);
+      }
       setSelectedProjectId(qc.projectId);
       setActiveConversationId(qc.conversationId);
       setNav("projects");
@@ -459,7 +469,7 @@ export default function App() {
 
       {/* Content */}
       <div className="content">
-        {nav === "projects" && view === "list" && (
+        {nav === "projects" && (view === "list" || !selectedProject) && (
           <>
             <div className="topbar">
               <h1>Missions</h1>
