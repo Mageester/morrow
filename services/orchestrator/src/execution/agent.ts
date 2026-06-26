@@ -921,15 +921,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const currentToolCalls: any[] = [];
 
     try {
-      const opened = await openStreamWithFallback(streamCandidates, chatMessages, {
+      const streamOptions: {
+        abortSignal?: AbortSignal;
+        tools: typeof exposedTools;
+        model?: string;
+        timeoutMs: number;
+        reasoningEffort?: "low" | "medium" | "high";
+        temperature?: number | null;
+        maxOutputTokens?: number | null;
+      } = {
         ...(abortSignal ? { abortSignal } : {}),
         tools: exposedTools,
         model: resolvedModel || assistantMessageRow.model || undefined,
         timeoutMs: preset.timeoutMs,
-        reasoningEffort: preset.reasoningEffort ?? undefined,
         temperature: preset.temperature,
         maxOutputTokens: preset.outputBudgetTokens
-      });
+      };
+      if (preset.reasoningEffort) streamOptions.reasoningEffort = preset.reasoningEffort;
+      const opened = await openStreamWithFallback(streamCandidates, chatMessages, streamOptions);
       if (opened.fellBackFrom.length > 0) {
         event("provider.fallback", { from: opened.fellBackFrom, servedBy: opened.servedBy });
       }
