@@ -1,6 +1,7 @@
 import type { ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
+import { getStoredAccessTokenSync } from "./oauth-flow.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -97,11 +98,21 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       };
       const spec = cfgByProvider[id]!;
       const c = resolveApiKeyCredential(env, { apiKeyEnv: spec.apiKeyEnv, baseUrlEnv: spec.baseUrlEnv, defaultBaseUrl: spec.defaultBaseUrl });
-      if (!c.configured) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
-      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+      // Prefer a subscription OAuth token (OpenAI only) so "Test connection"
+      // validates the credential that is actually in use rather than reporting
+      // the API key missing when the user signed in instead.
+      const oauthToken = id === "openai" ? getStoredAccessTokenSync("openai", env) : null;
+      const bearer = oauthToken ?? c.apiKey;
+      if (!bearer) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
+      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${bearer}`, ...(spec.extra ?? {}) }, host: c.host } };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
+      const oauthToken = getStoredAccessTokenSync("anthropic", env);
+      if (oauthToken) {
+        // Subscription transport: Bearer + OAuth beta header, no x-api-key.
+        return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/v1/models`, headers: { Authorization: `Bearer ${oauthToken}`, "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" }, host: c.host } };
+      }
       if (!c.configured) return { configured: false, reason: "anthropic is not configured (ANTHROPIC_API_KEY missing)." };
       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/v1/models`, headers: { "x-api-key": c.apiKey!, "anthropic-version": "2023-06-01" }, host: c.host } };
     }
