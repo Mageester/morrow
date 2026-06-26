@@ -77,6 +77,36 @@ describe("REST API and Task Runner Vertical Slice", () => {
     }
   });
 
+  it("lists discoverable skills from MORROW_SKILLS_DIR (manifest and frontmatter formats)", async () => {
+    const skillsDir = join(tempDir, "skills");
+    // Old format: manifest.json + "# Heading"
+    mkdirSync(join(skillsDir, "coding"), { recursive: true });
+    writeFileSync(join(skillsDir, "coding", "SKILL.md"), "# Coding\n\nScoped implementation workflow.");
+    writeFileSync(join(skillsDir, "coding", "manifest.json"), JSON.stringify({ id: "coding", name: "Coding", description: "Scoped implementation.", riskClass: "medium", requestedTools: ["filesystem-write"] }));
+    // New format: YAML frontmatter, no manifest
+    mkdirSync(join(skillsDir, "debug-loop"), { recursive: true });
+    writeFileSync(join(skillsDir, "debug-loop", "SKILL.md"), "---\nname: debug-loop\ndescription: Disciplined debugging methodology\nriskClass: low\npublisher: Axiom\n---\n\n# Debug Loop\n");
+
+    const prev = process.env.MORROW_SKILLS_DIR;
+    process.env.MORROW_SKILLS_DIR = skillsDir;
+    const server = buildServer({ db, runner });
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/skills" });
+      expect(res.statusCode).toBe(200);
+      const skills = res.json() as any[];
+      expect(skills.length).toBe(2);
+      const coding = skills.find((s) => s.id === "coding");
+      expect(coding).toMatchObject({ name: "Coding", trustTier: "controlled", tools: ["filesystem-write"] });
+      const debug = skills.find((s) => s.id === "debug-loop");
+      // Frontmatter parsed: kebab name prettified, description + risk tier resolved.
+      expect(debug).toMatchObject({ name: "Debug Loop", description: "Disciplined debugging methodology", trustTier: "core", category: "Debugging" });
+    } finally {
+      await server.close();
+      if (prev === undefined) delete process.env.MORROW_SKILLS_DIR;
+      else process.env.MORROW_SKILLS_DIR = prev;
+    }
+  });
+
   it("returns 404 for missing resources", async () => {
     const res1 = await app.inject({ method: "GET", url: "/api/projects/unknown" });
     expect(res1.statusCode).toBe(404);

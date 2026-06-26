@@ -55,7 +55,7 @@ import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
-import { unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
@@ -1087,6 +1087,84 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     deps.runner.run(taskId);
     reply.status(202);
     return { scheduleId, taskId, aggregateUrl: `/api/tasks/${taskId}` };
+  });
+
+  // List installed/discoverable skills for the Skills Control Center. Reads the
+  // same directories the agent's find_skill/load_skill tools scan (the bundled
+  // MORROW_SKILLS_DIR plus MORROW_HOME/skills), parsing each skill's manifest
+  // and SKILL.md. No project context needed; this is the global skill registry.
+  app.get("/api/skills", async () => {
+    const dirs: string[] = [];
+    if (process.env.MORROW_SKILLS_DIR) dirs.push(process.env.MORROW_SKILLS_DIR);
+    const home = resolveMorrowHome(process.env);
+    if (home) dirs.push(join(home, "skills"));
+    const riskToTier: Record<string, string> = { low: "core", medium: "controlled", high: "experimental" };
+    const categorize = (id: string): string => {
+      if (/test/.test(id)) return "Testing";
+      if (/review|audit|security|secret|dependency|adversarial/.test(id)) return "Security & Review";
+      if (/git/.test(id)) return "Git";
+      if (/doc/.test(id)) return "Documentation";
+      if (/data|database/.test(id)) return "Data";
+      if (/refactor|migration|performance|architecture/.test(id)) return "Refactoring";
+      if (/debug|diagnostic|error|bug/.test(id)) return "Debugging";
+      if (/file|shell|config|template|input/.test(id)) return "Files & Ops";
+      if (/web-search|api|integration/.test(id)) return "Research & API";
+      return "Development";
+    };
+    // Skills use one of two metadata formats: a manifest.json, or YAML
+    // frontmatter at the top of SKILL.md. Support both.
+    const parseFrontmatter = (md: string): Record<string, string> => {
+      const fm: Record<string, string> = {};
+      if (!md.startsWith("---")) return fm;
+      const end = md.indexOf("\n---", 3);
+      if (end === -1) return fm;
+      for (const line of md.slice(3, end).split("\n")) {
+        const m = line.match(/^([a-zA-Z0-9_]+):\s*(.*)$/);
+        const key = m?.[1];
+        if (key) fm[key] = (m?.[2] ?? "").trim().replace(/^["']|["']$/g, "");
+      }
+      return fm;
+    };
+    const pretty = (s: string): string =>
+      /\s/.test(s) ? s : s.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    const seen = new Set<string>();
+    const out: unknown[] = [];
+    for (const dir of dirs) {
+      if (!existsSync(dir)) continue;
+      let entries: string[] = [];
+      try { entries = readdirSync(dir); } catch { continue; }
+      for (const entry of entries) {
+        const sdir = join(dir, entry);
+        const mdPath = join(sdir, "SKILL.md");
+        if (seen.has(entry)) continue;
+        if (!existsSync(mdPath) || !lstatSync(sdir).isDirectory()) continue;
+        seen.add(entry);
+        let manifest: any = {};
+        try { manifest = JSON.parse(readFileSync(join(sdir, "manifest.json"), "utf8")); } catch {}
+        const md = readFileSync(mdPath, "utf8");
+        const fm = parseFrontmatter(md);
+        const body = md.startsWith("---") && md.indexOf("\n---", 3) !== -1 ? md.slice(md.indexOf("\n---", 3) + 4) : md;
+        const lines = body.split("\n").filter((l) => l.trim());
+        const mdName = (lines[0] ?? "").replace(/^#\s*/, "").trim();
+        const mdDesc = (lines.slice(1).find((l) => l.trim() && !l.startsWith("#")) ?? "").trim();
+        const riskClass: string = manifest.riskClass || fm.riskClass || "";
+        out.push({
+          id: manifest.id || fm.name || entry,
+          name: pretty(manifest.name || fm.name || mdName || entry),
+          description: manifest.description || fm.description || mdDesc || "",
+          category: manifest.category || fm.category || categorize(entry),
+          trustTier: riskToTier[riskClass] || "controlled",
+          enabled: true,
+          validation: "healthy",
+          tools: Array.isArray(manifest.requestedTools) ? manifest.requestedTools : [],
+          permissions: Array.isArray(manifest.requestedFilesystemScopes) ? manifest.requestedFilesystemScopes : [],
+          dependencies: [],
+          source: manifest.publisher || fm.publisher || "bundled",
+        });
+      }
+    }
+    (out as any[]).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    return out;
   });
 
   app.get("/api/projects/:projectId/skills/usage", async (request) => {

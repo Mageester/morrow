@@ -569,11 +569,19 @@ If your task matches a specialized workflow (testing, refactoring, debugging, se
           if (!statSync(skillDir).isDirectory() || !existsSync(join(skillDir, "SKILL.md"))) continue;
           if (seen.has(entry)) continue;
           seen.add(entry);
-          // Read the first few lines for name + description
+          // Read name + description. Skills use either a "# Heading" + body or
+          // YAML frontmatter (--- name: ... description: ... ---); handle both.
           const md = readFileSync(join(skillDir, "SKILL.md"), "utf8");
-          const lines = md.split("\n").filter(l => l.trim());
-          const name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
-          const desc = lines.slice(1).find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
+          let name = entry, desc = "";
+          if (md.startsWith("---") && md.indexOf("\n---", 3) !== -1) {
+            const fm = md.slice(3, md.indexOf("\n---", 3));
+            name = (fm.match(/^name:\s*(.*)$/m)?.[1] ?? entry).trim().replace(/^["']|["']$/g, "");
+            desc = (fm.match(/^description:\s*(.*)$/m)?.[1] ?? "").trim().replace(/^["']|["']$/g, "");
+          } else {
+            const lines = md.split("\n").filter(l => l.trim());
+            name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
+            desc = lines.slice(1).find(l => l.trim() && !l.startsWith("#"))?.trim() || "";
+          }
           // Match against query
           const searchable = `${entry} ${name} ${desc}`.toLowerCase();
           if (!query || searchable.includes(query)) {
