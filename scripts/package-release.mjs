@@ -179,6 +179,40 @@ const webSrc = join(ROOT, "apps", "web", "dist");
 if (!existsSync(join(webSrc, "index.html"))) throw new Error("Web app is not built (missing apps/web/dist/index.html).");
 cpSync(webSrc, join(PKG_DIR, "web"), { recursive: true });
 
+// ── 5b. Skills (so the packaged agent can find_skill / load_skill) ────────
+// The agent reads each skill's SKILL.md (and manifest/permissions) at runtime
+// from MORROW_SKILLS_DIR, which the launcher points at this bundled directory.
+// Offensive LLM-jailbreak/attack skills are deliberately NOT shipped in the
+// product: an installed assistant must not auto-load workflows whose purpose is
+// to bypass model safety. They remain in the source tree for authorized
+// red-team use; set MORROW_BUNDLE_ALL_SKILLS=1 to override (use responsibly).
+const EXCLUDED_SKILLS = new Set([
+  "adversarial-suffix", "context-smuggler", "dan-jailbreak", "encoding-warfare",
+  "extraction-forge", "godmode", "jailbreak-evolver", "multi-turn-persuasion",
+  "prompt-leak", "refusal-inverter", "roleplay-bypass", "sandbox-escape",
+  "toxicity-prober", "unicode-warfare",
+]);
+const bundleAll = process.env.MORROW_BUNDLE_ALL_SKILLS === "1";
+console.log("\n[5b/8] Bundling agent skills...");
+const skillsSrc = join(ROOT, "skills");
+const skillsDst = join(PKG_DIR, "skills");
+let bundledSkills = 0, skippedSkills = 0;
+if (existsSync(skillsSrc)) {
+  for (const id of readdirSync(skillsSrc)) {
+    const srcDir = join(skillsSrc, id);
+    if (!existsSync(join(srcDir, "SKILL.md"))) continue;
+    if (!bundleAll && EXCLUDED_SKILLS.has(id)) { skippedSkills++; continue; }
+    const dstDir = join(skillsDst, id);
+    ensure(dstDir);
+    for (const file of ["SKILL.md", "manifest.json", "permissions.json"]) {
+      if (existsSync(join(srcDir, file))) cpSync(join(srcDir, file), join(dstDir, file));
+    }
+    bundledSkills++;
+  }
+}
+if (bundledSkills === 0) throw new Error("No skills were bundled (expected SKILL.md files under skills/).");
+console.log(`  Bundled ${bundledSkills} skills${skippedSkills ? `, excluded ${skippedSkills} offensive/jailbreak skill(s)` : ""}.`);
+
 // ── 6. Launchers + metadata (from versioned templates) ───────────────────
 console.log("\n[6/8] Writing launchers and metadata...");
 cpSync(join(TEMPLATES, "morrow.mjs"), join(PKG_DIR, "morrow.mjs"));

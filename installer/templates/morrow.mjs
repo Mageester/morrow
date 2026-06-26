@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ const data = join(install, "data");
 const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
+const skillsDir = join(app, "skills");
 const pidFile = join(data, "morrow.pid");
 const logFile = join(logs, "orchestrator.log");
 const url = "http://127.0.0.1:4317";
@@ -45,7 +46,7 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), NODE_ENV: "production" } });
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), MORROW_SKILLS_DIR: skillsDir, NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
@@ -80,11 +81,14 @@ async function status() { const ok = await healthy(); console.log(ok ? "Morrow i
 async function doctor() {
   // Offline file checks first -- these decide the exit code so `doctor` is a
   // reliable post-install gate even when the service is intentionally stopped.
+  let skillCount = 0;
+  try { skillCount = readdirSync(skillsDir).filter((d) => existsSync(join(skillsDir, d, "SKILL.md"))).length; } catch {}
   const files = [
     ["bundled Node", existsSync(runtime)],
     ["orchestrator", existsSync(entry)],
     ["data", existsSync(data)],
     ["web UI files", existsSync(join(app, "web", "index.html"))],
+    [`agent skills (${skillCount})`, skillCount > 0],
   ];
   const running = await healthy();
   // The UI-serving check only applies while the service is up. When stopped it is

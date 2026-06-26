@@ -23,6 +23,7 @@ export const REQUIRED_PACKAGE_FILES = [
   "orchestrator/node_modules/fastify/fastify.js",
   "orchestrator/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
   "web/index.html",
+  "skills/coding/SKILL.md",
   "VERSION",
 ];
 
