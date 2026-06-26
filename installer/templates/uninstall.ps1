@@ -1,5 +1,7 @@
 param(
-  [switch]$PurgeData
+  [switch]$PurgeData,
+  [switch]$KeepData,
+  [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +12,29 @@ $Install = Split-Path -Parent $App
 $Bin = Join-Path $Install 'bin'
 $StartMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Morrow.lnk'
 $DesktopShortcut = Join-Path $env:USERPROFILE 'Desktop\Morrow.lnk'
+
+# Decide whether to delete user data. Flags win; otherwise prompt the user with a
+# clear, unambiguous "delete everything?" question (default No to stay safe).
+if ($PurgeData -and $KeepData) {
+  Write-Host 'Choose either -PurgeData or -KeepData, not both.' -ForegroundColor Red
+  exit 2
+}
+if (-not $PurgeData -and -not $KeepData) {
+  if ($Yes) {
+    # Non-interactive default preserves data.
+    $PurgeData = $false
+  } else {
+    Write-Host ''
+    Write-Host 'Delete your data too?' -ForegroundColor Yellow
+    Write-Host 'This permanently deletes ALL of your local Morrow data:'
+    Write-Host '  - Conversations, memory, and the project database'
+    Write-Host '  - Config and saved provider keys (API keys / OAuth sign-ins)'
+    Write-Host '  - Backups, checkpoints, logs, and cache'
+    Write-Host 'This cannot be undone. Choosing No keeps your data for a future reinstall.'
+    $answer = Read-Host 'Delete EVERYTHING, including all of the above? [y/N]'
+    $PurgeData = ($answer -match '^(y|yes)$')
+  }
+}
 
 Write-Host 'Removing Morrow launcher and shortcuts...'
 foreach ($shortcut in @($StartMenuShortcut, $DesktopShortcut)) {

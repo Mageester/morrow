@@ -36,7 +36,7 @@ function printHelp() {
   console.log(`Morrow packaged launcher\n\nUsage:\n  morrow start\n  morrow stop\n  morrow restart\n  morrow status\n  morrow open\n  morrow doctor\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
 }
 function printUninstallHelp() {
-  console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt for confirmation\n  --purge-data  delete local user data as well`);
+  console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data | --keep-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - interactively asks whether to also delete ALL your data (conversations,\n    memory, provider keys, backups, logs, cache)\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt; keep data unless --purge-data is also given\n  --purge-data  delete local user data as well (no prompt)\n  --keep-data   keep local user data (no prompt)`);
 }
 
 async function start() {
@@ -103,26 +103,42 @@ async function doctor() {
 }
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
-  const purgeData = process.argv.includes("--purge-data");
+  let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");
+  const keepData = process.argv.includes("--keep-data");
   const yes = process.argv.includes("--yes") || process.argv.includes("--force");
+  if (purgeData && keepData) throw new Error("Choose either --purge-data or --keep-data, not both.");
   console.log("Morrow uninstall");
   console.log("  Removes: running service, launcher/shim, shortcuts, app/runtime files");
-  console.log(purgeData ? "  Data:    DELETE local user data" : "  Data:    preserve local user data (default)");
   if (!yes) {
-    if (!process.stdin.isTTY) throw new Error("Uninstall requires confirmation. Re-run with --yes, or use --purge-data --yes to delete data too.");
+    if (!process.stdin.isTTY) throw new Error("Uninstall requires confirmation. Re-run with --yes (keeps data) or --purge-data --yes (deletes data).");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      const answer = (await rl.question("Continue? [y/N] ")).trim().toLowerCase();
-      if (answer !== "y" && answer !== "yes") { console.log("Uninstall cancelled."); return; }
+      const proceed = (await rl.question("Uninstall Morrow? [Y/n] ")).trim().toLowerCase();
+      if (proceed && proceed !== "y" && proceed !== "yes") { console.log("Uninstall cancelled."); return; }
+      // Headline choice: clearly offer to delete everything, unless the user
+      // already decided via a flag. Default No so data is never wiped by accident.
+      if (!purgeData && !keepData) {
+        console.log("");
+        console.log("Delete your data too?");
+        console.log("This permanently deletes ALL of your local Morrow data:");
+        console.log("  - Conversations, memory, and the project database");
+        console.log("  - Config and saved provider keys (API keys / OAuth sign-ins)");
+        console.log("  - Backups, checkpoints, logs, and cache");
+        console.log("This cannot be undone. Choosing No keeps your data for a future reinstall.");
+        const answer = (await rl.question("Delete EVERYTHING, including all of the above? [y/N] ")).trim().toLowerCase();
+        purgeData = answer === "y" || answer === "yes";
+      }
     } finally {
       rl.close();
     }
   }
+  console.log(purgeData ? "  Data:    DELETE local user data" : "  Data:    preserve local user data (default)");
   await stop();
   const script = join(app, "uninstall.ps1");
   if (!existsSync(script)) throw new Error("Uninstaller is missing.");
-  const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script];
-  if (purgeData) args.push("-PurgeData");
+  // Pass an explicit, already-decided data choice (+ -Yes) so the PowerShell
+  // uninstaller never re-prompts on top of this prompt.
+  const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Yes", purgeData ? "-PurgeData" : "-KeepData"];
   execFileSync("powershell.exe", args, { stdio: "inherit" });
 }
 

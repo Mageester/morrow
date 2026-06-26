@@ -36,6 +36,10 @@ export async function uninstallCommand(ctx: Context): Promise<number> {
   const installRoot = resolveInstallRoot();
   const binPath = join(installRoot, "bin");
   const choices = await resolveChoices(ctx);
+  if (!choices) {
+    if (!ctx.out.json) ctx.out.info("Uninstall cancelled. Nothing was removed.");
+    return EXIT.OK;
+  }
   const targets = buildTargets(ctx, installRoot, choices);
 
   if (ctx.out.json) {
@@ -85,7 +89,8 @@ function printUninstallHelp(ctx: Context): void {
   ctx.out.print(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data] [--dry-run]\n\nBehavior:\n  - asks for confirmation unless --yes is passed\n  - stops the running Morrow service\n  - removes launcher/shim, shortcuts, and app/runtime files\n  - preserves user data by default\n  - removes user data only with --purge-data\n\nOptions:\n  --yes         do not prompt for confirmation\n  --purge-data  remove local user data too\n  --dry-run     show what would be removed without changing files`);
 }
 
-async function resolveChoices(ctx: Context): Promise<UninstallChoices> {
+// Returns the resolved removal choices, or null if the user cancelled.
+async function resolveChoices(ctx: Context): Promise<UninstallChoices | null> {
   const dryRun = flagBool(ctx.flags, "dry-run");
   const yes = flagBool(ctx.flags, "yes") || flagBool(ctx.flags, "force");
   const removeData = flagBool(ctx.flags, "purge-data") || flagBool(ctx.flags, "remove-data") || flagBool(ctx.flags, "purge");
@@ -115,27 +120,31 @@ async function resolveChoices(ctx: Context): Promise<UninstallChoices> {
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    ctx.out.print("This will stop Morrow and remove selected local files. User data is preserved by default; use `morrow uninstall --purge-data` to delete it.");
+    ctx.out.print("This will stop Morrow and remove the app (launcher, PATH entry, and shortcuts).");
     ctx.out.print();
-    const removeAppChoice = await confirm(rl, "Remove application files from %LOCALAPPDATA%\\Morrow?", true);
-    const removePath = await confirm(rl, "Remove Morrow from your user PATH?", true);
-    const removeShortcuts = await confirm(rl, "Remove Start Menu/Desktop shortcuts?", true);
+    const proceed = await confirm(rl, "Uninstall Morrow?", true);
+    if (!proceed) return null;
+
+    // The headline choice: offer a full wipe of everything, clearly and up front.
     ctx.out.print();
-    ctx.out.print(ctx.out.bold("User data choices"));
-    const keepConfig = await confirm(rl, "Keep config and provider keys?", true);
-    const keepDatabase = await confirm(rl, "Keep conversations, memory, and project database?", true);
-    const keepBackups = await confirm(rl, "Keep backups/checkpoints?", true);
-    const keepLogs = await confirm(rl, "Keep logs?", true);
-    const keepCache = await confirm(rl, "Keep cache/browser scratch data?", true);
+    ctx.out.print(ctx.out.bold("Delete your data too?"));
+    ctx.out.print("This permanently deletes ALL of your local Morrow data:");
+    ctx.out.bullet("Conversations, memory, and the project database");
+    ctx.out.bullet("Config and saved provider keys (API keys / OAuth sign-ins)");
+    ctx.out.bullet("Backups, checkpoints, logs, and cache");
+    ctx.out.print("This cannot be undone. Choosing No keeps your data so a future reinstall can use it.");
+    ctx.out.print();
+    const deleteEverything = await confirm(rl, "Delete EVERYTHING, including all of the above?", false);
+
     return {
-      removeApp: removeAppChoice,
-      removePath,
-      removeShortcuts,
-      removeConfig: !keepConfig,
-      removeDatabase: !keepDatabase,
-      removeLogs: !keepLogs,
-      removeCache: !keepCache,
-      removeBackups: !keepBackups,
+      removeApp: true,
+      removePath: true,
+      removeShortcuts: true,
+      removeConfig: deleteEverything,
+      removeDatabase: deleteEverything,
+      removeLogs: deleteEverything,
+      removeCache: deleteEverything,
+      removeBackups: deleteEverything,
       dryRun: false,
     };
   } finally {
