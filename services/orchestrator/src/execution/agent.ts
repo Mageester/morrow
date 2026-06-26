@@ -1399,6 +1399,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             if (isApproved) {
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
+          } else if (tc.name === "find_skill" || tc.name === "load_skill") {
+            // Read-only skill discovery/loading: no approval needed. (These were
+            // advertised to the model but never dispatched here, so the model's
+            // calls hit the Forbidden branch -- the cause of "Forbidden tool".)
+            resultStr = await executeApprovedTool(tc.name, args, tc.id);
+          } else if (tc.name === "create_skill") {
+            if (activeToolProfile !== "agent") throw new Error(`Tool "create_skill" is not permitted in ${agentMode} mode`);
+            resultStr = await executeApprovedTool(tc.name, args, tc.id);
           } else {
             throw new Error(`Forbidden tool: ${tc.name}`);
           }
