@@ -68,7 +68,8 @@ jobs:
         with:
           tag_name: v${{ inputs.version }}
           name: Morrow v${{ inputs.version }}
-          prerelease: true
+          prerelease: false
+          make_latest: true
           body: |
             ## Morrow v${{ inputs.version }} (Beta)
 

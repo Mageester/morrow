@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { OpenAiCompatibleProvider } from "../src/provider/openai-compatible.js";
+import { CodexProvider } from "../src/provider/codex.js";
 import { AnthropicProvider } from "../src/provider/anthropic.js";
 import { GeminiProvider } from "../src/provider/gemini.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
@@ -57,7 +58,7 @@ describe("OpenAI-compatible provider normalization", () => {
         `data: [DONE]\n\n`,
       ])
     );
-    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "sk-secret-key", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", includeUsage: true });
+    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "sk-secret-key", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.5", includeUsage: true });
     const chunks = await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
 
     expect(chunks.find((c) => c.type === "text")?.text).toBe("Hello");
@@ -70,6 +71,23 @@ describe("OpenAI-compatible provider normalization", () => {
     // Request carried the key, but no chunk echoes it.
     expect(ref.captured?.init.headers.Authorization).toBe("Bearer sk-secret-key");
     expect(JSON.stringify(chunks)).not.toContain("sk-secret-key");
+  });
+
+  it("forwards reasoning_effort for OpenAI and Codex requests, but not other OpenAI-compatible gateways", async () => {
+    const openaiRef = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    const openai = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.5", includeUsage: true });
+    await collect(openai, userMessages, { reasoningEffort: "high" });
+    expect(JSON.parse(openaiRef.captured!.init.body).reasoning_effort).toBe("high");
+
+    const codexRef = mockFetch(sseResponse([`data: {"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":3}}}\n\n`]));
+    const codex = new CodexProvider({ oauthToken: "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xIn19.", defaultModel: "gpt-5.5" });
+    await collect(codex, userMessages, { reasoningEffort: "medium" });
+    expect(JSON.parse(codexRef.captured!.init.body).reasoning_effort).toBe("medium");
+
+    const openrouterRef = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    const openrouter = new OpenAiCompatibleProvider({ id: "openrouter", apiKey: "k", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openrouter/auto", includeUsage: true });
+    await collect(openrouter, userMessages, { reasoningEffort: "low" });
+    expect(JSON.parse(openrouterRef.captured!.init.body).reasoning_effort).toBeUndefined();
   });
 
   it("classifies HTTP errors into typed kinds", async () => {

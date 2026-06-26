@@ -48,10 +48,9 @@ estimates.
 Morrow only labels a flow "OAuth" when it is an officially supported,
 documented third-party integration. No private authentication is
 reverse-engineered, no browser cookies are read, and no session tokens are
-reused. As of this milestone, Codex/ChatGPT, Claude, and Gemini consumer
-subscriptions do not publish such a flow for this class of application, so they
-are reported as honestly unavailable with an API-key recommendation. See
-`docs/providers.md`.
+reused. As of this milestone, Codex/ChatGPT and Claude subscription sign-in are
+supported through first-party OAuth flows, while Gemini consumer subscriptions
+remain API-key only. See `docs/providers.md`.
 
 ## Consequences
 

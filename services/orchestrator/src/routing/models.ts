@@ -41,11 +41,13 @@ function model(
 
 export const BUILT_IN_MODELS: ModelInfo[] = [
   // OpenAI
-  model("openai", "gpt-4o", "GPT-4o", { contextWindow: 128000, vision: true, speed: "powerful", cost: "medium" }),
-  model("openai", "gpt-4o-mini", "GPT-4o mini", { contextWindow: 128000, vision: true, speed: "fast", cost: "low" }),
+  model("openai", "gpt-5.5", "GPT-5.5 (reasoning)", { speed: "powerful", cost: "medium" }),
+  model("openai", "gpt-5.4", "GPT-5.4 (reasoning)", { speed: "powerful", cost: "medium" }),
+  model("openai", "gpt-5.4-mini", "GPT-5.4 mini", { speed: "fast", cost: "low" }),
+  model("openai", "gpt-5.3-codex", "GPT-5.3 Codex (reasoning)", { speed: "powerful", cost: "medium" }),
+  model("openai", "gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", { speed: "fast", cost: "low" }),
   model("openai", "gpt-4.1", "GPT-4.1", { vision: true, speed: "powerful", cost: "medium" }),
   model("openai", "gpt-4.1-mini", "GPT-4.1 mini", { vision: true, speed: "fast", cost: "low" }),
-  model("openai", "o4-mini", "o4-mini (reasoning)", { vision: true, speed: "balanced", cost: "low" }),
   // Anthropic
   model("anthropic", "claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet", { contextWindow: 200000, vision: true, speed: "powerful", cost: "medium" }),
   model("anthropic", "claude-3-5-haiku-20241022", "Claude 3.5 Haiku", { contextWindow: 200000, vision: true, speed: "fast", cost: "low" }),

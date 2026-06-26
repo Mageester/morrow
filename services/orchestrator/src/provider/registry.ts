@@ -13,6 +13,8 @@ import {
 import { providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 
+const OPENAI_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-4.1", "gpt-4.1-mini"] as const;
+
 /** Mark a status as configured/available because a subscription OAuth token is held. */
 function withOAuth(status: ProviderStatus): ProviderStatus {
   return { ...status, configured: true, available: true, authStatus: "configured" };
@@ -87,18 +89,17 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     label: "OpenAI",
     kind: "api-key",
     capabilities: caps({ vision: true, customEndpoint: true }),
-    defaultModel: "gpt-4o-mini",
-    models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
+    defaultModel: "gpt-5.5",
+    models: [...OPENAI_MODELS],
     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
       const s = apiKeyStatus(this, c, env);
       if (getStoredAccessTokenSync("openai", env)) {
-        // Subscription sign-in routes through the Codex backend, which serves its
-        // own model slugs (gpt-5.x), not the api.openai.com model ids.
-        const override = modelOverride(env, "openai");
-        return { ...withOAuth(s), defaultModel: override || "gpt-5.5", models: ["gpt-5.5", ...s.models] };
+        // Subscription sign-in routes through the Codex backend, which serves
+        // the current GPT-5.x / Codex family.
+        return { ...withOAuth(s), models: [...OPENAI_MODELS] };
       }
       return s;
     },

@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.1.0-beta.9 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+> **Status:** v0.1.0-beta.14 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
 
 ## Quick Install (Windows)
 
@@ -160,8 +160,8 @@ credential reference, honest OAuth findings, and manual verification steps.
   user-configurable model ids.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
-- Subscription-based "OAuth" sign-in (Codex/Claude/Gemini) is reported as
-  honestly unavailable; use API keys or a local provider.
+- Subscription-based "OAuth" sign-in (Codex/Claude) is available through the
+  first-party flows documented by each provider; Gemini remains API-key only.
 
 ## Ownership and licensing
 

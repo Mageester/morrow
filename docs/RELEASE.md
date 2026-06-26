@@ -4,7 +4,7 @@
 
 Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE]`
 
-- **Pre-release**: `v0.1.0-beta.1`, `v0.1.0-beta.2`, etc.
+- **Pre-release**: `v0.1.0-beta.N`
 - **Release candidate**: `v0.1.0-rc.1`
 - **Stable**: `v0.1.0`, `v1.0.0`
 
@@ -29,8 +29,8 @@ Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEAS
 ## Artifact Naming
 
 ```
-Morrow-v0.1.0-beta.1-windows-x64.zip
-morrow-v0.1.0-beta.1-checksums.txt
+Morrow-v0.1.0-beta.N-windows-x64.zip
+morrow-v0.1.0-beta.N-checksums.txt
 release-manifest.json
 ```
 
@@ -99,20 +99,27 @@ morrow uninstall — Remove application, prompt about user data
 
 ```json
 {
-  "version": "0.1.0-beta.1",
+  "schemaVersion": 1,
+  "version": "0.1.0-beta.N",
   "channel": "beta",
-  "releasedAt": "2026-06-23T00:00:00Z",
+  "publishedAt": "2026-06-23T00:00:00Z",
+  "unsignedBeta": true,
+  "bundledNodeVersion": "24.13.1",
+  "minimumWindowsVersion": "10",
+  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.N",
+  "installerScriptUrl": "https://morrowproject.getaxiom.ca/install.ps1",
+  "installCommand": "irm https://morrowproject.getaxiom.ca/install.ps1 | iex",
+  "uninstallCommand": "morrow uninstall",
+  "purgeCommand": "morrow uninstall --purge-data",
   "artifacts": [
     {
       "platform": "windows-x64",
       "type": "portable",
-      "filename": "Morrow-v0.1.0-beta.1-windows-x64.zip",
+      "filename": "Morrow-v0.1.0-beta.N-windows-x64.zip",
       "size": 0,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.1/Morrow-v0.1.0-beta.1-windows-x64.zip"
+      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.N/Morrow-v0.1.0-beta.N-windows-x64.zip"
     }
-  ],
-  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.1",
-  "minimumNodeVersion": "22.0.0"
+  ]
 }
 ```

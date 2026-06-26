@@ -1,6 +1,6 @@
 # Security Policy
 
-Morrow is pre-alpha software and must not yet be trusted with production secrets, financial accounts, sensitive personal data, or unrestricted host access.
+Morrow is early access beta software and must not yet be trusted with production secrets, financial accounts, sensitive personal data, or unrestricted host access.
 
 ## Core security expectations
 

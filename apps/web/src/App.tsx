@@ -50,6 +50,11 @@ function fmtBytes(n?: number) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+function modelClass(modelId: string): string {
+  if (/codex/i.test(modelId)) return "Coding";
+  if (/^gpt-5/i.test(modelId) || /^o[34]/i.test(modelId)) return "Reasoning";
+  return "General";
+}
 function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
   const p: any = ev.payload || {};
   switch (ev.type) {
@@ -949,10 +954,10 @@ function SettingsView(props: {
         )}
 
         {tab === "models" && (
-          <div className="settings-panel"><div className="card"><h3>Model Registry</h3><p className="muted">Built-in known models. IDs are configurable; availability follows configured providers. Context windows are shown only where well documented.</p>
-            <table className="model-table"><thead><tr><th>Model</th><th>Provider</th><th>Context</th><th>Speed</th><th>Cost</th><th>Privacy</th><th>Status</th></tr></thead>
+          <div className="settings-panel"><div className="card"><h3>Model Registry</h3><p className="muted">Built-in known models. IDs are configurable; availability follows configured providers. Reasoning and coding models are tagged in the Type column. Context windows are shown only where well documented.</p>
+            <table className="model-table"><thead><tr><th>Model</th><th>Provider</th><th>Type</th><th>Context</th><th>Speed</th><th>Cost</th><th>Privacy</th><th>Status</th></tr></thead>
               <tbody>{models.map(({ model, available }) => (
-                <tr key={model.id} className={available ? "" : "row-muted"}><td>{model.label}</td><td>{model.providerId}</td><td>{model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "—"}</td><td>{model.speedClass}</td><td>{model.costClass}</td><td>{model.privacy}</td><td>{available ? <span className="badge-ok">available</span> : <span className="badge-muted">needs provider</span>}</td></tr>
+                <tr key={model.id} className={available ? "" : "row-muted"}><td>{model.label}</td><td>{model.providerId}</td><td><span className="badge-muted">{modelClass(model.id)}</span></td><td>{model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "—"}</td><td>{model.speedClass}</td><td>{model.costClass}</td><td>{model.privacy}</td><td>{available ? <span className="badge-ok">available</span> : <span className="badge-muted">needs provider</span>}</td></tr>
               ))}</tbody></table>
           </div></div>
         )}
@@ -963,7 +968,7 @@ function SettingsView(props: {
               <div key={ps.preset.id} className={`preset-card ${ps.available ? "" : "unavailable"}`}>
                 <div className="preset-card-head"><strong>{ps.preset.label}</strong>{ps.available ? <span className="badge-ok">{ps.resolved?.providerId} · {ps.resolved?.model}</span> : <span className="badge-muted">unavailable</span>}</div>
                 <p className="preset-desc">{ps.preset.description}</p>
-                <div className="preset-meta"><span>{ps.preset.privacyDescription}</span><span>{ps.preset.costDescription}</span></div>
+                <div className="preset-meta"><span>{ps.preset.privacyDescription}</span><span>{ps.preset.costDescription}</span><span>Reasoning: {ps.preset.reasoningEffort ?? "off"}</span></div>
                 {!ps.available && ps.unavailableReason && <p className="preset-reason">{ps.unavailableReason}</p>}
               </div>
             ))}</div>
@@ -1363,7 +1368,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
             </div>
             <div className="field">
               <label>Model Override (optional)</label>
-              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="claude-sonnet-4, gpt-4o..." />
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="gpt-5.5, gpt-5.3-codex..." />
             </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
