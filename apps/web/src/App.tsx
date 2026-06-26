@@ -120,6 +120,10 @@ export default function App() {
   // view stops yanking back down on every streamed token.
   const stickToBottomRef = useRef(true);
   const eventUnsubRef = useRef<(() => void) | null>(null);
+  // Highest evidence-stream sequence already folded into a message's content,
+  // keyed by taskId. Makes streamed-delta application idempotent so replays
+  // (reconnects, reopening a conversation) never double-append the text.
+  const appliedDeltaSeqRef = useRef<Map<string, number>>(new Map());
 
   // ── Loaders ────────────────────────────────────────────────────────────────
   const loadProjectMeta = async (list: Project[]) => {
@@ -203,41 +207,65 @@ export default function App() {
   useEffect(() => {
     if (!focusedTaskId) { setTaskState(null); if (eventUnsubRef.current) { eventUnsubRef.current(); eventUnsubRef.current = null; } return; }
     let live = true;
+    let unsub: (() => void) | null = null;
     const TERMINAL_STATUS = ["completed", "verified", "failed", "cancelled", "interrupted"];
-    const fetchAgg = () => {
-      // The aggregate endpoint already includes toolCalls + routing; read them
-      // directly rather than racing a second fetch whose failure path dropped
-      // toolCalls (the cause of the empty tool-call panel).
-      apiClient.getTaskAggregate(focusedTaskId).then((agg: any) => {
-        if (!live) return;
+    const taskId = focusedTaskId;
+
+    // The aggregate endpoint already includes toolCalls + routing; read them
+    // directly rather than racing a second fetch whose failure path dropped
+    // toolCalls (the cause of the empty tool-call panel).
+    const fetchAgg = () =>
+      apiClient.getTaskAggregate(taskId).then((agg: any) => {
+        if (!live) return null;
         setTaskState({ ...agg, toolCalls: agg.toolCalls ?? [], routing: agg.routing ?? null });
         // Release the composer lock as soon as the focused task is terminal, even
         // if the terminal SSE event was missed (e.g. the run finished before the
         // stream attached). Keeps the input from sticking on "Morrow is working...".
         if (TERMINAL_STATUS.includes(agg?.task?.status)) {
-          setActiveTaskId(prev => (prev === focusedTaskId ? "" : prev));
+          setActiveTaskId(prev => (prev === taskId ? "" : prev));
         }
-      }).catch(console.error);
-    };
-    fetchAgg();
-    const unsub = apiClient.subscribeToTaskEvents(focusedTaskId, 0, (event) => {
-      if (!live) return;
-      fetchAgg();
-      if (event.type === "evidence.persisted" && event.payload.deltaText) {
-        setMessages(prev => prev.map(m => m.taskId === focusedTaskId ? { ...m, content: m.content + (event.payload.deltaText as string), streamingState: "streaming" } : m));
-      }
-    }, () => {
-      if (!live) return;
-      if (activeConversationId) apiClient.listMessages(activeConversationId).then(setMessages).catch(() => {});
-      if (selectedProjectId) loadProjectMeta(projects);
-      // The focused task reached a terminal state (the SSE stream closes on a
-      // task.completed/verified/failed/cancelled/interrupted event). Release the
-      // composer lock so the user can type the next message; without this the UI
-      // stays stuck on "Morrow is working..." after the answer finishes.
-      setActiveTaskId(prev => (prev === focusedTaskId ? "" : prev));
-    });
-    eventUnsubRef.current = unsub;
-    return () => { live = false; unsub(); if (eventUnsubRef.current === unsub) eventUnsubRef.current = null; };
+        return agg;
+      });
+
+    // Fetch the aggregate first, THEN decide. A terminal task needs no live
+    // stream — subscribing would only replay its deltas and briefly double the
+    // (already-final) message text, so we skip it entirely. For a task that is
+    // still streaming we rebuild its message text from a full replay (reset to
+    // "" + baseline 0), so reopening a conversation or reconnecting can never
+    // double-apply or drop deltas.
+    fetchAgg().then((agg: any) => {
+      if (!live || !agg) return;
+      if (TERMINAL_STATUS.includes(agg?.task?.status)) return;
+      appliedDeltaSeqRef.current.set(taskId, 0);
+      setMessages(prev => prev.map(m => (m.taskId === taskId ? { ...m, content: "" } : m)));
+      unsub = apiClient.subscribeToTaskEvents(taskId, 0, (event) => {
+        if (!live) return;
+        const isTextDelta = event.type === "evidence.persisted" && !!event.payload.deltaText;
+        // Refresh the inspector aggregate only on structural events. Doing it on
+        // every streamed token fired one full-aggregate fetch per token, spamming
+        // the local server during long answers.
+        if (!isTextDelta) fetchAgg();
+        if (isTextDelta) {
+          const applied = appliedDeltaSeqRef.current.get(taskId) ?? 0;
+          if (event.sequence <= applied) return; // already folded in; ignore replay.
+          appliedDeltaSeqRef.current.set(taskId, event.sequence);
+          const delta = event.payload.deltaText as string;
+          setMessages(prev => prev.map(m => m.taskId === taskId ? { ...m, content: m.content + delta, streamingState: "streaming" } : m));
+        }
+      }, () => {
+        if (!live) return;
+        if (activeConversationId) apiClient.listMessages(activeConversationId).then(setMessages).catch(() => {});
+        if (selectedProjectId) loadProjectMeta(projects);
+        // The focused task reached a terminal state (the SSE stream closes on a
+        // task.completed/verified/failed/cancelled/interrupted event). Release the
+        // composer lock so the user can type the next message; without this the UI
+        // stays stuck on "Morrow is working..." after the answer finishes.
+        setActiveTaskId(prev => (prev === taskId ? "" : prev));
+      });
+      eventUnsubRef.current = unsub;
+    }).catch(console.error);
+
+    return () => { live = false; if (unsub) unsub(); if (eventUnsubRef.current === unsub) eventUnsubRef.current = null; };
   }, [focusedTaskId, activeConversationId]); // eslint-disable-line
 
   // ── Actions ─────────────────────────────────────────────────────────────────
