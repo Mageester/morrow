@@ -451,6 +451,39 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     pollEvents();
   });
 
+  // Zero-setup chat: provision (once) a default project backed by a
+  // server-managed scratch workspace plus a conversation, so the user can start
+  // chatting -- and the agent can use tools and skills -- without creating a
+  // mission. Idempotent: reuses the existing Quick Chat project/conversation.
+  app.post("/api/quick-chat", async () => {
+    const scratch = join(resolveMorrowHome(process.env), "scratch");
+    mkdirSync(scratch, { recursive: true });
+    // realpathSync can transiently fail on a just-created dir on Windows; the
+    // raw path is a safe fallback so first use never 500s.
+    let workspacePath = scratch;
+    try { workspacePath = realpathSync(scratch); } catch {}
+    let project = projects.listProjects().find((p) => p.name === "Quick Chat");
+    if (!project) {
+      project = projects.createProject({
+        id: crypto.randomUUID(),
+        name: "Quick Chat",
+        workspacePath,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    let conversation = convs.listConversationsByProject(project.id)[0];
+    if (!conversation) {
+      conversation = convs.createConversation({
+        id: crypto.randomUUID(),
+        projectId: project.id,
+        title: "Chat",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return { projectId: project.id, conversationId: conversation.id, workspacePath };
+  });
+
   app.get("/api/projects/:projectId/conversations", async (request, reply) => {
     const { projectId } = request.params as { projectId: string };
     const project = projects.getProjectById(projectId);

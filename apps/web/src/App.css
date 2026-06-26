@@ -112,6 +112,12 @@ button { font: inherit; color: inherit; }
 }
 .nav-item .ico { width: 17px; height: 17px; flex: none; opacity: 0.85; }
 .nav-item:hover { background: var(--row-hover); color: var(--text); }
+.nav-item--primary { background: var(--accent); color: #fff; font-weight: 600; margin-bottom: 6px; }
+.nav-item--primary .ico { opacity: 1; color: #fff; }
+.nav-item--primary:hover { background: var(--accent); color: #fff; filter: brightness(1.08); }
+.composer-autonomy { display: flex; align-items: center; gap: 8px; max-width: 880px; margin: 8px auto 0; font-size: 12px; color: var(--text-3); cursor: pointer; user-select: none; }
+.composer-autonomy input { accent-color: var(--amber); width: 14px; height: 14px; cursor: pointer; }
+.composer-autonomy:hover { color: var(--text-2); }
 .nav-item.active { background: var(--bg-elev); color: var(--text); }
 .nav-item.active .ico { opacity: 1; color: var(--accent); }
 .nav-divider { height: 1px; background: var(--border); margin: 12px 6px; }

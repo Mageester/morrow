@@ -6,6 +6,8 @@ export interface SendMessageOptions {
   model?: string;
   useMemory?: boolean;
   agentId?: string;
+  mode?: "agent" | "plan-only" | "inspect";
+  autoApprove?: boolean;
 }
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -126,6 +128,12 @@ export const apiClient = {
 
   async cancelTask(taskId: string): Promise<void> {
     return request(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  },
+
+  // Zero-setup chat: provisions (idempotently) a default project + scratch
+  // workspace + conversation so the user can chat without creating a mission.
+  async quickChat(): Promise<{ projectId: string; conversationId: string; workspacePath: string }> {
+    return request("/api/quick-chat", { method: "POST" });
   },
 
   async getProviderStatus(): Promise<{ configured: boolean; provider: string; model: string }> {

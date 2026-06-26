@@ -91,6 +91,9 @@ export default function App() {
   const [composerPrompt, setComposerPrompt] = useState("");
   const [composerError, setComposerError] = useState("");
   const [taskError, setTaskError] = useState("");
+  // Full-autonomy (YOLO): when on, the agent runs commands and writes files
+  // without per-action approval prompts. Off by default for safety.
+  const [autonomous, setAutonomous] = useState(false);
 
   const [activePreset, setActivePreset] = useState<string>("balanced");
   const [providerStatus, setProviderStatus] = useState<{ configured: boolean; provider: string; model: string } | null>(null);
@@ -247,11 +250,27 @@ export default function App() {
     const content = composerPrompt; setComposerPrompt("");
     try {
       const convId = await ensureConversation();
-      const res = await apiClient.sendMessage(convId, content, { preset: activePreset, useMemory: true });
+      const res = await apiClient.sendMessage(convId, content, { preset: activePreset, useMemory: true, mode: "agent", autoApprove: autonomous });
       setMessages(prev => [...prev, res.userMessage, res.assistantMessage]);
       setActiveTaskId(res.task.id);
       setFocusedTaskId(res.task.id);
     } catch (err: any) { setComposerError(err.message || "Failed to send message"); }
+  };
+
+  // Zero-setup chat: provision a default scratch workspace + conversation and
+  // jump straight into it, no mission/project setup required.
+  const handleNewChat = async () => {
+    try {
+      const qc = await apiClient.quickChat();
+      setSelectedProjectId(qc.projectId);
+      setActiveConversationId(qc.conversationId);
+      setNav("projects");
+      setView("conversation");
+      setActiveTaskId("");
+      setFocusedTaskId("");
+      const msgs = await apiClient.listMessages(qc.conversationId);
+      setMessages(msgs);
+    } catch (err: any) { setComposerError(err.message || "Failed to start chat"); }
   };
 
   const handleStop = async () => {
@@ -349,6 +368,9 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
+          <button className="nav-item nav-item--primary" onClick={handleNewChat}>
+            <I.IconSend className="ico" /><span>New Chat</span>
+          </button>
           <NavItem id="missions" label="New Mission" icon={I.IconSend} />
           <NavItem id="projects" label="Missions" icon={I.IconRuns} />
           <NavItem id="agents" label="Agents" icon={I.IconAgents} />
@@ -506,6 +528,10 @@ export default function App() {
                   ? <button type="button" className="stop-btn" onClick={handleStop}>Stop</button>
                   : <button type="submit" className="send-btn" aria-label="Send" disabled={!composerPrompt.trim()}><I.IconSend className="ico" style={{ width: 17, height: 17 }} /></button>}
               </div>
+              <label className="composer-autonomy" title="When on, Morrow runs commands and edits files without asking for approval each time.">
+                <input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />
+                <span>Full autonomy{autonomous ? " — on (no approval prompts)" : ""}</span>
+              </label>
             </form>
           </div>
         )}
