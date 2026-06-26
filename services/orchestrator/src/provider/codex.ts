@@ -102,7 +102,7 @@ export class CodexProvider implements AiProvider {
     const baseUrl = this.config.baseUrl || CODEX_BASE_URL;
     const { instructions, input } = this.buildRequest(messages);
     // The Codex backend only accepts its own model slugs (gpt-5.x / *codex*).
-    // Routing can hand us a standard api.openai.com id (e.g. gpt-4o-mini) as both
+    // Routing can hand us a standard api.openai.com id (e.g. gpt-4.1) as both
     // the requested model AND the configured default, so pick the first
     // Codex-shaped candidate and otherwise fall back to the hardcoded default.
     const model = [options.model, this.config.defaultModel].find(isCodexModel) || DEFAULT_CODEX_MODEL;
@@ -113,6 +113,7 @@ export class CodexProvider implements AiProvider {
       store: false,
       ...(instructions ? { instructions } : {}),
     };
+    if (options.reasoningEffort) body.reasoning_effort = options.reasoningEffort;
     if (options.tools && options.tools.length > 0) {
       // Responses API tool shape is flat (no nested "function" wrapper).
       body.tools = options.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters }));

@@ -926,6 +926,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         tools: exposedTools,
         model: resolvedModel || assistantMessageRow.model || undefined,
         timeoutMs: preset.timeoutMs,
+        reasoningEffort: preset.reasoningEffort ?? undefined,
         temperature: preset.temperature,
         maxOutputTokens: preset.outputBudgetTokens
       });

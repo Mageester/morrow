@@ -45,7 +45,7 @@ describe("Provider registry", () => {
   });
 
   it("exposes default models for known providers", () => {
-    expect(getProviderDefaultModel("openai", {})).toBe("gpt-4o-mini");
+    expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.5");
     expect(getProviderDefaultModel("anthropic", {})).toBe("claude-3-5-sonnet-20241022");
   });
 });
@@ -57,7 +57,7 @@ describe("Preset router", () => {
     if (res.ok) {
       expect(res.decision.providerId).toBe("openai");
       expect(res.decision.fallbackUsed).toBe(false);
-      expect(res.decision.model).toBe("gpt-4o-mini");
+      expect(res.decision.model).toBe("gpt-5.5");
     }
   });
 

@@ -8,7 +8,7 @@ honest OAuth findings, and manual end-to-end verification.
 
 | Provider | Adapter | Kind | Streaming | Tool calls | System msg | Vision | Custom endpoint | Local |
 |----------|---------|------|:---------:|:----------:|:----------:|:------:|:---------------:|:-----:|
-| OpenAI | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| OpenAI | OpenAI-compatible / Codex OAuth | api-key / oauth | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Anthropic | Messages API | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Google Gemini | generateContent | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
 | OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
@@ -62,6 +62,9 @@ Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
 `OPENAI_MODEL`) that sets the default model. Setting a default model in the app
 or via `--model` writes this value.
 
+OpenAI subscription sign-in routes through the Codex backend and exposes the
+current GPT-5.x / Codex family; the model picker follows the signed-in mode.
+
 ## Presets
 
 Each preset is a routing policy with concrete budgets. The router picks the
@@ -90,8 +93,8 @@ app's OAuth client, or implement undocumented token exchange.
 
 | Flow | Status | Finding | Recommendation |
 |------|--------|---------|----------------|
-| Codex / ChatGPT (OpenAI) | Unavailable | No documented third-party OAuth client flow for a consumer ChatGPT/Codex subscription. | Use the OpenAI provider with `OPENAI_API_KEY`. |
-| Claude (Anthropic) | Unavailable | No public third-party OAuth flow for a consumer Claude subscription. | Use the Anthropic provider with `ANTHROPIC_API_KEY`. |
+| Codex / ChatGPT (OpenAI) | Available | First-party OAuth sign-in is implemented with the provider's public client flow; tokens are stored locally and the backend uses the Codex endpoint. | Sign in below, or use the OpenAI provider with `OPENAI_API_KEY` for the API-key path. |
+| Claude (Anthropic) | Available | First-party OAuth sign-in is implemented with the provider's public client flow; tokens are stored locally and the backend uses the Claude subscription endpoint. | Sign in below, or use the Anthropic provider with `ANTHROPIC_API_KEY` for the API-key path. |
 | Gemini (Google) | Unavailable | The documented Generative Language API uses API keys; Google OAuth applies to Cloud/Vertex accounts, not consumer-subscription third-party sign-in. | Use the Gemini provider with `GEMINI_API_KEY`, or run Ollama locally. |
 
 Operators should re-verify the linked provider documentation, as terms change.
@@ -116,7 +119,7 @@ pnpm --filter @morrow/web dev               # in another terminal
 curl http://127.0.0.1:4317/api/providers      # openai -> "configured": true, host only
 curl http://127.0.0.1:4317/api/presets        # balanced -> available, resolved openai
 
-# 4. In the browser (http://localhost:5173): create a project pointed at a repo,
+# 4. In the browser (http://127.0.0.1:4317): create a project pointed at a repo,
 #    open a conversation, and ask:
 #    "Summarize the architecture of this project. Identify the major packages,
 #     explain how tasks are executed, and cite the most important files you inspected."

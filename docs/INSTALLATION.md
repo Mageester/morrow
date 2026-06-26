@@ -1,6 +1,6 @@
 # Morrow Installation
 
-Morrow v0.1.0-beta.9 is an unsigned Windows 10/11 x64 Early Access release.
+Morrow v0.1.0-beta.14 is an unsigned Windows 10/11 x64 Early Access release.
 Install with PowerShell:
 
 ```powershell
@@ -8,9 +8,10 @@ iex (irm https://morrowproject.getaxiom.ca/install.ps1)
 ```
 
 The installer verifies the release checksum, creates the `morrow` command and
-Start Menu shortcut, starts the local service, and opens the GUI. Configure an
-API key in **Settings → Providers**; no environment variables or restart are
-needed. Linux remains source-build only and macOS is not available.
+Start Menu shortcut, starts the local service, and opens the GUI at
+`http://127.0.0.1:4317`. Configure an API key in **Settings -> Providers**; no
+environment variables or restart are needed. Linux remains source-build only
+and macOS is not available.
 
 ## Prerequisites
 
@@ -46,8 +47,11 @@ To start both the background orchestrator service and the Web interface dev serv
 pnpm dev
 ```
 
-The Web application will be accessible at: [http://localhost:5173](http://localhost:5173)
-The background orchestrator service will listen at: [http://localhost:4317](http://localhost:4317)
+When you run `pnpm dev` from source, the Web application will be accessible at
+[http://localhost:5173](http://localhost:5173) and the background orchestrator
+service will listen at [http://localhost:4317](http://localhost:4317). The
+installed package serves the UI from
+[http://127.0.0.1:4317](http://127.0.0.1:4317).
 
 ---
 
@@ -75,7 +79,7 @@ pnpm --filter @morrow/cli doctor
 
 ## 3. Update Commands
 
-To update your developer preview setup to the latest version of the repository:
+To update your development setup to the latest version of the repository:
 
 ### Pull Latest Code & Re-build
 ```bash

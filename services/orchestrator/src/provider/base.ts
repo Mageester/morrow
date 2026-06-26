@@ -67,6 +67,7 @@ export interface StreamOptions {
   timeoutMs?: number;
   tools?: ToolDefinition[];
   model?: string;
+  reasoningEffort?: "low" | "medium" | "high";
   temperature?: number | null;
   maxOutputTokens?: number | null;
 }

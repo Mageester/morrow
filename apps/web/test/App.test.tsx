@@ -37,10 +37,10 @@ vi.mock('../src/api/client', () => ({
 }));
 
 const PRESETS = [
-  { preset: { id: 'balanced', label: 'Balanced', description: 'default', privacyDescription: 'cloud', costDescription: 'moderate' }, available: true, unavailableReason: null, resolved: { providerId: 'openai', model: 'gpt-4o-mini' } },
+  { preset: { id: 'balanced', label: 'Balanced', description: 'default', privacyDescription: 'cloud', costDescription: 'moderate', reasoningEffort: 'medium' }, available: true, unavailableReason: null, resolved: { providerId: 'openai', model: 'gpt-5.5' } },
 ];
 const PROVIDERS = [
-  { id: 'openai', label: 'OpenAI', kind: 'api-key', configured: true, available: true, endpointType: 'default', endpointHost: 'api.openai.com', authStatus: 'configured', capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: true, local: false }, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini', note: null, setupHint: null },
+  { id: 'openai', label: 'OpenAI', kind: 'api-key', configured: true, available: true, endpointType: 'default', endpointHost: 'api.openai.com', authStatus: 'configured', capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: true, local: false }, models: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex'], defaultModel: 'gpt-5.5', note: null, setupHint: null },
 ];
 
 function defaults(providerConfigured = true) {
@@ -49,7 +49,7 @@ function defaults(providerConfigured = true) {
   (apiClient.saveOnboardingState as any).mockResolvedValue({ success: true });
   (apiClient.resetOnboardingState as any).mockResolvedValue({ success: true });
   (apiClient.testProvider as any).mockResolvedValue({ ok: true, latencyMs: 100 });
-  (apiClient.getProviderStatus as any).mockResolvedValue({ configured: providerConfigured, provider: providerConfigured ? 'openai' : 'none', model: providerConfigured ? 'gpt-4o-mini' : 'none' });
+  (apiClient.getProviderStatus as any).mockResolvedValue({ configured: providerConfigured, provider: providerConfigured ? 'openai' : 'none', model: providerConfigured ? 'gpt-5.5' : 'none' });
   (apiClient.listProjectTasks as any).mockResolvedValue([]);
   (apiClient.listConversations as any).mockResolvedValue([]);
   (apiClient.listMessages as any).mockResolvedValue([]);
@@ -122,8 +122,8 @@ describe('Morrow Web App (redesigned shell)', () => {
   it('renders the providers settings tab', async () => {
     (apiClient.listProjects as any).mockResolvedValue([]);
     render(<App />);
-    await screen.findByText(/No missions yet/i);
-    fireEvent.click(screen.getByText('Settings', { selector: '.nav-item' }));
+    expect((await screen.findAllByText(/No missions yet/i)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByText('Settings', { selector: '.nav-item' })[0]);
     expect(await screen.findByRole('tab', { name: 'Providers' })).toBeDefined();
     expect(await screen.findByText(/Model Providers/i)).toBeDefined();
   });

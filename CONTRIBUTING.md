@@ -1,6 +1,6 @@
 # Contributing to Morrow
 
-Morrow is in private pre-alpha development. Contributions should be deliberate, reviewable, and tied to a documented product goal.
+Morrow is in private early access beta. Contributions should be deliberate, reviewable, and tied to a documented product goal.
 
 ## Development flow
 
