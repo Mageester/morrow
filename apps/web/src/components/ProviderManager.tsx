@@ -310,7 +310,7 @@ function OAuthCard(props: { status: OAuthProviderStatus; onChanged: () => Promis
   );
 }
 
-export function SubscriptionLogin() {
+export function SubscriptionLogin(props: { onConnectionChange?: () => Promise<void> | void }) {
   const [statuses, setStatuses] = useState<OAuthProviderStatus[]>([]);
   const refresh = async () => {
     try {
@@ -319,13 +319,19 @@ export function SubscriptionLogin() {
       /* leave empty on failure */
     }
   };
+  // Refresh our own status AND let the parent re-pull provider/preset state so
+  // the rest of the app reflects the new sign-in without a page reload.
+  const handleChanged = async () => {
+    await refresh();
+    await props.onConnectionChange?.();
+  };
   useEffect(() => {
     void refresh();
   }, []);
   return (
     <div className="provider-grid">
       {statuses.map((s) => (
-        <OAuthCard key={s.id} status={s} onChanged={refresh} />
+        <OAuthCard key={s.id} status={s} onChanged={handleChanged} />
       ))}
     </div>
   );

@@ -928,7 +928,7 @@ function SettingsView(props: {
             <div className="card">
               <h3>Subscription sign-in (Claude / Codex)</h3>
               <p className="muted">Sign in with your Claude or ChatGPT/Codex subscription using the same first-party OAuth flow the official CLIs use. <strong>Read the warning on each card:</strong> this reuses first-party OAuth client ids, may be subject to provider terms of service, and tokens are stored locally on this machine.</p>
-              <SubscriptionLogin />
+              <SubscriptionLogin onConnectionChange={onProvidersChanged} />
               {oauthFindings.filter(f => f.status === "unavailable").map(f => (
                 <p key={f.id} className="setup-hint" style={{ marginTop: 10 }}>
                   <strong>{f.label}:</strong> {f.reason}{f.documentationUrl ? <> <a href={f.documentationUrl} target="_blank" rel="noopener noreferrer">Docs ↗</a></> : null}
