@@ -2,6 +2,7 @@ import type { ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
+import { codexHeaders } from "./codex.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -98,13 +99,15 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       };
       const spec = cfgByProvider[id]!;
       const c = resolveApiKeyCredential(env, { apiKeyEnv: spec.apiKeyEnv, baseUrlEnv: spec.baseUrlEnv, defaultBaseUrl: spec.defaultBaseUrl });
-      // Prefer a subscription OAuth token (OpenAI only) so "Test connection"
-      // validates the credential that is actually in use rather than reporting
-      // the API key missing when the user signed in instead.
+      // A ChatGPT/Codex subscription OAuth token (OpenAI only) must be checked
+      // against the Codex backend with its Cloudflare-safe headers — probing
+      // api.openai.com with it returns 403/401.
       const oauthToken = id === "openai" ? getStoredAccessTokenSync("openai", env) : null;
-      const bearer = oauthToken ?? c.apiKey;
-      if (!bearer) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
-      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${bearer}`, ...(spec.extra ?? {}) }, host: c.host } };
+      if (oauthToken) {
+        return { configured: true, request: { url: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers: codexHeaders(oauthToken), host: "chatgpt.com" } };
+      }
+      if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
+      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });

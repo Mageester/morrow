@@ -2,6 +2,7 @@ import type { ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } f
 import { AiProvider, ProviderError } from "./base.js";
 import { OpenAiCompatibleProvider } from "./openai-compatible.js";
 import { AnthropicProvider } from "./anthropic.js";
+import { CodexProvider } from "./codex.js";
 import { GeminiProvider } from "./gemini.js";
 import {
   ProviderEnv,
@@ -93,16 +94,25 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
       const s = apiKeyStatus(this, c, env);
-      return getStoredAccessTokenSync("openai", env) ? withOAuth(s) : s;
+      if (getStoredAccessTokenSync("openai", env)) {
+        // Subscription sign-in routes through the Codex backend, which serves its
+        // own model slugs (gpt-5.x), not the api.openai.com model ids.
+        const override = modelOverride(env, "openai");
+        return { ...withOAuth(s), defaultModel: override || "gpt-5.5", models: ["gpt-5.5", ...s.models] };
+      }
+      return s;
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
-      // Prefer a subscription OAuth token (Codex/ChatGPT sign-in) when present;
-      // it is sent as a Bearer token by the OpenAI-compatible adapter.
+      // A ChatGPT/Codex subscription OAuth token only works against the Codex
+      // backend (chatgpt.com/backend-api/codex), not api.openai.com — so route it
+      // through the CodexProvider. An API key uses the standard endpoint.
       const oauthToken = getStoredAccessTokenSync("openai", env);
-      const key = oauthToken ?? c.apiKey;
-      if (!key) throw new ProviderError("not_configured", "OpenAI is not configured (sign in with OAuth or set OPENAI_API_KEY)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "openai", apiKey: key, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
+      if (oauthToken) {
+        return new CodexProvider({ oauthToken, defaultModel: resolveModel(env, this.id, model, "gpt-5.5") });
+      }
+      if (!c.configured) throw new ProviderError("not_configured", "OpenAI is not configured (sign in with OAuth or set OPENAI_API_KEY)", { kind: "auth" });
+      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
     },
   },
   {
