@@ -10,6 +10,12 @@ import {
   safeHost,
 } from "./credentials.js";
 import { providerEnvMapping } from "./secrets.js";
+import { getStoredAccessTokenSync } from "./oauth-flow.js";
+
+/** Mark a status as configured/available because a subscription OAuth token is held. */
+function withOAuth(status: ProviderStatus): ProviderStatus {
+  return { ...status, configured: true, available: true, authStatus: "configured" };
+}
 
 /** Persisted default-model override for a provider, if the operator set one. */
 function modelOverride(env: ProviderEnv, id: ProviderId): string | undefined {
@@ -86,12 +92,17 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
-      return apiKeyStatus(this, c, env);
+      const s = apiKeyStatus(this, c, env);
+      return getStoredAccessTokenSync("openai", env) ? withOAuth(s) : s;
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "OpenAI is not configured (OPENAI_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
+      // Prefer a subscription OAuth token (Codex/ChatGPT sign-in) when present;
+      // it is sent as a Bearer token by the OpenAI-compatible adapter.
+      const oauthToken = getStoredAccessTokenSync("openai", env);
+      const key = oauthToken ?? c.apiKey;
+      if (!key) throw new ProviderError("not_configured", "OpenAI is not configured (sign in with OAuth or set OPENAI_API_KEY)", { kind: "auth" });
+      return new OpenAiCompatibleProvider({ id: "openai", apiKey: key, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
     },
   },
   {
@@ -105,12 +116,21 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
-      return apiKeyStatus(this, c, env);
+      const s = apiKeyStatus(this, c, env);
+      return getStoredAccessTokenSync("anthropic", env) ? withOAuth(s) : s;
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
-      if (!c.configured) throw new ProviderError("not_configured", "Anthropic is not configured (ANTHROPIC_API_KEY missing)", { kind: "auth" });
-      return new AnthropicProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel) });
+      // Prefer a Claude subscription OAuth token when present: the adapter sends
+      // it as a Bearer token with the OAuth beta header instead of x-api-key.
+      const oauthToken = getStoredAccessTokenSync("anthropic", env);
+      if (!oauthToken && !c.configured) throw new ProviderError("not_configured", "Anthropic is not configured (sign in with OAuth or set ANTHROPIC_API_KEY)", { kind: "auth" });
+      return new AnthropicProvider({
+        apiKey: c.apiKey ?? "",
+        baseUrl: c.baseUrl,
+        defaultModel: resolveModel(env, this.id, model, this.defaultModel),
+        ...(oauthToken ? { oauthToken } : {}),
+      });
     },
   },
   {

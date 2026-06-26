@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ProviderStatus } from "@morrow/contracts";
-import { apiClient } from "../api/client";
+import { apiClient, type OAuthProviderStatus } from "../api/client";
 
 /**
  * Interactive provider configuration. Lets a user paste an API key, save it,
@@ -191,6 +191,142 @@ function ProviderCard(props: { provider: ProviderStatus; onChanged: () => Promis
       ) : (
         !p.configured && p.setupHint && <p className="setup-hint">{p.setupHint}</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Subscription sign-in (OAuth) for Claude and Codex. Starts a PKCE flow, opens
+ * the provider's authorization page in a new tab, and lets the user paste back
+ * the resulting authorization code (or full redirect URL) to complete sign-in.
+ *
+ * A prominent warning is shown because this reuses first-party OAuth client ids
+ * and may be subject to provider terms of service.
+ */
+function OAuthCard(props: { status: OAuthProviderStatus; onChanged: () => Promise<void> }) {
+  const { status: s } = props;
+  const [phase, setPhase] = useState<"idle" | "awaiting-code" | "exchanging">("idle");
+  const [code, setCode] = useState("");
+  const [authorizeUrl, setAuthorizeUrl] = useState("");
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const connected = s.status === "connected";
+
+  async function onStart() {
+    setMsg(null);
+    try {
+      const { authorizeUrl } = await apiClient.startOAuth(s.id);
+      setAuthorizeUrl(authorizeUrl);
+      setPhase("awaiting-code");
+      window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message || "Could not start sign-in." });
+    }
+  }
+
+  async function onExchange() {
+    if (!code.trim()) return;
+    setPhase("exchanging");
+    setMsg(null);
+    try {
+      await apiClient.exchangeOAuthCode(s.id, code.trim());
+      setCode("");
+      setPhase("idle");
+      await props.onChanged();
+      setMsg({ kind: "ok", text: "Signed in. Tokens are stored locally on this machine." });
+    } catch (e: any) {
+      setPhase("awaiting-code");
+      setMsg({ kind: "err", text: e?.message || "Sign-in failed." });
+    }
+  }
+
+  async function onSignOut() {
+    setMsg(null);
+    try {
+      await apiClient.signOutOAuth(s.id);
+      setPhase("idle");
+      await props.onChanged();
+      setMsg({ kind: "ok", text: "Signed out." });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message || "Could not sign out." });
+    }
+  }
+
+  return (
+    <div className={`provider-card ${connected ? "ok" : ""}`}>
+      <div className="provider-card-head">
+        <strong>{s.label}</strong>
+        <span className={`badge ${connected ? "badge-ok" : "badge-muted"}`}>
+          {connected ? "Signed in" : s.status === "expired" ? "Expired" : "Not signed in"}
+        </span>
+      </div>
+      <p className="oauth-warn">⚠ {s.warning}</p>
+      {connected && s.expiresAt && (
+        <p className="setup-hint">Token expires {new Date(s.expiresAt).toLocaleString()}.</p>
+      )}
+
+      <div className="provider-actions">
+        {connected ? (
+          <button className="btn btn-sm btn-danger" onClick={onSignOut}>Sign out</button>
+        ) : (
+          <button className="btn btn-sm btn-primary" onClick={onStart}>
+            {phase === "awaiting-code" ? "Re-open sign-in page" : "Sign in"}
+          </button>
+        )}
+      </div>
+
+      {phase !== "idle" && !connected && (
+        <div className="provider-form">
+          <p className="field-hint" style={{ marginTop: 0 }}>
+            A sign-in page opened in a new tab. After approving, copy the authorization code shown
+            (or the full redirected URL) and paste it here.
+          </p>
+          {authorizeUrl && (
+            <p className="field-hint">
+              Didn't open? <a href={authorizeUrl} target="_blank" rel="noopener noreferrer">Open sign-in page</a>.
+            </p>
+          )}
+          <label className="field">
+            <span className="field-label">Authorization code</span>
+            <input
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Paste the code or redirect URL"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </label>
+          <div className="provider-form-actions">
+            <button className="btn btn-primary btn-sm" onClick={onExchange} disabled={phase === "exchanging" || !code.trim()}>
+              {phase === "exchanging" ? "Completing…" : "Complete sign-in"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {msg && <p className={`provider-msg ${msg.kind === "ok" ? "ok" : "err"}`}>{msg.text}</p>}
+    </div>
+  );
+}
+
+export function SubscriptionLogin() {
+  const [statuses, setStatuses] = useState<OAuthProviderStatus[]>([]);
+  const refresh = async () => {
+    try {
+      setStatuses(await apiClient.listOAuthStatus());
+    } catch {
+      /* leave empty on failure */
+    }
+  };
+  useEffect(() => {
+    void refresh();
+  }, []);
+  return (
+    <div className="provider-grid">
+      {statuses.map((s) => (
+        <OAuthCard key={s.id} status={s} onChanged={refresh} />
+      ))}
     </div>
   );
 }

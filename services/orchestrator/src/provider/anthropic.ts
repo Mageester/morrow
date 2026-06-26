@@ -12,6 +12,12 @@ export interface AnthropicConfig {
   baseUrl: string; // default https://api.anthropic.com
   defaultModel: string;
   anthropicVersion?: string;
+  /**
+   * OAuth access token from a Claude subscription sign-in. When present it is
+   * sent as a Bearer token with the OAuth beta header instead of `x-api-key`,
+   * matching the official subscription-login transport.
+   */
+  oauthToken?: string;
 }
 
 type AnthropicBlock =
@@ -119,13 +125,21 @@ export class AnthropicProvider implements AiProvider {
 
     let response: Response;
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "anthropic-version": this.config.anthropicVersion ?? "2023-06-01",
+      };
+      if (this.config.oauthToken) {
+        // Subscription (OAuth) transport: Bearer token + OAuth beta header,
+        // with no x-api-key. Mirrors the official Claude subscription login.
+        headers["Authorization"] = `Bearer ${this.config.oauthToken}`;
+        headers["anthropic-beta"] = "oauth-2025-04-20";
+      } else {
+        headers["x-api-key"] = this.config.apiKey;
+      }
       response = await fetch(`${baseUrl}/v1/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": this.config.apiKey,
-          "anthropic-version": this.config.anthropicVersion ?? "2023-06-01",
-        },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });

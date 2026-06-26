@@ -59,6 +59,7 @@ import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
+import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
 import { listModels } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
@@ -907,8 +908,47 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }))
   );
 
-  // Honest OAuth integration findings.
+  // Honest OAuth integration findings (static, informational).
   app.get("/api/providers/oauth", async () => OAUTH_FINDINGS);
+
+  // Live subscription-OAuth connection status (connected/expired/disconnected),
+  // never includes any token material.
+  app.get("/api/providers/oauth/status", async () => oauthStatuses(process.env));
+
+  // Begin a subscription sign-in: returns the authorization URL the user opens
+  // in their browser. The PKCE verifier is held server-side until exchange.
+  app.post("/api/providers/:providerId/oauth/start", async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    if (!isOAuthProvider(providerId)) {
+      throw new ApiError(400, `Provider "${providerId}" does not support subscription OAuth.`, "OAUTH_UNSUPPORTED");
+    }
+    return startAuthorization(providerId);
+  });
+
+  // Complete sign-in: the user pastes the authorization code (or full redirect
+  // URL) returned by the provider. Tokens are exchanged and stored locally.
+  app.post("/api/providers/:providerId/oauth/exchange", async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    if (!isOAuthProvider(providerId)) {
+      throw new ApiError(400, `Provider "${providerId}" does not support subscription OAuth.`, "OAUTH_UNSUPPORTED");
+    }
+    const body = z.object({ code: z.string().min(1).max(8192) }).strict().parse((request.body ?? {}) as unknown);
+    try {
+      return await exchangeCode(providerId, body.code, process.env);
+    } catch (e: any) {
+      throw new ApiError(400, e?.message || "Failed to complete sign-in.", "OAUTH_EXCHANGE_FAILED");
+    }
+  });
+
+  // Sign out: remove stored tokens for a provider.
+  app.post("/api/providers/:providerId/oauth/signout", async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    if (!isOAuthProvider(providerId)) {
+      throw new ApiError(400, `Provider "${providerId}" does not support subscription OAuth.`, "OAUTH_UNSUPPORTED");
+    }
+    signOut(providerId, process.env);
+    return { ok: true, provider: providerId };
+  });
 
   // Bounded, server-side connectivity test for a single provider. The request is
   // made with credentials from the server environment; the response never

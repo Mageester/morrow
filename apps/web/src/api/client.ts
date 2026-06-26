@@ -10,6 +10,16 @@ export interface SendMessageOptions {
   autoApprove?: boolean;
 }
 
+export interface OAuthProviderStatus {
+  id: "anthropic" | "openai";
+  label: string;
+  providerId: string;
+  status: "connected" | "disconnected" | "expired";
+  expiresAt: string | null;
+  scope: string | null;
+  warning: string;
+}
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // ── Typed response wrapper ──────────────────────────────────────────────────
@@ -146,6 +156,24 @@ export const apiClient = {
 
   async listOAuthFindings(): Promise<OAuthFinding[]> {
     return request("/api/providers/oauth");
+  },
+
+  // ── Subscription OAuth (Claude / Codex sign-in) ─────────────────────────────
+  async listOAuthStatus(): Promise<OAuthProviderStatus[]> {
+    return request("/api/providers/oauth/status");
+  },
+  async startOAuth(providerId: string): Promise<{ authorizeUrl: string; redirectUri: string; manual: boolean }> {
+    return request(`/api/providers/${providerId}/oauth/start`, { method: "POST" });
+  },
+  async exchangeOAuthCode(providerId: string, code: string): Promise<OAuthProviderStatus> {
+    return request(`/api/providers/${providerId}/oauth/exchange`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+  },
+  async signOutOAuth(providerId: string): Promise<{ ok: boolean; provider: string }> {
+    return request(`/api/providers/${providerId}/oauth/signout`, { method: "POST" });
   },
 
   async listModels(): Promise<ModelStatus[]> {

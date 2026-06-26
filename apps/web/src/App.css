@@ -121,6 +121,9 @@ button { font: inherit; color: inherit; }
 .nav-item.active { background: var(--bg-elev); color: var(--text); }
 .nav-item.active .ico { opacity: 1; color: var(--accent); }
 .nav-divider { height: 1px; background: var(--border); margin: 12px 6px; }
+.nav-more { color: var(--text-3); }
+.nav-more .nav-more-chev { width: 14px; height: 14px; opacity: 0.7; transition: transform 0.15s ease; }
+.nav-more-group { display: flex; flex-direction: column; gap: 1px; margin-left: 8px; padding-left: 6px; border-left: 1px solid var(--border); }
 .nav-spacer { flex: 1; }
 
 .account {
@@ -408,15 +411,25 @@ button { font: inherit; color: inherit; }
 .stop-btn:hover { background: rgba(242,85,90,0.2); }
 
 /* Markdown */
-.md { display: flex; flex-direction: column; gap: 9px; color: var(--text); }
-.md-paragraph { margin: 0; white-space: pre-wrap; word-break: break-word; }
-.md-heading { margin: 4px 0 0; font-weight: 600; }
-.md-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
-.md-quote { margin: 0; padding: 4px 12px; border-left: 2px solid var(--accent); color: var(--text-2); }
-.md-inline-code { font-family: var(--mono); font-size: 12.5px; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+.md { display: flex; flex-direction: column; gap: 10px; color: var(--text); line-height: 1.6; white-space: normal; }
+.md > :first-child { margin-top: 0; }
+.md-paragraph { margin: 0; overflow-wrap: anywhere; }
+/* Heading scale. The renderer maps #→h3, ##→h4, ###→h5, ####+→h6. */
+.md-heading { margin: 6px 0 0; font-weight: 650; line-height: 1.3; letter-spacing: -0.01em; color: var(--text); }
+h3.md-heading { font-size: 16px; }
+h4.md-heading { font-size: 14.5px; }
+h5.md-heading { font-size: 13px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+h6.md-heading { font-size: 12.5px; color: var(--text-3); }
+.md-list { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 5px; }
+.md-list li { padding-left: 2px; }
+.md-list li::marker { color: var(--text-3); }
+.md-quote { margin: 0; padding: 6px 14px; border-left: 3px solid var(--accent); color: var(--text-2); background: var(--accent-soft); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.md-inline-code { font-family: var(--mono); font-size: 0.86em; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; word-break: break-word; }
 .md-code-block { margin: 2px 0; background: #08080a; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; overflow-x: auto; }
-.md-code-block code { font-family: var(--mono); font-size: 12.5px; color: #d6dbe4; white-space: pre; }
-.md a { color: var(--accent); }
+.md-code-block code { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: #d6dbe4; white-space: pre; }
+.md strong { font-weight: 650; color: var(--text); }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgba(61,123,253,0.4); }
+.md a:hover { text-decoration-color: var(--accent); }
 
 /* ---- Modal --------------------------------------------------------------- */
 
@@ -479,6 +492,7 @@ button { font: inherit; color: inherit; }
 .oauth-item { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
 .oauth-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .oauth-reason { font-size: 12.5px; color: var(--text-2); margin: 6px 0 4px; }
+.oauth-warn { font-size: 11.5px; line-height: 1.5; color: #ffd98a; background: var(--amber-soft); border: 1px solid rgba(240,180,41,0.3); border-radius: var(--radius-sm); padding: 8px 10px; margin: 2px 0 0; }
 .oauth-rec { font-size: 12.5px; color: var(--accent); margin: 0; }
 .model-table, .perm-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
 .model-table th, .perm-table th { text-align: left; color: var(--text-3); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; padding: 7px 9px; border-bottom: 1px solid var(--border); }

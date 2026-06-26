@@ -14,7 +14,7 @@ import { SkillsControlCenter } from "./components/SkillsControlCenter";
 import { MissionControl } from "./components/MissionControl";
 import { SystemHealth } from "./components/SystemHealth";
 import { DownloadPage } from "./components/DownloadPage";
-import { ProviderManager } from "./components/ProviderManager";
+import { ProviderManager, SubscriptionLogin } from "./components/ProviderManager";
 
 type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
@@ -76,6 +76,7 @@ export default function App() {
   const [projectMeta, setProjectMeta] = useState<Record<string, ProjectMeta>>({});
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [nav, setNav] = useState<Nav>("projects");
+  const [moreOpen, setMoreOpen] = useState(false);
   const [view, setView] = useState<"list" | "conversation">("list");
   const [inspTab, setInspTab] = useState<InspTab>("overview");
   const [search, setSearch] = useState("");
@@ -113,6 +114,11 @@ export default function App() {
   } | null>(null);
 
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  // Whether the chat is "pinned" to the bottom. Stays true while the user is
+  // reading the latest output; flips to false the moment they scroll up so the
+  // view stops yanking back down on every streamed token.
+  const stickToBottomRef = useRef(true);
   const eventUnsubRef = useRef<(() => void) | null>(null);
 
   // ── Loaders ────────────────────────────────────────────────────────────────
@@ -151,6 +157,7 @@ export default function App() {
 
   // Load conversation + messages for the selected project
   const openProject = async (projectId: string, asConversation: boolean) => {
+    stickToBottomRef.current = true; // opening a conversation lands at the bottom.
     setSelectedProjectId(projectId);
     setInspTab("overview");
     if (asConversation) setView("conversation");
@@ -176,7 +183,21 @@ export default function App() {
     } catch (e) { console.error(e); }
   };
 
-  useEffect(() => { messageEndRef.current?.scrollIntoView?.({ behavior: "smooth" }); }, [messages]);
+  // Auto-scroll to the newest message ONLY when the user is already pinned to
+  // the bottom. Scrolling the container directly (not scrollIntoView) avoids
+  // dragging parent layout, and "auto" avoids the janky animation that fought
+  // the user on every streamed delta.
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = chatScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const handleChatScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 80;
+  };
 
   // Aggregate + SSE for the focused task
   useEffect(() => {
@@ -248,6 +269,7 @@ export default function App() {
     const ps = presets.find(p => p.preset.id === activePreset);
     if (ps && !ps.available && !providerStatus?.configured) { setComposerError(ps.unavailableReason || "This preset is unavailable."); return; }
     const content = composerPrompt; setComposerPrompt("");
+    stickToBottomRef.current = true; // sending a message re-pins to the latest.
     try {
       const convId = await ensureConversation();
       const res = await apiClient.sendMessage(convId, content, { preset: activePreset, useMemory: true, mode: "agent", autoApprove: autonomous });
@@ -260,6 +282,7 @@ export default function App() {
   // Zero-setup chat: provision a default scratch workspace + conversation and
   // jump straight into it, no mission/project setup required.
   const handleNewChat = async () => {
+    stickToBottomRef.current = true;
     try {
       const qc = await apiClient.quickChat();
       setSelectedProjectId(qc.projectId);
@@ -371,23 +394,32 @@ export default function App() {
           <button className="nav-item nav-item--primary" onClick={handleNewChat}>
             <I.IconSend className="ico" /><span>New Chat</span>
           </button>
-          <NavItem id="missions" label="New Mission" icon={I.IconSend} />
+          {/* Core, everyday destinations. */}
           <NavItem id="projects" label="Missions" icon={I.IconRuns} />
+          <NavItem id="missions" label="Mission Control" icon={I.IconSend} />
           <NavItem id="agents" label="Agents" icon={I.IconAgents} />
           <NavItem id="skills" label="Skills" icon={I.IconTools} />
-          <div className="nav-divider" />
-          <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
-          <NavItem id="files" label="Files" icon={I.IconFile} />
-          <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
           <NavItem id="runs" label="Runs" icon={I.IconRuns} />
           <div className="nav-divider" />
-          <NavItem id="automations" label="Automations" icon={I.IconSettings} />
-          <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
-          <NavItem id="system" label="System Health" icon={I.IconSettings} />
-          <div className="nav-divider" />
           <NavItem id="settings" label="Settings" icon={I.IconSettings} />
-          <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
-          <NavItem id="help" label="Help" icon={I.IconHelp} />
+          {/* Secondary + not-yet-built destinations, collapsed by default to keep
+              the primary navigation focused. */}
+          <button className="nav-item nav-more" onClick={() => setMoreOpen(o => !o)} aria-expanded={moreOpen}>
+            <I.IconMore className="ico" /><span>More</span>
+            <I.IconChevron className="ico nav-more-chev" style={{ marginLeft: "auto", transform: moreOpen ? "rotate(90deg)" : undefined }} />
+          </button>
+          {moreOpen && (
+            <div className="nav-more-group">
+              <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
+              <NavItem id="files" label="Files" icon={I.IconFile} />
+              <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
+              <NavItem id="automations" label="Automations" icon={I.IconSettings} />
+              <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
+              <NavItem id="system" label="System Health" icon={I.IconSettings} />
+              <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
+              <NavItem id="help" label="Help" icon={I.IconHelp} />
+            </div>
+          )}
         </nav>
         <div className="nav-spacer" />
         <div className="account">
@@ -481,7 +513,7 @@ export default function App() {
               ))}
             </div>
             {taskError && <div className="error-message" role="alert" style={{ margin: "10px 22px 0" }}>{taskError}</div>}
-            <div className="chat-scroll">
+            <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
               {messages.length === 0 ? (
                 <div className="chat-empty">
                   <I.IconAgentFace className="empty-ico" />
@@ -866,13 +898,14 @@ function SettingsView(props: {
               <ProviderManager providers={providers} onChanged={onProvidersChanged} />
             </div>
             <div className="card">
-              <h3>Subscription OAuth (Codex / Claude / Gemini)</h3>
-              <p className="muted">Morrow only labels a flow "OAuth" when it is an officially supported third-party integration.</p>
-              <ul className="oauth-list">
-                {oauthFindings.map(f => (
-                  <li key={f.id} className="oauth-item"><div className="oauth-head"><strong>{f.label}</strong><span className="badge badge-muted">{f.status}</span></div><p className="oauth-reason">{f.reason}</p><p className="oauth-rec">{f.recommendation}</p></li>
-                ))}
-              </ul>
+              <h3>Subscription sign-in (Claude / Codex)</h3>
+              <p className="muted">Sign in with your Claude or ChatGPT/Codex subscription using the same first-party OAuth flow the official CLIs use. <strong>Read the warning on each card:</strong> this reuses first-party OAuth client ids, may be subject to provider terms of service, and tokens are stored locally on this machine.</p>
+              <SubscriptionLogin />
+              {oauthFindings.filter(f => f.status === "unavailable").map(f => (
+                <p key={f.id} className="setup-hint" style={{ marginTop: 10 }}>
+                  <strong>{f.label}:</strong> {f.reason}{f.documentationUrl ? <> <a href={f.documentationUrl} target="_blank" rel="noopener noreferrer">Docs ↗</a></> : null}
+                </p>
+              ))}
             </div>
           </div>
         )}

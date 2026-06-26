@@ -54,7 +54,18 @@ describe("Provider / preset / memory API", () => {
     expect((await json("GET", "/api/providers/capabilities")).body.length).toBeGreaterThanOrEqual(7);
     const oauth = (await json("GET", "/api/providers/oauth")).body;
     expect(oauth.length).toBe(3);
-    expect(oauth.every((f: any) => f.status === "unavailable")).toBe(true);
+    // Claude + Codex subscription sign-in is implemented; Gemini stays API-key.
+    expect(oauth.filter((f: any) => f.status === "available").map((f: any) => f.id).sort()).toEqual([
+      "claude-oauth",
+      "codex-oauth",
+    ]);
+    expect(oauth.find((f: any) => f.id === "gemini-oauth").status).toBe("unavailable");
+
+    // Live status endpoint reports a connection state and never token material.
+    const status = (await json("GET", "/api/providers/oauth/status")).body;
+    expect(status.map((s: any) => s.id).sort()).toEqual(["anthropic", "openai"]);
+    expect(status.every((s: any) => ["connected", "disconnected", "expired"].includes(s.status))).toBe(true);
+    expect(JSON.stringify(status)).not.toMatch(/accessToken|refreshToken|access_token/);
   });
 
   async function makeConversation() {

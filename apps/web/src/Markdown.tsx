@@ -14,8 +14,11 @@ function nextKey(prefix: string) {
 
 function renderInline(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  // Order matters: code spans first so we don't format inside them.
-  const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*|_[^_]+_)|(\[[^\]]+\]\((https?:\/\/[^\s)]+)\))/g;
+  // Order matters: code spans first so we don't format inside them, then bold,
+  // then italics, then links. Underscore italics only match when bounded by
+  // non-word characters so identifiers and paths like `file_name` or
+  // `__init__` are left untouched instead of being turned into italics.
+  const pattern = /(`[^`]+`)|(\*\*[^*]+?\*\*)|(\*(?!\s)[^*\n]+?\*)|((?<![A-Za-z0-9_])_[^_\n]+?_(?![A-Za-z0-9_]))|(\[[^\]]+\]\((https?:\/\/[^\s)]+)\))/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
