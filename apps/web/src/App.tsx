@@ -77,6 +77,9 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [nav, setNav] = useState<Nav>("projects");
   const [moreOpen, setMoreOpen] = useState(false);
+  // On narrow/mobile widths the sidebar is an off-canvas drawer. Without a way to
+  // open it the entire navigation was unreachable below 820px.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [view, setView] = useState<"list" | "conversation">("list");
   const [inspTab, setInspTab] = useState<InspTab>("overview");
   const [search, setSearch] = useState("");
@@ -380,7 +383,7 @@ export default function App() {
 
   // ── Render helpers ────────────────────────────────────────────────────────────
   const NavItem = ({ id, label, icon: Icon }: { id: Nav; label: string; icon: (p: any) => React.ReactElement }) => (
-    <button className={`nav-item ${nav === id ? "active" : ""}`} onClick={() => { setNav(id); if (id === "projects") setView("list"); }}>
+    <button className={`nav-item ${nav === id ? "active" : ""}`} onClick={() => { setNav(id); if (id === "projects") setView("list"); setSidebarOpen(false); }}>
       <Icon className="ico" /> {label}
     </button>
   );
@@ -424,12 +427,23 @@ export default function App() {
   }
 
   return (
-    <div className={`morrow-app ${inspectorOpen ? "with-inspector" : ""}`}>
+    <div className={`morrow-app ${inspectorOpen ? "with-inspector" : ""} ${sidebarOpen ? "sidebar-open" : ""}`}>
+      {/* Mobile navigation toggle — only visible on narrow widths (see CSS). */}
+      <button
+        className="nav-toggle"
+        aria-label={sidebarOpen ? "Close navigation" : "Open navigation"}
+        aria-expanded={sidebarOpen}
+        onClick={() => setSidebarOpen(o => !o)}
+      >
+        <I.IconMore className="ico" />
+      </button>
+      {/* Backdrop dismisses the drawer on narrow widths. */}
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
       {/* Sidebar */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <button className="nav-item nav-item--primary" onClick={handleNewChat}>
+          <button className="nav-item nav-item--primary" onClick={() => { handleNewChat(); setSidebarOpen(false); }}>
             <I.IconSend className="ico" /><span>New Chat</span>
           </button>
           {/* Core, everyday destinations. */}
