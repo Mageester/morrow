@@ -157,27 +157,32 @@ export function buildSlashCommands(input: BuildCommandsInput): SlashCommand[] {
     });
   }
 
-  // ── Navigation ─────────────────────────────────────────────────────────────
-  const nav: Array<[string, string, string]> = [
-    ["settings", "Settings", "settings"],
-    ["models", "Models", "settings"],
-    ["skills", "Skills", "skills"],
-    ["agents", "Agents", "agents"],
-    ["memory", "Memory", "memory"],
-    ["approvals", "Approvals", "approvals"],
-    ["runs", "Runs", "runs"],
-    ["missions", "Missions", "projects"],
-    ["system", "System Health", "system"],
+  // ── Navigation (collapsed IA: Workspace · History · Settings) ───────────────
+  // Everything that used to be a top-level page is now reachable here — most
+  // resolve to a Settings sub-tab (settings#<tab>) so the slash palette stays a
+  // complete index even though the nav rail only shows three destinations.
+  const nav: Array<[string, string, string, string[]]> = [
+    ["workspace", "Workspace", "workspace", ["work", "chat", "run", "agent"]],
+    ["history", "History", "history", ["runs", "missions", "sessions", "past"]],
+    ["settings", "Settings", "settings", ["config", "preferences"]],
+    ["models", "Models", "settings#models", ["registry", "catalog"]],
+    ["providers", "Providers", "settings#providers", ["provider", "api", "keys"]],
+    ["skills", "Skills", "settings#skills", ["skill", "extensions"]],
+    ["agents", "Agents", "settings#agents", ["agent", "studio", "team"]],
+    ["automations", "Automations", "settings#automations", ["cron", "schedule"]],
+    ["memory", "Memory", "settings#memory", ["memory", "notes", "data"]],
+    ["diagnostics", "Diagnostics", "settings#diagnostics", ["system", "health", "status"]],
+    ["approvals", "Approvals", "approvals", ["approve", "pending", "inbox"]],
   ];
-  for (const [cmd, title, target] of nav) {
+  for (const [cmd, title, target, extra] of nav) {
     out.push({
       id: `nav:${cmd}`,
       command: cmd,
       title: `Go to ${title}`,
-      hint: "navigate",
+      hint: target.startsWith("settings#") ? "Settings" : "navigate",
       group: "Go to",
-      keywords: [cmd, title, "go", "open", "navigate"],
-      run: (a) => (cmd === "models" ? (a.navigate("settings")) : a.navigate(target)),
+      keywords: [cmd, title, ...extra, "go", "open", "navigate"],
+      run: (a) => a.navigate(target),
     });
   }
 

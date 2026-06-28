@@ -73,18 +73,19 @@ function defaults(providerConfigured = true) {
 describe('Morrow Web App (redesigned shell)', () => {
   beforeEach(() => { vi.resetAllMocks(); defaults(true); });
 
-  it('renders the brand and a projects table', async () => {
+  it('renders the brand and lists projects under History', async () => {
     (apiClient.listProjects as any).mockResolvedValue([{ id: 'p1', name: 'Feedback Analysis', workspacePath: '/test/path', createdAt: new Date().toISOString() }]);
     render(<App />);
     expect(await screen.findByText('Morrow')).toBeDefined();
+    // The default screen is the Workspace, not a table — projects live in History.
+    fireEvent.click(screen.getByText('History', { selector: '.nav-item' }));
     expect(await screen.findByText('Feedback Analysis')).toBeDefined();
-    expect(screen.getAllByText(/Mission/i).length).toBeGreaterThan(0);
   });
 
-  it('shows an empty state with no missions', async () => {
+  it('shows the workspace start state when nothing is selected', async () => {
     (apiClient.listProjects as any).mockResolvedValue([]);
     render(<App />);
-    expect(await screen.findByText(/No missions yet/i)).toBeDefined();
+    expect(await screen.findByText(/Start working/i)).toBeDefined();
   });
 
   it('opens the New Project modal with workspace inputs', async () => {
@@ -116,7 +117,8 @@ describe('Morrow Web App (redesigned shell)', () => {
       routing: { providerId: 'mock', model: 'mock-model', presetId: 'balanced', privacy: 'cloud', reason: 'mock', fallbackUsed: false, overridden: false }
     });
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
+    // Open the project via the always-visible top-bar project picker.
+    fireEvent.change(await screen.findByLabelText('Project'), { target: { value: 'p1' } });
     expect(await screen.findByRole('button', { name: 'Ask' })).toBeDefined();
     expect(await screen.findByRole('button', { name: 'Plan' })).toBeDefined();
     expect(await screen.findByRole('button', { name: 'Agent' })).toBeDefined();
@@ -131,7 +133,7 @@ describe('Morrow Web App (redesigned shell)', () => {
     (apiClient.listProjects as any).mockResolvedValue([{ id: 'p1', name: 'Feedback Analysis', workspacePath: '/test/path', createdAt: new Date().toISOString() }]);
     (apiClient.listSkills as any).mockRejectedValue(new Error('skills unavailable'));
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
+    fireEvent.change(await screen.findByLabelText('Project'), { target: { value: 'p1' } });
     expect(apiClient.listSkills).not.toHaveBeenCalled();
 
     const input = await screen.findByPlaceholderText(/Agent Morrow/i);
@@ -150,7 +152,7 @@ describe('Morrow Web App (redesigned shell)', () => {
       routing: { providerId: 'openai', model: 'gpt-4o-mini', presetId: 'balanced', privacy: 'cloud', reason: 'override', fallbackUsed: false, overridden: true }
     });
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
+    fireEvent.change(await screen.findByLabelText('Project'), { target: { value: 'p1' } });
     const input = await screen.findByPlaceholderText(/Agent Morrow/i);
 
     fireEvent.change(input, { target: { value: '/model' } });
@@ -194,7 +196,7 @@ describe('Morrow Web App (redesigned shell)', () => {
   it('renders the providers settings tab', async () => {
     (apiClient.listProjects as any).mockResolvedValue([]);
     render(<App />);
-    await screen.findByText(/No missions yet/i);
+    await screen.findByText('Morrow');
     fireEvent.click(screen.getByText('Settings', { selector: '.nav-item' }));
     expect(await screen.findByRole('tab', { name: 'Providers' })).toBeDefined();
     expect(await screen.findByText(/Model Providers/i)).toBeDefined();

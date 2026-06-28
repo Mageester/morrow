@@ -30,13 +30,15 @@ test('no console errors or unhandled rejections on load and core navigation', as
   const problems = collectProblems(page);
   await page.goto('/');
   await expect(page.locator('.sidebar')).toBeVisible();
-  for (const label of ['Missions', 'Active Runs', 'Settings']) {
+  // The collapsed IA exposes only three destinations on the rail.
+  for (const label of ['History', 'Workspace', 'Settings']) {
     await page.locator('.nav-item').filter({ hasText: label }).first().click();
     await page.waitForTimeout(250);
   }
-  await page.locator('.nav-more').click();
-  for (const label of ['Skills', 'Agent Studio']) {
-    await page.locator('.nav-more-group .nav-item').filter({ hasText: label }).first().click();
+  // Relocated destinations now live as Settings tabs — exercise the ones that
+  // pulled in formerly-top-level pages (Agents, Skills, Diagnostics).
+  for (const tab of ['Providers', 'Agents', 'Skills', 'Diagnostics']) {
+    await page.locator('.settings-tab').filter({ hasText: tab }).first().click();
     await page.waitForTimeout(250);
   }
   expect(problems, problems.join('\n')).toEqual([]);
@@ -181,8 +183,7 @@ test.describe('narrow / mobile viewport', () => {
     await expect(sidebar).toBeInViewport({ ratio: 0.95 });
 
     // Selecting a destination navigates AND closes the drawer.
-    await page.locator('.sidebar .nav-more').click();
-    await page.locator('.sidebar .nav-more-group .nav-item').filter({ hasText: 'Skills' }).first().click();
+    await page.locator('.sidebar .nav-item').filter({ hasText: 'History' }).first().click();
     await expect(sidebar).not.toHaveClass(/\bopen\b/);
 
     // Reopen, then dismiss by tapping the backdrop.

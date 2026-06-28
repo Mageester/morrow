@@ -23,9 +23,11 @@ async function createProject(page: Page, name: string, path: string) {
 }
 
 async function openProjectFromList(page: Page, name: string) {
+  // The project list now lives under History (Workspace is the default screen).
+  await page.locator('.nav-item').filter({ hasText: 'History' }).first().click();
   const row = page.locator('.ptable tbody tr').filter({ hasText: name }).first();
   await expect(row).toBeVisible();
-  await row.locator('.row-menu').click();
+  await row.click();
   await expect(page.locator('.workspace-header h3')).toHaveText(`${name} Workspace`);
 }
 
@@ -47,7 +49,7 @@ test('persists a verified workspace inspection across reload', async ({ page }) 
     await expect(page.locator('.verification-section')).toContainText('Verified');
 
     await page.reload();
-    await page.locator('.ptable tbody tr').filter({ hasText: name }).first().click();
+    await openProjectFromList(page, name);
     await expect(page.locator('.insp-sub .status.verified')).toBeVisible();
     await expect(page.locator('.plan-step.completed')).toHaveCount(3);
     await expect(page.locator('.evidence-section')).toContainText('evidence.txt');

@@ -933,3 +933,71 @@ h6.md-heading { font-size: 12.5px; color: var(--text-3); }
   .skills-grid { grid-template-columns: 1fr; }
   .skill-detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Workspace-first shell ─────────────────────────────────────────────────────
+   Three-destination rail + dominant workspace + contextual drawer (Hermes-style). */
+.nav-badge {
+  min-width: 18px; height: 18px; margin-left: auto; padding: 0 5px; border-radius: 9px;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 650;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+
+.workspace { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+.ws-topbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg-content); flex: none; min-height: 52px;
+}
+.ws-spacer { flex: 1; min-width: 0; }
+.ws-mode, .ws-status, .ws-drawer-toggle, .ws-gear { flex: none; }
+.ws-picker, .ws-model {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-shrink: 1;
+  background: var(--bg-elev); border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm); padding: 4px 8px; max-width: 230px;
+}
+.ws-picker .ico, .ws-model .ico { width: 15px; height: 15px; opacity: 0.8; flex: none; }
+.ws-picker select, .ws-model select {
+  background: transparent; border: none; color: var(--text);
+  font-size: 13px; font-weight: 550; max-width: 190px; cursor: pointer; outline: none;
+}
+.ws-picker select option, .ws-model select option, .ws-model select optgroup { background: var(--bg-panel); color: var(--text); }
+.ws-model { border-color: var(--accent-soft); }
+.ws-mode { flex: none; }
+.ws-status {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 12px; color: var(--text-2); padding: 0 6px; white-space: nowrap;
+}
+.ws-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-4); }
+.ws-status.running .dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: pulse 1.4s ease-in-out infinite; }
+.ws-status.idle .dot { background: #41c08a; }
+.ws-drawer-toggle, .ws-gear {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 32px; height: 32px; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid var(--border-2); color: var(--text-2); cursor: pointer;
+}
+.ws-drawer-toggle:hover, .ws-gear:hover { background: var(--bg-elev); color: var(--text); }
+.ws-drawer-toggle.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.ws-drawer-toggle .ico, .ws-gear .ico { width: 16px; height: 16px; }
+
+.ws-start { flex: 1; gap: 12px; padding: 24px; }
+.ws-start h3 { margin: 4px 0 0; font-size: 17px; color: var(--text); font-weight: 650; }
+.ws-start p { max-width: 460px; line-height: 1.55; }
+.ws-start-actions { display: flex; gap: 10px; margin-top: 8px; }
+
+.ws-convo { flex: 1; }
+.ws-convo-head { flex-direction: row; align-items: center; gap: 12px; padding: 12px 22px; border-bottom: 1px solid var(--border); }
+.ws-convo-head .path-display { font-size: 12px; color: var(--text-3); margin: 0; }
+
+.history-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+/* Embedded relocated pages inside Settings tabs (Agents/Skills/Diagnostics). */
+.settings-embed { max-width: none; }
+.settings-embed .topbar { padding-left: 0; padding-right: 0; }
+.settings-embed .agents-panel, .settings-embed .skills-control { width: 100%; }
+
+@media (max-width: 820px) {
+  .ws-topbar { flex-wrap: wrap; min-height: auto; gap: 6px; }
+  .ws-picker, .ws-model { max-width: 150px; }
+  .ws-status { display: none; }
+}

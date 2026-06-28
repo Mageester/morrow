@@ -11,16 +11,20 @@ import * as I from "./icons";
 import "./App.css";
 import { OnboardingHub } from "./components/OnboardingWizard";
 import { SkillsControlCenter } from "./components/SkillsControlCenter";
-import { MissionControl } from "./components/MissionControl";
 import { SystemHealth } from "./components/SystemHealth";
-import { DownloadPage } from "./components/DownloadPage";
 import { ProviderManager, SubscriptionLogin } from "./components/ProviderManager";
 import { SlashMenu } from "./components/SlashMenu";
 import { buildSlashCommands, filterSlashCommands, type SlashActions, type SlashSkill } from "./commands";
 
-type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
+// Collapsed information architecture (Hermes-style workspace-first). The nav rail
+// only ever exposes three destinations; "approvals" is conditional (shown only
+// when something is pending). Everything that used to be a top-level page now
+// lives inside Settings tabs, the workspace context drawer, or slash commands.
+type Nav = "workspace" | "history" | "settings" | "approvals";
 type ComposerMode = "agent" | "plan-only" | "read-only";
-type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
+type SettingsTab =
+  | "providers" | "models" | "presets" | "agents" | "skills"
+  | "automations" | "memory" | "privacy" | "permissions" | "diagnostics";
 type InspTab = "overview" | "files" | "notes" | "settings";
 
 interface ProjectMeta { status: string; agent: string; updatedAt: string; latestTaskId: string | null; }
@@ -90,12 +94,13 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectMeta, setProjectMeta] = useState<Record<string, ProjectMeta>>({});
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
-  const [nav, setNav] = useState<Nav>("projects");
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [nav, setNav] = useState<Nav>("workspace");
   // On narrow/mobile widths the sidebar is an off-canvas drawer. Without a way to
   // open it the entire navigation was unreachable below 820px.
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [view, setView] = useState<"list" | "conversation">("list");
+  // The workspace context drawer (touched files, diffs, agents, run metadata).
+  // Hidden by default; revealed when there's an active run or on demand.
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const [inspTab, setInspTab] = useState<InspTab>("overview");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -195,12 +200,15 @@ export default function App() {
     } else setMemoryEntries([]);
   }, [selectedProjectId]);
 
-  // Load conversation + messages for the selected project
-  const openProject = async (projectId: string, asConversation: boolean) => {
+  // Open a project in the Workspace: select it, switch to the workspace surface,
+  // and load its latest conversation. (There is no separate "list vs conversation"
+  // view any more — the workspace IS the conversation; History is the list.)
+  const openProject = async (projectId: string) => {
     stickToBottomRef.current = true; // opening a conversation lands at the bottom.
     setSelectedProjectId(projectId);
     setInspTab("overview");
-    if (asConversation) setView("conversation");
+    setNav("workspace");
+    setSidebarOpen(false);
     const meta = projectMeta[projectId];
     setFocusedTaskId(meta?.latestTaskId || "");
     try {
@@ -314,8 +322,7 @@ export default function App() {
       setProjects(next);
       await loadProjectMeta(next);
       setNewProjectName(""); setNewWorkspacePath(""); setNewProjectOpen(false);
-      setNav("projects");
-      await openProject(p.id, true);
+      await openProject(p.id);
     } catch (err: any) { setProjectError(err.message || "Failed to create project"); }
   };
 
@@ -351,7 +358,11 @@ export default function App() {
     setMode: (mode, label) => { setComposerMode(mode); flashNotice(`Mode: ${label}`); },
     setAutonomy: (on) => { setAutonomous(on); flashNotice(on ? "Full autonomy ON" : "Full autonomy OFF"); },
     insertText: (text) => { setComposerPrompt(text); setTimeout(() => composerInputRef.current?.focus(), 0); },
-    navigate: (target) => { setNav(target as Nav); setSidebarOpen(false); },
+    navigate: (target) => {
+      if (target.startsWith("settings#")) { setNav("settings"); setSettingsTab(target.slice("settings#".length) as SettingsTab); }
+      else setNav(target as Nav);
+      setSidebarOpen(false);
+    },
     newChat: () => { handleNewChat(); },
     clearInput: () => setComposerPrompt(""),
     showHelp: () => { ensureSkillsLoaded(); setSlashQuery(""); setSlashIndex(0); setSlashOpen(true); setTimeout(() => composerInputRef.current?.focus(), 0); },
@@ -457,8 +468,8 @@ export default function App() {
       }
       setSelectedProjectId(qc.projectId);
       setActiveConversationId(qc.conversationId);
-      setNav("projects");
-      setView("conversation");
+      setNav("workspace");
+      setSidebarOpen(false);
       setActiveTaskId("");
       setFocusedTaskId("");
       const msgs = await apiClient.listMessages(qc.conversationId);
@@ -494,10 +505,6 @@ export default function App() {
 
   // ── Derived ──────────────────────────────────────────────────────────────────
   const selectedProject = projects.find(p => p.id === selectedProjectId);
-  const activePresetStatus = presets.find(p => p.preset.id === activePreset);
-  const latestAssistant = [...messages].reverse().find(m => m.role === "assistant" && (m.provider || m.model));
-  const providerLabel = latestAssistant?.provider || activePresetStatus?.resolved?.providerId || providerStatus?.provider || "—";
-  const modelLabel = latestAssistant?.model || activePresetStatus?.resolved?.model || providerStatus?.model || "—";
 
   const filteredProjects = useMemo(() => {
     return projects.filter(p => {
@@ -508,12 +515,20 @@ export default function App() {
     }).sort((a, b) => ((projectMeta[a.id]?.updatedAt || a.createdAt) < (projectMeta[b.id]?.updatedAt || b.createdAt) ? 1 : -1));
   }, [projects, projectMeta, search, statusFilter]);
 
-  const inspectorOpen = nav === "projects" && !!selectedProjectId;
+  const inspectorOpen = nav === "workspace" && !!selectedProjectId && drawerOpen;
+  // No approval queue is wired yet, so this is honestly zero — which means the
+  // conditional "Approvals" nav entry stays hidden until there's something to act
+  // on (per the workspace-first IA: surface machinery only when relevant).
+  const pendingApprovals = 0;
+  // Models that can actually be routed to right now, grouped for the top-bar
+  // picker. Unavailable models are never offered (no silent fallback).
+  const availableModels = useMemo(() => models.filter(m => m.available), [models]);
 
   // ── Render helpers ────────────────────────────────────────────────────────────
-  const NavItem = ({ id, label, icon: Icon }: { id: Nav; label: string; icon: (p: any) => React.ReactElement }) => (
-    <button className={`nav-item ${nav === id ? "active" : ""}`} onClick={() => { setNav(id); if (id === "projects") setView("list"); setSidebarOpen(false); }}>
+  const NavItem = ({ id, label, icon: Icon, badge }: { id: Nav; label: string; icon: (p: any) => React.ReactElement; badge?: number }) => (
+    <button className={`nav-item ${nav === id ? "active" : ""}`} onClick={() => { setNav(id); setSidebarOpen(false); }}>
       <Icon className="ico" /> {label}
+      {badge ? <span className="nav-badge">{badge}</span> : null}
     </button>
   );
   const Status = ({ s }: { s: string }) => (<span className={`status ${s}`}><span className="dot" />{STATUS_LABEL[s] || s}</span>);
@@ -547,8 +562,7 @@ export default function App() {
           setProjects(nextProjects);
           await loadProjectMeta(nextProjects);
           if (projectId) {
-            setNav("projects");
-            await openProject(projectId, true);
+            await openProject(projectId);
           }
         }}
       />
@@ -568,38 +582,19 @@ export default function App() {
       </button>
       {/* Backdrop dismisses the drawer on narrow widths. */}
       {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
-      {/* Sidebar */}
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+      {/* Narrow navigation rail — three destinations only. The workspace dominates
+          the screen; everything else is contextual (drawer), a Settings tab, or a
+          slash command. "Approvals" appears only when something is pending. */}
+      <aside className={`sidebar rail ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <button className="nav-item nav-item--primary" onClick={() => { setNav("missions"); setSidebarOpen(false); }}>
-            <I.IconSend className="ico" /><span>New Mission</span>
+          <button className="nav-item nav-item--primary" onClick={handleNewChat}>
+            <I.IconSend className="ico" /><span>New chat</span>
           </button>
-          {/* Core, everyday destinations. */}
-          <NavItem id="projects" label="Missions" icon={I.IconRuns} />
-          <NavItem id="runs" label="Active Runs" icon={I.IconAgentFace} />
+          <NavItem id="workspace" label="Workspace" icon={I.IconAgentFace} />
+          <NavItem id="history" label="History" icon={I.IconRuns} />
           <NavItem id="settings" label="Settings" icon={I.IconSettings} />
-          <div className="nav-divider" />
-          {/* Secondary + not-yet-built destinations, collapsed by default to keep
-              the primary navigation focused. */}
-          <button className="nav-item nav-more" onClick={() => setMoreOpen(o => !o)} aria-expanded={moreOpen}>
-            <I.IconMore className="ico" /><span>More</span>
-            <I.IconChevron className="ico nav-more-chev" style={{ marginLeft: "auto", transform: moreOpen ? "rotate(90deg)" : undefined }} />
-          </button>
-          {moreOpen && (
-            <div className="nav-more-group">
-              <NavItem id="agents" label="Agent Studio" icon={I.IconAgents} />
-              <NavItem id="skills" label="Skills" icon={I.IconTools} />
-              <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
-              <NavItem id="files" label="Files" icon={I.IconFile} />
-              <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
-              <NavItem id="automations" label="Automations" icon={I.IconSettings} />
-              <NavItem id="approvals" label="Approvals" icon={I.IconShield} />
-              <NavItem id="system" label="System Health" icon={I.IconSettings} />
-              <NavItem id="download" label="Install from Source" icon={I.IconHelp} />
-              <NavItem id="help" label="Help" icon={I.IconHelp} />
-            </div>
-          )}
+          {pendingApprovals > 0 && <NavItem id="approvals" label="Approvals" icon={I.IconShield} badge={pendingApprovals} />}
         </nav>
         <div className="nav-spacer" />
         <div className="account">
@@ -611,102 +606,60 @@ export default function App() {
 
       {/* Content */}
       <div className="content">
-        {nav === "projects" && (view === "list" || !selectedProject) && (
-          <>
-            <div className="topbar">
-              <h1>Missions</h1>
-              <div className="spacer" />
-              <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
-            </div>
-            <div className="toolbar">
-              <div className="search">
-                <I.IconSearch className="ico" />
-                <input placeholder="Search missions…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search missions" />
-                <span className="kbd">⌘K</span>
-              </div>
-              <label className="select">
-                <I.IconFilter className="ico" style={{ width: 14, height: 14 }} />
-                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label="Filter by status">
-                  <option value="all">All Statuses</option>
-                  <option value="running">Running</option>
-                  <option value="completed">Completed</option>
-                  <option value="verified">Verified</option>
-                  <option value="failed">Failed</option>
-                  <option value="draft">Draft</option>
+        {nav === "workspace" && (
+          <div className="workspace">
+            {/* Top bar — project · provider/model · mode · status · settings.
+                Model and mode are always visible here, never buried in a menu. */}
+            <div className="ws-topbar">
+              <label className="ws-picker" title="Project">
+                <I.IconFile className="ico" />
+                <select value={selectedProjectId} onChange={e => { if (e.target.value) openProject(e.target.value); }} aria-label="Project">
+                  <option value="">Select a project…</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </label>
-            </div>
-            {projects.length === 0 ? (
-              <div className="empty">
-                <I.IconProjects className="empty-ico" />
-                <h3>No missions yet</h3>
-                <p>Create a mission by pointing Morrow at a local folder. The agent will run within your workspace and report evidence.</p>
-                <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <table className="ptable">
-                  <colgroup><col className="c-name" /><col className="c-agent" /><col className="c-status" /><col className="c-updated" /><col className="c-menu" /></colgroup>
-                  <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th><span className="sort">Updated <I.IconChevron className="ico" style={{ width: 13, height: 13 }} /></span></th><th /></tr></thead>
-                  <tbody>
-                    {filteredProjects.map(p => {
-                      const m = projectMeta[p.id] || { status: "draft", agent: "—", updatedAt: p.createdAt, latestTaskId: null };
-                      return (
-                        <tr key={p.id} className={selectedProjectId === p.id ? "selected" : ""} onClick={() => openProject(p.id, false)} onDoubleClick={() => openProject(p.id, true)}>
-                          <td>
-                            <div className="cell-name">
-                              <I.IconFile className="file-ico" />
-                              <div><div className="name-main">{p.name}</div><div className="name-sub">{p.workspacePath}</div></div>
-                            </div>
-                          </td>
-                          <td className="cell-agent">{m.agent}</td>
-                          <td><Status s={m.status} /></td>
-                          <td className="cell-updated">{fmtRelative(m.updatedAt)}</td>
-                          <td><button className="row-menu" aria-label="Open project" onClick={(e) => { e.stopPropagation(); openProject(p.id, true); }}><I.IconMore className="ico" style={{ width: 16, height: 16 }} /></button></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <div className="table-footer">{filteredProjects.length} of {projects.length} mission{projects.length === 1 ? "" : "s"}</div>
-              </div>
-            )}
-          </>
-        )}
-
-        {nav === "projects" && view === "conversation" && selectedProject && (
-          <div className="convo">
-            <div className="convo-head">
-              <button className="back" onClick={() => setView("list")} aria-label="Back to projects"><I.IconBack className="ico" style={{ width: 16, height: 16 }} /></button>
-              <div className="workspace-header">
-                <h3>{selectedProject.name} Workspace</h3>
-                <p className="path-display">Path: <span className="path-truncate">{selectedProject.workspacePath}</span></p>
-              </div>
-              <div className="convo-head-meta">
-                <span className={`meta-chip ${providerStatus?.configured ? "ok" : "warn"}`}>{providerStatus?.configured ? `${providerLabel} · ${modelLabel}` : "No provider"}</span>
-                <button className="btn btn-ghost" onClick={handleInspect}>Inspect workspace</button>
-              </div>
-            </div>
-            <div className="conv-sub-toolbar">
-              <div className="mode-switch" role="group" aria-label="Execution mode">
+              <button className="btn btn-ghost btn-sm" onClick={() => setNewProjectOpen(true)} title="New project" aria-label="New project"><I.IconPlus className="ico" /></button>
+              <div className="ws-spacer" />
+              <ModelPicker
+                providers={providers}
+                models={availableModels}
+                activePreset={activePreset}
+                overrideProvider={overrideProvider}
+                overrideModel={overrideModel}
+                onAuto={() => { setOverrideProvider(""); setOverrideModel(""); flashNotice("Model override cleared — using preset routing"); }}
+                onPick={(prov, model, label) => { setOverrideProvider(prov); setOverrideModel(model); flashNotice(`Model set: ${label}`); }}
+              />
+              <div className="mode-switch ws-mode" role="group" aria-label="Execution mode">
                 {(["read-only", "plan-only", "agent"] as ComposerMode[]).map(mode => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={`mode-pill ${composerMode === mode ? "selected" : ""}`}
-                    onClick={() => setComposerMode(mode)}
-                    title={MODE_HINT[mode]}
-                  >
-                    {MODE_LABEL[mode]}
-                  </button>
+                  <button key={mode} type="button" className={`mode-pill ${composerMode === mode ? "selected" : ""}`} onClick={() => setComposerMode(mode)} title={MODE_HINT[mode]}>{MODE_LABEL[mode]}</button>
                 ))}
               </div>
-              <div className="toolbar-divider" aria-hidden="true" />
-              {presets.map(ps => (
-                <button key={ps.preset.id} className={`preset-chip ${activePreset === ps.preset.id ? "selected" : ""} ${!ps.available ? "unavailable" : ""}`} onClick={() => setActivePreset(ps.preset.id)} title={ps.available ? ps.preset.description : ps.unavailableReason || ""}>{ps.preset.label}</button>
-              ))}
+              <span className={`ws-status ${activeTaskId ? "running" : "idle"}`}><span className="dot" />{activeTaskId ? "Running" : "Ready"}</span>
+              {selectedProject && (
+                <button className={`ws-drawer-toggle ${drawerOpen ? "on" : ""}`} onClick={() => setDrawerOpen(o => !o)} title="Toggle context drawer" aria-pressed={drawerOpen} aria-label="Toggle context drawer"><I.IconKnowledge className="ico" /></button>
+              )}
+              <button className="ws-gear" onClick={() => setNav("settings")} title="Settings" aria-label="Settings"><I.IconSettings className="ico" /></button>
             </div>
-            {taskError && <div className="error-message" role="alert" style={{ margin: "10px 22px 0" }}>{taskError}</div>}
+
+            {!selectedProject ? (
+              <div className="chat-empty ws-start">
+                <I.IconAgentFace className="empty-ico" />
+                <h3>Start working</h3>
+                <p>Pick a project above, or create one, then give Morrow a goal — it will plan, act, and report right here. No page-hopping.</p>
+                <div className="ws-start-actions">
+                  <button className="btn btn-primary" onClick={() => setNewProjectOpen(true)}><I.IconPlus className="ico" /> New Project</button>
+                  <button className="btn btn-ghost" onClick={handleNewChat}>Quick chat (scratch workspace)</button>
+                </div>
+              </div>
+            ) : (
+              <div className="convo ws-convo">
+                <div className="workspace-header ws-convo-head">
+                  <h3>{selectedProject.name} Workspace</h3>
+                  <p className="path-display">Path: <span className="path-truncate">{selectedProject.workspacePath}</span></p>
+                  <div className="ws-spacer" />
+                  <button className="btn btn-ghost btn-sm" onClick={handleInspect}>Inspect workspace</button>
+                </div>
+                {taskError && <div className="error-message" role="alert" style={{ margin: "10px 22px 0" }}>{taskError}</div>}
             <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
               {messages.length === 0 ? (
                 <div className="chat-empty">
@@ -810,11 +763,21 @@ export default function App() {
                 </div>
               </div>
             </form>
+              </div>
+            )}
           </div>
         )}
 
-        {nav === "runs" && (
-          <RunsView projects={projects} projectMeta={projectMeta} onOpen={(id) => { setNav("projects"); openProject(id, false); }} />
+        {nav === "history" && (
+          <HistoryView
+            projects={projects} projectMeta={projectMeta}
+            filtered={filteredProjects}
+            search={search} setSearch={setSearch}
+            statusFilter={statusFilter} setStatusFilter={setStatusFilter}
+            selectedProjectId={selectedProjectId}
+            onOpen={(id) => openProject(id)}
+            onNewProject={() => setNewProjectOpen(true)}
+          />
         )}
 
         {nav === "settings" && (
@@ -822,10 +785,12 @@ export default function App() {
             tab={settingsTab} setTab={setSettingsTab}
             providers={providers} models={models} presets={presets} oauthFindings={oauthFindings}
             providerStatus={providerStatus}
+            projects={projects}
             selectedProject={selectedProject} memoryEntries={memoryEntries}
             newMemoryContent={newMemoryContent} setNewMemoryContent={setNewMemoryContent}
             onAddMemory={handleAddMemory} onToggleMemory={handleToggleMemory} onDeleteMemory={handleDeleteMemory}
             onResetOnboarding={handleResetOnboarding}
+            onOpenProject={(id) => openProject(id)}
             onProvidersChanged={async () => {
               setProviders(await apiClient.listProviders());
               setModels(await apiClient.listModels());
@@ -834,34 +799,18 @@ export default function App() {
           />
         )}
 
-        {nav === "agents" && (
-          <AgentsPanel
-            selectedProject={selectedProject}
-            projects={projects}
-            onNavigateToProject={(id) => { setSelectedProjectId(id); setNav("projects"); setView("list"); }}
-          />
-        )}
-
-        {nav === "skills" && <SkillsControlCenter />}
-        {nav === "missions" && <MissionControl />}
-        {nav === "system" && <SystemHealth />}
-        {nav === "download" && <DownloadPage />}
-
-        {["browser", "files", "memory", "automations", "approvals", "help"].includes(nav) && (
-          <PlaceholderView nav={nav} />
-        )}
+        {nav === "approvals" && <PlaceholderView nav="approvals" />}
       </div>
 
-      {/* Inspector */}
+      {/* Context drawer — touched files, diffs, plan, agents, run metadata for the
+          active run. Contextual: shown only in the workspace, dismissible. */}
       {inspectorOpen && selectedProject && (
-        <aside className="inspector" aria-label="Project inspector">
+        <aside className="inspector" aria-label="Context drawer">
           <div className="insp-head">
             <div className="insp-title-row">
-              <h3 className="insp-title">{selectedProject.name}</h3>
+              <h3 className="insp-title">Context · {selectedProject.name}</h3>
               <div className="insp-actions">
-                <button aria-label="Pin"><I.IconPin className="ico" /></button>
-                <button aria-label="More"><I.IconMore className="ico" /></button>
-                <button aria-label="Close inspector" onClick={() => setSelectedProjectId("")}><I.IconClose className="ico" /></button>
+                <button aria-label="Close context drawer" onClick={() => setDrawerOpen(false)}><I.IconClose className="ico" /></button>
               </div>
             </div>
             <div className="insp-sub">
@@ -1004,7 +953,7 @@ export default function App() {
                   <li><span className="kk">Workspace</span><span className="vv" style={{ wordBreak: "break-all" }}>{selectedProject.workspacePath}</span></li>
                   <li><span className="kk">Created</span><span className="vv">{new Date(selectedProject.createdAt).toLocaleString()}</span></li>
                 </ul>
-                <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => openProject(selectedProject.id, true)}>Open conversation</button>
+                <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => openProject(selectedProject.id)}>Open conversation</button>
               </div>
             )}
           </div>
@@ -1067,30 +1016,117 @@ function Timeline({ events, running }: { events: TaskEvent[]; running: boolean }
   );
 }
 
-// ── Runs view ──────────────────────────────────────────────────────────────────
-function RunsView({ projects, projectMeta, onOpen }: { projects: Project[]; projectMeta: Record<string, ProjectMeta>; onOpen: (id: string) => void }) {
-  const rows = projects.filter(p => projectMeta[p.id]?.latestTaskId).sort((a, b) => ((projectMeta[a.id]?.updatedAt || "") < (projectMeta[b.id]?.updatedAt || "") ? 1 : -1));
+// ── Model picker (top-bar) ──────────────────────────────────────────────────────
+// Compact provider/model selector, grouped by provider, offering ONLY models that
+// are available right now. "Auto" hands routing back to the active preset. Never
+// offers an unavailable model, so it can never silently fall back.
+function ModelPicker({ providers, models, activePreset, overrideProvider, overrideModel, onAuto, onPick }: {
+  providers: ProviderStatus[]; models: ModelStatus[]; activePreset: string;
+  overrideProvider: string; overrideModel: string;
+  onAuto: () => void; onPick: (providerId: string, model: string, label: string) => void;
+}) {
+  const value = overrideModel ? `${overrideProvider}::${overrideModel}` : "";
+  const byProvider = new Map<string, ModelStatus[]>();
+  for (const m of models) {
+    const list = byProvider.get(m.model.providerId) || [];
+    list.push(m); byProvider.set(m.model.providerId, list);
+  }
+  const providerLabel = (id: string) => providers.find(p => p.id === id)?.label || id;
   return (
-    <>
-      <div className="topbar"><h1>Runs</h1></div>
-      {rows.length === 0 ? (
-        <div className="empty"><I.IconRuns className="empty-ico" /><h3>No runs yet</h3><p>Runs appear here once you ask an agent or inspect a workspace.</p></div>
+    <label className="ws-model" title="Provider & model — only live models are listed">
+      <I.IconAgentFace className="ico" />
+      <select
+        aria-label="Provider and model"
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (!v) { onAuto(); return; }
+          const [prov, model] = v.split("::");
+          const label = `${providerLabel(prov)} · ${models.find(m => m.model.id === model && m.model.providerId === prov)?.model.label || model}`;
+          onPick(prov, model, label);
+        }}
+      >
+        <option value="">Auto · preset: {activePreset}</option>
+        {[...byProvider.entries()].map(([prov, list]) => (
+          <optgroup key={prov} label={providerLabel(prov)}>
+            {list.map(m => <option key={`${prov}::${m.model.id}`} value={`${prov}::${m.model.id}`}>{m.model.label}</option>)}
+          </optgroup>
+        ))}
+        {models.length === 0 && <option value="" disabled>No live models — configure a provider in Settings</option>}
+      </select>
+    </label>
+  );
+}
+
+// ── History view (merged Missions + Runs) ───────────────────────────────────────
+function HistoryView({ projects, projectMeta, filtered, search, setSearch, statusFilter, setStatusFilter, selectedProjectId, onOpen, onNewProject }: {
+  projects: Project[]; projectMeta: Record<string, ProjectMeta>; filtered: Project[];
+  search: string; setSearch: (s: string) => void;
+  statusFilter: string; setStatusFilter: (s: string) => void;
+  selectedProjectId: string;
+  onOpen: (id: string) => void; onNewProject: () => void;
+}) {
+  return (
+    <div className="history-view">
+      <div className="topbar">
+        <h1>History</h1>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={onNewProject}><I.IconPlus className="ico" /> New Project</button>
+      </div>
+      <div className="toolbar">
+        <div className="search">
+          <I.IconSearch className="ico" />
+          <input placeholder="Search projects & runs…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search history" />
+          <span className="kbd">⌘K</span>
+        </div>
+        <label className="select">
+          <I.IconFilter className="ico" style={{ width: 14, height: 14 }} />
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label="Filter by status">
+            <option value="all">All Statuses</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="verified">Verified</option>
+            <option value="failed">Failed</option>
+            <option value="draft">Draft</option>
+          </select>
+        </label>
+      </div>
+      {projects.length === 0 ? (
+        <div className="empty">
+          <I.IconProjects className="empty-ico" />
+          <h3>No history yet</h3>
+          <p>Open a project in the Workspace and give Morrow a goal. Past runs and sessions show up here, ready to resume.</p>
+          <button className="btn btn-primary" onClick={onNewProject}><I.IconPlus className="ico" /> New Project</button>
+        </div>
       ) : (
         <div className="table-wrap">
           <table className="ptable">
-            <thead><tr><th>Project</th><th>Agent</th><th>Status</th><th>Updated</th></tr></thead>
-            <tbody>{rows.map(p => { const m = projectMeta[p.id]!; return (
-              <tr key={p.id} onClick={() => onOpen(p.id)}>
-                <td><div className="cell-name"><I.IconRuns className="file-ico" /><div className="name-main">{p.name}</div></div></td>
-                <td className="cell-agent">{m.agent}</td>
-                <td><span className={`status ${m.status}`}><span className="dot" />{STATUS_LABEL[m.status] || m.status}</span></td>
-                <td className="cell-updated">{fmtRelative(m.updatedAt)}</td>
-              </tr>
-            ); })}</tbody>
+            <colgroup><col className="c-name" /><col className="c-agent" /><col className="c-status" /><col className="c-updated" /><col className="c-menu" /></colgroup>
+            <thead><tr><th>Name</th><th>Agent</th><th>Status</th><th><span className="sort">Updated <I.IconChevron className="ico" style={{ width: 13, height: 13 }} /></span></th><th /></tr></thead>
+            <tbody>
+              {filtered.map(p => {
+                const m = projectMeta[p.id] || { status: "draft", agent: "—", updatedAt: p.createdAt, latestTaskId: null };
+                return (
+                  <tr key={p.id} className={selectedProjectId === p.id ? "selected" : ""} onClick={() => onOpen(p.id)}>
+                    <td>
+                      <div className="cell-name">
+                        <I.IconFile className="file-ico" />
+                        <div><div className="name-main">{p.name}</div><div className="name-sub">{p.workspacePath}</div></div>
+                      </div>
+                    </td>
+                    <td className="cell-agent">{m.agent}</td>
+                    <td><span className={`status ${m.status}`}><span className="dot" />{STATUS_LABEL[m.status] || m.status}</span></td>
+                    <td className="cell-updated">{fmtRelative(m.updatedAt)}</td>
+                    <td><button className="row-menu" aria-label="Resume in workspace" onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}><I.IconBack className="ico" style={{ width: 16, height: 16, transform: "rotate(180deg)" }} /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
           </table>
+          <div className="table-footer">{filtered.length} of {projects.length} project{projects.length === 1 ? "" : "s"}</div>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -1118,22 +1154,39 @@ function SettingsView(props: {
   tab: SettingsTab; setTab: (t: SettingsTab) => void;
   providers: ProviderStatus[]; models: ModelStatus[]; presets: PresetStatus[]; oauthFindings: OAuthFinding[];
   providerStatus: { configured: boolean; provider: string; model: string } | null;
+  projects: Project[];
   selectedProject?: Project; memoryEntries: MemoryEntry[];
   newMemoryContent: string; setNewMemoryContent: (s: string) => void;
   onAddMemory: () => void; onToggleMemory: (id: string, e: boolean) => void; onDeleteMemory: (id: string) => void;
   onResetOnboarding: () => void;
+  onOpenProject: (id: string) => void;
   onProvidersChanged: () => Promise<void>;
 }) {
-  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, selectedProject, memoryEntries, onResetOnboarding, onProvidersChanged } = props;
+  const { tab, setTab, providers, models, presets, oauthFindings, providerStatus, projects, selectedProject, memoryEntries, onResetOnboarding, onOpenProject, onProvidersChanged } = props;
   return (
     <div className="placeholder-view">
       <div className="topbar"><h1>Settings</h1></div>
       <div className="settings">
         <div className="settings-tabs" role="tablist">
-          {([["providers", "Providers"], ["models", "Models"], ["presets", "Presets"], ["privacy", "Privacy"], ["permissions", "Tool Permissions"], ["data", "Data & Memory"], ["diagnostics", "Diagnostics"]] as const).map(([k, l]) => (
+          {([["providers", "Providers"], ["models", "Models"], ["presets", "Presets"], ["agents", "Agents"], ["skills", "Skills"], ["automations", "Automations"], ["memory", "Memory"], ["privacy", "Privacy"], ["permissions", "Tool Permissions"], ["diagnostics", "Diagnostics"]] as const).map(([k, l]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={`settings-tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
+
+        {tab === "agents" && (
+          <div className="settings-panel settings-embed">
+            <AgentsPanel selectedProject={selectedProject} projects={projects} onNavigateToProject={onOpenProject} />
+          </div>
+        )}
+        {tab === "skills" && (
+          <div className="settings-panel settings-embed"><SkillsControlCenter /></div>
+        )}
+        {tab === "automations" && (
+          <div className="settings-panel"><div className="card">
+            <h3>Automations</h3>
+            <p className="muted">Scheduled and unattended runs. The cron scheduler foundation exists; the management UI lands in a future release. Automations run with frozen permissions and a full audit trail — they never silently widen access.</p>
+          </div></div>
+        )}
 
         {tab === "providers" && (
           <div className="settings-panel">
@@ -1204,9 +1257,9 @@ function SettingsView(props: {
           </div></div>
         )}
 
-        {tab === "data" && (
+        {tab === "memory" && (
           <div className="settings-panel">
-            <div className="card"><h3>Project Memory</h3><p className="muted">Deterministic, project-isolated memory for <strong>{selectedProject?.name ?? "the selected project"}</strong>. Each entry has a source and timestamp, can be disabled, and never crosses projects.</p>
+            <div className="card"><h3>Project Memory</h3><p className="muted">Deterministic, project-isolated memory for <strong>{selectedProject?.name ?? "the selected project"}</strong>. Each entry has a source and timestamp, can be disabled, and never crosses projects. Memory operates silently during runs — this is the only place it's exposed.</p>
               {selectedProject ? (
                 <>
                   <div className="memory-add">
@@ -1244,6 +1297,10 @@ function SettingsView(props: {
               <h3>Onboarding Setup</h3>
               <p className="muted">Reset your onboarding status and rerun the guided Morrow setup wizard at any time.</p>
               <button className="btn" onClick={onResetOnboarding} style={{ marginTop: 10 }}>Rerun Guided Onboarding</button>
+            </div>
+            <div className="card settings-embed" style={{ marginTop: 16 }}>
+              <h3>System Health</h3>
+              <SystemHealth />
             </div>
           </div>
         )}
