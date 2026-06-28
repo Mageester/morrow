@@ -31,6 +31,38 @@ import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
+ * Agent mode means "do the work." This mandate is appended to the system prompt
+ * only in agent mode. It is the principled half of the execution fix; the
+ * deferral gate in the turn loop is the safety net that catches a model which
+ * ends a turn on a recommendation instead of executing.
+ */
+const AGENT_EXECUTION_MANDATE = `AGENT MODE — EXECUTION MANDATE
+You are in Agent mode. Your job is to DO the work, not to describe what could be done.
+When you identify a concrete, in-scope problem, you MUST fix it: apply the change with propose_patch and verify it with run_command (run the project's tests or build). Then report exactly what changed, what you ran, and the result.
+propose_patch APPLIES the change through the approval policy — use it to make the fix, not merely to suggest one.
+Do NOT end your turn by asking whether to proceed. Never finish with "Would you like me to fix it?", "I can fix this if you want", "Should I continue?", or any offer-without-action. In Agent mode, proceeding IS the default.
+You may stop without executing ONLY when: an approval is genuinely required (request it via the tool, do not ask in prose), the action is unsafe, required information or credentials are missing, or the user's request is explicitly analysis-only. If you must stop, state the specific blocker — never a vague offer to help.`;
+
+/** System nudge injected when an agent turn ends on a deferral without executing. */
+const AGENT_EXECUTION_NUDGE = `You stopped to ask whether to proceed, but you are in Agent mode with the authority to act. Do not ask — execute now. Apply the fix you identified with propose_patch and verify it with run_command. If (and only if) a genuine blocker prevents this, name the specific blocker instead.`;
+
+/** Language that offers action instead of taking it ("would you like me to fix it?"). */
+const DEFERRAL_RE = /\b(would you like|do you want(?: me)?|shall i|should i (?:proceed|continue|go ahead|fix|apply)|let me know if you|if you(?:'d| would| want)| i can (?:fix|apply|implement|make|update|change|add|create)| i could (?:fix|apply|implement)|happy to (?:fix|apply|help)|want me to|ready to (?:apply|implement)|please confirm|with your approval)\b/i;
+
+/** Genuine blockers that legitimately end an agent turn — never nudge past these. */
+const BLOCKER_RE = /\b(need(?:s|ed)? (?:more|additional|the|further) (?:information|details|context|credentials|access)|missing (?:information|credentials|an? (?:api )?key)|cannot (?:proceed|access|continue)|unable to|do(?:es)?n'?t have access|requires? credentials|analysis[- ]only|read[- ]only mode|awaiting approval|pending approval)\b/i;
+
+/**
+ * True when an agent turn ended with text that defers action ("I can fix it if
+ * you want") rather than executing — and there's no genuine blocker explaining
+ * the stop. Used to force one more execution turn instead of finishing.
+ */
+export function isDeferralWithoutExecution(text: string): boolean {
+  if (!text) return false;
+  return DEFERRAL_RE.test(text) && !BLOCKER_RE.test(text);
+}
+
+/**
  * Find installed skills relevant to a prompt by scoring each skill's
  * id/name/description against the prompt's keywords. Scans the same directories
  * the find_skill tool uses (workspace, MORROW_HOME, bundled MORROW_SKILLS_DIR)
@@ -431,12 +463,17 @@ export async function executeAgentChatTask({
     role: "system",
     content: `You are Morrow, a secure personal AI coding assistant.
 You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
-You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
+You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and modify files with propose_patch.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
-You must run test/verification commands using run_command, and propose file modifications using propose_patch.
+Run test/verification commands using run_command, and make file modifications using propose_patch.
 Morrow ships installed skills (reusable expert workflows). They ARE available — never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
+
+  // Agent mode carries an explicit execution mandate: do the work, don't offer to.
+  if (agentMode === "agent") {
+    chatMessages.push({ role: "system", content: AGENT_EXECUTION_MANDATE });
+  }
 
   // Deterministically surface installed skills relevant to this request so the
   // agent reliably uses them, rather than depending on the model deciding to
@@ -764,6 +801,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
 
   let turn = 0;
   let noProgressTurns = 0;
+  // Execution gate state: did this run actually apply a change or run a command,
+  // and how many times have we nudged a deferring agent to execute? Bounded so a
+  // model that keeps refusing can't spin forever.
+  let appliedWriteOrExec = false;
+  let executionNudges = 0;
+  const MAX_EXECUTION_NUDGES = 2;
   const seenToolSignatures = new Set<string>();
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
@@ -1428,6 +1471,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           completedAt: now()
         });
         if (isSuccess) completedToolSignatures.push(toolSignature);
+        // A successful patch or command is real execution — it satisfies the
+        // agent-mode mandate and disarms the deferral gate.
+        if (isSuccess && (tc.name === "propose_patch" || tc.name === "run_command")) appliedWriteOrExec = true;
         let summary = isSuccess ? "completed" : "failed";
         try {
           const parsed = JSON.parse(resultStr) as { exitCode?: number | null; stdout?: string; stderr?: string; error?: string };
@@ -1453,6 +1499,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       }
       transitionAgentState("observing", { toolCount: currentToolCalls.length });
     } else {
+      // No more tool calls. In Agent mode, refuse to finish on a recommendation:
+      // if the model deferred action ("I can fix it if you want") instead of
+      // executing, and nothing genuinely blocks it, force one more turn with an
+      // explicit mandate to act. This is the safety net behind the system prompt.
+      if (
+        agentMode === "agent" &&
+        !appliedWriteOrExec &&
+        executionNudges < MAX_EXECUTION_NUDGES &&
+        isDeferralWithoutExecution(responseContent)
+      ) {
+        executionNudges++;
+        event("agent.execution_nudge", { attempt: executionNudges, reason: "deferred_without_execution" });
+        chatMessages.push({ role: "assistant", content: responseContent });
+        chatMessages.push({ role: "system", content: AGENT_EXECUTION_NUDGE });
+        continue;
+      }
       // No more tool calls, we're done
       completedWithoutMoreTools = true;
       break;
