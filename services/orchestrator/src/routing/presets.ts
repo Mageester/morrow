@@ -15,7 +15,7 @@ export const PRESETS: Preset[] = [
     providerOrder: ["anthropic", "openai", "gemini", "openrouter", "deepseek", "ollama"],
     modelPreferences: {
       anthropic: ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229"],
-      openai: ["gpt-4o", "gpt-4.1"],
+      openai: ["gpt-5.5", "gpt-5.4"],
       gemini: ["gemini-1.5-pro"],
       openrouter: ["anthropic/claude-3.5-sonnet"],
       deepseek: ["deepseek-reasoner"],
@@ -41,7 +41,7 @@ export const PRESETS: Preset[] = [
     description: "A sensible default trading quality, speed, and cost.",
     providerOrder: ["openai", "anthropic", "gemini", "openrouter", "deepseek", "ollama"],
     modelPreferences: {
-      openai: ["gpt-4o-mini", "gpt-4o"],
+      openai: ["gpt-5.4-mini", "gpt-5.4"],
       anthropic: ["claude-3-5-sonnet-20241022"],
       gemini: ["gemini-1.5-flash"],
       openrouter: ["openrouter/auto"],
@@ -68,7 +68,7 @@ export const PRESETS: Preset[] = [
     description: "Lowest-latency models for quick answers.",
     providerOrder: ["openai", "gemini", "deepseek", "openrouter", "anthropic", "ollama"],
     modelPreferences: {
-      openai: ["gpt-4o-mini"],
+      openai: ["gpt-5.4-mini"],
       gemini: ["gemini-1.5-flash"],
       deepseek: ["deepseek-chat"],
       openrouter: ["google/gemini-flash-1.5"],
@@ -97,7 +97,7 @@ export const PRESETS: Preset[] = [
     modelPreferences: {
       deepseek: ["deepseek-chat"],
       gemini: ["gemini-1.5-flash"],
-      openai: ["gpt-4o-mini"],
+      openai: ["gpt-5.4-mini"],
       openrouter: ["google/gemini-flash-1.5"],
       ollama: ["llama3.1"],
       anthropic: ["claude-3-5-haiku-20241022"],
@@ -123,7 +123,7 @@ export const PRESETS: Preset[] = [
     providerOrder: ["anthropic", "openai", "deepseek", "openrouter", "gemini", "ollama"],
     modelPreferences: {
       anthropic: ["claude-3-5-sonnet-20241022"],
-      openai: ["gpt-4o", "gpt-4.1"],
+      openai: ["gpt-5.5", "gpt-5.4"],
       deepseek: ["deepseek-reasoner", "deepseek-chat"],
       openrouter: ["anthropic/claude-3.5-sonnet"],
       gemini: ["gemini-1.5-pro"],
@@ -151,7 +151,7 @@ export const PRESETS: Preset[] = [
     modelPreferences: {
       gemini: ["gemini-1.5-pro"],
       anthropic: ["claude-3-5-sonnet-20241022"],
-      openai: ["gpt-4o"],
+      openai: ["gpt-5.4"],
       openrouter: ["openrouter/auto"],
       deepseek: ["deepseek-reasoner"],
       ollama: ["llama3.1"],

@@ -102,7 +102,7 @@ export class CodexProvider implements AiProvider {
     const baseUrl = this.config.baseUrl || CODEX_BASE_URL;
     const { instructions, input } = this.buildRequest(messages);
     // The Codex backend only accepts its own model slugs (gpt-5.x / *codex*).
-    // Routing can hand us a standard api.openai.com id (e.g. gpt-4o-mini) as both
+    // Routing can hand us a standard api.openai.com id (e.g. gpt-5.4-mini) as both
     // the requested model AND the configured default, so pick the first
     // Codex-shaped candidate and otherwise fall back to the hardcoded default.
     const model = [options.model, this.config.defaultModel].find(isCodexModel) || DEFAULT_CODEX_MODEL;

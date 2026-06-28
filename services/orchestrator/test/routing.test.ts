@@ -2,7 +2,31 @@ import { describe, it, expect } from "vitest";
 import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel } from "../src/provider/registry.js";
 import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
+import { listModels } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
+
+describe("Model registry currency", () => {
+  it("exposes the current OpenAI and DeepSeek lineups and drops retired ids", () => {
+    const ids = new Set(listModels().map((m) => m.id));
+    for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"]) {
+      expect(ids.has(id), `expected model ${id} to be present`).toBe(true);
+    }
+    for (const retired of ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"]) {
+      expect(ids.has(retired), `retired model ${retired} should be gone`).toBe(false);
+    }
+  });
+
+  it("only references known model ids in presets (no dangling routing targets)", () => {
+    const ids = new Set(listModels().map((m) => m.id));
+    for (const preset of listPresets()) {
+      for (const [, models] of Object.entries(preset.modelPreferences)) {
+        for (const m of models as string[]) {
+          expect(ids.has(m), `preset ${preset.id} references unknown model ${m}`).toBe(true);
+        }
+      }
+    }
+  });
+});
 
 describe("Provider registry", () => {
   it("reports nothing configured with an empty environment", () => {
@@ -45,7 +69,7 @@ describe("Provider registry", () => {
   });
 
   it("exposes default models for known providers", () => {
-    expect(getProviderDefaultModel("openai", {})).toBe("gpt-4o-mini");
+    expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.4-mini");
     expect(getProviderDefaultModel("anthropic", {})).toBe("claude-3-5-sonnet-20241022");
   });
 });
@@ -57,7 +81,7 @@ describe("Preset router", () => {
     if (res.ok) {
       expect(res.decision.providerId).toBe("openai");
       expect(res.decision.fallbackUsed).toBe(false);
-      expect(res.decision.model).toBe("gpt-4o-mini");
+      expect(res.decision.model).toBe("gpt-5.4-mini");
     }
   });
 

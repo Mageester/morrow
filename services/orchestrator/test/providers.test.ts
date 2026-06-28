@@ -57,7 +57,7 @@ describe("OpenAI-compatible provider normalization", () => {
         `data: [DONE]\n\n`,
       ])
     );
-    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "sk-secret-key", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", includeUsage: true });
+    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "sk-secret-key", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini", includeUsage: true });
     const chunks = await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
 
     expect(chunks.find((c) => c.type === "text")?.text).toBe("Hello");

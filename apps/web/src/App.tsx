@@ -1377,7 +1377,7 @@ function AgentsPanel({ selectedProject, projects }: AgentsPanelProps) {
             </div>
             <div className="field">
               <label>Model Override (optional)</label>
-              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="claude-sonnet-4, gpt-4o..." />
+              <input value={formModelOverride} onChange={e => setFormModelOverride(e.target.value)} placeholder="claude-sonnet-4, gpt-5.4..." />
             </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost" onClick={() => setShowCreate(false)}>Cancel</button>
