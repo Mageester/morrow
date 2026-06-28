@@ -62,6 +62,33 @@ test('survives a mid-session reload without runtime errors', async ({ page }) =>
   expect(problems, problems.join('\n')).toEqual([]);
 });
 
+test('inner panels scroll instead of overflowing the viewport (trapped-scroll regression)', async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 560 }); // short enough to force overflow
+  await page.goto('/');
+  await page.locator('.nav-item').filter({ hasText: 'Settings' }).first().click();
+
+  // The .content grid cell must stay bounded to the viewport; previously it
+  // defaulted to min-height:auto and grew past 100dvh, so inner overflow-y:auto
+  // panels never scrolled and their content was clipped by overflow:hidden.
+  const content = page.locator('.content');
+  const metrics = await content.evaluate((el) => ({
+    clientH: el.clientHeight,
+    win: window.innerHeight,
+  }));
+  expect(metrics.clientH).toBeLessThanOrEqual(metrics.win + 1);
+
+  // The settings panel must be a real scroll container and actually move.
+  const settings = page.locator('.settings');
+  const moved = await settings.evaluate((el) => {
+    if (el.scrollHeight <= el.clientHeight + 2) return null; // not overflowing; nothing to prove
+    const before = el.scrollTop;
+    el.scrollTop = 99999;
+    return el.scrollTop > before;
+  });
+  // Either it wasn't tall enough to overflow (null) or it scrolled — never stuck.
+  expect(moved === null || moved === true).toBe(true);
+});
+
 test('modals are scroll-bounded so they cannot trap content off-screen', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 360 }); // deliberately short
   await page.goto('/');

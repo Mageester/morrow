@@ -172,7 +172,13 @@ button { font: inherit; color: inherit; }
 
 /* ---- Content region ------------------------------------------------------ */
 
-.content { display: flex; flex-direction: column; min-width: 0; background: var(--bg-content); }
+/* min-height: 0 is essential: as a grid item .content defaults to min-height:auto,
+   which lets it grow past the 100dvh row to fit its children. That left every
+   inner `flex:1; overflow-y:auto` region (chat, settings, models, agents…)
+   unbounded, so they never scrolled and their overflow was clipped by
+   .morrow-app{overflow:hidden} — the "scroll is trapped everywhere" bug.
+   Bounding .content to its row restores scrolling in all inner panels. */
+.content { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-content); }
 
 .topbar {
   display: flex; align-items: center; gap: 14px;
