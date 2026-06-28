@@ -29,7 +29,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const err = await res.json().catch(() => null);
     throw new Error(err?.error?.message || `Request failed: ${res.status}`);
   }
-  return res.json();
+  // Many endpoints (cancel, deletes) legitimately answer 204 No Content or an
+  // empty body. Calling res.json() on those throws "Unexpected end of JSON
+  // input", which surfaced as a spurious console error on every Stop/delete even
+  // though the action succeeded. Tolerate empty bodies and return undefined.
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export const apiClient = {
