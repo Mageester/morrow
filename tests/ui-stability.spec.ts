@@ -53,6 +53,41 @@ test('cancelling a run does not emit a console error (empty-body parse regressio
   }
 });
 
+test('slash-command palette opens, predicts, applies a mode, and dismisses', async ({ page }) => {
+  const problems = collectProblems(page);
+  await page.goto('/');
+  await page.locator('.nav-item').filter({ hasText: 'New Chat' }).first().click();
+  const composer = page.locator('.composer-input');
+  await expect(composer).toBeVisible();
+
+  // Typing "/" opens the palette with grouped commands.
+  await composer.click();
+  await composer.fill('/');
+  await expect(page.locator('.slash-menu')).toBeVisible();
+  expect(await page.locator('.slash-item').count()).toBeGreaterThan(0);
+
+  // Predictive filtering narrows as you type.
+  await composer.fill('/plan');
+  await expect(page.locator('.slash-item.active')).toContainText('/plan');
+  // Enter applies the command (does not send a message) and shows a mode chip.
+  await composer.press('Enter');
+  await expect(page.locator('.composer-chip')).toContainText('Plan-only');
+  expect(await composer.inputValue()).toBe('');
+
+  // Skills are offered (bundled skill registry, lazy-loaded on first palette use).
+  await composer.fill('/skill');
+  await expect.poll(() => page.locator('.slash-item .slash-cmd').count()).toBeGreaterThan(0);
+  await expect(page.locator('.slash-item').first()).toContainText('/skill');
+
+  // Escape closes the palette without sending.
+  await composer.fill('/model');
+  await expect(page.locator('.slash-menu')).toBeVisible();
+  await composer.press('Escape');
+  await expect(page.locator('.slash-menu')).toBeHidden();
+
+  expect(problems, problems.join('\n')).toEqual([]);
+});
+
 test('survives a mid-session reload without runtime errors', async ({ page }) => {
   const problems = collectProblems(page);
   await page.goto('/');

@@ -41,6 +41,11 @@ const PRESETS = [
 ];
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', kind: 'api-key', configured: true, available: true, endpointType: 'default', endpointHost: 'api.openai.com', authStatus: 'configured', capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: true, local: false }, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini', note: null, setupHint: null },
+  { id: 'gemini', label: 'Gemini', kind: 'api-key', configured: false, available: false, endpointType: 'default', endpointHost: 'generativelanguage.googleapis.com', authStatus: 'missing', capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: false, local: false }, models: ['gemini-1.5-pro'], defaultModel: null, note: null, setupHint: null },
+];
+const MODELS = [
+  { available: true, model: { id: 'gpt-4o-mini', providerId: 'openai', label: 'GPT-4o mini', speedClass: 'fast', costClass: 'low' } },
+  { available: false, model: { id: 'gemini-1.5-pro', providerId: 'gemini', label: 'Gemini 1.5 Pro', speedClass: 'powerful', costClass: 'medium' } },
 ];
 
 function defaults(providerConfigured = true) {
@@ -55,7 +60,7 @@ function defaults(providerConfigured = true) {
   (apiClient.listMessages as any).mockResolvedValue([]);
   (apiClient.listPresets as any).mockResolvedValue(PRESETS);
   (apiClient.listProviders as any).mockResolvedValue(PROVIDERS);
-  (apiClient.listModels as any).mockResolvedValue([]);
+  (apiClient.listModels as any).mockResolvedValue(MODELS);
   (apiClient.listOAuthFindings as any).mockResolvedValue([]);
   (apiClient.listProjectMemory as any).mockResolvedValue([]);
   (apiClient.subscribeToTaskEvents as any).mockReturnValue(() => {});
@@ -117,6 +122,70 @@ describe('Morrow Web App (redesigned shell)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send/i }));
     expect(await screen.findByText('Explain repo')).toBeDefined();
     expect(await screen.findByRole('button', { name: /Stop/i })).toBeDefined();
+  });
+
+  it('lazy-loads slash skills and keeps help useful if that load fails', async () => {
+    (apiClient.listProjects as any).mockResolvedValue([{ id: 'p1', name: 'Feedback Analysis', workspacePath: '/test/path', createdAt: new Date().toISOString() }]);
+    (apiClient.listSkills as any).mockRejectedValue(new Error('skills unavailable'));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
+    expect(apiClient.listSkills).not.toHaveBeenCalled();
+
+    const input = await screen.findByPlaceholderText(/Message Morrow/i);
+    fireEvent.change(input, { target: { value: '/' } });
+    await waitFor(() => expect(apiClient.listSkills).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole('option', { name: /\/help/i })).toBeDefined();
+  });
+
+  it('handles slash keyboard, mouse, outside-click, deletion, and request overrides', async () => {
+    (apiClient.listProjects as any).mockResolvedValue([{ id: 'p1', name: 'Feedback Analysis', workspacePath: '/test/path', createdAt: new Date().toISOString() }]);
+    (apiClient.createConversation as any).mockResolvedValue({ id: 'c1', projectId: 'p1', title: 'Conversation 1', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    (apiClient.sendMessage as any).mockResolvedValue({
+      task: { id: 't9', status: 'queued' },
+      userMessage: { id: 'u1', conversationId: 'c1', role: 'user', content: 'Use override', streamingState: 'completed' },
+      assistantMessage: { id: 'a1', conversationId: 'c1', role: 'assistant', content: '', taskId: 't9', streamingState: 'queued', provider: 'openai', model: 'gpt-4o-mini' },
+      routing: { providerId: 'openai', model: 'gpt-4o-mini', presetId: 'balanced', privacy: 'cloud', reason: 'override', fallbackUsed: false, overridden: true }
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
+    const input = await screen.findByPlaceholderText(/Message Morrow/i);
+
+    fireEvent.change(input, { target: { value: '/model' } });
+    expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();
+    expect(screen.queryByText(/Gemini 1.5 Pro/i)).toBeNull();
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(await screen.findByText(/Model set: OpenAI · GPT-4o mini/i)).toBeDefined();
+    expect(document.querySelector('.composer-chip.accent')?.textContent).toContain('gpt-4o-mini');
+
+    fireEvent.change(input, { target: { value: '/read' } });
+    fireEvent.mouseDown(await screen.findByRole('option', { name: /\/read-only/i }));
+    await waitFor(() => expect(document.querySelector('.composer-chip')?.textContent).toContain('Read-only'));
+
+    fireEvent.change(input, { target: { value: '/help' } });
+    expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByRole('listbox', { name: /Commands/i })).toBeNull());
+
+    fireEvent.change(input, { target: { value: '/' } });
+    expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();
+    fireEvent.change(input, { target: { value: '' } });
+    await waitFor(() => expect(screen.queryByRole('listbox', { name: /Commands/i })).toBeNull());
+
+    fireEvent.change(input, { target: { value: '/plan' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('listbox', { name: /Commands/i })).toBeNull());
+    fireEvent.change(input, { target: { value: 'Use override' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send/i }));
+
+    await waitFor(() => expect(apiClient.sendMessage).toHaveBeenCalled());
+    expect((apiClient.sendMessage as any).mock.calls[0][2]).toMatchObject({
+      providerId: 'openai',
+      model: 'gpt-4o-mini',
+      mode: 'inspect',
+    });
   });
 
   it('renders the providers settings tab', async () => {

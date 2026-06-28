@@ -15,6 +15,8 @@ import { MissionControl } from "./components/MissionControl";
 import { SystemHealth } from "./components/SystemHealth";
 import { DownloadPage } from "./components/DownloadPage";
 import { ProviderManager, SubscriptionLogin } from "./components/ProviderManager";
+import { SlashMenu } from "./components/SlashMenu";
+import { buildSlashCommands, filterSlashCommands, type SlashActions, type SlashSkill } from "./commands";
 
 type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
@@ -98,6 +100,20 @@ export default function App() {
   // Full-autonomy (YOLO): when on, the agent runs commands and writes files
   // without per-action approval prompts. Off by default for safety.
   const [autonomous, setAutonomous] = useState(false);
+  // Composer execution mode + per-conversation model/provider override set via
+  // slash commands (e.g. "/model openai gpt-5.4", "/plan").
+  const [composerMode, setComposerMode] = useState<"agent" | "plan-only" | "inspect">("agent");
+  const [overrideProvider, setOverrideProvider] = useState<string>("");
+  const [overrideModel, setOverrideModel] = useState<string>("");
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
+  // Slash-command palette state.
+  const [skills, setSkills] = useState<SlashSkill[]>([]);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
+  const noticeTimerRef = useRef<number | undefined>(undefined);
 
   const [activePreset, setActivePreset] = useState<string>("balanced");
   const [providerStatus, setProviderStatus] = useState<{ configured: boolean; provider: string; model: string } | null>(null);
@@ -154,6 +170,10 @@ export default function App() {
     apiClient.listProviders?.().then(setProviders).catch(console.error);
     apiClient.listModels?.().then(setModels).catch(console.error);
     apiClient.listOAuthFindings?.().then(setOauthFindings).catch(console.error);
+    // Skills are loaded lazily the first time the slash palette opens (see
+    // ensureSkillsLoaded). Fetching them here forced a synchronous skill-registry
+    // read on the orchestrator during the initial load burst, which delayed
+    // project metadata and broke first-interaction navigation.
   }, []);
 
   useEffect(() => {
@@ -293,17 +313,113 @@ export default function App() {
     return c.id;
   };
 
+  // ── Slash commands ───────────────────────────────────────────────────────────
+  const allCommands = useMemo(
+    () => buildSlashCommands({ providers, models, presets, skills }),
+    [providers, models, presets, skills]
+  );
+  const filteredCommands = useMemo(
+    () => (slashOpen ? filterSlashCommands(allCommands, slashQuery) : []),
+    [slashOpen, slashQuery, allCommands]
+  );
+
+  const flashNotice = (text: string) => {
+    setCommandNotice(text);
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setCommandNotice(null), 3500);
+  };
+
+  // Recreated each render (cheap) so the closures always see current state and
+  // the latest handleNewChat — never a stale binding.
+  const slashActions: SlashActions = {
+    setModel: (providerId, model, label) => { setOverrideProvider(providerId); setOverrideModel(model); flashNotice(`Model set: ${label}`); },
+    setProvider: (providerId, label) => { setOverrideProvider(providerId); setOverrideModel(""); flashNotice(`Provider set: ${label} (default model)`); },
+    setPreset: (presetId, label) => { setActivePreset(presetId); setOverrideProvider(""); setOverrideModel(""); flashNotice(`Routing preset: ${label}`); },
+    setMode: (mode, label) => { setComposerMode(mode); flashNotice(`Mode: ${label}`); },
+    setAutonomy: (on) => { setAutonomous(on); flashNotice(on ? "Full autonomy ON" : "Full autonomy OFF"); },
+    insertText: (text) => { setComposerPrompt(text); setTimeout(() => composerInputRef.current?.focus(), 0); },
+    navigate: (target) => { setNav(target as Nav); setSidebarOpen(false); },
+    newChat: () => { handleNewChat(); },
+    clearInput: () => setComposerPrompt(""),
+    showHelp: () => { ensureSkillsLoaded(); setSlashQuery(""); setSlashIndex(0); setSlashOpen(true); setTimeout(() => composerInputRef.current?.focus(), 0); },
+  };
+
+  // Fetch the skill catalog at most once, the first time it's actually needed
+  // (palette open). Kept off the initial-load path so the synchronous skill
+  // registry read never competes with the critical project/conversation loads.
+  const skillsLoadedRef = useRef(false);
+  const ensureSkillsLoaded = () => {
+    if (skillsLoadedRef.current) return;
+    skillsLoadedRef.current = true;
+    apiClient.listSkills?.().then((d: any[]) =>
+      setSkills((d || []).map((s) => ({ id: s.id, name: s.name ?? s.id, description: s.description ?? "", category: s.category })))
+    ).catch(() => { /* skills are optional for the palette */ });
+  };
+
+  // Open the palette whenever the composer line starts with "/" (a command-only
+  // line), and track the query after the slash for predictive filtering.
+  const onComposerChange = (value: string) => {
+    setComposerPrompt(value);
+    if (value.startsWith("/") && !value.includes("\n")) {
+      ensureSkillsLoaded();
+      setSlashQuery(value.slice(1));
+      setSlashIndex(0);
+      setSlashOpen(true);
+    } else if (slashOpen) {
+      setSlashOpen(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!slashOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!composerWrapRef.current?.contains(event.target as Node)) setSlashOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [slashOpen]);
+
+  const runSlashCommand = (index: number) => {
+    const cmd = filteredCommands[index];
+    if (!cmd) return;
+    cmd.run(slashActions);
+    setSlashOpen(false);
+    // Action commands consume the line; insert commands replace it themselves.
+    if (!cmd.inserts) setComposerPrompt("");
+  };
+
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen && filteredCommands.length > 0) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(i => (i + 1) % filteredCommands.length); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setSlashIndex(i => (i - 1 + filteredCommands.length) % filteredCommands.length); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); runSlashCommand(slashIndex); return; }
+      if (e.key === "Escape") { e.preventDefault(); setSlashOpen(false); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      (e.currentTarget.form as HTMLFormElement)?.requestSubmit();
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (slashOpen) { setSlashOpen(false); return; } // never send a half-typed command
     if (!selectedProjectId || !composerPrompt.trim()) return;
     setComposerError("");
     const ps = presets.find(p => p.preset.id === activePreset);
-    if (ps && !ps.available && !providerStatus?.configured) { setComposerError(ps.unavailableReason || "This preset is unavailable."); return; }
+    if (!overrideProvider && ps && !ps.available && !providerStatus?.configured) { setComposerError(ps.unavailableReason || "This preset is unavailable."); return; }
     const content = composerPrompt; setComposerPrompt("");
     stickToBottomRef.current = true; // sending a message re-pins to the latest.
     try {
       const convId = await ensureConversation();
-      const res = await apiClient.sendMessage(convId, content, { preset: activePreset, useMemory: true, mode: "agent", autoApprove: autonomous });
+      const res = await apiClient.sendMessage(convId, content, {
+        preset: activePreset,
+        useMemory: true,
+        mode: composerMode,
+        autoApprove: autonomous,
+        ...(overrideProvider ? { providerId: overrideProvider } : {}),
+        ...(overrideModel ? { model: overrideModel } : {}),
+      });
       setMessages(prev => [...prev, res.userMessage, res.assistantMessage]);
       setActiveTaskId(res.task.id);
       setFocusedTaskId(res.task.id);
@@ -599,23 +715,46 @@ export default function App() {
             </div>
             <form className="composer composer-form" onSubmit={handleSendMessage}>
               {composerError && <div className="composer-error" role="alert">{composerError}</div>}
-              <div className="composer-box">
-                <textarea
-                  className="composer-input" rows={1}
-                  value={composerPrompt}
-                  onChange={e => setComposerPrompt(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.currentTarget.form as HTMLFormElement)?.requestSubmit(); } }}
-                  placeholder={activeTaskId ? "Morrow is working…" : "Message Morrow…"}
-                  disabled={!!activeTaskId}
-                />
-                {activeTaskId
-                  ? <button type="button" className="stop-btn" onClick={handleStop}>Stop</button>
-                  : <button type="submit" className="send-btn" aria-label="Send" disabled={!composerPrompt.trim()}><I.IconSend className="ico" style={{ width: 17, height: 17 }} /></button>}
+              {commandNotice && <div className="composer-notice" role="status">{commandNotice}</div>}
+              <div className="composer-box-wrap" ref={composerWrapRef}>
+                {slashOpen && (
+                  <SlashMenu
+                    commands={filteredCommands}
+                    activeIndex={slashIndex}
+                    onSelect={runSlashCommand}
+                    onHover={setSlashIndex}
+                  />
+                )}
+                <div className="composer-box">
+                  <textarea
+                    ref={composerInputRef}
+                    className="composer-input" rows={1}
+                    value={composerPrompt}
+                    onChange={e => onComposerChange(e.target.value)}
+                    onKeyDown={onComposerKeyDown}
+                    placeholder={activeTaskId ? "Morrow is working…" : "Message Morrow…  (type / for commands)"}
+                    disabled={!!activeTaskId}
+                  />
+                  {activeTaskId
+                    ? <button type="button" className="stop-btn" onClick={handleStop}>Stop</button>
+                    : <button type="submit" className="send-btn" aria-label="Send" disabled={!composerPrompt.trim()}><I.IconSend className="ico" style={{ width: 17, height: 17 }} /></button>}
+                </div>
               </div>
-              <label className="composer-autonomy" title="When on, Morrow runs commands and edits files without asking for approval each time.">
-                <input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />
-                <span>Full autonomy{autonomous ? " — on (no approval prompts)" : ""}</span>
-              </label>
+              <div className="composer-meta">
+                <label className="composer-autonomy" title="When on, Morrow runs commands and edits files without asking for approval each time.">
+                  <input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />
+                  <span>Full autonomy{autonomous ? " — on (no approval prompts)" : ""}</span>
+                </label>
+                <div className="composer-chips">
+                  {composerMode !== "agent" && <span className="composer-chip" title="Set with /plan or /read-only">{composerMode === "plan-only" ? "Plan-only" : "Read-only"}</span>}
+                  {(overrideModel || overrideProvider) && (
+                    <span className="composer-chip accent" title="Set with /model or /provider">
+                      {overrideModel || `${overrideProvider} (default)`}
+                      <button type="button" className="chip-x" aria-label="Clear model override" onClick={() => { setOverrideModel(""); setOverrideProvider(""); flashNotice("Model override cleared — using preset routing"); }}>✕</button>
+                    </span>
+                  )}
+                </div>
+              </div>
             </form>
           </div>
         )}
