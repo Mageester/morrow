@@ -212,13 +212,18 @@ function OAuthCard(props: { status: OAuthProviderStatus; onChanged: () => Promis
 
   const connected = s.status === "connected";
 
+  // Whether the sign-in tab actually opened. When a popup blocker prevents it we
+  // must NOT claim "a tab opened" — we point the user at the inline link instead.
+  const [popupBlocked, setPopupBlocked] = useState(false);
+
   async function onStart() {
     setMsg(null);
     try {
       const { authorizeUrl } = await apiClient.startOAuth(s.id);
       setAuthorizeUrl(authorizeUrl);
       setPhase("awaiting-code");
-      window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+      const win = window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+      setPopupBlocked(!win);
     } catch (e: any) {
       setMsg({ kind: "err", text: e?.message || "Could not start sign-in." });
     }
@@ -278,12 +283,15 @@ function OAuthCard(props: { status: OAuthProviderStatus; onChanged: () => Promis
       {phase !== "idle" && !connected && (
         <div className="provider-form">
           <p className="field-hint" style={{ marginTop: 0 }}>
-            A sign-in page opened in a new tab. After approving, copy the authorization code shown
-            (or the full redirected URL) and paste it here.
+            {popupBlocked
+              ? "Your browser blocked the sign-in tab. Use the link below to open it, then"
+              : "A sign-in page opened in a new tab. After approving,"}{" "}
+            copy the authorization code shown (or the full redirected URL) and paste it here.
           </p>
           {authorizeUrl && (
             <p className="field-hint">
-              Didn't open? <a href={authorizeUrl} target="_blank" rel="noopener noreferrer">Open sign-in page</a>.
+              {popupBlocked ? "Open the sign-in page: " : "Didn't open? "}
+              <a href={authorizeUrl} target="_blank" rel="noopener noreferrer">Open sign-in page</a>.
             </p>
           )}
           <label className="field">
@@ -312,11 +320,15 @@ function OAuthCard(props: { status: OAuthProviderStatus; onChanged: () => Promis
 
 export function SubscriptionLogin(props: { onConnectionChange?: () => Promise<void> | void }) {
   const [statuses, setStatuses] = useState<OAuthProviderStatus[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const refresh = async () => {
     try {
       setStatuses(await apiClient.listOAuthStatus());
-    } catch {
-      /* leave empty on failure */
+      setLoadError(null);
+    } catch (e: any) {
+      // Don't fail silently: an empty section with no explanation reads as "no
+      // providers" when the real cause is the service being unreachable.
+      setLoadError(e?.message || "Could not load subscription sign-in status. Is the Morrow service running?");
     }
   };
   // Refresh our own status AND let the parent re-pull provider/preset state so
@@ -330,6 +342,7 @@ export function SubscriptionLogin(props: { onConnectionChange?: () => Promise<vo
   }, []);
   return (
     <div className="provider-grid">
+      {loadError && <p className="provider-msg err" role="alert">{loadError}</p>}
       {statuses.map((s) => (
         <OAuthCard key={s.id} status={s} onChanged={handleChanged} />
       ))}

@@ -218,6 +218,37 @@ function parseCodeInput(input: string): { code: string; state?: string } {
   return { code: trimmed };
 }
 
+/**
+ * Build a human-readable error message from a token-endpoint failure. OAuth
+ * error bodies are inconsistent: `error_description` may be absent and `error`
+ * may itself be a nested object, so naively doing `error_description || error`
+ * and throwing it produced the useless "[object Object]" the UI surfaced.
+ * Always coerce to a non-empty string and never echo back anything but the
+ * provider's own (non-secret) error text.
+ */
+export function tokenErrorMessage(status: number, rawBody: string): string {
+  const fallback = `Token request failed (HTTP ${status})`;
+  const text = (rawBody ?? "").trim();
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return text ? `${fallback}: ${text.slice(0, 200)}` : fallback;
+  }
+  const pick = (v: unknown): string | null => {
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (v && typeof v === "object") {
+      const m = (v as any).message ?? (v as any).error_description ?? (v as any).error;
+      if (typeof m === "string" && m.trim()) return m.trim();
+    }
+    return null;
+  };
+  const detail = pick(parsed?.error_description) ?? pick(parsed?.error) ?? pick(parsed?.message);
+  if (detail) return detail;
+  // Structured but unrecognized: serialize compactly rather than "[object Object]".
+  return text ? `${fallback}: ${text.slice(0, 200)}` : fallback;
+}
+
 async function postToken(cfg: OAuthProviderConfig, fields: Record<string, string>): Promise<StoredOAuthToken> {
   const headers: Record<string, string> = { Accept: "application/json" };
   let body: string;
@@ -231,14 +262,7 @@ async function postToken(cfg: OAuthProviderConfig, fields: Record<string, string
   const res = await fetch(cfg.tokenUrl, { method: "POST", headers, body });
   const text = await res.text();
   if (!res.ok) {
-    let message = `Token request failed (HTTP ${res.status})`;
-    try {
-      const parsed = JSON.parse(text);
-      message = parsed.error_description || parsed.error || message;
-    } catch {
-      if (text) message = `${message}: ${text.slice(0, 200)}`;
-    }
-    throw new Error(message);
+    throw new Error(tokenErrorMessage(res.status, text));
   }
   let json: any;
   try {
