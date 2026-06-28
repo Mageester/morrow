@@ -98,4 +98,24 @@ describe("runProcessSafe", () => {
     expect(res.terminationReason).toBe("error");
     expect(res.error).toContain("forbidden shell metacharacters");
   });
+
+  itWin("rejects the full batch metacharacter set, including quotes, bangs, and newlines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "morrow-batchmeta-"));
+    try {
+      writeFileSync(join(dir, "tool.cmd"), "@echo ok\r\n");
+      const env = { ...process.env, PATH: `${dir};${process.env.PATH ?? ""}`, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+      // Each of these would let an argument break out of the intended command
+      // when cmd.exe re-parses the batch argument line.
+      for (const bad of ['"', "!", "&", "|", "<", ">", "^", "%", "(", ")", "a\nb", "x\ty"]) {
+        const res = await runProcessSafe("tool", [bad], process.cwd(), env);
+        expect(res.terminationReason, `expected rejection for arg ${JSON.stringify(bad)}`).toBe("error");
+        expect(res.error).toContain("forbidden shell metacharacters");
+      }
+      // A benign argument is still accepted (no false positive on normal flags).
+      const ok = await runProcessSafe("tool", ["--flag", "value", "path/to/file.ts"], process.cwd(), env);
+      expect(ok.terminationReason).toBe("completed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

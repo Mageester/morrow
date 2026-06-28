@@ -107,7 +107,21 @@ export interface SpawnResult {
   error?: string;
 }
 
-const SHELL_META_CHARS = /[&|<>\^%()]/;
+// Characters that are dangerous when cmd.exe re-parses a `.bat`/`.cmd` argument
+// line. `.bat`/`.cmd` resolution forces a `cmd /c` invocation, and cmd applies
+// its own metacharacter parsing to the arguments, so any of these could break
+// out of the intended command:
+//   & |        command chaining / piping
+//   < >        redirection
+//   ^          cmd escape character
+//   %          environment-variable expansion
+//   ( )        command grouping
+//   "          quote breakout — the core of the Windows batch argument-injection
+//              class (e.g. CVE-2024-27980)
+//   !          delayed-expansion variable substitution (when cmd /v:on)
+//   \x00-\x1f  control characters; a newline could append a second command line
+// eslint-disable-next-line no-control-regex
+const SHELL_META_CHARS = /["&|<>^%()!\x00-\x1f]/;
 
 export function runProcessSafe(
   executable: string,
