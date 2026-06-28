@@ -66,6 +66,7 @@ import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
 import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
+import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -126,6 +127,25 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // (5173), which does not exist in an installed build.
   const servicePort = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 4317;
   const uiUrl = deps.webDir ? `http://127.0.0.1:${servicePort}` : "http://127.0.0.1:5173";
+
+  // Reject requests that aren't trustworthy local clients BEFORE any routing,
+  // body parsing, or handler runs. This protects the loopback API from hostile
+  // browser pages (CSRF), DNS rebinding, and forged Host/Origin headers without
+  // requiring any token or manual setup for the CLI, web UI, or installer.
+  const trustedOrigins = parseTrustedOrigins(process.env.MORROW_TRUSTED_ORIGINS);
+  app.addHook("onRequest", async (request, reply) => {
+    const decision = evaluateLocalRequest({
+      host: request.headers.host,
+      origin: request.headers.origin as string | undefined,
+      trustedOrigins,
+    });
+    if (!decision.ok) {
+      return reply.status(403).send({
+        version: 1,
+        error: { code: decision.code ?? "FORBIDDEN", message: decision.reason ?? "Request rejected." },
+      });
+    }
+  });
 
   const projects = projectRepository(deps.db);
   const agents = agentsRepository(deps.db);
