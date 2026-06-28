@@ -14,7 +14,7 @@ export interface SlashActions {
   setModel: (providerId: string, model: string, label: string) => void;
   setProvider: (providerId: string, label: string) => void;
   setPreset: (presetId: string, label: string) => void;
-  setMode: (mode: "agent" | "plan-only" | "inspect", label: string) => void;
+  setMode: (mode: "agent" | "plan-only" | "read-only", label: string) => void;
   setAutonomy: (on: boolean) => void;
   insertText: (text: string) => void;
   navigate: (nav: string) => void;
@@ -121,7 +121,7 @@ export function buildSlashCommands(input: BuildCommandsInput): SlashCommand[] {
       hint: "Inspect files, never write or execute",
       group: "Mode",
       keywords: ["read", "read-only", "inspect", "safe", "mode"],
-      run: (a) => a.setMode("inspect", "Read-only"),
+      run: (a) => a.setMode("read-only", "Read-only"),
     },
     {
       id: "mode:yolo",

@@ -156,8 +156,9 @@ events. See [docs/providers.md](docs/providers.md) for the capability matrix,
 credential reference, honest OAuth findings, and manual verification steps.
 
 ## Current alpha limitations
-- Live model discovery is not implemented; the model registry is built-in plus
-  user-configurable model ids.
+- Live network model discovery is not implemented; selectable models come from
+  configured provider status and saved provider defaults, with built-in metadata
+  used only for known capability labels.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription-based "OAuth" sign-in (Codex/Claude/Gemini) is reported as

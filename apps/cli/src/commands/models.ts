@@ -47,12 +47,13 @@ async function list(ctx: Context, api: MorrowApi): Promise<number> {
 async function selectModel(ctx: Context, api: MorrowApi, requested?: string): Promise<number> {
   const models = await api.listModels();
   const available = models.filter((m) => m.available);
-  const pool = available.length > 0 ? available : models;
   let chosen = requested ? models.find((model) => model.model.id === requested) : undefined;
   if (requested && !chosen) throw notFound(`Unknown model: ${requested}`);
+  if (requested && chosen && !chosen.available) throw usageError(`Model is not available: ${requested}`, "Configure its provider or choose an available model from `morrow models list`.");
   if (!chosen) {
     if (!isInteractive(ctx)) throw usageError("Usage: morrow models select <model>");
-    chosen = pool[(await select(ctx, "Select default model", pool, (m) => `${m.model.id}  ${ctx.out.gray(m.model.label)}${m.available ? "" : ctx.out.yellow(" (provider not configured)")}`))]!;
+    if (available.length === 0) throw usageError("No available models.", "Configure a provider first with `morrow auth login` or `morrow providers configure`.");
+    chosen = available[(await select(ctx, "Select default model", available, (m) => `${m.model.id}  ${ctx.out.gray(m.model.label)}`))]!;
   }
   ctx.config.set("defaults.model", chosen.model.id, ctx.paths.projectConfigFile ? "project" : "user");
   ctx.config.set("defaults.provider", chosen.model.providerId, ctx.paths.projectConfigFile ? "project" : "user");

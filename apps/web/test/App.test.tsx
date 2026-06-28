@@ -117,7 +117,10 @@ describe('Morrow Web App (redesigned shell)', () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
-    const input = await screen.findByPlaceholderText(/Message Morrow/i);
+    expect(await screen.findByRole('button', { name: 'Ask' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'Plan' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'Agent' })).toBeDefined();
+    const input = await screen.findByPlaceholderText(/Agent Morrow/i);
     fireEvent.change(input, { target: { value: 'Explain repo' } });
     fireEvent.click(screen.getByRole('button', { name: /Send/i }));
     expect(await screen.findByText('Explain repo')).toBeDefined();
@@ -131,7 +134,7 @@ describe('Morrow Web App (redesigned shell)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
     expect(apiClient.listSkills).not.toHaveBeenCalled();
 
-    const input = await screen.findByPlaceholderText(/Message Morrow/i);
+    const input = await screen.findByPlaceholderText(/Agent Morrow/i);
     fireEvent.change(input, { target: { value: '/' } });
     await waitFor(() => expect(apiClient.listSkills).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('option', { name: /\/help/i })).toBeDefined();
@@ -148,7 +151,7 @@ describe('Morrow Web App (redesigned shell)', () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Open project/i }));
-    const input = await screen.findByPlaceholderText(/Message Morrow/i);
+    const input = await screen.findByPlaceholderText(/Agent Morrow/i);
 
     fireEvent.change(input, { target: { value: '/model' } });
     expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();
@@ -162,7 +165,7 @@ describe('Morrow Web App (redesigned shell)', () => {
 
     fireEvent.change(input, { target: { value: '/read' } });
     fireEvent.mouseDown(await screen.findByRole('option', { name: /\/read-only/i }));
-    await waitFor(() => expect(document.querySelector('.composer-chip')?.textContent).toContain('Read-only'));
+    await waitFor(() => expect(document.querySelector('.composer-chip')?.textContent).toContain('Ask'));
 
     fireEvent.change(input, { target: { value: '/help' } });
     expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();
@@ -184,7 +187,7 @@ describe('Morrow Web App (redesigned shell)', () => {
     expect((apiClient.sendMessage as any).mock.calls[0][2]).toMatchObject({
       providerId: 'openai',
       model: 'gpt-4o-mini',
-      mode: 'inspect',
+      mode: 'read-only',
     });
   });
 

@@ -31,12 +31,13 @@ and a routing layer under `services/orchestrator/src/routing`.
 - **Credentials** (`provider/credentials.ts`): resolved from the environment on
   the server only. Status output exposes a boolean and the endpoint *host* — the
   API key is only ever passed into an adapter to make the upstream request.
-- **Models + presets + router** (`routing/*`): a built-in model registry with
-  capability metadata; seven presets that encode provider order, model
-  preferences, and execution budgets; and a router that resolves a preset to a
-  configured provider+model, reports fallbacks and candidates, and enforces a
-  hard privacy boundary (a `local-only` preset never routes to a hosted provider,
-  even on explicit override).
+- **Models + presets + router** (`routing/*`): provider-backed selectable
+  models from configured provider status, with built-in capability metadata for
+  known ids; seven presets that encode provider order, model preferences, and
+  execution budgets; and a router that resolves a preset to a configured
+  provider+model, rejects unavailable explicit model choices, reports fallbacks
+  and candidates, and enforces a hard privacy boundary (a `local-only` preset
+  never routes to a hosted provider, even on explicit override).
 
 The agent persists the routing decision per task and discloses the actual
 provider, model, and privacy posture. Cost is reported as `unknown (not metered)`
@@ -65,5 +66,5 @@ are reported as honestly unavailable with an API-key recommendation. See
 ### Negative
 
 - Each non-OpenAI wire format needs bespoke normalization and tests.
-- Live model discovery is not yet implemented; the registry is built-in plus
-  user-configurable model ids.
+- Live network model discovery is not yet implemented; selectable models come
+  from provider status and saved provider defaults.

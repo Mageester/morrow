@@ -25,7 +25,7 @@ export const VERSION = "0.1.0";
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
+const COMMANDS = new Set(["ask", "agent", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
@@ -93,13 +93,14 @@ export async function run(argv: string[]): Promise<number> {
         break;
     }
     const { root, sub, args = [] } = invocation;
-    // Primary product surface: ask (inspect), fix (agent), plan (plan-only),
+    // Primary product surface: ask (read-only), plan (plan-only), agent (execution),
     // new (fresh agent session). A trailing prompt makes them one-shot.
     const promptOf = () => [sub, ...args].filter((v): v is string => Boolean(v)).join(" ");
     const chatWith = (extra: Record<string, string | boolean>) =>
       chatCommand(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
       case "ask": { const p = promptOf(); return chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
+      case "agent": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
       case "yolo": { const p = promptOf(); return chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
@@ -173,7 +174,7 @@ function printHelp(out: Output): number {
     `  morrow                       ${g("start Morrow and open the app")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
-    `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow agent "…"             ${g("execute with visible plan, tools, approvals")}`,
     `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
     `  morrow resume                ${g("resume the most recent session")}`,
     `  morrow new                   ${g("start a fresh session")}`,
@@ -191,7 +192,7 @@ function printHelp(out: Output): number {
     b("In a session"),
     `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
     "",
-    g("More: morrow projects | conversations | presets | tools | audit | skills | serve | logs"),
+    g("More: morrow fix | projects | conversations | presets | tools | audit | skills | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);

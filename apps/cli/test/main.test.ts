@@ -19,6 +19,7 @@ describe("morrow root command", () => {
     // Primary product commands lead.
     expect(help).toContain("morrow ask");
     expect(help).toContain("morrow plan");
+    expect(help).toContain("morrow agent");
     expect(help).toContain("morrow fix");
     expect(help).toContain("morrow resume");
     expect(help).toContain("morrow onboard");

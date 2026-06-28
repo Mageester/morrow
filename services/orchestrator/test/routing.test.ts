@@ -123,6 +123,23 @@ describe("Preset router", () => {
     }
   });
 
+  it("rejects an explicit unavailable model for the chosen provider", () => {
+    const res = routePreset("balanced", { ANTHROPIC_API_KEY: "k" }, { providerId: "anthropic", model: "gpt-5.4" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("not available for provider");
+  });
+
+  it("does not silently cross-wire a model-only override onto another provider", () => {
+    const rejected = routePreset("balanced", { ANTHROPIC_API_KEY: "k" }, { model: "gpt-5.4" });
+    expect(rejected.ok).toBe(false);
+    const accepted = routePreset("balanced", { OPENAI_API_KEY: "k" }, { model: "gpt-5.4" });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.decision.providerId).toBe("openai");
+      expect(accepted.decision.model).toBe("gpt-5.4");
+    }
+  });
+
   it("lists every preset with availability and reasons", () => {
     const statuses = listPresetStatuses({ OPENAI_API_KEY: "k" });
     expect(statuses.length).toBe(listPresets().length);

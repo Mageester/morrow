@@ -60,7 +60,7 @@ import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels } from "./routing/models.js";
+import { listModelStatuses } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -604,18 +604,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         autoApprove,
       };
     } else {
-      const override = body.providerId
-        ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) }
+      const override = body.providerId || body.model
+        ? { ...(body.providerId ? { providerId: body.providerId } : {}), ...(body.model ? { model: body.model } : {}) }
         : undefined;
       const result = routePreset(presetId, process.env, override);
       if (!result.ok) {
-        throw new ApiError(400, result.reason, "PRESET_UNAVAILABLE");
+        throw new ApiError(400, result.reason, body.model ? "MODEL_UNAVAILABLE" : "PRESET_UNAVAILABLE");
       }
       decision = result.decision;
-      // Model-only override (keep routed provider, force the model id).
-      if (body.model && !body.providerId) {
-        decision = { ...decision, model: body.model, overridden: true };
-      }
       decision = { ...decision, mode, toolProfile, autoApprove };
     }
 
@@ -1100,11 +1096,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
   });
 
-  // Built-in model registry with availability derived from configured providers.
-  app.get("/api/models", async () => {
-    const configured = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
-    return listModels().map((model) => ({ model, available: configured.has(model.providerId) }));
-  });
+  // Provider-backed model registry. The UI can only select models reported by
+  // the active provider status, so stale built-in metadata never becomes a
+  // selectable command by itself.
+  app.get("/api/models", async () => listModelStatuses());
 
   // Presets with live availability + resolved provider/model. In mock mode every
   // preset resolves to the mock provider so the UI reflects what will actually run.

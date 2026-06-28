@@ -93,6 +93,25 @@ describe("Provider / preset / memory API", () => {
     expect(agg.body.routing.providerId).toBe("mock");
   });
 
+  it("rejects unavailable explicit models before creating a task", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "k";
+    try {
+      const { conv } = await makeConversation();
+      const res = await json("POST", `/api/conversations/${conv.id}/messages`, {
+        content: "hi",
+        providerId: "anthropic",
+        model: "gpt-5.4",
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("MODEL_UNAVAILABLE");
+      expect(res.body.error.message).toContain("not available");
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
+  });
+
   it("supports the full memory lifecycle with project isolation", async () => {
     const { project, conv } = await makeConversation();
     const created = await json("POST", `/api/projects/${project.id}/memory`, { scope: "conversation", content: "remember this", conversationId: conv.id });

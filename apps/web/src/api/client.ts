@@ -6,7 +6,7 @@ export interface SendMessageOptions {
   model?: string;
   useMemory?: boolean;
   agentId?: string;
-  mode?: "agent" | "plan-only" | "inspect";
+  mode?: "agent" | "plan-only" | "read-only";
   autoApprove?: boolean;
 }
 

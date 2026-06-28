@@ -1,11 +1,11 @@
-import type { ModelInfo, ProviderId } from "@morrow/contracts";
+import type { ModelInfo, ModelStatus, ProviderCapabilities, ProviderId } from "@morrow/contracts";
+import type { ProviderEnv } from "../provider/credentials.js";
+import { getProviderStatus, listProviderStatuses } from "../provider/registry.js";
 
 /**
- * Built-in known model registry with capability metadata. Model IDs remain
- * configurable: any provider can also be driven with a custom model id passed
- * as an override. Context windows are only asserted where well documented;
- * unknown values are reported as null rather than guessed, so the UI never
- * presents a stale or fabricated capability claim.
+ * Built-in capability metadata for known model ids. Selectable models are
+ * derived from provider status; unknown provider-backed ids are shown with
+ * inferred labels and conservative unknown capability metadata.
  */
 function model(
   providerId: ProviderId,
@@ -79,4 +79,68 @@ export function getModel(id: string): ModelInfo | undefined {
 
 export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
   return BUILT_IN_MODELS.filter((m) => m.providerId === providerId);
+}
+
+function labelFromId(id: string): string {
+  return id
+    .split(/[\/:_-]+/)
+    .filter(Boolean)
+    .map((part) => (part.length <= 3 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" ");
+}
+
+function inferredModel(providerId: ProviderId, id: string, capabilities?: ProviderCapabilities): ModelInfo {
+  return {
+    version: 1,
+    id,
+    providerId,
+    label: labelFromId(id),
+    contextWindow: null,
+    capabilities: {
+      streaming: capabilities?.streaming ?? true,
+      toolCalls: capabilities?.toolCalls ?? true,
+      vision: capabilities?.vision ?? false,
+    },
+    speedClass: "unknown",
+    costClass: providerId === "ollama" ? "free" : "unknown",
+    privacy: capabilities?.local ? "local" : "remote",
+    builtIn: false,
+  };
+}
+
+export function getModelForProvider(providerId: ProviderId, id: string, capabilities?: ProviderCapabilities): ModelInfo {
+  return BUILT_IN_MODELS.find((m) => m.providerId === providerId && m.id === id) ?? inferredModel(providerId, id, capabilities);
+}
+
+export function listModelStatuses(env: ProviderEnv = process.env): ModelStatus[] {
+  return listProviderStatuses(env).flatMap((provider) => {
+    const seen = new Set<string>();
+    const ids = [
+      ...(provider.defaultModel ? [provider.defaultModel] : []),
+      ...provider.models,
+    ].filter((id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    return ids.map((id) => ({
+      model: getModelForProvider(provider.id, id, provider.capabilities),
+      available: provider.available && provider.configured,
+    }));
+  });
+}
+
+export function isModelAvailableForProvider(providerId: ProviderId, modelId: string, env: ProviderEnv = process.env): boolean {
+  const status = getProviderStatus(providerId, env);
+  if (!status || !status.available || !status.configured) return false;
+  if (status.models.includes(modelId) || status.defaultModel === modelId) return true;
+  // Generic compatible endpoints often cannot enumerate models. If configured
+  // but model-less, an explicit caller-provided id is the only honest option.
+  return providerId === "openai-compatible" && status.models.length === 0 && status.defaultModel === null;
+}
+
+export function availableModelsForProvider(providerId: ProviderId, env: ProviderEnv = process.env): string[] {
+  const status = getProviderStatus(providerId, env);
+  if (!status || !status.available || !status.configured) return [];
+  return [...new Set([...(status.defaultModel ? [status.defaultModel] : []), ...status.models])];
 }

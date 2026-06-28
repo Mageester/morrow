@@ -19,6 +19,7 @@ import { SlashMenu } from "./components/SlashMenu";
 import { buildSlashCommands, filterSlashCommands, type SlashActions, type SlashSkill } from "./commands";
 
 type Nav = "missions" | "projects" | "runs" | "agents" | "skills" | "browser" | "files" | "memory" | "automations" | "approvals" | "settings" | "system" | "download" | "help";
+type ComposerMode = "agent" | "plan-only" | "read-only";
 type SettingsTab = "providers" | "models" | "presets" | "privacy" | "permissions" | "data" | "diagnostics";
 type InspTab = "overview" | "files" | "notes" | "settings";
 
@@ -72,6 +73,18 @@ function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
   }
 }
 
+const MODE_LABEL: Record<ComposerMode, string> = {
+  "read-only": "Ask",
+  "plan-only": "Plan",
+  agent: "Agent",
+};
+
+const MODE_HINT: Record<ComposerMode, string> = {
+  "read-only": "Read-only answers. No writes or shell.",
+  "plan-only": "Produces plan. No execution.",
+  agent: "Runs task with visible tools and approvals.",
+};
+
 export default function App() {
   const [onboardState, setOnboardState] = useState<{ onboarded: boolean; onboardingStep: string | null; useCase: string | null; name: string | null } | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -102,7 +115,7 @@ export default function App() {
   const [autonomous, setAutonomous] = useState(false);
   // Composer execution mode + per-conversation model/provider override set via
   // slash commands (e.g. "/model openai gpt-5.4", "/plan").
-  const [composerMode, setComposerMode] = useState<"agent" | "plan-only" | "inspect">("agent");
+  const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
   const [overrideProvider, setOverrideProvider] = useState<string>("");
   const [overrideModel, setOverrideModel] = useState<string>("");
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
@@ -559,17 +572,14 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand"><div className="brand-mark">M</div><div className="brand-name">Morrow</div></div>
         <nav className="nav">
-          <button className="nav-item nav-item--primary" onClick={() => { handleNewChat(); setSidebarOpen(false); }}>
-            <I.IconSend className="ico" /><span>New Chat</span>
+          <button className="nav-item nav-item--primary" onClick={() => { setNav("missions"); setSidebarOpen(false); }}>
+            <I.IconSend className="ico" /><span>New Mission</span>
           </button>
           {/* Core, everyday destinations. */}
           <NavItem id="projects" label="Missions" icon={I.IconRuns} />
-          <NavItem id="missions" label="Mission Control" icon={I.IconSend} />
-          <NavItem id="agents" label="Agents" icon={I.IconAgents} />
-          <NavItem id="skills" label="Skills" icon={I.IconTools} />
-          <NavItem id="runs" label="Runs" icon={I.IconRuns} />
-          <div className="nav-divider" />
+          <NavItem id="runs" label="Active Runs" icon={I.IconAgentFace} />
           <NavItem id="settings" label="Settings" icon={I.IconSettings} />
+          <div className="nav-divider" />
           {/* Secondary + not-yet-built destinations, collapsed by default to keep
               the primary navigation focused. */}
           <button className="nav-item nav-more" onClick={() => setMoreOpen(o => !o)} aria-expanded={moreOpen}>
@@ -578,6 +588,8 @@ export default function App() {
           </button>
           {moreOpen && (
             <div className="nav-more-group">
+              <NavItem id="agents" label="Agent Studio" icon={I.IconAgents} />
+              <NavItem id="skills" label="Skills" icon={I.IconTools} />
               <NavItem id="browser" label="Browser" icon={I.IconKnowledge} />
               <NavItem id="files" label="Files" icon={I.IconFile} />
               <NavItem id="memory" label="Memory" icon={I.IconKnowledge} />
@@ -676,6 +688,20 @@ export default function App() {
               </div>
             </div>
             <div className="conv-sub-toolbar">
+              <div className="mode-switch" role="group" aria-label="Execution mode">
+                {(["read-only", "plan-only", "agent"] as ComposerMode[]).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`mode-pill ${composerMode === mode ? "selected" : ""}`}
+                    onClick={() => setComposerMode(mode)}
+                    title={MODE_HINT[mode]}
+                  >
+                    {MODE_LABEL[mode]}
+                  </button>
+                ))}
+              </div>
+              <div className="toolbar-divider" aria-hidden="true" />
               {presets.map(ps => (
                 <button key={ps.preset.id} className={`preset-chip ${activePreset === ps.preset.id ? "selected" : ""} ${!ps.available ? "unavailable" : ""}`} onClick={() => setActivePreset(ps.preset.id)} title={ps.available ? ps.preset.description : ps.unavailableReason || ""}>{ps.preset.label}</button>
               ))}
@@ -685,7 +711,7 @@ export default function App() {
               {messages.length === 0 ? (
                 <div className="chat-empty">
                   <I.IconAgentFace className="empty-ico" />
-                  <p>Ask Morrow about this project, e.g. <em>"Summarize the architecture of this project."</em></p>
+                  <p>Choose Ask, Plan, or Agent, then give Morrow a concrete project goal.</p>
                 </div>
               ) : (
                 <div className="message-history">
@@ -713,6 +739,34 @@ export default function App() {
                 </div>
               )}
             </div>
+            {taskState?.task && (
+              <div className="run-surface" aria-label="Active run">
+                <div className="run-surface-head">
+                  <span className="run-mode">{MODE_LABEL[taskState.routing?.mode as ComposerMode] || (taskState.routing?.toolProfile === "none" ? "Plan" : "Agent")}</span>
+                  <Status s={taskState.task.status} />
+                  {taskState.routing && <span className="run-route">{taskState.routing.providerId} · {taskState.routing.model}</span>}
+                  {taskState.routing?.fallbackUsed && <span className="run-warn">{taskState.routing.fallbackReason || "Fallback used"}</span>}
+                </div>
+                <div className="run-surface-body">
+                  {taskState.plan && taskState.plan.length > 0 && (
+                    <ol className="run-plan">
+                      {taskState.plan.slice(0, 4).map((step, index) => (
+                        <li key={step.id} className={step.status}>
+                          <span>{index + 1}</span>
+                          <strong>{step.title}</strong>
+                          <em>{step.status}</em>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  <div className="run-facts">
+                    <span>{taskState.toolCalls?.length ?? 0} tool calls</span>
+                    <span>{taskState.evidence?.length ?? 0} evidence files</span>
+                    <span>{taskState.events?.length ?? 0} events</span>
+                  </div>
+                </div>
+              </div>
+            )}
             <form className="composer composer-form" onSubmit={handleSendMessage}>
               {composerError && <div className="composer-error" role="alert">{composerError}</div>}
               {commandNotice && <div className="composer-notice" role="status">{commandNotice}</div>}
@@ -732,7 +786,7 @@ export default function App() {
                     value={composerPrompt}
                     onChange={e => onComposerChange(e.target.value)}
                     onKeyDown={onComposerKeyDown}
-                    placeholder={activeTaskId ? "Morrow is working…" : "Message Morrow…  (type / for commands)"}
+                    placeholder={activeTaskId ? "Morrow is working…" : `${MODE_LABEL[composerMode]} Morrow…  (type / for commands)`}
                     disabled={!!activeTaskId}
                   />
                   {activeTaskId
@@ -746,7 +800,7 @@ export default function App() {
                   <span>Full autonomy{autonomous ? " — on (no approval prompts)" : ""}</span>
                 </label>
                 <div className="composer-chips">
-                  {composerMode !== "agent" && <span className="composer-chip" title="Set with /plan or /read-only">{composerMode === "plan-only" ? "Plan-only" : "Read-only"}</span>}
+                  {composerMode !== "agent" && <span className="composer-chip" title={MODE_HINT[composerMode]}>{MODE_LABEL[composerMode]}</span>}
                   {(overrideModel || overrideProvider) && (
                     <span className="composer-chip accent" title="Set with /model or /provider">
                       {overrideModel || `${overrideProvider} (default)`}
@@ -1102,7 +1156,7 @@ function SettingsView(props: {
         )}
 
         {tab === "models" && (
-          <div className="settings-panel"><div className="card"><h3>Model Registry</h3><p className="muted">Built-in known models. IDs are configurable; availability follows configured providers. Context windows are shown only where well documented.</p>
+          <div className="settings-panel"><div className="card"><h3>Model Registry</h3><p className="muted">Models come from configured providers and saved provider defaults. Capability metadata is shown only where documented; custom ids stay clearly marked.</p>
             <table className="model-table"><thead><tr><th>Model</th><th>Provider</th><th>Context</th><th>Speed</th><th>Cost</th><th>Privacy</th><th>Status</th></tr></thead>
               <tbody>{models.map(({ model, available }) => (
                 <tr key={model.id} className={available ? "" : "row-muted"}><td>{model.label}</td><td>{model.providerId}</td><td>{model.contextWindow ? `${Math.round(model.contextWindow / 1000)}k` : "—"}</td><td>{model.speedClass}</td><td>{model.costClass}</td><td>{model.privacy}</td><td>{available ? <span className="badge-ok">available</span> : <span className="badge-muted">needs provider</span>}</td></tr>

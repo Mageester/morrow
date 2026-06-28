@@ -1,6 +1,7 @@
 import type { PresetId, Preset, PresetStatus, RoutingDecision, RoutingCandidate, ProviderId } from "@morrow/contracts";
 import type { ProviderEnv } from "../provider/credentials.js";
 import { getProviderStatus, isProviderConfigured, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
+import { availableModelsForProvider, isModelAvailableForProvider } from "./models.js";
 import { getPreset, listPresets } from "./presets.js";
 
 export interface RouteOverride {
@@ -16,8 +17,15 @@ function isLocal(id: ProviderId): boolean {
 
 function preferredModel(preset: Preset, providerId: ProviderId, env: ProviderEnv): string | null {
   const prefs = preset.modelPreferences[providerId] ?? [];
-  if (prefs.length) return prefs[0]!;
+  const preferred = prefs.find((model) => isModelAvailableForProvider(providerId, model, env));
+  if (preferred) return preferred;
   return getProviderDefaultModel(providerId, env);
+}
+
+function unavailableModelReason(providerId: ProviderId, model: string, env: ProviderEnv): string {
+  const available = availableModelsForProvider(providerId, env);
+  const suffix = available.length ? ` Available models: ${available.join(", ")}.` : " No models are currently available for that provider.";
+  return `Model "${model}" is not available for provider "${providerId}".${suffix}`;
 }
 
 /**
@@ -37,6 +45,9 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
     }
     if (!isProviderConfigured(pid, env)) {
       return { ok: false, reason: `Provider "${pid}" is not configured.` };
+    }
+    if (override.model && !isModelAvailableForProvider(pid, override.model, env)) {
+      return { ok: false, reason: unavailableModelReason(pid, override.model, env) };
     }
     const model = override.model || preferredModel(preset, pid, env);
     if (!model) return { ok: false, reason: `No model available for provider "${pid}".` };
@@ -63,19 +74,25 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
 
   for (const pid of order) {
     const configured = isProviderConfigured(pid, env);
+    const forcedModel = override?.model;
+    const modelAvailable = forcedModel ? isModelAvailableForProvider(pid, forcedModel, env) : true;
     candidates.push({
       providerId: pid,
       configured,
-      reason: configured ? "configured" : getProviderStatus(pid, env)?.setupHint ?? "not configured",
+      reason: configured
+        ? (modelAvailable ? "configured" : unavailableModelReason(pid, forcedModel!, env))
+        : getProviderStatus(pid, env)?.setupHint ?? "not configured",
     });
-    if (configured && !chosen) {
-      const model = preferredModel(preset, pid, env);
+    if (configured && modelAvailable && !chosen) {
+      const model = forcedModel || preferredModel(preset, pid, env);
       if (model) chosen = { providerId: pid, model };
     }
   }
 
   if (!chosen) {
-    const reason = preset.requiresLocal
+    const reason = override?.model
+      ? `Model "${override.model}" is not available from any configured provider in preset "${preset.label}".`
+      : preset.requiresLocal
       ? `Preset "${preset.label}" requires a local provider. Enable Ollama (set OLLAMA_BASE_URL to a running server).`
       : `Preset "${preset.label}" has no configured provider. Configure one of: ${order.join(", ")}.`;
     return { ok: false, reason };
@@ -93,6 +110,7 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
         ? `Preferred provider unavailable; routed to first configured provider "${chosen.providerId}".`
         : `Routed to preferred provider "${chosen.providerId}".`,
       fallbackUsed,
+      ...(fallbackUsed ? { fallbackFrom: order[0], fallbackReason: candidates.find((c) => c.providerId === order[0])?.reason ?? "preferred provider unavailable" } : {}),
       overridden: false,
       privacy: preset.privacy,
       candidates,

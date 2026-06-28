@@ -146,6 +146,8 @@ export const RoutingDecisionSchema=z.object({
   model:z.string(),
   reason:z.string(),
   fallbackUsed:z.boolean(),
+  fallbackFrom:ProviderIdSchema.optional(),
+  fallbackReason:z.string().optional(),
   overridden:z.boolean(),
   privacy:PresetPrivacySchema,
   candidates:z.array(RoutingCandidateSchema),
