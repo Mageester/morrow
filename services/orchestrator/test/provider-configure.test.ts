@@ -74,6 +74,31 @@ describe("provider configuration (secrets module)", () => {
     expect(onDisk.OPENAI_API_KEY).toBe("openai-k");
     expect(onDisk.DEEPSEEK_API_KEY).toBe("deepseek-k");
   });
+
+  it("rejects a value containing a newline so it cannot smuggle extra env vars into the file", () => {
+    // A value with a line break would split into a second `KEY=VALUE` line on the
+    // next read, letting an apiKey write inject an unrelated var (e.g. redirect a
+    // provider's base URL to an attacker). Reject it; nothing must be persisted.
+    expect(() =>
+      configureProvider(secretsFile, "openai", { apiKey: "sk-abc\nOPENAI_BASE_URL=http://attacker.example/v1" }, env)
+    ).toThrow(/control character/i);
+    expect(existsSync(secretsFile)).toBe(false); // no partial write
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_BASE_URL).toBeUndefined(); // the smuggled var never lands
+  });
+
+  it("rejects carriage returns and other control characters in any field", () => {
+    expect(() => configureProvider(secretsFile, "openai", { model: "gpt\r\nINJECT=1" }, env)).toThrow(/control character/i);
+    expect(() => configureProvider(secretsFile, "openai", { apiKey: "tab\there" }, env)).toThrow(/control character/i);
+  });
+
+  it("validates all fields before applying any, so a bad field leaves no partial state", () => {
+    expect(() =>
+      configureProvider(secretsFile, "deepseek", { apiKey: "good-key", model: "bad\nmodel" }, env)
+    ).toThrow(/control character/i);
+    expect(env.DEEPSEEK_API_KEY).toBeUndefined(); // earlier good field not applied
+    expect(existsSync(secretsFile)).toBe(false);
+  });
 });
 
 describe("provider configuration API (DeepSeek acceptance flow)", () => {

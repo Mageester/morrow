@@ -975,11 +975,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!deps.secretsFile) {
       throw new ApiError(503, "In-app provider configuration is unavailable on this server.", "SECRETS_UNAVAILABLE");
     }
+    // Reject control characters (newlines especially): persisted values land in a
+    // line-oriented KEY=VALUE secrets file, so a smuggled newline could inject an
+    // unrelated env var. The secrets module enforces this too; refining here turns
+    // it into a clean 400 instead of a 500.
+    const noControlChars = (label: string) =>
+      z.string().refine((v) => !/[\x00-\x1f\x7f]/.test(v), { message: `${label} must not contain control characters` });
     const body = z
       .object({
-        apiKey: z.string().max(8192).optional(),
+        apiKey: noControlChars("apiKey").max(8192).optional(),
         baseUrl: z.string().max(2048).optional(),
-        model: z.string().max(256).optional(),
+        model: noControlChars("model").max(256).optional(),
       })
       .strict()
       .parse((request.body ?? {}) as unknown);

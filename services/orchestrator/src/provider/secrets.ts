@@ -90,6 +90,23 @@ function writeSecretsFile(path: string, entries: Record<string, string>): { secu
   return { securePermissions };
 }
 
+/**
+ * The secrets file is a line-oriented `KEY=VALUE` format. A value that contains
+ * a line break (or other control character) would split into additional lines on
+ * the next read, letting a single configured field smuggle in an arbitrary,
+ * unrelated env var — e.g. setting `apiKey` could inject
+ * `OPENAI_BASE_URL=http://attacker` and silently redirect a provider's traffic
+ * (and its real key) to an attacker. No legitimate API key, base URL, or model
+ * id contains a control character, so reject them at the single writer rather
+ * than trusting every caller to pre-sanitize.
+ */
+function assertPersistableSecretValue(envName: string, value: string): void {
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error(`Value for ${envName} contains control characters and cannot be stored.`);
+  }
+}
+
 export interface ConfigureProviderInput {
   apiKey?: string | undefined;
   baseUrl?: string | undefined;
@@ -138,6 +155,13 @@ export function configureProvider(
   }
   if (input.model !== undefined && mapping.modelEnv) {
     updates.push({ envName: mapping.modelEnv, value: input.model });
+  }
+
+  // Validate every value BEFORE mutating env/file so a single bad value can
+  // never leave a half-applied configuration behind.
+  for (const { envName, value } of updates) {
+    const trimmed = value?.trim() ?? "";
+    if (trimmed !== "") assertPersistableSecretValue(envName, trimmed);
   }
 
   const existing = readSecretsFileSafe(secretsFile);
