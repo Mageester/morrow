@@ -157,6 +157,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       return;
     }
 
+    // Framework-level client errors (malformed JSON body, payload too large,
+    // unsupported media type, etc.) carry a 4xx statusCode and a stable FST_*
+    // code. These are the caller's fault, not ours, so surface them as a
+    // structured 4xx instead of masking them as a misleading 500.
+    const frameworkStatus = (error as { statusCode?: number }).statusCode;
+    if (typeof frameworkStatus === "number" && frameworkStatus >= 400 && frameworkStatus < 500) {
+      reply.status(frameworkStatus).send({
+        version: 1,
+        error: { code: (error as { code?: string }).code ?? "BAD_REQUEST", message: "Invalid request" }
+      });
+      return;
+    }
+
     reply.status(500).send({
       version: 1,
       error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred" }

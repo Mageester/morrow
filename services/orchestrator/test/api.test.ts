@@ -107,6 +107,19 @@ describe("REST API and Task Runner Vertical Slice", () => {
     }
   });
 
+  it("returns a structured 4xx (not a misleading 500) for a malformed JSON body", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { "content-type": "application/json" },
+      payload: "{bad json",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBeDefined();
+    // The framework's client error must not be masked as INTERNAL_ERROR.
+    expect(res.json().error.code).not.toBe("INTERNAL_ERROR");
+  });
+
   it("returns 404 for missing resources", async () => {
     const res1 = await app.inject({ method: "GET", url: "/api/projects/unknown" });
     expect(res1.statusCode).toBe(404);
