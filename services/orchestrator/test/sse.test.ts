@@ -98,7 +98,15 @@ describe("SSE Streaming", () => {
       }).on('error', reject);
     });
 
-    await new Promise(r => setTimeout(r, 50));
+    // Poll until the replayed task.created event lands instead of assuming a
+    // fixed wall-clock delay: under parallel test load on a busy host the first
+    // SSE chunk can take well over 50ms to arrive, which made this assertion
+    // flaky. The event is guaranteed to be replayed from sequence 0, so wait for
+    // it deterministically with a generous ceiling.
+    const deadline = Date.now() + 5000;
+    while (streamedEvents.length === 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 10));
+    }
     expect(streamedEvents.length).toBeGreaterThan(0);
     expect(streamedEvents[0].event).toBe("task.created");
 

@@ -125,8 +125,20 @@ describe("browser audit evidence", () => {
   });
 });
 
+// Each test below drives a real Chromium instance. Cold browser launch,
+// navigation, and screenshotting routinely exceed Vitest's default 5s test
+// timeout on Windows and under parallel load, which made the whole suite go red
+// on the production target even though the controller works correctly. Give the
+// real-browser tests a realistic ceiling so they pass deterministically when a
+// browser is present.
+// 60s, not the default 5s: each test cold-launches a real Chromium and these run
+// concurrently with the rest of the monorepo's CPU-bound test/build work under
+// `turbo test`, which can starve the browser long enough to blow a tighter
+// ceiling on slower hosts.
+const BROWSER_TEST_TIMEOUT_MS = 60_000;
+
 describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
-  it("controls a local isolated browser session semantically and preserves bounded evidence", async () => {
+  it("controls a local isolated browser session semantically and preserves bounded evidence", { timeout: BROWSER_TEST_TIMEOUT_MS }, async () => {
     const baseUrl = await controlledBrowserServer();
     const uploads = await mkdtemp(join(tmpdir(), "morrow-upload-"));
     const downloads = await mkdtemp(join(tmpdir(), "morrow-download-"));
@@ -140,7 +152,9 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
       uploadRoot: uploads,
       downloadRoot: downloads,
       audit: browserAuditSink(auditLog, { projectId: "project-1", taskId: "task-1" }),
-      timeoutMs: 2_000,
+      // Cold Chromium navigation on Windows can take several seconds for the very
+      // first page load; 2s was too tight and made page.goto time out spuriously.
+      timeoutMs: 15_000,
       headless: true,
     });
 
@@ -174,7 +188,7 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
     await expect(controller.snapshot()).rejects.toThrow(/closed/i);
   });
 
-  it("contains hostile page text and cancels a long navigation", async () => {
+  it("contains hostile page text and cancels a long navigation", { timeout: BROWSER_TEST_TIMEOUT_MS }, async () => {
     const baseUrl = await controlledBrowserServer();
     const controller = playwrightController({ allowedDomains: ["127.0.0.1"], allowPrivateNetwork: true, timeoutMs: 5_000, headless: true });
     try {
@@ -190,7 +204,7 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
     }
   });
 
-  it("attaches to an existing Chromium CDP session without owning its process", async () => {
+  it("attaches to an existing Chromium CDP session without owning its process", { timeout: BROWSER_TEST_TIMEOUT_MS }, async () => {
     const baseUrl = await controlledBrowserServer();
     const external = await cdpEndpoint();
     const controller = playwrightController({ cdpEndpoint: external.endpoint, allowedDomains: ["127.0.0.1"], allowPrivateNetwork: true, headless: true });
@@ -203,7 +217,7 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
     }
   });
 
-  it("retains browser storage only when an explicit persistent profile is selected", async () => {
+  it("retains browser storage only when an explicit persistent profile is selected", { timeout: BROWSER_TEST_TIMEOUT_MS }, async () => {
     const baseUrl = await controlledBrowserServer();
     const profileDir = await mkdtemp(join(tmpdir(), "morrow-profile-"));
     const options = { session: "persistent" as const, profileDir, allowedDomains: ["127.0.0.1"], allowPrivateNetwork: true, headless: true };
@@ -218,7 +232,7 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
     }
   });
 
-  it("makes pause, resume, and panic explicit browser-session controls", async () => {
+  it("makes pause, resume, and panic explicit browser-session controls", { timeout: BROWSER_TEST_TIMEOUT_MS }, async () => {
     const baseUrl = await controlledBrowserServer();
     const controller = playwrightController({ allowedDomains: ["127.0.0.1"], allowPrivateNetwork: true, headless: true });
     try {
