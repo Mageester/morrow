@@ -77,6 +77,30 @@ function humanizeEvent(ev: TaskEvent): { label: string; desc?: string } | null {
   }
 }
 
+// Turn raw tool calls into a few human-meaningful activity lines for the run
+// strip ("Read 12 files", "Updated src/math.mjs", "Ran node test/run.mjs · passed").
+// Raw per-call detail and counts stay in the context drawer, not on the timeline.
+function summarizeActivity(toolCalls: any[] = []): string[] {
+  const READ = new Set(["read_file", "list_files", "inspect_workspace", "search_text", "search_files", "git_status", "git_diff", "git_log"]);
+  const reads = toolCalls.filter((t) => READ.has(t.toolName)).length;
+  const out: string[] = [];
+  if (reads > 0) out.push(`Read ${reads} file${reads === 1 ? "" : "s"}`);
+  for (const t of toolCalls) {
+    if (t.toolName === "propose_patch") {
+      let files: string[] = [];
+      try { files = JSON.parse(t.argsJson || "{}").files || []; } catch { /* ignore */ }
+      out.push(files.length ? `Updated ${files.join(", ")}` : "Applied a patch");
+    } else if (t.toolName === "run_command") {
+      let label = "a command";
+      try { const a = JSON.parse(t.argsJson || "{}"); label = `${a.executable} ${(a.args || []).join(" ")}`.trim(); } catch { /* ignore */ }
+      let suffix = "";
+      try { const r = JSON.parse(t.resultJson || "{}"); if (r.exitCode === 0) suffix = " · passed"; else if (typeof r.exitCode === "number") suffix = " · failed"; } catch { /* ignore */ }
+      out.push(`Ran ${label}${suffix}`);
+    }
+  }
+  return out.slice(-4);
+}
+
 const MODE_LABEL: Record<ComposerMode, string> = {
   "read-only": "Ask",
   "plan-only": "Plan",
@@ -655,9 +679,7 @@ export default function App() {
               <div className="convo ws-convo">
                 <div className="workspace-header ws-convo-head">
                   <h3>{selectedProject.name} Workspace</h3>
-                  <p className="path-display">Path: <span className="path-truncate">{selectedProject.workspacePath}</span></p>
-                  <div className="ws-spacer" />
-                  <button className="btn btn-ghost btn-sm" onClick={handleInspect}>Inspect workspace</button>
+                  <span className="ws-path" title={selectedProject.workspacePath}>{selectedProject.workspacePath}</span>
                 </div>
                 {taskError && <div className="error-message" role="alert" style={{ margin: "10px 22px 0" }}>{taskError}</div>}
             <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
@@ -692,34 +714,29 @@ export default function App() {
                 </div>
               )}
             </div>
-            {taskState?.task && (
-              <div className="run-surface" aria-label="Active run">
-                <div className="run-surface-head">
-                  <span className="run-mode">{MODE_LABEL[taskState.routing?.mode as ComposerMode] || (taskState.routing?.toolProfile === "none" ? "Plan" : "Agent")}</span>
+            {taskState?.task && (() => {
+              // Slim run strip: status, compact progress, and the latest meaningful
+              // action. The full plan, every tool call, evidence and event counts
+              // live in the context drawer — not as permanent counters here.
+              const plan = taskState.plan || [];
+              const active = plan.find((s) => s.status === "running") || [...plan].reverse().find((s) => s.status === "completed");
+              const doneCount = plan.filter((s) => s.status === "completed").length;
+              const activity = summarizeActivity(taskState.toolCalls);
+              return (
+                <div className="run-strip" aria-label="Active run">
                   <Status s={taskState.task.status} />
-                  {taskState.routing && <span className="run-route">{taskState.routing.providerId} · {taskState.routing.model}</span>}
-                  {taskState.routing?.fallbackUsed && <span className="run-warn">{taskState.routing.fallbackReason || "Fallback used"}</span>}
-                </div>
-                <div className="run-surface-body">
-                  {taskState.plan && taskState.plan.length > 0 && (
-                    <ol className="run-plan">
-                      {taskState.plan.slice(0, 4).map((step, index) => (
-                        <li key={step.id} className={step.status}>
-                          <span>{index + 1}</span>
-                          <strong>{step.title}</strong>
-                          <em>{step.status}</em>
-                        </li>
-                      ))}
-                    </ol>
+                  {plan.length > 0 && (
+                    <span className="run-progress">{doneCount}/{plan.length}{active ? ` · ${active.title}` : ""}</span>
                   )}
-                  <div className="run-facts">
-                    <span>{taskState.toolCalls?.length ?? 0} tool calls</span>
-                    <span>{taskState.evidence?.length ?? 0} evidence files</span>
-                    <span>{taskState.events?.length ?? 0} events</span>
-                  </div>
+                  {activity.length > 0 && (
+                    <span className="run-activity" title={activity.join(" · ")}>{activity[activity.length - 1]}</span>
+                  )}
+                  {taskState.routing?.fallbackUsed && <span className="run-warn">{taskState.routing.fallbackReason || "Fallback used"}</span>}
+                  <div className="ws-spacer" />
+                  <button type="button" className="run-detail-link" onClick={() => setDrawerOpen(true)}>Details</button>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             <form className="composer composer-form" onSubmit={handleSendMessage}>
               {composerError && <div className="composer-error" role="alert">{composerError}</div>}
               {commandNotice && <div className="composer-notice" role="status">{commandNotice}</div>}
@@ -748,19 +765,16 @@ export default function App() {
                 </div>
               </div>
               <div className="composer-meta">
-                <label className="composer-autonomy" title="When on, Morrow runs commands and edits files without asking for approval each time.">
-                  <input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />
-                  <span>Full autonomy{autonomous ? " — on (no approval prompts)" : ""}</span>
+                {/* Model and mode live in the top bar — not repeated here. The only
+                    composer-level control is how approvals are handled, worded so it
+                    never implies the safety policy is switched off. */}
+                <label className="approvals-control" title="Automatic still enforces the safety policy: risky or blocked actions are surfaced for approval, never silently bypassed.">
+                  <span className="approvals-label">Approvals</span>
+                  <select value={autonomous ? "auto" : "ask"} onChange={(e) => setAutonomous(e.target.value === "auto")} aria-label="Approvals">
+                    <option value="ask">Ask first</option>
+                    <option value="auto">Automatic (within policy)</option>
+                  </select>
                 </label>
-                <div className="composer-chips">
-                  {composerMode !== "agent" && <span className="composer-chip" title={MODE_HINT[composerMode]}>{MODE_LABEL[composerMode]}</span>}
-                  {(overrideModel || overrideProvider) && (
-                    <span className="composer-chip accent" title="Set with /model or /provider">
-                      {overrideModel || `${overrideProvider} (default)`}
-                      <button type="button" className="chip-x" aria-label="Clear model override" onClick={() => { setOverrideModel(""); setOverrideProvider(""); flashNotice("Model override cleared — using preset routing"); }}>✕</button>
-                    </span>
-                  )}
-                </div>
               </div>
             </form>
               </div>
@@ -810,6 +824,7 @@ export default function App() {
             <div className="insp-title-row">
               <h3 className="insp-title">Context · {selectedProject.name}</h3>
               <div className="insp-actions">
+                <button className="btn btn-ghost btn-sm" onClick={handleInspect}>Inspect workspace</button>
                 <button aria-label="Close context drawer" onClick={() => setDrawerOpen(false)}><I.IconClose className="ico" /></button>
               </div>
             </div>

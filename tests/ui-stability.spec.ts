@@ -88,7 +88,8 @@ test('slash-command palette opens, predicts, applies a mode, and dismisses', asy
     await expect(page.locator('.slash-item.active')).toContainText('/plan');
     // Enter applies the command (does not send a message) and shows a mode chip.
     await composer.press('Enter');
-    await expect(page.locator('.composer-chip')).toContainText('Plan');
+    // Mode is reflected in the top-bar mode switch (no duplicate composer chip).
+    await expect(page.locator('.mode-pill.selected')).toContainText('Plan');
     expect(await composer.inputValue()).toBe('');
 
     // Skills are offered (bundled skill registry, lazy-loaded on first palette use).

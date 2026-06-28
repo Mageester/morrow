@@ -85,8 +85,7 @@ test('agent chat: tool calls, evidence, reload persistence, and cancellation', a
     await page.locator('.composer-form button[type="submit"]').click();
     await expect(page.locator('.message-bubble.user .msg-text')).toHaveText('Explain this repository');
 
-    await expect(page.locator('.run-surface')).toBeVisible();
-    await expect(page.locator('.run-surface')).toContainText('Agent');
+    await expect(page.locator('.run-strip')).toBeVisible();
     await expect(page.locator('.tools-section')).toContainText('read_file');
     await expect(page.locator('.evidence-section')).toContainText('evidence.txt');
     await expect(page.locator('.message-bubble.assistant .msg-text')).toContainText('Based on the evidence');

@@ -163,11 +163,13 @@ describe('Morrow Web App (redesigned shell)', () => {
     fireEvent.keyDown(input, { key: 'ArrowUp' });
     fireEvent.keyDown(input, { key: 'Tab' });
     expect(await screen.findByText(/Model set: OpenAI · GPT-4o mini/i)).toBeDefined();
-    expect(document.querySelector('.composer-chip.accent')?.textContent).toContain('gpt-4o-mini');
+    // The override is reflected in the single top-bar model picker (no duplicate chip).
+    expect((document.querySelector('[aria-label="Provider and model"]') as HTMLSelectElement)?.value).toContain('gpt-4o-mini');
 
     fireEvent.change(input, { target: { value: '/read' } });
     fireEvent.mouseDown(await screen.findByRole('option', { name: /\/read-only/i }));
-    await waitFor(() => expect(document.querySelector('.composer-chip')?.textContent).toContain('Ask'));
+    // Mode is reflected in the composer placeholder + top-bar mode switch, not a chip.
+    await waitFor(() => expect(document.querySelector('.composer-input')?.getAttribute('placeholder')).toContain('Ask Morrow'));
 
     fireEvent.change(input, { target: { value: '/help' } });
     expect(await screen.findByRole('listbox', { name: /Commands/i })).toBeDefined();

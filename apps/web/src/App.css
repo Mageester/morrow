@@ -142,9 +142,6 @@ button { font: inherit; color: inherit; }
 .nav-item--primary { background: var(--accent); color: #fff; font-weight: 600; margin-bottom: 6px; }
 .nav-item--primary .ico { opacity: 1; color: #fff; }
 .nav-item--primary:hover { background: var(--accent); color: #fff; filter: brightness(1.08); }
-.composer-autonomy { display: flex; align-items: center; gap: 8px; max-width: 880px; margin: 8px auto 0; font-size: 12px; color: var(--text-3); cursor: pointer; user-select: none; }
-.composer-autonomy input { accent-color: var(--amber); width: 14px; height: 14px; cursor: pointer; }
-.composer-autonomy:hover { color: var(--text-2); }
 .nav-item.active { background: var(--bg-elev); color: var(--text); }
 .nav-item.active .ico { opacity: 1; color: var(--accent); }
 .nav-divider { height: 1px; background: var(--border); margin: 12px 6px; }
@@ -436,23 +433,6 @@ button { font: inherit; color: inherit; }
 .loading-pulse { color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 
-.run-surface { border-top: 1px solid var(--border); background: var(--bg-panel); padding: 10px 22px; display: flex; flex-direction: column; gap: 8px; }
-.run-surface-head { max-width: 880px; width: 100%; margin: 0 auto; display: flex; align-items: center; gap: 10px; min-height: 24px; flex-wrap: wrap; }
-.run-mode { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(61,123,253,0.28); border-radius: 999px; padding: 2px 8px; }
-.run-route, .run-warn { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
-.run-warn { color: var(--amber); }
-.run-surface-body { max-width: 880px; width: 100%; margin: 0 auto; display: flex; align-items: center; gap: 14px; min-height: 32px; }
-.run-plan { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; flex: 1; min-width: 0; }
-.run-plan li { min-width: 0; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 8px; }
-.run-plan li span { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-elev-2); color: var(--text-3); font-size: 10px; font-weight: 700; }
-.run-plan li.running span { background: var(--accent); color: #fff; }
-.run-plan li.completed span { background: var(--green); color: #07130b; }
-.run-plan li.failed span { background: var(--red); color: #fff; }
-.run-plan li strong { font-size: 12px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-plan li em { font-style: normal; font-size: 10.5px; color: var(--text-3); text-transform: capitalize; }
-.run-facts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.run-facts span { font-size: 11.5px; color: var(--text-3); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; white-space: nowrap; }
-
 .composer { padding: 14px 22px 18px; border-top: 1px solid var(--border); }
 .composer-error { background: var(--red-soft); border: 1px solid rgba(242,85,90,0.3); color: #ffb4b6; padding: 8px 11px; border-radius: var(--radius-sm); font-size: 12.5px; margin-bottom: 9px; }
 .composer-box-wrap { position: relative; max-width: 880px; margin: 0 auto; }
@@ -469,12 +449,6 @@ button { font: inherit; color: inherit; }
 .slash-cmd { font-family: var(--mono); font-size: 12px; color: var(--accent); flex: none; }
 .slash-title { font-size: 13px; color: var(--text); }
 .slash-hint { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
-.composer-meta { display: flex; align-items: center; gap: 14px; max-width: 880px; margin: 8px auto 0; flex-wrap: wrap; }
-.composer-chips { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
-.composer-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); background: var(--bg-elev); border: 1px solid var(--border-2); border-radius: 999px; padding: 3px 10px; }
-.composer-chip.accent { color: var(--accent); border-color: var(--accent); }
-.composer-chip .chip-x { background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 11px; padding: 0; opacity: 0.7; }
-.composer-chip .chip-x:hover { opacity: 1; }
 .composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer-input { flex: 1; background: transparent; border: 0; color: var(--text); font-size: 14px; resize: none; outline: none; padding: 6px 0; max-height: 160px; line-height: 1.5; }
 .composer-input::placeholder { color: var(--text-3); }
@@ -1001,3 +975,34 @@ h6.md-heading { font-size: 12.5px; color: var(--text-3); }
   .ws-picker, .ws-model { max-width: 150px; }
   .ws-status { display: none; }
 }
+
+/* ── Simplified run surface ────────────────────────────────────────────────────
+   Compact header + a one-line run strip. No oversized header, no permanent
+   tool/evidence/event counters (those live in the context drawer). */
+.ws-convo-head { padding: 10px 22px; gap: 10px; align-items: baseline; }
+.ws-convo-head h3 { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.ws-path { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.run-strip {
+  display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
+  padding: 8px 22px; border-top: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text-2); min-width: 0;
+}
+.run-progress { color: var(--text); font-weight: 550; white-space: nowrap; }
+.run-activity { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.run-warn { color: var(--amber, #d8a657); }
+.run-detail-link {
+  background: transparent; border: none; color: var(--accent);
+  font-size: 12.5px; cursor: pointer; padding: 2px 4px; flex: none;
+}
+.run-detail-link:hover { text-decoration: underline; }
+
+/* Compact approvals control replaces the full-autonomy checkbox. */
+.composer-meta { display: flex; align-items: center; gap: 10px; max-width: 880px; margin: 8px auto 0; }
+.approvals-control { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); }
+.approvals-label { color: var(--text-3); }
+.approvals-control select {
+  background: var(--bg-elev); border: 1px solid var(--border-2); color: var(--text-2);
+  border-radius: var(--radius-sm); padding: 3px 7px; font-size: 12px; cursor: pointer;
+}
+.insp-actions { display: flex; align-items: center; gap: 6px; }
