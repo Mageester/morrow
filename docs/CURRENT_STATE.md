@@ -37,7 +37,11 @@ README-only scaffolds (no `package.json` yet) — intentional placeholders.
 | Build | `pnpm build` | ✅ PASS |
 | Vertical-slice smoke | `smoke:vertical-slice` | ✅ PASS |
 | Provider/routing smoke | `smoke:providers` | ❌ FAIL on untouched tree → **fixed in this session** |
-| E2E (Playwright) | `pnpm test:e2e` | ⏳ Not run this session (needs web+orchestrator servers + Chromium) |
+| Agent-alpha smoke | `smoke:agent-alpha` | ✅ PASS |
+| SQLite smoke | `smoke:sqlite` | ✅ PASS |
+| E2E (Playwright) | `pnpm test:e2e` | ✅ PASS — 11/11 (Chromium; servers on :4317/:5173) |
+
+After the smoke fix, **every documented validation command is green.**
 
 Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · hermes-compat 4.
 
@@ -75,6 +79,12 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   untracked (and likely git-ignored) for release hygiene. *(open)*
 
 ### P3
+- **[RESOLVED 2026-06-29] Stale internal status docs** (see below) — refreshed.
+- **`/versions` uses `execSync("pnpm --version")`.** `apps/cli/src/commands/chat.ts:698`
+  shells out via `execSync` while the codebase otherwise routes pnpm through a
+  hardened Windows-safe resolver (`apps/cli/src/service/pnpm.ts`, `shell:false`,
+  PATHEXT-aware). Input is a hardcoded literal so there is no injection risk, but
+  it is an inconsistency worth aligning. *(open, low priority)*
 - **Stale internal status docs.** `docs/MORROW_STATUS.md` /
   `docs/CONTINUATION.md` report orchestrator 278 / CLI 135 (actual: 325 / 140)
   and `CONTINUATION.md` references a wrong resume path
@@ -88,7 +98,6 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
 
 Recorded so the next pass knows where coverage is thin:
 
-- E2E/Playwright run (servers + browser).
 - Windows installer (`installer/`) rollback / partial-install cleanup.
 - Web UI contract alignment under disconnected/error/reconnect states.
 - Orchestrator concurrency / cancellation / idempotency edge cases beyond
