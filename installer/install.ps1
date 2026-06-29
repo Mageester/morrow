@@ -218,7 +218,11 @@ try {
   $shortcut.Save()
 
   Write-Host 'Starting Morrow...'
-  & $installedCmd start
+  # The localhost health poll below is the real success gate. Wrap the launch so a
+  # failing service that writes to stderr (which PowerShell turns into a
+  # terminating NativeCommandError under ErrorActionPreference=Stop) cannot bypass
+  # the health-check rollback by throwing straight to the outer catch.
+  try { & $installedCmd start } catch {}
   $healthy = $false
   for ($attempt = 0; $attempt -lt 45; $attempt++) {
     try { if ((Invoke-WebRequest -Uri 'http://127.0.0.1:4317/api/health' -UseBasicParsing).StatusCode -eq 200) { $healthy = $true; break } } catch {}
@@ -226,12 +230,14 @@ try {
   }
   if (-not $healthy) {
     # Roll back to the previous working version (if any) rather than leaving the
-    # user with a broken install. User data is untouched either way.
+    # user with a broken install. User data is untouched either way. The recovery
+    # start/stop are best-effort (swallow native errors) so the rollback always
+    # completes and reports honestly.
     if ($hadPrevious -and (Test-Path -LiteralPath $appOld)) {
-      & $installedCmd stop 2>$null
+      try { & $installedCmd stop *>$null } catch {}
       Remove-Item -LiteralPath $installedApp -Recurse -Force -ErrorAction SilentlyContinue
       Move-Item -LiteralPath $appOld -Destination $installedApp -ErrorAction SilentlyContinue
-      & (Join-Path $installedApp 'morrow.cmd') start 2>$null
+      try { & (Join-Path $installedApp 'morrow.cmd') start *>$null } catch {}
       Fail 'The new version did not pass its health check; the previous version was restored and restarted. Run "morrow doctor" for details.'
     }
     Fail 'Morrow did not pass its localhost health check. Run "morrow doctor" for details.'
