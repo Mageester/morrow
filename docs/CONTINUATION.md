@@ -22,11 +22,16 @@ The `skills/` directory contains ~20 extra skills created via the skill creator
 ## Resume command
 
 ```bash
-cd "C:/Users/aidan/OneDrive/Documents/PlaceHolder"
-git checkout feat/morrow-agent-terminal
+cd "C:/Users/aidan/OneDrive/Documents/Morrow/Morrow"
+git checkout main
 pnpm install
-pnpm check && pnpm test && pnpm build   # expect green
+pnpm check && pnpm test && pnpm build   # expect green (495 tests)
 ```
+
+> Note (2026-06-29): the work below predates the current `main`. The legacy
+> `feat/morrow-agent-terminal` branch no longer exists — its work is on `main`
+> (e.g. the B15 browser slice). Treat `main` as the source of truth and see
+> `docs/CURRENT_STATE.md` for the verified snapshot.
 
 ## Where we are (all committed + pushed on feat/morrow-agent-terminal)
 

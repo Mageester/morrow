@@ -2,6 +2,18 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Repo hygiene + status-doc accuracy
+
+- **chore(repo) `1dbe020`:** Untracked `morrow-tui-wip-before-codex.patch` (a
+  UTF-16 WIP diff accidentally committed in `096cc9f`, referenced nowhere,
+  superseded). Added `*.patch`/`*.orig`/`*.rej` to `.gitignore`.
+- **docs:** Refreshed `MORROW_STATUS.md` (orchestrator 278→325, CLI 135→140,
+  web 8→22) and fixed `CONTINUATION.md`'s wrong resume path
+  (`Documents/PlaceHolder`) and dead `feat/morrow-agent-terminal` branch
+  reference, pointing both at `main` + `docs/CURRENT_STATE.md`.
+- **Validation:** `pnpm check`/`pnpm test`/`pnpm build` unaffected (docs +
+  ignore only); `smoke:providers` + `smoke:vertical-slice` PASS.
+
 ## 2026-06-29 — Fix failing `smoke:providers` + OAuth documentation drift
 
 - **Issue:** `pnpm --filter @morrow/orchestrator smoke:providers` (a
@@ -23,4 +35,4 @@ Concise, append-only record of verified changes. Newest first.
 - **Validation:**
   - `smoke:providers` → PASS (was FAIL).
   - `pnpm check` → PASS, `pnpm test` → PASS (495), `pnpm build` → PASS (unchanged).
-- **Commit:** _(see git log on `fix/provider-smoke-oauth-drift`)_
+- **Commit:** `37358f2`
