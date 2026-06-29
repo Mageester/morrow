@@ -59,6 +59,85 @@ function Resolve-PackageRoot([string]$root) {
   return $null
 }
 
+function Test-MorrowAppTree([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if (-not $item.PSIsContainer) { return $false }
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+  } catch {
+    return $false
+  }
+  foreach ($rel in $RequiredFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Path $rel))) { return $false }
+  }
+  return $true
+}
+
+function Remove-MorrowAppDirectory([string]$Path, [string]$Description) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  try {
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+  } catch {
+    Fail "Could not remove $Description at $Path. Close Morrow, check for locked files or antivirus interference, then rerun the installer. ($_)"
+  }
+}
+
+function Move-MorrowAppDirectory([string]$From, [string]$To, [string]$Description) {
+  try {
+    Move-Item -LiteralPath $From -Destination $To -ErrorAction Stop
+  } catch {
+    Fail "Could not $Description. Close Morrow, check for locked files or antivirus interference, then rerun the installer. ($_)"
+  }
+}
+
+function Invoke-MorrowInstallRecovery {
+  param([Parameter(Mandatory)][string]$Root)
+
+  $installedApp = Join-Path $Root 'app'
+  $appNew = Join-Path $Root 'app.new'
+  $appOld = Join-Path $Root 'app.old'
+
+  $appValid = Test-MorrowAppTree $installedApp
+  $newValid = Test-MorrowAppTree $appNew
+  $oldValid = Test-MorrowAppTree $appOld
+
+  if ($appValid) {
+    # A valid app is the known runnable version. Scratch dirs are safe to clear
+    # before the next activation because the current app will become app.old.
+    Remove-MorrowAppDirectory $appNew 'stale app.new'
+    Remove-MorrowAppDirectory $appOld 'stale app.old'
+    return
+  }
+
+  if ((Test-Path -LiteralPath $installedApp) -and (-not $appValid)) {
+    Remove-MorrowAppDirectory $installedApp 'incomplete app'
+  }
+
+  if ($newValid) {
+    # Crash after app.old was created and before/while app.new became app:
+    # complete the promotion. Keep a valid app.old for later health rollback.
+    Move-MorrowAppDirectory $appNew $installedApp 'promote the recovered app.new to app'
+    if ((Test-Path -LiteralPath $appOld) -and (-not $oldValid)) {
+      Remove-MorrowAppDirectory $appOld 'invalid app.old'
+    }
+    return
+  }
+
+  if ((Test-Path -LiteralPath $appNew) -and (-not $newValid)) {
+    Remove-MorrowAppDirectory $appNew 'invalid app.new'
+  }
+
+  if ($oldValid) {
+    Move-MorrowAppDirectory $appOld $installedApp 'restore the previous app.old to app'
+    return
+  }
+
+  if ((Test-Path -LiteralPath $appOld) -and (-not $oldValid)) {
+    Remove-MorrowAppDirectory $appOld 'invalid app.old'
+  }
+}
+
 # Atomically activate a validated package into <Root>\app while preserving ALL
 # user data (everything under <Root> except app/app.new/app.old) and keeping the
 # previous working version in app.old until the new tree is in place and verified.
@@ -80,10 +159,9 @@ function Invoke-MorrowActivation {
   $appOld = Join-Path $Root 'app.old'
   $installedCmd = Join-Path $installedApp 'morrow.cmd'
 
-  # Clear app.new/app.old scratch dirs from a previous interrupted upgrade (code
-  # only -- never user data).
-  Remove-Item -LiteralPath $appNew -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
+  # Recover any interrupted prior activation before staging a new package. This
+  # is idempotent and never deletes the only complete app tree.
+  Invoke-MorrowInstallRecovery -Root $Root
 
   # Stage into a fresh app.new beside the live install, then validate BEFORE any
   # swap. The currently working `app` is untouched, so failure here cannot destroy
@@ -108,6 +186,9 @@ function Invoke-MorrowActivation {
   # back to the preserved version if the promotion throws.
   $hadPrevious = Test-Path -LiteralPath $installedApp
   try {
+    if ($hadPrevious -and (Test-Path -LiteralPath $appOld)) {
+      Remove-MorrowAppDirectory $appOld 'stale app.old'
+    }
     if ($hadPrevious) { Move-Item -LiteralPath $installedApp -Destination $appOld }
     Move-Item -LiteralPath $appNew -Destination $installedApp
   } catch {
