@@ -20,14 +20,32 @@ describe("aggregateDoctor", () => {
 });
 
 describe("semver helpers", () => {
-  it("parses and compares versions", () => {
-    expect(parseSemver("v1.2.3")).toEqual({ major: 1, minor: 2, patch: 3 });
+  it("parses and compares release versions", () => {
+    expect(parseSemver("v1.2.3")).toEqual({ major: 1, minor: 2, patch: 3, prerelease: [] });
     expect(parseSemver("not-a-version")).toBeNull();
     expect(compareSemver("1.2.3", "1.2.3")).toBe(0);
     expect(compareSemver("1.2.3", "1.3.0")).toBe(-1);
     expect(compareSemver("2.0.0", "1.9.9")).toBe(1);
     // Unparseable sorts lowest.
     expect(compareSemver("garbage", "0.0.1")).toBe(-1);
+  });
+
+  it("parses pre-release identifiers", () => {
+    expect(parseSemver("0.1.0-beta.9")).toEqual({ major: 0, minor: 1, patch: 0, prerelease: ["beta", "9"] });
+  });
+
+  it("orders pre-releases by SemVer precedence (the beta-channel update bug)", () => {
+    // Numeric identifiers compare numerically, not lexically: beta.10 > beta.9.
+    expect(compareSemver("0.1.0-beta.10", "0.1.0-beta.9")).toBe(1);
+    expect(compareSemver("0.1.0-beta.9", "0.1.0-beta.10")).toBe(-1);
+    // A release outranks its own pre-release.
+    expect(compareSemver("0.1.0", "0.1.0-beta.9")).toBe(1);
+    expect(compareSemver("0.1.0-beta.9", "0.1.0")).toBe(-1);
+    // Same pre-release is equal; a larger identifier set outranks a smaller one.
+    expect(compareSemver("0.1.0-beta.9", "0.1.0-beta.9")).toBe(0);
+    expect(compareSemver("0.1.0-beta.9.1", "0.1.0-beta.9")).toBe(1);
+    // Alphanumeric identifiers outrank numeric ones (rc > 1 here).
+    expect(compareSemver("0.1.0-rc.1", "0.1.0-beta.9")).toBe(1);
   });
 });
 
@@ -36,6 +54,14 @@ describe("checkForUpdate", () => {
     expect(checkForUpdate("0.1.0", "0.2.0").updateAvailable).toBe(true);
     expect(checkForUpdate("0.1.0", "0.1.0").updateAvailable).toBe(false);
     expect(checkForUpdate("0.2.0", "0.1.0").updateAvailable).toBe(false);
+  });
+
+  it("detects a newer beta on the same release line (regression: was always false)", () => {
+    expect(checkForUpdate("0.1.0-beta.9", "0.1.0-beta.10").updateAvailable).toBe(true);
+    expect(checkForUpdate("0.1.0-beta.9", "0.1.0-beta.9").updateAvailable).toBe(false);
+    expect(checkForUpdate("0.1.0-beta.10", "0.1.0-beta.9").updateAvailable).toBe(false);
+    // A stable release is offered as an update over the pre-release.
+    expect(checkForUpdate("0.1.0-beta.9", "0.1.0").updateAvailable).toBe(true);
   });
 });
 

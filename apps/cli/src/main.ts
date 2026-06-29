@@ -21,7 +21,10 @@ import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./
 import { aggregateDoctor } from "./service/doctor-checks.js";
 import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/update.js";
 
-export const VERSION = "0.1.0";
+// Single source of truth lives in service/update.ts (MORROW_VERSION); re-exported
+// here so `morrow --version`, `/versions`, and `--help` never drift from the
+// update checker's notion of the current version.
+export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };

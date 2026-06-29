@@ -140,6 +140,14 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     const onboarding = await fetch("http://127.0.0.1:4317/onboarding");
     assert.equal(onboarding.status, 200, "GET /onboarding is 200");
 
+    // 5c. The packaged `morrow doctor` must pass on a healthy install: it gates
+    // its exit code on the offline file checks plus the running service serving
+    // the UI, so a non-zero exit (which ps() turns into a throw) is a real defect.
+    const doctorOut = ps(`& '${installedCmd}' doctor`);
+    assert.doesNotMatch(doctorOut, /^FAIL\b/m, `morrow doctor reported a failure:\n${doctorOut}`);
+    assert.match(doctorOut, /bundled Node/, "doctor reports on the bundled Node runtime");
+    assert.match(doctorOut, /web UI serving/, "doctor reports on UI serving");
+
     // 6. stop
     ps(`& '${installedCmd}' stop`);
   } finally {

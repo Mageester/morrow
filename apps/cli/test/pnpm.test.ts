@@ -72,4 +72,35 @@ describe("probePnpm validation", () => {
     expect(result).toMatchObject({ ok: true, detail: "10.12.1" });
     expect(result.executable?.toLowerCase()).toBe("c:\\nodejs\\pnpm.cmd");
   });
+
+  it("normalizes multi-token version output to the leading semver", () => {
+    // A Corepack/standalone shim may print extra tokens (e.g. a one-time setup
+    // note) on the same line; only the leading semver should surface in /versions.
+    const runner: PnpmRunner = (p) =>
+      p.toLowerCase() === "c:\\nodejs\\pnpm.cmd"
+        ? { ok: true, output: "10.12.1 (standalone)\r\n" }
+        : { ok: false, output: "", reason: "not found" };
+    const result = probePnpm({ PATH: "C:\\nodejs", PATHEXT: ".CMD" } as NodeJS.ProcessEnv, "win32", runner, NODE);
+    expect(result).toMatchObject({ ok: true, detail: "10.12.1" });
+  });
+
+  it("reports unavailable (the value /versions renders as \"unknown\") when no candidate validates", () => {
+    const runner: PnpmRunner = () => ({ ok: false, output: "", reason: "not found" });
+    const result = probePnpm({ PATH: "C:\\nodejs", PATHEXT: ".CMD" } as NodeJS.ProcessEnv, "win32", runner, NODE);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/not found/);
+    // /versions maps a failed probe to "unknown" rather than crashing or hanging.
+    const rendered = result.ok ? result.detail : "unknown";
+    expect(rendered).toBe("unknown");
+  });
+
+  it("resolves POSIX candidates without Windows .cmd shims (PNPM_HOME then PATH)", () => {
+    const candidates = buildPnpmCandidates(
+      { PNPM_HOME: "/home/a/.local/share/pnpm", PATH: "/usr/bin" } as NodeJS.ProcessEnv,
+      "linux",
+      "/usr/bin/node",
+    );
+    expect(candidates.map((c) => c.path)).toEqual(["/home/a/.local/share/pnpm/pnpm", "pnpm"]);
+    expect(candidates.some((c) => c.path.endsWith(".cmd"))).toBe(false);
+  });
 });

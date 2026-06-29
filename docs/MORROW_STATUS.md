@@ -2,15 +2,17 @@
 
 Snapshot of what is **verified working** right now, updated as slices land.
 
-## Build / test health (2026-06-23, latest)
+## Build / test health (2026-06-29, latest)
 
-- `pnpm check`, `pnpm test`, and `pnpm build`: green after B15.
-- `pnpm test`: **orchestrator 278 · CLI 135 · contracts 4 · web 8 ·
-  hermes-compat 4 — all green**.
-- Orchestrator smoke suites: `sqlite`, `vertical-slice`, `agent-alpha`,
-  `providers` — all pass.
-- `pnpm run test:e2e` (Playwright): 4 passed.
-- DB migrations: 13. Agent tools: 10. Built-in signed skills: 6.
+- `pnpm check`, `pnpm test`, and `pnpm build`: green.
+- `pnpm test`: **orchestrator 325 · CLI 140 · web 22 · contracts 4 ·
+  hermes-compat 4 — all green (495 total)**.
+- Orchestrator smoke suites: `vertical-slice` and `providers` verified passing
+  this session. (`providers` previously failed on a stale OAuth assertion — see
+  `docs/CURRENT_STATE.md`; fixed 2026-06-29.)
+- `pnpm run test:e2e` (Playwright): not re-run this session.
+
+> See `docs/CURRENT_STATE.md` for the authoritative verified snapshot.
 
 ## Verified capabilities (evidence in tree)
 

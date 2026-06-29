@@ -1,5 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import process from "node:process";
+import { installerSafetyFailures } from "./lib/installer-safety.mjs";
+import { versionDriftFailures } from "./lib/version-consistency.mjs";
 
 const requiredFiles = [
   "README.md",
@@ -56,6 +58,32 @@ for (const path of asciiOnlyShellScripts) {
   } catch {
     failures.push(`Missing or unreadable installer script: ${path}`);
   }
+}
+
+// The Windows installer must never destroy user data or the previous working
+// version on upgrade (see scripts/lib/installer-safety.mjs for the invariants).
+try {
+  const installer = await readFile("installer/install.ps1", "utf8");
+  for (const failure of installerSafetyFailures(installer)) {
+    failures.push(`installer/install.ps1: ${failure}`);
+  }
+} catch {
+  failures.push("Missing or unreadable installer script: installer/install.ps1");
+}
+
+// Release-facing versions must all match the canonical root package.json version.
+try {
+  const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([
+    readFile("package.json", "utf8"),
+    readFile("apps/cli/src/service/update.ts", "utf8"),
+    readFile("README.md", "utf8"),
+    readFile("CHANGELOG.md", "utf8"),
+  ]);
+  for (const failure of versionDriftFailures({ rootPackageJson, cliUpdateTs, readme, changelog })) {
+    failures.push(`Version drift: ${failure}`);
+  }
+} catch {
+  failures.push("Could not read one of the version-bearing files (package.json, apps/cli/src/service/update.ts, README.md, CHANGELOG.md)");
 }
 
 for (const path of requiredFiles) {

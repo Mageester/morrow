@@ -83,15 +83,18 @@ an explicit override.
 
 ## OAuth findings (honest)
 
-Morrow only labels a flow "OAuth" when it is an officially supported, documented
-third-party integration. It does **not** reverse-engineer private
-authentication, read browser cookies, reuse session tokens, imitate another
-app's OAuth client, or implement undocumented token exchange.
+Morrow does **not** reverse-engineer private authentication, read browser
+cookies, or reuse an existing browser session. Subscription sign-in goes through
+each provider's real OAuth endpoints using the same first-party OAuth client ids
+and PKCE flow the official CLIs use (`src/provider/oauth-flow.ts`), behind an
+explicit security/ToS warning, with tokens stored locally. Reusing a first-party
+client id may be subject to provider terms and can break on provider-side
+changes.
 
 | Flow | Status | Finding | Recommendation |
 |------|--------|---------|----------------|
-| Codex / ChatGPT (OpenAI) | Unavailable | No documented third-party OAuth client flow for a consumer ChatGPT/Codex subscription. | Use the OpenAI provider with `OPENAI_API_KEY`. |
-| Claude (Anthropic) | Unavailable | No public third-party OAuth flow for a consumer Claude subscription. | Use the Anthropic provider with `ANTHROPIC_API_KEY`. |
+| Codex / ChatGPT (OpenAI) | Available | Subscription sign-in via the Codex CLI's first-party OAuth client + PKCE. ChatGPT/Codex tokens target OpenAI's Codex backend and may need extra configuration for general chat. Tokens stored locally. | Sign in in the app, or use the OpenAI provider with `OPENAI_API_KEY`. |
+| Claude (Anthropic) | Available | Subscription sign-in via Claude Code's first-party OAuth client + PKCE. Subscription inference is intended for Anthropic's own tools and may be rejected. Tokens stored locally. | Sign in in the app, or use the Anthropic provider with `ANTHROPIC_API_KEY`. |
 | Gemini (Google) | Unavailable | The documented Generative Language API uses API keys; Google OAuth applies to Cloud/Vertex accounts, not consumer-subscription third-party sign-in. | Use the Gemini provider with `GEMINI_API_KEY`, or run Ollama locally. |
 
 Operators should re-verify the linked provider documentation, as terms change.
