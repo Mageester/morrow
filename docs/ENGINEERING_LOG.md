@@ -2,6 +2,19 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Remove redundant @morrow/cli build (turbo "no output" warning)
+
+- **Issue:** `pnpm build` warned "no output files found for task @morrow/cli#build".
+- **Root cause:** The base tsconfig is `noEmit: true`, so the CLI's `build`
+  (`tsc -p tsconfig.json`) was byte-identical to its `check` and emitted nothing;
+  the CLI ships as `bin/morrow.mjs` (run via tsx), never a compiled artifact, and
+  nothing depends on `@morrow/cli#build`. turbo's `build` task expects `dist/**`.
+- **Fix:** Removed the redundant `build` script. `turbo build` no longer runs a
+  cli build (warning gone); `pnpm check` still typechecks the CLI.
+- **Validation:** `pnpm build` 5/5 clean (no warning), `pnpm check` PASS (cli
+  typecheck intact), `pnpm test` PASS (501).
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Verified the real artifact end-to-end + two installer rollback fixes
 
 - **Built the real artifact** with repo-supported commands
