@@ -2,6 +2,18 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Run repository-guard tests in CI
+
+- **Issue:** The new installer-safety and version-drift guards were enforced in
+  CI only indirectly (via `validate-repository.mjs` in `pnpm check`); their
+  dedicated unit tests — including the negative cases that prove the guards
+  actually fire — never ran in CI.
+- **Implementation:** Added `node --test scripts/validate-repository.test.mjs` to
+  the main CI job (`.github/workflows/ci.yml`). It is the only cross-platform
+  script test; the artifact/Windows-dependent ones stay in `release.yml`.
+- **Validation:** Command runs clean locally (9 passed).
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Installer: null-safe User PATH update
 
 - **Issue:** `install.ps1` set the User PATH via

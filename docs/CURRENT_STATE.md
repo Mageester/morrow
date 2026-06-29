@@ -126,7 +126,7 @@ Recorded so the next pass knows where coverage is thin:
 2. **[RESOLVED 2026-06-29]** `install.ps1` null-PATH crash — now defaults a
    missing User `Path` to `''` and filters blank segments (parse-checked +
    simulated). See ENGINEERING_LOG.
-3. CI (`ci.yml`) runs `pnpm check`/`test`/`build` but **not** the
-   `scripts/*.test.mjs` suite (only `release.yml` runs two of them). The new
-   installer-safety guard is still enforced via the validator in `pnpm check`,
-   but wiring the script tests into CI would add coverage. *(P3)*
+3. **[RESOLVED 2026-06-29]** CI now runs `scripts/validate-repository.test.mjs`
+   (installer-safety + version-drift negatives + ASCII/UTF-8). The other
+   `scripts/*.test.mjs` need a Windows release artifact and remain in
+   `release.yml`.
