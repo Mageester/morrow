@@ -139,7 +139,11 @@ function Invoke-MorrowActivation {
 # returned unchanged so re-running the installer never duplicates the entry.
 function Get-MorrowMergedPath([string]$Existing, [string]$Bin) {
   if ($null -eq $Existing) { $Existing = '' }
-  if ((@($Existing -split ';' | Where-Object { $_ }) -contains $Bin)) { return $Existing }
+  # Compare entries case-insensitively and ignoring a trailing backslash, matching
+  # the uninstaller, so `...\bin` and `...\bin\` are never treated as distinct.
+  $needle = $Bin.TrimEnd('\')
+  $present = @($Existing -split ';' | Where-Object { $_ } | Where-Object { $_.TrimEnd('\') -ieq $needle })
+  if ($present.Count -gt 0) { return $Existing }
   return (($Existing.TrimEnd(';') + ';' + $Bin).TrimStart(';'))
 }
 

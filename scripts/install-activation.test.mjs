@@ -163,4 +163,6 @@ test("PATH merge is null-safe and never duplicates the bin entry", { skip }, () 
   assert.equal(mergePath("C:\\a", bin), `C:\\a;${bin}`, "bin is appended");
   assert.equal(mergePath("C:\\a;", bin), `C:\\a;${bin}`, "trailing semicolon handled");
   assert.equal(mergePath(`C:\\a;${bin}`, bin), `C:\\a;${bin}`, "already-present bin is not duplicated");
+  assert.equal(mergePath(`C:\\a;${bin}\\`, bin), `C:\\a;${bin}\\`, "trailing-backslash entry is treated as present (no duplicate)");
+  assert.equal(mergePath(`C:\\a;${bin.toUpperCase()}`, bin), `C:\\a;${bin.toUpperCase()}`, "case-insensitive match (no duplicate)");
 });

@@ -142,3 +142,13 @@ Recorded so the next pass knows where coverage is thin:
    (installer-safety + version-drift negatives + ASCII/UTF-8). The other
    `scripts/*.test.mjs` need a Windows release artifact and remain in
    `release.yml`.
+4. **Installer crash-window (hostile-review note, low).** A process kill *exactly*
+   between `app → app.old` and `app.new → app` leaves `app` missing with the
+   previous version safe in `app.old`; re-running the installer recovers (user
+   data is never at risk). A fully crash-safe design would detect a leftover
+   `app.old` on startup and auto-recover — out of scope for this PR.
+5. **PATH dedup is trailing-backslash sensitive (hostile-review note, low).**
+   `Get-MorrowMergedPath` compares case-insensitively but treats `…\bin` and
+   `…\bin\` as distinct. The installer always uses the same `Join-Path` form so it
+   never self-duplicates; a hand-edited PATH with a trailing slash could. Aligning
+   with the uninstaller's `TrimEnd('\')` comparison would close it.
