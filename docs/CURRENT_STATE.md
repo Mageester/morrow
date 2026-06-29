@@ -84,6 +84,14 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   and was non-atomic (a failed move left no working install). Rewrote to an
   atomic, data-preserving, rollback-capable swap; added ADR-0004 and a CI-enforced
   static guard (`scripts/lib/installer-safety.mjs`). See ENGINEERING_LOG.
+  **Verified on real Windows (2026-06-29):** refactored the activation into
+  `Invoke-MorrowActivation` + a test-only `MORROW_TEST_HOOK`, and
+  `scripts/install-activation.test.mjs` drives the real code (synthetic data,
+  isolated temp dir). 5/5 pass: fresh install; upgrade preserves DB + provider
+  config; corrupt package rolls back with data intact; spaces in path; null-safe
+  no-duplicate PATH. Also hardened a best-effort `stop` that could abort an
+  upgrade. Still pending: full packaged-service launch + `morrow doctor` (needs a
+  built artifact).
 
 ### P2
 - **[RESOLVED 2026-06-29] OAuth documentation drift.** `README.md`,

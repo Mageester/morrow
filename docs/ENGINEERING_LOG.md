@@ -2,6 +2,35 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Windows installer activation: real-code integration test + stop hardening
+
+- **Context:** The existing `install-integration.test.mjs` is safely sandboxed
+  (all paths under `mkdtemp(tmpdir())`; never touches real `%LOCALAPPDATA%\Morrow`,
+  Documents, the dev checkout, or real credentials) but only covered fresh
+  install + launch, and **reimplemented** the install steps inline — it never
+  exercised `install.ps1`'s atomic swap/rollback (the P0 fix).
+- **Change:** Refactored `install.ps1`'s activation into `Invoke-MorrowActivation`
+  and the PATH merge into a pure `Get-MorrowMergedPath`, plus a single test-only
+  `MORROW_TEST_HOOK` dispatcher (`activate` / `mergepath`) that is never set on the
+  `irm|iex` path. New `scripts/install-activation.test.mjs` drives the REAL
+  activation code with synthetic packages + synthetic data (no artifact, no
+  network, never mutates the real User PATH).
+- **Defect found while testing:** `& $installedCmd stop` could throw under
+  `$ErrorActionPreference='Stop'` if the previous launcher errored, aborting the
+  upgrade before the swap. Stopping is best-effort, so wrapped it in try/catch.
+  (Exposure pre-dated the refactor.)
+- **Verified on real Windows (`MORROW_RUN_INSTALL_ITEST=1`), 5/5:** fresh install;
+  upgrade preserves user DB + provider config; corrupt package rejected and rolls
+  back to the previous app with data intact; spaces in the install path; PATH
+  merge null-safe + no duplicate entry. Staging (`app.new`) cleaned; backup
+  (`app.old`) correctly retained for health-rollback. Skips cleanly without the
+  opt-in flag (5 skipped).
+- **Validation:** `pnpm check`/`test`/`build` PASS; installer-safety guard PASS;
+  PowerShell parser clean.
+- **Limitation:** The full packaged-service launch + `morrow doctor` path still
+  needs a built artifact (`install-integration.test.mjs`); see CURRENT_STATE.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Run repository-guard tests in CI
 
 - **Issue:** The new installer-safety and version-drift guards were enforced in
