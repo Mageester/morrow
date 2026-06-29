@@ -2,6 +2,33 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — P0: installer destroyed user data on every upgrade
+
+- **Issue:** `installer/install.ps1` deleted the entire install root on upgrade
+  and was non-atomic.
+- **Root cause:** The launcher sets `MORROW_HOME=<InstallRoot>\data`
+  (`morrow.mjs`) and the orchestrator treats `MORROW_HOME` as its whole home
+  (`home.ts`), so the DB, config, provider keys and backups live under the
+  install root. `install.ps1` ran `Remove-Item $InstallRoot -Recurse -Force`
+  before staging the new app — wiping all user data on every upgrade and, if the
+  subsequent `Move-Item` failed, leaving no working install and nothing to roll
+  back to. This contradicted the uninstaller's "preserve data by default" design.
+- **Implementation:** Rewrote activation to be atomic and data-preserving:
+  create data dirs idempotently, never delete the root; stage to `app.new`;
+  validate; same-volume swap `app→app.old`, `app.new→app`; roll back to `app.old`
+  on activation/verify/health failure; discard `app.old` only after a healthy
+  start. Added ADR-0004.
+- **Tests / enforcement:** New pure guard `scripts/lib/installer-safety.mjs`
+  wired into `scripts/validate-repository.mjs` so `pnpm check`/CI fail if the
+  destructive pattern or missing rollback returns. 3 new tests in
+  `validate-repository.test.mjs` (live script passes; destructive + no-rollback
+  scripts are caught). PowerShell `Parser::ParseFile` reports no syntax errors.
+- **Validation:** `pnpm check` PASS (now includes the guard), `pnpm test` PASS
+  (498), `pnpm build` PASS, installer unit tests 6/6.
+- **Limitation:** Full end-to-end install requires Windows + the real artifact
+  (out of reach here); verified via static invariants + parse check.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — `/versions` uses the hardened pnpm resolver
 
 - **Issue:** The CLI `/versions` slash command resolved pnpm via

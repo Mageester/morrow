@@ -68,6 +68,14 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   Fixed by aligning the assertion with the implemented contract (mirrors
   `server-providers.test.ts`).
 
+### P0
+- **[RESOLVED 2026-06-29] Installer destroyed all user data on every upgrade.**
+  `install.ps1` deleted `$InstallRoot` (which holds the DB, config, provider
+  keys, backups — `MORROW_HOME=<InstallRoot>\data`) before staging the new app,
+  and was non-atomic (a failed move left no working install). Rewrote to an
+  atomic, data-preserving, rollback-capable swap; added ADR-0004 and a CI-enforced
+  static guard (`scripts/lib/installer-safety.mjs`). See ENGINEERING_LOG.
+
 ### P2
 - **[RESOLVED 2026-06-29] OAuth documentation drift.** `README.md`,
   `docs/providers.md`, and ADR `docs/decisions/0002-multi-provider-runtime.md`
@@ -104,7 +112,12 @@ Recorded so the next pass knows where coverage is thin:
 
 ## Prioritized backlog (next)
 
-1. Untrack `morrow-tui-wip-before-codex.patch` and ignore the pattern (P2).
-2. Refresh `MORROW_STATUS.md` / `CONTINUATION.md` to match reality (P3).
-3. Run + stabilize the Playwright E2E suite; record result here.
-4. Decide and converge a single product-version source (needs owner input).
+1. **Product version single-source-of-truth** (root `package.json` `0.0.0` vs
+   README `v0.1.0-beta.9` vs packages `0.1.0`) — investigate + ADR + drift check.
+2. `install.ps1` reads User `Path` then calls `$userPath.TrimEnd(';')` — if the
+   User Path env var is unset (`$null`) this throws. Pre-existing; guard with a
+   `$null`-safe default. *(P3, low)*
+3. CI (`ci.yml`) runs `pnpm check`/`test`/`build` but **not** the
+   `scripts/*.test.mjs` suite (only `release.yml` runs two of them). The new
+   installer-safety guard is still enforced via the validator in `pnpm check`,
+   but wiring the script tests into CI would add coverage. *(P3)*

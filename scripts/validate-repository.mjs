@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import process from "node:process";
+import { installerSafetyFailures } from "./lib/installer-safety.mjs";
 
 const requiredFiles = [
   "README.md",
@@ -56,6 +57,17 @@ for (const path of asciiOnlyShellScripts) {
   } catch {
     failures.push(`Missing or unreadable installer script: ${path}`);
   }
+}
+
+// The Windows installer must never destroy user data or the previous working
+// version on upgrade (see scripts/lib/installer-safety.mjs for the invariants).
+try {
+  const installer = await readFile("installer/install.ps1", "utf8");
+  for (const failure of installerSafetyFailures(installer)) {
+    failures.push(`installer/install.ps1: ${failure}`);
+  }
+} catch {
+  failures.push("Missing or unreadable installer script: installer/install.ps1");
 }
 
 for (const path of requiredFiles) {

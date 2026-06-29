@@ -92,24 +92,68 @@ try {
   }
 
   Write-Host 'Package validated. Installing...'
-  # Stop any running instance from a previous install, then replace it.
-  $existingCmd = Join-Path $InstallRoot 'app\morrow.cmd'
-  if (Test-Path -LiteralPath $existingCmd) { & $existingCmd stop 2>$null }
-  if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
 
+  # The application code lives in <InstallRoot>\app and is the ONLY thing an
+  # upgrade replaces. The user's data (database, config, saved provider keys,
+  # backups, logs, cache) lives in sibling directories -- the launcher points
+  # MORROW_HOME at <InstallRoot>\data -- and must survive every upgrade. So we
+  # create the data directories idempotently and never delete the install root.
   New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-  Move-Item -LiteralPath $package -Destination (Join-Path $InstallRoot 'app')
   foreach ($name in 'data','config','logs','browser','cache','backup','bin') {
     New-Item -ItemType Directory -Path (Join-Path $InstallRoot $name) -Force | Out-Null
   }
+
+  $installedApp = Join-Path $InstallRoot 'app'
+  $appNew = Join-Path $InstallRoot 'app.new'
+  $appOld = Join-Path $InstallRoot 'app.old'
+  $installedCmd = Join-Path $installedApp 'morrow.cmd'
+
+  # Clear app.new/app.old scratch dirs left by a previous interrupted upgrade.
+  # These are code-only staging/backup copies -- never user data -- so removing
+  # them is safe. The user's data directories above are untouched.
+  Remove-Item -LiteralPath $appNew -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
+
+  # Stage the validated package into a fresh app.new beside the live install.
+  # This lands in a new directory; the currently working `app` is left intact,
+  # so a failure here can never destroy the previous version.
+  Move-Item -LiteralPath $package -Destination $appNew
+  foreach ($rel in $RequiredFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $appNew $rel))) {
+      Remove-Item -LiteralPath $appNew -Recurse -Force -ErrorAction SilentlyContinue
+      Fail "Staged install is incomplete (missing app\$rel)."
+    }
+  }
+
+  # Stop any running instance before swapping files (a live node.exe/DLL would
+  # lock the directory and fail the rename).
+  if (Test-Path -LiteralPath $installedCmd) { & $installedCmd stop 2>$null }
+
+  # Activate: move the previous app aside, then promote app.new. Both renames are
+  # same-volume (under $InstallRoot), so they are fast and the previous version
+  # is preserved in app.old until the new one is proven healthy. Roll back to the
+  # preserved version if activation fails.
+  $hadPrevious = Test-Path -LiteralPath $installedApp
+  try {
+    if ($hadPrevious) { Move-Item -LiteralPath $installedApp -Destination $appOld }
+    Move-Item -LiteralPath $appNew -Destination $installedApp
+  } catch {
+    if ((-not (Test-Path -LiteralPath $installedApp)) -and (Test-Path -LiteralPath $appOld)) {
+      Move-Item -LiteralPath $appOld -Destination $installedApp -ErrorAction SilentlyContinue
+    }
+    Fail "Could not activate the new version; the previous installation is intact. ($_)"
+  }
+
   Set-Content -LiteralPath (Join-Path $InstallRoot 'bin\morrow.cmd') -Value "@echo off`r`n`"%~dp0..\app\morrow.cmd`" %*`r`n" -NoNewline
 
-  # Verify the installed tree before registering and launching.
-  $installedApp = Join-Path $InstallRoot 'app'
-  $installedCmd = Join-Path $installedApp 'morrow.cmd'
+  # Verify the activated tree. On any gap, roll back to the previous version.
   foreach ($rel in $RequiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $installedApp $rel))) {
-      Fail "Installation incomplete: app\$rel is missing after install."
+      Remove-Item -LiteralPath $installedApp -Recurse -Force -ErrorAction SilentlyContinue
+      if ($hadPrevious -and (Test-Path -LiteralPath $appOld)) {
+        Move-Item -LiteralPath $appOld -Destination $installedApp -ErrorAction SilentlyContinue
+      }
+      Fail "Installation incomplete: app\$rel is missing after activation; previous version restored."
     }
   }
 
@@ -132,7 +176,21 @@ try {
     try { if ((Invoke-WebRequest -Uri 'http://127.0.0.1:4317/api/health' -UseBasicParsing).StatusCode -eq 200) { $healthy = $true; break } } catch {}
     Start-Sleep -Seconds 1
   }
-  if (-not $healthy) { Fail 'Morrow did not pass its localhost health check. Run "morrow doctor" for details.' }
+  if (-not $healthy) {
+    # Roll back to the previous working version (if any) rather than leaving the
+    # user with a broken install. User data is untouched either way.
+    if ($hadPrevious -and (Test-Path -LiteralPath $appOld)) {
+      & $installedCmd stop 2>$null
+      Remove-Item -LiteralPath $installedApp -Recurse -Force -ErrorAction SilentlyContinue
+      Move-Item -LiteralPath $appOld -Destination $installedApp -ErrorAction SilentlyContinue
+      & (Join-Path $installedApp 'morrow.cmd') start 2>$null
+      Fail 'The new version did not pass its health check; the previous version was restored and restarted. Run "morrow doctor" for details.'
+    }
+    Fail 'Morrow did not pass its localhost health check. Run "morrow doctor" for details.'
+  }
+
+  # Success: the new version is healthy. Discard the preserved previous version.
+  Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
   Start-Process 'http://127.0.0.1:4317/onboarding'
   Write-Host "Morrow $($manifest.version) installed to $InstallRoot. It is an unsigned beta."
 } catch {
