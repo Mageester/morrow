@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import process from "node:process";
 import { installerSafetyFailures } from "./lib/installer-safety.mjs";
+import { versionDriftFailures } from "./lib/version-consistency.mjs";
 
 const requiredFiles = [
   "README.md",
@@ -68,6 +69,21 @@ try {
   }
 } catch {
   failures.push("Missing or unreadable installer script: installer/install.ps1");
+}
+
+// Release-facing versions must all match the canonical root package.json version.
+try {
+  const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([
+    readFile("package.json", "utf8"),
+    readFile("apps/cli/src/service/update.ts", "utf8"),
+    readFile("README.md", "utf8"),
+    readFile("CHANGELOG.md", "utf8"),
+  ]);
+  for (const failure of versionDriftFailures({ rootPackageJson, cliUpdateTs, readme, changelog })) {
+    failures.push(`Version drift: ${failure}`);
+  }
+} catch {
+  failures.push("Could not read one of the version-bearing files (package.json, apps/cli/src/service/update.ts, README.md, CHANGELOG.md)");
 }
 
 for (const path of requiredFiles) {

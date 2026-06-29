@@ -2,6 +2,33 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Single-source product version + fix the broken update checker
+
+- **Issue:** The release version was duplicated and drifted (root `package.json`
+  `0.0.0`; `main.ts`/`update.ts` `0.1.0`; README/CHANGELOG `0.1.0-beta.9`), and
+  the update checker was functionally broken.
+- **Root cause:** (1) `fetchLatestVersion` reads root `package.json` on `main` as
+  "latest", but it was `0.0.0`, so no update ever showed. (2) `parseSemver`
+  discarded the pre-release suffix, so every `0.1.0-beta.*` compared equal — the
+  beta channel could never detect a newer beta. The runtime also reported the
+  wrong version (`0.1.0`).
+- **Implementation:**
+  - Canonical version = root `package.json` (`0.1.0-beta.9`). Consolidated the
+    two CLI constants into one (`MORROW_VERSION` in `update.ts`); `main.ts`
+    re-exports it.
+  - Implemented SemVer §11 pre-release precedence in `compareSemver`
+    (`beta.10 > beta.9`, release > pre-release, numeric < alphanumeric).
+  - Added `scripts/lib/version-consistency.mjs`, wired into
+    `validate-repository.mjs`, so `pnpm check`/CI fail when root package.json, the
+    CLI constant, the README status line, or the latest CHANGELOG entry drift.
+  - ADR-0005.
+- **Tests:** 3 new CLI semver/update tests (incl. the beta-channel regression);
+  3 new validator tests (live repo consistent; CLI-drift and README/CHANGELOG-
+  drift caught).
+- **Validation:** `pnpm check` PASS (incl. drift guard), `pnpm test` PASS (CLI
+  146; 501 total), `pnpm build` PASS, script tests PASS.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — P0: installer destroyed user data on every upgrade
 
 - **Issue:** `installer/install.ps1` deleted the entire install root on upgrade

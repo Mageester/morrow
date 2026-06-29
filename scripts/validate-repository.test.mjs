@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { installerSafetyFailures } from "./lib/installer-safety.mjs";
+import { versionDriftFailures } from "./lib/version-consistency.mjs";
 
 test("package is private and unlicensed", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
@@ -56,4 +57,34 @@ test("installer safety guard catches a non-atomic overwrite with no rollback", (
   ].join("\n");
   const failures = installerSafetyFailures(noRollback);
   assert.ok(failures.some((f) => /roll back/.test(f)), "must require a rollback path");
+});
+
+test("the live repo has a single consistent product version", async () => {
+  const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([
+    readFile("package.json", "utf8"),
+    readFile("apps/cli/src/service/update.ts", "utf8"),
+    readFile("README.md", "utf8"),
+    readFile("CHANGELOG.md", "utf8"),
+  ]);
+  assert.deepEqual(versionDriftFailures({ rootPackageJson, cliUpdateTs, readme, changelog }), []);
+});
+
+test("version drift guard flags a CLI constant that diverges from root package.json", () => {
+  const failures = versionDriftFailures({
+    rootPackageJson: JSON.stringify({ version: "0.1.0-beta.9" }),
+    cliUpdateTs: 'export const MORROW_VERSION = "0.1.0";', // stale duplicate
+    readme: "> **Status:** v0.1.0-beta.9 Early Access.",
+    changelog: "## [0.1.0-beta.9] - 2026-06-25",
+  });
+  assert.ok(failures.some((f) => /MORROW_VERSION/.test(f) && /0\.1\.0\b/.test(f)));
+});
+
+test("version drift guard flags a stale README/CHANGELOG", () => {
+  const failures = versionDriftFailures({
+    rootPackageJson: JSON.stringify({ version: "0.1.0-beta.10" }),
+    cliUpdateTs: 'export const MORROW_VERSION = "0.1.0-beta.10";',
+    readme: "> **Status:** v0.1.0-beta.9 Early Access.",
+    changelog: "## [0.1.0-beta.9] - 2026-06-25",
+  });
+  assert.equal(failures.length, 2, "README and CHANGELOG should both be flagged");
 });

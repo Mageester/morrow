@@ -68,6 +68,15 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   Fixed by aligning the assertion with the implemented contract (mirrors
   `server-providers.test.ts`).
 
+### P1
+- **[RESOLVED 2026-06-29] Update checker was non-functional + version drift.**
+  Release version was duplicated/inconsistent (root `0.0.0`, CLI `0.1.0`,
+  README/CHANGELOG `0.1.0-beta.9`). `fetchLatestVersion` read root `0.0.0` as
+  "latest" and `parseSemver` ignored pre-release suffixes, so the beta channel
+  could never detect a newer beta. Established root `package.json` as the single
+  canonical version, consolidated the CLI constants, implemented SemVer
+  pre-release precedence, and added a CI drift guard. ADR-0005.
+
 ### P0
 - **[RESOLVED 2026-06-29] Installer destroyed all user data on every upgrade.**
   `install.ps1` deleted `$InstallRoot` (which holds the DB, config, provider
@@ -112,8 +121,8 @@ Recorded so the next pass knows where coverage is thin:
 
 ## Prioritized backlog (next)
 
-1. **Product version single-source-of-truth** (root `package.json` `0.0.0` vs
-   README `v0.1.0-beta.9` vs packages `0.1.0`) — investigate + ADR + drift check.
+1. **[RESOLVED 2026-06-29]** Product version single-source-of-truth — root
+   `package.json` is now canonical with a CI drift guard (ADR-0005).
 2. `install.ps1` reads User `Path` then calls `$userPath.TrimEnd(';')` — if the
    User Path env var is unset (`$null`) this throws. Pre-existing; guard with a
    `$null`-safe default. *(P3, low)*

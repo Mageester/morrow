@@ -6,19 +6,62 @@
  * check is testable without network.
  */
 
-/** The running CLI version. Kept in sync with apps/cli/package.json. */
-export const MORROW_VERSION = "0.1.0";
+/**
+ * The single canonical Morrow product/release version. This is the ONE place the
+ * version is declared in runtime code; `apps/cli/src/main.ts` re-exports it.
+ * `scripts/validate-repository.mjs` fails `pnpm check`/CI if this drifts from the
+ * root `package.json` version, the README status line, or the latest CHANGELOG
+ * entry. See ADR-0005.
+ */
+export const MORROW_VERSION = "0.1.0-beta.9";
 
 export interface SemverParts {
   major: number;
   minor: number;
   patch: number;
+  /** Dot-separated pre-release identifiers, e.g. ["beta", "9"]. Empty for a release. */
+  prerelease: string[];
 }
 
 export function parseSemver(version: string): SemverParts | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(version.trim());
   if (!match) return null;
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+/**
+ * Compare two pre-release identifier lists per the SemVer §11 precedence rules:
+ * numeric identifiers compare numerically, alphanumeric compare in ASCII order,
+ * numeric always sorts lower than alphanumeric, and a larger set outranks a
+ * smaller one when all preceding identifiers are equal.
+ */
+function comparePrerelease(a: string[], b: string[]): number {
+  // A non-empty pre-release has LOWER precedence than the same version with none.
+  if (a.length === 0 && b.length === 0) return 0;
+  if (a.length === 0) return 1; // a is a release, b is a pre-release -> a > b
+  if (b.length === 0) return -1;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const ai = a[i]!;
+    const bi = b[i]!;
+    const an = /^\d+$/.test(ai);
+    const bn = /^\d+$/.test(bi);
+    if (an && bn) {
+      const d = Number(ai) - Number(bi);
+      if (d !== 0) return d < 0 ? -1 : 1;
+    } else if (an !== bn) {
+      return an ? -1 : 1; // numeric identifiers have lower precedence than alphanumeric
+    } else if (ai !== bi) {
+      return ai < bi ? -1 : 1;
+    }
+  }
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
+  return 0;
 }
 
 /** -1 if a<b, 0 if equal, 1 if a>b. Unparseable versions sort as lowest. */
@@ -31,7 +74,7 @@ export function compareSemver(a: string, b: string): number {
   for (const key of ["major", "minor", "patch"] as const) {
     if (pa[key] !== pb[key]) return pa[key] < pb[key] ? -1 : 1;
   }
-  return 0;
+  return comparePrerelease(pa.prerelease, pb.prerelease);
 }
 
 export interface UpdateStatus {
