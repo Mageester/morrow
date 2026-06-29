@@ -98,6 +98,13 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   deliberately unhealthy artifact); corrupt-package rollback IS covered.
 
 ### P2
+- **[RESOLVED 2026-06-29] Interrupted deterministic task resume failed.**
+  `POST /api/tasks/:taskId/resume` used the agent continuation transition for
+  every task kind (`interrupted -> running`). Deterministic `inspect_workspace`
+  execution only starts from `queued`, so an interrupted workspace task failed
+  immediately on resume. Non-agent interrupted tasks now use the existing retry
+  path before `runner.run`; agent tasks still use continuation resume. Covered by
+  `services/orchestrator/test/retry.test.ts`.
 - **[RESOLVED 2026-06-29] OAuth documentation drift.** `README.md`,
   `docs/providers.md`, and ADR `docs/decisions/0002-multi-provider-runtime.md`
   all still claimed subscription OAuth was "honestly unavailable," contradicting

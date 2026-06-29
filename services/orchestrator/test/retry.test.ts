@@ -8,6 +8,9 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import type { TaskStatus } from "@morrow/contracts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 function seedTask(db: Database.Database, status: TaskStatus) {
   const ts = new Date().toISOString();
@@ -75,5 +78,30 @@ describe("POST /api/tasks/:taskId/retry", () => {
     const res = await app.inject({ method: "POST", url: "/api/tasks/t1/retry" });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TASK_NOT_RETRYABLE");
+  });
+});
+
+describe("POST /api/tasks/:taskId/resume", () => {
+  it("restarts an interrupted workspace inspection instead of resuming it as already running", async () => {
+    const work = mkdtempSync(join(tmpdir(), "morrow-resume-"));
+    const db = openDatabase(":memory:");
+    const runner = new TaskRunner(db);
+    const app = buildServer({ db, runner });
+    try {
+      writeFileSync(join(work, "readme.txt"), "hello");
+      const ts = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: work, createdAt: ts });
+      taskRepository(db).createTask({ id: "inspect", projectId: "p1", kind: "inspect_workspace", status: "interrupted", createdAt: ts });
+
+      const res = await app.inject({ method: "POST", url: "/api/tasks/inspect/resume" });
+      expect(res.statusCode).toBe(202);
+      await runner.waitFor("inspect");
+
+      expect(taskRepository(db).getTaskById("inspect")?.status).toBe("verified");
+    } finally {
+      await app.close();
+      db.close();
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });

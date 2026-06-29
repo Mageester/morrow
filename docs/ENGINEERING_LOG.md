@@ -2,6 +2,25 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 - Resume interrupted deterministic tasks safely
+
+- **Issue:** `POST /api/tasks/:taskId/resume` failed for interrupted
+  `inspect_workspace` tasks.
+- **Root cause:** The endpoint used `resumeInterruptedTask` for every task kind,
+  which transitions `interrupted -> running` before calling `runner.run`.
+  `executeInspectWorkspaceTask` is deterministic and only starts from `queued`,
+  so the resumed task immediately failed with "Task is not available for
+  workspace inspection."
+- **Implementation:** Agent tasks still use continuation resume. Non-agent
+  interrupted tasks use the existing retry path, which clears stale execution
+  state and re-queues the task before the runner restarts it.
+- **Tests:** Added an API regression that seeds an interrupted workspace
+  inspection in a temporary workspace, calls `/resume`, waits for the real
+  runner, and verifies the task reaches `verified`.
+- **Validation:** `pnpm --filter @morrow/orchestrator test -- test/retry.test.ts`
+  PASS (326 orchestrator tests with the targeted file request).
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 - Installer recovery for interrupted app swaps
 
 - **Issue:** A crash between installer rename operations could leave `app`

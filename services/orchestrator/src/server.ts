@@ -721,7 +721,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
     if (task.status !== "interrupted") throw new ApiError(409, "Only interrupted tasks can be resumed", "TASK_NOT_RESUMABLE");
-    records.resumeInterruptedTask(taskId, { id: crypto.randomUUID(), createdAt: new Date().toISOString(), payload: { reason: "user_continue" } });
+    if (task.kind === "agent_chat") {
+      records.resumeInterruptedTask(taskId, { id: crypto.randomUUID(), createdAt: new Date().toISOString(), payload: { reason: "user_continue" } });
+    } else {
+      records.retryTask(taskId);
+    }
     deps.runner.run(taskId);
     reply.status(202);
     return records.getAggregate(taskId).task;
