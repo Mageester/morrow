@@ -692,11 +692,13 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     case "versions": {
       const nodeVer = process.versions.node;
       const morrowVer = (await import("../main.js")).VERSION;
-      let pnpmVer = "unknown";
-      try {
-        const { execSync } = await import("node:child_process");
-        pnpmVer = execSync("pnpm --version", { encoding: "utf8" }).trim();
-      } catch {}
+      // Use the shared hardened resolver (ranked candidates, no shell, bounded
+      // timeout, .cmd/.bat via ComSpec, semver-validated) instead of a naive
+      // `execSync("pnpm --version")`, which shells out with ambiguous PATH/.cmd
+      // resolution, can hang with no timeout, and leaks stderr/Corepack chatter.
+      const { probePnpm } = await import("../service/pnpm.js");
+      const pnpm = probePnpm(process.env);
+      const pnpmVer = pnpm.ok ? pnpm.detail : "unknown";
       out.heading("Versions");
       out.keyValue([["node", nodeVer], ["pnpm", pnpmVer], ["morrow", morrowVer]]);
       return {};

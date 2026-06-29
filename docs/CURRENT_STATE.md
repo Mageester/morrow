@@ -80,11 +80,10 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
 
 ### P3
 - **[RESOLVED 2026-06-29] Stale internal status docs** (see below) — refreshed.
-- **`/versions` uses `execSync("pnpm --version")`.** `apps/cli/src/commands/chat.ts:698`
-  shells out via `execSync` while the codebase otherwise routes pnpm through a
-  hardened Windows-safe resolver (`apps/cli/src/service/pnpm.ts`, `shell:false`,
-  PATHEXT-aware). Input is a hardcoded literal so there is no injection risk, but
-  it is an inconsistency worth aligning. *(open, low priority)*
+- **[RESOLVED 2026-06-29] `/versions` used `execSync("pnpm --version")`.**
+  Replaced with the shared hardened `probePnpm` resolver (no shell, bounded
+  timeout, `.cmd`/`.bat` via ComSpec, semver-normalized); failed probe → `"unknown"`.
+  Added 4 regression tests. See ENGINEERING_LOG.
 - **Stale internal status docs.** `docs/MORROW_STATUS.md` /
   `docs/CONTINUATION.md` report orchestrator 278 / CLI 135 (actual: 325 / 140)
   and `CONTINUATION.md` references a wrong resume path

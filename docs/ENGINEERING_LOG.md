@@ -2,6 +2,27 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — `/versions` uses the hardened pnpm resolver
+
+- **Issue:** The CLI `/versions` slash command resolved pnpm via
+  `execSync("pnpm --version")` (`apps/cli/src/commands/chat.ts`).
+- **Root cause / failure modes:** `execSync` spawns through a shell, so it
+  inherits ambiguous PATH/`.cmd` resolution (a stray `pnpm.bat` shim could win),
+  has no timeout (can hang), leaks child `stderr` to the console, and is
+  vulnerable to Corepack first-run download chatter contaminating stdout. The
+  repo already ships a hardened resolver (`service/pnpm.ts` `probePnpm`): ranked
+  candidates, `shell:false`, bounded 5s timeout, `.cmd`/`.bat` via ComSpec,
+  semver-validated and normalized output — already used by `main.ts`.
+- **Implementation:** Replaced the `execSync` block with `probePnpm(process.env)`
+  and mapped a failed probe to `"unknown"`. No new helper introduced.
+- **Tests:** Added 4 regression tests in `apps/cli/test/pnpm.test.ts`:
+  multi-token output normalization, unavailable→`"unknown"` mapping, POSIX
+  candidate resolution (no `.cmd`), complementing existing success/failure/
+  stray-shim coverage.
+- **Validation:** `pnpm --filter @morrow/cli test` → 143 passed;
+  `pnpm check` → PASS; `pnpm test` → PASS (498 total); build unaffected.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Repo hygiene + status-doc accuracy
 
 - **chore(repo) `1dbe020`:** Untracked `morrow-tui-wip-before-codex.patch` (a
