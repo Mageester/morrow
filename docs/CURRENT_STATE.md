@@ -90,8 +90,12 @@ Test distribution: orchestrator 325 · CLI 140 · web 22 · contracts 4 · herme
   isolated temp dir). 5/5 pass: fresh install; upgrade preserves DB + provider
   config; corrupt package rolls back with data intact; spaces in path; null-safe
   no-duplicate PATH. Also hardened a best-effort `stop` that could abort an
-  upgrade. Still pending: full packaged-service launch + `morrow doctor` (needs a
-  built artifact).
+  upgrade. **Full artifact test (2026-06-29):** built the real 47 MB artifact and
+  ran `install-integration.test.mjs` — installs, launches, serves health/UI/
+  onboarding, and `morrow doctor` passes. Hostile review also found+fixed a
+  health-rollback bypass (a failing launch threw past the rollback). Remaining:
+  the health-failure rollback path itself has no automated test (needs a
+  deliberately unhealthy artifact); corrupt-package rollback IS covered.
 
 ### P2
 - **[RESOLVED 2026-06-29] OAuth documentation drift.** `README.md`,

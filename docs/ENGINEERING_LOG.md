@@ -2,6 +2,31 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Verified the real artifact end-to-end + two installer rollback fixes
+
+- **Built the real artifact** with repo-supported commands
+  (`pnpm build` + `node scripts/package-release.mjs 0.1.0-beta.9 --skip-build`):
+  47.2 MB, 5215 entries, package contract OK.
+- **Full installer integration test** (`MORROW_RUN_INSTALL_ITEST=1`,
+  `scripts/install-integration.test.mjs`) PASS on the real artifact: installs,
+  launches the packaged service, serves `/api/health`, serves HTML at `/`, serves
+  `/onboarding`, and `morrow doctor` passes (added a doctor assertion). Verified
+  the test is sandboxed under `mkdtemp(tmpdir())`.
+- **Hostile-review bug (health-rollback bypass):** `& $installedCmd start` was a
+  bare native call; a service that fails to start writes to stderr → PowerShell
+  raises a terminating `NativeCommandError` under `ErrorActionPreference=Stop` →
+  control jumped to the outer catch, **skipping the upgrade health-rollback**.
+  Wrapped the launch and the recovery start/stop so the health poll stays the
+  gate and the rollback always runs (`23427ef`).
+- **Scenario coverage (real Windows):** fresh install, launch, UI, onboarding,
+  doctor (full artifact test); upgrade + data/provider survival, corrupt-package
+  rollback, spaces in path, null-safe/no-duplicate PATH (activation test).
+- **Honest limitation:** the *health-failure* rollback (new version installs but
+  fails its health check) is fixed but not covered by an automated test — it
+  needs a deliberately unhealthy artifact. The corrupt-package activation
+  rollback IS covered.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Windows installer activation: real-code integration test + stop hardening
 
 - **Context:** The existing `install-integration.test.mjs` is safely sandboxed
