@@ -53,6 +53,17 @@ subscriptions do not publish such a flow for this class of application, so they
 are reported as honestly unavailable with an API-key recommendation. See
 `docs/providers.md`.
 
+> **Update (2026-06-29):** This posture was subsequently revised. Morrow now
+> implements subscription sign-in for Claude (Anthropic) and Codex/ChatGPT
+> (OpenAI) using the same first-party OAuth client ids and PKCE flow the official
+> CLIs use (`src/provider/oauth-flow.ts`), surfaced behind an explicit
+> security/ToS warning. No browser cookies or existing sessions are scraped —
+> sign-in goes through each provider's real OAuth endpoints, and tokens are
+> stored locally. These reuse first-party client ids and may be subject to
+> provider terms or break on provider-side changes. Gemini still has no
+> comparable consumer-subscription OAuth and remains API-key only. The honest
+> per-provider findings live in `src/provider/oauth.ts` (`OAUTH_FINDINGS`).
+
 ## Consequences
 
 ### Positive

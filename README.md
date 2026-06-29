@@ -160,8 +160,11 @@ credential reference, honest OAuth findings, and manual verification steps.
   user-configurable model ids.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
-- Subscription-based "OAuth" sign-in (Codex/Claude/Gemini) is reported as
-  honestly unavailable; use API keys or a local provider.
+- Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT
+  (OpenAI) via their first-party OAuth client ids and PKCE, behind an explicit
+  security/ToS warning; tokens are stored locally. These reuse first-party
+  client ids and may break if the provider changes them. Gemini has no
+  comparable consumer-subscription OAuth and stays API-key only.
 
 ## Ownership and licensing
 
