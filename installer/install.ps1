@@ -157,9 +157,14 @@ try {
     }
   }
 
+  # A fresh user account can have no User-scoped Path (only a Machine Path), in
+  # which case GetEnvironmentVariable returns $null. Default to '' so appending
+  # the bin dir never calls a method on $null. Filter blanks so we compare
+  # against real entries and never write an empty PATH segment.
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if ($null -eq $userPath) { $userPath = '' }
   $bin = Join-Path $InstallRoot 'bin'
-  if ((@($userPath -split ';') -notcontains $bin)) {
+  if ((@($userPath -split ';' | Where-Object { $_ }) -notcontains $bin)) {
     [Environment]::SetEnvironmentVariable('Path', (($userPath.TrimEnd(';') + ';' + $bin).TrimStart(';')), 'User')
   }
   $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'

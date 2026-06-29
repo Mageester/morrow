@@ -2,6 +2,23 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 — Installer: null-safe User PATH update
+
+- **Issue:** `install.ps1` set the User PATH via
+  `$userPath.TrimEnd(';')` after reading it with
+  `[Environment]::GetEnvironmentVariable('Path','User')`.
+- **Root cause:** On accounts with no User-scoped PATH (only a Machine PATH),
+  that call returns `$null`, so `$userPath.TrimEnd(';')` throws "method on a
+  null-valued expression" — failing the install at the PATH step, after the app
+  was already swapped in, leaving a confusing half-configured state. The
+  uninstaller already guarded this; install did not.
+- **Implementation:** Default a `$null` PATH to `''` and filter blank segments
+  before the membership test and append.
+- **Validation:** PowerShell `Parser::ParseFile` clean; simulated the null-PATH
+  branch (no crash, yields a single clean bin entry); `pnpm check` + installer
+  guard tests PASS.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Single-source product version + fix the broken update checker
 
 - **Issue:** The release version was duplicated and drifted (root `package.json`

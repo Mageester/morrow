@@ -123,9 +123,9 @@ Recorded so the next pass knows where coverage is thin:
 
 1. **[RESOLVED 2026-06-29]** Product version single-source-of-truth — root
    `package.json` is now canonical with a CI drift guard (ADR-0005).
-2. `install.ps1` reads User `Path` then calls `$userPath.TrimEnd(';')` — if the
-   User Path env var is unset (`$null`) this throws. Pre-existing; guard with a
-   `$null`-safe default. *(P3, low)*
+2. **[RESOLVED 2026-06-29]** `install.ps1` null-PATH crash — now defaults a
+   missing User `Path` to `''` and filters blank segments (parse-checked +
+   simulated). See ENGINEERING_LOG.
 3. CI (`ci.yml`) runs `pnpm check`/`test`/`build` but **not** the
    `scripts/*.test.mjs` suite (only `release.yml` runs two of them). The new
    installer-safety guard is still enforced via the validator in `pnpm check`,
