@@ -47,14 +47,14 @@
 | 7 | Autonomous execution | 3 | M,D | Loop/budget guards real; verification-gating shallow |
 | 8 | Tool calling | 3 | M,D | 10 tools + approvals; tool timeline UI thin |
 | 9 | Coding workflow | 3 | M,D | read/search/git/diff/undo/patch; no baseline-regression auto-block |
-| 10 | Terminal / process execution | 2 | M,D | Synchronous exec only; **no process-tree kill**; no background PTY |
+| 10 | Terminal / process execution | 3 | M,D,W | Synchronous exec only; Windows process-tree kill verified; no background PTY |
 | 11 | Browser / computer interaction | 3 | D | Playwright strong; desktop control absent |
-| 12 | Subagents | 2 | M,U | Spawn+tree work, but **no restart recovery, no cancel propagation** |
+| 12 | Subagents | 3 | M,U | Spawn+tree work with restart consistency and cancel propagation; parent synthesis still thin |
 | 13 | Task trees | 3 | M,U | parent_task_id + `/tree`; no parent/child terminal-state reconciliation |
 | 14 | Approvals & trust controls | 3 | M,D | Hard-block policy + YOLO guards; pending-approval-after-restart fragile |
-| 15 | Cancellation | 2 | M,U | `/cancel` flips state but **no ptree kill, no subagent propagation, races** |
-| 16 | Retry / resume | 2 | M,U | Retry solid; **agent continuation resume is a latent `running→running` bug** |
-| 17 | Crash recovery | 2 | M,U | `running→interrupted` only; **`queued` tasks orphaned forever** ← slice 1 |
+| 15 | Cancellation | 3 | M,U,W | `/cancel` propagates descendants and has explicit route outcomes; cancel-across-restart UX remains |
+| 16 | Retry / resume | 3 | M,U | Retry solid; agent continuation resume is state-aware and regression-tested |
+| 17 | Crash recovery | 3 | M,U | Startup re-dispatches queued work; cancel-across-restart UX remains |
 | 18 | Sessions & conversation history | 3 | M,D | Persisted conversations; resume picker UX thin |
 | 19 | Memory | 4 | D | Scopes, pin, provenance, FTS, edit/delete; identity overlay partial |
 | 20 | Skills | 4 | D | Registry/creator/curator/lifecycle strong; progressive disclosure partial |
@@ -136,10 +136,12 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 ### 10. Terminal / process execution — 2
 - **Exists:** `tools/command-executor.ts` over `command-policy.ts`, `backends/local.ts`.
 - **Works:** Bounded synchronous exec (exit code, abort, timeout) — `backends.test.ts`.
-- **Incomplete:** **No background/PTY process registry** (matrix MISSING); **no process-tree kill** (matrix PARTIAL — "ptree kill" gap); env allow-list missing.
-- **Unsafe:** On Windows, aborting a command that spawned children leaves **orphaned child processes** (no `taskkill /T`). Directly impacts cancellation (15).
-- **Proof:** M, D.
-- **Next:** Windows process-tree termination (Phase 3B / cancellation slice).
+- **Incomplete:** **No background/PTY process registry** (matrix MISSING); env allow-list missing.
+- **Works:** Windows command cancellation now has an acceptance fixture proving
+  parent/child/grandchild termination through structured `taskkill /F /T /PID`,
+  stdout/stderr closure, no hang, and unrelated-process survival.
+- **Proof:** M, D, W.
+- **Next:** Background process registry / PTY semantics.
 
 ### 11. Browser / computer interaction — 3
 - **Exists:** `browser/playwright.ts` (real Chromium/CDP, semantic refs, click/fill/key, dialogs, screenshots, persistence, cleanup), `browser/injection-guard.ts`.
@@ -151,10 +153,10 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 ### 12. Subagents — 2
 - **Exists:** `POST /api/tasks/:id/subagents`, `tasks.parent_task_id`, `GET /api/tasks/:id/tree`, named agents (`repositories/agents.ts`).
 - **Works:** Spawn child task, build descendant tree (`subagents.test.ts`, 6).
-- **Incomplete:** **No restart recovery** (a queued/running child orphaned on crash — see 17); **no cancellation propagation** (cancelling parent leaves children running — see 15); no concurrency limit; no parent synthesis of child results.
-- **Unsafe:** Orphaned runaway children after a parent cancel/crash.
+- **Incomplete:** No concurrency limit; parent synthesis of child results remains thin.
+- **Unsafe:** Child failures and parent synthesis still need a visible Mission Control path.
 - **Proof:** M, U.
-- **Next:** Parent/child reconciliation (slice 1) + cancel propagation (slice 2).
+- **Next:** Real delegated mission flow with visible tree, bounded context, and parent synthesis.
 
 ### 13. Task trees — 3
 - **Exists/Works:** parent_task_id + `/tree` endpoint, tested.
@@ -172,16 +174,18 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 ### 15. Cancellation — 2
 - **Exists:** `runner.cancel()` (`/api/tasks/:id/cancel`), `/panic` stop-all.
 - **Works:** Cancels queued/running, sets cancelled agent state (`runner.test.ts`).
-- **Incomplete/Unsafe:** No subagent propagation; **no Windows process-tree kill**; a cancel that races executor completion can throw an invalid transition (verified→cancelled) and 500; cancel-across-restart undefined.
-- **Proof:** M, U.
+- **Incomplete/Unsafe:** Cancel-across-restart remains an interface-level gap; CLI/web wording still needs to expose accepted vs already-cancelled vs already-terminal outcomes.
+- **Proof:** M, U, W.
 - **Next:** Cancellation-lifecycle slice (Phase 3B).
 
 ### 16. Retry / resume — 2
 - **Exists:** `retryTask` (clean re-queue), `/retry`, `resumeInterruptedTask`, `/resume`, `task-continuations.ts`.
 - **Works:** Retry of failed/interrupted (`retry.test.ts`); deterministic `inspect_workspace` resume via retry path (tested).
-- **Incomplete/Unsafe:** **`agent_chat` resume is a latent bug** — `/resume` does `resumeInterruptedTask` (interrupted→running) then the executor unconditionally re-transitions `running→running` (`agent.ts:271`), which the state machine rejects, failing the task. No test covers agent resume e2e.
+- **Works:** `agent_chat` resume is state-aware: fresh tasks do
+  `queued→running`, interrupted continuations resume correctly, and already
+  running continuations do not emit a duplicate running transition.
 - **Proof:** M, U.
-- **Next:** Fix agent continuation resume (reconciliation or a dedicated slice).
+- **Next:** Surface resume vs retry clearly in Mission Control and CLI flows.
 
 ### 17. Crash recovery — 2 ← **first slice target**
 - **Exists:** `recovery.ts#recoverRunningTasks` (called in `index.ts` at startup), interrupts `running` tasks + interrupted-streaming messages.
@@ -263,9 +267,9 @@ priority:
 
 1. **Crash recovery (17)** — re-dispatch orphaned `queued` work; parent/child
    consistency; idempotent, no duplicate execution. ← **slice 1, in progress.**
-2. **Cancellation & process lifecycle (15, 10)** — Windows process-tree kill,
-   subagent cancel propagation, deterministic races. ← slice 2.
-3. **Retry/resume correctness (16)** — fix agent continuation `running→running`.
+2. **Cancellation & process lifecycle (15, 10)** — cancel-across-restart
+   acceptance and interface wording for lifecycle outcomes.
+3. **Retry/resume correctness (16)** — interface-level resume/retry distinction.
 4. **Toolchain reproducibility (Phase 3C)** — Corepack-pin enforcement.
 5. **Autonomous coding loop (6–9)** — verification gating, baseline auto-block.
 6. **Observability (24, 25)** — task/tool timeline, support bundle, redaction.

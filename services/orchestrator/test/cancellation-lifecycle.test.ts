@@ -8,6 +8,7 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
+import { approvalsRepository } from "../src/repositories/approvals.js";
 import { TaskRunner, type TaskExecutor } from "../src/runner.js";
 
 const now = "2026-01-01T00:00:00.000Z";
@@ -180,6 +181,84 @@ describe("cancellation lifecycle — continuation resume (reproduction)", () => 
       db.close();
       rmSync(work, { recursive: true, force: true });
       if (prevMock === undefined) delete process.env.MOCK_PROVIDER; else process.env.MOCK_PROVIDER = prevMock;
+    }
+  });
+});
+
+describe("cancellation lifecycle — route and race semantics", () => {
+  it("reports accepted, duplicate, and terminal cancellation without throwing", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    seedTask(db, "running", "running");
+    seedTask(db, "done", "verified");
+    const runner = new TaskRunner(db, parkUntilAborted);
+    runner.run("running");
+    const app = buildServer({ db, runner });
+    try {
+      const first = await app.inject({ method: "POST", url: "/api/tasks/running/cancel" });
+      expect(first.statusCode).toBe(202);
+      expect(first.json()).toMatchObject({ taskId: "running", status: "cancelled", outcome: "cancelled" });
+
+      const duplicate = await app.inject({ method: "POST", url: "/api/tasks/running/cancel" });
+      expect(duplicate.statusCode).toBe(200);
+      expect(duplicate.json()).toMatchObject({ taskId: "running", status: "cancelled", outcome: "already_cancelled" });
+
+      const terminal = await app.inject({ method: "POST", url: "/api/tasks/done/cancel" });
+      expect(terminal.statusCode).toBe(409);
+      expect(terminal.json().error).toMatchObject({ code: "TASK_ALREADY_TERMINAL" });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("records a lost cancel/complete race as a normal route outcome, not a 500", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    seedTask(db, "done", "completed");
+    const runner = new TaskRunner(db, parkUntilAborted);
+    const app = buildServer({ db, runner });
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/tasks/done/cancel" });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatchObject({
+        code: "TASK_ALREADY_TERMINAL",
+        message: expect.stringContaining("already completed"),
+      });
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("does not let a late approval revive a cancelled continuation", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    seedTask(db, "agent", "cancelled", undefined, "agent_chat");
+    approvalsRepository(db).create({
+      id: "approval",
+      taskId: "agent",
+      projectId: "p",
+      kind: "command",
+      summary: "Run command: node -v",
+      details: { executable: "node", args: ["-v"], cwd: "", risk: "medium", purpose: "test", toolCallId: "call-1" },
+      createdAt: now,
+    });
+    const runner = new TaskRunner(db, parkUntilAborted);
+    const app = buildServer({ db, runner });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/approvals/approval/resolve",
+        payload: { projectId: "p", decision: "allow_once" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(taskRepository(db).getTaskById("agent")?.status).toBe("cancelled");
+      expect(runner.isActive("agent")).toBe(false);
+    } finally {
+      await app.close();
+      db.close();
     }
   });
 });

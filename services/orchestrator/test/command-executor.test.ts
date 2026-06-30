@@ -1,11 +1,33 @@
 import { describe, it, expect } from "vitest";
 import { filterEnv, resolveExecutable, runProcessSafe } from "../src/tools/command-executor.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const onWindows = process.platform === "win32";
 const itWin = onWindows ? it : it.skip;
+
+async function waitForCondition(label: string, predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function readPid(path: string): number {
+  return Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("filterEnv", () => {
   it("filters to a safe allowlist and drops secrets", () => {
@@ -118,4 +140,82 @@ describe("runProcessSafe", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  itWin("terminates a Windows parent/child/grandchild process tree on cancellation and leaves unrelated processes alive", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "morrow-ptree-"));
+    const parentPidFile = join(dir, "parent.pid");
+    const childPidFile = join(dir, "child.pid");
+    const grandchildPidFile = join(dir, "grandchild.pid");
+    const parentScript = join(dir, "parent.mjs");
+    const childScript = join(dir, "child.mjs");
+    const grandchildScript = join(dir, "grandchild.mjs");
+    const controlScript = join(dir, "control.mjs");
+
+    writeFileSync(parentScript, `
+      import { spawn } from "node:child_process";
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(parentPidFile)}, String(process.pid));
+      console.log("parent-ready");
+      console.error("parent-stderr-ready");
+      spawn(process.execPath, [${JSON.stringify(childScript)}], { stdio: ["ignore", "inherit", "inherit"] });
+      setInterval(() => {}, 1000);
+    `);
+    writeFileSync(childScript, `
+      import { spawn } from "node:child_process";
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));
+      console.log("child-ready");
+      console.error("child-stderr-ready");
+      spawn(process.execPath, [${JSON.stringify(grandchildScript)}], { stdio: ["ignore", "inherit", "inherit"] });
+      setInterval(() => {}, 1000);
+    `);
+    writeFileSync(grandchildScript, `
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(grandchildPidFile)}, String(process.pid));
+      console.log("grandchild-ready");
+      console.error("grandchild-stderr-ready");
+      setInterval(() => {}, 1000);
+    `);
+    writeFileSync(controlScript, "setInterval(() => {}, 1000);\n");
+
+    const control = spawn(process.execPath, [controlScript], { stdio: "ignore", windowsHide: true });
+    const controller = new AbortController();
+    try {
+      await waitForCondition("control process pid", () => typeof control.pid === "number");
+      const resultPromise = runProcessSafe("node", [parentScript], dir, process.env, {
+        abortSignal: controller.signal,
+        timeoutMs: 30000,
+        maxOutputBytes: 65536,
+      });
+
+      await waitForCondition("parent, child, and grandchild ready signals", () =>
+        existsSync(parentPidFile) && existsSync(childPidFile) && existsSync(grandchildPidFile)
+      );
+      const parentPid = readPid(parentPidFile);
+      const childPid = readPid(childPidFile);
+      const grandchildPid = readPid(grandchildPidFile);
+      expect(isProcessAlive(parentPid)).toBe(true);
+      expect(isProcessAlive(childPid)).toBe(true);
+      expect(isProcessAlive(grandchildPid)).toBe(true);
+      expect(isProcessAlive(control.pid!)).toBe(true);
+
+      controller.abort();
+      const result = await resultPromise;
+
+      expect(result.terminationReason).toBe("cancelled");
+      expect(result.stdout).toContain("parent-ready");
+      expect(result.stdout).toContain("child-ready");
+      expect(result.stdout).toContain("grandchild-ready");
+      expect(result.stderr).toContain("parent-stderr-ready");
+      expect(result.stderr).toContain("child-stderr-ready");
+      expect(result.stderr).toContain("grandchild-stderr-ready");
+      await waitForCondition("process tree termination", () =>
+        !isProcessAlive(parentPid) && !isProcessAlive(childPid) && !isProcessAlive(grandchildPid)
+      );
+      expect(isProcessAlive(control.pid!)).toBe(true);
+    } finally {
+      if (control.pid && isProcessAlive(control.pid)) control.kill("SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20000);
 });

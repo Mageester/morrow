@@ -79,17 +79,18 @@
   easy to break.
 
 ## Journey: Cancellation
-1. `POST /api/tasks/:id/cancel` → `runner.cancel()` aborts the AbortController and
-   flips queued/running → `cancelled` (`runner.ts:102`).
+1. `POST /api/tasks/:id/cancel` -> `runner.cancel()` aborts the AbortController,
+   propagates cancellation to persisted descendants, and flips queued/running
+   work to `cancelled` (`runner.ts`).
 2. `/panic` stops all.
-- `⛔` **No Windows process-tree kill:** `cancel()` only calls
-  `controller.abort()`. A command that spawned child processes leaves **orphans**
-  (no `taskkill /T`). (`command-executor.ts`, terminal/process category.)
-- `⛔` **No subagent propagation:** cancelling a parent does **not** cancel its
-  child tasks — they keep running (`runner.cancel` ignores `parent_task_id`).
-- `⛔` **Cancel/complete race:** if the executor finishes as cancel runs, the
-  `running→cancelled` transition may collide with a `verified` transition and
-  throw `Invalid task transition` (→ 500). No deterministic synchronization.
+- **Works:** Duplicate cancellation is idempotent (`already_cancelled`), already
+  terminal tasks return a structured `409` instead of an internal error, and a
+  late approval cannot revive cancelled work.
+- **Works on Windows:** command cancellation exercises structured
+  `taskkill /F /T /PID` and is verified with a parent/child/grandchild process
+  tree plus an unrelated survivor process (`command-executor.test.ts`).
+- `⛔` **Remaining gap:** cancel-across-restart and interface-level messaging need
+  a user-visible acceptance path, not just backend truth.
 
 ## Journey: Restart (crash recovery)
 1. On boot, `index.ts` calls `recoverRunningTasks(db)` → `running→interrupted`,
@@ -106,11 +107,11 @@
 ## Journey: Resume
 1. `POST /api/tasks/:id/resume`. For `inspect_workspace` (deterministic) it routes
    through `retryTask` → `queued` → runs cleanly (tested, `retry.test.ts`).
-2. For `agent_chat`, it calls `resumeInterruptedTask` → `interrupted→running`,
-   then `runner.run()`.
-- `⛔` **Agent resume is a latent bug:** the executor then unconditionally calls
-  `transitionTask("running")` (`agent.ts:271`); `running→running` is rejected by
-  the state machine, so the task **fails on resume**. No test covers it.
+2. For `agent_chat`, it calls `resumeInterruptedTask` -> `interrupted` to
+   `running`, then `runner.run()`. The agent executor is state-aware and does
+   not attempt a duplicate `running -> running` transition.
+- **Works:** `cancellation-lifecycle.test.ts` covers interrupted agent resume so
+  it does not fail with an invalid lifecycle transition.
 
 ## Journey: Update
 1. `morrow update` → `checkForUpdate` (`service/update.ts`) compares SemVer
@@ -139,12 +140,10 @@
 |---|---|---|---|---|
 | 1 | Queued task orphaned after restart | Restart | **P0 task-truth** | **slice 1 (this)** |
 | 2 | Subagent child orphaned after restart | Restart | P0 | slice 1 |
-| 3 | No process-tree kill on cancel (Windows) | Cancellation | P1 | slice 2 |
-| 4 | Cancel doesn't propagate to subagents | Cancellation | P1 | slice 2 |
-| 5 | Cancel/complete race → invalid transition 500 | Cancellation | P1 | slice 2 |
-| 6 | Agent `/resume` `running→running` failure | Resume | P1 | slice 1/3 |
-| 7 | Pending-approval-after-restart raw-SQL hack | Approval | P2 | slice 1/3 |
-| 8 | No baseline-regression auto-block | Coding | P2 | Phase 4 |
-| 9 | No support bundle / tool timeline | Diagnosis | P2 | Phase 9 |
-| 10 | Stray workspace-path debug log | Diagnosis | P3 | quick fix |
-| 11 | No continuous onboarding→first-task thread | Onboarding | P2 | Phase 2/5 |
+| 3 | Cancel/restart continuity needs interface-level acceptance | Cancellation | P1 | slice 2 |
+| 4 | Terminal/duplicate cancellation route semantics need CLI/web wording | Cancellation | P2 | Mission Control |
+| 5 | Approval-after-restart path still uses direct status reset | Approval | P2 | slice 3 |
+| 6 | No baseline-regression auto-block | Coding | P2 | Phase 4 |
+| 7 | No support bundle / tool timeline | Diagnosis | P2 | Phase 9 |
+| 8 | Stray workspace-path debug log | Diagnosis | P3 | quick fix |
+| 9 | No continuous onboarding→first-task thread | Onboarding | P2 | Phase 2/5 |
