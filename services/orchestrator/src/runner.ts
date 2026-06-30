@@ -107,25 +107,58 @@ export class TaskRunner {
     this.activePromises.set(taskId, promise);
   }
 
+  /**
+   * Cancel a task and propagate to its entire persisted descendant tree: a
+   * running parent must never leave active subagents behind. Targets are
+   * collected from `parent_task_id` (persisted, not in-memory) in a deterministic
+   * depth-first, parent-before-child order, then each is cancelled idempotently.
+   * Cancelling a child never touches its parent or siblings.
+   */
   cancel(taskId: string) {
+    const targets = this.collectCancelTargets(taskId);
+    targets.forEach((id, index) =>
+      this.cancelOne(id, index === 0 ? "user_cancelled" : "parent_cancelled")
+    );
+  }
+
+  // Depth-first pre-order (parent before children) over the persisted task tree.
+  // listChildren orders by (created_at, id), so the traversal is deterministic.
+  private collectCancelTargets(rootId: string): string[] {
+    const tasks = taskRepository(this.db);
+    const order: string[] = [];
+    const seen = new Set<string>();
+    const visit = (id: string) => {
+      if (seen.has(id)) return; // guard against any cyclic parent link
+      seen.add(id);
+      order.push(id);
+      for (const child of tasks.listChildren(id)) visit(child.id);
+    };
+    visit(rootId);
+    return order;
+  }
+
+  // Cancel a single task idempotently. The status check is a compare-and-transition
+  // guard: a task already in a terminal state is left untouched (no throw, no
+  // duplicate terminal event). `cancel()` is synchronous, so the check and the
+  // transition cannot be interleaved by another lifecycle write.
+  private cancelOne(taskId: string, reason: "user_cancelled" | "parent_cancelled") {
     const controller = this.abortControllers.get(taskId);
     if (controller) {
       controller.abort();
     }
-    
-    // Perform state transition immediately if it was running or queued
+
     const records = taskRecordsRepository(this.db);
     const task = taskRepository(this.db).getTaskById(taskId);
     if (task && ["queued", "running"].includes(task.status)) {
       const timestamp = new Date().toISOString();
       if (task.kind === "agent_chat") {
         if (!records.getAgentState(taskId)) records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
-        records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "cancelled", details: { reason: "user_cancelled" }, createdAt: timestamp });
+        records.transitionAgentState(taskId, { id: crypto.randomUUID(), state: "cancelled", details: { reason }, createdAt: timestamp });
       }
       records.transitionTask(taskId, "cancelled", {
         id: crypto.randomUUID(),
         createdAt: timestamp,
-        payload: { message: "Task cancelled by user" }
+        payload: { reason, message: reason === "parent_cancelled" ? "Task cancelled: parent cancelled" : "Task cancelled by user" }
       });
 
       if (task.kind === "agent_chat") {
