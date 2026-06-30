@@ -2,6 +2,56 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-30 — Startup reconciliation: re-dispatch orphaned `queued` tasks
+
+- **Issue:** After a restart, `recoverRunningTasks` only flipped `running ->
+  interrupted`. Nothing re-dispatched `queued` tasks, and the runner only ever
+  runs a task via an explicit API call. A task (or subagent child) persisted as
+  `queued` when the process died **never executed** — a silent task-truth loss.
+  Independently flagged as PARTIAL in `HERMES_PARITY_MATRIX.md` ("Reboot-survival
+  integration test").
+- **Root cause:** `index.ts` called `recoverRunningTasks(db)` before the runner
+  existed and had no resume loop. `server.ts` is the only caller of `runner.run`.
+- **Implementation:** Added `reconcileTasksOnStartup({ db, runner })`
+  (`services/orchestrator/src/recovery.ts`), run once after the runner is built:
+  1. `running -> interrupted` (unchanged `recoverRunningTasks`; never auto-resumed
+     because partial side effects are possible).
+  2. Re-dispatch `queued` tasks via `runner.run(id, { recovered: true })`. Safe
+     because every executor's first persisted action is `queued -> running`, so a
+     task still in `queued` has done no work — re-running cannot duplicate
+     execution.
+  3. Parent/child consistency: a `queued` child whose parent is terminal/missing
+     is cancelled (`parent_terminal`/`parent_missing`) rather than run orphaned; a
+     child whose parent is itself being recovered is re-dispatched.
+  - `TaskRunner` gained `isActive()` (idempotency guard) and a `recovered` flag so
+    a re-dispatch records `task.recovery_requeued` instead of a duplicate
+    `task.created`. New contract event type `task.recovery_requeued`.
+  - **Hostile-review hardening (items 13/14):** before re-dispatch, clear partial
+    pre-`running` artifacts (`agent_state_transitions`, `plan_steps`,
+    `task_continuations`). A hard kill in the synchronous window between an agent
+    advancing its state to `planning` (`agent.ts:172`) and persisting `queued ->
+    running` (`agent.ts:271`) otherwise leaves a `queued` task whose stale state
+    makes the fresh run throw on `planning -> understanding` and fail. Verified the
+    invariant that a `queued` task has caused **no external side effects** (only
+    idempotent plan/disclosure/agent-state DB writes precede the `running`
+    transition). Parent/child integrity is DB-enforced (`parent_task_id` FK
+    `ON DELETE CASCADE`), so a missing-parent orphan cannot occur in practice.
+- **Tests:** 7 new (`recovery.test.ts`, 9 total): interrupt+re-dispatch,
+  subagent-child re-dispatch under a recovered parent, orphan cancellation under a
+  terminal parent, idempotency (no double-dispatch / re-interrupt), cancelled +
+  interrupted tasks left untouched, an **end-to-end restart acceptance test** (a
+  `queued` deterministic task runs to `verified` exactly once while a mid-flight
+  task becomes `interrupted`), and an **agent crash-mid-startup test** proving a
+  stale-state `queued` task re-dispatches clean to `completed` (fails without the
+  clearing hardening).
+- **Validation:** `pnpm check` PASS; `pnpm test` PASS (509 total; orchestrator
+  333); `pnpm build` PASS; `smoke:vertical-slice` + `smoke:agent-alpha` PASS.
+  Pinned pnpm 10.12.1 via Corepack, frozen-lockfile install clean. E2E: blocked
+  locally by the live installed service on :4317 (canonical run needs it stopped).
+  Not yet covered: agent continuation `/resume` (`running->running`) and cancel
+  propagation — tracked for follow-up slices in `docs/HERMES_LEVEL_PLAN.md`.
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 - Resume interrupted deterministic tasks safely
 
 - **Issue:** `POST /api/tasks/:taskId/resume` failed for interrupted
