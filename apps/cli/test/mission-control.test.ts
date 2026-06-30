@@ -1,0 +1,102 @@
+import { describe, expect, it } from "vitest";
+import { formatMissionResult, formatTaskTree } from "../src/terminal/mission-control.js";
+import type { TaskAggregate, TaskTreeNode } from "../src/client/api.js";
+
+const baseTask = {
+  version: 1 as const,
+  id: "task-parent-123456",
+  projectId: "project",
+  kind: "agent_chat" as const,
+  status: "completed" as const,
+  parentTaskId: null,
+  agentId: null,
+  createdAt: "2026-06-30T00:00:00.000Z",
+  updatedAt: "2026-06-30T00:00:01.000Z",
+};
+
+describe("Mission Control formatters", () => {
+  it("renders a nested task tree without internal route names", () => {
+    const tree: TaskTreeNode = {
+      task: baseTask,
+      children: [
+        { task: { ...baseTask, id: "child-a-123456", status: "verified", parentTaskId: baseTask.id }, children: [] },
+        {
+          task: { ...baseTask, id: "child-b-123456", status: "running", parentTaskId: baseTask.id },
+          children: [{ task: { ...baseTask, id: "grandchild-123456", status: "cancelled", parentTaskId: "child-b-123456" }, children: [] }],
+        },
+      ],
+    };
+
+    expect(formatTaskTree(tree)).toEqual([
+      "Task tree",
+      "task-par  done  agent_chat",
+      "+- child-a  done  agent_chat",
+      "`- child-b  running  agent_chat",
+      "   `- grandchi  cancelled  agent_chat",
+    ]);
+  });
+
+  it("renders final evidence, verification, approvals, and rollback guidance", () => {
+    const aggregate: TaskAggregate = {
+      task: baseTask,
+      plan: [
+        { id: "p1", position: 1, title: "Inspect", description: "Read files", status: "completed" },
+        { id: "p2", position: 2, title: "Verify", description: "Run tests", status: "completed" },
+      ],
+      events: [],
+      agentStates: [],
+      approvals: [
+        {
+          version: 1,
+          id: "approval",
+          taskId: baseTask.id,
+          projectId: "project",
+          kind: "command",
+          status: "approved",
+          summary: "Run tests",
+          details: {},
+          decision: "allow_once",
+          decisionNote: null,
+          createdAt: baseTask.createdAt,
+          resolvedAt: baseTask.updatedAt,
+        },
+      ],
+      evidence: [{ id: "ev", path: "src/app.ts", metadata: {}, createdAt: baseTask.updatedAt }],
+      disclosure: {
+        provider: "mock",
+        networkAccess: "disabled",
+        filesystemAccess: "workspace-write",
+        shellExecution: true,
+        modelInvocation: true,
+        workspaceScope: "C:/repo",
+        estimatedCostUsd: "$0.00",
+      },
+      toolCalls: [
+        { id: "tool-run-123456", toolName: "run_command", argsJson: "{}", resultJson: "{\"exitCode\":0}", status: "completed" },
+        { id: "tool-patch-123456", toolName: "propose_patch", argsJson: "{}", resultJson: "{\"files\":[\"src/app.ts\"]}", status: "completed" },
+      ],
+      routing: {
+        version: 1,
+        presetId: "coding",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "test",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "local-only",
+        candidates: [],
+        mode: "agent",
+      },
+    };
+
+    const lines = formatMissionResult(aggregate);
+
+    expect(lines).toContain("Status: done (completed)");
+    expect(lines).toContain("Provider/model: mock / mock-model");
+    expect(lines).toContain("Files affected: src/app.ts");
+    expect(lines).toContain("Commands run: tool-run");
+    expect(lines).toContain("Verification: not recorded");
+    expect(lines).toContain("Approvals: command:approved");
+    expect(lines.at(-1)).toContain("/diff");
+  });
+});

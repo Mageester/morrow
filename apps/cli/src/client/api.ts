@@ -20,6 +20,7 @@ import type {
   PermissionProfile,
   AuditEntry,
   ProviderTestResult,
+  VerificationResult,
   Health,
   SearchResponse,
   SearchKind,
@@ -54,6 +55,7 @@ export interface TaskAggregate {
   agentStates: AgentStateTransition[];
   approvals: Approval[];
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
+  verification?: VerificationResult;
   disclosure?: {
     provider: string;
     networkAccess: string;
@@ -65,6 +67,11 @@ export interface TaskAggregate {
   };
   toolCalls: Array<{ id: string; toolName: string; argsJson: string; resultJson?: string | null; status: string; errorType?: string | null; errorMessage?: string | null }>;
   routing: RoutingDecision | null;
+}
+
+export interface TaskTreeNode {
+  task: Task;
+  children: TaskTreeNode[];
 }
 
 function statusToExit(status: number): number {
@@ -133,6 +140,7 @@ export class MorrowApi {
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
   getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
+  getTaskTree(taskId: string) { return this.req<TaskTreeNode>("GET", `/api/tasks/${taskId}/tree`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
   resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/resume`); }
   retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }

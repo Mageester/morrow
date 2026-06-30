@@ -51,8 +51,24 @@
    (`server.ts:665`), streams via SSE (`/api/tasks/:id/events/stream`).
 3. Watch tool cards, plan steps, final answer.
 - **Hidden prerequisite:** a project with a valid workspace path must exist first.
-- `⛔` **If the service restarts between "queued" and "run", the task is orphaned
-  forever** — see Journey: Restart.
+- **Works:** startup reconciliation re-dispatches persisted `queued` tasks after
+  restart; see Journey: Restart for the remaining recovery gaps.
+
+## Journey: Mission Control
+1. `morrow mission` opens the primary terminal Mission Control session. It is the
+   same live task surface as chat/fix, with streaming events, approvals, Ctrl+C
+   cancellation, mode/provider controls, `/output`, `/diff`, and `/undo`.
+2. `/tree` renders the current mission's persisted task/subagent tree from
+   `GET /api/tasks/:id/tree`.
+3. `/result` renders the current mission aggregate: status, provider/model,
+   mode/privacy, plan, files affected, command/tool evidence, verification,
+   approvals, and the next safe action.
+- **Works:** CLI formatter tests cover nested task trees and mission result
+  summaries (`apps/cli/test/mission-control.test.ts`); root command parsing
+  covers `morrow mission` (`apps/cli/test/main.test.ts`).
+- `⛔` **Remaining gap:** `/result` is a compact evidence summary, not a full
+  chronological tool timeline or parent synthesis view. Web MissionControl is
+  still not the primary live mission cockpit.
 
 ## Journey: Coding task
 1. As First task, but the agent uses `read_file`/`inspect_workspace`/`grep`/git
@@ -95,14 +111,14 @@
 ## Journey: Restart (crash recovery)
 1. On boot, `index.ts` calls `recoverRunningTasks(db)` → `running→interrupted`,
    interrupts streaming/queued messages, emits `task.recovery_required`.
-- `⛔` **`queued` tasks are not re-dispatched.** The runner only runs a task when
-  an API handler calls `runner.run()`. Nothing re-queues persisted `queued` tasks
-  at startup → **a queued task created before the crash never runs.** This is the
-  single most damaging task-truth gap. (`recovery.ts`, `index.ts`, `runner.ts`.)
-- `⛔` **Subagent children inherit it** — a `queued` child orphaned, parent has no
-  way to learn it never ran.
-- `⛔` **`interrupted` agent tasks** can only be recovered by `retry` (fresh
-  start) because `/resume` is broken for agents (see next).
+2. Startup reconciliation re-dispatches orphaned `queued` tasks, clears partial
+   pre-running artifacts, and cancels queued children whose parent is already
+   terminal.
+- **Works:** recovery tests cover idempotent queued-task re-dispatch, subagent
+  child re-dispatch under a recovered parent, terminal-parent cancellation, and
+  a restart acceptance where a queued deterministic task reaches `verified`.
+- `⛔` **Remaining gap:** mid-stream reconnect/dedup and cancel-across-restart
+  interface acceptance still need user-visible proof.
 
 ## Journey: Resume
 1. `POST /api/tasks/:id/resume`. For `inspect_workspace` (deterministic) it routes
@@ -124,11 +140,11 @@
 ## Journey: Failure diagnosis
 1. `morrow doctor` reports environment/service/provider/migration health.
 2. `/api/projects/:id/diagnostics` returns normalized tsc/eslint diagnostics.
-3. Audit log + task events provide a trail.
+3. Audit log + task events provide a trail. In terminal Mission Control, `/tree`
+   shows the task/subagent tree and `/result` summarizes final evidence.
 - `⛔` **No single support-bundle export** (redacted logs + versions + task
-  timeline in one artifact). A user diagnosing a stuck task must currently reason
-  over raw events; there is **no tool-call timeline or subagent-tree view** in the
-  UI (Phase 9).
+  timeline in one artifact). A user diagnosing a stuck task still lacks a full
+  chronological tool-call timeline and parent synthesis view (Phase 9).
 - `⛔` **Stray debug logging** (`console.log("INSPECTING WORKSPACE PATH:" …)`,
   `inspect-workspace.ts:26`) leaks workspace paths to stdout.
 
@@ -138,11 +154,11 @@
 
 | # | Dead end | Journey | Severity | Fix slice |
 |---|---|---|---|---|
-| 1 | Queued task orphaned after restart | Restart | **P0 task-truth** | **slice 1 (this)** |
-| 2 | Subagent child orphaned after restart | Restart | P0 | slice 1 |
-| 3 | Cancel/restart continuity needs interface-level acceptance | Cancellation | P1 | slice 2 |
-| 4 | Terminal/duplicate cancellation route semantics need CLI/web wording | Cancellation | P2 | Mission Control |
-| 5 | Approval-after-restart path still uses direct status reset | Approval | P2 | slice 3 |
+| 1 | Cancel/restart continuity needs interface-level acceptance | Cancellation | P1 | slice 2 |
+| 2 | Mid-stream reconnect/dedup after service recovery | Restart | P1 | slice 2 |
+| 3 | Approval-after-restart path still uses direct status reset | Approval | P2 | slice 3 |
+| 4 | Full tool timeline and parent synthesis view | Diagnosis | P2 | Mission Control |
+| 5 | Terminal/duplicate cancellation route semantics need richer CLI/web wording | Cancellation | P2 | Mission Control |
 | 6 | No baseline-regression auto-block | Coding | P2 | Phase 4 |
 | 7 | No support bundle / tool timeline | Diagnosis | P2 | Phase 9 |
 | 8 | Stray workspace-path debug log | Diagnosis | P3 | quick fix |

@@ -28,7 +28,7 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
@@ -107,6 +107,7 @@ export async function run(argv: string[]): Promise<number> {
       case "yolo": { const p = promptOf(); return chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return chatWith({ new: true });
+      case "mission": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
       case "model": return modelsCommand(ctx, sub ?? "", args);
       case "settings": return configCommand(ctx, sub ?? "list", args);
       case "auth": return providersCommand(ctx, authSub(sub), args);
@@ -174,6 +175,7 @@ function printHelp(out: Output): number {
     "",
     b("Start here"),
     `  morrow                       ${g("start Morrow and open the app")}`,
+    `  morrow mission               ${g("open Mission Control in the terminal")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
@@ -192,7 +194,7 @@ function printHelp(out: Output): number {
     `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
-    `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
+    `  ${g("/help /mode /yolo /model /tree /result /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
     "",
     g("More: morrow projects | conversations | presets | tools | audit | skills | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),

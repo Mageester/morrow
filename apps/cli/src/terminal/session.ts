@@ -25,6 +25,7 @@ import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText } from "./yolo.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
+import { formatMissionResult, formatTaskTree } from "./mission-control.js";
 
 const ALT_ENTER = "\x1b[?1049h";
 const ALT_LEAVE = "\x1b[?1049l";
@@ -61,6 +62,8 @@ export interface SessionBackend {
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
   getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
+  getTask(taskId: string): Promise<import("../client/api.js").TaskAggregate>;
+  getTaskTree(taskId: string): Promise<import("../client/api.js").TaskTreeNode>;
   search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
   recordSkillUse?(skillId: string): Promise<void>;
 }
@@ -299,6 +302,12 @@ export class InteractiveSession {
       case "output":
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
+      case "tree":
+        await this.showTaskTree();
+        return void this.requestPaint(false);
+      case "result":
+        await this.showMissionResult();
+        return void this.requestPaint(false);
       // ── New commands ──────────────────────────────────────────────────────
       case "tasks":
         this.pushNotice("info", "Use /tasks in line mode (MORROW_TUI=0) — coming to interactive view soon.");
@@ -407,6 +416,26 @@ export class InteractiveSession {
     const lines = allLines.slice(0, 200).map((line, i) => `${String(i + 1).padStart(4, " ")}  ${line}`);
     if (allLines.length > lines.length) lines.push("… output capped at 200 lines");
     this.outputViewer = { title: `${selected.toolName} · ${selected.id}`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showTaskTree(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No mission task exists yet.");
+      return;
+    }
+    const tree = await this.deps.backend.getTaskTree(this.lastTaskId);
+    this.outputViewer = { title: `task tree · ${this.lastTaskId}`, lines: formatTaskTree(tree) };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionResult(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No mission result exists yet.");
+      return;
+    }
+    const aggregate = await this.deps.backend.getTask(this.lastTaskId);
+    this.outputViewer = { title: `result · ${this.lastTaskId}`, lines: formatMissionResult(aggregate) };
     this.input = { ...this.input, overlay: "output" };
   }
 

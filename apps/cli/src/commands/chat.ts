@@ -21,6 +21,7 @@ import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
+import { formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
@@ -154,6 +155,8 @@ async function runInteractiveSession(
         .then(() => undefined),
     getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
     getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
+    getTask: (taskId) => api.getTask(taskId),
+    getTaskTree: (taskId) => api.getTaskTree(taskId),
     search: (query) =>
       api
         .search(project.id, query, { limit: 25 })
@@ -586,6 +589,26 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "tree": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission task exists yet.");
+        return {};
+      }
+      const tree = await api.getTaskTree(taskId);
+      for (const line of formatTaskTree(tree)) out.print(line);
+      return {};
+    }
+    case "result": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission result exists yet.");
+        return {};
+      }
+      const aggregate = await api.getTask(taskId);
+      for (const line of formatMissionResult(aggregate)) out.print(line);
+      return {};
+    }
     case "cancel":
       out.info("Nothing is currently streaming (cancel works during a response with Ctrl+C).");
       return {};
@@ -819,6 +842,8 @@ function printReplHelp(ctx: Context) {
     ["/inspect", "run a safe workspace inspection"],
     ["/diff", "show the current session's latest Morrow-owned applied change"],
     ["/undo", "rollback the latest Morrow-owned change in the session"],
+    ["/tree", "show the current mission task tree"],
+    ["/result", "show final evidence and next action"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],
@@ -827,4 +852,9 @@ function printReplHelp(ctx: Context) {
     ["/exit", "quit"],
   ];
   out.keyValue(rows);
+}
+
+async function latestTaskId(api: MorrowApi, conversationId: string): Promise<string | null> {
+  const messages = await api.listMessages(conversationId);
+  return [...messages].reverse().find((message) => Boolean(message.taskId))?.taskId ?? null;
 }

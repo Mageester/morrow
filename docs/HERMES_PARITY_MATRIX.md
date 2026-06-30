@@ -43,7 +43,7 @@
 | Slash-command autocomplete | TUI | VERIFIED | `terminal/commands.ts`, `completion.ts`, `terminal-completion.test.ts` | — |
 | Command history | TUI | VERIFIED | in-session ring (`prompt.ts`) + persisted `terminal/history.ts` (load/append, dedup, trim, ignore noise) wired into the session via `onHistory`/`history`. `test/terminal-history.test.ts` (5) | — |
 | Streaming tool cards | TUI streaming | VERIFIED | `terminal/state.ts` ToolCard, `terminal-view.test.ts` | — |
-| Live task tree | Hermes plan view | MISSING | plan steps render flat | Nested child-task tree |
+| Live task tree | Hermes plan view | VERIFIED | `GET /api/tasks/:id/tree` + terminal Mission Control `/tree` render nested child tasks. `services/orchestrator/test/subagents.test.ts`, `apps/cli/test/mission-control.test.ts` | Parent/child terminal-state reconciliation remains tracked in runtime docs |
 | Bounded transcript | TUI scrollback cap | PARTIAL | `state.ts` transcript cap | Verify cap + `/output` overflow |
 | `/output` viewer | TUI | VERIFIED | `commands.ts` + bounded viewer commit `60d72ce` | — |
 | `/diff` | TUI diff | VERIFIED | `commands.ts`, server `/api/tasks/:id/diff`, integration test | — |
