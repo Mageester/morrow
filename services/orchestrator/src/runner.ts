@@ -28,19 +28,27 @@ export class TaskRunner {
     });
   }
 
-  run(taskId: string) {
+  /** True while a task is executing (or queued to execute) in this process. */
+  isActive(taskId: string): boolean {
+    return this.activeTasks.has(taskId);
+  }
+
+  run(taskId: string, opts: { recovered?: boolean } = {}) {
     if (this.activeTasks.has(taskId)) {
       throw new Error("Duplicate execution rejected");
     }
 
     this.activeTasks.add(taskId);
-    
+
     const records = taskRecordsRepository(this.db);
+    // A fresh dispatch records `task.created`; a restart re-dispatch records
+    // `task.recovery_requeued` so the audit trail never claims the task was
+    // created twice.
     records.appendEvent({
       id: crypto.randomUUID(),
       taskId,
-      type: "task.created",
-      payload: {},
+      type: opts.recovered ? "task.recovery_requeued" : "task.created",
+      payload: opts.recovered ? { reason: "restart" } : {},
       createdAt: new Date().toISOString()
     });
 
