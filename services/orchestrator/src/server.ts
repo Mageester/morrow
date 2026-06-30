@@ -711,9 +711,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { taskId } = request.params as { taskId: string };
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (task.status === "cancelled") {
+      reply.status(200);
+      return { taskId, status: task.status, outcome: "already_cancelled" };
+    }
+    if (task.status === "completed" || task.status === "verified" || task.status === "failed") {
+      throw new ApiError(409, `Task is already ${task.status}; cancellation was not applied.`, "TASK_ALREADY_TERMINAL");
+    }
+    if (task.status === "interrupted") {
+      throw new ApiError(409, "Task is interrupted and can be resumed or retried; cancellation was not applied.", "TASK_NOT_ACTIVE");
+    }
 
     deps.runner.cancel(taskId);
-    reply.status(204).send();
+    const updated = tasks.getTaskById(taskId);
+    reply.status(202);
+    return { taskId, status: updated?.status ?? task.status, outcome: "cancelled" };
   });
 
   app.post("/api/tasks/:taskId/resume", async (request, reply) => {

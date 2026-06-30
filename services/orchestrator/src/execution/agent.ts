@@ -268,7 +268,18 @@ export async function executeAgentChatTask({
     updatedAt: now()
   });
 
-  records.transitionTask(taskId, "running", { id: randomUUID(), createdAt: now(), payload: {} });
+  // Move into the running lifecycle. A fresh task is `queued`; a continuation or
+  // restart resume arrives already `running` (the /resume route used
+  // resumeInterruptedTask), or still `interrupted` if the executor was invoked
+  // directly. Transition each correctly instead of unconditionally emitting
+  // `running -> running` (which the state machine rejects, failing the resume).
+  const entryStatus = tasks.getTaskById(taskId)?.status;
+  if (entryStatus === "queued") {
+    records.transitionTask(taskId, "running", { id: randomUUID(), createdAt: now(), payload: {} });
+  } else if (entryStatus === "interrupted") {
+    records.resumeInterruptedTask(taskId, { id: randomUUID(), createdAt: now(), payload: { reason: "continuation_resume" } });
+  }
+  // else already `running` (resumed via the route) — no duplicate task.running event.
   convs.updateMessageContentAndState(assistantMessageRow.id, "", "streaming", now());
 
   // Setup tools definitions

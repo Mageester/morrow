@@ -2,6 +2,36 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-30 - Cancellation lifecycle route semantics + Windows process-tree proof
+
+- **Issue:** Cancellation behavior was stronger in the runner than in the API
+  contract. `/api/tasks/:taskId/cancel` returned `204` for every existing task,
+  including duplicate cancellation and already-terminal tasks, which gave users
+  no truthful distinction between accepted cancellation and a lost race to
+  completion.
+- **Implementation:** The cancel route now returns explicit outcomes:
+  `202 { outcome: "cancelled" }` when queued/running work is cancelled,
+  `200 { outcome: "already_cancelled" }` for duplicate cancellation, `409
+  TASK_ALREADY_TERMINAL` for completed/verified/failed tasks, and `409
+  TASK_NOT_ACTIVE` for interrupted tasks that should be resumed or retried.
+  Runner-level persisted descendant propagation remains unchanged.
+- **Windows process-tree proof:** Added a Windows-only acceptance fixture in
+  `command-executor.test.ts` that launches a parent Node process, a child, and a
+  grandchild with inherited stdout/stderr. The test waits on explicit PID-ready
+  files, aborts the owning `runProcessSafe` call, verifies the result is
+  `cancelled`, verifies all three process PIDs are gone, verifies stdout/stderr
+  closed with output from all levels, and verifies an unrelated control process
+  survives. This exercises the existing structured `taskkill /F /T /PID <pid>`
+  path without shell interpolation.
+- **Race/security coverage added:** deterministic API coverage now proves
+  duplicate cancellation is idempotent, terminal cancellation returns a normal
+  non-500 outcome, and a late approval resolution cannot revive a cancelled
+  continuation.
+- **Validation:** `corepack pnpm --filter @morrow/orchestrator test --
+  cancellation-lifecycle.test.ts` -> 343 tests passed. `corepack pnpm --filter
+  @morrow/orchestrator test -- command-executor.test.ts` -> 344 tests passed on
+  Windows.
+
 ## 2026-06-30 — Startup reconciliation: re-dispatch orphaned `queued` tasks
 
 - **Issue:** After a restart, `recoverRunningTasks` only flipped `running ->
@@ -48,8 +78,8 @@ Concise, append-only record of verified changes. Newest first.
   333); `pnpm build` PASS; `smoke:vertical-slice` + `smoke:agent-alpha` PASS.
   Pinned pnpm 10.12.1 via Corepack, frozen-lockfile install clean. E2E: blocked
   locally by the live installed service on :4317 (canonical run needs it stopped).
-  Not yet covered: agent continuation `/resume` (`running->running`) and cancel
-  propagation — tracked for follow-up slices in `docs/HERMES_LEVEL_PLAN.md`.
+  Superseded later on 2026-06-30: agent continuation `/resume` and cancellation
+  propagation are now covered in `cancellation-lifecycle.test.ts`.
 - **Commit:** _(see git log)_
 
 ## 2026-06-29 - Resume interrupted deterministic tasks safely

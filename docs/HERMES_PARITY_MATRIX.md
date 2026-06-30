@@ -75,7 +75,7 @@
 | Adaptive budgets | `iteration_budget.py` | VERIFIED | `execution/adaptive-budget.ts`, commit `c2f74ca` | — |
 | Loop detection | Hermes | VERIFIED | `execution/loop-detector.ts` (stable-signature sliding window) wired into `execution/agent.ts`; interrupts with reason `loop_detected` before false success. Tests: `test/loop-detector.test.ts` (11) + `test/agent-loop.test.ts` (2) | — |
 | Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |
-| Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` `reconcileTasksOnStartup`: `running->interrupted`, **re-dispatches orphaned `queued` tasks** (no duplicate exec — executor's first write is `queued->running`), parent/child consistency (terminal-parent orphans cancelled). E2E restart test in `recovery.test.ts` resumes a `queued` task to `verified`. | Agent continuation `/resume` (`running->running` bug) + cancel propagation across restart |
+| Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` `reconcileTasksOnStartup`: `running->interrupted`, **re-dispatches orphaned `queued` tasks** (no duplicate exec — executor's first write is `queued->running`), parent/child consistency (terminal-parent orphans cancelled). E2E restart test in `recovery.test.ts` resumes a `queued` task to `verified`. | Cancel-across-restart interface acceptance + reconnect dedup |
 | Scheduled jobs (cron) | `cron/` | VERIFIED | `schedule/cron.ts` (pure UTC engine) + `repositories/schedules.ts` + `schedule/ticker.ts` (isolated runs via the task runner) + API + CLI `schedule`. `test/cron.test.ts` (7) + `test/schedules.test.ts` (8) | — |
 | Idempotency | Hermes | VERIFIED | `tasks(project_id, idempotency_key)` partial unique index (migration 12), `findByIdempotencyKey`, `Idempotency-Key` header/body on task creation returns the original task. `test/tasks.test.ts` + `test/idempotency-api.test.ts` | Extend to the agent-chat creation path |
 | Session search (FTS) | `agent/memory_manager.py` FTS5 | VERIFIED | `repositories/search.ts`, migration 10 triggers, `/api/projects/:id/search`, `test/search.test.ts` (13) + `test/search-api.test.ts` (4) + CLI `test/api-search.test.ts` (3) | — |
@@ -88,7 +88,7 @@
 | Docker sandbox | Hermes docker backend | SCAFFOLD | `backends/remote.ts` `dockerBackend` honest stub (refuses until configured; never fakes) | Real container runtime impl |
 | SSH | Hermes ssh backend | SCAFFOLD | `backends/remote.ts` `sshBackend` honest stub | Real SSH impl |
 | Unified backend interface | Hermes `transports/` | VERIFIED | `backends/types.ts` `ExecutionBackend`; local + remote stubs implement it; `test/backends.test.ts` | — |
-| Limits / env filter / no-new-privs / process-tree kill | Hermes | PARTIAL | timeout + denied patterns | env allow-list, ptree kill |
+| Limits / env filter / no-new-privs / process-tree kill | Hermes | PARTIAL | timeout + denied patterns + Windows `taskkill /F /T /PID` acceptance (`command-executor.test.ts`) | env allow-list, background PTY registry |
 
 ## 5. Skills
 
@@ -197,7 +197,7 @@
 | Model routing | Hermes | VERIFIED | `routing/router.ts`, `models.ts` | — |
 | Checkpoints | Hermes | PARTIAL | `change-sets.ts` | Named checkpoints + restore |
 | Diff / undo | Hermes | VERIFIED | server diff/undo + integration test | — |
-| Recovery | Hermes | PARTIAL | `recovery.ts` `reconcileTasksOnStartup` + e2e restart test (orphaned `queued` resumes to `verified`) | Cancel-across-restart + agent continuation resume |
+| Recovery | Hermes | PARTIAL | `recovery.ts` `reconcileTasksOnStartup` + e2e restart test (orphaned `queued` resumes to `verified`); cancellation propagation + agent continuation resume covered in `cancellation-lifecycle.test.ts` | Mid-stream reconnect/dedup and richer visible recovery UX |
 
 ---
 
