@@ -4,7 +4,7 @@ import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultD
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { TaskRunner } from "./runner.js";
-import { recoverRunningTasks } from "./recovery.js";
+import { reconcileTasksOnStartup } from "./recovery.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 
@@ -21,10 +21,18 @@ const dbPath = resolveDefaultDatabasePath(process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
 const db = openDatabase(dbPath);
 
-// Recover tasks on startup
-recoverRunningTasks(db);
-
 const runner = new TaskRunner(db);
+
+// Reconcile persisted task state after a restart: interrupt tasks that were
+// mid-flight, re-dispatch orphaned `queued` work, and cancel subagent children
+// whose parent is no longer active. Runs once, before serving traffic.
+const reconciliation = reconcileTasksOnStartup({ db, runner });
+if (reconciliation.interrupted || reconciliation.requeued || reconciliation.cancelledOrphans) {
+  console.log(
+    `Startup reconciliation: ${reconciliation.interrupted} interrupted, ` +
+    `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled`
+  );
+}
 const app = buildServer({ db, runner, secretsFile: join(resolveMorrowHome(process.env), "secrets.env"), webDir: process.env.MORROW_WEB_DIR });
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence
