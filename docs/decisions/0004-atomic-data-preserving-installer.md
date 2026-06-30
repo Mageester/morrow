@@ -38,13 +38,18 @@ activation is staged and atomic with rollback:
 2. Resolve + validate the package root (required files) **before** touching the
    install.
 3. Create the data directories idempotently; **never** delete the install root.
-4. Stage the validated tree into a fresh `<InstallRoot>\app.new` (the live `app`
+4. Before staging, recover any interrupted prior activation by validating
+   `<InstallRoot>\app`, `app.new`, and `app.old` with the same required-file
+   contract used for package validation. Prefer a complete runnable tree:
+   restore valid `app.old` when `app` is missing, promote valid `app.new`, reject
+   incomplete scratch directories, and never delete the only valid app copy.
+5. Stage the validated tree into a fresh `<InstallRoot>\app.new` (the live `app`
    is untouched, so failure here cannot destroy the previous version).
-5. Stop any running instance, then activate via same-volume renames:
+6. Stop any running instance, then activate via same-volume renames:
    `app → app.old`, `app.new → app`. If activation throws, restore `app.old`.
-6. Verify the activated tree; on any gap, roll back to `app.old`.
-7. Start and health-check. If unhealthy, restore and restart `app.old`.
-8. Only on a healthy new version is `app.old` discarded. Staging/`%TEMP%` debris
+7. Verify the activated tree; on any gap, roll back to `app.old`.
+8. Start and health-check. If unhealthy, restore and restart `app.old`.
+9. Only on a healthy new version is `app.old` discarded. Staging/`%TEMP%` debris
    is always swept.
 
 The previous working version is never deleted until the replacement has passed

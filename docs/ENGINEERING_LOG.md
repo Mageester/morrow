@@ -2,6 +2,48 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-29 - Resume interrupted deterministic tasks safely
+
+- **Issue:** `POST /api/tasks/:taskId/resume` failed for interrupted
+  `inspect_workspace` tasks.
+- **Root cause:** The endpoint used `resumeInterruptedTask` for every task kind,
+  which transitions `interrupted -> running` before calling `runner.run`.
+  `executeInspectWorkspaceTask` is deterministic and only starts from `queued`,
+  so the resumed task immediately failed with "Task is not available for
+  workspace inspection."
+- **Implementation:** Agent tasks still use continuation resume. Non-agent
+  interrupted tasks use the existing retry path, which clears stale execution
+  state and re-queues the task before the runner restarts it.
+- **Tests:** Added an API regression that seeds an interrupted workspace
+  inspection in a temporary workspace, calls `/resume`, waits for the real
+  runner, and verifies the task reaches `verified`.
+- **Validation:** `pnpm --filter @morrow/orchestrator test -- test/retry.test.ts`
+  PASS (326 orchestrator tests with the targeted file request).
+- **Commit:** _(see git log)_
+
+## 2026-06-29 - Installer recovery for interrupted app swaps
+
+- **Issue:** A crash between installer rename operations could leave `app`
+  missing while a recoverable version sat in `app.old` or `app.new`.
+- **Root cause:** `Invoke-MorrowActivation` unconditionally deleted `app.new`
+  and `app.old` before staging a new package. In the interrupted state
+  `app.old` may be the only valid previous application, so a later corrupt
+  package could leave no runnable `app` even though user data was intact.
+- **Implementation:** Added idempotent pre-activation recovery that validates
+  `app`, `app.new`, and `app.old` with the same required-file list used for
+  package validation; restores valid `app.old` when `app` is missing; promotes
+  valid `app.new`; rejects incomplete scratch trees; and reports locked-file or
+  antivirus failures with a rerun/close-Morrow recovery instruction. Reparse
+  points are not treated as valid app trees.
+- **Tests:** Added Windows activation regressions for restoring valid
+  `app.old`, promoting valid `app.new`, rejecting invalid `app.new`, repeated
+  idempotent recovery, user DB/provider config preservation, and upgrading after
+  a recovered promotion with a stale backup.
+- **Validation:** `MORROW_RUN_INSTALL_ITEST=1 node --test
+  scripts/install-activation.test.mjs` PASS (9/9); PowerShell parser clean;
+  `node --test scripts/validate-repository.test.mjs` PASS (9/9).
+- **Commit:** _(see git log)_
+
 ## 2026-06-29 — Remove redundant @morrow/cli build (turbo "no output" warning)
 
 - **Issue:** `pnpm build` warned "no output files found for task @morrow/cli#build".

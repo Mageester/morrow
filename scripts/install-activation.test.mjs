@@ -143,6 +143,98 @@ test("a corrupt upgrade is rejected and rolls back to the previous app + data", 
   }
 });
 
+test("interrupted activation restores a valid previous app before rejecting a corrupt package", { skip }, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-act-"));
+  try {
+    const root = join(work, "InstallRoot");
+    makePackage(join(root, "app.old"), "v1");
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(join(root, "data", "morrow.db"), "USERDATA");
+    const bad = join(work, "pkgbad");
+    makePackage(bad, "v2");
+    rmSync(join(bad, "web", "index.html"), { force: true });
+
+    const r = activate(bad, root);
+
+    assert.notEqual(r.code, 0, "corrupt package must still be rejected");
+    assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v1", "previous app restored from app.old");
+    assert.equal(readFileSync(join(root, "data", "morrow.db"), "utf8"), "USERDATA", "user data survived recovery");
+    assert.ok(!existsSync(join(root, "app.new")), "invalid staged app cleaned up");
+  } finally {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test("interrupted activation promotes a valid app.new before processing a new package", { skip }, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-act-"));
+  try {
+    const root = join(work, "InstallRoot");
+    makePackage(join(root, "app.old"), "v1");
+    makePackage(join(root, "app.new"), "v2");
+    mkdirSync(join(root, "config"), { recursive: true });
+    writeFileSync(join(root, "config", "providers.json"), "PROVIDERKEYS");
+    const bad = join(work, "pkgbad");
+    makePackage(bad, "v3");
+    rmSync(join(bad, "runtime", "node.exe"), { force: true });
+
+    const r = activate(bad, root);
+
+    assert.notEqual(r.code, 0, "corrupt package must still be rejected");
+    assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v2", "valid interrupted app.new promoted");
+    assert.equal(readFileSync(join(root, "app.old", "morrow.mjs"), "utf8"), "v1", "previous app retained for rollback");
+    assert.equal(readFileSync(join(root, "config", "providers.json"), "utf8"), "PROVIDERKEYS", "provider config survived recovery");
+  } finally {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test("activation can upgrade after recovering a promoted app.new with a stale app.old", { skip }, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-act-"));
+  try {
+    const root = join(work, "InstallRoot");
+    makePackage(join(root, "app.old"), "v1");
+    makePackage(join(root, "app.new"), "v2");
+    const bad = join(work, "pkgbad");
+    makePackage(bad, "v3-bad");
+    rmSync(join(bad, "web", "index.html"), { force: true });
+    assert.notEqual(activate(bad, root).code, 0, "first run recovers v2 and rejects the bad package");
+
+    makePackage(join(work, "pkg3"), "v3");
+    const r = activate(join(work, "pkg3"), root);
+
+    assert.equal(r.code, 0, `valid upgrade after recovery should succeed: ${r.stderr}`);
+    assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v3", "new package activated");
+    assert.equal(readFileSync(join(root, "app.old", "morrow.mjs"), "utf8"), "v2", "fresh backup is the recovered app");
+  } finally {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test("interrupted activation rejects invalid app.new and keeps the valid previous app idempotently", { skip }, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-act-"));
+  try {
+    const root = join(work, "InstallRoot");
+    makePackage(join(root, "app.old"), "v1");
+    makePackage(join(root, "app.new"), "v2");
+    rmSync(join(root, "app.new", "orchestrator", "dist", "src", "index.js"), { force: true });
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(join(root, "data", "morrow.db"), "USERDATA");
+
+    for (const version of ["v3", "v4"]) {
+      const bad = join(work, `bad-${version}`);
+      makePackage(bad, version);
+      rmSync(join(bad, "web", "index.html"), { force: true });
+      const r = activate(bad, root);
+      assert.notEqual(r.code, 0, `corrupt package ${version} must be rejected`);
+      assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v1", "previous app remains restored");
+      assert.equal(readFileSync(join(root, "data", "morrow.db"), "utf8"), "USERDATA", "user data remains unchanged");
+      assert.ok(!existsSync(join(root, "app.new")), "invalid app.new is cleaned once and stays gone");
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
 test("activation works when the install path contains spaces", { skip }, () => {
   const work = mkdtempSync(join(tmpdir(), "morrow act ")); // note the spaces
   try {
