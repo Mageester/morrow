@@ -18,6 +18,7 @@ describe("morrow root command", () => {
     const help = stdout.mock.calls.map(([value]) => String(value)).join("");
     // Primary product commands lead.
     expect(help).toContain("morrow ask");
+    expect(help).toContain("morrow mission");
     expect(help).toContain("morrow plan");
     expect(help).toContain("morrow fix");
     expect(help).toContain("morrow resume");
@@ -65,6 +66,21 @@ describe("morrow root command", () => {
       root: "sessions",
       sub: undefined,
       args: [],
+    });
+  });
+
+  it("treats mission as the primary terminal Mission Control command", () => {
+    expect(resolveInvocation(["mission"])).toEqual({
+      kind: "command",
+      root: "mission",
+      sub: undefined,
+      args: [],
+    });
+    expect(resolveInvocation(["mission", "fix", "the", "tests"])).toEqual({
+      kind: "command",
+      root: "mission",
+      sub: "fix",
+      args: ["the", "tests"],
     });
   });
 

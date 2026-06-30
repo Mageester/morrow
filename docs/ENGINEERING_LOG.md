@@ -2,6 +2,29 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-06-30 - Terminal Mission Control entrypoint + mission evidence views
+
+- **Issue:** Morrow had real terminal session mechanics, task trees, diffs, undo,
+  approvals, and task aggregates, but no primary product entrypoint that named the
+  experience as Mission Control. Users also had to leave the session to inspect a
+  subagent tree or final mission evidence.
+- **Implementation:** Added `morrow mission` as a top-level alias for the
+  terminal Mission Control session. Added `/tree` and `/result` slash commands in
+  interactive TUI and line-mode chat. `/tree` renders `GET /api/tasks/:id/tree`
+  as a compact nested task tree; `/result` summarizes status, provider/model,
+  mode/privacy, plan, files affected, command/tool evidence, verification,
+  approvals, and the next safe action (`/diff`, `/undo`, `/continue`, or retry
+  guidance depending on status).
+- **Scope choice:** The first primary real interface is CLI/TUI because it already
+  owns streaming task events, approvals, cancellation, diffs, undo, output, and
+  provider/mode controls. Web MissionControl remains useful but is not yet the
+  live mission cockpit.
+- **Tests:** Added CLI formatter coverage for nested task trees and mission
+  result summaries, plus root-command coverage for `morrow mission`.
+- **Validation:** `corepack pnpm --filter @morrow/cli test -- main.test.ts
+  mission-control.test.ts` -> 149 tests passed. `corepack pnpm --filter
+  @morrow/cli check` -> PASS.
+
 ## 2026-06-30 - Cancellation lifecycle route semantics + Windows process-tree proof
 
 - **Issue:** Cancellation behavior was stronger in the runner than in the API
