@@ -56,6 +56,8 @@ import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspa
 import { processesRepository } from "./repositories/processes.js";
 import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
+import { integrationsRepository } from "./repositories/integrations.js";
+import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
@@ -177,6 +179,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   supervisor.reconcileOnStartup();
   const worktreesRepo = worktreesRepository(deps.db);
   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
+  const integrationsRepo = integrationsRepository(deps.db);
+  const integrationManager = new IntegrationManager(
+    integrationsRepo,
+    worktreesRepo,
+    (projectId) => projects.getProjectById(projectId)?.workspacePath
+  );
   // Abandoned-worktree reconciliation: a row whose directory vanished is
   // marked (branch retained) before any traffic is served.
   worktreeManager.reconcile((projectId) => projects.getProjectById(projectId)?.workspacePath);
@@ -438,7 +446,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const agg = records.getAggregate(taskId);
     const toolCalls = convs.listToolCallsForTask(taskId);
     const routing = routingRepo.get(taskId)?.decision ?? null;
-    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), routing };
+    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), routing };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -1228,6 +1236,67 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       return { status: "removed", worktree: result.record, preservedCommit: result.preservedCommit };
     } catch (e) {
       return worktreeApiError(e);
+    }
+  });
+
+  // ── Git integrations ──────────────────────────────────────────────────────
+  // Check runs in a temporary local clone; apply is explicit and refuses dirty
+  // or moved targets. Failed/conflicted checks never delete source worktrees.
+
+  const integrationApiError = (e: unknown): never => {
+    if (e instanceof IntegrationError) {
+      if (e.code === "not_found") throw new ApiError(404, e.message, "NOT_FOUND");
+      if (e.code === "conflict") throw new ApiError(409, e.message, "CONFLICT");
+      if (e.code === "validation") throw new ApiError(400, e.message, "VALIDATION_ERROR");
+      throw new ApiError(500, e.message, "GIT_FAILED");
+    }
+    throw e;
+  };
+
+  app.post("/api/worktrees/:worktreeId/integrations/check", async (request, reply) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    const body = z.object({ targetBranch: z.string().trim().min(1).max(200).optional() }).strict().parse(request.body ?? {});
+    try {
+      const attempt = integrationManager.check(worktreeId, body.targetBranch ? { targetBranch: body.targetBranch } : {});
+      reply.status(201);
+      return attempt;
+    } catch (e) {
+      return integrationApiError(e);
+    }
+  });
+
+  app.get("/api/projects/:projectId/integrations", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["pending", "clean", "conflicted", "applied", "failed", "cancelled"].includes(status)) {
+      throw new ApiError(400, "Invalid integration status filter", "VALIDATION_ERROR");
+    }
+    return integrationsRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/integrations/:integrationId", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    const attempt = integrationsRepo.get(integrationId);
+    if (!attempt) throw new ApiError(404, "Integration attempt not found", "NOT_FOUND");
+    return attempt;
+  });
+
+  app.post("/api/integrations/:integrationId/apply", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    try {
+      return integrationManager.apply(integrationId);
+    } catch (e) {
+      return integrationApiError(e);
+    }
+  });
+
+  app.post("/api/integrations/:integrationId/cancel", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    try {
+      return integrationManager.cancel(integrationId);
+    } catch (e) {
+      return integrationApiError(e);
     }
   });
 

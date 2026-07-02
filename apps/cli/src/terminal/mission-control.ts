@@ -55,6 +55,15 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
   const failedTools = aggregate.toolCalls.filter((call) => call.status === "failed");
   const verification = aggregate.verification;
   const disclosure = aggregate.disclosure;
+  const integrations = aggregate.integrations ?? [];
+  const integrationSummary = integrations.length
+    ? integrations
+        .map((attempt) => {
+          const conflicts = attempt.conflictedFiles.length ? ` (${attempt.conflictedFiles.length} conflicts)` : "";
+          return `${attempt.status}:${short(attempt.id)} ${attempt.sourceBranch}->${attempt.targetBranch}${conflicts}`;
+        })
+        .join("; ")
+    : "none";
 
   const lines = [
     "Mission result",
@@ -67,6 +76,7 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
     `Tool calls: ${aggregate.toolCalls.length}${failedTools.length ? ` (${failedTools.length} failed)` : ""}`,
     `Verification: ${verification ? `${verification.status} - ${verification.summary}` : "not recorded"}`,
     `Approvals: ${aggregate.approvals.length ? aggregate.approvals.map((approval) => `${approval.kind}:${approval.status}`).join(", ") : "none"}`,
+    `Integrations: ${integrationSummary}`,
   ];
 
   if (task.status === "cancelled") lines.push("Next action: resume is unavailable; start a new mission or retry only if the task failed/interrupted.");

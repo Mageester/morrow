@@ -365,6 +365,29 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX worktrees_project_idx ON worktrees(project_id);
     ALTER TABLE tasks ADD COLUMN worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL;
+  `},
+  {id:22,name:"integration_attempts",sql:`
+    CREATE TABLE integration_attempts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      worktree_id TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      source_commit TEXT NOT NULL,
+      target_commit TEXT NOT NULL,
+      status TEXT NOT NULL,
+      conflicted_files_json TEXT NOT NULL,
+      error_detail TEXT,
+      applied_commit TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      applied_at TEXT,
+      cancelled_at TEXT
+    );
+    CREATE INDEX integration_attempts_project_idx ON integration_attempts(project_id);
+    CREATE INDEX integration_attempts_worktree_idx ON integration_attempts(worktree_id);
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

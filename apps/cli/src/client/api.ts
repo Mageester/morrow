@@ -57,6 +57,7 @@ export interface TaskAggregate {
   approvals: Approval[];
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
   verification?: VerificationResult;
+  integrations?: IntegrationAttempt[];
   disclosure?: {
     provider: string;
     networkAccess: string;
@@ -111,6 +112,26 @@ export interface WorktreeStatusReport extends WorktreeRecord {
   dirty: boolean;
   dirtyFiles: string[];
   aheadCommits: Array<{ hash: string; subject: string }>;
+}
+
+export interface IntegrationAttempt {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  worktreeId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  sourceCommit: string;
+  targetCommit: string;
+  status: "pending" | "clean" | "conflicted" | "applied" | "failed" | "cancelled";
+  conflictedFiles: string[];
+  errorDetail: string | null;
+  appliedCommit: string | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+  cancelledAt: string | null;
 }
 
 export interface CheckpointSummary {
@@ -240,6 +261,24 @@ export class MorrowApi {
       "DELETE",
       `/api/worktrees/${encodeURIComponent(id)}${preserve ? "?preserve=true" : ""}`
     );
+  }
+
+  // ── Git integrations ─────────────────────────────────────────────────────
+  checkIntegration(worktreeId: string, input: { targetBranch?: string } = {}) {
+    return this.req<IntegrationAttempt>("POST", `/api/worktrees/${encodeURIComponent(worktreeId)}/integrations/check`, input);
+  }
+  listIntegrations(projectId: string, status?: IntegrationAttempt["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<IntegrationAttempt[]>("GET", `/api/projects/${projectId}/integrations${suffix}`);
+  }
+  getIntegration(id: string) {
+    return this.req<IntegrationAttempt>("GET", `/api/integrations/${encodeURIComponent(id)}`);
+  }
+  applyIntegration(id: string) {
+    return this.req<IntegrationAttempt>("POST", `/api/integrations/${encodeURIComponent(id)}/apply`);
+  }
+  cancelIntegration(id: string) {
+    return this.req<IntegrationAttempt>("POST", `/api/integrations/${encodeURIComponent(id)}/cancel`);
   }
 
   // ── Named workspace checkpoints ───────────────────────────────────────────

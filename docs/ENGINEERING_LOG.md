@@ -2,6 +2,33 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slices: worktree isolation and safe integration attempts
+
+- **Git worktrees / parallel agents (section 8, MISSING->VERIFIED):** migration
+  21 adds durable `worktrees` rows; `workspace/worktrees.ts` creates per-agent
+  task branches and checked-out worktrees under Morrow control; agent tasks can
+  execute inside an assigned worktree; API + CLI `morrow worktrees`, `/worktrees`,
+  and `morrow chat --worktree` expose the lifecycle. Source worktrees are
+  preserved until explicit cleanup.
+- **Conflict handling (section 8, MISSING->VERIFIED):** migration 22 adds
+  `integration_attempts`; `workspace/integrations.ts` records isolated merge
+  checks, dry-runs merges in a temporary local clone, reports clean/conflicted/
+  failed outcomes with conflicted files, refuses dirty or stale targets, applies
+  only previously clean attempts with `--no-ff`, and preserves the source branch
+  and worktree. API routes under `/api/worktrees/:id/integrations/check`,
+  `/api/projects/:id/integrations`, and `/api/integrations/:id/apply|cancel`;
+  CLI command `morrow integrate`.
+- **Tests:** worktrees coverage in `services/orchestrator/test/worktrees.test.ts`,
+  `apps/cli/test/api-worktrees.test.ts`, `apps/cli/test/worktrees-command.test.ts`;
+  integration coverage in `services/orchestrator/test/integrations.test.ts`,
+  `apps/cli/test/api-integrations.test.ts`, and
+  `apps/cli/test/integrations-command.test.ts`.
+- **Validation:** `pnpm --filter @morrow/orchestrator test --
+  test/integrations.test.ts` PASS (391 orchestrator tests);
+  `pnpm --filter @morrow/cli test -- test/api-integrations.test.ts
+  test/integrations-command.test.ts` PASS (177 CLI tests); `pnpm check` PASS;
+  `pnpm test` PASS (all repo packages); `pnpm build` PASS.
+
 ## 2026-07-02 - Hermes-parity slice batch: rate guard, import CLI, checkpoints, chat idempotency, palette evidence
 
 - **Baseline:** full validation on `product/mission-control` before changes:

@@ -87,6 +87,27 @@ describe("Mission Control formatters", () => {
         candidates: [],
         mode: "agent",
       },
+      integrations: [
+        {
+          id: "integration-123456",
+          projectId: "project",
+          taskId: baseTask.id,
+          agentId: null,
+          worktreeId: "worktree-123456",
+          sourceBranch: "morrow/task",
+          targetBranch: "main",
+          sourceCommit: "abc123",
+          targetCommit: "def456",
+          status: "conflicted",
+          conflictedFiles: ["src/app.ts"],
+          errorDetail: null,
+          appliedCommit: null,
+          createdAt: baseTask.createdAt,
+          updatedAt: baseTask.updatedAt,
+          appliedAt: null,
+          cancelledAt: null,
+        },
+      ],
     };
 
     const lines = formatMissionResult(aggregate);
@@ -97,6 +118,7 @@ describe("Mission Control formatters", () => {
     expect(lines).toContain("Commands run: tool-run");
     expect(lines).toContain("Verification: not recorded");
     expect(lines).toContain("Approvals: command:approved");
+    expect(lines).toContain("Integrations: conflicted:integrat morrow/task->main (1 conflicts)");
     expect(lines.at(-1)).toContain("/diff");
   });
 });

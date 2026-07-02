@@ -20,6 +20,26 @@ export interface OAuthProviderStatus {
   warning: string;
 }
 
+export interface IntegrationAttempt {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  worktreeId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  sourceCommit: string;
+  targetCommit: string;
+  status: "pending" | "clean" | "conflicted" | "applied" | "failed" | "cancelled";
+  conflictedFiles: string[];
+  errorDetail: string | null;
+  appliedCommit: string | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+  cancelledAt: string | null;
+}
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // ── Typed response wrapper ──────────────────────────────────────────────────
@@ -62,7 +82,7 @@ export const apiClient = {
     });
   },
 
-  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; toolCalls?: any[]; routing?: RoutingDecision | null }> {
+  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; integrations?: IntegrationAttempt[]; toolCalls?: any[]; routing?: RoutingDecision | null }> {
     return request(`/api/tasks/${taskId}`);
   },
 
