@@ -74,6 +74,15 @@ export interface TaskTreeNode {
   children: TaskTreeNode[];
 }
 
+export interface CheckpointSummary {
+  id: string;
+  name: string;
+  taskId: string | null;
+  fileCount: number;
+  files: string[];
+  createdAt: string;
+}
+
 function statusToExit(status: number): number {
   if (status === 404) return EXIT.NOT_FOUND;
   if (status === 400 || status === 422) return EXIT.USAGE;
@@ -146,6 +155,23 @@ export class MorrowApi {
   retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }
   getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
+
+  // ── Named workspace checkpoints ───────────────────────────────────────────
+  createCheckpoint(projectId: string, input: { name: string; files?: string[]; taskId?: string }) {
+    return this.req<CheckpointSummary & { skipped: Array<{ path: string; reason: string }> }>("POST", `/api/projects/${projectId}/checkpoints`, input);
+  }
+  listCheckpoints(projectId: string) {
+    return this.req<CheckpointSummary[]>("GET", `/api/projects/${projectId}/checkpoints`);
+  }
+  restoreCheckpoint(projectId: string, name: string) {
+    return this.req<{ status: string; name: string; restoredFiles: string[]; deletedFiles: string[]; safetyCheckpoint: string | null }>(
+      "POST",
+      `/api/projects/${projectId}/checkpoints/${encodeURIComponent(name)}/restore`
+    );
+  }
+  deleteCheckpoint(projectId: string, name: string) {
+    return this.req<{ status: string; name: string }>("DELETE", `/api/projects/${projectId}/checkpoints/${encodeURIComponent(name)}`);
+  }
 
   // ── Approvals and project-scoped command trust ────────────────────────────
   listApprovals(projectId: string, status?: "pending" | "approved" | "denied" | "cancelled") {

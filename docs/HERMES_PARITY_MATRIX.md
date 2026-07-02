@@ -195,7 +195,7 @@
 |---|---|---|---|---|
 | Subagents / delegation | Hermes spawn | VERIFIED | `POST /api/tasks/:id/subagents` spawns an isolated child task run via the normal runner; composes with persistent named agents (`repositories/agents.ts`, committed `feat(agents)`). `test/subagents.test.ts` (6) | — |
 | Model routing | Hermes | VERIFIED | `routing/router.ts`, `models.ts` | — |
-| Checkpoints | Hermes | PARTIAL | `change-sets.ts` | Named checkpoints + restore |
+| Checkpoints | Hermes | VERIFIED | Named workspace checkpoints: migration 19 `checkpoints` table + `repositories/checkpoints.ts` + `workspace/checkpoints.ts` (content-addressed snapshots sharing the undo backup store; containment-gated; restore verifies all blobs up front and auto-saves an `auto/pre-restore-…` safety checkpoint so restores are reversible). API: POST/GET/restore/DELETE under `/api/projects/:id/checkpoints` (`CreateCheckpointSchema` in contracts). CLI: `/checkpoint save|list|restore|delete`. Tests: `test/checkpoints.test.ts` (8) + `apps/cli/test/api-checkpoints.test.ts` (3) | Interactive TUI mode points to line mode for now |
 | Diff / undo | Hermes | VERIFIED | server diff/undo + integration test | — |
 | Recovery | Hermes | PARTIAL | `recovery.ts` `reconcileTasksOnStartup` + e2e restart test (orphaned `queued` resumes to `verified`); cancellation propagation + agent continuation resume covered in `cancellation-lifecycle.test.ts` | Mid-stream reconnect/dedup and richer visible recovery UX |
 
