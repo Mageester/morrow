@@ -187,7 +187,7 @@
 | Uninstall | Hermes | VERIFIED | `installer/templates/uninstall.ps1` — removes app/bin/shortcuts/PATH entry; data preserved by default with explicit `-PurgeData`/`-KeepData` flags and a safe-default prompt. Covered by `scripts/package-command.test.mjs` + `validate-repository` checks | No automated end-to-end uninstall run on CI (needs Windows artifact) |
 | Service management | Hermes | VERIFIED | `service/lifecycle.ts`, `service-lifecycle.test.ts` | — |
 | Doctor | `hermes doctor` | VERIFIED | `morrow doctor` (node/pnpm/home/migrations/providers checks) with testable `service/doctor-checks.ts` `aggregateDoctor`. `test/doctor-update.test.ts` | — |
-| Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` real package: `parseHermesEnv` + `mapToMorrow` (known keys only; unknowns → `unmapped`; secret *names* not values) + `summarizeImport` (no secret leak). `test/import.test.ts` (4) | CLI `morrow import` + session/skill import |
+| Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` (`parseHermesEnv`/`mapToMorrow`/`summarizeImport`, `test/import.test.ts` 4) + CLI `morrow import hermes <path>` (`apps/cli/src/commands/import.ts`): offline dry-run report by default, `--apply` maps provider aliases (claude→anthropic, google→gemini, …) and configures provider+model+key through the same service path as `providers configure`; secret values never printed in human or JSON output. `test/import-command.test.ts` (6) | Session/skill import |
 
 ## 14. Cross-cutting
 
