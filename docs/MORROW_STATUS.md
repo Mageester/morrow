@@ -5,8 +5,10 @@ Snapshot of what is **verified working** right now, updated as slices land.
 ## Build / test health (2026-07-02, latest)
 
 - `pnpm check`, `pnpm test`, and `pnpm build`: green.
-- `pnpm test`: **orchestrator 344 · CLI 149 · web 22 · contracts 4 ·
-  hermes-compat 4 — all green (523 total)**.
+- `pnpm test`: **orchestrator 368 · CLI 169 · web 22 · contracts 4 ·
+  hermes-compat 4 — all green (567 total)** after the 2026-07-02
+  hermes-parity slice batch (rate guard, import CLI, checkpoints, chat
+  idempotency, palette tests — see ENGINEERING_LOG).
 - Orchestrator smoke suites: `vertical-slice`, `providers`, `agent-alpha`, and
   `sqlite` all verified passing this session (2026-07-02).
 - `pnpm run test:e2e` (Playwright): **11/11 green** (2026-07-02).
