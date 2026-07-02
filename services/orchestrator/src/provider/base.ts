@@ -49,6 +49,8 @@ export interface ProviderErrorPayload {
   message: string;
   retryable: boolean;
   status?: number;
+  /** Cooldown requested by the provider (parsed Retry-After), in milliseconds. */
+  retryAfterMs?: number;
 }
 
 export interface ProviderChunk {
@@ -97,27 +99,37 @@ export class ProviderError extends Error {
   readonly kind: ProviderErrorKind;
   readonly retryable: boolean;
   readonly status?: number;
+  /** Cooldown requested by the provider (parsed Retry-After), in milliseconds. */
+  readonly retryAfterMs?: number;
   constructor(
     public type: string,
     message: string,
-    options: { kind?: ProviderErrorKind; retryable?: boolean; status?: number } = {}
+    options: { kind?: ProviderErrorKind; retryable?: boolean; status?: number; retryAfterMs?: number } = {}
   ) {
     super(message);
     this.name = "ProviderError";
     this.kind = options.kind ?? "unknown";
     this.retryable = options.retryable ?? false;
     if (options.status !== undefined) this.status = options.status;
+    if (options.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
   }
 }
 
 /** Classify an HTTP status code from any provider into a normalized error. */
-export function classifyHttpStatus(status: number, message: string): ProviderErrorPayload {
+export function classifyHttpStatus(status: number, message: string, retryAfterMs?: number): ProviderErrorPayload {
   const safeMessage = redactSecrets(message);
   if (status === 401 || status === 403) {
     return { type: "auth_error", kind: "auth", message: safeMessage, retryable: false, status };
   }
   if (status === 429) {
-    return { type: "rate_limit", kind: "rate_limit", message: safeMessage, retryable: true, status };
+    return {
+      type: "rate_limit",
+      kind: "rate_limit",
+      message: safeMessage,
+      retryable: true,
+      status,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    };
   }
   if (status === 400 || status === 404 || status === 422) {
     return { type: "invalid_request", kind: "invalid_request", message: safeMessage, retryable: false, status };

@@ -6,6 +6,7 @@ import {
   classifyHttpStatus,
   classifyThrownError,
 } from "./base.js";
+import { parseRetryAfter } from "./rate-guard.js";
 
 /**
  * Streaming adapter for OpenAI's ChatGPT/Codex subscription backend
@@ -153,7 +154,7 @@ export class CodexProvider implements AiProvider {
       const errText = await response.text().catch(() => "");
       let errMsg = errText || `Request failed with status ${response.status}`;
       try { errMsg = JSON.parse(errText)?.detail || JSON.parse(errText)?.error?.message || errMsg; } catch { /* keep raw */ }
-      yield { type: "error", error: classifyHttpStatus(response.status, errMsg) };
+      yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;
     }
     if (!response.body) {

@@ -58,6 +58,7 @@ import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
+import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
 import { listModels } from "./routing/models.js";
@@ -945,6 +946,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Full provider status list (configured/available, capabilities, endpoint host).
   app.get("/api/providers", async () => listProviderStatuses());
+
+  // Live rate-limit guard state: which providers are cooling down and for how long.
+  app.get("/api/providers/rate-limits", async () => globalRateGuard.snapshot());
 
   // Capability matrix for the UI.
   app.get("/api/providers/capabilities", async () =>

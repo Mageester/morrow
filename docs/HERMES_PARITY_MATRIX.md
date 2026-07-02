@@ -170,7 +170,7 @@
 | Multi-provider | `providers/`, `agent/*_adapter.py` | VERIFIED | `provider/{anthropic,openai,gemini,openai-compatible,mock}.ts` | — |
 | Health checks | Hermes | VERIFIED | `provider/connectivity.ts`, `/providers/:id/test` | — |
 | Fallback | Hermes | VERIFIED | `provider/fallback.ts` `openStreamWithFallback` (retryable-only, no mid-stream switch) wired into `execution/agent.ts`; primary failure falls back to the next configured candidate and emits `provider.fallback`. Tests: `provider-fallback.test.ts` (8) + `agent-fallback.test.ts` (2) | — |
-| Rate limits | `nous_rate_guard.py`, `rate_limit_tracker.py` | MISSING | — | Rate guard |
+| Rate limits | `nous_rate_guard.py`, `rate_limit_tracker.py` | VERIFIED | `provider/rate-guard.ts` (`RateGuard`: per-provider cooldown, Retry-After honored, exponential backoff 2s→5m cap, success reset; advisory not blocking) wired into `openStreamWithFallback` (rate-limited candidates deprioritized, never skipped) + `execution/agent.ts` (`provider.rate_limited` event) + `GET /api/providers/rate-limits`. Adapters parse `Retry-After` into the 429 payload. `test/rate-guard.test.ts` (13) | Persisted cross-restart cooldowns intentionally omitted (stale-state risk) |
 | Local/cloud routing | Hermes | VERIFIED | `routing/presets.ts` privacy classes | — |
 | Context limits | `context_engine.py` | PARTIAL | preset `contextBudgetBytes` | Token-accurate trimming |
 | Profiles | Hermes | VERIFIED | `routing/presets.ts`, `presets.test.ts` | — |
