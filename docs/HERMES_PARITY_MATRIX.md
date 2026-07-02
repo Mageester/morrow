@@ -48,7 +48,7 @@
 | `/output` viewer | TUI | VERIFIED | `commands.ts` + bounded viewer commit `60d72ce` | — |
 | `/diff` | TUI diff | VERIFIED | `commands.ts`, server `/api/tasks/:id/diff`, integration test | — |
 | `/undo` | TUI undo | VERIFIED | `commands.ts`, server `/api/tasks/:id/undo`, integration test | — |
-| Ctrl+K palette | — | MISSING | — | Command palette |
+| Ctrl+K palette | — | VERIFIED | `terminal/palette.ts` (static items = all slash commands + capability modes; fuzzy subsequence ranking, prefix-boosted) + `input-state.ts` Ctrl+K overlay (type-to-filter, ↑/↓/Tab navigation, Enter runs the item through the normal dispatch, Esc/Ctrl+C close, Ctrl+U clears, in-progress buffer preserved) rendered by `app-view.ts`. `test/terminal-palette.test.ts` (11) | Dynamic items (models/projects/sessions) supplied by the session controller where available |
 | Resize handling | TUI | PARTIAL | `renderer.ts` width clip | SIGWINCH reflow test |
 | No-color / ASCII fallback | TUI | VERIFIED | `capabilities.ts`, `view.ts` glyphs, `terminal-capabilities.test.ts` | — |
 | Clean Ctrl+C | TUI | PARTIAL | `runtime.ts` signal handling | Double-Ctrl-C abort test |
