@@ -8,6 +8,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { MockProvider } from "../src/provider/mock.js";
+import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
 import { TaskRunner } from "../src/runner.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { readWorkspaceFile, SafeReadError, validateSafeReadPath } from "../src/workspace/safe-reader.js";
@@ -333,6 +334,97 @@ describe("Agent Alpha", () => {
       const evidence = taskRecordsRepository(db).listEvidence("task-1");
       expect(evidence.length).toBe(1);
       expect(evidence[0]?.path).toBe("readme.md");
+    });
+
+    it("trims old conversation context before provider calls when the input budget is tight", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Trim Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Trim Chat",
+        createdAt: "2026-07-02T00:00:00.000Z",
+        updatedAt: "2026-07-02T00:00:00.000Z"
+      });
+
+      convs.appendMessage({
+        id: "msg-old-user",
+        conversationId: "c1",
+        role: "user",
+        content: "ANCIENT_CONTEXT " + "alpha ".repeat(1200),
+        createdAt: "2026-07-02T00:00:01.000Z",
+        updatedAt: "2026-07-02T00:00:01.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "OLD_ASSISTANT_CONTEXT " + "beta ".repeat(1200),
+        createdAt: "2026-07-02T00:00:02.000Z",
+        updatedAt: "2026-07-02T00:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-new-user",
+        conversationId: "c1",
+        role: "user",
+        content: "LATEST_REQUEST keep this exact phrase",
+        createdAt: "2026-07-02T00:00:03.000Z",
+        updatedAt: "2026-07-02T00:00:03.000Z"
+      });
+
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T00:00:04.000Z"
+      });
+
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T00:00:04.000Z",
+        updatedAt: "2026-07-02T00:00:04.000Z"
+      });
+
+      const captured: ChatMessage[][] = [];
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          captured.push(messages);
+          yield { type: "text", text: "trimmed ok" };
+          yield { type: "done" };
+        }
+      };
+
+      await executeAgentChatTask({
+        db,
+        taskId: "task-1",
+        provider,
+        maxContextBytes: 1800
+      });
+
+      const sent = captured[0]!.map((message) => message.content).join("\n");
+      expect(sent).toContain("You are Morrow");
+      expect(sent).toContain("LATEST_REQUEST keep this exact phrase");
+      expect(sent).not.toContain("ANCIENT_CONTEXT");
+      expect(sent).not.toContain("OLD_ASSISTANT_CONTEXT");
+
+      const trimEvent = taskRecordsRepository(db).listEvents("task-1").find((event) => event.type === "context.trimmed");
+      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 450 });
     });
 
     it("handles abort signals during streaming cancellation cleanly", async () => {

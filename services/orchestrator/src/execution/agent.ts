@@ -26,9 +26,11 @@ import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
+import { getModel } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
+import { inputTokenBudget, trimMessagesToBudget } from "./context-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -203,6 +205,11 @@ export async function executeAgentChatTask({
   const turnCeiling = adaptiveTurnCeiling(turnsLimit);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
+  const maxInputTokens = inputTokenBudget({
+    contextBudgetBytes: contextBytesLimit,
+    modelContextWindow: resolvedModel ? getModel(resolvedModel)?.contextWindow ?? null : null,
+    outputBudgetTokens: preset.outputBudgetTokens,
+  });
 
   // Resolve active provider: an injected provider wins (tests); otherwise the
   // deterministic mock for demo mode, or a registry-built real provider.
@@ -947,9 +954,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const currentToolCalls: any[] = [];
 
     try {
+      const budgetedContext = trimMessagesToBudget(chatMessages, { maxInputTokens });
+      if (budgetedContext.trimmedMessages > 0) {
+        event("context.trimmed", {
+          originalTokens: budgetedContext.originalTokens,
+          finalTokens: budgetedContext.finalTokens,
+          maxInputTokens,
+          trimmedMessages: budgetedContext.trimmedMessages,
+        });
+      }
       const opened = await openStreamWithFallback(
         streamCandidates,
-        chatMessages,
+        budgetedContext.messages,
         {
           ...(abortSignal ? { abortSignal } : {}),
           tools: exposedTools,

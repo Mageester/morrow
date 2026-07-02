@@ -2,6 +2,27 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slice: token-aware context trimming begins
+
+- **Context limits (section 12, still PARTIAL):** added
+  `execution/context-budget.ts`, which derives an input-token budget from preset
+  bytes, known model context windows, output-token reservations, and a safety
+  reserve. Agent prompt assembly now trims before every provider call, preserving
+  system messages and the newest conversational/tool segment while dropping older
+  history first.
+- **Evidence:** added typed `context.trimmed` task events carrying original/final
+  token estimates, max input tokens, and trimmed message count. Added pure tests
+  for budget derivation, old-history trimming, and assistant-tool-output grouping;
+  added an agent provider-capture regression proving oversized old history is not
+  sent while the latest user request is preserved.
+- **Remaining gap:** token counts use a deterministic estimator, not provider-
+  specific tokenizer packages yet; dropped context is not semantically summarized
+  into memory/UI yet.
+- **Validation:** `pnpm --filter @morrow/orchestrator test --
+  test/context-budget.test.ts test/agent-alpha.test.ts` PASS (395 orchestrator
+  tests); `pnpm check` PASS; `pnpm test` PASS (orchestrator 395, CLI 177, web 22,
+  contracts/hermes-compat green); `pnpm build` PASS.
+
 ## 2026-07-02 - Hermes-parity slices: worktree isolation and safe integration attempts
 
 - **Git worktrees / parallel agents (section 8, MISSING->VERIFIED):** migration
