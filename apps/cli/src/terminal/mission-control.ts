@@ -36,6 +36,22 @@ export function formatTaskTree(root: TaskTreeNode): string[] {
   return lines;
 }
 
+export function formatContextStatus(aggregate: TaskAggregate): string[] {
+  const context = aggregate.context ?? null;
+  if (!context) return ["Context", "Context: not recorded"];
+  return [
+    "Context",
+    `Context: ${context.inputTokensAfter ?? "unknown"} / ${context.maxInputTokens} tokens (${context.exact ? "exact" : "estimated"})`,
+    `Window: ${context.contextWindowTokens} tokens (${context.contextWindowSource})`,
+    `Reserved: ${context.reservedTokens} tokens`,
+    `Compacted groups: ${context.compactedGroups}`,
+    `Removed groups: ${context.removedGroups}`,
+    `Last operation: ${context.lastOperation ?? "none"}`,
+    `Last summary: ${context.lastSummary ? `${context.lastSummary.method} ${short(context.lastSummary.id)} (${context.lastSummary.sourceMessageCount} messages)` : "none"}`,
+    ...(context.warning ? [`Warning: ${context.warning}`] : []),
+  ];
+}
+
 export function formatMissionResult(aggregate: TaskAggregate): string[] {
   const task = aggregate.task;
   const files = new Set<string>();
@@ -56,6 +72,7 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
   const verification = aggregate.verification;
   const disclosure = aggregate.disclosure;
   const integrations = aggregate.integrations ?? [];
+  const context = aggregate.context ?? null;
   const integrationSummary = integrations.length
     ? integrations
         .map((attempt) => {
@@ -76,6 +93,12 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
     `Tool calls: ${aggregate.toolCalls.length}${failedTools.length ? ` (${failedTools.length} failed)` : ""}`,
     `Verification: ${verification ? `${verification.status} - ${verification.summary}` : "not recorded"}`,
     `Approvals: ${aggregate.approvals.length ? aggregate.approvals.map((approval) => `${approval.kind}:${approval.status}`).join(", ") : "none"}`,
+    ...(context
+      ? [
+          `Context: ${context.inputTokensAfter ?? "unknown"} / ${context.maxInputTokens} tokens (${context.exact ? "exact" : "estimated"}); compacted ${context.compactedGroups} groups; removed ${context.removedGroups} groups`,
+          ...(context.lastSummary ? [`Last context summary: ${context.lastSummary.method} ${short(context.lastSummary.id)} (${context.lastSummary.sourceMessageCount} messages)`] : []),
+        ]
+      : ["Context: not recorded"]),
     `Integrations: ${integrationSummary}`,
   ];
 

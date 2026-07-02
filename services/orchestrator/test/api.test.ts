@@ -38,6 +38,52 @@ describe("REST API and Task Runner Vertical Slice", () => {
     });
   });
 
+  it("includes context usage metadata in task aggregates without message content", async () => {
+    const now = "2026-07-02T03:00:00.000Z";
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "Project", tempDir, now, now);
+    db.prepare("INSERT INTO tasks(id,schema_version,project_id,type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run("task-ctx", 1, "p1", "agent_chat", "completed", now, now);
+    db.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)").run("c1", "p1", "Context", now, now);
+    db.prepare("INSERT INTO context_summaries(id,project_id,conversation_id,task_id,method,content,source_start_index,source_end_index,source_message_count,source_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("summary-1", "p1", "c1", "task-ctx", "deterministic", "secret should not be returned", 0, 1, 2, "hash", now);
+    const insertEvent = db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,?,?,?,?,?,?)");
+    insertEvent.run("ev1", 1, "task-ctx", 1, "context.budget_calculated", JSON.stringify({
+      provider: "mock",
+      model: "mock-model",
+      contextWindowTokens: 32768,
+      contextWindowSource: "fallback",
+      reservedTokens: 4096,
+      maxInputTokens: 900,
+    }), now);
+    insertEvent.run("ev2", 1, "task-ctx", 2, "context.history_trimmed", JSON.stringify({
+      inputTokensBefore: 1800,
+      inputTokensAfter: 620,
+      compactedGroups: 2,
+      removedGroups: 1,
+    }), now);
+    insertEvent.run("ev3", 1, "task-ctx", 3, "context.estimate_used", JSON.stringify({
+      method: "estimate",
+      exact: false,
+    }), now);
+
+    const res = await app.inject({ method: "GET", url: "/api/tasks/task-ctx" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().context).toMatchObject({
+      providerId: "mock",
+      model: "mock-model",
+      contextWindowTokens: 32768,
+      contextWindowSource: "fallback",
+      maxInputTokens: 900,
+      inputTokensBefore: 1800,
+      inputTokensAfter: 620,
+      countingMethod: "estimate",
+      exact: false,
+      compactedGroups: 2,
+      removedGroups: 1,
+      lastSummary: { id: "summary-1", method: "deterministic", sourceMessageCount: 2 },
+    });
+    expect(JSON.stringify(res.json().context)).not.toContain("secret");
+  });
+
   it("health advertises the dev UI URL when no bundle is present", async () => {
     const res = await app.inject({ method: "GET", url: "/api/health" });
     expect(res.statusCode).toBe(200);

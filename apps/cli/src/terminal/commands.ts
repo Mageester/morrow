@@ -34,6 +34,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "integrate", arg: "[check|show|apply]", description: "review and apply worktree branch integrations" },
   { name: "tree", description: "show the current mission task tree" },
   { name: "result", description: "show final evidence and next action" },
+  { name: "context", description: "show model context usage and compaction status" },
   { name: "panic", description: "cancel active work and disable YOLO" },
   { name: "continue", description: "resume the latest paused task" },
   { name: "memory", description: "toggle memory for this session" },

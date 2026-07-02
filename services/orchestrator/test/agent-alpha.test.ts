@@ -427,6 +427,160 @@ describe("Agent Alpha", () => {
       expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 450 });
     });
 
+    it("compacts old history into a persisted summary before falling back to raw history trimming", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Compact Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Compact Chat",
+        createdAt: "2026-07-02T01:00:00.000Z",
+        updatedAt: "2026-07-02T01:00:00.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Old goal: update src/app.ts. Command: pnpm test. API_KEY=abc123. " + "alpha ".repeat(500),
+        createdAt: "2026-07-02T01:00:01.000Z",
+        updatedAt: "2026-07-02T01:00:01.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "Decision: preserve local-first routing. Error: test failed in src/app.ts. " + "beta ".repeat(500),
+        createdAt: "2026-07-02T01:00:02.000Z",
+        updatedAt: "2026-07-02T01:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-new-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Current request remains raw.",
+        createdAt: "2026-07-02T01:00:03.000Z",
+        updatedAt: "2026-07-02T01:00:03.000Z"
+      });
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T01:00:04.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T01:00:04.000Z",
+        updatedAt: "2026-07-02T01:00:04.000Z"
+      });
+
+      const captured: ChatMessage[][] = [];
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          captured.push(messages);
+          yield { type: "text", text: "compacted ok" };
+          yield { type: "done" };
+        }
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 3600 });
+
+      const sent = captured[0]!.map((message) => message.content).join("\n");
+      expect(sent).toContain("Context summary (deterministic");
+      expect(sent).toContain("src/app.ts");
+      expect(sent).toContain("pnpm test");
+      expect(sent).toContain("Current request remains raw.");
+      expect(sent).not.toContain("abc123");
+      expect(sent).not.toContain("alpha alpha alpha");
+
+      const summary = db.prepare("SELECT * FROM context_summaries WHERE conversation_id = ?").get("c1") as { content: string; method: string; source_message_count: number } | undefined;
+      expect(summary).toMatchObject({ method: "deterministic", source_message_count: 2 });
+      expect(summary?.content).not.toContain("abc123");
+
+      const events = taskRecordsRepository(db).listEvents("task-1").filter((event) => event.type.startsWith("context."));
+      expect(events.map((event) => event.type)).toContain("context.compaction_completed");
+      expect(JSON.stringify(events)).not.toContain("API_KEY");
+      expect(JSON.stringify(events)).not.toContain("abc123");
+    });
+
+    it("fails before provider calls when minimum viable context cannot fit", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Tiny Context Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Tiny Chat",
+        createdAt: "2026-07-02T02:00:00.000Z",
+        updatedAt: "2026-07-02T02:00:00.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Current request must remain raw.",
+        createdAt: "2026-07-02T02:00:01.000Z",
+        updatedAt: "2026-07-02T02:00:01.000Z"
+      });
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T02:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T02:00:02.000Z",
+        updatedAt: "2026-07-02T02:00:02.000Z"
+      });
+
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(_messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          providerCalls++;
+          yield { type: "text", text: "should not run" };
+        }
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 20 });
+
+      expect(providerCalls).toBe(0);
+      expect(tasks.getTaskById("task-1")?.status).toBe("failed");
+      const msg = convs.getMessage("msg-assistant");
+      expect(msg?.streamingState).toBe("failed");
+      expect(msg?.content).toContain("Minimum viable context is too large");
+      const event = taskRecordsRepository(db).listEvents("task-1").find((item) => item.type === "context.minimum_viable_context_exceeded");
+      expect(event?.payload).toMatchObject({ provider: "mock", model: "mock-model" });
+    });
+
     it("handles abort signals during streaming cancellation cleanly", async () => {
       const projects = projectRepository(db);
       const convs = conversationsRepository(db);

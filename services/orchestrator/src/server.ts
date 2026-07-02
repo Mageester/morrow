@@ -47,6 +47,38 @@ const defaultDiagnosticsRunner: DiagnosticsRunner = async (tool, cwd) => {
   const result = await runProcessSafe("npx", args, cwd, process.env, { timeoutMs: 120000, maxOutputBytes: 4_000_000 });
   return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
 };
+
+function contextUsageFromEvents(events: Array<{ type: string; payload: Record<string, unknown> }>, summary: { id: string; method: string; sourceMessageCount: number; createdAt: string } | undefined) {
+  const budget = [...events].reverse().find((event) => event.type === "context.budget_calculated")?.payload;
+  const trim = [...events].reverse().find((event) => event.type === "context.history_trimmed" || event.type === "context.trimmed")?.payload;
+  const count = [...events].reverse().find((event) => event.type === "context.exact_count_used" || event.type === "context.estimate_used")?.payload;
+  const lastContext = [...events].reverse().find((event) => event.type.startsWith("context."));
+  if (!budget && !trim && !count && !summary) return null;
+  const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const bool = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
+  const exact = bool(count?.exact) ?? bool(trim?.exact);
+  const method = str(count?.method) ?? str(trim?.countingMethod);
+  return {
+    providerId: str(budget?.provider) ?? str(count?.provider) ?? "unknown",
+    model: str(budget?.model) ?? str(count?.model) ?? "unknown",
+    contextWindowTokens: num(budget?.contextWindowTokens) ?? 0,
+    contextWindowSource: str(budget?.contextWindowSource) ?? "fallback",
+    maxInputTokens: num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
+    reservedTokens: num(budget?.reservedTokens) ?? 0,
+    inputTokensBefore: num(trim?.inputTokensBefore) ?? num(count?.tokens),
+    inputTokensAfter: num(trim?.inputTokensAfter) ?? num(trim?.finalTokens) ?? null,
+    countingMethod: method,
+    exact,
+    compactedGroups: num(trim?.compactedGroups) ?? 0,
+    removedGroups: num(trim?.removedGroups) ?? 0,
+    lastOperation: lastContext?.type ?? null,
+    warning: exact === false ? "estimated token count" : null,
+    lastSummary: summary
+      ? { id: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, createdAt: summary.createdAt }
+      : null,
+  };
+}
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
@@ -57,6 +89,7 @@ import { processesRepository } from "./repositories/processes.js";
 import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
+import { contextSummariesRepository } from "./repositories/context-summaries.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 
@@ -180,6 +213,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const worktreesRepo = worktreesRepository(deps.db);
   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
   const integrationsRepo = integrationsRepository(deps.db);
+  const contextSummariesRepo = contextSummariesRepository(deps.db);
   const integrationManager = new IntegrationManager(
     integrationsRepo,
     worktreesRepo,
@@ -446,7 +480,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const agg = records.getAggregate(taskId);
     const toolCalls = convs.listToolCallsForTask(taskId);
     const routing = routingRepo.get(taskId)?.decision ?? null;
-    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), routing };
+    const latestSummary = contextSummariesRepo.latestForTask(taskId);
+    const context = contextUsageFromEvents(agg.events, latestSummary);
+    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), context, routing };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {

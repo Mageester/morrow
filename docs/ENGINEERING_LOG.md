@@ -2,6 +2,38 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slice: context management completed
+
+- **Context manager:** expanded `execution/context-budget.ts` from a basic
+  trimmer into a provider-neutral context preparation layer. It now returns
+  labeled exact/estimated token counts, resolves model-aware budgets centrally,
+  reserves output/tool/framing/safety tokens, validates provider message ordering,
+  keeps assistant tool calls with their tool results, compacts older eligible
+  history before dropping it, and refuses provider calls when mandatory context
+  cannot fit.
+- **Tokenizers:** added offline `js-tiktoken` support for OpenAI-family model
+  IDs using `o200k_base`. Anthropic, Gemini, Ollama, OpenAI-compatible unknown
+  models, and unknown custom IDs use Morrow's conservative deterministic
+  estimator and are never labeled exact.
+- **Compaction and privacy:** migration 23 adds `context_summaries`.
+  Deterministic summaries preserve goals, constraints, file paths, commands,
+  errors, decisions, and unresolved work while redacting secret-like material.
+  Summary records are idempotent by conversation/source hash and store provenance
+  indexes/counts without deleting raw conversation history.
+- **Observability and UX:** added metadata-only `context.*` task events,
+  aggregate `context` summaries, Mission Control context lines, and `/context`
+  line-mode output. Events and API responses exclude summary content by default.
+- **Tests:** `context-budget.test.ts` covers exact and estimated count paths,
+  known/unknown/user-override model budgets, reservations, message ordering,
+  multi-tool grouping, compaction, redaction, and minimum-context refusal.
+  `agent-alpha.test.ts` proves persisted compaction, no secret event content,
+  retry-safe pre-provider refusal, and valid provider payloads. `api.test.ts`
+  proves aggregate JSON purity. `mission-control.test.ts` proves user surfacing.
+- **Validation:** focused context/API/CLI tests PASS; `pnpm check` PASS;
+  `pnpm test` PASS (orchestrator 403, CLI 177, web 22, contracts and
+  hermes-compat green); `pnpm build` PASS; orchestrator
+  `smoke:vertical-slice`, `smoke:agent-alpha`, and `smoke:providers` PASS.
+
 ## 2026-07-02 - Hermes-parity slice: token-aware context trimming begins
 
 - **Context limits (section 12, still PARTIAL):** added

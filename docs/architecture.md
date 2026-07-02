@@ -77,6 +77,15 @@ A narrow compatibility layer for importing supported Hermes configuration, skill
 - Extensions run with declared capabilities.
 - External model providers receive only the context selected for that request.
 
+## Context management
+
+Agent model requests pass through the local context manager before provider
+execution. The manager resolves model-aware budgets, counts tokens with exact
+offline tokenizers where available and labeled conservative estimates elsewhere,
+preserves system instructions and tool-call groups, compacts older eligible
+history into redacted persisted summaries, and refuses provider calls when the
+minimum viable prompt cannot fit. See [context-management.md](context-management.md).
+
 ## Initial vertical slice
 
 The first implementation should prove:

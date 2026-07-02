@@ -15,6 +15,7 @@ import { memoryRepository } from "../repositories/memory.js";
 import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
+import { contextSummariesRepository } from "../repositories/context-summaries.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
@@ -26,11 +27,10 @@ import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
-import { getModel } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
-import { inputTokenBudget, trimMessagesToBudget } from "./context-budget.js";
+import { prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -114,6 +114,7 @@ export async function executeAgentChatTask({
   const approvals = approvalsRepository(db);
   const changeSets = changeSetsRepository(db);
   const continuationsRepo = taskContinuationsRepository(db);
+  const contextSummaries = contextSummariesRepository(db);
 
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
@@ -205,10 +206,12 @@ export async function executeAgentChatTask({
   const turnCeiling = adaptiveTurnCeiling(turnsLimit);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
-  const maxInputTokens = inputTokenBudget({
-    contextBudgetBytes: contextBytesLimit,
-    modelContextWindow: resolvedModel ? getModel(resolvedModel)?.contextWindow ?? null : null,
+  const contextBudget = resolveContextBudget({
+    providerId,
+    model: resolvedModel || assistantMessageRow.model || `${providerId}-default`,
+    presetContextBudgetBytes: contextBytesLimit,
     outputBudgetTokens: preset.outputBudgetTokens,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
   });
 
   // Resolve active provider: an injected provider wins (tests); otherwise the
@@ -954,18 +957,70 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const currentToolCalls: any[] = [];
 
     try {
-      const budgetedContext = trimMessagesToBudget(chatMessages, { maxInputTokens });
-      if (budgetedContext.trimmedMessages > 0) {
+      const contextModel = resolvedModel || assistantMessageRow.model || `${providerType}-model`;
+      const preparedContext = prepareContextForProvider(chatMessages, {
+        providerId: providerType,
+        model: contextModel,
+        maxInputTokens: contextBudget.maxInputTokens,
+        compact: true,
+        recentRawGroups: 1,
+      });
+      event("context.budget_calculated", {
+        provider: providerType,
+        model: contextModel,
+        contextWindowTokens: contextBudget.contextWindowTokens,
+        contextWindowSource: contextBudget.contextWindowSource,
+        exactModelLimit: contextBudget.exactModelLimit,
+        reservedOutputTokens: contextBudget.outputBudgetTokens,
+        reservedTokens: contextBudget.reservedTokens,
+        maxInputTokens: contextBudget.maxInputTokens,
+      });
+      for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
+      if (!preparedContext.ok) {
+        transitionAgentState("failed", { message: preparedContext.actionableMessage });
+        records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
+        convs.updateMessageContentAndState(assistantMessageRow.id, preparedContext.actionableMessage, "failed", now());
+        if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
+        event("task.failed", { message: preparedContext.actionableMessage });
+        return;
+      }
+      if (preparedContext.summary) {
+        const record = contextSummaries.record({
+          id: randomUUID(),
+          projectId,
+          conversationId,
+          taskId,
+          method: preparedContext.summary.method,
+          content: preparedContext.summary.content,
+          sourceStartIndex: preparedContext.summary.sourceStartIndex,
+          sourceEndIndex: preparedContext.summary.sourceEndIndex,
+          sourceMessageCount: preparedContext.summary.sourceMessageCount,
+          createdAt: now(),
+        });
+        const last = records.listEvents(taskId).filter((ev) => ev.type === "context.compaction_completed").at(-1);
+        if (last) {
+          event("context.compaction_completed", {
+            summaryId: record.id,
+            method: record.method,
+            compactedGroups: preparedContext.compactedGroups,
+            sourceMessageCount: record.sourceMessageCount,
+          });
+        }
+      }
+      if (preparedContext.removedGroups > 0 || preparedContext.compactedGroups > 0) {
         event("context.trimmed", {
-          originalTokens: budgetedContext.originalTokens,
-          finalTokens: budgetedContext.finalTokens,
-          maxInputTokens,
-          trimmedMessages: budgetedContext.trimmedMessages,
+          finalTokens: preparedContext.finalTokens,
+          maxInputTokens: contextBudget.maxInputTokens,
+          trimmedMessages: preparedContext.compactedGroups + preparedContext.removedGroups,
+          compactedGroups: preparedContext.compactedGroups,
+          removedGroups: preparedContext.removedGroups,
+          countingMethod: preparedContext.tokenCount.method,
+          exact: preparedContext.tokenCount.exact,
         });
       }
       const opened = await openStreamWithFallback(
         streamCandidates,
-        budgetedContext.messages,
+        preparedContext.messages,
         {
           ...(abortSignal ? { abortSignal } : {}),
           tools: exposedTools,

@@ -40,6 +40,29 @@ export interface IntegrationAttempt {
   cancelledAt: string | null;
 }
 
+export interface ContextUsageSummary {
+  providerId: string;
+  model: string;
+  contextWindowTokens: number;
+  contextWindowSource: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  maxInputTokens: number;
+  reservedTokens: number;
+  inputTokensBefore: number | null;
+  inputTokensAfter: number | null;
+  countingMethod: "exact" | "estimate" | null;
+  exact: boolean | null;
+  compactedGroups: number;
+  removedGroups: number;
+  lastOperation: string | null;
+  warning: string | null;
+  lastSummary?: {
+    id: string;
+    method: "deterministic" | "fallback" | "model-assisted";
+    sourceMessageCount: number;
+    createdAt: string;
+  } | null;
+}
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 // ── Typed response wrapper ──────────────────────────────────────────────────
@@ -82,7 +105,7 @@ export const apiClient = {
     });
   },
 
-  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; integrations?: IntegrationAttempt[]; toolCalls?: any[]; routing?: RoutingDecision | null }> {
+  async getTaskAggregate(taskId: string): Promise<{ task: Task; plan: PlanStep[]; events: TaskEvent[]; agentState?: AgentStateTransition; agentStates: AgentStateTransition[]; evidence: TaskEvidence[]; disclosure?: ExecutionDisclosure; verification?: VerificationResult; integrations?: IntegrationAttempt[]; context?: ContextUsageSummary | null; toolCalls?: any[]; routing?: RoutingDecision | null }> {
     return request(`/api/tasks/${taskId}`);
   },
 

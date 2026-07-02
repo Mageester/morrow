@@ -21,7 +21,7 @@ import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
-import { formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
+import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
@@ -733,6 +733,16 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       for (const line of formatMissionResult(aggregate)) out.print(line);
       return {};
     }
+    case "context": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission context exists yet.");
+        return {};
+      }
+      const aggregate = await api.getTask(taskId);
+      for (const line of formatContextStatus(aggregate)) out.print(line);
+      return {};
+    }
     case "cancel":
       out.info("Nothing is currently streaming (cancel works during a response with Ctrl+C).");
       return {};
@@ -968,6 +978,7 @@ function printReplHelp(ctx: Context) {
     ["/undo", "rollback the latest Morrow-owned change in the session"],
     ["/tree", "show the current mission task tree"],
     ["/result", "show final evidence and next action"],
+    ["/context", "show context usage, compaction, and token-count confidence"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],

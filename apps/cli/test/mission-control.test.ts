@@ -87,6 +87,28 @@ describe("Mission Control formatters", () => {
         candidates: [],
         mode: "agent",
       },
+      context: {
+        providerId: "mock",
+        model: "mock-model",
+        contextWindowTokens: 32768,
+        contextWindowSource: "fallback",
+        maxInputTokens: 900,
+        reservedTokens: 4096,
+        inputTokensBefore: 1800,
+        inputTokensAfter: 620,
+        countingMethod: "estimate",
+        exact: false,
+        compactedGroups: 2,
+        removedGroups: 0,
+        lastOperation: "context.history_trimmed",
+        warning: "estimated token count",
+        lastSummary: {
+          id: "summary-123456",
+          method: "deterministic",
+          sourceMessageCount: 2,
+          createdAt: baseTask.updatedAt,
+        },
+      },
       integrations: [
         {
           id: "integration-123456",
@@ -118,6 +140,8 @@ describe("Mission Control formatters", () => {
     expect(lines).toContain("Commands run: tool-run");
     expect(lines).toContain("Verification: not recorded");
     expect(lines).toContain("Approvals: command:approved");
+    expect(lines).toContain("Context: 620 / 900 tokens (estimated); compacted 2 groups; removed 0 groups");
+    expect(lines).toContain("Last context summary: deterministic summary (2 messages)");
     expect(lines).toContain("Integrations: conflicted:integrat morrow/task->main (1 conflicts)");
     expect(lines.at(-1)).toContain("/diff");
   });

@@ -58,6 +58,7 @@ export interface TaskAggregate {
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
   verification?: VerificationResult;
   integrations?: IntegrationAttempt[];
+  context?: ContextUsageSummary | null;
   disclosure?: {
     provider: string;
     networkAccess: string;
@@ -69,6 +70,29 @@ export interface TaskAggregate {
   };
   toolCalls: Array<{ id: string; toolName: string; argsJson: string; resultJson?: string | null; status: string; errorType?: string | null; errorMessage?: string | null }>;
   routing: RoutingDecision | null;
+}
+
+export interface ContextUsageSummary {
+  providerId: string;
+  model: string;
+  contextWindowTokens: number;
+  contextWindowSource: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  maxInputTokens: number;
+  reservedTokens: number;
+  inputTokensBefore: number | null;
+  inputTokensAfter: number | null;
+  countingMethod: "exact" | "estimate" | null;
+  exact: boolean | null;
+  compactedGroups: number;
+  removedGroups: number;
+  lastOperation: string | null;
+  warning: string | null;
+  lastSummary?: {
+    id: string;
+    method: "deterministic" | "fallback" | "model-assisted";
+    sourceMessageCount: number;
+    createdAt: string;
+  } | null;
 }
 
 export interface TaskTreeNode {
