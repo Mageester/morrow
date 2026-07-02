@@ -37,7 +37,7 @@ import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema } from "@morrow/contracts";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -54,6 +54,8 @@ import { changeSetsRepository } from "./repositories/change-sets.js";
 import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { processesRepository } from "./repositories/processes.js";
+import { worktreesRepository } from "./repositories/worktrees.js";
+import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
@@ -173,6 +175,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // A `running` row from a previous orchestrator run is unobservable — mark it
   // lost before serving any traffic so no stale row masquerades as live.
   supervisor.reconcileOnStartup();
+  const worktreesRepo = worktreesRepository(deps.db);
+  const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
+  // Abandoned-worktree reconciliation: a row whose directory vanished is
+  // marked (branch retained) before any traffic is served.
+  worktreeManager.reconcile((projectId) => projects.getProjectById(projectId)?.workspacePath);
   supervisor.onExit((record) => {
     if (!record.taskId) return;
     try {
@@ -626,6 +633,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       }
     }
 
+    if (body.worktreeId) {
+      const wt = worktreesRepo.get(body.worktreeId);
+      if (!wt || wt.projectId !== conversation.projectId) throw new ApiError(404, "Worktree not found in this project", "NOT_FOUND");
+      if (wt.status !== "active") throw new ApiError(409, `Worktree is ${wt.status}; create a fresh one`, "CONFLICT");
+    }
+
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
@@ -680,6 +693,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         kind: "agent_chat",
         status: "queued",
         ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
         createdAt: timestamp,
       });
     } catch (e) {
@@ -1036,8 +1050,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const body = StartProcessSchema.parse(request.body ?? {});
-    if (body.taskId && !tasks.getTaskById(body.taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
-    if (body.agentId && !agents.get(body.agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+    if (body.taskId) {
+      const task = tasks.getTaskById(body.taskId);
+      if (!task || task.projectId !== projectId) throw new ApiError(404, "Task not found in this project", "NOT_FOUND");
+    }
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
 
     // The categorical deny list applies even to explicit user requests —
     // shells, privilege escalation, and destructive commands stay blocked.
@@ -1125,6 +1145,90 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(409, `Process is not running (${result.reason.split(":")[1]})`, "PROCESS_NOT_RUNNING");
     }
     throw new ApiError(409, "Process is not controlled by this orchestrator instance (marked from a previous run); terminate it manually if it is still alive", "PROCESS_NOT_OWNED");
+  });
+
+  // ── Git worktrees ─────────────────────────────────────────────────────────
+  // Isolated checkouts on deterministic morrow/<name> branches. Removal never
+  // deletes the branch, and dirty trees are preserved-by-commit or refused.
+
+  const worktreeApiError = (e: unknown): never => {
+    if (e instanceof WorktreeError) {
+      if (e.code === "not_found") throw new ApiError(404, e.message, "NOT_FOUND");
+      if (e.code === "conflict") throw new ApiError(409, e.message, "CONFLICT");
+      if (e.code === "dirty") throw new ApiError(409, e.message, "WORKTREE_DIRTY");
+      if (e.code === "not_a_repo" || e.code === "invalid_name") throw new ApiError(400, e.message, "VALIDATION_ERROR");
+      throw new ApiError(500, e.message, "GIT_FAILED");
+    }
+    throw e;
+  };
+
+  app.post("/api/projects/:projectId/worktrees", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateWorktreeSchema.parse(request.body ?? {});
+    if (body.taskId) {
+      const task = tasks.getTaskById(body.taskId);
+      if (!task || task.projectId !== projectId) throw new ApiError(404, "Task not found in this project", "NOT_FOUND");
+    }
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    try {
+      const record = worktreeManager.create({
+        projectId,
+        workspacePath: project.workspacePath,
+        ...(body.name ? { name: body.name } : {}),
+        taskId: body.taskId ?? null,
+        agentId: body.agentId ?? null,
+        ...(body.baseRef ? { baseRef: body.baseRef } : {}),
+      });
+      reply.status(201);
+      return record;
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.get("/api/projects/:projectId/worktrees", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["active", "removed", "abandoned"].includes(status)) {
+      throw new ApiError(400, "Invalid worktree status filter", "VALIDATION_ERROR");
+    }
+    return worktreesRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/worktrees/:worktreeId", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    try {
+      const report = worktreeManager.status(worktreeId);
+      return { ...report.record, exists: report.exists, dirty: report.dirty, dirtyFiles: report.dirtyFiles, aheadCommits: report.aheadCommits };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.get("/api/worktrees/:worktreeId/diff", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    try {
+      return { worktreeId, ...worktreeManager.diff(worktreeId) };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.delete("/api/worktrees/:worktreeId", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    const { preserve } = request.query as { preserve?: string };
+    try {
+      const result = worktreeManager.remove(worktreeId, { preserve: preserve === "true" });
+      return { status: "removed", worktree: result.record, preservedCommit: result.preservedCommit };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
   });
 
   app.get("/api/projects/:projectId/approvals", async (request) => {

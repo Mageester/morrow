@@ -53,6 +53,7 @@ interface SessionState {
   preset: string;
   provider: string | undefined;
   model: string | undefined;
+  worktreeId: string | undefined;
   mode: AgentMode;
   useMemory: boolean;
   autoApprove: boolean;
@@ -69,6 +70,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
+    worktreeId: flagString(ctx.flags, "worktree"),
     mode,
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
     autoApprove: resolveAutoApprove(ctx, mode),
@@ -139,6 +141,7 @@ async function runInteractiveSession(
         mode: opts.mode,
         useMemory: opts.useMemory,
         ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
+        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
       });
       return { taskId: sent.task.id };
     },
@@ -230,6 +233,7 @@ function sendOptions(s: SessionState) {
     preset: s.preset,
     ...(s.provider ? { providerId: s.provider } : {}),
     ...(s.model ? { model: s.model } : {}),
+    ...(s.worktreeId ? { worktreeId: s.worktreeId } : {}),
     mode: s.mode,
     useMemory: s.useMemory,
     // Only send autoApprove when it is meaningfully on (agent mode); the server
@@ -286,6 +290,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     ["Branch", gitSummaryText(git)],
     ["Model", `${modelName}  ${out.gray("·")}  ${privacyLabel(providerName)}`],
     ["Mode", modeLabel(session.mode, session.autoApprove)],
+    ...(session.worktreeId ? [["Worktree", shortId(session.worktreeId)] as [string, string]] : []),
     ["Memory", session.useMemory ? "project context on" : "off"],
     ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
@@ -527,6 +532,55 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         for (const p of processes) {
           const cmd = [p.command, ...p.args].join(" ").slice(0, 60);
           out.print(`  ${p.id.slice(0, 8)}  ${p.status.padEnd(9)}  ${cmd}${p.exitCode !== null ? out.gray(`  exit ${p.exitCode}`) : ""}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
+    case "worktrees":
+    case "worktree": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const ref = parts[1];
+      try {
+        const all = await api.listWorktrees(projectId);
+        const resolve = (value: string | undefined) => {
+          if (!value) return undefined;
+          const matches = all.filter((w) => w.id === value || w.id.startsWith(value) || w.branch === value || w.branch === `morrow/${value}`);
+          return matches.length === 1 ? matches[0] : null;
+        };
+        if (verb === "show") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees show <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          const status = await api.getWorktree(match.id);
+          out.heading(`Worktree ${status.branch}`);
+          out.keyValue([
+            ["status", status.status],
+            ["path", status.path],
+            ["dirty", status.dirty ? `yes (${status.dirtyFiles.length})` : "no"],
+            ["commits ahead", String(status.aheadCommits.length)],
+            ["task", status.taskId ?? "-"],
+            ["agent", status.agentId ?? "-"],
+          ]);
+          for (const f of status.dirtyFiles.slice(0, 10)) out.print(`  M ${f}`);
+          return {};
+        }
+        if (verb === "remove") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees remove <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          await api.removeWorktree(match.id, parts.includes("--preserve"));
+          out.success(`Removed worktree ${match.branch} (branch retained).`);
+          return {};
+        }
+        if (all.length === 0) { out.info("No worktrees. Create one with `morrow worktrees create <name>`."); return {}; }
+        out.heading(`Worktrees (${all.length})`);
+        for (const w of all) {
+          const assoc = [w.taskId ? `task ${w.taskId.slice(0, 8)}` : "", w.agentId ? `agent ${w.agentId.slice(0, 8)}` : ""].filter(Boolean).join(", ");
+          out.print(`  ${w.id.slice(0, 8)}  ${w.status.padEnd(9)}  ${w.branch}  ${out.gray(assoc || w.path)}`);
         }
         return {};
       } catch (e: any) {

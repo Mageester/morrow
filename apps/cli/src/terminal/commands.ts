@@ -30,6 +30,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "undo", description: "roll back the latest Morrow-owned change" },
   { name: "checkpoint", arg: "[save|list|restore|delete] [name]", description: "named workspace checkpoints (snapshot & restore files)" },
   { name: "ps", arg: "[kill <id>]", description: "list or terminate background processes" },
+  { name: "worktrees", arg: "[show|remove <id>]", description: "list or inspect isolated agent worktrees" },
   { name: "tree", description: "show the current mission task tree" },
   { name: "result", description: "show final evidence and next action" },
   { name: "panic", description: "cancel active work and disable YOLO" },

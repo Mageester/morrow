@@ -3,7 +3,7 @@ import type { Task as TaskRecord } from "@morrow/contracts";
 
 type Input = {
   id: string; projectId: string; kind: string; status: string;
-  idempotencyKey?: string; parentTaskId?: string; agentId?: string;
+  idempotencyKey?: string; parentTaskId?: string; agentId?: string; worktreeId?: string;
   createdAt: string; updatedAt?: string; startedAt?: string; completedAt?: string;
 };
 type Update = { status: string; updatedAt: string; startedAt?: string | null; completedAt?: string | null };
@@ -17,6 +17,7 @@ function map(row: Record<string, unknown>): TaskRecord {
     status: String(row.status),
     parentTaskId: row.parent_task_id ? String(row.parent_task_id) : null,
     agentId: row.agent_id ? String(row.agent_id) : null,
+    worktreeId: row.worktree_id ? String(row.worktree_id) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   } as TaskRecord;
@@ -27,12 +28,13 @@ export function taskRepository(db: Database.Database) {
   return {
     createTask(i: Input) {
       db.prepare(
-        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,parent_task_id,agent_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@parentTaskId,@agentId,@createdAt,@updatedAt,@startedAt,@completedAt)"
+        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,parent_task_id,agent_id,worktree_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@parentTaskId,@agentId,@worktreeId,@createdAt,@updatedAt,@startedAt,@completedAt)"
       ).run({
         ...i,
         idempotencyKey: i.idempotencyKey ?? null,
         parentTaskId: i.parentTaskId ?? null,
         agentId: i.agentId ?? null,
+        worktreeId: i.worktreeId ?? null,
         updatedAt: i.updatedAt ?? i.createdAt,
         startedAt: i.startedAt ?? null,
         completedAt: i.completedAt ?? null,

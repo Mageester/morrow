@@ -124,7 +124,21 @@ export async function executeAgentChatTask({
   }
   const projectId = project.id;
   const projectName = project.name;
-  const workspacePath = project.workspacePath;
+  // A task assigned to a worktree executes entirely inside it: reads, writes,
+  // and commands are scoped to the isolated checkout, never the main tree.
+  let workspacePath = project.workspacePath;
+  const assignedWorktreeId = (task as { worktreeId?: string | null }).worktreeId;
+  if (assignedWorktreeId) {
+    const worktreeRow = db.prepare("SELECT * FROM worktrees WHERE id = ?").get(assignedWorktreeId) as
+      | { status: string; path: string; branch: string }
+      | undefined;
+    if (!worktreeRow || worktreeRow.status !== "active" || !existsSync(worktreeRow.path)) {
+      throw new Error(
+        `Assigned worktree is not available (${worktreeRow ? worktreeRow.status : "missing"}). Recreate it or start the task without a worktree.`
+      );
+    }
+    workspacePath = worktreeRow.path;
+  }
 
   // Find the assistant message associated with this task
   const allMessages = db.prepare("SELECT * FROM conversation_messages WHERE task_id = ?").all(taskId);

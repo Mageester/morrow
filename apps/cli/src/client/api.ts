@@ -36,6 +36,7 @@ export interface SendMessageOptions {
   mode?: AgentMode;
   useMemory?: boolean;
   autoApprove?: boolean;
+  worktreeId?: string;
 }
 
 export interface SendMessageResult {
@@ -89,6 +90,27 @@ export interface ProcessRecord {
   detail: string | null;
   startedAt: string;
   endedAt: string | null;
+}
+
+export interface WorktreeRecord {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  branch: string;
+  path: string;
+  baseRef: string;
+  status: "active" | "removed" | "abandoned";
+  detail: string | null;
+  createdAt: string;
+  removedAt: string | null;
+}
+
+export interface WorktreeStatusReport extends WorktreeRecord {
+  exists: boolean;
+  dirty: boolean;
+  dirtyFiles: string[];
+  aheadCommits: Array<{ hash: string; subject: string }>;
 }
 
 export interface CheckpointSummary {
@@ -197,6 +219,27 @@ export class MorrowApi {
   }
   terminateProcess(id: string, force = false) {
     return this.req<{ status: string; processId: string; forced: boolean }>("POST", `/api/processes/${encodeURIComponent(id)}/terminate`, { force });
+  }
+
+  // ── Git worktrees ─────────────────────────────────────────────────────────
+  createWorktree(projectId: string, input: { name?: string; taskId?: string; agentId?: string; baseRef?: string }) {
+    return this.req<WorktreeRecord>("POST", `/api/projects/${projectId}/worktrees`, input);
+  }
+  listWorktrees(projectId: string, status?: WorktreeRecord["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<WorktreeRecord[]>("GET", `/api/projects/${projectId}/worktrees${suffix}`);
+  }
+  getWorktree(id: string) {
+    return this.req<WorktreeStatusReport>("GET", `/api/worktrees/${encodeURIComponent(id)}`);
+  }
+  getWorktreeDiff(id: string) {
+    return this.req<{ worktreeId: string; diff: string; truncated: boolean }>("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`);
+  }
+  removeWorktree(id: string, preserve = false) {
+    return this.req<{ status: string; worktree: WorktreeRecord; preservedCommit: string | null }>(
+      "DELETE",
+      `/api/worktrees/${encodeURIComponent(id)}${preserve ? "?preserve=true" : ""}`
+    );
   }
 
   // ── Named workspace checkpoints ───────────────────────────────────────────

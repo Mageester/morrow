@@ -10,7 +10,7 @@ export const PlanStepStatusSchema=z.enum(["pending","running","completed","faile
 export const ProjectSchema=z.object({version:SchemaVersionSchema,id:z.string(),name:z.string().min(1),workspacePath:z.string().min(1),createdAt:z.string().datetime()}).strict();
 export const CreateProjectSchema=z.object({name:z.string().trim().min(1).max(120),workspacePath:z.string().min(1)});
 export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),position:z.number().int().positive(),title:z.string(),description:z.string(),status:PlanStepStatusSchema}).strict();
-export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),worktreeId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace"]).default("inspect_workspace"),label:z.string().trim().max(120).optional()}).strict();
 export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
 export const CreateCheckpointSchema=z.object({name:z.string().trim().min(1).max(100),files:z.array(z.string().min(1).max(1024)).min(1).max(500).optional(),taskId:z.string().optional()}).strict();
@@ -18,6 +18,8 @@ export type CreateCheckpointInput=z.infer<typeof CreateCheckpointSchema>;
 export const StartProcessSchema=z.object({command:z.string().trim().min(1).max(500),args:z.array(z.string().max(4096)).max(100).default([]),cwd:z.string().max(1024).optional(),taskId:z.string().optional(),agentId:z.string().optional(),mode:z.enum(["pipe","pty"]).default("pipe"),timeoutMs:z.number().int().positive().max(86400000).optional()}).strict();
 export type StartProcessInput=z.infer<typeof StartProcessSchema>;
 export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled","lost"]);
+export const CreateWorktreeSchema=z.object({name:z.string().trim().min(1).max(81).optional(),taskId:z.string().optional(),agentId:z.string().optional(),baseRef:z.string().trim().min(1).max(200).optional()}).strict();
+export type CreateWorktreeInput=z.infer<typeof CreateWorktreeSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
 export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required","task.recovery_requeued","provider.fallback","provider.rate_limited","process.started","process.exited"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
@@ -169,6 +171,7 @@ export const SendMessageSchema=z.object({
   autoApprove:z.boolean().optional(),
   agentId:z.string().optional(),
   idempotencyKey:z.string().trim().min(1).max(200).optional(),
+  worktreeId:z.string().optional(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────

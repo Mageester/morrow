@@ -347,6 +347,24 @@ export const migrations:Migration[]=[
     CREATE INDEX processes_project_idx ON processes(project_id);
     CREATE INDEX processes_status_idx ON processes(status);
     CREATE INDEX processes_task_idx ON processes(task_id);
+  `},
+  {id:21,name:"worktrees",sql:`
+    CREATE TABLE worktrees (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      branch TEXT NOT NULL,
+      path TEXT NOT NULL,
+      base_ref TEXT NOT NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT,
+      UNIQUE(project_id, branch)
+    );
+    CREATE INDEX worktrees_project_idx ON worktrees(project_id);
+    ALTER TABLE tasks ADD COLUMN worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL;
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
