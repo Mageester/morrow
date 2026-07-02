@@ -581,6 +581,29 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     const body = SendMessageSchema.parse(request.body);
 
+    // Idempotent replay: a repeated send with the same key returns the original
+    // task and messages (200) instead of dispatching the agent a second time.
+    const idempotencyKey = readIdempotencyKey(request);
+    if (idempotencyKey) {
+      const existing = tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey);
+      if (existing) {
+        const msgs = convs.listMessages(conversationId);
+        const assistantIndex = msgs.findIndex((m) => m.taskId === existing.id && m.role === "assistant");
+        const assistantMessage = assistantIndex >= 0 ? msgs[assistantIndex] : null;
+        const userMessage = assistantIndex >= 0 ? [...msgs.slice(0, assistantIndex)].reverse().find((m) => m.role === "user") ?? null : null;
+        reply.status(200);
+        return {
+          task: existing,
+          userMessage,
+          assistantMessage,
+          routing: routingRepo.get(existing.id)?.decision ?? null,
+          aggregateUrl: `/api/tasks/${existing.id}`,
+          sseUrl: `/api/tasks/${existing.id}/events/stream`,
+          replayed: true,
+        };
+      }
+    }
+
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
@@ -625,6 +648,34 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     const timestamp = new Date().toISOString();
 
+    // Create the task before appending any messages so a lost race on the
+    // idempotency unique index can't leave a duplicate user message behind.
+    let task;
+    try {
+      task = tasks.createTask({
+        id: crypto.randomUUID(),
+        projectId: conversation.projectId,
+        kind: "agent_chat",
+        status: "queued",
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        createdAt: timestamp,
+      });
+    } catch (e) {
+      // Concurrent duplicate with the same key: replay the winner.
+      const winner = idempotencyKey ? tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey) : undefined;
+      if (!winner) throw e;
+      reply.status(200);
+      return {
+        task: winner,
+        userMessage: null,
+        assistantMessage: null,
+        routing: routingRepo.get(winner.id)?.decision ?? null,
+        aggregateUrl: `/api/tasks/${winner.id}`,
+        sseUrl: `/api/tasks/${winner.id}/events/stream`,
+        replayed: true,
+      };
+    }
+
     const userMsg = convs.appendMessage({
       id: crypto.randomUUID(),
       conversationId,
@@ -632,14 +683,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       content: body.content,
       createdAt: timestamp,
       updatedAt: timestamp,
-    });
-
-    const task = tasks.createTask({
-      id: crypto.randomUUID(),
-      projectId: conversation.projectId,
-      kind: "agent_chat",
-      status: "queued",
-      createdAt: timestamp,
     });
     records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
 

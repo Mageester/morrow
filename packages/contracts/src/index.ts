@@ -165,6 +165,7 @@ export const SendMessageSchema=z.object({
   useMemory:z.boolean().optional(),
   autoApprove:z.boolean().optional(),
   agentId:z.string().optional(),
+  idempotencyKey:z.string().trim().min(1).max(200).optional(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────
