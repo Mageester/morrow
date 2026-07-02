@@ -16,6 +16,7 @@ import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { importCommand } from "./commands/import.js";
+import { processesCommand } from "./commands/processes.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -29,7 +30,7 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import"]);
+const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
@@ -145,6 +146,8 @@ export async function run(argv: string[]): Promise<number> {
       case "panic": return panicCommand(ctx);
       case "skills": return skillsCommand(ctx, sub, args);
       case "import": return importCommand(ctx, sub ?? "", args);
+      case "processes":
+      case "ps": return processesCommand(ctx, sub ?? "", args);
       case "schedule":
       case "schedules": return scheduleCommand(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");

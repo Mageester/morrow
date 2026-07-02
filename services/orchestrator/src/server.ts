@@ -37,7 +37,7 @@ import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema } from "@morrow/contracts";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -53,9 +53,12 @@ import { TaskRunner } from "./runner.js";
 import { changeSetsRepository } from "./repositories/change-sets.js";
 import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
+import { processesRepository } from "./repositories/processes.js";
+import { ProcessSupervisor } from "./processes/supervisor.js";
+
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
-import { canonicalCommandTrustKey } from "./tools/command-policy.js";
+import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -105,6 +108,8 @@ function parseEventCursor(value: string): number {
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
+  /** Injectable background-process supervisor (tests point its logs at a temp dir). */
+  supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
   /** Injectable so the diagnostics route is fast and deterministic in tests. */
   diagnosticsRunner?: DiagnosticsRunner;
@@ -163,6 +168,23 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
+  const processesRepo = processesRepository(deps.db);
+  const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
+  // A `running` row from a previous orchestrator run is unobservable — mark it
+  // lost before serving any traffic so no stale row masquerades as live.
+  supervisor.reconcileOnStartup();
+  supervisor.onExit((record) => {
+    if (!record.taskId) return;
+    try {
+      records.appendEvent({
+        id: crypto.randomUUID(),
+        taskId: record.taskId,
+        type: "process.exited",
+        payload: { processId: record.id, status: record.status, exitCode: record.exitCode, detail: record.detail },
+        createdAt: new Date().toISOString(),
+      });
+    } catch { /* the task may be gone; never break the supervisor */ }
+  });
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -1002,6 +1024,107 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     if (!checkpoints.remove(projectId, name)) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
     return { status: "deleted", name };
+  });
+
+  // ── Background process registry ──────────────────────────────────────────
+  // Start, observe, and terminate long-running commands owned by the
+  // orchestrator. Rows never claim liveness across a restart (reconciled to
+  // `lost` at startup), and output is captured bounded per stream.
+
+  app.post("/api/projects/:projectId/processes", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = StartProcessSchema.parse(request.body ?? {});
+    if (body.taskId && !tasks.getTaskById(body.taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (body.agentId && !agents.get(body.agentId)) throw new ApiError(404, "Agent not found", "NOT_FOUND");
+
+    // The categorical deny list applies even to explicit user requests —
+    // shells, privilege escalation, and destructive commands stay blocked.
+    const policy = classifyCommand(body.command, body.args);
+    if (policy.risk === "denied") {
+      throw new ApiError(403, `Command refused by policy: ${policy.reason}`, "FORBIDDEN");
+    }
+
+    // cwd is workspace-relative and containment-checked; default is the root.
+    let cwd: string;
+    try {
+      cwd = body.cwd ? assertContainedRealPath(project.workspacePath, body.cwd) : realpathSync(project.workspacePath);
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+
+    let record;
+    try {
+      record = await supervisor.start({
+        projectId,
+        taskId: body.taskId ?? null,
+        agentId: body.agentId ?? null,
+        command: body.command,
+        args: body.args,
+        cwd,
+        mode: body.mode,
+        ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
+      });
+    } catch (e: any) {
+      throw new ApiError(400, e?.message ?? "Failed to start process", "PROCESS_START_FAILED");
+    }
+    if (record.taskId) {
+      records.appendEvent({
+        id: crypto.randomUUID(),
+        taskId: record.taskId,
+        type: "process.started",
+        payload: { processId: record.id, command: record.command, args: record.args, pid: record.pid },
+        createdAt: new Date().toISOString(),
+      });
+    }
+    reply.status(201);
+    return record;
+  });
+
+  app.get("/api/projects/:projectId/processes", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["running", "exited", "failed", "cancelled", "lost"].includes(status)) {
+      throw new ApiError(400, "Invalid process status filter", "VALIDATION_ERROR");
+    }
+    return processesRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/processes/:processId", async (request) => {
+    const { processId } = request.params as { processId: string };
+    const record = processesRepo.get(processId);
+    if (!record) throw new ApiError(404, "Process not found", "NOT_FOUND");
+    return record;
+  });
+
+  app.get("/api/processes/:processId/output", async (request) => {
+    const { processId } = request.params as { processId: string };
+    if (!processesRepo.get(processId)) throw new ApiError(404, "Process not found", "NOT_FOUND");
+    const q = request.query as { stream?: string; offset?: string; limit?: string };
+    const stream = q.stream === "stderr" ? "stderr" : "stdout";
+    const offset = q.offset ? Number(q.offset) : 0;
+    const limit = q.limit ? Math.min(Number(q.limit), 1024 * 1024) : 64 * 1024;
+    if (!Number.isFinite(offset) || offset < 0 || !Number.isFinite(limit) || limit <= 0) {
+      throw new ApiError(400, "offset and limit must be non-negative numbers", "VALIDATION_ERROR");
+    }
+    return { processId, stream, ...supervisor.readOutput(processId, stream, offset, limit) };
+  });
+
+  app.post("/api/processes/:processId/terminate", async (request, reply) => {
+    const { processId } = request.params as { processId: string };
+    const { force } = (request.body ?? {}) as { force?: boolean };
+    const result = await supervisor.terminate(processId, { force: force === true });
+    if (result.ok) {
+      reply.status(202);
+      return { status: "terminating", processId, forced: force === true };
+    }
+    if (result.reason === "not_found") throw new ApiError(404, "Process not found", "NOT_FOUND");
+    if (result.reason?.startsWith("not_running")) {
+      throw new ApiError(409, `Process is not running (${result.reason.split(":")[1]})`, "PROCESS_NOT_RUNNING");
+    }
+    throw new ApiError(409, "Process is not controlled by this orchestrator instance (marked from a previous run); terminate it manually if it is still alive", "PROCESS_NOT_OWNED");
   });
 
   app.get("/api/projects/:projectId/approvals", async (request) => {

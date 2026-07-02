@@ -349,6 +349,9 @@ export class InteractiveSession {
       case "checkpoint":
         this.pushNotice("info", "Use /checkpoint in line mode (MORROW_TUI=0) to save, list, restore, or delete workspace checkpoints.");
         return void this.requestPaint(false);
+      case "ps":
+        this.pushNotice("info", "Use /ps in line mode (MORROW_TUI=0) or `morrow processes` to inspect background processes.");
+        return void this.requestPaint(false);
       case "theme": {
         const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
         if (!arg || !themes.includes(arg)) { this.pushNotice("info", `Available: ${themes.join(", ")}. Current: dawn`); return void this.requestPaint(false); }

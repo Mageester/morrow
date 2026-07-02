@@ -74,6 +74,23 @@ export interface TaskTreeNode {
   children: TaskTreeNode[];
 }
 
+export interface ProcessRecord {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  command: string;
+  args: string[];
+  cwd: string;
+  mode: "pipe" | "pty";
+  pid: number | null;
+  status: "running" | "exited" | "failed" | "cancelled" | "lost";
+  exitCode: number | null;
+  detail: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 export interface CheckpointSummary {
   id: string;
   name: string;
@@ -155,6 +172,32 @@ export class MorrowApi {
   retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }
   getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
+
+  // ── Background processes ──────────────────────────────────────────────────
+  startProcess(projectId: string, input: { command: string; args?: string[]; cwd?: string; taskId?: string; agentId?: string; mode?: "pipe" | "pty"; timeoutMs?: number }) {
+    return this.req<ProcessRecord>("POST", `/api/projects/${projectId}/processes`, input);
+  }
+  listProcesses(projectId: string, status?: ProcessRecord["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<ProcessRecord[]>("GET", `/api/projects/${projectId}/processes${suffix}`);
+  }
+  getProcess(id: string) {
+    return this.req<ProcessRecord>("GET", `/api/processes/${encodeURIComponent(id)}`);
+  }
+  getProcessOutput(id: string, opts: { stream?: "stdout" | "stderr"; offset?: number; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    if (opts.stream) params.set("stream", opts.stream);
+    if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return this.req<{ processId: string; stream: string; data: string; nextOffset: number; eof: boolean; truncated: boolean }>(
+      "GET",
+      `/api/processes/${encodeURIComponent(id)}/output${qs ? `?${qs}` : ""}`
+    );
+  }
+  terminateProcess(id: string, force = false) {
+    return this.req<{ status: string; processId: string; forced: boolean }>("POST", `/api/processes/${encodeURIComponent(id)}/terminate`, { force });
+  }
 
   // ── Named workspace checkpoints ───────────────────────────────────────────
   createCheckpoint(projectId: string, input: { name: string; files?: string[]; taskId?: string }) {

@@ -509,6 +509,31 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "ps": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      try {
+        if (parts[0] === "kill") {
+          if (!parts[1]) { out.warn("Usage: /ps kill <id>"); return {}; }
+          const all = await api.listProcesses(projectId);
+          const matches = all.filter((p) => p.id === parts[1] || p.id.startsWith(parts[1]!));
+          if (matches.length !== 1) { out.warn(matches.length === 0 ? `No process matching "${parts[1]}".` : `"${parts[1]}" is ambiguous.`); return {}; }
+          await api.terminateProcess(matches[0]!.id, true);
+          out.success(`Terminating ${matches[0]!.id.slice(0, 8)}.`);
+          return {};
+        }
+        const processes = await api.listProcesses(projectId);
+        if (processes.length === 0) { out.info("No background processes. Start one with `morrow processes start -- <cmd> …`."); return {}; }
+        out.heading(`Processes (${processes.length})`);
+        for (const p of processes) {
+          const cmd = [p.command, ...p.args].join(" ").slice(0, 60);
+          out.print(`  ${p.id.slice(0, 8)}  ${p.status.padEnd(9)}  ${cmd}${p.exitCode !== null ? out.gray(`  exit ${p.exitCode}`) : ""}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
     case "checkpoint": {
       const parts = (arg ?? "").split(/\s+/).filter(Boolean);
       const verb = parts[0] ?? "list";
