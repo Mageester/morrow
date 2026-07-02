@@ -167,6 +167,45 @@ export interface CheckpointSummary {
   createdAt: string;
 }
 
+export interface SymbolRecord {
+  id: string;
+  projectId: string;
+  filePath: string;
+  language: string;
+  fileFingerprint: string;
+  name: string;
+  fqName: string;
+  kind: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  parentName: string | null;
+  exported: boolean;
+  indexedAt: string;
+  indexerVersion: string;
+  parserVersion: string;
+}
+
+export interface SymbolIndexResult {
+  indexedFiles: number;
+  changedFiles: number;
+  skippedFiles: number;
+  deletedFiles: number;
+  symbolCount: number;
+  diagnostics: Array<{ filePath: string; line: number; column: number; code: string; message: string }>;
+}
+
+export interface SymbolIndexStatus {
+  projectId: string;
+  fileCount: number;
+  symbolCount: number;
+  diagnosticCount: number;
+  latestIndexedAt: string | null;
+  indexerVersion: string | null;
+  parserVersion: string | null;
+}
+
 function statusToExit(status: number): number {
   if (status === 404) return EXIT.NOT_FOUND;
   if (status === 400 || status === 422) return EXIT.USAGE;
@@ -408,6 +447,29 @@ export class MorrowApi {
     if (opts.conversationId) qs.set("conversationId", opts.conversationId);
     if (opts.limit) qs.set("limit", String(opts.limit));
     return this.req<SearchResponse>("GET", `/api/projects/${projectId}/search?${qs}`);
+  }
+  rebuildSymbols(projectId: string) {
+    return this.req<SymbolIndexResult>("POST", `/api/projects/${projectId}/symbols/rebuild`);
+  }
+  refreshSymbols(projectId: string) {
+    return this.req<SymbolIndexResult>("POST", `/api/projects/${projectId}/symbols/refresh`);
+  }
+  symbolStatus(projectId: string) {
+    return this.req<SymbolIndexStatus>("GET", `/api/projects/${projectId}/symbols/status`);
+  }
+  searchSymbols(projectId: string, query: string, opts: { limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    qs.set("q", query);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return this.req<{ version: 1; query: string; projectId: string; symbols: SymbolRecord[] }>("GET", `/api/projects/${projectId}/symbols/search?${qs}`);
+  }
+  symbolDefinition(projectId: string, name: string) {
+    const qs = new URLSearchParams({ name });
+    return this.req<SymbolRecord>("GET", `/api/projects/${projectId}/symbols/definition?${qs}`);
+  }
+  fileSymbols(projectId: string, path: string) {
+    const qs = new URLSearchParams({ path });
+    return this.req<{ version: 1; projectId: string; filePath: string; symbols: SymbolRecord[] }>("GET", `/api/projects/${projectId}/symbols/file?${qs}`);
   }
   recordSkillUse(projectId: string, skillId: string) {
     return this.req<{ skillId: string; count: number }>("POST", `/api/projects/${projectId}/skills/${encodeURIComponent(skillId)}/use`);

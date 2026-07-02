@@ -3,17 +3,19 @@
 ## Current checkpoint (2026-07-02)
 
 - Branch: `product/hermes-parity`.
-- Latest completed slice: Slice D context management.
-- Context management now has exact offline OpenAI-family counting, conservative
-  labeled estimates for other providers, model-aware reservations, message-group
-  integrity, deterministic persisted compaction, hard minimum-context failure,
-  metadata-only context events, task aggregate `context`, Mission Control
-  surfacing, and `/context`.
-- Validation: `pnpm check`, `pnpm test` (orchestrator 403, CLI 177, web 22,
-  contracts/hermes-compat green), `pnpm build`, and orchestrator
-  `smoke:vertical-slice`, `smoke:agent-alpha`, `smoke:providers` all passed.
-- Exact next step after committing this slice: start Slice E symbol index. Do not
-  combine symbol-index work into the context-management commit.
+- Latest completed slice: Slice E symbol index.
+- Symbol indexing now has parser-backed TS/JS/TSX/JSX extraction, parsed JSON
+  config keys, migration 24 persistence, full rebuild, incremental refresh,
+  deletion/rename cleanup, ignore support, parse diagnostics, cancellation,
+  status/search/definition/file-symbol APIs, CLI `morrow symbols`, and read-only
+  agent `search_symbols` with concise locations only.
+- Validation: `pnpm check`, `pnpm test` (orchestrator 408, CLI 180, web 22,
+  contracts/hermes-compat green), `pnpm build`, orchestrator
+  `smoke:vertical-slice`, `smoke:agent-alpha`, `smoke:providers`, and
+  `git diff --check` all passed.
+- Exact next step after committing this slice: choose the next Hermes-parity gap
+  from the matrix. Do not combine future semantic/vector search work into the
+  symbol-index commit.
 
 > Always names the **exact** next step so any agent (or a fresh session) can
 > resume without re-deriving context. Update this at every interruption.

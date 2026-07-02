@@ -16,6 +16,7 @@ import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
 import { contextSummariesRepository } from "../repositories/context-summaries.js";
+import { symbolIndexRepository } from "../repositories/symbols.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
@@ -115,6 +116,7 @@ export async function executeAgentChatTask({
   const changeSets = changeSetsRepository(db);
   const continuationsRepo = taskContinuationsRepository(db);
   const contextSummaries = contextSummariesRepository(db);
+  const symbolIndex = symbolIndexRepository(db);
 
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
@@ -364,6 +366,18 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "search_symbols",
+      description: "Searches the project symbol index for functions, classes, methods, types, variables, and JSON config keys. Returns concise locations only.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Symbol name or qualified-name text to find" },
+          limit: { type: "number", description: "Maximum symbols to return, up to 50" }
+        },
+        required: ["query"]
+      }
+    },
+    {
       name: "git_status",
       description: "Inspects concise Git status in the current project without changing Git state.",
       parameters: { type: "object", properties: {} }
@@ -453,7 +467,7 @@ export async function executeAgentChatTask({
   // sees run_command/propose_patch; plan-only sees nothing; only agent mode
   // exposes execution and write tools.
   const READ_ONLY_TOOL_NAMES = new Set([
-    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
+    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
   ]);
   const exposedTools: ToolDefinition[] =
     activeToolProfile === "none" ? [] : activeToolProfile === "agent" ? tools : tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name));
@@ -1244,6 +1258,31 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "search_files", query: args.query, resultCount: result.matches.length, truncated: result.truncatedByCount || result.truncatedByTimeout });
+          } else if (tc.name === "search_symbols") {
+            if (typeof args.query !== "string") throw new Error("Missing required argument: query");
+            const limit = typeof args.limit === "number" ? Math.min(Math.max(Math.floor(args.limit), 1), 50) : 20;
+            const status = symbolIndex.status(project.id);
+            const matches = status.fileCount === 0 ? [] : symbolIndex.search(project.id, args.query, { limit });
+            resultStr = JSON.stringify({
+              query: args.query,
+              status: status.fileCount === 0 ? "empty" : "ready",
+              hint: status.fileCount === 0 ? "Symbol index is empty; run `morrow symbols rebuild`." : null,
+              symbols: matches.map((symbol) => ({
+                name: symbol.name,
+                fqName: symbol.fqName,
+                kind: symbol.kind,
+                filePath: symbol.filePath,
+                startLine: symbol.startLine,
+                startColumn: symbol.startColumn,
+                endLine: symbol.endLine,
+                endColumn: symbol.endColumn,
+                parentName: symbol.parentName,
+                exported: symbol.exported,
+              })),
+            });
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "search_symbols", query: args.query, resultCount: matches.length, empty: status.fileCount === 0 });
           } else if (tc.name === "git_status") {
             const result = await gitStatus(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
             resultStr = JSON.stringify(result);

@@ -90,7 +90,9 @@ import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
 import { contextSummariesRepository } from "./repositories/context-summaries.js";
+import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
+import { SymbolIndex } from "./workspace/symbol-index.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
@@ -214,6 +216,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
   const integrationsRepo = integrationsRepository(deps.db);
   const contextSummariesRepo = contextSummariesRepository(deps.db);
+  const symbolIndexRepo = symbolIndexRepository(deps.db);
+  const symbolIndex = new SymbolIndex(symbolIndexRepo);
   const integrationManager = new IntegrationManager(
     integrationsRepo,
     worktreesRepo,
@@ -1643,6 +1647,49 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  app.post("/api/projects/:projectId/symbols/rebuild", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndex.rebuildProject(projectId, project.workspacePath);
+  });
+
+  app.post("/api/projects/:projectId/symbols/refresh", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndex.refreshProject(projectId, project.workspacePath);
+  });
+
+  app.get("/api/projects/:projectId/symbols/status", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndexRepo.status(projectId);
+  });
+
+  app.get("/api/projects/:projectId/symbols/search", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ q: z.string().max(200).optional().default(""), limit: z.coerce.number().int().positive().max(200).optional() }).parse(request.query);
+    return { version: 1, query: query.q, projectId, symbols: symbolIndexRepo.search(projectId, query.q, query.limit === undefined ? {} : { limit: query.limit }) };
+  });
+
+  app.get("/api/projects/:projectId/symbols/definition", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.query);
+    const symbol = symbolIndexRepo.findDefinition(projectId, query.name);
+    if (!symbol) throw new ApiError(404, "Symbol not found", "NOT_FOUND");
+    return symbol;
+  });
+
+  app.get("/api/projects/:projectId/symbols/file", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ path: z.string().trim().min(1).max(1024) }).parse(request.query);
+    return { version: 1, projectId, filePath: query.path, symbols: symbolIndexRepo.listFileSymbols(projectId, query.path) };
   });
 
   const messageAdapters = deps.messageAdapters ?? loadAdaptersFromEnv(process.env);

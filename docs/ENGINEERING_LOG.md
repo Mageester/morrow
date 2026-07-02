@@ -2,6 +2,40 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slice: symbol index completed
+
+- **Project symbol index:** added migration 24 with `symbol_index_files` and
+  `symbols`, plus `repositories/symbols.ts` and `workspace/symbol-index.ts`.
+  The indexer uses the TypeScript compiler API for TS/JS/TSX/JSX declarations
+  and parsed JSON objects for configuration keys. Stored metadata includes
+  project, file path, language, fingerprint, symbol/fq name, kind, location,
+  parent, export status, indexed time, indexer version, and parser version.
+- **Operations and safety:** supports full rebuild, incremental refresh,
+  changed-file detection, deleted-file cleanup, rename handling as delete+add,
+  symbol search, definition lookup, file-symbol listing, status, parse
+  diagnostics, cancellation, resource limits, `.gitignore`, `.morrowignore`,
+  default dependency/build/cache ignores, and generated-file skips.
+- **Agent/API/CLI:** added project-scoped REST routes under
+  `/api/projects/:id/symbols/*`, CLI `morrow symbols`/`morrow symbol-index`
+  for status/rebuild/refresh/search/definition/file output, and read-only
+  `search_symbols` in both inspect/read-only and agent modes. Tool results are
+  concise metadata locations, not source-file bodies.
+- **Privacy/security impact:** indexing remains local and project-scoped. It
+  stores code symbol metadata and parser diagnostics in SQLite, not file
+  contents. Existing safe path deny rules and additional dependency/build/cache
+  ignores keep secret-like paths, `.morrow`, `node_modules`, build output, and
+  generated files out of the index.
+- **Tests:** `symbol-index.test.ts` covers realistic TS/TSX/JSON fixtures,
+  nested symbols, exports, duplicates, parse errors, ignore rules, deleted and
+  renamed files, incremental refresh, and cancellation. API, agent tool,
+  catalog, CLI client, and CLI command tests cover public reachability.
+- **Validation:** focused orchestrator symbol/API/agent/catalog tests PASS
+  (408 orchestrator tests reported); focused CLI symbol tests PASS (180 CLI
+  tests reported); `pnpm check` PASS; `pnpm test` PASS (orchestrator 408,
+  CLI 180, web 22, contracts and hermes-compat green); `pnpm build` PASS;
+  orchestrator `smoke:vertical-slice`, `smoke:agent-alpha`, and
+  `smoke:providers` PASS; `git diff --check` PASS.
+
 ## 2026-07-02 - Hermes-parity slice: context management completed
 
 - **Context manager:** expanded `execution/context-budget.ts` from a basic

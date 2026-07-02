@@ -7,11 +7,14 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
+import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { symbolIndexRepository } from "../src/repositories/symbols.js";
 import { MockProvider } from "../src/provider/mock.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
 import { TaskRunner } from "../src/runner.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { readWorkspaceFile, SafeReadError, validateSafeReadPath } from "../src/workspace/safe-reader.js";
+import { SymbolIndex } from "../src/workspace/symbol-index.js";
 
 describe("Agent Alpha", () => {
   let db: Database.Database;
@@ -334,6 +337,70 @@ describe("Agent Alpha", () => {
       const evidence = taskRecordsRepository(db).listEvidence("task-1");
       expect(evidence.length).toBe(1);
       expect(evidence[0]?.path).toBe("readme.md");
+    });
+
+    it("exposes search_symbols in read-only mode and returns concise indexed locations", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const routing = taskRoutingRepository(db);
+
+      writeFileSync(join(tempDir, "math.ts"), "export function add(a: number, b: number) { return a + b; }\n");
+      projects.createProject({ id: "p1", name: "Symbols", workspacePath: tempDir, createdAt: new Date().toISOString() });
+      new SymbolIndex(symbolIndexRepository(db)).rebuildProject("p1", tempDir);
+
+      convs.createConversation({ id: "c1", projectId: "p1", title: "Symbols", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "Where is add?", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      tasks.createTask({ id: "task-symbols", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-symbols", streamingState: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      routing.upsert({
+        taskId: "task-symbols",
+        presetId: "balanced",
+        providerId: "mock",
+        model: "mock-model",
+        useMemory: true,
+        createdAt: new Date().toISOString(),
+        decision: {
+          version: 1,
+          presetId: "balanced",
+          providerId: "mock",
+          model: "mock-model",
+          reason: "test",
+          fallbackUsed: false,
+          overridden: false,
+          privacy: "cloud",
+          candidates: [],
+          mode: "read-only",
+          toolProfile: "read-only",
+        },
+      });
+
+      let exposedTools: string[] = [];
+      let turn = 0;
+      const provider: AiProvider = {
+        async *streamChat(_messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
+          exposedTools = (options.tools ?? []).map((tool) => tool.name);
+          if (turn++ === 0 && exposedTools.includes("search_symbols")) {
+            yield { type: "tool_call", toolCalls: [{ id: "symbol-call", index: 0, type: "function", function: { name: "search_symbols", arguments: JSON.stringify({ query: "add", limit: 5 }) } }] };
+            yield { type: "done" };
+            return;
+          }
+          yield { type: "text", text: "add is in math.ts" };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-symbols", provider });
+
+      expect(exposedTools).toContain("search_symbols");
+      expect(exposedTools).not.toContain("run_command");
+      const toolCall = convs.listToolCallsForMessage("msg-assistant")[0]!;
+      expect(toolCall.toolName).toBe("search_symbols");
+      const result = JSON.parse(toolCall.resultJson!);
+      expect(result.symbols).toEqual([
+        expect.objectContaining({ name: "add", kind: "function", filePath: "math.ts", startLine: 1 }),
+      ]);
+      expect(toolCall.resultJson).not.toContain("return a + b");
     });
 
     it("trims old conversation context before provider calls when the input budget is tight", async () => {
