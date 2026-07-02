@@ -23,15 +23,15 @@ The `skills/` directory contains ~20 extra skills created via the skill creator
 
 ```bash
 cd "C:/Users/aidan/OneDrive/Documents/Morrow/Morrow"
-git checkout main
+git checkout product/hermes-parity   # stacks on product/mission-control (PR #22)
 pnpm install
-pnpm check && pnpm test && pnpm build   # expect green (495 tests)
+pnpm check && pnpm test && pnpm build   # expect green (523 tests)
 ```
 
-> Note (2026-06-29): the work below predates the current `main`. The legacy
-> `feat/morrow-agent-terminal` branch no longer exists — its work is on `main`
-> (e.g. the B15 browser slice). Treat `main` as the source of truth and see
-> `docs/CURRENT_STATE.md` for the verified snapshot.
+> Note (2026-07-02): active work is on `product/hermes-parity`, stacked on the
+> unmerged `product/mission-control` (PR #22, terminal Mission Control). The
+> legacy `feat/morrow-agent-terminal` branch no longer exists — its work is on
+> `main`. See `docs/CURRENT_STATE.md` for the verified snapshot.
 
 ## Where we are (all committed + pushed on feat/morrow-agent-terminal)
 

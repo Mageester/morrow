@@ -179,12 +179,12 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Windows install (no git/pnpm knowledge) | `install.ps1` | MISSING | — | One-command installer |
-| Ubuntu install | `install.sh` | MISSING | — | One-command installer |
+| Windows install (no git/pnpm knowledge) | `install.ps1` | VERIFIED | `installer/install.ps1` — one-command (`iex (irm …/install.ps1)`), atomic data-preserving upgrade with rollback + crash-window recovery (ADR-0004). Tested: `scripts/install-activation.test.mjs` (9, real Windows) + `scripts/install-integration.test.mjs` (full 47 MB artifact → install → health → `morrow doctor`) + CI static safety guard (`scripts/lib/installer-safety.mjs`) | Health-failure rollback path lacks an automated test (needs deliberately unhealthy artifact) |
+| Ubuntu install | `install.sh` | MISSING | — | One-command installer (source build documented in README) |
 | Onboarding | `agent/onboarding.py` | VERIFIED | `commands/onboard.ts`, `onboard.test.ts`, commit `bf8ae79` | — |
 | Provider setup wizard | `hermes setup` | PARTIAL | onboarding provider step | — |
 | Update / rollback | `hermes update` | PARTIAL | `service/update.ts` (`compareSemver`, `checkForUpdate`, injectable `fetchLatestVersion`) + `morrow update` command. `test/doctor-update.test.ts` | Apply-update (git pull+install) automation + rollback |
-| Uninstall | Hermes | MISSING | — | — |
+| Uninstall | Hermes | VERIFIED | `installer/templates/uninstall.ps1` — removes app/bin/shortcuts/PATH entry; data preserved by default with explicit `-PurgeData`/`-KeepData` flags and a safe-default prompt. Covered by `scripts/package-command.test.mjs` + `validate-repository` checks | No automated end-to-end uninstall run on CI (needs Windows artifact) |
 | Service management | Hermes | VERIFIED | `service/lifecycle.ts`, `service-lifecycle.test.ts` | — |
 | Doctor | `hermes doctor` | VERIFIED | `morrow doctor` (node/pnpm/home/migrations/providers checks) with testable `service/doctor-checks.ts` `aggregateDoctor`. `test/doctor-update.test.ts` | — |
 | Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` real package: `parseHermesEnv` + `mapToMorrow` (known keys only; unknowns → `unmapped`; secret *names* not values) + `summarizeImport` (no secret leak). `test/import.test.ts` (4) | CLI `morrow import` + session/skill import |
