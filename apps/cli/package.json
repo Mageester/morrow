@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Morrow command-line interface — a thin, capable client over the Morrow orchestrator.",
+  "description": "Morrow command-line interface \u2014 a thin, capable client over the Morrow orchestrator.",
   "bin": {
     "morrow": "bin/morrow.mjs"
   },
@@ -15,7 +15,8 @@
   "dependencies": {
     "@morrow/contracts": "workspace:*",
     "@morrow/orchestrator": "workspace:*",
-    "tsx": "4.20.6"
+    "tsx": "4.20.6",
+    "@morrow/hermes-compat": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

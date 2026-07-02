@@ -13,8 +13,10 @@ export const PlanStepSchema=z.object({version:SchemaVersionSchema,id:z.string(),
 export const TaskSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),kind:z.enum(["inspect_workspace","agent_chat"]),status:TaskStatusSchema,parentTaskId:z.string().nullable().default(null),agentId:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
 export const SpawnSubagentSchema=z.object({kind:z.enum(["inspect_workspace"]).default("inspect_workspace"),label:z.string().trim().max(120).optional()}).strict();
 export type SpawnSubagentInput=z.infer<typeof SpawnSubagentSchema>;
+export const CreateCheckpointSchema=z.object({name:z.string().trim().min(1).max(100),files:z.array(z.string().min(1).max(1024)).min(1).max(500).optional(),taskId:z.string().optional()}).strict();
+export type CreateCheckpointInput=z.infer<typeof CreateCheckpointSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
-export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required","task.recovery_requeued","provider.fallback"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
+export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.recovery_required","task.recovery_requeued","provider.fallback","provider.rate_limited"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
@@ -163,6 +165,7 @@ export const SendMessageSchema=z.object({
   useMemory:z.boolean().optional(),
   autoApprove:z.boolean().optional(),
   agentId:z.string().optional(),
+  idempotencyKey:z.string().trim().min(1).max(200).optional(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────

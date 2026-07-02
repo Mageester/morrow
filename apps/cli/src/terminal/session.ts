@@ -346,6 +346,9 @@ export class InteractiveSession {
         this.pushNotice("info", `Stash "${arg}": use /stash in line mode to save to project memory.`);
         return void this.requestPaint(false);
       }
+      case "checkpoint":
+        this.pushNotice("info", "Use /checkpoint in line mode (MORROW_TUI=0) to save, list, restore, or delete workspace checkpoints.");
+        return void this.requestPaint(false);
       case "theme": {
         const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
         if (!arg || !themes.includes(arg)) { this.pushNotice("info", `Available: ${themes.join(", ")}. Current: dawn`); return void this.requestPaint(false); }

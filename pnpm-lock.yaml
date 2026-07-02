@@ -20,6 +20,9 @@ importers:
       '@morrow/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@morrow/hermes-compat':
+        specifier: workspace:*
+        version: link:../../packages/hermes-compat
       '@morrow/orchestrator':
         specifier: workspace:*
         version: link:../../services/orchestrator

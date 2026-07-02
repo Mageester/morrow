@@ -2,6 +2,48 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slice batch: rate guard, import CLI, checkpoints, chat idempotency, palette evidence
+
+- **Baseline:** full validation on `product/mission-control` before changes:
+  `pnpm check`/`test` (523)/`build`, all four orchestrator smokes, Playwright
+  11/11 — all green. Work landed on `product/hermes-parity` (stacked on the
+  unmerged PR #22 branch).
+- **Provider rate-limit guard (§12, was the last MISSING row):**
+  `provider/rate-guard.ts` tracks per-provider cooldowns (Retry-After wins,
+  else exponential backoff 2s→5m cap, reset on success). Advisory by design —
+  `openStreamWithFallback` deprioritizes cooling providers instead of refusing
+  them, reports 429s/successes to the shared guard, and now rethrows start
+  error chunks as classified `ProviderError`s. Adapters parse `Retry-After`.
+  New `provider.rate_limited` task event + `GET /api/providers/rate-limits`.
+  `test/rate-guard.test.ts` (13).
+- **`morrow import hermes <path>` (§13):** wires `@morrow/hermes-compat` into a
+  real command — offline dry-run report by default; `--apply` maps provider
+  aliases (claude→anthropic, google→gemini, …) and configures provider/model/
+  key through the same path as `providers configure`. Secret values never
+  printed (human or JSON). `test/import-command.test.ts` (6).
+- **Named workspace checkpoints (§14, PARTIAL→VERIFIED):** migration 19 +
+  `repositories/checkpoints.ts` + `workspace/checkpoints.ts` — content-
+  addressed snapshots sharing the undo backup store, containment-gated,
+  all-blobs-verified-before-first-write restore, and an automatic
+  `auto/pre-restore-…` safety checkpoint so every restore is reversible.
+  API under `/api/projects/:id/checkpoints` (shared `CreateCheckpointSchema`),
+  CLI `/checkpoint save|list|restore|delete`. `test/checkpoints.test.ts` (8),
+  `apps/cli/test/api-checkpoints.test.ts` (3).
+- **Agent-chat idempotency (§3 gap):** `POST /api/conversations/:id/messages`
+  honors `Idempotency-Key` (header or body; field added to the strict
+  `SendMessageSchema`). Replay returns the original task/messages/routing with
+  200 + `replayed:true`; the task row is created before messages so a lost
+  race on the unique index can't leave a duplicate user message.
+  `idempotency-api.test.ts` +3.
+- **Ctrl+K palette:** the matrix claimed MISSING but a complete implementation
+  ships; what was missing was proof. Added `test/terminal-palette.test.ts`
+  (11) covering open/filter/navigate/submit/close plus render states.
+- **Hygiene:** refreshed stale MORROW_STATUS/CONTINUATION snapshots; corrected
+  stale §13 rows (Windows installer + uninstaller are shipped and tested, not
+  MISSING); `database.test.ts` migration count 18→19.
+- **Validation:** see MORROW_STATUS for the dated green run (final counts:
+  orchestrator 368 · CLI 169 · web 22 · contracts 4 · hermes-compat 4).
+
 ## 2026-06-30 - Terminal Mission Control entrypoint + mission evidence views
 
 - **Issue:** Morrow had real terminal session mechanics, task trees, diffs, undo,

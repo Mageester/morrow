@@ -6,6 +6,7 @@ import {
   classifyHttpStatus,
   classifyThrownError,
 } from "./base.js";
+import { parseRetryAfter } from "./rate-guard.js";
 
 export interface OpenAiCompatibleConfig {
   /** Provider identifier surfaced in disclosures (openai, openrouter, deepseek, ...). */
@@ -122,7 +123,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
       } catch {
         /* keep raw text */
       }
-      yield { type: "error", error: classifyHttpStatus(response.status, errMsg) };
+      yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;
     }
 

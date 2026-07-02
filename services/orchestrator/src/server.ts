@@ -37,7 +37,7 @@ import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema } from "@morrow/contracts";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -51,6 +51,8 @@ import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
 import { changeSetsRepository } from "./repositories/change-sets.js";
+import { checkpointsRepository } from "./repositories/checkpoints.js";
+import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
 import { canonicalCommandTrustKey } from "./tools/command-policy.js";
@@ -58,6 +60,7 @@ import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
+import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
 import { listModels } from "./routing/models.js";
@@ -159,6 +162,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
+  const checkpoints = checkpointsRepository(deps.db);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -577,6 +581,29 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     const body = SendMessageSchema.parse(request.body);
 
+    // Idempotent replay: a repeated send with the same key returns the original
+    // task and messages (200) instead of dispatching the agent a second time.
+    const idempotencyKey = readIdempotencyKey(request);
+    if (idempotencyKey) {
+      const existing = tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey);
+      if (existing) {
+        const msgs = convs.listMessages(conversationId);
+        const assistantIndex = msgs.findIndex((m) => m.taskId === existing.id && m.role === "assistant");
+        const assistantMessage = assistantIndex >= 0 ? msgs[assistantIndex] : null;
+        const userMessage = assistantIndex >= 0 ? [...msgs.slice(0, assistantIndex)].reverse().find((m) => m.role === "user") ?? null : null;
+        reply.status(200);
+        return {
+          task: existing,
+          userMessage,
+          assistantMessage,
+          routing: routingRepo.get(existing.id)?.decision ?? null,
+          aggregateUrl: `/api/tasks/${existing.id}`,
+          sseUrl: `/api/tasks/${existing.id}/events/stream`,
+          replayed: true,
+        };
+      }
+    }
+
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
@@ -621,6 +648,34 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     const timestamp = new Date().toISOString();
 
+    // Create the task before appending any messages so a lost race on the
+    // idempotency unique index can't leave a duplicate user message behind.
+    let task;
+    try {
+      task = tasks.createTask({
+        id: crypto.randomUUID(),
+        projectId: conversation.projectId,
+        kind: "agent_chat",
+        status: "queued",
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        createdAt: timestamp,
+      });
+    } catch (e) {
+      // Concurrent duplicate with the same key: replay the winner.
+      const winner = idempotencyKey ? tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey) : undefined;
+      if (!winner) throw e;
+      reply.status(200);
+      return {
+        task: winner,
+        userMessage: null,
+        assistantMessage: null,
+        routing: routingRepo.get(winner.id)?.decision ?? null,
+        aggregateUrl: `/api/tasks/${winner.id}`,
+        sseUrl: `/api/tasks/${winner.id}/events/stream`,
+        replayed: true,
+      };
+    }
+
     const userMsg = convs.appendMessage({
       id: crypto.randomUUID(),
       conversationId,
@@ -628,14 +683,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       content: body.content,
       createdAt: timestamp,
       updatedAt: timestamp,
-    });
-
-    const task = tasks.createTask({
-      id: crypto.randomUUID(),
-      projectId: conversation.projectId,
-      kind: "agent_chat",
-      status: "queued",
-      createdAt: timestamp,
     });
     records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
 
@@ -847,6 +894,116 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
   });
 
+  // ── Named workspace checkpoints ──────────────────────────────────────────
+  // Snapshot a set of workspace files under a project-unique name; restore
+  // rewrites them to the captured state (auto-snapshotting the current state
+  // first so a restore is itself reversible).
+
+  const checkpointSummary = (cp: ReturnType<typeof checkpoints.getByName> & object) => ({
+    id: cp.id,
+    name: cp.name,
+    taskId: cp.taskId,
+    fileCount: Object.keys(cp.files).length,
+    files: Object.keys(cp.files),
+    createdAt: cp.createdAt,
+  });
+
+  app.post("/api/projects/:projectId/checkpoints", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+
+    const parsed = CreateCheckpointSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid checkpoint request", "VALIDATION_ERROR");
+    const { name, files, taskId } = parsed.data;
+    if (!isValidCheckpointName(name)) {
+      throw new ApiError(400, "Checkpoint names may use letters, digits, dot, dash, underscore, and slash (max 100 chars)", "VALIDATION_ERROR");
+    }
+    if (checkpoints.getByName(projectId, name)) {
+      throw new ApiError(409, `A checkpoint named "${name}" already exists in this project`, "CONFLICT");
+    }
+    if (taskId && !tasks.getTaskById(taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
+
+    // Default file set: everything Morrow's change sets have ever touched in
+    // this project — the surface a user most plausibly wants to protect.
+    let fileList = files ?? [];
+    if (fileList.length === 0) {
+      const touched = new Set<string>();
+      for (const cs of changeSets.listByProject(projectId)) {
+        for (const f of Object.keys(cs.originalHashes)) if (f !== "/dev/null") touched.add(f);
+      }
+      fileList = [...touched];
+    }
+    if (fileList.length === 0) {
+      throw new ApiError(400, "Nothing to checkpoint: no Morrow-modified files exist yet; pass an explicit files list", "VALIDATION_ERROR");
+    }
+    if (fileList.length > 500) throw new ApiError(400, "A checkpoint may cover at most 500 files", "VALIDATION_ERROR");
+
+    const backupsDir = join(resolveMorrowHome(process.env), "backups");
+    let snapshot;
+    try {
+      snapshot = snapshotFiles(project.workspacePath, backupsDir, fileList);
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+    const created = checkpoints.create({ id: crypto.randomUUID(), projectId, name, taskId: taskId ?? null, files: snapshot.files });
+    reply.status(201);
+    return { ...checkpointSummary(created), skipped: snapshot.skipped };
+  });
+
+  app.get("/api/projects/:projectId/checkpoints", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return checkpoints.listByProject(projectId).map(checkpointSummary);
+  });
+
+  app.post("/api/projects/:projectId/checkpoints/:name/restore", async (request) => {
+    const { projectId, name } = request.params as { projectId: string; name: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const checkpoint = checkpoints.getByName(projectId, name);
+    if (!checkpoint) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
+
+    const backupsDir = join(resolveMorrowHome(process.env), "backups");
+
+    // Reversibility: capture the current state of the same file set first.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const safetyName = `auto/pre-restore-${name}-${stamp}`.slice(0, 100);
+    let safety;
+    try {
+      safety = snapshotFiles(project.workspacePath, backupsDir, Object.keys(checkpoint.files));
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+    if (safety.skipped.length > 0) {
+      throw new ApiError(409, `Cannot restore safely: current state of ${safety.skipped.map((s) => s.path).join(", ")} could not be captured`, "CONFLICT");
+    }
+    const safetyCheckpoint = checkpoints.getByName(projectId, safetyName)
+      ? null
+      : checkpoints.create({ id: crypto.randomUUID(), projectId, name: safetyName, taskId: null, files: safety.files });
+
+    let restored;
+    try {
+      restored = restoreSnapshot(project.workspacePath, backupsDir, checkpoint.files);
+    } catch (e: any) {
+      throw new ApiError(409, `Restore failed: ${e?.message ?? e}`, "CONFLICT");
+    }
+    return {
+      status: "success",
+      name: checkpoint.name,
+      restoredFiles: restored.restoredFiles,
+      deletedFiles: restored.deletedFiles,
+      safetyCheckpoint: safetyCheckpoint?.name ?? null,
+    };
+  });
+
+  app.delete("/api/projects/:projectId/checkpoints/:name", async (request) => {
+    const { projectId, name } = request.params as { projectId: string; name: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (!checkpoints.remove(projectId, name)) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
+    return { status: "deleted", name };
+  });
+
   app.get("/api/projects/:projectId/approvals", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
@@ -945,6 +1102,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Full provider status list (configured/available, capabilities, endpoint host).
   app.get("/api/providers", async () => listProviderStatuses());
+
+  // Live rate-limit guard state: which providers are cooling down and for how long.
+  app.get("/api/providers/rate-limits", async () => globalRateGuard.snapshot());
 
   // Capability matrix for the UI.
   app.get("/api/providers/capabilities", async () =>

@@ -24,6 +24,7 @@ import { resolveMorrowHome } from "../home.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
+import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
@@ -932,16 +933,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const currentToolCalls: any[] = [];
 
     try {
-      const opened = await openStreamWithFallback(streamCandidates, chatMessages, {
-        ...(abortSignal ? { abortSignal } : {}),
-        tools: exposedTools,
-        model: resolvedModel || assistantMessageRow.model || undefined,
-        timeoutMs: preset.timeoutMs,
-        temperature: preset.temperature,
-        maxOutputTokens: preset.outputBudgetTokens
-      });
+      const opened = await openStreamWithFallback(
+        streamCandidates,
+        chatMessages,
+        {
+          ...(abortSignal ? { abortSignal } : {}),
+          tools: exposedTools,
+          model: resolvedModel || assistantMessageRow.model || undefined,
+          timeoutMs: preset.timeoutMs,
+          temperature: preset.temperature,
+          maxOutputTokens: preset.outputBudgetTokens
+        },
+        globalRateGuard
+      );
       if (opened.fellBackFrom.length > 0) {
         event("provider.fallback", { from: opened.fellBackFrom, servedBy: opened.servedBy });
+      }
+      if (opened.deprioritizedRateLimited.length > 0) {
+        event("provider.rate_limited", { deprioritized: opened.deprioritizedRateLimited, servedBy: opened.servedBy });
       }
       const stream = opened.stream;
 

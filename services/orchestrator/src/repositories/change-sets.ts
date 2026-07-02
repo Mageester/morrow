@@ -71,6 +71,13 @@ export function changeSetsRepository(db: Database.Database) {
         .map(mapChangeSet);
     },
 
+    listByProject(projectId: string): ChangeSet[] {
+      return db
+        .prepare("SELECT * FROM change_sets WHERE project_id = ? ORDER BY created_at ASC")
+        .all(projectId)
+        .map(mapChangeSet);
+    },
+
     getLatestApproved(projectId: string): ChangeSet | undefined {
       const row = db
         .prepare(

@@ -509,6 +509,51 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "checkpoint": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const name = parts[1];
+      const usage = "Usage: /checkpoint save <name> [file …] | list | restore <name> | delete <name>";
+      try {
+        if (verb === "list") {
+          const list = await api.listCheckpoints(projectId);
+          if (list.length === 0) {
+            out.info("No checkpoints yet. Create one with /checkpoint save <name>.");
+            return {};
+          }
+          out.heading(`Checkpoints (${list.length})`);
+          for (const cp of list) {
+            out.print(`  ${out.bold(cp.name)}  ${out.gray(`${cp.fileCount} file${cp.fileCount === 1 ? "" : "s"} · ${cp.createdAt}`)}`);
+          }
+          return {};
+        }
+        if (!name) { out.warn(usage); return {}; }
+        if (verb === "save") {
+          const files = parts.slice(2);
+          const created = await api.createCheckpoint(projectId, { name, ...(files.length > 0 ? { files } : {}) });
+          out.success(`Checkpoint "${created.name}" saved (${created.fileCount} file${created.fileCount === 1 ? "" : "s"}).`);
+          for (const s of created.skipped) out.warn(`Skipped ${s.path}: ${s.reason}`);
+          return {};
+        }
+        if (verb === "restore") {
+          const res = await api.restoreCheckpoint(projectId, name);
+          const total = res.restoredFiles.length + res.deletedFiles.length;
+          out.success(total === 0 ? `Workspace already matches "${name}".` : `Restored "${name}" (${res.restoredFiles.length} written, ${res.deletedFiles.length} removed).`);
+          if (res.safetyCheckpoint) out.info(`Previous state saved as "${res.safetyCheckpoint}" — restore it to undo.`);
+          return {};
+        }
+        if (verb === "delete") {
+          await api.deleteCheckpoint(projectId, name);
+          out.success(`Deleted checkpoint "${name}".`);
+          return {};
+        }
+        out.warn(usage);
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
     case "diff": {
       const msgs = await api.listMessages(conversation.id);
       const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];

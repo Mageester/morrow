@@ -6,11 +6,16 @@
 
 ## Baseline
 
-- **Date:** 2026-06-29
-- **Branch at session start:** `main` (clean, up to date with `origin/main`)
-- **Baseline commit:** `545bbfe feat(web): add slash command palette`
-- **Working branch for this session:** `fix/provider-smoke-oauth-drift`
+- **Date:** 2026-07-02 (previous snapshot: 2026-06-29)
+- **Branch at session start:** `product/mission-control` (clean, PR #22 open)
+- **Baseline commit:** `9c25fbd feat(cli): add terminal mission control`
+- **Working branch for this session:** `product/hermes-parity` (stacked on
+  `product/mission-control`)
 - **Toolchain:** Node v24.13.1, pnpm 10.12.1 (repo declares `node >=22`, `pnpm@10.12.1`)
+- **2026-07-02 full validation (post-slice-batch):** `pnpm check` ✅ ·
+  `pnpm test` ✅ 567 (orchestrator 368 · CLI 169 · web 22 · contracts 4 ·
+  hermes-compat 4) · `pnpm build` ✅ · smokes `vertical-slice`/`providers`/
+  `agent-alpha`/`sqlite` ✅ · Playwright e2e ✅ 11/11.
 
 ## Repository / package overview
 
