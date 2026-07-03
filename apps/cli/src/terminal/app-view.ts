@@ -15,13 +15,16 @@ import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
 import { completionActive, type InputState } from "./input-state.js";
 import type { TerminalState } from "./state.js";
 import {
-  activityLine,
+  activityGroupLine,
   clipToWidth,
   completionLines,
   formatElapsed,
   glyphs,
+  groupActivities,
   headerLines,
   patchLines,
+  relativePath,
+  stageBanner,
   toolCardLines,
 } from "./view.js";
 
@@ -53,6 +56,8 @@ export function composeApp(
   ctx: AppFrameContext,
   opts: AppFrameOptions
 ): AppFrame {
+  const workspace = term.meta?.workspacePath;
+
   // ── Fixed top: header ──────────────────────────────────────────────────────
   const top: string[] = [];
   for (const l of headerLines(term, out)) top.push(l);
@@ -87,7 +92,7 @@ export function composeApp(
   }
 
   // ── Middle: transcript + live region, tail-clipped to remaining rows ────────
-  const middle = buildMiddle(term, out, unicode, opts);
+  const middle = buildMiddle(term, out, unicode, opts, workspace);
   const reserved = top.length + 1 /*blank*/ + bottom.length + footer.length + 1 /*blank*/;
   const available = Math.max(1, opts.rows - reserved);
   const clippedMiddle = middle.length > available ? middle.slice(middle.length - available) : middle;
@@ -123,8 +128,17 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
   }
 }
 
-function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
+function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
   const lines: string[] = [];
+
+  // Progress stage banner.
+  const stage = stageBanner(term.progressStage, term.progressDetail, out, unicode);
+  if (stage) {
+    lines.push(stage);
+    lines.push("");
+  }
+
+  // Plan summary.
   if (term.plan.length > 0) {
     lines.push(out.bold("  Plan"));
     for (const step of term.plan) {
@@ -133,6 +147,8 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     }
     lines.push("");
   }
+
+  // Conversation.
   for (const entry of term.conversation) {
     const label = entry.role === "user" ? out.green("you › ") : out.magenta("morrow › ");
     const body = entry.text.length ? entry.text : entry.streaming ? out.gray("…") : "";
@@ -141,14 +157,18 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
   }
   // Completed/failed tool cards and patches form the recent transcript tail.
   for (const card of term.tools) {
-    if (card.status !== "running") for (const cl of toolCardLines(card, out, unicode)) lines.push(cl);
+    if (card.status !== "running") for (const cl of toolCardLines(card, out, unicode, 0, workspace)) lines.push(cl);
   }
-  for (const patch of term.patches) for (const pl of patchLines(patch, out, unicode)) lines.push(pl);
-  // Live region: recent activity + running tool cards (animated).
-  for (const a of term.activity.slice(-3)) lines.push(activityLine(a, out, unicode));
+  for (const patch of term.patches) for (const pl of patchLines(patch, out, unicode, workspace)) lines.push(pl);
+
+  // Live region: grouped activity + running tool cards (animated).
+  const groups = groupActivities(term.activity);
+  for (const g of groups.slice(-3)) lines.push(activityGroupLine(g, out, unicode));
   for (const card of term.tools) {
-    if (card.status === "running") for (const cl of toolCardLines(card, out, unicode, opts.tick)) lines.push(cl);
+    if (card.status === "running") for (const cl of toolCardLines(card, out, unicode, opts.tick, workspace)) lines.push(cl);
   }
+
+  // Completion summary.
   if (term.status === "completed" || term.status === "failed") {
     lines.push("");
     for (const cl of completionLines(term, out, unicode)) lines.push(cl);

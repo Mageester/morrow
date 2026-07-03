@@ -11,7 +11,7 @@ import type { Output } from "../cli/output.js";
 import type { TerminalEvent } from "./events.js";
 import type { Renderer } from "./renderer.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
-import { activityLine, completionLines, glyphs, patchLines, toolCardLines } from "./view.js";
+import { activityGroupLine, completionLines, glyphs, groupActivities, patchLines, toolCardLines } from "./view.js";
 
 export interface LineRendererOptions {
   unicode: boolean;
@@ -26,6 +26,9 @@ export class LineRenderer implements Renderer {
   private answer = "";
   private wroteText = false;
   private endedConversation = false;
+
+  /** Track which activity groups we've already rendered to avoid duplicates. */
+  private lastActivityCount = 0;
 
   constructor(
     private readonly out: Output,
@@ -63,8 +66,9 @@ export class LineRenderer implements Renderer {
 
       case "activity":
         if (opts.showActivity) {
+          // Render grouped activity periodically, not on every single event.
           this.flushPendingNewline();
-          out.diag(activityLine({ kind: event.kind, at: 0, ...(event.detail !== undefined ? { detail: event.detail } : {}), ...(event.count !== undefined ? { count: event.count } : {}) }, out, opts.unicode));
+          this.renderNewActivityGroups();
         }
         break;
 
@@ -72,7 +76,7 @@ export class LineRenderer implements Renderer {
         if (opts.showActivity) {
           this.flushPendingNewline();
           const card = this.state.tools.find((t) => t.id === event.id);
-          if (card) for (const line of toolCardLines(card, out, opts.unicode)) out.diag(line);
+          if (card) for (const line of toolCardLines(card, out, opts.unicode, 0, this.state.meta?.workspacePath)) out.diag(line);
         }
         break;
 
@@ -81,7 +85,7 @@ export class LineRenderer implements Renderer {
         if (opts.showActivity) {
           this.flushPendingNewline();
           const patch = this.state.patches[this.state.patches.length - 1];
-          if (patch) for (const line of patchLines(patch, out, opts.unicode)) out.diag(line);
+          if (patch) for (const line of patchLines(patch, out, opts.unicode, this.state.meta?.workspacePath)) out.diag(line);
         }
         break;
 
@@ -116,6 +120,8 @@ export class LineRenderer implements Renderer {
 
       case "task.completed":
         this.flushPendingNewline();
+        // Render any remaining unrendered activity groups.
+        this.renderAllActivityGroups();
         if (opts.showSummary) {
           out.diag("");
           for (const line of completionLines(this.state, out, opts.unicode)) out.diag(line);
@@ -124,8 +130,6 @@ export class LineRenderer implements Renderer {
 
       // ── Extended presentation events ──────────────────────────────────────
       case "git.state":
-        // Git state is shown in the header in interactive mode; in line mode
-        // it's diagnostic info surfaced only when activity is enabled.
         if (opts.showActivity) {
           this.flushPendingNewline();
           out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} git · ${event.git.branch}${event.git.dirty ? " (dirty)" : ""}${event.git.ahead ? ` +${event.git.ahead}` : ""}${event.git.behind ? ` -${event.git.behind}` : ""}`));
@@ -182,6 +186,20 @@ export class LineRenderer implements Renderer {
   /** The answer text streamed so far (exposed for callers that need it early). */
   get answerText(): string {
     return this.answer;
+  }
+
+  private renderNewActivityGroups(): void {
+    const groups = groupActivities(this.state.activity);
+    const newGroups = groups.slice(this.lastActivityCount);
+    for (const group of newGroups) {
+      this.out.diag(activityGroupLine(group, this.out, this.opts.unicode));
+    }
+    this.lastActivityCount = groups.length;
+  }
+
+  private renderAllActivityGroups(): void {
+    this.lastActivityCount = 0; // reset so we re-render
+    this.renderNewActivityGroups();
   }
 
   private flushPendingNewline(): void {

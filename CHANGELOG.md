@@ -6,6 +6,30 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.18] - 2026-07-03
+
+### Fixed
+
+- Context management: discovery-ignored paths (vendor, lockfiles, dist) remain accessible via explicit reads.
+  Discovery exclusions no longer become universal access bans.
+- Safe-reader no longer rejects files with "key" or "token" in their names (was blocking legitimate files
+  like keymap.ts, tokenize.ts).
+- Gitignore matcher handles negation rules (!pattern) correctly.
+- Context budget failures provide actionable recovery options instead of only suggesting a larger model.
+- Added .lock, .map, .svg, .csv to supported extensions for explicit reads.
+
+### Added
+
+- Unified terminal presentation model: extended events for git state, context usage, progress stages,
+  processes, worktrees, agents, integrations, and recovery suggestions.
+- 16 focused deterministic tests for context management requirements.
+- 19 terminal presentation tests for extended events and adapter mapping.
+
+### Changed
+
+- Interactive CLI: Ctrl+T opens task tree, ? shows help on empty buffer, Ctrl+K palette,
+  Ctrl+R history search, Ctrl+O output viewer, context-aware footer hints.
+
 ## [0.1.0-beta.17] - 2026-07-03
 
 ### Changed

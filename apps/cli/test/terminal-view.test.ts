@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Output } from "../src/cli/output.js";
 import { initialState, reduce, type TerminalState } from "../src/terminal/state.js";
-import { activityLine, completionLines, composeFrame, headerLines, toolCardLines, formatElapsed, clipToWidth } from "../src/terminal/view.js";
+import { activityLine, activityGroupLine, completionLines, composeFrame, groupActivities, headerLines, toolCardLines, formatElapsed, clipToWidth, relativePath, stageBanner } from "../src/terminal/view.js";
 import type { TerminalEvent, SessionMeta } from "../src/terminal/events.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
@@ -100,5 +100,116 @@ describe("terminal views (ASCII, no color)", () => {
     expect(frame[frame.length - 1]).toContain("Ctrl+C cancel");
     // No line exceeds the column budget.
     expect(frame.every((l) => l.length <= 60)).toBe(true);
+  });
+});
+
+// ── Activity grouping ─────────────────────────────────────────────────────────
+
+describe("activity grouping", () => {
+  it("collapses consecutive reading activities into one group", () => {
+    const groups = groupActivities([
+      { kind: "reading", detail: "package.json", at: 0 },
+      { kind: "reading", detail: "tsconfig.json", at: 1 },
+      { kind: "reading", detail: "src/index.ts", at: 2 },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.stage).toBe("understanding");
+    expect(groups[0]!.targets).toEqual(["package.json", "tsconfig.json", "src/index.ts"]);
+  });
+
+  it("merges reading+searching+inspecting into understanding stage", () => {
+    const groups = groupActivities([
+      { kind: "reading", detail: "README.md", at: 0 },
+      { kind: "searching", detail: "*.ts", count: 12, at: 1 },
+      { kind: "inspecting", detail: "src/", at: 2 },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.stage).toBe("understanding");
+    expect(groups[0]!.targets).toHaveLength(3);
+  });
+
+  it("splits different stages into separate groups", () => {
+    const groups = groupActivities([
+      { kind: "reading", detail: "package.json", at: 0 },
+      { kind: "running", detail: "pnpm test", count: 1, at: 1 },
+      { kind: "verifying", detail: "tests pass", at: 2 },
+    ]);
+    expect(groups).toHaveLength(3);
+    expect(groups[0]!.stage).toBe("understanding");
+    expect(groups[1]!.stage).toBe("running_checks");
+    expect(groups[2]!.stage).toBe("verifying");
+  });
+
+  it("handles empty activity list", () => {
+    expect(groupActivities([])).toHaveLength(0);
+  });
+});
+
+describe("activity group rendering", () => {
+  it("renders a grouped reading activity compactly", () => {
+    const group = { kind: "reading" as const, stage: "understanding" as const, targets: ["package.json", "tsconfig.json"], counts: [], at: 0 };
+    const line = activityGroupLine(group, plain, false);
+    expect(line).toContain("reading");
+    expect(line).toContain("package.json");
+    expect(line).toContain("tsconfig.json");
+    // Verify it's a single line, not multi-line.
+    expect(line.split("\n")).toHaveLength(1);
+  });
+
+  it("shows count suffix when counts are present", () => {
+    const group = { kind: "searching" as const, stage: "understanding" as const, targets: ["*.ts"], counts: [12], at: 0 };
+    const line = activityGroupLine(group, plain, false);
+    expect(line).toContain("12 results");
+  });
+
+  it("collapses more than 3 targets with '+N more'", () => {
+    const group = { kind: "reading" as const, stage: "understanding" as const, targets: ["a", "b", "c", "d", "e"], counts: [], at: 0 };
+    const line = activityGroupLine(group, plain, false);
+    expect(line).toContain("+2 more");
+    // Should show at most 3 individual names.
+    const shownNames = ["a", "b", "c"].filter((n) => line.includes(n));
+    expect(shownNames).toHaveLength(3);
+  });
+});
+
+// ── Relative paths ────────────────────────────────────────────────────────────
+
+describe("relativePath", () => {
+  it("shortens a path under the workspace", () => {
+    expect(relativePath("C:/work/project/src/index.ts", "C:/work/project")).toBe("src/index.ts");
+  });
+
+  it("falls back to basename for external paths", () => {
+    const result = relativePath("/etc/nginx/nginx.conf", "C:/work/project");
+    expect(result).toContain("nginx.conf");
+    expect(result).not.toBe("/etc/nginx/nginx.conf");
+  });
+
+  it("passes through relative paths unchanged", () => {
+    expect(relativePath("src/index.ts", "C:/project")).toBe("src/index.ts");
+  });
+
+  it("handles trailing slash in workspace", () => {
+    expect(relativePath("C:/work/project/src/a.ts", "C:/work/project/")).toBe("src/a.ts");
+  });
+});
+
+// ── Stage banner ──────────────────────────────────────────────────────────────
+
+describe("stage banner", () => {
+  it("renders a stage with detail", () => {
+    const line = stageBanner("understanding", "6 files", plain, false);
+    expect(line).toContain("Understanding project");
+    expect(line).toContain("6 files");
+  });
+
+  it("returns null when no stage is set", () => {
+    expect(stageBanner(undefined, undefined, plain, false)).toBeNull();
+  });
+
+  it("does not show ellipsis for completed stages", () => {
+    const line = stageBanner("completed", undefined, plain, false);
+    expect(line).toContain("Completed");
+    expect(line).not.toContain("…");
   });
 });
