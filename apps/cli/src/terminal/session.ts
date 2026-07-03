@@ -685,7 +685,7 @@ export class InteractiveSession {
       tick: this.tick,
       promptLabel: out.green(unicode ? "› " : "> "),
       promptWidth: 2,
-    }).lines.slice(0, -2); // drop the input + footer; the approval panel replaces them
+    }).lines.slice(0, -4); // drop separator + input + completion + footer
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
