@@ -233,6 +233,19 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     lines.push("");
     for (const cl of completionLines(term, out, unicode)) lines.push(cl);
   }
+
+  // Recovery hints for non-successful task states.
+  if (term.status === "failed" || term.status === "interrupted" || term.status === "cancelled" || term.status === "stalled" || term.status === "budget-reached") {
+    lines.push("");
+    lines.push(out.yellow("  Recovery"));
+    const hints: string[] = [];
+    hints.push("/continue to resume");
+    hints.push("/diff to inspect changes");
+    hints.push("/undo to rollback");
+    hints.push("/result for details");
+    hints.push("/output to see outputs");
+    lines.push(`  ${out.gray(hints.join(" · "))}`);
+  }
   return lines;
 }
 
