@@ -265,6 +265,9 @@ export class MorrowApi {
   createProject(name: string, workspacePath: string) {
     return this.req<Project>("POST", "/api/projects", { name, workspacePath });
   }
+  quickChat() {
+    return this.req<{ projectId: string; conversationId: string; workspacePath: string }>("POST", "/api/quick-chat");
+  }
   startInspectWorkspace(projectId: string) {
     return this.req<{ taskId: string; sseUrl: string }>("POST", `/api/projects/${projectId}/tasks/inspect-workspace`);
   }

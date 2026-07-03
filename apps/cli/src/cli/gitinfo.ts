@@ -14,8 +14,18 @@ export function gitSummary(cwd: string): GitSummary {
   const run = (args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8", shell: false, timeout: 2000, windowsHide: true });
   try {
     const branchRes = run(["rev-parse", "--abbrev-ref", "HEAD"]);
-    if (branchRes.status !== 0) return { branch: null, dirty: 0 };
-    const branch = (branchRes.stdout || "").trim() || null;
+    let branch = branchRes.status === 0 ? (branchRes.stdout || "").trim() || null : null;
+    // Brand-new repositories have an unborn HEAD; rev-parse can fail even though
+    // `git status` and the symbolic branch are available. Keep the header honest
+    // for `morrow init` by falling back before giving up.
+    if (!branch || branch === "HEAD") {
+      const symbolic = run(["symbolic-ref", "--short", "HEAD"]);
+      branch = symbolic.status === 0 ? (symbolic.stdout || "").trim() || branch : branch;
+    }
+    if (!branch || branch === "HEAD") {
+      const shown = run(["branch", "--show-current"]);
+      branch = shown.status === 0 ? (shown.stdout || "").trim() || null : null;
+    }
     const statusRes = run(["status", "--porcelain"]);
     const dirty = statusRes.status === 0 ? (statusRes.stdout || "").split(/\r?\n/).filter((l) => l.trim().length > 0).length : 0;
     return { branch, dirty };
