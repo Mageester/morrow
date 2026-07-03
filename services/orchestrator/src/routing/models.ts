@@ -54,12 +54,14 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   model("gemini", "gemini-2.0-flash", "Gemini 2.0 Flash", { contextWindow: 1000000, vision: true, speed: "fast", cost: "low" }),
   // OpenRouter (aggregated upstreams)
   model("openrouter", "openrouter/auto", "OpenRouter Auto", { speed: "balanced", cost: "unknown" }),
+  model("openrouter", "deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (via OpenRouter)", { contextWindow: 1000000, speed: "powerful", cost: "low" }),
+  model("openrouter", "deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (via OpenRouter)", { contextWindow: 1000000, speed: "fast", cost: "low" }),
   model("openrouter", "anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet (via OpenRouter)", { contextWindow: 200000, vision: true, speed: "powerful", cost: "medium" }),
   model("openrouter", "openai/gpt-5.4", "GPT-5.4 (via OpenRouter)", { vision: true, speed: "powerful", cost: "medium" }),
   model("openrouter", "google/gemini-flash-1.5", "Gemini Flash 1.5 (via OpenRouter)", { contextWindow: 1000000, vision: true, speed: "fast", cost: "low" }),
   // DeepSeek
-  model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { speed: "powerful", cost: "low" }),
-  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { speed: "fast", cost: "low" }),
+  model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { contextWindow: 1000000, speed: "powerful", cost: "low" }),
+  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { contextWindow: 1000000, speed: "fast", cost: "low" }),
   model("deepseek", "deepseek-chat", "DeepSeek Chat", { speed: "balanced", cost: "low" }),
   model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { speed: "powerful", cost: "low" }),
   // Ollama (local)

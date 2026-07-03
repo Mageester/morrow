@@ -5,8 +5,8 @@ Snapshot of what is **verified working** right now, updated as slices land.
 ## Build / test health (2026-07-03, latest)
 
 - `pnpm check`, `pnpm test`, and `pnpm build`: green.
-- Release package validation for `0.1.0-beta.16`: `node
-  scripts/package-release.mjs 0.1.0-beta.16 --skip-build` green; package
+- Release package validation for `0.1.0-beta.17`: `node
+  scripts/package-release.mjs 0.1.0-beta.17` green; package
   contract includes `dispatch.mjs`, `orchestrator/cli/bin/morrow.mjs`, and
   `orchestrator/cli/src/main.js`.
 - `pnpm test`: **orchestrator 368 · CLI 169 · web 22 · contracts 4 ·
@@ -39,6 +39,12 @@ Snapshot of what is **verified working** right now, updated as slices land.
 See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
+
+- **DeepSeek V4 + OpenRouter model routing (beta.17)** - DeepSeek defaults to
+  `deepseek-v4-flash`, presets prefer `deepseek-v4-flash`/`deepseek-v4-pro`
+  before legacy chat/reasoner IDs, and OpenRouter exposes
+  `deepseek/deepseek-v4-flash` plus `deepseek/deepseek-v4-pro`. Evidence:
+  `services/orchestrator/test/routing.test.ts` and package release validation.
 
 - **Packaged CLI dispatch + beta.16 installer fix (P0)** - public
   `0.1.0-beta.15` installer reports a consumer failure during

@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.17] - 2026-07-03
+
+### Changed
+
+- **DeepSeek now defaults to the V4 model family.** The provider default is
+  `deepseek-v4-flash`, presets prefer `deepseek-v4-flash` for fast/cheap flows
+  and `deepseek-v4-pro` for quality/coding/research, with the older
+  `deepseek-chat`/`deepseek-reasoner` entries kept only as compatibility
+  fallbacks.
+- **OpenRouter now advertises DeepSeek V4 routes.** The OpenRouter provider and
+  model registry expose `deepseek/deepseek-v4-flash` and
+  `deepseek/deepseek-v4-pro` as selectable built-ins.
+
 ## [0.1.0-beta.16] - 2026-07-03
 
 ### Fixed

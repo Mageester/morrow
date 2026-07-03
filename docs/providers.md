@@ -62,6 +62,11 @@ Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
 `OPENAI_MODEL`) that sets the default model. Setting a default model in the app
 or via `--model` writes this value.
 
+DeepSeek defaults to `deepseek-v4-flash` and advertises both
+`deepseek-v4-flash` and `deepseek-v4-pro`. OpenRouter is also a first-class
+provider option and includes `deepseek/deepseek-v4-flash` and
+`deepseek/deepseek-v4-pro` alongside its auto router.
+
 ## Presets
 
 Each preset is a routing policy with concrete budgets. The router picks the
