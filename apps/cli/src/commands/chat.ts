@@ -80,6 +80,12 @@ export async function chatCommand(ctx: Context): Promise<number> {
 
   const message = flagString(ctx.flags, "message") ?? flagString(ctx.flags, "m");
   if (message) {
+    // Make the target explicit before any one-shot work so a command can never
+    // silently act on a different project than the user expects.
+    if (!ctx.out.json) {
+      const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
+      ctx.out.diag(ctx.out.gray(`  ${projectName}  ${project.workspacePath}  ·  ${modeLabel(session.mode, session.autoApprove)}`));
+    }
     return runOneShot(ctx, api, conversation, message, session);
   }
 

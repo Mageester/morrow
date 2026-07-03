@@ -13,8 +13,16 @@ export function isInteractive(ctx: Context): boolean {
 }
 
 /**
- * Resolve the active project from --project (id | name | workspace path) or the
- * configured default. Throws a clear error when none can be resolved.
+ * Resolve the active project with a strict, safety-first precedence:
+ *
+ *   1. Explicit `--project <id|name|path>` (an intentional override).
+ *   2. A registered project whose workspace IS the current directory. This comes
+ *      BEFORE the configured default so a command launched inside project B can
+ *      never silently operate on project A just because A is the saved default.
+ *   3. The configured default project.
+ *   4. Interactive selection or an actionable error.
+ *
+ * Throws a clear error when none can be resolved and `required` is set.
  */
 export async function resolveProject(
   ctx: Context,
@@ -22,22 +30,44 @@ export async function resolveProject(
   opts: { required?: boolean; autoCreateMissing?: boolean } = {},
 ): Promise<Project | null> {
   const flag = flagString(ctx.flags, "project");
-  const configured = ctx.config.get("defaults.project") as string | undefined;
-  const ref = flag ?? configured;
   const projects = await api.listProjects();
 
-  if (!ref) {
-    const cwdProject = matchProjectByPath(projects, process.cwd());
-    if (cwdProject) return cwdProject;
-    if (opts.autoCreateMissing) return autoCreateProjectForPath(ctx, api, process.cwd());
-    if (projects.length === 1) return projects[0]!;
-    if (!opts.required) return null;
-    throw usageError(
-      "No project selected.",
-      "Pass --project <id|path>, run `morrow projects select`, or add one with `morrow projects add`."
-    );
+  // 1. Explicit --project always wins.
+  if (flag) return resolveRef(ctx, api, projects, flag, opts);
+
+  // 2. A registered project matching the current directory takes precedence over
+  //    the configured default. This is the isolation guarantee: being inside B's
+  //    workspace selects B, regardless of what default is saved.
+  const cwdProject = matchProjectByPath(projects, process.cwd());
+  if (cwdProject) return cwdProject;
+
+  // 3. The configured default project (only when cwd is not itself a workspace).
+  const configured = ctx.config.get("defaults.project") as string | undefined;
+  if (configured) {
+    const byConfig = projects.find((p) => p.id === configured || p.name === configured);
+    if (byConfig) return byConfig;
+    // A stale default (project since removed) should not hard-fail resolution;
+    // fall through to auto-create / single-project / selection below.
   }
 
+  // 4. Fall back: auto-create the cwd, the sole project, or an actionable error.
+  if (opts.autoCreateMissing) return autoCreateProjectForPath(ctx, api, process.cwd());
+  if (projects.length === 1) return projects[0]!;
+  if (!opts.required) return null;
+  throw usageError(
+    "No project selected.",
+    "Pass --project <id|path>, run `morrow projects select`, or add one with `morrow projects add`."
+  );
+}
+
+/** Resolve an explicit reference (id, unique name, or workspace path). */
+async function resolveRef(
+  ctx: Context,
+  api: MorrowApi,
+  projects: Project[],
+  ref: string,
+  opts: { autoCreateMissing?: boolean },
+): Promise<Project> {
   // Exact id match.
   const byId = projects.find((p) => p.id === ref);
   if (byId) return byId;

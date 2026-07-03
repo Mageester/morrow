@@ -98,8 +98,10 @@ test("packaged morrow.cmd handles uninstall before any prompt/chat fallback", {
   try {
     let installed = installFromArtifact(artifact, root);
     const help = runMorrow(installed.cmd, ["--help"]);
-    assert.match(help, /Morrow packaged launcher/);
-    assert.match(help, /morrow uninstall \[--yes\] \[--purge-data\]/);
+    assert.match(help, /MORROW .*private intelligence, built around you/);
+    assert.match(help, /morrow yolo/);
+    assert.match(help, /morrow mission/);
+    assert.match(help, /morrow uninstall\s+guided uninstall; preserves user data unless --purge-data/);
 
     const uninstallHelp = runMorrow(installed.cmd, ["uninstall", "--help"]);
     assert.match(uninstallHelp, /Morrow uninstall/);

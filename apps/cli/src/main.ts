@@ -33,7 +33,7 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
@@ -188,7 +188,7 @@ function printHelp(out: Output): number {
     `${b("MORROW")} ${g("· private intelligence, built around you")}`,
     "",
     b("Start here"),
-    `  morrow                       ${g("start Morrow and open the app")}`,
+    `  morrow                       ${g("open the terminal agent shell")}`,
     `  morrow mission               ${g("open Mission Control in the terminal")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,

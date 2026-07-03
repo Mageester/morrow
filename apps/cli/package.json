@@ -8,7 +8,7 @@
     "morrow": "bin/morrow.mjs"
   },
   "scripts": {
-    "morrow": "tsx src/main.ts",
+    "morrow": "node bin/morrow.mjs",
     "check": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
