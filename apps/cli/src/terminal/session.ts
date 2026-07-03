@@ -22,7 +22,7 @@ import { composeApp } from "./app-view.js";
 import { completionActive, initialInputState, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
-import { yoloPolicyText, yoloStatusText } from "./yolo.js";
+import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree } from "./mission-control.js";
@@ -650,14 +650,20 @@ export class InteractiveSession {
     let decision: string | null = null;
     let trust: string | undefined;
     if (ch === "y") decision = "allow_once";
-    else if (ch === "n" || (k.ctrl && k.name === "c")) decision = "deny";
-    else if (ch === "t" && ap.kind === "command") {
+    else if (ch === "s") {
+      // Trust session: approve similar commands for the rest of this session.
+      decision = "trust_session";
+      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
+    }
+    else if (ch === "p") {
       decision = "trust_project";
-      trust = String((ap.details as any).pattern ?? "");
-    } else return;
+      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
+    }
+    else if (ch === "n" || (k.ctrl && k.name === "c")) decision = "deny";
+    else return;
 
     this.pendingApproval = null;
-    const source = decision === "deny" ? "denied" : decision === "trust_project" ? "trusted" : "approved";
+    const source = decision === "deny" ? "denied" : decision === "trust_project" ? "trusted (project)" : decision === "trust_session" ? "trusted (session)" : "approved";
     this.pushNotice(decision === "deny" ? "warn" : "info", `${ap.kind === "command" ? "Command" : "Patch"} ${source}.`);
     void this.deps.backend.resolveApproval(ap.id, decision, trust).catch((err) => this.pushNotice("error", `Approval failed: ${err instanceof Error ? err.message : String(err)}`));
     this.requestPaint(true);
@@ -728,18 +734,56 @@ export class InteractiveSession {
     const lines: string[] = [];
     for (const l of this.composeBaseLines()) lines.push(l);
     lines.push("");
+
     if (ap.kind === "command") {
       const d = ap.details as any;
-      lines.push(out.bold("  Command approval"));
-      lines.push(`  ${out.gray("run:")} ${d.executable} ${(d.args ?? []).join(" ")}`);
-      lines.push(`  ${out.gray("why:")} ${d.purpose ?? "(not specified)"}  ${out.gray("risk:")} ${d.risk ?? "?"}`);
-      lines.push(out.yellow("  [y] approve   [n] deny   [t] trust this command"));
+      const risk = riskLabel(d.risk);
+      const glyph = riskGlyph(risk);
+      const colorFn = out[riskColor(risk)];
+
+      lines.push(out.bold(`  Command approval  ${colorFn(glyph + " " + risk + " risk")}`));
+      lines.push(`    ${out.gray("run:")} ${d.executable} ${(d.args ?? []).join(" ")}`);
+      if (d.workingDir) lines.push(`    ${out.gray("dir:")} ${d.workingDir}`);
+      lines.push(`    ${out.gray("why:")} ${d.purpose ?? "(not specified)"}`);
+      if (d.preview) {
+        lines.push(out.gray("    ── preview ──"));
+        for (const previewLine of String(d.preview).split(/\r?\n/).slice(0, 5)) {
+          lines.push(`    ${out.gray("│")} ${previewLine}`);
+        }
+        lines.push(out.gray("    ──"));
+      }
+      lines.push("");
+      // Auto-approved actions shown when YOLO is on.
+      if (this.settings.autoApprove) {
+        lines.push(out.yellow("  ⚡ YOLO active — projects edits & commands are auto-approved."));
+        lines.push(out.gray("  Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
+        lines.push("");
+      }
+      lines.push(out.yellow("  [y] approve once   [s] trust session   [p] trust project   [n] deny"));
     } else {
       const d = ap.details as any;
       lines.push(out.bold("  Patch approval"));
-      lines.push(`  ${out.gray("files:")} ${(d.files ?? []).join(", ")}`);
-      lines.push(`  ${out.gray("why:")} ${d.explanation ?? ""}`);
-      lines.push(out.yellow("  [y] apply   [n] deny"));
+      lines.push(`    ${out.gray("files:")} ${(d.files ?? []).join(", ")}`);
+      if (d.additions !== undefined || d.deletions !== undefined) {
+        const churn = [d.additions > 0 ? out.green(`+${d.additions}`) : "", d.deletions > 0 ? out.red(`-${d.deletions}`) : ""].filter(Boolean).join(" ");
+        if (churn) lines.push(`    ${out.gray("changes:")} ${churn}`);
+      }
+      lines.push(`    ${out.gray("why:")} ${d.explanation ?? "(not specified)"}`);
+      if (d.diffPreview) {
+        lines.push(out.gray("    ── diff preview ──"));
+        for (const diffLine of String(d.diffPreview).split(/\r?\n/).slice(0, 8)) {
+          const trimmed = diffLine.length > 80 ? diffLine.slice(0, 77) + "…" : diffLine;
+          lines.push(`    ${out.gray("│")} ${trimmed}`);
+        }
+        lines.push(out.gray("    ──"));
+      }
+      lines.push("");
+      if (this.settings.autoApprove) {
+        lines.push(out.yellow("  ⚡ YOLO active — patches are auto-approved."));
+        lines.push(out.gray("  Hard blocks: external writes, credential files, system paths."));
+        lines.push("");
+      }
+      lines.push(out.yellow("  [y] apply once   [s] trust session   [p] trust project   [n] deny"));
     }
     return lines;
   }
