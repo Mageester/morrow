@@ -11,7 +11,7 @@ import type { SlashCommand } from "./commands.js";
 import { clampSelection, filterCommands } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
 
-export type Overlay = "none" | "palette" | "output" | "history";
+export type Overlay = "none" | "palette" | "output" | "history" | "tasktree";
 
 export interface InputState {
   buffer: string;
@@ -112,6 +112,11 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
     s.overlay = s.overlay === "output" ? "none" : "output";
     return r(s);
   }
+  if (key.ctrl && name === "t") {
+    // Ctrl+T: toggle task tree / Mission Control overlay
+    s.overlay = s.overlay === "tasktree" ? "none" : "tasktree";
+    return r(s);
+  }
   if (key.ctrl && name === "u") {
     if (s.overlay === "palette") {
       s.paletteQuery = "";
@@ -125,7 +130,7 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
 
   // ── Palette overlay ──────────────────────────────────────────────────────
   if (s.overlay === "palette") return reducePalette(s, key, ctx);
-  if (s.overlay === "output") {
+  if (s.overlay === "output" || s.overlay === "tasktree") {
     if (key.name === "escape" || (key.ctrl && key.name === "c")) {
       s.overlay = "none";
       return r(s);

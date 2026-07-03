@@ -171,8 +171,21 @@ export class InteractiveSession {
       // Only cancellation and repaint are meaningful while a task runs.
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
+      if (k.ctrl && k.name === "t") return void this.showTaskTree();
       this.confirmExitWhileBusy = false;
       return;
+    }
+
+    // Ctrl+T opens task tree even when not busy (if there's a last task)
+    if (k.ctrl && k.name === "t" && !k.meta && !k.shift) {
+      void this.showTaskTree();
+      return void this.requestPaint(false);
+    }
+
+    // `?` on empty buffer shows help
+    if (k.str === "?" && !k.ctrl && !k.meta && this.input.buffer.length === 0) {
+      this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
+      return void this.requestPaint(false);
     }
 
     const { state, action } = reduceKey(this.input, k, this.keyCtx);
@@ -228,6 +241,7 @@ export class InteractiveSession {
         this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [] };
         return void this.fullRepaint();
       case "help":
+      case "?":
         this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
         return void this.requestPaint(false);
       case "mode": {
@@ -619,7 +633,7 @@ export class InteractiveSession {
       promptWidth: 2,
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "output" ? this.outputFrameLines() : frame.lines;
+    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;

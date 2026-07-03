@@ -194,6 +194,12 @@ function footerLine(input: InputState, out: Output, unicode: boolean): string[] 
   const hint =
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"
-      : "/ commands · Ctrl+K palette · Ctrl+C cancel/exit · Ctrl+L repaint";
+      : input.overlay === "output"
+        ? "Esc closes · output retained in task record"
+        : input.overlay === "tasktree"
+          ? "Esc closes · task tree from last mission"
+          : input.overlay === "history"
+            ? "type to search · Enter recall · Esc close"
+            : "/ commands · Ctrl+K palette · Ctrl+T tree · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
   return [out.gray("  " + hint)];
 }
