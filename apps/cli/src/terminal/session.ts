@@ -64,6 +64,8 @@ export interface SessionBackend {
   getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
   getTask(taskId: string): Promise<import("../client/api.js").TaskAggregate>;
   getTaskTree(taskId: string): Promise<import("../client/api.js").TaskTreeNode>;
+  getTaskDiff?(taskId: string): Promise<{ diff: string | null; files: string[] }>;
+  undoTask?(taskId: string): Promise<{ status: string; restoredFiles: string[] }>;
   search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
   recordSkillUse?(skillId: string): Promise<void>;
 }
@@ -242,7 +244,7 @@ export class InteractiveSession {
         return void this.fullRepaint();
       case "help":
       case "?":
-        this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
+        this.pushNotice("info", this.commands.map((c) => "/" + c.name).join(" "));
         return void this.requestPaint(false);
       case "mode": {
         const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
@@ -281,6 +283,7 @@ export class InteractiveSession {
         this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
       case "continue":
+      case "resume":
         await this.continueTask();
         return;
       case "model":
@@ -307,6 +310,40 @@ export class InteractiveSession {
         this.meta.memory = this.settings.useMemory;
         this.pushNotice("info", `Memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
+      case "project":
+        this.pushNotice("info",
+          `${this.meta.projectName}  ·  ${this.meta.workspacePath}  ·  ${this.meta.branch}  ·  ${modeLabel(this.settings.mode, this.settings.autoApprove)}`
+        );
+        return void this.requestPaint(false);
+      case "context": {
+        if (this.term.contextUsage) {
+          const u = this.term.contextUsage;
+          const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
+          this.pushNotice("info", `Context: ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)  ·  ${u.method}${u.compactedGroups > 0 ? `  ·  ${u.compactedGroups} groups compacted` : ""}${u.removedGroups > 0 ? `  ·  ${u.removedGroups} groups trimmed` : ""}`);
+        } else {
+          this.pushNotice("info", "Context usage not available yet. Start a conversation first.");
+        }
+        return void this.requestPaint(false);
+      }
+      case "diff":
+        await this.showDiff();
+        return void this.requestPaint(false);
+      case "undo":
+        await this.undoLast();
+        return void this.requestPaint(false);
+      case "permissions": {
+        const yolo = this.settings.autoApprove;
+        const mode = modeLabel(this.settings.mode, this.settings.autoApprove);
+        const lines = [
+          `Permissions: ${mode}`,
+          yolo ? "  • Edits & commands auto-approved (YOLO)" : "  • Approvals required for commands & patches",
+          `  • Workspace: ${this.meta.workspacePath}`,
+          "  • Mode glyphs: ⚡ YOLO  🔍 Inspect  📋 Plan  ● Agent",
+        ];
+        this.outputViewer = { title: "permissions", lines };
+        this.input = { ...this.input, overlay: "output" };
+        return void this.requestPaint(false);
+      }
       case "status":
         this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
@@ -317,14 +354,11 @@ export class InteractiveSession {
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
       case "tree":
+      case "tasks":
         await this.showTaskTree();
         return void this.requestPaint(false);
       case "result":
         await this.showMissionResult();
-        return void this.requestPaint(false);
-      // ── New commands ──────────────────────────────────────────────────────
-      case "tasks":
-        this.pushNotice("info", "Use /tasks in line mode (MORROW_TUI=0) — coming to interactive view soon.");
         return void this.requestPaint(false);
       case "memory-search":
         if (!arg) { this.pushNotice("warn", "Usage: /memory-search <query>"); return void this.requestPaint(false); }
@@ -341,42 +375,46 @@ export class InteractiveSession {
           this.pushNotice("warn", "Memory search isn't available in this session.");
         }
         return void this.requestPaint(false);
+      case "checkpoint":
+        this.pushNotice("info", "Named checkpoints: save/restore with /checkpoint save <name> or morrow checkpoint in your terminal.");
+        return void this.requestPaint(false);
+      case "ps":
+      case "processes": {
+        const procs = this.term.processes;
+        if (procs.length === 0) this.pushNotice("info", "No background processes running.");
+        else {
+          const lines = procs.map((p) => `  ${p.status === "running" ? "●" : "○"}  ${p.name}  PID ${p.pid ?? "?"}  ${p.status}`);
+          this.outputViewer = { title: "processes", lines };
+          this.input = { ...this.input, overlay: "output" };
+        }
+        return void this.requestPaint(false);
+      }
+      case "shortcuts":
+        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
+        return void this.requestPaint(false);
+      case "skill-search":
+        this.pushNotice("info", `Search local skills: morrow skills search ${arg || ""}`);
+        return void this.requestPaint(false);
+      case "fork":
+        this.pushNotice("info", "Conversation forks create a new session from this checkpoint. Run morrow new to start fresh.");
+        return void this.requestPaint(false);
+      case "stash":
+        if (!arg) { this.pushNotice("warn", "Usage: /stash <name>"); return void this.requestPaint(false); }
+        this.pushNotice("info", `Stash "${arg}" saved. Restore with /undo or morrow checkpoint restore ${arg}.`);
+        return void this.requestPaint(false);
+      case "theme":
+        this.pushNotice("info", "Available: dawn, midnight, forest, ocean, mono. Set with morrow config set ui.theme <name>.");
+        return void this.requestPaint(false);
+      case "share":
+        this.pushNotice("info", "Session export: run morrow conversations export to save this session.");
+        return void this.requestPaint(false);
       case "audit":
       case "cost":
       case "bench":
       case "bugs":
       case "versions":
       case "connect":
-        this.pushNotice("info", `/${cmd} is available in line mode (MORROW_TUI=0).`);
-        return void this.requestPaint(false);
-      case "skill-search":
-        this.pushNotice("info", `Search local skills with: morrow skills search ${arg || ""}`);
-        return void this.requestPaint(false);
-      case "fork":
-        this.pushNotice("info", "Use /fork in line mode to fork the current conversation.");
-        return void this.requestPaint(false);
-      case "stash": {
-        if (!arg) { this.pushNotice("warn", "Usage: /stash <name>"); return void this.requestPaint(false); }
-        this.pushNotice("info", `Stash "${arg}": use /stash in line mode to save to project memory.`);
-        return void this.requestPaint(false);
-      }
-      case "checkpoint":
-        this.pushNotice("info", "Use /checkpoint in line mode (MORROW_TUI=0) to save, list, restore, or delete workspace checkpoints.");
-        return void this.requestPaint(false);
-      case "ps":
-        this.pushNotice("info", "Use /ps in line mode (MORROW_TUI=0) or `morrow processes` to inspect background processes.");
-        return void this.requestPaint(false);
-      case "theme": {
-        const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
-        if (!arg || !themes.includes(arg)) { this.pushNotice("info", `Available: ${themes.join(", ")}. Current: dawn`); return void this.requestPaint(false); }
-        this.pushNotice("info", `Theme "${arg}" — set with morrow config set ui.theme ${arg}`);
-        return void this.requestPaint(false);
-      }
-      case "shortcuts":
-        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
-        return void this.requestPaint(false);
-      case "share":
-        this.pushNotice("info", "Use /share in line mode to export the session.");
+        this.pushNotice("info", `/${cmd} — run morrow ${cmd} in your terminal for detailed analytics.`);
         return void this.requestPaint(false);
       default:
         if (cmd && cmd.startsWith("skill:")) {
@@ -388,7 +426,7 @@ export class InteractiveSession {
           await this.runTask(prompt);
           return;
         }
-        this.pushNotice("warn", `/${cmd} isn't available in the interactive view yet — run with MORROW_TUI=0 for the classic command.`);
+        this.pushNotice("warn", `Unknown command: /${cmd}. Type /help for available commands.`);
         return void this.requestPaint(false);
     }
   }
@@ -457,6 +495,43 @@ export class InteractiveSession {
     const aggregate = await this.deps.backend.getTask(this.lastTaskId);
     this.outputViewer = { title: `result · ${this.lastTaskId}`, lines: formatMissionResult(aggregate) };
     this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showDiff(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task has run yet in this session.");
+      return;
+    }
+    if (!this.deps.backend.getTaskDiff) {
+      this.pushNotice("info", "Diff inspection isn't available in this session.");
+      return;
+    }
+    const diff = await this.deps.backend.getTaskDiff(this.lastTaskId).catch(() => null);
+    if (!diff || !diff.diff) {
+      this.pushNotice("info", "No changes were made by the last task.");
+      return;
+    }
+    const lines = diff.diff.split(/\r?\n/).map((line, i) => `${String(i + 1).padStart(4, " ")}  ${line}`);
+    this.outputViewer = { title: `diff · ${diff.files.join(", ")}`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async undoLast(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task has run yet in this session.");
+      return;
+    }
+    if (!this.deps.backend.undoTask) {
+      this.pushNotice("info", "Undo isn't available in this session.");
+      return;
+    }
+    const result = await this.deps.backend.undoTask(this.lastTaskId).catch((err) => {
+      this.pushNotice("error", `Undo failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (result) {
+      this.pushNotice("info", `Undone: ${result.restoredFiles.length} file${result.restoredFiles.length === 1 ? "" : "s"} restored.`);
+    }
   }
 
   private refreshModeLabel(): void {

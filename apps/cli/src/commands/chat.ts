@@ -166,6 +166,10 @@ async function runInteractiveSession(
     getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
     getTask: (taskId) => api.getTask(taskId),
     getTaskTree: (taskId) => api.getTaskTree(taskId),
+    getTaskDiff: (taskId) =>
+      api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
+    undoTask: (taskId) =>
+      api.undoTask(taskId).then((u) => ({ status: u.status, restoredFiles: u.restoredFiles })),
     search: (query) =>
       api
         .search(project.id, query, { limit: 25 })
