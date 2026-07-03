@@ -6,6 +6,35 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.16] - 2026-07-03
+
+### Fixed
+
+- **Packaged CLI command dispatch now matches the development CLI.** The
+  installed launcher delegates product commands such as `ask`, `fix`, `plan`,
+  `yolo`, `mission`, `symbols`, `processes`, `worktrees`, `integrate`,
+  `projects`, and `chat` into the bundled compiled CLI while keeping packaged
+  lifecycle commands in the launcher.
+- **The Windows package now ships and validates the full terminal CLI surface.**
+  Release packaging compiles `apps/cli` into `orchestrator/cli`, ships the shared
+  dispatcher, verifies the bundled CLI loads under the bundled runtime, and
+  asserts those files in the package contract before a ZIP is accepted.
+- **Safe onboarding no longer blanket-enables high-risk skills.** The
+  recommended setup enables only safe-default skills and leaves offensive or
+  high-risk skills disabled until individually approved.
+- **Project resolution now prefers intentional local context.** Explicit
+  `--project` still wins, a registered workspace matching the current directory
+  overrides a stale default, `morrow init` activates the new project, and
+  one-shot chat reports the active project before work starts.
+
+### Release notes
+
+- This beta is intended to replace `0.1.0-beta.15`, whose public installer path
+  could fail during `Extracting archive...` for consumers. The beta.16 artifact
+  and `latest.json` manifest must be uploaded together so
+  `irm https://morrowproject.getaxiom.ca/install.ps1 | iex` downloads the fixed
+  package.
+
 ## [0.1.0-beta.9] - 2026-06-25
 
 ### Fixed

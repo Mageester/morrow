@@ -2,9 +2,13 @@
 
 Snapshot of what is **verified working** right now, updated as slices land.
 
-## Build / test health (2026-07-02, latest)
+## Build / test health (2026-07-03, latest)
 
 - `pnpm check`, `pnpm test`, and `pnpm build`: green.
+- Release package validation for `0.1.0-beta.16`: `node
+  scripts/package-release.mjs 0.1.0-beta.16 --skip-build` green; package
+  contract includes `dispatch.mjs`, `orchestrator/cli/bin/morrow.mjs`, and
+  `orchestrator/cli/src/main.js`.
 - `pnpm test`: **orchestrator 368 · CLI 169 · web 22 · contracts 4 ·
   hermes-compat 4 — all green (567 total)** after the 2026-07-02
   hermes-parity slice batch (rate guard, import CLI, checkpoints, chat
@@ -35,6 +39,16 @@ Snapshot of what is **verified working** right now, updated as slices land.
 See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
+
+- **Packaged CLI dispatch + beta.16 installer fix (P0)** - public
+  `0.1.0-beta.15` installer reports a consumer failure during
+  `Extracting archive...`. Beta.16 rebuilds the Windows artifact with the shared
+  launcher dispatcher and compiled CLI bundled under `orchestrator/cli`, so the
+  installed `morrow` command exposes the same product command surface as the
+  development CLI. Evidence: `scripts/launcher-dispatch.test.mjs`,
+  `apps/cli/test/entrypoint-parity.test.ts`, `scripts/package-command.test.mjs`,
+  `scripts/package-release.test.mjs`, `pnpm check`, `pnpm test`, and package
+  contract validation.
 
 - **Local browser control (B15, partial)** — `browser/playwright.ts` launches a
   real Playwright Chromium session (visible unless explicitly headless), attaches
