@@ -6,7 +6,7 @@
  *
  * See docs/decisions/0003-terminal-runtime.md for the renderer decision.
  */
-export type { TerminalEvent, TerminalEventType, ActivityKind, ApprovalSource, SessionMeta } from "./events.js";
+export type { TerminalEvent, TerminalEventType, ActivityKind, ApprovalSource, SessionMeta, GitStateInfo, ContextUsageInfo, ProcessInfo, WorktreeInfo, AgentInfo, IntegrationInfo, ProgressStage } from "./events.js";
 export {
   reduce,
   initialState,

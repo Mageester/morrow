@@ -112,6 +112,31 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       }
       return withSource([{ type: "task.interrupted" }]);
 
+    // ── Extended presentation events ──────────────────────────────────────
+    case "context.budget_calculated":
+    case "context.trimmed":
+    case "context.compaction_completed": {
+      const used = num(p.finalTokens ?? p.tokens);
+      const max = num(p.maxInputTokens);
+      if (used === undefined || max === undefined) return [];
+      return withSource([{
+        type: "context.usage",
+        usage: {
+          usedTokens: used,
+          maxTokens: max,
+          method: p.exact === true ? "exact" : "estimate",
+          compactedGroups: num(p.compactedGroups) ?? 0,
+          removedGroups: num(p.removedGroups) ?? num(p.removedMessages) ?? 0,
+        },
+      }]);
+    }
+
+    case "provider.fallback":
+      return withSource([{ type: "notice", level: "info", text: `Provider fallback: ${str(p.from) ?? "?"} → ${str(p.servedBy) ?? "?"}` }]);
+
+    case "provider.rate_limited":
+      return withSource([{ type: "notice", level: "warn", text: `Rate-limited provider deprioritized: ${Array.isArray(p.deprioritized) ? p.deprioritized.join(", ") : "?"}` }]);
+
     // Internal plan/step/state churn is intentionally not surfaced.
     default:
       return [];

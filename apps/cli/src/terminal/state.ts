@@ -77,6 +77,15 @@ export interface TerminalState {
   notices: NoticeEntry[];
   status: SessionStatus;
   lastError?: string;
+  git?: import("./events.js").GitStateInfo;
+  contextUsage?: import("./events.js").ContextUsageInfo;
+  progressStage?: import("./events.js").ProgressStage;
+  progressDetail?: string;
+  processes: import("./events.js").ProcessInfo[];
+  worktrees: import("./events.js").WorktreeInfo[];
+  agents: import("./events.js").AgentInfo[];
+  integrations: import("./events.js").IntegrationInfo[];
+  recoverySuggestions: string[];
 }
 
 export const MAX_CONVERSATION = 200;
@@ -84,7 +93,7 @@ export const MAX_ACTIVITY = 80;
 export const MAX_NOTICES = 6;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle" };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [] };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -257,6 +266,38 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return { ...state, status: "budget-reached", lastError: event.message };
     case "task.stalled":
       return { ...state, status: "stalled", lastError: event.message };
+
+    // ── Extended presentation events ──────────────────────────────────────
+    case "git.state":
+      return { ...state, git: event.git };
+
+    case "context.usage":
+      return { ...state, contextUsage: event.usage };
+
+    case "progress.stage":
+      return {
+        ...state,
+        progressStage: event.stage,
+        ...(event.detail !== undefined ? { progressDetail: event.detail } : {}),
+      };
+
+    case "process.update":
+      return { ...state, processes: event.processes };
+
+    case "worktree.update":
+      return { ...state, worktrees: event.worktrees };
+
+    case "agent.update":
+      return { ...state, agents: event.agents };
+
+    case "integration.update":
+      return { ...state, integrations: event.integrations };
+
+    case "recovery.suggestion":
+      return {
+        ...state,
+        recoverySuggestions: bounded([...state.recoverySuggestions, event.text], MAX_NOTICES),
+      };
 
     default: {
       // Exhaustiveness guard: a new event type must be handled here.

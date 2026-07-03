@@ -122,6 +122,44 @@ export class LineRenderer implements Renderer {
         }
         break;
 
+      // ── Extended presentation events ──────────────────────────────────────
+      case "git.state":
+        // Git state is shown in the header in interactive mode; in line mode
+        // it's diagnostic info surfaced only when activity is enabled.
+        if (opts.showActivity) {
+          this.flushPendingNewline();
+          out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} git · ${event.git.branch}${event.git.dirty ? " (dirty)" : ""}${event.git.ahead ? ` +${event.git.ahead}` : ""}${event.git.behind ? ` -${event.git.behind}` : ""}`));
+        }
+        break;
+
+      case "context.usage":
+        if (opts.showActivity) {
+          this.flushPendingNewline();
+          const pct = event.usage.maxTokens > 0 ? Math.round((event.usage.usedTokens / event.usage.maxTokens) * 100) : 0;
+          out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} context · ${event.usage.usedTokens}/${event.usage.maxTokens} tokens (${pct}%) · ${event.usage.method}`));
+        }
+        break;
+
+      case "progress.stage":
+        if (opts.showActivity) {
+          this.flushPendingNewline();
+          const label = event.stage.replace(/_/g, " ");
+          out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} ${label}${event.detail ? ` · ${event.detail}` : ""}`));
+        }
+        break;
+
+      case "recovery.suggestion":
+        this.flushPendingNewline();
+        out.warn(`Recovery: ${event.text}`);
+        break;
+
+      // State-only events that don't produce incremental line output.
+      case "process.update":
+      case "worktree.update":
+      case "agent.update":
+      case "integration.update":
+        break;
+
       // session.started / user.message carry no incremental line output here.
       default:
         break;

@@ -68,11 +68,37 @@ export function headerLines(state: TerminalState, out: Output): string[] {
   if (!m) return [];
   const rows: Array<[string, string]> = [
     ["Project", `${m.projectName}  ${out.gray(m.workspacePath)}`],
-    ["Branch", m.branch],
-    ["Model", `${m.provider} · ${m.model}  ${out.gray(m.privacy)}`],
-    ["Mode", m.mode],
-    ["Memory", m.memory ? "project context on" : "off"],
   ];
+  // Git state (from git.state event, or the session meta branch)
+  if (state.git) {
+    const g = state.git;
+    const gitParts = [g.branch];
+    if (g.dirty) gitParts.push("dirty");
+    if (g.ahead > 0) gitParts.push(`+${g.ahead}`);
+    if (g.behind > 0) gitParts.push(`-${g.behind}`);
+    rows.push(["Branch", gitParts.join(" ")]);
+  } else {
+    rows.push(["Branch", m.branch]);
+  }
+  rows.push(["Model", `${m.provider} · ${m.model}  ${out.gray(m.privacy)}`]);
+  rows.push(["Mode", m.mode]);
+  rows.push(["Memory", m.memory ? "project context on" : "off"]);
+  // Context usage
+  if (state.contextUsage) {
+    const u = state.contextUsage;
+    const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
+    rows.push(["Context", `${u.usedTokens}/${u.maxTokens} (${pct}%) · ${u.method}`]);
+  }
+  // Active agents
+  const activeAgents = state.agents.filter((a) => a.status === "running");
+  if (activeAgents.length > 0) {
+    rows.push(["Agents", activeAgents.map((a) => `${a.name} (${a.role})`).join(", ")]);
+  }
+  // Background processes
+  const runningProcs = state.processes.filter((p) => p.status === "running");
+  if (runningProcs.length > 0) {
+    rows.push(["Processes", `${runningProcs.length} running`]);
+  }
   const width = rows.reduce((w, [k]) => Math.max(w, k.length), 0);
   return rows.map(([k, v]) => `  ${out.gray((k + ":").padEnd(width + 1))} ${v}`);
 }
