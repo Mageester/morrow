@@ -357,14 +357,22 @@ export function prepareContextForProvider(
   }
 
   if (candidateCount.tokens > input.maxInputTokens) {
-    operations.push({
-      type: "context.minimum_viable_context_exceeded",
-      payload: { finalTokens: candidateCount.tokens, maxInputTokens: input.maxInputTokens, provider: input.providerId, model: input.model },
-    });
+    operations.push(
+      {
+        type: "context.minimum_viable_context_exceeded",
+        payload: { finalTokens: candidateCount.tokens, maxInputTokens: input.maxInputTokens, provider: input.providerId, model: input.model },
+      },
+    );
     return {
       ok: false,
       reason: "minimum_context_too_large",
-      actionableMessage: `Minimum viable context is too large for ${input.providerId}/${input.model}. Select a larger-context model, start a new session, compact history, or reduce attached content.`,
+      actionableMessage:
+        `Context is too large for ${input.providerId}/${input.model} (${candidateCount.tokens} tokens needed, ${input.maxInputTokens} available).\n` +
+        "Recovery options:\n" +
+        "1. Start a new session to reset conversation history.\n" +
+        "2. Use /context to inspect and trim large messages.\n" +
+        "3. Switch to a larger-context model with /model.\n" +
+        "4. Reduce the number of attached files or narrow tool results.",
       tokenCount: candidateCount,
       operations,
     };

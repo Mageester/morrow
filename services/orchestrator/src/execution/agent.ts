@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
+import { createGitignoreMatcher, isBuiltInIgnoredName } from "../workspace/ignore.js";
 import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
 import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js";
 import { projectRepository } from "../repositories/projects.js";
@@ -80,6 +81,110 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, env: Node
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
+}
+
+const TOOL_RESULT_BYTE_LIMIT = 24 * 1024;
+const TOP_LEVEL_ENTRY_LIMIT = 80;
+
+async function buildWorkspaceDiscovery(
+  project: { id: string; workspacePath: string },
+  symbolIndex: ReturnType<typeof symbolIndexRepository>,
+  abortSignal?: AbortSignal
+): Promise<string> {
+  const root = project.workspacePath;
+  const topLevel = listTopLevel(root, TOP_LEVEL_ENTRY_LIMIT);
+  const manifestPaths = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "deno.json", "tsconfig.json", "vite.config.ts", "next.config.js", "README.md", "AGENTS.md"];
+  const manifests = manifestPaths
+    .map((path) => readOptionalWorkspaceText(root, path, path.toLowerCase().endsWith("readme.md") ? 2_000 : 4_000))
+    .filter((item): item is { path: string; bytes: number; preview: string } => Boolean(item));
+  const git = await gitStatus(root, { maxOutputBytes: 12 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+  const symbols = symbolIndex.status(project.id);
+  return JSON.stringify({
+    kind: "workspace_discovery",
+    root: ".",
+    limits: { topLevelEntries: TOP_LEVEL_ENTRY_LIMIT, manifestPreviewBytes: 4_000, toolResultBytes: TOOL_RESULT_BYTE_LIMIT },
+    topLevel,
+    manifests,
+    indicators: inferIndicators(topLevel, manifests),
+    git,
+    symbols,
+    nextStep: "Use search_symbols/search_files/search_text/list_files/read_file narrowly for files relevant to the user's request. Do not call inspect_workspace again unless the project root changed.",
+  });
+}
+
+function listTopLevel(root: string, limit: number): { entries: Array<{ path: string; type: "file" | "directory"; size?: number }>; truncated: boolean } {
+  const entries: Array<{ path: string; type: "file" | "directory"; size?: number }> = [];
+  const ignoredByGitignore = createGitignoreMatcher(root, (path) => { try { return readFileSync(path, "utf8"); } catch { return null; } });
+  let truncated = false;
+  try {
+    for (const child of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (isBuiltInIgnoredName(child.name, child.isDirectory())) continue;
+      if (ignoredByGitignore(child.name, child.isDirectory())) continue;
+      if (entries.length >= limit) { truncated = true; break; }
+      const full = join(root, child.name);
+      if (child.isDirectory()) entries.push({ path: child.name, type: "directory" });
+      else if (child.isFile()) {
+        let size: number | undefined;
+        try { size = statSync(full).size; } catch { size = undefined; }
+        entries.push({ path: child.name, type: "file", ...(size === undefined ? {} : { size }) });
+      }
+    }
+  } catch {
+    return { entries, truncated };
+  }
+  return { entries, truncated };
+}
+
+function readOptionalWorkspaceText(root: string, path: string, maxBytes: number): { path: string; bytes: number; preview: string } | null {
+  try {
+    const file = readWorkspaceFile(root, path, maxBytes);
+    return { path: file.path, bytes: file.size, preview: file.content.slice(0, maxBytes) };
+  } catch {
+    return null;
+  }
+}
+
+function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file" | "directory" }> }, manifests: Array<{ path: string; preview: string }>): { languages: string[]; frameworks: string[] } {
+  const languages = new Set<string>();
+  const frameworks = new Set<string>();
+  for (const entry of topLevel.entries) {
+    if (/\.(ts|tsx)$/.test(entry.path)) languages.add("TypeScript");
+    if (/\.(js|jsx|mjs|cjs)$/.test(entry.path)) languages.add("JavaScript");
+    if (/\.py$/.test(entry.path)) languages.add("Python");
+    if (/\.rs$/.test(entry.path)) languages.add("Rust");
+    if (/\.go$/.test(entry.path)) languages.add("Go");
+  }
+  for (const manifest of manifests) {
+    const text = manifest.preview.toLowerCase();
+    if (manifest.path === "package.json") languages.add("JavaScript/TypeScript");
+    if (manifest.path === "pyproject.toml") languages.add("Python");
+    if (manifest.path === "Cargo.toml") languages.add("Rust");
+    if (manifest.path === "go.mod") languages.add("Go");
+    for (const fw of ["react", "vite", "next", "astro", "svelte", "vue", "vitest", "playwright", "express", "fastify"]) {
+      if (text.includes(fw)) frameworks.add(fw);
+    }
+  }
+  return { languages: [...languages], frameworks: [...frameworks] };
+}
+
+function capToolResult(toolName: string, result: string): string {
+  const bytes = Buffer.byteLength(result, "utf8");
+  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return result;
+  try {
+    const parsed = JSON.parse(result) as any;
+    if (Array.isArray(parsed.entries)) {
+      return JSON.stringify({ ...parsed, entries: parsed.entries.slice(0, 120), truncatedForContext: true, originalBytes: bytes, note: `${toolName} returned a large result; only the first 120 entries are included. Narrow with list_files/search_files/search_text/read_file.` });
+    }
+  } catch {
+    // Fall through to text head/tail summary.
+  }
+  const head = result.slice(0, Math.floor(TOOL_RESULT_BYTE_LIMIT * 0.65));
+  const tail = result.slice(-Math.floor(TOOL_RESULT_BYTE_LIMIT * 0.25));
+  return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: bytes, head, tail });
+}
+
+function duplicateToolResult(toolName: string, previousBytes: number): string {
+  return JSON.stringify({ duplicate: true, tool: toolName, previousResultBytes: previousBytes, note: "Identical tool call already ran in this task. Morrow reused the previous observation and omitted duplicate output to preserve context." });
 }
 
 type Dependencies = {
@@ -313,7 +418,7 @@ export async function executeAgentChatTask({
   const tools: ToolDefinition[] = [
     {
       name: "inspect_workspace",
-      description: "Recursively lists all files in the project workspace. Returns a list of relative file paths and sizes.",
+      description: "Performs bounded initial project discovery only: top-level structure, manifests, README/AGENTS previews, Git state, and symbol-index status. Does not recursively dump the repository; use search/list/read tools narrowly after this.",
       parameters: {
         type: "object",
         properties: {}
@@ -321,7 +426,7 @@ export async function executeAgentChatTask({
     },
     {
       name: "list_files",
-      description: "Lists directory contents (files and subdirectories) relative to the workspace root.",
+      description: "Lists a single directory relative to the workspace root with strict limits and ignore rules. Use this for narrow exploration after inspect_workspace.",
       parameters: {
         type: "object",
         properties: {
@@ -367,7 +472,7 @@ export async function executeAgentChatTask({
     },
     {
       name: "search_symbols",
-      description: "Searches the project symbol index for functions, classes, methods, types, variables, and JSON config keys. Returns concise locations only.",
+      description: "Searches the project symbol index for functions, classes, methods, types, variables, and JSON config keys. Prefer this before broad file searches. Returns concise locations only.",
       parameters: {
         type: "object",
         properties: {
@@ -483,7 +588,7 @@ export async function executeAgentChatTask({
 You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
 You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
-If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
+If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
 You must run test/verification commands using run_command, and propose file modifications using propose_patch.
 Morrow ships installed skills (reusable expert workflows). They ARE available â€” never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
@@ -815,6 +920,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let turn = 0;
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
+  const toolResultBytesBySignature = new Map<string, number>();
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
@@ -1189,14 +1295,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             throw new Error(`Tool "${tc.name}" is not permitted in ${agentMode} mode`);
           }
 
-          if (tc.name === "inspect_workspace") {
-            const res = inspectWorkspace(project.workspacePath, { maxDepth: 8, maxResults: 500 });
-            resultStr = JSON.stringify({
-              entries: res.entries.map(e => ({ path: e.path, size: e.size })),
-              truncatedByDepth: res.truncatedByDepth,
-              truncatedByCount: res.truncatedByCount
-            });
-            event("workspace.inspected", { resultCount: res.entries.length });
+          const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
+          if (duplicateBytes !== undefined) {
+            resultStr = duplicateToolResult(tc.name, duplicateBytes);
+            event("workspace.inspected", { kind: "duplicate_tool", toolName: tc.name, resultCount: 0, duplicate: true });
+          } else if (tc.name === "inspect_workspace") {
+            resultStr = await buildWorkspaceDiscovery(project, symbolIndex, abortSignal);
+            const parsed = JSON.parse(resultStr) as { topLevel?: { entries?: unknown[] } };
+            event("workspace.inspected", { kind: "workspace_discovery", resultCount: parsed.topLevel?.entries?.length ?? 0 });
           } else if (tc.name === "list_files") {
             const relPath = args.path || ".";
             const res = inspectWorkspace(project.workspacePath, { startPath: relPath, maxDepth: 1, maxResults: 100 });
@@ -1562,7 +1668,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           event("tool.failed", { toolName: tc.name, message: errorMessage });
         }
 
-        // Complete tool call record
+        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
+        if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
+
+        // Complete tool call record. The database keeps raw output for /output;
+        // only the model-facing context gets capped/summarized.
         convs.upsertToolCall({
           ...toolCallRecord,
           status: isSuccess ? "completed" : "failed",
@@ -1592,7 +1702,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           role: "tool",
           name: tc.name,
           toolCallId: tc.id,
-          content: resultStr
+          content: contextResultStr
         });
       }
       transitionAgentState("observing", { toolCount: currentToolCalls.length });

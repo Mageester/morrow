@@ -158,6 +158,6 @@ describe("context budget", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("minimum_context_too_large");
-    expect(result.actionableMessage).toContain("Select a larger-context model");
+    expect(result.actionableMessage).toContain("Recovery options");
   });
 });

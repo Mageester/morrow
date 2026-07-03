@@ -643,7 +643,7 @@ describe("Agent Alpha", () => {
       expect(tasks.getTaskById("task-1")?.status).toBe("failed");
       const msg = convs.getMessage("msg-assistant");
       expect(msg?.streamingState).toBe("failed");
-      expect(msg?.content).toContain("Minimum viable context is too large");
+      expect(msg?.content).toContain("Recovery options");
       const event = taskRecordsRepository(db).listEvents("task-1").find((item) => item.type === "context.minimum_viable_context_exceeded");
       expect(event?.payload).toMatchObject({ provider: "mock", model: "mock-model" });
     });

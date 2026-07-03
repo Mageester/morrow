@@ -18,12 +18,13 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".html", ".css",
   ".yaml", ".yml", ".log", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
   ".sh", ".bat", ".ps1", ".py", ".go", ".rs", ".java", ".c", ".cpp",
-  ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties", ""
+  ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties",
+  ".lock", ".map", ".svg", ".csv", ".env.example", ""
 ]);
 
 function isDeniedName(name: string): boolean {
   const value = name.toLowerCase();
-  return value === ".morrow" || value.startsWith(".env") || value.includes("secret") || value.includes("credential") || value.includes("password") || value.includes("key") || value.includes("token") || value.startsWith("id_");
+  return value === ".morrow" || value.startsWith(".env") || value.includes("secret") || value.includes("credential") || value.includes("password") || value.startsWith("id_");
 }
 
 export function isDeniedWorkspacePath(requested: string): boolean {
@@ -41,6 +42,9 @@ export function validateSafeReadPath(root: string, requested: string): string {
   if (isDeniedWorkspacePath(requested)) {
     throw new SafeReadError("Access to secret or credential files is forbidden");
   }
+  // Note: discovery-ignored paths (node_modules, dist, lockfiles, etc.) are
+  // excluded from automatic discovery only. Explicit read requests for those
+  // paths remain accessible — they are not universally forbidden.
 
   // Resolve candidate absolute path
   const candidate = resolve(root, requested);
