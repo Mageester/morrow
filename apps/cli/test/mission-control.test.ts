@@ -28,7 +28,6 @@ describe("Mission Control formatters", () => {
     };
 
     expect(formatTaskTree(tree)).toEqual([
-      "Task tree",
       "task-par  done  agent_chat",
       "+- child-a  done  agent_chat",
       "`- child-b  running  agent_chat",

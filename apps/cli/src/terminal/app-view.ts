@@ -300,8 +300,10 @@ function footerLine(input: InputState, out: Output, unicode: boolean): string[] 
         ? "Esc closes · output retained in task record"
         : input.overlay === "tasktree"
           ? "Esc closes · task tree from last mission"
-          : input.overlay === "history"
+          : input.overlay === "mission"
+            ? "← → or 1/2/3 tabs · Esc close"
+            : input.overlay === "history"
             ? "type to search · Enter recall · Esc close"
-            : "/ commands · Ctrl+K palette · Ctrl+T tree · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
+            : "/ commands · Ctrl+K palette · Ctrl+T mission · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
   return [out.gray("  " + hint)];
 }

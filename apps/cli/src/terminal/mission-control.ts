@@ -23,7 +23,7 @@ function statusLabel(status: string): string {
 }
 
 export function formatTaskTree(root: TaskTreeNode): string[] {
-  const lines: string[] = ["Task tree"];
+  const lines: string[] = [];
   const visit = (node: TaskTreeNode, prefix: string, isLast: boolean, isRoot = false) => {
     const connector = isRoot ? "" : isLast ? "`- " : "+- ";
     const task = node.task;
@@ -38,16 +38,14 @@ export function formatTaskTree(root: TaskTreeNode): string[] {
 
 export function formatContextStatus(aggregate: TaskAggregate): string[] {
   const context = aggregate.context ?? null;
-  if (!context) return ["Context", "Context: not recorded"];
+  if (!context) return ["Context: not recorded"];
   return [
-    "Context",
-    `Context: ${context.inputTokensAfter ?? "unknown"} / ${context.maxInputTokens} tokens (${context.exact ? "exact" : "estimated"})`,
+    `Tokens: ${context.inputTokensAfter ?? "unknown"} / ${context.maxInputTokens} (${context.exact ? "exact" : "estimated"})`,
     `Window: ${context.contextWindowTokens} tokens (${context.contextWindowSource})`,
     `Reserved: ${context.reservedTokens} tokens`,
-    `Compacted groups: ${context.compactedGroups}`,
-    `Removed groups: ${context.removedGroups}`,
+    `Compacted: ${context.compactedGroups} groups`,
+    `Removed: ${context.removedGroups} groups`,
     `Last operation: ${context.lastOperation ?? "none"}`,
-    `Last summary: ${context.lastSummary ? `${context.lastSummary.method} ${short(context.lastSummary.id)} (${context.lastSummary.sourceMessageCount} messages)` : "none"}`,
     ...(context.warning ? [`Warning: ${context.warning}`] : []),
   ];
 }
@@ -83,7 +81,6 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
     : "none";
 
   const lines = [
-    "Mission result",
     `Status: ${statusLabel(task.status)} (${task.status})`,
     `Provider/model: ${aggregate.routing?.providerId ?? disclosure?.provider ?? "unknown"} / ${aggregate.routing?.model ?? "unknown"}`,
     `Mode/privacy: ${aggregate.routing?.mode ?? "unknown"} / ${aggregate.routing?.privacy ?? "unknown"}`,
@@ -102,10 +99,44 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
     `Integrations: ${integrationSummary}`,
   ];
 
-  if (task.status === "cancelled") lines.push("Next action: resume is unavailable; start a new mission or retry only if the task failed/interrupted.");
-  else if (task.status === "interrupted") lines.push("Next action: use /continue to resume, or /retry in line mode for a fresh attempt.");
-  else if (task.status === "failed") lines.push("Next action: inspect /output, then retry after adjusting the objective or workspace.");
-  else lines.push("Next action: use /diff to inspect changes or /undo when a Morrow-owned rollback is available.");
+  if (task.status === "cancelled") lines.push("Next: resume is unavailable; start a new mission or retry only if the task failed/interrupted.");
+  else if (task.status === "interrupted") lines.push("Next: use /continue to resume, or /retry in line mode for a fresh attempt.");
+  else if (task.status === "failed") lines.push("Next: inspect /output, then retry after adjusting the objective or workspace.");
+  else lines.push("Next: use /diff to inspect changes or /undo when a Morrow-owned rollback is available.");
 
+  return lines;
+}
+
+/** Renders a live cockpit summary from terminal state (no async needed). */
+export function formatLiveCockpit(state: {
+  status: string;
+  activityCount: number;
+  toolCount: number;
+  patchCount: number;
+  gitBranch?: string;
+  gitDirty?: boolean;
+  contextTokens?: number;
+  contextMax?: number;
+  agentCount: number;
+  processCount: number;
+  planCount: number;
+  planDone: number;
+}): string[] {
+  const lines: string[] = [];
+  lines.push("Live state");
+  lines.push(`Status: ${state.status}`);
+  lines.push(`Activity: ${state.activityCount} entries`);
+  lines.push(`Tools: ${state.toolCount} calls · ${state.patchCount} patches`);
+  if (state.gitBranch) {
+    lines.push(`Git: ${state.gitBranch}${state.gitDirty ? " (dirty)" : ""}`);
+  }
+  if (state.contextTokens !== undefined) {
+    const pct = state.contextMax && state.contextMax > 0 ? Math.round((state.contextTokens / state.contextMax) * 100) : 0;
+    lines.push(`Context: ${state.contextTokens}/${state.contextMax} (${pct}%)`);
+  }
+  lines.push(`Agents: ${state.agentCount} · Processes: ${state.processCount}`);
+  if (state.planCount > 0) {
+    lines.push(`Plan: ${state.planDone}/${state.planCount} done`);
+  }
   return lines;
 }

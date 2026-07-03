@@ -25,7 +25,7 @@ import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
-import { formatMissionResult, formatTaskTree } from "./mission-control.js";
+import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
 
 const ALT_ENTER = "\x1b[?1049h";
 const ALT_LEAVE = "\x1b[?1049l";
@@ -113,6 +113,8 @@ export class InteractiveSession {
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
   private confirmExitWhileBusy = false;
+  private missionTab = 0; // 0=tree, 1=activity, 2=result
+  private missionCache: { tree?: string[]; result?: string[]; cockpit?: string[] } = {};
   private resolveDone: (() => void) | null = null;
   private readonly now: () => number;
   /** Source event ids survive SSE reconnects; never fold the same event twice. */
@@ -169,18 +171,29 @@ export class InteractiveSession {
 
     if (this.pendingApproval) return void this.handleApprovalKey(k);
 
+    if (this.input.overlay === "mission") {
+      if (k.name === "left" || k.str === "1") { this.missionTab = Math.max(0, this.missionTab - 1); return void this.requestPaint(true); }
+      if (k.name === "right" || k.str === "2" || k.str === "3") { this.missionTab = Math.min(2, this.missionTab + 1); return void this.requestPaint(true); }
+      if (k.str === "1") { this.missionTab = 0; return void this.requestPaint(true); }
+      if (k.str === "2") { this.missionTab = 1; return void this.requestPaint(true); }
+      if (k.str === "3") { this.missionTab = 2; return void this.requestPaint(true); }
+      if (k.name === "escape") { this.input = { ...this.input, overlay: undefined }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      if (k.ctrl && k.name === "c") { this.input = { ...this.input, overlay: undefined }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      return;
+    }
+
     if (this.busy) {
       // Only cancellation and repaint are meaningful while a task runs.
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
-      if (k.ctrl && k.name === "t") return void this.showTaskTree();
+      if (k.ctrl && k.name === "t") return void this.showMissionControl();
       this.confirmExitWhileBusy = false;
       return;
     }
 
-    // Ctrl+T opens task tree even when not busy (if there's a last task)
+    // Ctrl+T opens mission control.
     if (k.ctrl && k.name === "t" && !k.meta && !k.shift) {
-      void this.showTaskTree();
+      void this.showMissionControl();
       return void this.requestPaint(false);
     }
 
@@ -477,6 +490,42 @@ export class InteractiveSession {
     this.input = { ...this.input, overlay: "output" };
   }
 
+  private async showMissionControl(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No mission task exists yet.");
+      return;
+    }
+    this.missionTab = 0;
+    this.missionCache = {};
+
+    // Load all three tabs in parallel.
+    const [tree, aggregate, cockpit] = await Promise.all([
+      this.deps.backend.getTaskTree(this.lastTaskId).catch(() => null),
+      this.deps.backend.getTask(this.lastTaskId).catch(() => null),
+      Promise.resolve(formatLiveCockpit({
+        status: this.term.status,
+        activityCount: this.term.activity.length,
+        toolCount: this.term.tools.length,
+        patchCount: this.term.patches.length,
+        gitBranch: this.term.git?.branch,
+        gitDirty: this.term.git?.dirty,
+        contextTokens: this.term.contextUsage?.usedTokens,
+        contextMax: this.term.contextUsage?.maxTokens,
+        agentCount: this.term.agents.filter((a) => a.status === "running").length,
+        processCount: this.term.processes.filter((p) => p.status === "running").length,
+        planCount: this.term.plan.length,
+        planDone: this.term.plan.filter((p) => p.status === "completed").length,
+      })),
+    ]);
+
+    if (tree) this.missionCache.tree = formatTaskTree(tree);
+    if (aggregate) this.missionCache.result = formatMissionResult(aggregate);
+    this.missionCache.cockpit = cockpit;
+
+    this.input = { ...this.input, overlay: "mission" };
+    this.requestPaint(true);
+  }
+
   private async showTaskTree(): Promise<void> {
     if (!this.lastTaskId) {
       this.pushNotice("info", "No mission task exists yet.");
@@ -714,7 +763,7 @@ export class InteractiveSession {
       promptWidth: 2,
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
+    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "mission" ? this.missionFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;
@@ -794,6 +843,48 @@ export class InteractiveSession {
     if (!viewer) return this.composeBaseLines();
     const limit = Math.max(4, this.deps.io.rows - 6);
     return [out.bold(`  Output · ${viewer.title}`), out.gray("  Esc closes · output retained in task record"), "", ...viewer.lines.slice(-limit)];
+  }
+
+  private missionFrameLines(): string[] {
+    const out = this.deps.out;
+    const base = this.composeBaseLines();
+    const available = Math.max(6, this.deps.io.rows - base.length - 4);
+
+    const tabs = ["Task Tree", "Live State", "Mission Result"];
+    const tabsLine = tabs
+      .map((label, i) => {
+        const prefix = i === this.missionTab ? out.bold(` ${i + 1} `) : out.gray(` ${i + 1} `);
+        return i === this.missionTab ? out.bold(`${prefix}${label}`) : out.gray(`${prefix}${label}`);
+      })
+      .join(out.gray("  |  "));
+
+    const lines: string[] = [
+      ...base,
+      "",
+      out.bold("  Mission Control"),
+      `  ${tabsLine}`,
+      out.gray("  " + "─".repeat(Math.min(60, this.deps.io.columns - 2))),
+    ];
+
+    let content: string[] = [];
+    if (this.missionTab === 0 && this.missionCache.tree) {
+      content = this.missionCache.tree;
+    } else if (this.missionTab === 1 && this.missionCache.cockpit) {
+      content = this.missionCache.cockpit;
+    } else if (this.missionTab === 2 && this.missionCache.result) {
+      content = this.missionCache.result;
+    } else {
+      content = ["Loading…"];
+    }
+
+    lines.push("");
+    for (const line of content.slice(0, available)) {
+      lines.push(`  ${line}`);
+    }
+
+    lines.push("");
+    lines.push(out.gray("  ← → or 1/2/3 to switch tabs · Esc to close"));
+    return lines;
   }
 
   private composeBaseLines(): string[] {
