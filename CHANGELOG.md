@@ -6,6 +6,26 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.19] - 2026-07-04
+
+### Changed
+
+- Terminal shell redesign: the bare `morrow` command opens a premium, terminal-first
+  agent shell — MORROW wordmark header with compact project/branch/provider/model/mode/
+  context status, clean user/assistant/plan/approval/result separation, inline Markdown,
+  and a persistent composer with slash completion and context-sensitive footer hints.
+- Grouped activity replaces raw tool logs: consecutive reads/searches/inspections
+  collapse into single stage lines (Understanding, Inspecting, Planning, Editing,
+  Running checks, Verifying, Completed), with workspace-relative paths and no tool IDs.
+- Failed or interrupted tasks surface an inline Recovery section with actionable commands.
+- Terminal Mission Control (`morrow mission`, Ctrl+T) provides a responsive operational
+  cockpit for the task tree, agents, processes, worktrees, Git state, and verification.
+
+### Notes
+
+- Raw tool details, call IDs, and backend routing remain available through `/output`;
+  they are hidden from the default conversation view.
+
 ## [0.1.0-beta.18] - 2026-07-03
 
 ### Fixed

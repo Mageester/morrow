@@ -294,9 +294,31 @@ const notices = join(ROOT, "THIRD_PARTY_NOTICES.txt");
 writeFileSync(join(PKG_DIR, "THIRD_PARTY_NOTICES.txt"), existsSync(notices) ? readFileSync(notices, "utf8") : "Morrow bundles Node.js and third-party npm dependencies under their respective licenses.\n");
 
 // ── 7. Archive ───────────────────────────────────────────────────────────
+// Zip via .NET ZipFile from a temp stage OUTSIDE the project tree. Compress-Archive
+// reads each source file with a BinaryReader, which throws "Stream was not readable"
+// when the source lives under a synced folder (OneDrive) whose files are cloud
+// placeholders or transiently locked by the sync client. Staging to %TEMP% forces
+// local hydration and removes the sync client from the archive path entirely.
 console.log("\n[7/8] Creating archive...");
 if (existsSync(ZIP_PATH)) rmSync(ZIP_PATH, { force: true });
-ps(`Compress-Archive -Path '${PKG_DIR}' -DestinationPath '${ZIP_PATH}' -CompressionLevel Optimal -Force`);
+const zipStage = join(process.env.TEMP || process.env.TMP || DIST, `morrow-pkgzip-${Date.now()}`);
+ps([
+  `$ErrorActionPreference='Stop'`,
+  `$stage=${JSON.stringify(zipStage)}`,
+  `if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }`,
+  `[void](New-Item -ItemType Directory -Path $stage)`,
+  `$dest=Join-Path $stage ${JSON.stringify(PKG_NAME)}`,
+  `robocopy ${JSON.stringify(PKG_DIR)} $dest /E /NFL /NDL /NJH /NJS /NP | Out-Null`,
+  `if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`,
+  `Add-Type -AssemblyName System.IO.Compression.FileSystem`,
+  // tmpZip must live OUTSIDE $stage so CreateFromDirectory does not try to archive
+  // its own output. includeBaseDirectory=false → archive root holds PKG_NAME/ only.
+  `$tmpZip="$stage.zip"`,
+  `if (Test-Path $tmpZip) { Remove-Item -Force $tmpZip }`,
+  `[IO.Compression.ZipFile]::CreateFromDirectory($stage, $tmpZip, [IO.Compression.CompressionLevel]::Optimal, $false)`,
+  `Move-Item -Force $tmpZip ${JSON.stringify(ZIP_PATH)}`,
+  `Remove-Item -Recurse -Force $stage`,
+].join("; "));
 
 // ── 8. Validate contract, checksums, manifest ────────────────────────────
 console.log("\n[8/8] Validating package contract and writing manifest...");
