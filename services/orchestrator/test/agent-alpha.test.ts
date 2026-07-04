@@ -7,10 +7,14 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
+import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { symbolIndexRepository } from "../src/repositories/symbols.js";
 import { MockProvider } from "../src/provider/mock.js";
+import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
 import { TaskRunner } from "../src/runner.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { readWorkspaceFile, SafeReadError, validateSafeReadPath } from "../src/workspace/safe-reader.js";
+import { SymbolIndex } from "../src/workspace/symbol-index.js";
 
 describe("Agent Alpha", () => {
   let db: Database.Database;
@@ -333,6 +337,315 @@ describe("Agent Alpha", () => {
       const evidence = taskRecordsRepository(db).listEvidence("task-1");
       expect(evidence.length).toBe(1);
       expect(evidence[0]?.path).toBe("readme.md");
+    });
+
+    it("exposes search_symbols in read-only mode and returns concise indexed locations", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const routing = taskRoutingRepository(db);
+
+      writeFileSync(join(tempDir, "math.ts"), "export function add(a: number, b: number) { return a + b; }\n");
+      projects.createProject({ id: "p1", name: "Symbols", workspacePath: tempDir, createdAt: new Date().toISOString() });
+      new SymbolIndex(symbolIndexRepository(db)).rebuildProject("p1", tempDir);
+
+      convs.createConversation({ id: "c1", projectId: "p1", title: "Symbols", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "Where is add?", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      tasks.createTask({ id: "task-symbols", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-symbols", streamingState: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      routing.upsert({
+        taskId: "task-symbols",
+        presetId: "balanced",
+        providerId: "mock",
+        model: "mock-model",
+        useMemory: true,
+        createdAt: new Date().toISOString(),
+        decision: {
+          version: 1,
+          presetId: "balanced",
+          providerId: "mock",
+          model: "mock-model",
+          reason: "test",
+          fallbackUsed: false,
+          overridden: false,
+          privacy: "cloud",
+          candidates: [],
+          mode: "read-only",
+          toolProfile: "read-only",
+        },
+      });
+
+      let exposedTools: string[] = [];
+      let turn = 0;
+      const provider: AiProvider = {
+        async *streamChat(_messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
+          exposedTools = (options.tools ?? []).map((tool) => tool.name);
+          if (turn++ === 0 && exposedTools.includes("search_symbols")) {
+            yield { type: "tool_call", toolCalls: [{ id: "symbol-call", index: 0, type: "function", function: { name: "search_symbols", arguments: JSON.stringify({ query: "add", limit: 5 }) } }] };
+            yield { type: "done" };
+            return;
+          }
+          yield { type: "text", text: "add is in math.ts" };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-symbols", provider });
+
+      expect(exposedTools).toContain("search_symbols");
+      expect(exposedTools).not.toContain("run_command");
+      const toolCall = convs.listToolCallsForMessage("msg-assistant")[0]!;
+      expect(toolCall.toolName).toBe("search_symbols");
+      const result = JSON.parse(toolCall.resultJson!);
+      expect(result.symbols).toEqual([
+        expect.objectContaining({ name: "add", kind: "function", filePath: "math.ts", startLine: 1 }),
+      ]);
+      expect(toolCall.resultJson).not.toContain("return a + b");
+    });
+
+    it("trims old conversation context before provider calls when the input budget is tight", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Trim Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Trim Chat",
+        createdAt: "2026-07-02T00:00:00.000Z",
+        updatedAt: "2026-07-02T00:00:00.000Z"
+      });
+
+      convs.appendMessage({
+        id: "msg-old-user",
+        conversationId: "c1",
+        role: "user",
+        content: "ANCIENT_CONTEXT " + "alpha ".repeat(1200),
+        createdAt: "2026-07-02T00:00:01.000Z",
+        updatedAt: "2026-07-02T00:00:01.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "OLD_ASSISTANT_CONTEXT " + "beta ".repeat(1200),
+        createdAt: "2026-07-02T00:00:02.000Z",
+        updatedAt: "2026-07-02T00:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-new-user",
+        conversationId: "c1",
+        role: "user",
+        content: "LATEST_REQUEST keep this exact phrase",
+        createdAt: "2026-07-02T00:00:03.000Z",
+        updatedAt: "2026-07-02T00:00:03.000Z"
+      });
+
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T00:00:04.000Z"
+      });
+
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T00:00:04.000Z",
+        updatedAt: "2026-07-02T00:00:04.000Z"
+      });
+
+      const captured: ChatMessage[][] = [];
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          captured.push(messages);
+          yield { type: "text", text: "trimmed ok" };
+          yield { type: "done" };
+        }
+      };
+
+      await executeAgentChatTask({
+        db,
+        taskId: "task-1",
+        provider,
+        maxContextBytes: 1800
+      });
+
+      const sent = captured[0]!.map((message) => message.content).join("\n");
+      expect(sent).toContain("You are Morrow");
+      expect(sent).toContain("LATEST_REQUEST keep this exact phrase");
+      expect(sent).not.toContain("ANCIENT_CONTEXT");
+      expect(sent).not.toContain("OLD_ASSISTANT_CONTEXT");
+
+      const trimEvent = taskRecordsRepository(db).listEvents("task-1").find((event) => event.type === "context.trimmed");
+      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 450 });
+    });
+
+    it("compacts old history into a persisted summary before falling back to raw history trimming", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Compact Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Compact Chat",
+        createdAt: "2026-07-02T01:00:00.000Z",
+        updatedAt: "2026-07-02T01:00:00.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Old goal: update src/app.ts. Command: pnpm test. API_KEY=abc123. " + "alpha ".repeat(500),
+        createdAt: "2026-07-02T01:00:01.000Z",
+        updatedAt: "2026-07-02T01:00:01.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-old-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "Decision: preserve local-first routing. Error: test failed in src/app.ts. " + "beta ".repeat(500),
+        createdAt: "2026-07-02T01:00:02.000Z",
+        updatedAt: "2026-07-02T01:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-new-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Current request remains raw.",
+        createdAt: "2026-07-02T01:00:03.000Z",
+        updatedAt: "2026-07-02T01:00:03.000Z"
+      });
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T01:00:04.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T01:00:04.000Z",
+        updatedAt: "2026-07-02T01:00:04.000Z"
+      });
+
+      const captured: ChatMessage[][] = [];
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          captured.push(messages);
+          yield { type: "text", text: "compacted ok" };
+          yield { type: "done" };
+        }
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 3600 });
+
+      const sent = captured[0]!.map((message) => message.content).join("\n");
+      expect(sent).toContain("Context summary (deterministic");
+      expect(sent).toContain("src/app.ts");
+      expect(sent).toContain("pnpm test");
+      expect(sent).toContain("Current request remains raw.");
+      expect(sent).not.toContain("abc123");
+      expect(sent).not.toContain("alpha alpha alpha");
+
+      const summary = db.prepare("SELECT * FROM context_summaries WHERE conversation_id = ?").get("c1") as { content: string; method: string; source_message_count: number } | undefined;
+      expect(summary).toMatchObject({ method: "deterministic", source_message_count: 2 });
+      expect(summary?.content).not.toContain("abc123");
+
+      const events = taskRecordsRepository(db).listEvents("task-1").filter((event) => event.type.startsWith("context."));
+      expect(events.map((event) => event.type)).toContain("context.compaction_completed");
+      expect(JSON.stringify(events)).not.toContain("API_KEY");
+      expect(JSON.stringify(events)).not.toContain("abc123");
+    });
+
+    it("fails before provider calls when minimum viable context cannot fit", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Tiny Context Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Tiny Chat",
+        createdAt: "2026-07-02T02:00:00.000Z",
+        updatedAt: "2026-07-02T02:00:00.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Current request must remain raw.",
+        createdAt: "2026-07-02T02:00:01.000Z",
+        updatedAt: "2026-07-02T02:00:01.000Z"
+      });
+      tasks.createTask({
+        id: "task-1",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-02T02:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-1",
+        streamingState: "queued",
+        createdAt: "2026-07-02T02:00:02.000Z",
+        updatedAt: "2026-07-02T02:00:02.000Z"
+      });
+
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(_messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          providerCalls++;
+          yield { type: "text", text: "should not run" };
+        }
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 20 });
+
+      expect(providerCalls).toBe(0);
+      expect(tasks.getTaskById("task-1")?.status).toBe("failed");
+      const msg = convs.getMessage("msg-assistant");
+      expect(msg?.streamingState).toBe("failed");
+      expect(msg?.content).toContain("Recovery options");
+      const event = taskRecordsRepository(db).listEvents("task-1").find((item) => item.type === "context.minimum_viable_context_exceeded");
+      expect(event?.payload).toMatchObject({ provider: "mock", model: "mock-model" });
     });
 
     it("handles abort signals during streaming cancellation cleanly", async () => {

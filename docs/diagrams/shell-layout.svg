@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+  <rect width="800" height="520" fill="#0f172a" rx="12"/>
+  <text x="400" y="30" fill="white" font-size="18" font-weight="bold" text-anchor="middle" font-family="Arial">Terminal Shell Layout</text>
+
+  <rect x="40" y="50" width="720" height="440" fill="#0a1628" stroke="#334155" stroke-width="1.5" rx="6"/>
+
+  <rect x="40" y="50" width="720" height="68" fill="#1e3a5f" fill-opacity="0.25" stroke="#143C78" stroke-width="1" stroke-dasharray="6,3" rx="0"/>
+  <text x="420" y="85" fill="#22d3ee" font-size="11" font-weight="bold" text-anchor="middle" font-family="Arial">CHROME — brand, project, mode, git, context</text>
+
+  <text x="55" y="70" fill="white" font-size="13" font-weight="bold" font-family="monospace">MORROW</text>
+  <text x="125" y="70" fill="#22d3ee" font-size="12" font-family="monospace">broken-game</text>
+  <text x="230" y="70" fill="#64748b" font-size="10" font-family="monospace">C:/Users/.../broken-game</text>
+  <text x="55" y="88" fill="#94a3b8" font-size="10" font-family="monospace">⚡ Agent · YOLO  ·  deepseek/deepseek-v4-pro  ·  master  ·  mem  ·  3% ctx</text>
+  <text x="55" y="106" fill="#34d399" font-size="10" font-family="monospace">✓ ready</text>
+  <line x1="55" y1="115" x2="745" y2="115" stroke="#334155" stroke-width="1"/>
+
+  <rect x="40" y="118" width="720" height="22" fill="#1e3a5f" fill-opacity="0.12" stroke="#22d3ee" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="134" fill="#22d3ee" font-size="9" text-anchor="middle" font-family="Arial">STAGE BANNER</text>
+  <text x="60" y="135" fill="#94a3b8" font-size="10" font-family="monospace">Understanding project · 4 files…</text>
+
+  <rect x="40" y="140" width="720" height="155" fill="#1e3a5f" fill-opacity="0.08" stroke="#a78bfa" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="220" fill="#a78bfa" font-size="9" text-anchor="middle" font-family="Arial">CONVERSATION + TOOL CARDS + PATCHES</text>
+  <text x="55" y="162" fill="#22c55e" font-size="10" font-family="monospace">you › Fix the collision detection</text>
+  <text x="55" y="180" fill="#c084fc" font-size="10" font-family="monospace">morrow › I found the issue. The collision detection is</text>
+  <text x="63" y="196" fill="#c084fc" font-size="10" font-family="monospace">commented out and the ground offset is wrong.</text>
+  <text x="55" y="222" fill="#94a3b8" font-size="9" font-family="monospace">✓ read_file · index.html · 12ms  ↳ 116 lines read</text>
+  <text x="55" y="238" fill="#94a3b8" font-size="9" font-family="monospace">✓ search · collision detection · 45ms  ↳ 3 matches</text>
+  <text x="55" y="254" fill="#94a3b8" font-size="9" font-family="monospace">◦ patch applied  index.html  +14 -12  ↳ auto-approved</text>
+
+  <rect x="40" y="265" width="720" height="22" fill="#1e3a5f" fill-opacity="0.08" stroke="#fb923c" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="281" fill="#fb923c" font-size="9" text-anchor="middle" font-family="Arial">GROUPED ACTIVITY</text>
+  <text x="55" y="282" fill="#94a3b8" font-size="9" font-family="monospace">◦ reading 3 files · index.html, package.json, collision +1 more</text>
+
+  <rect x="40" y="287" width="720" height="50" fill="#1e3a5f" fill-opacity="0.08" stroke="#34d399" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="315" fill="#34d399" font-size="9" text-anchor="middle" font-family="Arial">COMPLETION SUMMARY</text>
+  <text x="55" y="305" fill="#94a3b8" font-size="9" font-family="monospace">Result: ✓ completed  ·  Files changed: 1  ·  Tool calls: 2</text>
+
+  <line x1="55" y1="340" x2="510" y2="340" stroke="#334155" stroke-width="1"/>
+  <rect x="40" y="340" width="720" height="55" fill="#1e3a5f" fill-opacity="0.1" stroke="#22d3ee" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="370" fill="#22d3ee" font-size="9" text-anchor="middle" font-family="Arial">COMPOSER — persistent input + slash completion</text>
+  <text x="55" y="360" fill="#22c55e" font-size="10" font-family="monospace">› /diff</text>
+  <text x="88" y="378" fill="#64748b" font-size="9" font-family="monospace">/diff — view changes from last task</text>
+
+  <rect x="40" y="395" width="720" height="30" fill="#1e3a5f" fill-opacity="0.06" stroke="#64748b" stroke-width="0.5" stroke-dasharray="4,2" rx="0"/>
+  <text x="420" y="414" fill="#64748b" font-size="9" text-anchor="middle" font-family="Arial">FOOTER — context-sensitive keyboard hints</text>
+  <text x="55" y="416" fill="#475569" font-size="9" font-family="monospace">/ commands · Ctrl+K palette · Ctrl+T mission · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit</text>
+</svg>

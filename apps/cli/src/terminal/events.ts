@@ -45,6 +45,70 @@ export interface SessionMeta {
   autoApprove: boolean;
 }
 
+/** Git state snapshot shown in header/status. */
+export interface GitStateInfo {
+  branch: string;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
+}
+
+/** Context usage shown in status footer. */
+export interface ContextUsageInfo {
+  usedTokens: number;
+  maxTokens: number;
+  method: "exact" | "estimate";
+  compactedGroups: number;
+  removedGroups: number;
+}
+
+/** Background process info. */
+export interface ProcessInfo {
+  id: string;
+  name: string;
+  pid?: number;
+  status: "running" | "exited" | "killed";
+  exitCode?: number;
+}
+
+/** Worktree info. */
+export interface WorktreeInfo {
+  id: string;
+  path: string;
+  branch: string;
+  status: "active" | "abandoned" | "removed";
+}
+
+/** Agent/subagent info. */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  role: "primary" | "subagent" | "worktree";
+  status: "idle" | "running" | "completed" | "failed" | "cancelled";
+  taskId?: string;
+}
+
+/** Integration attempt info. */
+export interface IntegrationInfo {
+  id: string;
+  worktreeId: string;
+  branch: string;
+  status: "pending" | "applied" | "conflict" | "rejected";
+  conflicts?: string[];
+}
+
+/** Progress stage for grouped activity. */
+export type ProgressStage =
+  | "understanding"
+  | "inspecting"
+  | "planning"
+  | "editing"
+  | "running_checks"
+  | "waiting_for_approval"
+  | "verifying"
+  | "completed"
+  | "failed";
+
 export type TerminalEvent =
   | { type: "session.started"; meta: SessionMeta }
   | { type: "plan.snapshot"; steps: Array<{ id: string; title: string; status: "pending" | "running" | "completed" | "failed" | "skipped" }> }
@@ -89,6 +153,15 @@ export type TerminalEvent =
   | { type: "task.cancelled" }
   | { type: "task.interrupted" }
   | { type: "task.budget_reached"; message: string }
-  | { type: "task.stalled"; message: string };
+  | { type: "task.stalled"; message: string }
+  // ── Extended presentation events ──────────────────────────────────────
+  | { type: "git.state"; git: GitStateInfo }
+  | { type: "context.usage"; usage: ContextUsageInfo }
+  | { type: "progress.stage"; stage: ProgressStage; detail?: string }
+  | { type: "process.update"; processes: ProcessInfo[] }
+  | { type: "worktree.update"; worktrees: WorktreeInfo[] }
+  | { type: "agent.update"; agents: AgentInfo[] }
+  | { type: "integration.update"; integrations: IntegrationInfo[] }
+  | { type: "recovery.suggestion"; text: string };
 
 export type TerminalEventType = TerminalEvent["type"];

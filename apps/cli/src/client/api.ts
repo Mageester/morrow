@@ -36,6 +36,7 @@ export interface SendMessageOptions {
   mode?: AgentMode;
   useMemory?: boolean;
   autoApprove?: boolean;
+  worktreeId?: string;
 }
 
 export interface SendMessageResult {
@@ -56,6 +57,8 @@ export interface TaskAggregate {
   approvals: Approval[];
   evidence: Array<{ id: string; path: string; metadata: Record<string, unknown>; createdAt: string }>;
   verification?: VerificationResult;
+  integrations?: IntegrationAttempt[];
+  context?: ContextUsageSummary | null;
   disclosure?: {
     provider: string;
     networkAccess: string;
@@ -69,9 +72,138 @@ export interface TaskAggregate {
   routing: RoutingDecision | null;
 }
 
+export interface ContextUsageSummary {
+  providerId: string;
+  model: string;
+  contextWindowTokens: number;
+  contextWindowSource: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  maxInputTokens: number;
+  reservedTokens: number;
+  inputTokensBefore: number | null;
+  inputTokensAfter: number | null;
+  countingMethod: "exact" | "estimate" | null;
+  exact: boolean | null;
+  compactedGroups: number;
+  removedGroups: number;
+  lastOperation: string | null;
+  warning: string | null;
+  lastSummary?: {
+    id: string;
+    method: "deterministic" | "fallback" | "model-assisted";
+    sourceMessageCount: number;
+    createdAt: string;
+  } | null;
+}
+
 export interface TaskTreeNode {
   task: Task;
   children: TaskTreeNode[];
+}
+
+export interface ProcessRecord {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  command: string;
+  args: string[];
+  cwd: string;
+  mode: "pipe" | "pty";
+  pid: number | null;
+  status: "running" | "exited" | "failed" | "cancelled" | "lost";
+  exitCode: number | null;
+  detail: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface WorktreeRecord {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  branch: string;
+  path: string;
+  baseRef: string;
+  status: "active" | "removed" | "abandoned";
+  detail: string | null;
+  createdAt: string;
+  removedAt: string | null;
+}
+
+export interface WorktreeStatusReport extends WorktreeRecord {
+  exists: boolean;
+  dirty: boolean;
+  dirtyFiles: string[];
+  aheadCommits: Array<{ hash: string; subject: string }>;
+}
+
+export interface IntegrationAttempt {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  agentId: string | null;
+  worktreeId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  sourceCommit: string;
+  targetCommit: string;
+  status: "pending" | "clean" | "conflicted" | "applied" | "failed" | "cancelled";
+  conflictedFiles: string[];
+  errorDetail: string | null;
+  appliedCommit: string | null;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+  cancelledAt: string | null;
+}
+
+export interface CheckpointSummary {
+  id: string;
+  name: string;
+  taskId: string | null;
+  fileCount: number;
+  files: string[];
+  createdAt: string;
+}
+
+export interface SymbolRecord {
+  id: string;
+  projectId: string;
+  filePath: string;
+  language: string;
+  fileFingerprint: string;
+  name: string;
+  fqName: string;
+  kind: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  parentName: string | null;
+  exported: boolean;
+  indexedAt: string;
+  indexerVersion: string;
+  parserVersion: string;
+}
+
+export interface SymbolIndexResult {
+  indexedFiles: number;
+  changedFiles: number;
+  skippedFiles: number;
+  deletedFiles: number;
+  symbolCount: number;
+  diagnostics: Array<{ filePath: string; line: number; column: number; code: string; message: string }>;
+}
+
+export interface SymbolIndexStatus {
+  projectId: string;
+  fileCount: number;
+  symbolCount: number;
+  diagnosticCount: number;
+  latestIndexedAt: string | null;
+  indexerVersion: string | null;
+  parserVersion: string | null;
 }
 
 function statusToExit(status: number): number {
@@ -133,6 +265,9 @@ export class MorrowApi {
   createProject(name: string, workspacePath: string) {
     return this.req<Project>("POST", "/api/projects", { name, workspacePath });
   }
+  quickChat() {
+    return this.req<{ projectId: string; conversationId: string; workspacePath: string }>("POST", "/api/quick-chat");
+  }
   startInspectWorkspace(projectId: string) {
     return this.req<{ taskId: string; sseUrl: string }>("POST", `/api/projects/${projectId}/tasks/inspect-workspace`);
   }
@@ -146,6 +281,88 @@ export class MorrowApi {
   retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }
   getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
+
+  // ── Background processes ──────────────────────────────────────────────────
+  startProcess(projectId: string, input: { command: string; args?: string[]; cwd?: string; taskId?: string; agentId?: string; mode?: "pipe" | "pty"; timeoutMs?: number }) {
+    return this.req<ProcessRecord>("POST", `/api/projects/${projectId}/processes`, input);
+  }
+  listProcesses(projectId: string, status?: ProcessRecord["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<ProcessRecord[]>("GET", `/api/projects/${projectId}/processes${suffix}`);
+  }
+  getProcess(id: string) {
+    return this.req<ProcessRecord>("GET", `/api/processes/${encodeURIComponent(id)}`);
+  }
+  getProcessOutput(id: string, opts: { stream?: "stdout" | "stderr"; offset?: number; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    if (opts.stream) params.set("stream", opts.stream);
+    if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return this.req<{ processId: string; stream: string; data: string; nextOffset: number; eof: boolean; truncated: boolean }>(
+      "GET",
+      `/api/processes/${encodeURIComponent(id)}/output${qs ? `?${qs}` : ""}`
+    );
+  }
+  terminateProcess(id: string, force = false) {
+    return this.req<{ status: string; processId: string; forced: boolean }>("POST", `/api/processes/${encodeURIComponent(id)}/terminate`, { force });
+  }
+
+  // ── Git worktrees ─────────────────────────────────────────────────────────
+  createWorktree(projectId: string, input: { name?: string; taskId?: string; agentId?: string; baseRef?: string }) {
+    return this.req<WorktreeRecord>("POST", `/api/projects/${projectId}/worktrees`, input);
+  }
+  listWorktrees(projectId: string, status?: WorktreeRecord["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<WorktreeRecord[]>("GET", `/api/projects/${projectId}/worktrees${suffix}`);
+  }
+  getWorktree(id: string) {
+    return this.req<WorktreeStatusReport>("GET", `/api/worktrees/${encodeURIComponent(id)}`);
+  }
+  getWorktreeDiff(id: string) {
+    return this.req<{ worktreeId: string; diff: string; truncated: boolean }>("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`);
+  }
+  removeWorktree(id: string, preserve = false) {
+    return this.req<{ status: string; worktree: WorktreeRecord; preservedCommit: string | null }>(
+      "DELETE",
+      `/api/worktrees/${encodeURIComponent(id)}${preserve ? "?preserve=true" : ""}`
+    );
+  }
+
+  // ── Git integrations ─────────────────────────────────────────────────────
+  checkIntegration(worktreeId: string, input: { targetBranch?: string } = {}) {
+    return this.req<IntegrationAttempt>("POST", `/api/worktrees/${encodeURIComponent(worktreeId)}/integrations/check`, input);
+  }
+  listIntegrations(projectId: string, status?: IntegrationAttempt["status"]) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this.req<IntegrationAttempt[]>("GET", `/api/projects/${projectId}/integrations${suffix}`);
+  }
+  getIntegration(id: string) {
+    return this.req<IntegrationAttempt>("GET", `/api/integrations/${encodeURIComponent(id)}`);
+  }
+  applyIntegration(id: string) {
+    return this.req<IntegrationAttempt>("POST", `/api/integrations/${encodeURIComponent(id)}/apply`);
+  }
+  cancelIntegration(id: string) {
+    return this.req<IntegrationAttempt>("POST", `/api/integrations/${encodeURIComponent(id)}/cancel`);
+  }
+
+  // ── Named workspace checkpoints ───────────────────────────────────────────
+  createCheckpoint(projectId: string, input: { name: string; files?: string[]; taskId?: string }) {
+    return this.req<CheckpointSummary & { skipped: Array<{ path: string; reason: string }> }>("POST", `/api/projects/${projectId}/checkpoints`, input);
+  }
+  listCheckpoints(projectId: string) {
+    return this.req<CheckpointSummary[]>("GET", `/api/projects/${projectId}/checkpoints`);
+  }
+  restoreCheckpoint(projectId: string, name: string) {
+    return this.req<{ status: string; name: string; restoredFiles: string[]; deletedFiles: string[]; safetyCheckpoint: string | null }>(
+      "POST",
+      `/api/projects/${projectId}/checkpoints/${encodeURIComponent(name)}/restore`
+    );
+  }
+  deleteCheckpoint(projectId: string, name: string) {
+    return this.req<{ status: string; name: string }>("DELETE", `/api/projects/${projectId}/checkpoints/${encodeURIComponent(name)}`);
+  }
 
   // ── Approvals and project-scoped command trust ────────────────────────────
   listApprovals(projectId: string, status?: "pending" | "approved" | "denied" | "cancelled") {
@@ -233,6 +450,29 @@ export class MorrowApi {
     if (opts.conversationId) qs.set("conversationId", opts.conversationId);
     if (opts.limit) qs.set("limit", String(opts.limit));
     return this.req<SearchResponse>("GET", `/api/projects/${projectId}/search?${qs}`);
+  }
+  rebuildSymbols(projectId: string) {
+    return this.req<SymbolIndexResult>("POST", `/api/projects/${projectId}/symbols/rebuild`);
+  }
+  refreshSymbols(projectId: string) {
+    return this.req<SymbolIndexResult>("POST", `/api/projects/${projectId}/symbols/refresh`);
+  }
+  symbolStatus(projectId: string) {
+    return this.req<SymbolIndexStatus>("GET", `/api/projects/${projectId}/symbols/status`);
+  }
+  searchSymbols(projectId: string, query: string, opts: { limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    qs.set("q", query);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    return this.req<{ version: 1; query: string; projectId: string; symbols: SymbolRecord[] }>("GET", `/api/projects/${projectId}/symbols/search?${qs}`);
+  }
+  symbolDefinition(projectId: string, name: string) {
+    const qs = new URLSearchParams({ name });
+    return this.req<SymbolRecord>("GET", `/api/projects/${projectId}/symbols/definition?${qs}`);
+  }
+  fileSymbols(projectId: string, path: string) {
+    const qs = new URLSearchParams({ path });
+    return this.req<{ version: 1; projectId: string; filePath: string; symbols: SymbolRecord[] }>("GET", `/api/projects/${projectId}/symbols/file?${qs}`);
   }
   recordSkillUse(projectId: string, skillId: string) {
     return this.req<{ skillId: string; count: number }>("POST", `/api/projects/${projectId}/skills/${encodeURIComponent(skillId)}/use`);

@@ -1,8 +1,9 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
-import { resolveProject, validateDirectory, ask, select, isInteractive, shortId } from "./common.js";
-import { flagString } from "../cli/args.js";
+import { findNearestGitRoot, resolveProject, validateProjectDirectory, ask, select, isInteractive, shortId } from "./common.js";
+import { flagBool, flagString } from "../cli/args.js";
+import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 import { usageError, notFound } from "../cli/errors.js";
 import { EXIT } from "../cli/errors.js";
 
@@ -50,7 +51,7 @@ async function add(ctx: Context, api: MorrowApi, args: string[]): Promise<number
   let name = flagString(ctx.flags, "name");
   if (!pathArg && isInteractive(ctx)) pathArg = await ask("Workspace path: ");
   if (!pathArg) throw usageError("A workspace path is required.", "Usage: morrow projects add <path> [--name <name>]");
-  const canonical = validateDirectory(pathArg);
+  const canonical = validateProjectDirectory(pathArg, { force: flagBool(ctx.flags, "force") });
   if (!name) {
     name = flagString(ctx.flags, "name") ?? canonical.split(/[\\/]/).filter(Boolean).pop() ?? "Project";
     if (isInteractive(ctx) && !flagString(ctx.flags, "name")) {
@@ -143,10 +144,32 @@ export function statusColor(ctx: Context, status: string): string {
   return ctx.out.gray(status);
 }
 
-/** `morrow init` — add the current directory as a project. */
+/**
+ * `morrow init` — register the current directory (or a given path) as a project
+ * AND activate it as the default. Without the activation step, a freshly
+ * `init`ed workspace would keep resolving to whatever default was configured
+ * before, so `morrow ask` in the new repo could inspect the old one.
+ */
 export async function initCommand(ctx: Context, args: string[]): Promise<number> {
   await ensureRunning(ctx);
   const api = ctx.api();
   const path = args[0] ?? process.cwd();
-  return add(ctx, api, [path]);
+  const requested = validateProjectDirectory(path, { force: flagBool(ctx.flags, "force") });
+  const gitRoot = findNearestGitRoot(requested);
+  if (!gitRoot && !flagBool(ctx.flags, "force")) {
+    throw usageError("morrow init must be run inside a Git repository.", "Use --force to register a non-Git directory intentionally.");
+  }
+  const canonical = validateProjectDirectory(gitRoot ?? requested, { force: flagBool(ctx.flags, "force") });
+  const name = flagString(ctx.flags, "name") ?? canonical.split(/[\\/]/).filter(Boolean).pop() ?? "Project";
+  const project = await api.createProject(name, canonical);
+  // Always activate the just-initialized project, overwriting any prior default.
+  const scope = ctx.paths.projectConfigFile ? "project" : "user";
+  ctx.config.set("defaults.project", project.id, scope);
+  const git = gitSummary(canonical);
+  ctx.out.success(`Initialized project "${project.name}" (${shortId(project.id)}).`);
+  ctx.out.info(`Workspace: ${project.workspacePath}`);
+  ctx.out.info(`Git: ${gitSummaryText(git)}`);
+  ctx.out.info("Set as the active project.");
+  if (ctx.out.json) ctx.out.data({ ...project, isDefault: true });
+  return EXIT.OK;
 }

@@ -164,6 +164,16 @@ export async function serveDetached(ctx: Context): Promise<void> {
  */
 export async function ensureRunning(ctx: Context): Promise<void> {
   if (await isRunning(ctx)) return;
+  // In a packaged install the launcher owns the service process, so the CLI must
+  // never spawn its own (it has no dev toolchain to do so). It sets this flag and
+  // guarantees the service is up before delegating.
+  if (process.env.MORROW_NO_AUTOSTART === "1") {
+    throw new CliError(`The Morrow service at ${ctx.service.baseUrl} is not reachable.`, {
+      code: "SERVICE_UNREACHABLE",
+      exitCode: EXIT.SERVICE_UNAVAILABLE,
+      hint: "Start it with `morrow start`, then retry.",
+    });
+  }
   const isExternal = ctx.service.baseUrl !== `http://${ctx.service.host}:${ctx.service.port}`;
   if (isExternal) {
     throw new CliError(`The configured Morrow service at ${ctx.service.baseUrl} is not reachable.`, {

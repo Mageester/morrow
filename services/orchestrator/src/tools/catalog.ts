@@ -70,6 +70,19 @@ export const TOOL_CATALOG: ToolSpec[] = [
     ],
   },
   {
+    name: "search_symbols",
+    title: "Search symbols",
+    description: "Search the project symbol index for functions, classes, methods, types, variables, and JSON config keys.",
+    sideEffect: "read-only",
+    enabled: true,
+    parameters: { query: { type: "string", description: "Symbol name or qualified-name text to find" }, limit: { type: "number", description: "Maximum results, up to 50" } },
+    constraints: [
+      "Scoped to the project symbol index",
+      "Returns concise locations and metadata only",
+      "Requires the index to be built with `morrow symbols rebuild`",
+    ],
+  },
+  {
     name: "git_status",
     title: "Git status",
     description: "Inspect concise repository status without changing Git state.",
@@ -136,7 +149,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 ];
 
 /** Tool names the agent runtime actually implements (must match the catalog). */
-export const IMPLEMENTED_TOOL_NAMES = ["inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log", "run_command", "propose_patch"] as const;
+export const IMPLEMENTED_TOOL_NAMES = ["inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols", "git_status", "git_diff", "git_log", "run_command", "propose_patch"] as const;
 
 export function getTool(name: string): ToolSpec | undefined {
   return TOOL_CATALOG.find((t) => t.name === name);

@@ -21,7 +21,7 @@ import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
-import { formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
+import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
@@ -53,6 +53,7 @@ interface SessionState {
   preset: string;
   provider: string | undefined;
   model: string | undefined;
+  worktreeId: string | undefined;
   mode: AgentMode;
   useMemory: boolean;
   autoApprove: boolean;
@@ -69,6 +70,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
+    worktreeId: flagString(ctx.flags, "worktree"),
     mode,
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
     autoApprove: resolveAutoApprove(ctx, mode),
@@ -78,6 +80,12 @@ export async function chatCommand(ctx: Context): Promise<number> {
 
   const message = flagString(ctx.flags, "message") ?? flagString(ctx.flags, "m");
   if (message) {
+    // Make the target explicit before any one-shot work so a command can never
+    // silently act on a different project than the user expects.
+    if (!ctx.out.json) {
+      const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
+      ctx.out.diag(ctx.out.gray(`  ${projectName}  ${project.workspacePath}  ·  ${modeLabel(session.mode, session.autoApprove)}`));
+    }
     return runOneShot(ctx, api, conversation, message, session);
   }
 
@@ -139,6 +147,7 @@ async function runInteractiveSession(
         mode: opts.mode,
         useMemory: opts.useMemory,
         ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
+        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
       });
       return { taskId: sent.task.id };
     },
@@ -157,6 +166,10 @@ async function runInteractiveSession(
     getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
     getTask: (taskId) => api.getTask(taskId),
     getTaskTree: (taskId) => api.getTaskTree(taskId),
+    getTaskDiff: (taskId) =>
+      api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
+    undoTask: (taskId) =>
+      api.undoTask(taskId).then((u) => ({ status: u.status, restoredFiles: u.restoredFiles })),
     search: (query) =>
       api
         .search(project.id, query, { limit: 25 })
@@ -230,6 +243,7 @@ function sendOptions(s: SessionState) {
     preset: s.preset,
     ...(s.provider ? { providerId: s.provider } : {}),
     ...(s.model ? { model: s.model } : {}),
+    ...(s.worktreeId ? { worktreeId: s.worktreeId } : {}),
     mode: s.mode,
     useMemory: s.useMemory,
     // Only send autoApprove when it is meaningfully on (agent mode); the server
@@ -286,6 +300,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     ["Branch", gitSummaryText(git)],
     ["Model", `${modelName}  ${out.gray("·")}  ${privacyLabel(providerName)}`],
     ["Mode", modeLabel(session.mode, session.autoApprove)],
+    ...(session.worktreeId ? [["Worktree", shortId(session.worktreeId)] as [string, string]] : []),
     ["Memory", session.useMemory ? "project context on" : "off"],
     ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
@@ -509,6 +524,125 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       return {};
     }
+    case "ps": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      try {
+        if (parts[0] === "kill") {
+          if (!parts[1]) { out.warn("Usage: /ps kill <id>"); return {}; }
+          const all = await api.listProcesses(projectId);
+          const matches = all.filter((p) => p.id === parts[1] || p.id.startsWith(parts[1]!));
+          if (matches.length !== 1) { out.warn(matches.length === 0 ? `No process matching "${parts[1]}".` : `"${parts[1]}" is ambiguous.`); return {}; }
+          await api.terminateProcess(matches[0]!.id, true);
+          out.success(`Terminating ${matches[0]!.id.slice(0, 8)}.`);
+          return {};
+        }
+        const processes = await api.listProcesses(projectId);
+        if (processes.length === 0) { out.info("No background processes. Start one with `morrow processes start -- <cmd> …`."); return {}; }
+        out.heading(`Processes (${processes.length})`);
+        for (const p of processes) {
+          const cmd = [p.command, ...p.args].join(" ").slice(0, 60);
+          out.print(`  ${p.id.slice(0, 8)}  ${p.status.padEnd(9)}  ${cmd}${p.exitCode !== null ? out.gray(`  exit ${p.exitCode}`) : ""}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
+    case "worktrees":
+    case "worktree": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const ref = parts[1];
+      try {
+        const all = await api.listWorktrees(projectId);
+        const resolve = (value: string | undefined) => {
+          if (!value) return undefined;
+          const matches = all.filter((w) => w.id === value || w.id.startsWith(value) || w.branch === value || w.branch === `morrow/${value}`);
+          return matches.length === 1 ? matches[0] : null;
+        };
+        if (verb === "show") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees show <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          const status = await api.getWorktree(match.id);
+          out.heading(`Worktree ${status.branch}`);
+          out.keyValue([
+            ["status", status.status],
+            ["path", status.path],
+            ["dirty", status.dirty ? `yes (${status.dirtyFiles.length})` : "no"],
+            ["commits ahead", String(status.aheadCommits.length)],
+            ["task", status.taskId ?? "-"],
+            ["agent", status.agentId ?? "-"],
+          ]);
+          for (const f of status.dirtyFiles.slice(0, 10)) out.print(`  M ${f}`);
+          return {};
+        }
+        if (verb === "remove") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees remove <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          await api.removeWorktree(match.id, parts.includes("--preserve"));
+          out.success(`Removed worktree ${match.branch} (branch retained).`);
+          return {};
+        }
+        if (all.length === 0) { out.info("No worktrees. Create one with `morrow worktrees create <name>`."); return {}; }
+        out.heading(`Worktrees (${all.length})`);
+        for (const w of all) {
+          const assoc = [w.taskId ? `task ${w.taskId.slice(0, 8)}` : "", w.agentId ? `agent ${w.agentId.slice(0, 8)}` : ""].filter(Boolean).join(", ");
+          out.print(`  ${w.id.slice(0, 8)}  ${w.status.padEnd(9)}  ${w.branch}  ${out.gray(assoc || w.path)}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
+    case "checkpoint": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const name = parts[1];
+      const usage = "Usage: /checkpoint save <name> [file …] | list | restore <name> | delete <name>";
+      try {
+        if (verb === "list") {
+          const list = await api.listCheckpoints(projectId);
+          if (list.length === 0) {
+            out.info("No checkpoints yet. Create one with /checkpoint save <name>.");
+            return {};
+          }
+          out.heading(`Checkpoints (${list.length})`);
+          for (const cp of list) {
+            out.print(`  ${out.bold(cp.name)}  ${out.gray(`${cp.fileCount} file${cp.fileCount === 1 ? "" : "s"} · ${cp.createdAt}`)}`);
+          }
+          return {};
+        }
+        if (!name) { out.warn(usage); return {}; }
+        if (verb === "save") {
+          const files = parts.slice(2);
+          const created = await api.createCheckpoint(projectId, { name, ...(files.length > 0 ? { files } : {}) });
+          out.success(`Checkpoint "${created.name}" saved (${created.fileCount} file${created.fileCount === 1 ? "" : "s"}).`);
+          for (const s of created.skipped) out.warn(`Skipped ${s.path}: ${s.reason}`);
+          return {};
+        }
+        if (verb === "restore") {
+          const res = await api.restoreCheckpoint(projectId, name);
+          const total = res.restoredFiles.length + res.deletedFiles.length;
+          out.success(total === 0 ? `Workspace already matches "${name}".` : `Restored "${name}" (${res.restoredFiles.length} written, ${res.deletedFiles.length} removed).`);
+          if (res.safetyCheckpoint) out.info(`Previous state saved as "${res.safetyCheckpoint}" — restore it to undo.`);
+          return {};
+        }
+        if (verb === "delete") {
+          await api.deleteCheckpoint(projectId, name);
+          out.success(`Deleted checkpoint "${name}".`);
+          return {};
+        }
+        out.warn(usage);
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
     case "diff": {
       const msgs = await api.listMessages(conversation.id);
       const taskIds = msgs.map(m => m.taskId).filter(Boolean) as string[];
@@ -607,6 +741,16 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       const aggregate = await api.getTask(taskId);
       for (const line of formatMissionResult(aggregate)) out.print(line);
+      return {};
+    }
+    case "context": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission context exists yet.");
+        return {};
+      }
+      const aggregate = await api.getTask(taskId);
+      for (const line of formatContextStatus(aggregate)) out.print(line);
       return {};
     }
     case "cancel":
@@ -844,6 +988,7 @@ function printReplHelp(ctx: Context) {
     ["/undo", "rollback the latest Morrow-owned change in the session"],
     ["/tree", "show the current mission task tree"],
     ["/result", "show final evidence and next action"],
+    ["/context", "show context usage, compaction, and token-count confidence"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],

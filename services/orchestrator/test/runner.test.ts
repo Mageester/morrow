@@ -12,7 +12,7 @@ describe("TaskRunner", () => {
     db = new Database(":memory:");
     db.exec(`
       CREATE TABLE projects (id TEXT PRIMARY KEY, schema_version INTEGER, name TEXT, workspace_path TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE tasks (id TEXT PRIMARY KEY, schema_version INTEGER, project_id TEXT, type TEXT, status TEXT, idempotency_key TEXT, parent_task_id TEXT, agent_id TEXT, created_at TEXT, updated_at TEXT, started_at TEXT, completed_at TEXT);
+      CREATE TABLE tasks (id TEXT PRIMARY KEY, schema_version INTEGER, project_id TEXT, type TEXT, status TEXT, idempotency_key TEXT, parent_task_id TEXT, agent_id TEXT, worktree_id TEXT, created_at TEXT, updated_at TEXT, started_at TEXT, completed_at TEXT);
       CREATE TABLE task_events (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, type TEXT, payload_json TEXT, created_at TEXT);
       CREATE TABLE agent_state_transitions (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, state TEXT, details_json TEXT, created_at TEXT);
       CREATE TABLE plan_steps (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, position INTEGER, title TEXT, description TEXT, status TEXT, created_at TEXT, updated_at TEXT);

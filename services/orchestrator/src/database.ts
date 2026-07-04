@@ -312,6 +312,137 @@ export const migrations:Migration[]=[
       hash TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+  `},
+  {id:19,name:"checkpoints",sql:`
+    CREATE TABLE checkpoints (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      files_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, name)
+    );
+    CREATE INDEX checkpoints_project_idx ON checkpoints(project_id);
+  `},
+  {id:20,name:"processes",sql:`
+    CREATE TABLE processes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      command TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'pipe',
+      pid INTEGER,
+      status TEXT NOT NULL,
+      exit_code INTEGER,
+      run_id TEXT NOT NULL,
+      detail TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX processes_project_idx ON processes(project_id);
+    CREATE INDEX processes_status_idx ON processes(status);
+    CREATE INDEX processes_task_idx ON processes(task_id);
+  `},
+  {id:21,name:"worktrees",sql:`
+    CREATE TABLE worktrees (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      branch TEXT NOT NULL,
+      path TEXT NOT NULL,
+      base_ref TEXT NOT NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT,
+      UNIQUE(project_id, branch)
+    );
+    CREATE INDEX worktrees_project_idx ON worktrees(project_id);
+    ALTER TABLE tasks ADD COLUMN worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL;
+  `},
+  {id:22,name:"integration_attempts",sql:`
+    CREATE TABLE integration_attempts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      worktree_id TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      source_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      source_commit TEXT NOT NULL,
+      target_commit TEXT NOT NULL,
+      status TEXT NOT NULL,
+      conflicted_files_json TEXT NOT NULL,
+      error_detail TEXT,
+      applied_commit TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      applied_at TEXT,
+      cancelled_at TEXT
+    );
+    CREATE INDEX integration_attempts_project_idx ON integration_attempts(project_id);
+    CREATE INDEX integration_attempts_worktree_idx ON integration_attempts(worktree_id);
+  `}
+  ,{id:23,name:"context_summaries",sql:`
+    CREATE TABLE context_summaries (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      method TEXT NOT NULL,
+      content TEXT NOT NULL,
+      source_start_index INTEGER NOT NULL,
+      source_end_index INTEGER NOT NULL,
+      source_message_count INTEGER NOT NULL,
+      source_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(conversation_id, source_hash)
+    );
+    CREATE INDEX context_summaries_conversation_idx ON context_summaries(conversation_id, created_at DESC);
+    CREATE INDEX context_summaries_task_idx ON context_summaries(task_id);
+  `}
+  ,{id:24,name:"symbol_index",sql:`
+    CREATE TABLE symbol_index_files (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_path TEXT NOT NULL,
+      language TEXT NOT NULL,
+      file_fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL,
+      diagnostics_json TEXT NOT NULL,
+      indexed_at TEXT NOT NULL,
+      indexer_version TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      PRIMARY KEY(project_id, file_path)
+    );
+    CREATE TABLE symbols (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_path TEXT NOT NULL,
+      language TEXT NOT NULL,
+      file_fingerprint TEXT NOT NULL,
+      name TEXT NOT NULL,
+      fq_name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      start_column INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      end_column INTEGER NOT NULL,
+      parent_name TEXT,
+      exported INTEGER NOT NULL,
+      indexed_at TEXT NOT NULL,
+      indexer_version TEXT NOT NULL,
+      parser_version TEXT NOT NULL
+    );
+    CREATE INDEX symbols_project_name_idx ON symbols(project_id, name);
+    CREATE INDEX symbols_project_fq_name_idx ON symbols(project_id, fq_name);
+    CREATE INDEX symbols_project_file_idx ON symbols(project_id, file_path, start_line, start_column);
+    CREATE INDEX symbol_index_files_project_idx ON symbol_index_files(project_id, indexed_at DESC);
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

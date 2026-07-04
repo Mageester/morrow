@@ -2,15 +2,20 @@
 
 Snapshot of what is **verified working** right now, updated as slices land.
 
-## Build / test health (2026-06-29, latest)
+## Build / test health (2026-07-03, latest)
 
 - `pnpm check`, `pnpm test`, and `pnpm build`: green.
-- `pnpm test`: **orchestrator 325 · CLI 140 · web 22 · contracts 4 ·
-  hermes-compat 4 — all green (495 total)**.
-- Orchestrator smoke suites: `vertical-slice` and `providers` verified passing
-  this session. (`providers` previously failed on a stale OAuth assertion — see
-  `docs/CURRENT_STATE.md`; fixed 2026-06-29.)
-- `pnpm run test:e2e` (Playwright): not re-run this session.
+- Release package validation for `0.1.0-beta.17`: `node
+  scripts/package-release.mjs 0.1.0-beta.17` green; package
+  contract includes `dispatch.mjs`, `orchestrator/cli/bin/morrow.mjs`, and
+  `orchestrator/cli/src/main.js`.
+- `pnpm test`: **orchestrator 368 · CLI 169 · web 22 · contracts 4 ·
+  hermes-compat 4 — all green (567 total)** after the 2026-07-02
+  hermes-parity slice batch (rate guard, import CLI, checkpoints, chat
+  idempotency, palette tests — see ENGINEERING_LOG).
+- Orchestrator smoke suites: `vertical-slice`, `providers`, `agent-alpha`, and
+  `sqlite` all verified passing this session (2026-07-02).
+- `pnpm run test:e2e` (Playwright): **11/11 green** (2026-07-02).
 
 > See `docs/CURRENT_STATE.md` for the authoritative verified snapshot.
 
@@ -34,6 +39,22 @@ Snapshot of what is **verified working** right now, updated as slices land.
 See `CONTINUATION.md` for the exact next step.
 
 ## Recently verified
+
+- **DeepSeek V4 + OpenRouter model routing (beta.17)** - DeepSeek defaults to
+  `deepseek-v4-flash`, presets prefer `deepseek-v4-flash`/`deepseek-v4-pro`
+  before legacy chat/reasoner IDs, and OpenRouter exposes
+  `deepseek/deepseek-v4-flash` plus `deepseek/deepseek-v4-pro`. Evidence:
+  `services/orchestrator/test/routing.test.ts` and package release validation.
+
+- **Packaged CLI dispatch + beta.16 installer fix (P0)** - public
+  `0.1.0-beta.15` installer reports a consumer failure during
+  `Extracting archive...`. Beta.16 rebuilds the Windows artifact with the shared
+  launcher dispatcher and compiled CLI bundled under `orchestrator/cli`, so the
+  installed `morrow` command exposes the same product command surface as the
+  development CLI. Evidence: `scripts/launcher-dispatch.test.mjs`,
+  `apps/cli/test/entrypoint-parity.test.ts`, `scripts/package-command.test.mjs`,
+  `scripts/package-release.test.mjs`, `pnpm check`, `pnpm test`, and package
+  contract validation.
 
 - **Local browser control (B15, partial)** — `browser/playwright.ts` launches a
   real Playwright Chromium session (visible unless explicitly headless), attaches

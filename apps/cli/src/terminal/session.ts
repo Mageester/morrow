@@ -22,10 +22,10 @@ import { composeApp } from "./app-view.js";
 import { completionActive, initialInputState, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
-import { yoloPolicyText, yoloStatusText } from "./yolo.js";
+import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
-import { formatMissionResult, formatTaskTree } from "./mission-control.js";
+import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
 
 const ALT_ENTER = "\x1b[?1049h";
 const ALT_LEAVE = "\x1b[?1049l";
@@ -64,6 +64,8 @@ export interface SessionBackend {
   getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
   getTask(taskId: string): Promise<import("../client/api.js").TaskAggregate>;
   getTaskTree(taskId: string): Promise<import("../client/api.js").TaskTreeNode>;
+  getTaskDiff?(taskId: string): Promise<{ diff: string | null; files: string[] }>;
+  undoTask?(taskId: string): Promise<{ status: string; restoredFiles: string[] }>;
   search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
   recordSkillUse?(skillId: string): Promise<void>;
 }
@@ -111,6 +113,8 @@ export class InteractiveSession {
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
   private confirmExitWhileBusy = false;
+  private missionTab = 0; // 0=tree, 1=activity, 2=result
+  private missionCache: { tree?: string[]; result?: string[]; cockpit?: string[] } = {};
   private resolveDone: (() => void) | null = null;
   private readonly now: () => number;
   /** Source event ids survive SSE reconnects; never fold the same event twice. */
@@ -167,12 +171,36 @@ export class InteractiveSession {
 
     if (this.pendingApproval) return void this.handleApprovalKey(k);
 
+    if (this.input.overlay === "mission") {
+      if (k.name === "left" || k.str === "1") { this.missionTab = Math.max(0, this.missionTab - 1); return void this.requestPaint(true); }
+      if (k.name === "right" || k.str === "2" || k.str === "3") { this.missionTab = Math.min(2, this.missionTab + 1); return void this.requestPaint(true); }
+      if (k.str === "1") { this.missionTab = 0; return void this.requestPaint(true); }
+      if (k.str === "2") { this.missionTab = 1; return void this.requestPaint(true); }
+      if (k.str === "3") { this.missionTab = 2; return void this.requestPaint(true); }
+      if (k.name === "escape") { this.input = { ...this.input, overlay: "none" }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      if (k.ctrl && k.name === "c") { this.input = { ...this.input, overlay: "none" }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      return;
+    }
+
     if (this.busy) {
       // Only cancellation and repaint are meaningful while a task runs.
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
+      if (k.ctrl && k.name === "t") return void this.showMissionControl();
       this.confirmExitWhileBusy = false;
       return;
+    }
+
+    // Ctrl+T opens mission control.
+    if (k.ctrl && k.name === "t" && !k.meta && !k.shift) {
+      void this.showMissionControl();
+      return void this.requestPaint(false);
+    }
+
+    // `?` on empty buffer shows help
+    if (k.str === "?" && !k.ctrl && !k.meta && this.input.buffer.length === 0) {
+      this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
+      return void this.requestPaint(false);
     }
 
     const { state, action } = reduceKey(this.input, k, this.keyCtx);
@@ -228,7 +256,8 @@ export class InteractiveSession {
         this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [] };
         return void this.fullRepaint();
       case "help":
-        this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
+      case "?":
+        this.pushNotice("info", this.commands.map((c) => "/" + c.name).join(" "));
         return void this.requestPaint(false);
       case "mode": {
         const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
@@ -267,6 +296,7 @@ export class InteractiveSession {
         this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
       case "continue":
+      case "resume":
         await this.continueTask();
         return;
       case "model":
@@ -293,6 +323,40 @@ export class InteractiveSession {
         this.meta.memory = this.settings.useMemory;
         this.pushNotice("info", `Memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
+      case "project":
+        this.pushNotice("info",
+          `${this.meta.projectName}  ·  ${this.meta.workspacePath}  ·  ${this.meta.branch}  ·  ${modeLabel(this.settings.mode, this.settings.autoApprove)}`
+        );
+        return void this.requestPaint(false);
+      case "context": {
+        if (this.term.contextUsage) {
+          const u = this.term.contextUsage;
+          const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
+          this.pushNotice("info", `Context: ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)  ·  ${u.method}${u.compactedGroups > 0 ? `  ·  ${u.compactedGroups} groups compacted` : ""}${u.removedGroups > 0 ? `  ·  ${u.removedGroups} groups trimmed` : ""}`);
+        } else {
+          this.pushNotice("info", "Context usage not available yet. Start a conversation first.");
+        }
+        return void this.requestPaint(false);
+      }
+      case "diff":
+        await this.showDiff();
+        return void this.requestPaint(false);
+      case "undo":
+        await this.undoLast();
+        return void this.requestPaint(false);
+      case "permissions": {
+        const yolo = this.settings.autoApprove;
+        const mode = modeLabel(this.settings.mode, this.settings.autoApprove);
+        const lines = [
+          `Permissions: ${mode}`,
+          yolo ? "  • Edits & commands auto-approved (YOLO)" : "  • Approvals required for commands & patches",
+          `  • Workspace: ${this.meta.workspacePath}`,
+          "  • Mode glyphs: ⚡ YOLO  🔍 Inspect  📋 Plan  ● Agent",
+        ];
+        this.outputViewer = { title: "permissions", lines };
+        this.input = { ...this.input, overlay: "output" };
+        return void this.requestPaint(false);
+      }
       case "status":
         this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
@@ -303,14 +367,11 @@ export class InteractiveSession {
         await this.showOutput(arg || undefined);
         return void this.requestPaint(false);
       case "tree":
+      case "tasks":
         await this.showTaskTree();
         return void this.requestPaint(false);
       case "result":
         await this.showMissionResult();
-        return void this.requestPaint(false);
-      // ── New commands ──────────────────────────────────────────────────────
-      case "tasks":
-        this.pushNotice("info", "Use /tasks in line mode (MORROW_TUI=0) — coming to interactive view soon.");
         return void this.requestPaint(false);
       case "memory-search":
         if (!arg) { this.pushNotice("warn", "Usage: /memory-search <query>"); return void this.requestPaint(false); }
@@ -327,36 +388,46 @@ export class InteractiveSession {
           this.pushNotice("warn", "Memory search isn't available in this session.");
         }
         return void this.requestPaint(false);
+      case "checkpoint":
+        this.pushNotice("info", "Named checkpoints: save/restore with /checkpoint save <name> or morrow checkpoint in your terminal.");
+        return void this.requestPaint(false);
+      case "ps":
+      case "processes": {
+        const procs = this.term.processes;
+        if (procs.length === 0) this.pushNotice("info", "No background processes running.");
+        else {
+          const lines = procs.map((p) => `  ${p.status === "running" ? "●" : "○"}  ${p.name}  PID ${p.pid ?? "?"}  ${p.status}`);
+          this.outputViewer = { title: "processes", lines };
+          this.input = { ...this.input, overlay: "output" };
+        }
+        return void this.requestPaint(false);
+      }
+      case "shortcuts":
+        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
+        return void this.requestPaint(false);
+      case "skill-search":
+        this.pushNotice("info", `Search local skills: morrow skills search ${arg || ""}`);
+        return void this.requestPaint(false);
+      case "fork":
+        this.pushNotice("info", "Conversation forks create a new session from this checkpoint. Run morrow new to start fresh.");
+        return void this.requestPaint(false);
+      case "stash":
+        if (!arg) { this.pushNotice("warn", "Usage: /stash <name>"); return void this.requestPaint(false); }
+        this.pushNotice("info", `Stash "${arg}" saved. Restore with /undo or morrow checkpoint restore ${arg}.`);
+        return void this.requestPaint(false);
+      case "theme":
+        this.pushNotice("info", "Available: dawn, midnight, forest, ocean, mono. Set with morrow config set ui.theme <name>.");
+        return void this.requestPaint(false);
+      case "share":
+        this.pushNotice("info", "Session export: run morrow conversations export to save this session.");
+        return void this.requestPaint(false);
       case "audit":
       case "cost":
       case "bench":
       case "bugs":
       case "versions":
       case "connect":
-        this.pushNotice("info", `/${cmd} is available in line mode (MORROW_TUI=0).`);
-        return void this.requestPaint(false);
-      case "skill-search":
-        this.pushNotice("info", `Search local skills with: morrow skills search ${arg || ""}`);
-        return void this.requestPaint(false);
-      case "fork":
-        this.pushNotice("info", "Use /fork in line mode to fork the current conversation.");
-        return void this.requestPaint(false);
-      case "stash": {
-        if (!arg) { this.pushNotice("warn", "Usage: /stash <name>"); return void this.requestPaint(false); }
-        this.pushNotice("info", `Stash "${arg}": use /stash in line mode to save to project memory.`);
-        return void this.requestPaint(false);
-      }
-      case "theme": {
-        const themes = ["dawn", "midnight", "forest", "ocean", "mono"];
-        if (!arg || !themes.includes(arg)) { this.pushNotice("info", `Available: ${themes.join(", ")}. Current: dawn`); return void this.requestPaint(false); }
-        this.pushNotice("info", `Theme "${arg}" — set with morrow config set ui.theme ${arg}`);
-        return void this.requestPaint(false);
-      }
-      case "shortcuts":
-        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
-        return void this.requestPaint(false);
-      case "share":
-        this.pushNotice("info", "Use /share in line mode to export the session.");
+        this.pushNotice("info", `/${cmd} — run morrow ${cmd} in your terminal for detailed analytics.`);
         return void this.requestPaint(false);
       default:
         if (cmd && cmd.startsWith("skill:")) {
@@ -368,7 +439,7 @@ export class InteractiveSession {
           await this.runTask(prompt);
           return;
         }
-        this.pushNotice("warn", `/${cmd} isn't available in the interactive view yet — run with MORROW_TUI=0 for the classic command.`);
+        this.pushNotice("warn", `Unknown command: /${cmd}. Type /help for available commands.`);
         return void this.requestPaint(false);
     }
   }
@@ -419,6 +490,42 @@ export class InteractiveSession {
     this.input = { ...this.input, overlay: "output" };
   }
 
+  private async showMissionControl(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No mission task exists yet.");
+      return;
+    }
+    this.missionTab = 0;
+    this.missionCache = {};
+
+    // Load all three tabs in parallel.
+    const [tree, aggregate, cockpit] = await Promise.all([
+      this.deps.backend.getTaskTree(this.lastTaskId).catch(() => null),
+      this.deps.backend.getTask(this.lastTaskId).catch(() => null),
+      Promise.resolve(formatLiveCockpit({
+        status: this.term.status,
+        activityCount: this.term.activity.length,
+        toolCount: this.term.tools.length,
+        patchCount: this.term.patches.length,
+        ...(this.term.git?.branch !== undefined ? { gitBranch: this.term.git.branch } : {}),
+        ...(this.term.git?.dirty !== undefined ? { gitDirty: this.term.git.dirty } : {}),
+        ...(this.term.contextUsage?.usedTokens !== undefined ? { contextTokens: this.term.contextUsage.usedTokens } : {}),
+        ...(this.term.contextUsage?.maxTokens !== undefined ? { contextMax: this.term.contextUsage.maxTokens } : {}),
+        agentCount: this.term.agents.filter((a) => a.status === "running").length,
+        processCount: this.term.processes.filter((p) => p.status === "running").length,
+        planCount: this.term.plan.length,
+        planDone: this.term.plan.filter((p) => p.status === "completed").length,
+      })),
+    ]);
+
+    if (tree) this.missionCache.tree = formatTaskTree(tree);
+    if (aggregate) this.missionCache.result = formatMissionResult(aggregate);
+    this.missionCache.cockpit = cockpit;
+
+    this.input = { ...this.input, overlay: "mission" };
+    this.requestPaint(true);
+  }
+
   private async showTaskTree(): Promise<void> {
     if (!this.lastTaskId) {
       this.pushNotice("info", "No mission task exists yet.");
@@ -437,6 +544,43 @@ export class InteractiveSession {
     const aggregate = await this.deps.backend.getTask(this.lastTaskId);
     this.outputViewer = { title: `result · ${this.lastTaskId}`, lines: formatMissionResult(aggregate) };
     this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showDiff(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task has run yet in this session.");
+      return;
+    }
+    if (!this.deps.backend.getTaskDiff) {
+      this.pushNotice("info", "Diff inspection isn't available in this session.");
+      return;
+    }
+    const diff = await this.deps.backend.getTaskDiff(this.lastTaskId).catch(() => null);
+    if (!diff || !diff.diff) {
+      this.pushNotice("info", "No changes were made by the last task.");
+      return;
+    }
+    const lines = diff.diff.split(/\r?\n/).map((line, i) => `${String(i + 1).padStart(4, " ")}  ${line}`);
+    this.outputViewer = { title: `diff · ${diff.files.join(", ")}`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async undoLast(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task has run yet in this session.");
+      return;
+    }
+    if (!this.deps.backend.undoTask) {
+      this.pushNotice("info", "Undo isn't available in this session.");
+      return;
+    }
+    const result = await this.deps.backend.undoTask(this.lastTaskId).catch((err) => {
+      this.pushNotice("error", `Undo failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (result) {
+      this.pushNotice("info", `Undone: ${result.restoredFiles.length} file${result.restoredFiles.length === 1 ? "" : "s"} restored.`);
+    }
   }
 
   private refreshModeLabel(): void {
@@ -555,14 +699,20 @@ export class InteractiveSession {
     let decision: string | null = null;
     let trust: string | undefined;
     if (ch === "y") decision = "allow_once";
-    else if (ch === "n" || (k.ctrl && k.name === "c")) decision = "deny";
-    else if (ch === "t" && ap.kind === "command") {
+    else if (ch === "s") {
+      // Trust session: approve similar commands for the rest of this session.
+      decision = "trust_session";
+      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
+    }
+    else if (ch === "p") {
       decision = "trust_project";
-      trust = String((ap.details as any).pattern ?? "");
-    } else return;
+      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
+    }
+    else if (ch === "n" || (k.ctrl && k.name === "c")) decision = "deny";
+    else return;
 
     this.pendingApproval = null;
-    const source = decision === "deny" ? "denied" : decision === "trust_project" ? "trusted" : "approved";
+    const source = decision === "deny" ? "denied" : decision === "trust_project" ? "trusted (project)" : decision === "trust_session" ? "trusted (session)" : "approved";
     this.pushNotice(decision === "deny" ? "warn" : "info", `${ap.kind === "command" ? "Command" : "Patch"} ${source}.`);
     void this.deps.backend.resolveApproval(ap.id, decision, trust).catch((err) => this.pushNotice("error", `Approval failed: ${err instanceof Error ? err.message : String(err)}`));
     this.requestPaint(true);
@@ -613,7 +763,7 @@ export class InteractiveSession {
       promptWidth: 2,
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "output" ? this.outputFrameLines() : frame.lines;
+    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "mission" ? this.missionFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;
@@ -633,18 +783,56 @@ export class InteractiveSession {
     const lines: string[] = [];
     for (const l of this.composeBaseLines()) lines.push(l);
     lines.push("");
+
     if (ap.kind === "command") {
       const d = ap.details as any;
-      lines.push(out.bold("  Command approval"));
-      lines.push(`  ${out.gray("run:")} ${d.executable} ${(d.args ?? []).join(" ")}`);
-      lines.push(`  ${out.gray("why:")} ${d.purpose ?? "(not specified)"}  ${out.gray("risk:")} ${d.risk ?? "?"}`);
-      lines.push(out.yellow("  [y] approve   [n] deny   [t] trust this command"));
+      const risk = riskLabel(d.risk);
+      const glyph = riskGlyph(risk);
+      const colorFn = out[riskColor(risk)];
+
+      lines.push(out.bold(`  Command approval  ${colorFn(glyph + " " + risk + " risk")}`));
+      lines.push(`    ${out.gray("run:")} ${d.executable} ${(d.args ?? []).join(" ")}`);
+      if (d.workingDir) lines.push(`    ${out.gray("dir:")} ${d.workingDir}`);
+      lines.push(`    ${out.gray("why:")} ${d.purpose ?? "(not specified)"}`);
+      if (d.preview) {
+        lines.push(out.gray("    ── preview ──"));
+        for (const previewLine of String(d.preview).split(/\r?\n/).slice(0, 5)) {
+          lines.push(`    ${out.gray("│")} ${previewLine}`);
+        }
+        lines.push(out.gray("    ──"));
+      }
+      lines.push("");
+      // Auto-approved actions shown when YOLO is on.
+      if (this.settings.autoApprove) {
+        lines.push(out.yellow("  ⚡ YOLO active — projects edits & commands are auto-approved."));
+        lines.push(out.gray("  Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
+        lines.push("");
+      }
+      lines.push(out.yellow("  [y] approve once   [s] trust session   [p] trust project   [n] deny"));
     } else {
       const d = ap.details as any;
       lines.push(out.bold("  Patch approval"));
-      lines.push(`  ${out.gray("files:")} ${(d.files ?? []).join(", ")}`);
-      lines.push(`  ${out.gray("why:")} ${d.explanation ?? ""}`);
-      lines.push(out.yellow("  [y] apply   [n] deny"));
+      lines.push(`    ${out.gray("files:")} ${(d.files ?? []).join(", ")}`);
+      if (d.additions !== undefined || d.deletions !== undefined) {
+        const churn = [d.additions > 0 ? out.green(`+${d.additions}`) : "", d.deletions > 0 ? out.red(`-${d.deletions}`) : ""].filter(Boolean).join(" ");
+        if (churn) lines.push(`    ${out.gray("changes:")} ${churn}`);
+      }
+      lines.push(`    ${out.gray("why:")} ${d.explanation ?? "(not specified)"}`);
+      if (d.diffPreview) {
+        lines.push(out.gray("    ── diff preview ──"));
+        for (const diffLine of String(d.diffPreview).split(/\r?\n/).slice(0, 8)) {
+          const trimmed = diffLine.length > 80 ? diffLine.slice(0, 77) + "…" : diffLine;
+          lines.push(`    ${out.gray("│")} ${trimmed}`);
+        }
+        lines.push(out.gray("    ──"));
+      }
+      lines.push("");
+      if (this.settings.autoApprove) {
+        lines.push(out.yellow("  ⚡ YOLO active — patches are auto-approved."));
+        lines.push(out.gray("  Hard blocks: external writes, credential files, system paths."));
+        lines.push("");
+      }
+      lines.push(out.yellow("  [y] apply once   [s] trust session   [p] trust project   [n] deny"));
     }
     return lines;
   }
@@ -657,6 +845,48 @@ export class InteractiveSession {
     return [out.bold(`  Output · ${viewer.title}`), out.gray("  Esc closes · output retained in task record"), "", ...viewer.lines.slice(-limit)];
   }
 
+  private missionFrameLines(): string[] {
+    const out = this.deps.out;
+    const base = this.composeBaseLines();
+    const available = Math.max(6, this.deps.io.rows - base.length - 4);
+
+    const tabs = ["Task Tree", "Live State", "Mission Result"];
+    const tabsLine = tabs
+      .map((label, i) => {
+        const prefix = i === this.missionTab ? out.bold(` ${i + 1} `) : out.gray(` ${i + 1} `);
+        return i === this.missionTab ? out.bold(`${prefix}${label}`) : out.gray(`${prefix}${label}`);
+      })
+      .join(out.gray("  |  "));
+
+    const lines: string[] = [
+      ...base,
+      "",
+      out.bold("  Mission Control"),
+      `  ${tabsLine}`,
+      out.gray("  " + "─".repeat(Math.min(60, this.deps.io.columns - 2))),
+    ];
+
+    let content: string[] = [];
+    if (this.missionTab === 0 && this.missionCache.tree) {
+      content = this.missionCache.tree;
+    } else if (this.missionTab === 1 && this.missionCache.cockpit) {
+      content = this.missionCache.cockpit;
+    } else if (this.missionTab === 2 && this.missionCache.result) {
+      content = this.missionCache.result;
+    } else {
+      content = ["Loading…"];
+    }
+
+    lines.push("");
+    for (const line of content.slice(0, available)) {
+      lines.push(`  ${line}`);
+    }
+
+    lines.push("");
+    lines.push(out.gray("  ← → or 1/2/3 to switch tabs · Esc to close"));
+    return lines;
+  }
+
   private composeBaseLines(): string[] {
     const { io, out, unicode } = this.deps;
     return composeApp(this.term, this.input, out, unicode, this.keyCtx, {
@@ -665,7 +895,7 @@ export class InteractiveSession {
       tick: this.tick,
       promptLabel: out.green(unicode ? "› " : "> "),
       promptWidth: 2,
-    }).lines.slice(0, -2); // drop the input + footer; the approval panel replaces them
+    }).lines.slice(0, -4); // drop separator + input + completion + footer
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────

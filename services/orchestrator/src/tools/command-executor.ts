@@ -121,7 +121,7 @@ export interface SpawnResult {
 //   !          delayed-expansion variable substitution (when cmd /v:on)
 //   \x00-\x1f  control characters; a newline could append a second command line
 // eslint-disable-next-line no-control-regex
-const SHELL_META_CHARS = /["&|<>^%()!\x00-\x1f]/;
+export const SHELL_META_CHARS = /["&|<>^%()!\x00-\x1f]/;
 
 export function runProcessSafe(
   executable: string,

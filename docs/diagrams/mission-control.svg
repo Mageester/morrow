@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380">
+  <defs><marker id="a" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#94a3b8"/></marker></defs>
+  <rect width="800" height="380" fill="#0f172a" rx="12"/>
+  <text x="400" y="30" fill="white" font-size="16" font-weight="bold" text-anchor="middle" font-family="Arial">Mission Control (Ctrl+T) — 3-Tab Cockpit</text>
+  <rect x="50" y="55" width="200" height="28" rx="6" fill="#143C78" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="150" y="74" fill="white" font-size="11" font-weight="bold" text-anchor="middle" font-family="Arial">1  Task Tree</text>
+  <rect x="260" y="55" width="200" height="28" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+  <text x="360" y="74" fill="#64748b" font-size="11" text-anchor="middle" font-family="Arial">2  Live State</text>
+  <rect x="470" y="55" width="200" height="28" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+  <text x="570" y="74" fill="#64748b" font-size="11" text-anchor="middle" font-family="Arial">3  Mission Result</text>
+  <line x1="50" y1="91" x2="750" y2="91" stroke="#334155" stroke-width="1"/>
+  <rect x="50" y="100" width="700" height="250" fill="#0a1628" stroke="#22d3ee" stroke-width="0.5" rx="4"/>
+  <text x="65" y="125" fill="#34d399" font-size="10" font-family="monospace">task-abc  done  agent_chat</text>
+  <text x="65" y="145" fill="#94a3b8" font-size="9" font-family="monospace">├─ child-1  done  agent_chat</text>
+  <text x="65" y="163" fill="#94a3b8" font-size="9" font-family="monospace">└─ child-2  running  agent_chat</text>
+  <text x="65" y="181" fill="#94a3b8" font-size="9" font-family="monospace">   ├─ fix-collision  done  edit_file</text>
+  <text x="65" y="199" fill="#94a3b8" font-size="9" font-family="monospace">   ├─ fix-ground  done  edit_file</text>
+  <text x="65" y="217" fill="#fbbf24" font-size="9" font-family="monospace">   └─ run-tests  running  run_command</text>
+  <text x="65" y="250" fill="#64748b" font-size="9" font-family="monospace">Tab 2: Live State — activity 24 · tools 8 · patches 3</text>
+  <text x="65" y="267" fill="#64748b" font-size="9" font-family="monospace">git master · context 8.4k/128k (7%) · agents 1 · plan 3/5 done</text>
+  <text x="65" y="290" fill="#64748b" font-size="9" font-family="monospace">Tab 3: Mission Result — completed · 5 files · 3 commands · 2 approvals · verified</text>
+  <text x="65" y="310" fill="#64748b" font-size="9" font-family="monospace">Next: use /diff to inspect changes or /undo for rollback</text>
+  <text x="65" y="335" fill="white" font-size="9" font-family="monospace">← → or 1/2/3 to switch tabs · Esc to close · Ctrl+T to reopen</text>
+</svg>

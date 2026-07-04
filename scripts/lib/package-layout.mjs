@@ -17,11 +17,16 @@ import { openSync, readSync, fstatSync, closeSync } from "node:fs";
 export const REQUIRED_PACKAGE_FILES = [
   "morrow.cmd",
   "morrow.mjs",
+  "dispatch.mjs",
   "runtime/node.exe",
   "orchestrator/dist/src/index.js",
   "orchestrator/node_modules/@morrow/contracts/dist/index.js",
+  "orchestrator/node_modules/@morrow/orchestrator/dist/src/lib.js",
   "orchestrator/node_modules/fastify/fastify.js",
   "orchestrator/node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+  // The bundled CLI is the installed launcher's product surface (ask/fix/yolo/…).
+  "orchestrator/cli/bin/morrow.mjs",
+  "orchestrator/cli/src/main.js",
   "web/index.html",
   "skills/coding/SKILL.md",
   "VERSION",

@@ -43,6 +43,29 @@ export function skillsAsSlashCommands(root: string): Array<{ name: string; arg?:
     }));
 }
 
+/**
+ * Offensive / red-team skills whose purpose is to probe or bypass model safety.
+ * They must never be enabled by a blanket recommendation and are excluded from
+ * the packaged product; this list mirrors the packager's exclusion set.
+ */
+export const OFFENSIVE_SKILL_IDS: ReadonlySet<string> = new Set([
+  "adversarial-suffix", "context-smuggler", "dan-jailbreak", "encoding-warfare",
+  "extraction-forge", "godmode", "jailbreak-evolver", "multi-turn-persuasion",
+  "prompt-leak", "refusal-inverter", "roleplay-bypass", "sandbox-escape",
+  "toxicity-prober", "unicode-warfare",
+]);
+
+/**
+ * Whether a skill belongs in the safe default bundle enabled by onboarding's
+ * recommended option. A skill is safe only when it is not an offensive/red-team
+ * skill AND its declared risk class is not "high". Everything else must be
+ * approved individually.
+ */
+export function isSafeDefaultSkill(id: string, riskClass?: string): boolean {
+  if (OFFENSIVE_SKILL_IDS.has(id)) return false;
+  return riskClass !== "high";
+}
+
 /** Verification is local-only: malformed or tampered skills can never be run implicitly. */
 export function verifySkill(directory: string): { ok: boolean; issues: string[] } {
   const manifest = readManifest(directory);

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { resolve, relative, join, isAbsolute, dirname } from "node:path";
 import { inspectWorkspace, type WorkspaceEntry } from "../workspace/inspector.js";
 import { readWorkspaceFile, SafeReadError } from "../workspace/safe-reader.js";
+import { createGitignoreMatcher, isBuiltInIgnoredName } from "../workspace/ignore.js";
 import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
 import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js";
 import { projectRepository } from "../repositories/projects.js";
@@ -15,6 +16,8 @@ import { memoryRepository } from "../repositories/memory.js";
 import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
+import { contextSummariesRepository } from "../repositories/context-summaries.js";
+import { symbolIndexRepository } from "../repositories/symbols.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
@@ -24,10 +27,12 @@ import { resolveMorrowHome } from "../home.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
+import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
+import { prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -78,6 +83,110 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, env: Node
   return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
 }
 
+const TOOL_RESULT_BYTE_LIMIT = 24 * 1024;
+const TOP_LEVEL_ENTRY_LIMIT = 80;
+
+async function buildWorkspaceDiscovery(
+  project: { id: string; workspacePath: string },
+  symbolIndex: ReturnType<typeof symbolIndexRepository>,
+  abortSignal?: AbortSignal
+): Promise<string> {
+  const root = project.workspacePath;
+  const topLevel = listTopLevel(root, TOP_LEVEL_ENTRY_LIMIT);
+  const manifestPaths = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "deno.json", "tsconfig.json", "vite.config.ts", "next.config.js", "README.md", "AGENTS.md"];
+  const manifests = manifestPaths
+    .map((path) => readOptionalWorkspaceText(root, path, path.toLowerCase().endsWith("readme.md") ? 2_000 : 4_000))
+    .filter((item): item is { path: string; bytes: number; preview: string } => Boolean(item));
+  const git = await gitStatus(root, { maxOutputBytes: 12 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+  const symbols = symbolIndex.status(project.id);
+  return JSON.stringify({
+    kind: "workspace_discovery",
+    root: ".",
+    limits: { topLevelEntries: TOP_LEVEL_ENTRY_LIMIT, manifestPreviewBytes: 4_000, toolResultBytes: TOOL_RESULT_BYTE_LIMIT },
+    topLevel,
+    manifests,
+    indicators: inferIndicators(topLevel, manifests),
+    git,
+    symbols,
+    nextStep: "Use search_symbols/search_files/search_text/list_files/read_file narrowly for files relevant to the user's request. Do not call inspect_workspace again unless the project root changed.",
+  });
+}
+
+function listTopLevel(root: string, limit: number): { entries: Array<{ path: string; type: "file" | "directory"; size?: number }>; truncated: boolean } {
+  const entries: Array<{ path: string; type: "file" | "directory"; size?: number }> = [];
+  const ignoredByGitignore = createGitignoreMatcher(root, (path) => { try { return readFileSync(path, "utf8"); } catch { return null; } });
+  let truncated = false;
+  try {
+    for (const child of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (isBuiltInIgnoredName(child.name, child.isDirectory())) continue;
+      if (ignoredByGitignore(child.name, child.isDirectory())) continue;
+      if (entries.length >= limit) { truncated = true; break; }
+      const full = join(root, child.name);
+      if (child.isDirectory()) entries.push({ path: child.name, type: "directory" });
+      else if (child.isFile()) {
+        let size: number | undefined;
+        try { size = statSync(full).size; } catch { size = undefined; }
+        entries.push({ path: child.name, type: "file", ...(size === undefined ? {} : { size }) });
+      }
+    }
+  } catch {
+    return { entries, truncated };
+  }
+  return { entries, truncated };
+}
+
+function readOptionalWorkspaceText(root: string, path: string, maxBytes: number): { path: string; bytes: number; preview: string } | null {
+  try {
+    const file = readWorkspaceFile(root, path, maxBytes);
+    return { path: file.path, bytes: file.size, preview: file.content.slice(0, maxBytes) };
+  } catch {
+    return null;
+  }
+}
+
+function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file" | "directory" }> }, manifests: Array<{ path: string; preview: string }>): { languages: string[]; frameworks: string[] } {
+  const languages = new Set<string>();
+  const frameworks = new Set<string>();
+  for (const entry of topLevel.entries) {
+    if (/\.(ts|tsx)$/.test(entry.path)) languages.add("TypeScript");
+    if (/\.(js|jsx|mjs|cjs)$/.test(entry.path)) languages.add("JavaScript");
+    if (/\.py$/.test(entry.path)) languages.add("Python");
+    if (/\.rs$/.test(entry.path)) languages.add("Rust");
+    if (/\.go$/.test(entry.path)) languages.add("Go");
+  }
+  for (const manifest of manifests) {
+    const text = manifest.preview.toLowerCase();
+    if (manifest.path === "package.json") languages.add("JavaScript/TypeScript");
+    if (manifest.path === "pyproject.toml") languages.add("Python");
+    if (manifest.path === "Cargo.toml") languages.add("Rust");
+    if (manifest.path === "go.mod") languages.add("Go");
+    for (const fw of ["react", "vite", "next", "astro", "svelte", "vue", "vitest", "playwright", "express", "fastify"]) {
+      if (text.includes(fw)) frameworks.add(fw);
+    }
+  }
+  return { languages: [...languages], frameworks: [...frameworks] };
+}
+
+function capToolResult(toolName: string, result: string): string {
+  const bytes = Buffer.byteLength(result, "utf8");
+  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return result;
+  try {
+    const parsed = JSON.parse(result) as any;
+    if (Array.isArray(parsed.entries)) {
+      return JSON.stringify({ ...parsed, entries: parsed.entries.slice(0, 120), truncatedForContext: true, originalBytes: bytes, note: `${toolName} returned a large result; only the first 120 entries are included. Narrow with list_files/search_files/search_text/read_file.` });
+    }
+  } catch {
+    // Fall through to text head/tail summary.
+  }
+  const head = result.slice(0, Math.floor(TOOL_RESULT_BYTE_LIMIT * 0.65));
+  const tail = result.slice(-Math.floor(TOOL_RESULT_BYTE_LIMIT * 0.25));
+  return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: bytes, head, tail });
+}
+
+function duplicateToolResult(toolName: string, previousBytes: number): string {
+  return JSON.stringify({ duplicate: true, tool: toolName, previousResultBytes: previousBytes, note: "Identical tool call already ran in this task. Morrow reused the previous observation and omitted duplicate output to preserve context." });
+}
+
 type Dependencies = {
   db: Database.Database;
   taskId: string;
@@ -111,6 +220,8 @@ export async function executeAgentChatTask({
   const approvals = approvalsRepository(db);
   const changeSets = changeSetsRepository(db);
   const continuationsRepo = taskContinuationsRepository(db);
+  const contextSummaries = contextSummariesRepository(db);
+  const symbolIndex = symbolIndexRepository(db);
 
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
@@ -123,7 +234,21 @@ export async function executeAgentChatTask({
   }
   const projectId = project.id;
   const projectName = project.name;
-  const workspacePath = project.workspacePath;
+  // A task assigned to a worktree executes entirely inside it: reads, writes,
+  // and commands are scoped to the isolated checkout, never the main tree.
+  let workspacePath = project.workspacePath;
+  const assignedWorktreeId = (task as { worktreeId?: string | null }).worktreeId;
+  if (assignedWorktreeId) {
+    const worktreeRow = db.prepare("SELECT * FROM worktrees WHERE id = ?").get(assignedWorktreeId) as
+      | { status: string; path: string; branch: string }
+      | undefined;
+    if (!worktreeRow || worktreeRow.status !== "active" || !existsSync(worktreeRow.path)) {
+      throw new Error(
+        `Assigned worktree is not available (${worktreeRow ? worktreeRow.status : "missing"}). Recreate it or start the task without a worktree.`
+      );
+    }
+    workspacePath = worktreeRow.path;
+  }
 
   // Find the assistant message associated with this task
   const allMessages = db.prepare("SELECT * FROM conversation_messages WHERE task_id = ?").all(taskId);
@@ -188,6 +313,13 @@ export async function executeAgentChatTask({
   const turnCeiling = adaptiveTurnCeiling(turnsLimit);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
+  const contextBudget = resolveContextBudget({
+    providerId,
+    model: resolvedModel || assistantMessageRow.model || `${providerId}-default`,
+    presetContextBudgetBytes: contextBytesLimit,
+    outputBudgetTokens: preset.outputBudgetTokens,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
+  });
 
   // Resolve active provider: an injected provider wins (tests); otherwise the
   // deterministic mock for demo mode, or a registry-built real provider.
@@ -286,7 +418,7 @@ export async function executeAgentChatTask({
   const tools: ToolDefinition[] = [
     {
       name: "inspect_workspace",
-      description: "Recursively lists all files in the project workspace. Returns a list of relative file paths and sizes.",
+      description: "Performs bounded initial project discovery only: top-level structure, manifests, README/AGENTS previews, Git state, and symbol-index status. Does not recursively dump the repository; use search/list/read tools narrowly after this.",
       parameters: {
         type: "object",
         properties: {}
@@ -294,7 +426,7 @@ export async function executeAgentChatTask({
     },
     {
       name: "list_files",
-      description: "Lists directory contents (files and subdirectories) relative to the workspace root.",
+      description: "Lists a single directory relative to the workspace root with strict limits and ignore rules. Use this for narrow exploration after inspect_workspace.",
       parameters: {
         type: "object",
         properties: {
@@ -334,6 +466,18 @@ export async function executeAgentChatTask({
         properties: {
           query: { type: "string", description: "Literal filename text to find" },
           path: { type: "string", description: "Optional relative directory" }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "search_symbols",
+      description: "Searches the project symbol index for functions, classes, methods, types, variables, and JSON config keys. Prefer this before broad file searches. Returns concise locations only.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Symbol name or qualified-name text to find" },
+          limit: { type: "number", description: "Maximum symbols to return, up to 50" }
         },
         required: ["query"]
       }
@@ -428,7 +572,7 @@ export async function executeAgentChatTask({
   // sees run_command/propose_patch; plan-only sees nothing; only agent mode
   // exposes execution and write tools.
   const READ_ONLY_TOOL_NAMES = new Set([
-    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
+    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
   ]);
   const exposedTools: ToolDefinition[] =
     activeToolProfile === "none" ? [] : activeToolProfile === "agent" ? tools : tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name));
@@ -444,7 +588,7 @@ export async function executeAgentChatTask({
 You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
 You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
-If you need to explore, first call inspect_workspace or list_files, then call read_file on selected files.
+If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
 You must run test/verification commands using run_command, and propose file modifications using propose_patch.
 Morrow ships installed skills (reusable expert workflows). They ARE available â€” never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
@@ -776,6 +920,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let turn = 0;
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
+  const toolResultBytesBySignature = new Map<string, number>();
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
@@ -932,16 +1077,85 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const currentToolCalls: any[] = [];
 
     try {
-      const opened = await openStreamWithFallback(streamCandidates, chatMessages, {
-        ...(abortSignal ? { abortSignal } : {}),
-        tools: exposedTools,
-        model: resolvedModel || assistantMessageRow.model || undefined,
-        timeoutMs: preset.timeoutMs,
-        temperature: preset.temperature,
-        maxOutputTokens: preset.outputBudgetTokens
+      const contextModel = resolvedModel || assistantMessageRow.model || `${providerType}-model`;
+      const preparedContext = prepareContextForProvider(chatMessages, {
+        providerId: providerType,
+        model: contextModel,
+        maxInputTokens: contextBudget.maxInputTokens,
+        compact: true,
+        recentRawGroups: 1,
       });
+      event("context.budget_calculated", {
+        provider: providerType,
+        model: contextModel,
+        contextWindowTokens: contextBudget.contextWindowTokens,
+        contextWindowSource: contextBudget.contextWindowSource,
+        exactModelLimit: contextBudget.exactModelLimit,
+        reservedOutputTokens: contextBudget.outputBudgetTokens,
+        reservedTokens: contextBudget.reservedTokens,
+        maxInputTokens: contextBudget.maxInputTokens,
+      });
+      for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
+      if (!preparedContext.ok) {
+        transitionAgentState("failed", { message: preparedContext.actionableMessage });
+        records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
+        convs.updateMessageContentAndState(assistantMessageRow.id, preparedContext.actionableMessage, "failed", now());
+        if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
+        event("task.failed", { message: preparedContext.actionableMessage });
+        return;
+      }
+      if (preparedContext.summary) {
+        const record = contextSummaries.record({
+          id: randomUUID(),
+          projectId,
+          conversationId,
+          taskId,
+          method: preparedContext.summary.method,
+          content: preparedContext.summary.content,
+          sourceStartIndex: preparedContext.summary.sourceStartIndex,
+          sourceEndIndex: preparedContext.summary.sourceEndIndex,
+          sourceMessageCount: preparedContext.summary.sourceMessageCount,
+          createdAt: now(),
+        });
+        const last = records.listEvents(taskId).filter((ev) => ev.type === "context.compaction_completed").at(-1);
+        if (last) {
+          event("context.compaction_completed", {
+            summaryId: record.id,
+            method: record.method,
+            compactedGroups: preparedContext.compactedGroups,
+            sourceMessageCount: record.sourceMessageCount,
+          });
+        }
+      }
+      if (preparedContext.removedGroups > 0 || preparedContext.compactedGroups > 0) {
+        event("context.trimmed", {
+          finalTokens: preparedContext.finalTokens,
+          maxInputTokens: contextBudget.maxInputTokens,
+          trimmedMessages: preparedContext.compactedGroups + preparedContext.removedGroups,
+          compactedGroups: preparedContext.compactedGroups,
+          removedGroups: preparedContext.removedGroups,
+          countingMethod: preparedContext.tokenCount.method,
+          exact: preparedContext.tokenCount.exact,
+        });
+      }
+      const opened = await openStreamWithFallback(
+        streamCandidates,
+        preparedContext.messages,
+        {
+          ...(abortSignal ? { abortSignal } : {}),
+          tools: exposedTools,
+          model: resolvedModel || assistantMessageRow.model || undefined,
+          timeoutMs: preset.timeoutMs,
+          temperature: preset.temperature,
+          maxOutputTokens: preset.outputBudgetTokens
+        },
+        globalRateGuard
+      );
       if (opened.fellBackFrom.length > 0) {
         event("provider.fallback", { from: opened.fellBackFrom, servedBy: opened.servedBy });
+      }
+      if (opened.deprioritizedRateLimited.length > 0) {
+        event("provider.rate_limited", { deprioritized: opened.deprioritizedRateLimited, servedBy: opened.servedBy });
       }
       const stream = opened.stream;
 
@@ -1081,14 +1295,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             throw new Error(`Tool "${tc.name}" is not permitted in ${agentMode} mode`);
           }
 
-          if (tc.name === "inspect_workspace") {
-            const res = inspectWorkspace(project.workspacePath, { maxDepth: 8, maxResults: 500 });
-            resultStr = JSON.stringify({
-              entries: res.entries.map(e => ({ path: e.path, size: e.size })),
-              truncatedByDepth: res.truncatedByDepth,
-              truncatedByCount: res.truncatedByCount
-            });
-            event("workspace.inspected", { resultCount: res.entries.length });
+          const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
+          if (duplicateBytes !== undefined) {
+            resultStr = duplicateToolResult(tc.name, duplicateBytes);
+            event("workspace.inspected", { kind: "duplicate_tool", toolName: tc.name, resultCount: 0, duplicate: true });
+          } else if (tc.name === "inspect_workspace") {
+            resultStr = await buildWorkspaceDiscovery(project, symbolIndex, abortSignal);
+            const parsed = JSON.parse(resultStr) as { topLevel?: { entries?: unknown[] } };
+            event("workspace.inspected", { kind: "workspace_discovery", resultCount: parsed.topLevel?.entries?.length ?? 0 });
           } else if (tc.name === "list_files") {
             const relPath = args.path || ".";
             const res = inspectWorkspace(project.workspacePath, { startPath: relPath, maxDepth: 1, maxResults: 100 });
@@ -1150,6 +1364,31 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "search_files", query: args.query, resultCount: result.matches.length, truncated: result.truncatedByCount || result.truncatedByTimeout });
+          } else if (tc.name === "search_symbols") {
+            if (typeof args.query !== "string") throw new Error("Missing required argument: query");
+            const limit = typeof args.limit === "number" ? Math.min(Math.max(Math.floor(args.limit), 1), 50) : 20;
+            const status = symbolIndex.status(project.id);
+            const matches = status.fileCount === 0 ? [] : symbolIndex.search(project.id, args.query, { limit });
+            resultStr = JSON.stringify({
+              query: args.query,
+              status: status.fileCount === 0 ? "empty" : "ready",
+              hint: status.fileCount === 0 ? "Symbol index is empty; run `morrow symbols rebuild`." : null,
+              symbols: matches.map((symbol) => ({
+                name: symbol.name,
+                fqName: symbol.fqName,
+                kind: symbol.kind,
+                filePath: symbol.filePath,
+                startLine: symbol.startLine,
+                startColumn: symbol.startColumn,
+                endLine: symbol.endLine,
+                endColumn: symbol.endColumn,
+                parentName: symbol.parentName,
+                exported: symbol.exported,
+              })),
+            });
+            totalBytesRead += Buffer.byteLength(resultStr, "utf8");
+            if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
+            event("workspace.inspected", { kind: "search_symbols", query: args.query, resultCount: matches.length, empty: status.fileCount === 0 });
           } else if (tc.name === "git_status") {
             const result = await gitStatus(project.workspacePath, { maxOutputBytes: 64 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
             resultStr = JSON.stringify(result);
@@ -1429,7 +1668,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           event("tool.failed", { toolName: tc.name, message: errorMessage });
         }
 
-        // Complete tool call record
+        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
+        if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
+
+        // Complete tool call record. The database keeps raw output for /output;
+        // only the model-facing context gets capped/summarized.
         convs.upsertToolCall({
           ...toolCallRecord,
           status: isSuccess ? "completed" : "failed",
@@ -1459,7 +1702,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           role: "tool",
           name: tc.name,
           toolCallId: tc.id,
-          content: resultStr
+          content: contextResultStr
         });
       }
       transitionAgentState("observing", { toolCount: currentToolCalls.length });
