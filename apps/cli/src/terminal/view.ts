@@ -246,8 +246,11 @@ export function toolCardLines(card: ToolCard, out: Output, unicode: boolean, tic
   const statusGlyph =
     card.status === "completed" ? out.green(g.ok) : card.status === "failed" ? out.red(g.fail) : out.gray(g.spinner[tick % g.spinner.length]!);
   const head = [`  ${statusGlyph} ${out.bold(card.name)}`];
-  if (card.purpose) head.push(out.gray(`${g.dot} ${relativePath(card.purpose, workspace)}`));
-  if (card.scope) head.push(out.gray(`${g.dot} ${relativePath(card.scope, workspace)}`));
+  const relPurpose = card.purpose ? relativePath(card.purpose, workspace) : null;
+  const relScope = card.scope ? relativePath(card.scope, workspace) : null;
+  if (relPurpose) head.push(out.gray(`${g.dot} ${relPurpose}`));
+  // Only show scope when it adds new info beyond purpose
+  if (relScope && relScope !== relPurpose) head.push(out.gray(`${g.dot} ${relScope}`));
   if (card.elapsedMs !== undefined) head.push(out.gray(`${g.dot} ${formatElapsed(card.elapsedMs)}`));
   const lines = [head.join(" ")];
 

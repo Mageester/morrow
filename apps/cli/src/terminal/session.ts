@@ -177,8 +177,8 @@ export class InteractiveSession {
       if (k.str === "1") { this.missionTab = 0; return void this.requestPaint(true); }
       if (k.str === "2") { this.missionTab = 1; return void this.requestPaint(true); }
       if (k.str === "3") { this.missionTab = 2; return void this.requestPaint(true); }
-      if (k.name === "escape") { this.input = { ...this.input, overlay: undefined }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
-      if (k.ctrl && k.name === "c") { this.input = { ...this.input, overlay: undefined }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      if (k.name === "escape") { this.input = { ...this.input, overlay: "none" }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
+      if (k.ctrl && k.name === "c") { this.input = { ...this.input, overlay: "none" }; this.missionTab = 0; this.missionCache = {}; return void this.requestPaint(true); }
       return;
     }
 
@@ -507,10 +507,10 @@ export class InteractiveSession {
         activityCount: this.term.activity.length,
         toolCount: this.term.tools.length,
         patchCount: this.term.patches.length,
-        gitBranch: this.term.git?.branch,
-        gitDirty: this.term.git?.dirty,
-        contextTokens: this.term.contextUsage?.usedTokens,
-        contextMax: this.term.contextUsage?.maxTokens,
+        ...(this.term.git?.branch !== undefined ? { gitBranch: this.term.git.branch } : {}),
+        ...(this.term.git?.dirty !== undefined ? { gitDirty: this.term.git.dirty } : {}),
+        ...(this.term.contextUsage?.usedTokens !== undefined ? { contextTokens: this.term.contextUsage.usedTokens } : {}),
+        ...(this.term.contextUsage?.maxTokens !== undefined ? { contextMax: this.term.contextUsage.maxTokens } : {}),
         agentCount: this.term.agents.filter((a) => a.status === "running").length,
         processCount: this.term.processes.filter((p) => p.status === "running").length,
         planCount: this.term.plan.length,
