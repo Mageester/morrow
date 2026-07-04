@@ -495,3 +495,262 @@ export const HealthSchema=z.object({
   time:z.string(),
 }).strict();
 export type Health=z.infer<typeof HealthSchema>;
+
+// ── Verified Missions (Morrow Advantage, beta.20) ──────────────────────────
+// A Mission is a first-class, durable, resumable unit of accountable work. It
+// converts a free-text objective into measurable success criteria, executes
+// under supervision, records every meaningful failure and recovery, verifies
+// each criterion with concrete evidence, obtains an independent review, and
+// grades itself honestly. All of it survives service restarts.
+
+export const MissionStatusSchema=z.enum([
+  "draft","awaiting_criteria_approval","running","reviewing",
+  "completed","completed_with_reservations","partially_completed","blocked","failed","cancelled",
+]);
+export type MissionStatus=z.infer<typeof MissionStatusSchema>;
+
+// Terminal states never transition further; used by the state machine + grading.
+export const MISSION_TERMINAL_STATUSES:readonly MissionStatus[]=[
+  "completed","completed_with_reservations","partially_completed","blocked","failed","cancelled",
+];
+
+export const MissionCriterionStateSchema=z.enum([
+  "proposed","approved","in_progress","verified","failed","waived","unverified",
+]);
+export type MissionCriterionState=z.infer<typeof MissionCriterionStateSchema>;
+
+// How a criterion is proven. `manual` requires a structured human/agent
+// observation; every other kind produces evidence from a concrete action.
+export const MissionVerificationKindSchema=z.enum([
+  "command","test","build","typecheck","lint","runtime","http","browser","diff","review","manual","artifact",
+]);
+export type MissionVerificationKind=z.infer<typeof MissionVerificationKindSchema>;
+
+export const MissionVerificationStrategySchema=z.object({
+  kind:MissionVerificationKindSchema,
+  // A shell command to run (command/test/build/typecheck/lint/runtime).
+  command:z.string().max(2000).optional(),
+  // Expected exit code for command-style strategies (default 0).
+  expectExitCode:z.number().int().optional(),
+  // For http: a URL to probe and the expected status.
+  url:z.string().max(2000).optional(),
+  expectStatus:z.number().int().optional(),
+  // For diff: a path glob that changes are expected to stay within.
+  pathScope:z.string().max(500).optional(),
+  // Human-readable description of what evidence proves this criterion.
+  describe:z.string().max(500).optional(),
+}).strict();
+export type MissionVerificationStrategy=z.infer<typeof MissionVerificationStrategySchema>;
+
+export const MissionCriterionSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  order:z.number().int().nonnegative(),
+  description:z.string().min(1).max(1000),
+  state:MissionCriterionStateSchema,
+  verification:MissionVerificationStrategySchema,
+  evidenceIds:z.array(z.string()).default([]),
+  failureReason:z.string().max(2000).nullable().default(null),
+  waiverReason:z.string().max(2000).nullable().default(null),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export type MissionCriterion=z.infer<typeof MissionCriterionSchema>;
+
+export const MissionEvidenceTypeSchema=z.enum([
+  "command","test","build","typecheck","lint","runtime","http","browser","diff","review","manual","artifact",
+]);
+export type MissionEvidenceType=z.infer<typeof MissionEvidenceTypeSchema>;
+export const MissionEvidenceStatusSchema=z.enum(["passed","failed","inconclusive"]);
+export type MissionEvidenceStatus=z.infer<typeof MissionEvidenceStatusSchema>;
+export const MissionEvidenceSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  criterionIds:z.array(z.string()).default([]),
+  type:MissionEvidenceTypeSchema,
+  summary:z.string().min(1).max(1000),
+  command:z.string().max(2000).nullable().default(null),
+  exitCode:z.number().int().nullable().default(null),
+  // Reference into the existing output store (never the full body inline).
+  outputRef:z.string().max(500).nullable().default(null),
+  artifactPath:z.string().max(1024).nullable().default(null),
+  status:MissionEvidenceStatusSchema,
+  recordedAt:z.string().datetime(),
+}).strict();
+export type MissionEvidence=z.infer<typeof MissionEvidenceSchema>;
+
+export const MissionFailureCategorySchema=z.enum([
+  "tool_error","patch_context_mismatch","test_failure","build_failure","provider_failure",
+  "permission_denied","timeout","invalid_output","loop_detected","unknown",
+]);
+export type MissionFailureCategory=z.infer<typeof MissionFailureCategorySchema>;
+export const MissionFailureSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  taskId:z.string().nullable().default(null),
+  agentId:z.string().nullable().default(null),
+  operation:z.string().min(1).max(500),
+  // A stable signature (category + normalized operation) used for loop detection.
+  normalizedSignature:z.string().min(1).max(500),
+  category:MissionFailureCategorySchema,
+  message:z.string().max(2000),
+  attempt:z.number().int().positive(),
+  recoveryStrategy:z.string().max(500).nullable().default(null),
+  recovered:z.boolean().default(false),
+  createdAt:z.string().datetime(),
+}).strict();
+export type MissionFailure=z.infer<typeof MissionFailureSchema>;
+
+export const MissionCheckpointSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  label:z.string().min(1).max(200),
+  reason:z.string().max(500),
+  // Git commit sha when the workspace is a git repo; otherwise null (a
+  // content-snapshot checkpoint is used and referenced by checkpointName).
+  gitRef:z.string().max(200).nullable().default(null),
+  checkpointName:z.string().max(200).nullable().default(null),
+  affectedFiles:z.array(z.string()).default([]),
+  rollbackAvailable:z.boolean().default(false),
+  createdAt:z.string().datetime(),
+}).strict();
+export type MissionCheckpoint=z.infer<typeof MissionCheckpointSchema>;
+
+export const MissionReviewVerdictSchema=z.enum([
+  "approved","approved_with_risks","revisions_required","insufficient_evidence",
+]);
+export type MissionReviewVerdict=z.infer<typeof MissionReviewVerdictSchema>;
+export const MissionReviewCriterionJudgmentSchema=z.object({
+  criterionId:z.string(),
+  judgment:z.enum(["satisfied","not_satisfied","unclear"]),
+  note:z.string().max(1000).default(""),
+}).strict();
+export const MissionReviewSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  verdict:MissionReviewVerdictSchema,
+  // The reviewer is a SEPARATE execution; this records which provider/model ran it.
+  reviewerProvider:z.string().max(100).nullable().default(null),
+  reviewerModel:z.string().max(200).nullable().default(null),
+  criterionJudgments:z.array(MissionReviewCriterionJudgmentSchema).default([]),
+  regressionRisks:z.array(z.string().max(500)).default([]),
+  suspiciousChanges:z.array(z.string().max(500)).default([]),
+  missingVerification:z.array(z.string().max(500)).default([]),
+  concerns:z.array(z.string().max(500)).default([]),
+  recommendedStatus:MissionStatusSchema,
+  summary:z.string().max(4000).default(""),
+  createdAt:z.string().datetime(),
+}).strict();
+export type MissionReview=z.infer<typeof MissionReviewSchema>;
+
+export const MissionBudgetSchema=z.object({
+  maxUsd:z.number().nonnegative().nullable().default(null),
+  maxAttempts:z.number().int().positive().nullable().default(null),
+  maxReviewCycles:z.number().int().positive().default(2),
+  spentUsd:z.number().nonnegative().default(0),
+  attemptsUsed:z.number().int().nonnegative().default(0),
+  reviewCyclesUsed:z.number().int().nonnegative().default(0),
+}).strict();
+export type MissionBudget=z.infer<typeof MissionBudgetSchema>;
+
+export const MissionResultSchema=z.object({
+  status:MissionStatusSchema,
+  objective:z.string(),
+  criteriaVerified:z.number().int().nonnegative(),
+  criteriaFailed:z.number().int().nonnegative(),
+  criteriaUnverified:z.number().int().nonnegative(),
+  criteriaWaived:z.number().int().nonnegative(),
+  criteriaTotal:z.number().int().nonnegative(),
+  reviewVerdict:MissionReviewVerdictSchema.nullable().default(null),
+  failuresTotal:z.number().int().nonnegative().default(0),
+  failuresRecovered:z.number().int().nonnegative().default(0),
+  humanInterventions:z.number().int().nonnegative().default(0),
+  tasksCompleted:z.number().int().nonnegative().default(0),
+  changedFiles:z.array(z.string()).default([]),
+  unresolvedRisks:z.array(z.string().max(1000)).default([]),
+  artifacts:z.array(z.string().max(500)).default([]),
+  checkpointRefs:z.array(z.string()).default([]),
+  spentUsd:z.number().nonnegative().nullable().default(null),
+  elapsedMs:z.number().int().nonnegative().nullable().default(null),
+  summary:z.string().max(8000).default(""),
+}).strict();
+export type MissionResult=z.infer<typeof MissionResultSchema>;
+
+export const MissionSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  projectId:z.string(),
+  conversationId:z.string().nullable().default(null),
+  objective:z.string().min(1).max(8000),
+  status:MissionStatusSchema,
+  autoApprove:z.boolean().default(false),
+  criteria:z.array(MissionCriterionSchema).default([]),
+  taskTreeRootId:z.string().nullable().default(null),
+  budget:MissionBudgetSchema,
+  checkpoints:z.array(MissionCheckpointSchema).default([]),
+  evidence:z.array(MissionEvidenceSchema).default([]),
+  failures:z.array(MissionFailureSchema).default([]),
+  finalReview:MissionReviewSchema.nullable().default(null),
+  result:MissionResultSchema.nullable().default(null),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+  startedAt:z.string().datetime().nullable().default(null),
+  completedAt:z.string().datetime().nullable().default(null),
+}).strict();
+export type Mission=z.infer<typeof MissionSchema>;
+
+// Append-only mission timeline; a durable, auditable record distinct from raw
+// model reasoning (which is never stored).
+export const MissionEventTypeSchema=z.enum([
+  "mission.created","mission.criteria_generated","mission.criteria_approved","mission.started",
+  "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
+  "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
+  "mission.review_started","mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
+]);
+export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
+export const MissionEventSchema=z.object({
+  id:z.string(),
+  missionId:z.string(),
+  sequence:z.number().int().positive(),
+  type:MissionEventTypeSchema,
+  summary:z.string().max(1000),
+  data:z.record(z.string(),z.unknown()).default({}),
+  createdAt:z.string().datetime(),
+}).strict();
+export type MissionEvent=z.infer<typeof MissionEventSchema>;
+
+// ── Mission API inputs ─────────────────────────────────────────────────────
+export const CreateMissionSchema=z.object({
+  objective:z.string().trim().min(1).max(8000),
+  conversationId:z.string().optional(),
+  autoApprove:z.boolean().optional(),
+  maxUsd:z.number().nonnegative().optional(),
+  maxAttempts:z.number().int().positive().optional(),
+}).strict();
+export type CreateMissionInput=z.infer<typeof CreateMissionSchema>;
+
+export const AddMissionCriterionSchema=z.object({
+  description:z.string().trim().min(1).max(1000),
+  verification:MissionVerificationStrategySchema.optional(),
+}).strict();
+export type AddMissionCriterionInput=z.infer<typeof AddMissionCriterionSchema>;
+
+export const UpdateMissionCriterionSchema=z.object({
+  description:z.string().trim().min(1).max(1000).optional(),
+  state:MissionCriterionStateSchema.optional(),
+  verification:MissionVerificationStrategySchema.optional(),
+  waiverReason:z.string().trim().max(2000).optional(),
+}).strict().refine(
+  (v)=>v.description!==undefined||v.state!==undefined||v.verification!==undefined||v.waiverReason!==undefined,
+  {message:"Provide at least one field to update"},
+);
+export type UpdateMissionCriterionInput=z.infer<typeof UpdateMissionCriterionSchema>;
+
+export {
+  MISSION_TRANSITIONS,
+  isTerminalMissionStatus,
+  canTransitionMission,
+  assertMissionTransition,
+  MissionTransitionError,
+  gradeMission,
+} from "./mission-state.js";

@@ -106,7 +106,36 @@ async function resolveRef(
   if (byName.length === 1) return byName[0]!;
   if (byName.length > 1) throw usageError(`Multiple projects named "${ref}". Use the project id instead.`);
 
+  // Short-id prefix match — the id form `morrow projects list` prints (first 8
+  // chars). Only after exact id/name so an exact match always wins.
+  const prefix = matchProjectByIdPrefix(projects, ref);
+  if (prefix.project) return prefix.project;
+  if (prefix.ambiguous.length > 1) {
+    throw usageError(
+      `Ambiguous project id "${ref}" — it matches ${prefix.ambiguous.length} projects.`,
+      `Matches: ${prefix.ambiguous.map((p) => `${shortId(p.id)} (${p.name})`).join(", ")}. Use a longer id.`,
+    );
+  }
+
   throw notFound(`No project matching "${ref}".`);
+}
+
+/**
+ * Match a project by an id prefix (e.g. the 8-char short id shown by
+ * `projects list`). A ref only qualifies as an id prefix when it is a
+ * hex/dash token of at least 4 chars, so ordinary names never accidentally
+ * prefix-match an id. Returns the unique match, or the ambiguous candidates
+ * when more than one id starts with the ref.
+ */
+export function matchProjectByIdPrefix(
+  projects: Project[],
+  ref: string,
+): { project?: Project; ambiguous: Project[] } {
+  if (!/^[0-9a-fA-F-]{4,}$/.test(ref)) return { ambiguous: [] };
+  const lower = ref.toLowerCase();
+  const matches = projects.filter((p) => p.id.toLowerCase().startsWith(lower));
+  if (matches.length === 1) return { project: matches[0]!, ambiguous: [] };
+  return { ambiguous: matches };
 }
 
 function matchProjectByPath(projects: Project[], ref: string): Project | undefined {

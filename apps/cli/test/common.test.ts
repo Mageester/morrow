@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { resolveProject, validateProjectDirectory } from "../src/commands/common.js";
+import { resolveProject, validateProjectDirectory, matchProjectByIdPrefix } from "../src/commands/common.js";
 
 describe("resolveProject", () => {
   const tempDirs: string[] = [];
@@ -110,5 +110,32 @@ describe("resolveProject", () => {
 
   it("refuses the real home directory by default", () => {
     expect(() => validateProjectDirectory(homedir())).toThrow("Refusing to use unsafe workspace");
+  });
+});
+
+describe("matchProjectByIdPrefix", () => {
+  const projects = [
+    { id: "560fbc91-1111-4aaa-bbbb-cccccccccccc", name: "game", workspacePath: "/a" },
+    { id: "f820e474-2222-4aaa-bbbb-cccccccccccc", name: "chat", workspacePath: "/b" },
+    { id: "560fdd00-3333-4aaa-bbbb-cccccccccccc", name: "other", workspacePath: "/c" },
+  ] as any;
+
+  it("resolves the 8-char short id shown by `projects list`", () => {
+    expect(matchProjectByIdPrefix(projects, "f820e474").project?.name).toBe("chat");
+  });
+
+  it("resolves a shorter unambiguous prefix", () => {
+    expect(matchProjectByIdPrefix(projects, "f820").project?.name).toBe("chat");
+  });
+
+  it("reports ambiguity when a prefix matches several projects", () => {
+    const r = matchProjectByIdPrefix(projects, "560f");
+    expect(r.project).toBeUndefined();
+    expect(r.ambiguous.map((p: any) => p.name).sort()).toEqual(["game", "other"]);
+  });
+
+  it("ignores non-id-looking refs so names never prefix-match ids", () => {
+    expect(matchProjectByIdPrefix(projects, "ga").ambiguous).toEqual([]);
+    expect(matchProjectByIdPrefix(projects, "game").project).toBeUndefined();
   });
 });

@@ -444,5 +444,101 @@ export const migrations:Migration[]=[
     CREATE INDEX symbols_project_file_idx ON symbols(project_id, file_path, start_line, start_column);
     CREATE INDEX symbol_index_files_project_idx ON symbol_index_files(project_id, indexed_at DESC);
   `}
+  ,{id:25,name:"missions",sql:`
+    CREATE TABLE missions (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL,
+      auto_approve INTEGER NOT NULL DEFAULT 0,
+      task_tree_root_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      budget_json TEXT NOT NULL,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX missions_project_idx ON missions(project_id, created_at DESC);
+    CREATE TABLE mission_criteria (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      ordering INTEGER NOT NULL,
+      description TEXT NOT NULL,
+      state TEXT NOT NULL,
+      verification_json TEXT NOT NULL,
+      evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      failure_reason TEXT,
+      waiver_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_criteria_mission_idx ON mission_criteria(mission_id, ordering);
+    CREATE TABLE mission_evidence (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      criterion_ids_json TEXT NOT NULL DEFAULT '[]',
+      type TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      command TEXT,
+      exit_code INTEGER,
+      output_ref TEXT,
+      artifact_path TEXT,
+      status TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_evidence_mission_idx ON mission_evidence(mission_id, recorded_at);
+    CREATE TABLE mission_failures (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      task_id TEXT,
+      agent_id TEXT,
+      operation TEXT NOT NULL,
+      normalized_signature TEXT NOT NULL,
+      category TEXT NOT NULL,
+      message TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      recovery_strategy TEXT,
+      recovered INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_failures_mission_idx ON mission_failures(mission_id, created_at);
+    CREATE INDEX mission_failures_signature_idx ON mission_failures(mission_id, normalized_signature);
+    CREATE TABLE mission_checkpoints (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      git_ref TEXT,
+      checkpoint_name TEXT,
+      affected_files_json TEXT NOT NULL DEFAULT '[]',
+      rollback_available INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_checkpoints_mission_idx ON mission_checkpoints(mission_id, created_at);
+    CREATE TABLE mission_reviews (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      verdict TEXT NOT NULL,
+      reviewer_provider TEXT,
+      reviewer_model TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_reviews_mission_idx ON mission_reviews(mission_id, created_at DESC);
+    CREATE TABLE mission_events (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      data_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      UNIQUE(mission_id, sequence)
+    );
+    CREATE INDEX mission_events_mission_idx ON mission_events(mission_id, sequence);
+  `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

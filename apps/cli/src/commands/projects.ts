@@ -1,7 +1,7 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
-import { findNearestGitRoot, resolveProject, validateProjectDirectory, ask, select, isInteractive, shortId } from "./common.js";
+import { findNearestGitRoot, resolveProject, validateProjectDirectory, ask, select, isInteractive, shortId, matchProjectByIdPrefix } from "./common.js";
 import { flagBool, flagString } from "../cli/args.js";
 import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
 import { usageError, notFound } from "../cli/errors.js";
@@ -124,7 +124,18 @@ async function selectProject(ctx: Context, api: MorrowApi, requested?: string): 
   if (!isInteractive(ctx) || requested) {
     const ref = requested ?? flagString(ctx.flags, "project");
     if (!ref) throw usageError("Non-interactive: pass --project <id> to select.");
-    const project = projects.find((p) => p.id === ref || p.name === ref);
+    let project = projects.find((p) => p.id === ref || p.name === ref);
+    if (!project) {
+      // Accept the shortened id printed by `projects list` when it is unambiguous.
+      const prefix = matchProjectByIdPrefix(projects, ref);
+      if (prefix.project) project = prefix.project;
+      else if (prefix.ambiguous.length > 1) {
+        throw usageError(
+          `Ambiguous project id "${ref}" — it matches ${prefix.ambiguous.length} projects.`,
+          `Matches: ${prefix.ambiguous.map((p) => `${shortId(p.id)} (${p.name})`).join(", ")}. Use a longer id.`,
+        );
+      }
+    }
     if (!project) throw notFound(`No project matching "${ref}".`);
     ctx.config.set("defaults.project", project.id, ctx.paths.projectConfigFile ? "project" : "user");
     ctx.out.success(`Default project set to "${project.name}".`);
