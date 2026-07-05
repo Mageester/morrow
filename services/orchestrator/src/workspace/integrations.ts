@@ -6,6 +6,11 @@ import type { IntegrationAttempt, IntegrationStatus } from "../repositories/inte
 import type { WorktreeRecord } from "../repositories/worktrees.js";
 import { runGit } from "./worktrees.js";
 
+// Merges run under an explicit identity: CI runners and fresh machines have no
+// global user.name/user.email, and git refuses to merge without one (exit 128,
+// "Committer identity unknown") — even for --no-commit dry runs.
+const MERGE_IDENT = ["-c", "user.name=Morrow", "-c", "user.email=morrow@localhost"];
+
 export class IntegrationError extends Error {
   constructor(message: string, readonly code: "not_found" | "conflict" | "git_failed" | "validation" = "git_failed") {
     super(message);
@@ -112,7 +117,7 @@ export class IntegrationManager {
       const clone = runGit(workspacePath, ["clone", "--shared", "--no-checkout", workspacePath, sandbox], 60_000);
       if (clone.exitCode !== 0) throw new IntegrationError(`Failed to create integration sandbox: ${clone.stderr.trim() || clone.stdout.trim()}`);
       git(sandbox, ["checkout", "-B", "morrow-integration-target", targetCommit], "Failed to checkout target in sandbox");
-      const merge = runGit(sandbox, ["merge", "--no-commit", "--no-ff", sourceCommit], 60_000);
+      const merge = runGit(sandbox, [...MERGE_IDENT, "merge", "--no-commit", "--no-ff", sourceCommit], 60_000);
       if (merge.exitCode === 0) {
         return this.attempts.create({ ...base, status: "clean" });
       }
@@ -146,7 +151,7 @@ export class IntegrationManager {
       return this.attempts.update(id, { status: "failed", errorDetail: "Target branch moved since the integration check; run a fresh check." });
     }
 
-    const merge = runGit(workspacePath, ["merge", "--no-ff", attempt.sourceCommit, "-m", `morrow: integrate ${attempt.sourceBranch}`], 60_000);
+    const merge = runGit(workspacePath, [...MERGE_IDENT, "merge", "--no-ff", attempt.sourceCommit, "-m", `morrow: integrate ${attempt.sourceBranch}`], 60_000);
     if (merge.exitCode !== 0) {
       const conflicts = conflictFiles(workspacePath);
       runGit(workspacePath, ["merge", "--abort"]);

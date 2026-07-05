@@ -36,9 +36,34 @@ describe("integration attempts (real git)", () => {
   let ws: string;
   let home: string;
   let prevHome: string | undefined;
+  let prevGitEnv: Record<string, string | undefined>;
   const cleanups: string[] = [];
 
   beforeEach(() => {
+    // Simulate a machine with no git identity (like CI runners): without this,
+    // a developer's global user.name/user.email masks merges that would fail
+    // in CI with "Committer identity unknown" (exit 128).
+    const noConfig = mkdtempSync(join(tmpdir(), "morrow-integrate-gitcfg-"));
+    cleanups.push(noConfig);
+    const emptyConfig = join(noConfig, "empty.gitconfig");
+    writeFileSync(emptyConfig, "", "utf8");
+    prevGitEnv = {
+      GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+      GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME,
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME,
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL,
+      EMAIL: process.env.EMAIL,
+    };
+    process.env.GIT_CONFIG_GLOBAL = emptyConfig;
+    process.env.GIT_CONFIG_SYSTEM = emptyConfig;
+    delete process.env.GIT_AUTHOR_NAME;
+    delete process.env.GIT_AUTHOR_EMAIL;
+    delete process.env.GIT_COMMITTER_NAME;
+    delete process.env.GIT_COMMITTER_EMAIL;
+    delete process.env.EMAIL;
+
     ws = makeRepo();
     home = mkdtempSync(join(tmpdir(), "morrow-integrate-home-"));
     cleanups.push(ws, home);
@@ -50,6 +75,9 @@ describe("integration attempts (real git)", () => {
   });
 
   afterEach(() => {
+    for (const [key, value] of Object.entries(prevGitEnv)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
     if (prevHome === undefined) delete process.env.MORROW_HOME; else process.env.MORROW_HOME = prevHome;
     app.close();
     db.close();
