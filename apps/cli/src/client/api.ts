@@ -47,6 +47,7 @@ export interface SendMessageOptions {
   useMemory?: boolean;
   autoApprove?: boolean;
   worktreeId?: string;
+  missionId?: string;
 }
 
 export interface SendMessageResult {

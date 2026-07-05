@@ -24,6 +24,9 @@ import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath } from "../tools/diff-applier.js";
 import { resolveMorrowHome } from "../home.js";
+import { missionsRepository } from "../repositories/missions.js";
+import { MissionService } from "../mission/service.js";
+import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
 import { createProvider, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
@@ -261,6 +264,25 @@ export async function executeAgentChatTask({
   const event = (type: Parameters<typeof records.appendEvent>[0]["type"], payload: Record<string, unknown> = {}) => {
     return records.appendEvent({ id: randomUUID(), taskId, type, payload, createdAt: now() });
   };
+
+  // A mission-linked task feeds meaningful tool failures into the mission's
+  // failure ledger (loop detection, recovery ladder, /failures). Non-mission
+  // tasks get a no-op reporter.
+  const taskMissionId = (task as { missionId?: string | null }).missionId ?? null;
+  const missionFailures = createMissionToolFailureReporter({
+    service: taskMissionId
+      ? new MissionService({
+          repo: missionsRepository(db),
+          getWorkspacePath: (pid) => projects.getProjectById(pid)?.workspacePath,
+          backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
+          now,
+        })
+      : null,
+    missionId: taskMissionId,
+    taskId,
+    agentId: (task as { agentId?: string | null }).agentId ?? null,
+    log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
+  });
   const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) =>
     records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: now() });
 
@@ -698,6 +720,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const files = args.files || [];
 
       const patchFiles = parseUnifiedDiff(patch);
+      if (patchFiles.length === 0) {
+        throw new Error("Malformed patch: could not parse any file hunks from the unified diff");
+      }
       validatePatchPaths(workspacePath, patchFiles, PERMISSION_PROFILE.deniedNamePatterns);
 
       const diffHash = hashString(patch);
@@ -959,12 +984,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (isApproved) {
           try {
             resultStr = await executeApprovedTool(continuation.toolName, continuation.args, continuation.toolCallId);
+            missionFailures.reportSuccess(continuation.toolName, continuation.args);
           } catch (err: any) {
             isSuccess = false;
             errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
             errorMessage = err.message || "Unknown error";
             resultStr = JSON.stringify({ error: errorMessage });
             event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
+            missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
           }
         } else {
           isSuccess = false;
@@ -972,6 +999,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
+          missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
         }
 
         convs.upsertToolCall({
@@ -1279,9 +1307,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         let isSuccess = true;
         let errorType = null;
         let errorMessage = null;
+        let args: any = {};
 
         try {
-          let args: any = {};
           try {
             args = JSON.parse(tc.arguments || "{}");
           } catch {
@@ -1527,8 +1555,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               throw new Error("Missing required argument: patch");
             }
 
-            // 1. Parse unified diff
+            // 1. Parse unified diff. A patch that parses to zero files is
+            // malformed input, not an empty success â€” beta.20 recorded these
+            // as successful applications of nothing.
             const patchFiles = parseUnifiedDiff(patch);
+            if (patchFiles.length === 0) {
+              throw new Error("Malformed patch: could not parse any file hunks from the unified diff");
+            }
 
             // 2. Validate paths containment and safety
             validatePatchPaths(project.workspacePath, patchFiles, PERMISSION_PROFILE.deniedNamePatterns);
@@ -1666,7 +1699,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage = err.message || "Unknown error";
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: tc.name, message: errorMessage });
+          missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
         }
+        if (isSuccess) missionFailures.reportSuccess(tc.name, args);
 
         const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
         if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));

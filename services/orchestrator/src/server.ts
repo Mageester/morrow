@@ -698,6 +698,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       if (wt.status !== "active") throw new ApiError(409, `Worktree is ${wt.status}; create a fresh one`, "CONFLICT");
     }
 
+    // A mission-linked task routes agent tool failures into that mission's
+    // failure ledger. Reject cross-project links so a mission can never
+    // accumulate failures from another project's execution.
+    if (body.missionId) {
+      const mission = missions.get(body.missionId);
+      if (!mission || mission.projectId !== conversation.projectId) throw new ApiError(404, "Mission not found in this project", "NOT_FOUND");
+    }
+
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
@@ -753,6 +761,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         status: "queued",
         ...(idempotencyKey ? { idempotencyKey } : {}),
         ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
+        ...(body.missionId ? { missionId: body.missionId } : {}),
         createdAt: timestamp,
       });
     } catch (e) {

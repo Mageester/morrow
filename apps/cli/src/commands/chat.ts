@@ -54,6 +54,7 @@ interface SessionState {
   provider: string | undefined;
   model: string | undefined;
   worktreeId: string | undefined;
+  missionId: string | undefined;
   mode: AgentMode;
   useMemory: boolean;
   autoApprove: boolean;
@@ -71,6 +72,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     provider: ctx.provider(),
     model: ctx.model(),
     worktreeId: flagString(ctx.flags, "worktree"),
+    missionId: flagString(ctx.flags, "mission"),
     mode,
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
     autoApprove: resolveAutoApprove(ctx, mode),
@@ -148,6 +150,7 @@ async function runInteractiveSession(
         useMemory: opts.useMemory,
         ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
         ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
+        ...(session.missionId ? { missionId: session.missionId } : {}),
       });
       return { taskId: sent.task.id };
     },
@@ -245,6 +248,7 @@ function sendOptions(s: SessionState) {
     ...(s.provider ? { providerId: s.provider } : {}),
     ...(s.model ? { model: s.model } : {}),
     ...(s.worktreeId ? { worktreeId: s.worktreeId } : {}),
+    ...(s.missionId ? { missionId: s.missionId } : {}),
     mode: s.mode,
     useMemory: s.useMemory,
     // Only send autoApprove when it is meaningfully on (agent mode); the server

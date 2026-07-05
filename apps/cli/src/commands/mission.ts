@@ -118,8 +118,10 @@ async function runAgentExecution(ctx: Context, mission: Mission): Promise<void> 
     "Make the minimal correct changes to satisfy them. Preserve intended behaviour.",
     "Do not change unrelated files. When done, ensure the project runs.",
   ].join("\n");
-  // Reuse the existing one-shot agent path in autonomous (yolo) mode.
-  const flags: Record<string, string | boolean> = { message: prompt, yolo: true };
+  // Reuse the existing one-shot agent path in autonomous (yolo) mode. The
+  // mission flag links the agent task to this mission so tool failures land
+  // in the mission failure ledger (loop detection, /failures, honest grading).
+  const flags: Record<string, string | boolean> = { message: prompt, yolo: true, mission: mission.id };
   const child = new CliContext({ out: ctx.out, config: ctx.config, paths: ctx.paths, flags: { ...ctx.flags, ...flags } });
   try {
     await chatCommand(child);
