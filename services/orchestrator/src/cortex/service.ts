@@ -27,6 +27,7 @@ const SCOPE_INVALIDATIONS: Record<string, { architecture: boolean; kinds: Array<
   manifests: { architecture: true, kinds: ["command", "relationship"] },
   lockfiles: { architecture: false, kinds: ["command"] },
   workspaces: { architecture: true, kinds: ["command", "relationship", "convention"] },
+  entry_points: { architecture: true, kinds: ["relationship", "learning"] },
   build_config: { architecture: true, kinds: ["command", "convention"] },
   test_config: { architecture: false, kinds: ["command", "learning"] },
   ci: { architecture: false, kinds: ["command"] },

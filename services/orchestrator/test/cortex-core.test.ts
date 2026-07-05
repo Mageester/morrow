@@ -35,6 +35,7 @@ function makeRepo(): string {
     name: "@fixture/core", description: "Core library", main: "src/index.ts",
   }));
   write("packages/core/src/index.ts", "export const core = 1;\n");
+  write("packages/core/src/internal.ts", "export const internal = 1;\n");
   write("packages/core/src/generated/schema.ts", "export const generated = true;\n");
   return dir;
 }
@@ -52,10 +53,16 @@ describe("cortex fingerprinting", () => {
     expect(a.find((s) => s.scope === "workspaces")!.files).toContain("pnpm-workspace.yaml");
   });
 
-  it("an unrelated source change alters no scope", () => {
+  it("an unrelated non-entry source change alters no scope", () => {
     const before = computeScopeFingerprints(ws);
-    writeFileSync(join(ws, "packages/core/src/index.ts"), "export const core = 2;\n");
+    writeFileSync(join(ws, "packages/core/src/internal.ts"), "export const internal = 2;\n");
     expect(diffScopes(before, computeScopeFingerprints(ws))).toEqual([]);
+  });
+
+  it("an entry point source change alters only the entry_points scope", () => {
+    const before = computeScopeFingerprints(ws);
+    writeFileSync(join(ws, "packages/core/src/index.ts"), "export { internal } from './internal.js';\n");
+    expect(diffScopes(before, computeScopeFingerprints(ws))).toEqual(["entry_points"]);
   });
 
   it("a manifest change alters exactly the manifests scope", () => {
@@ -155,7 +162,7 @@ describe("cortex service", () => {
 
   it("unrelated file changes do not invalidate anything", () => {
     service.build("p1");
-    writeFileSync(join(ws, "packages/core/src/index.ts"), "export const core = 3;\n");
+    writeFileSync(join(ws, "packages/core/src/internal.ts"), "export const internal = 3;\n");
     const result = service.detectStaleness("p1");
     expect(result.changedScopes).toEqual([]);
     expect(result.itemsMarked).toBe(0);
@@ -174,6 +181,18 @@ describe("cortex service", () => {
     expect(refreshed.architecture.freshness).toBe("current");
     expect(refreshed.architecture.workspaces).toContain("services/*");
     expect(service.detectStaleness("p1").changedScopes).toEqual([]);
+  });
+
+  it("entry point source changes mark architecture possibly_stale without invalidating unrelated source edits", () => {
+    service.build("p1");
+    writeFileSync(join(ws, "packages/core/src/internal.ts"), "export const internal = 3;\n");
+    expect(service.detectStaleness("p1").changedScopes).toEqual([]);
+
+    writeFileSync(join(ws, "packages/core/src/index.ts"), "export { internal } from './internal.js';\n");
+    const result = service.detectStaleness("p1");
+    expect(result.changedScopes).toEqual(["entry_points"]);
+    expect(result.architectureStale).toBe(true);
+    expect(service.get("p1").architecture.freshness).toBe("possibly_stale");
   });
 
   it("convention approval survives a refresh; inferred conventions stay inferred", () => {

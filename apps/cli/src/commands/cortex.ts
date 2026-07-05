@@ -1,4 +1,5 @@
 import type { Context } from "../cli/context.js";
+import type { Output } from "../cli/output.js";
 import type { MorrowApi } from "../client/api.js";
 import type {
   ProjectIntelligence, RepositoryConvention, ArchitectureDecision,
@@ -14,7 +15,32 @@ import { EXIT, usageError } from "../cli/errors.js";
  * conventions are visibly distinct from approved ones; user rules outrank
  * everything inferred.
  */
+export function printCortexHelp(out: Output): number {
+  const help = [
+    "Morrow Cortex",
+    "",
+    "Usage:",
+    "  morrow cortex status",
+    "  morrow cortex map",
+    "  morrow cortex refresh",
+    "  morrow cortex conventions [show <id> | approve <id> | reject <id>]",
+    "  morrow cortex decisions [show <id>]",
+    "  morrow cortex risks",
+    "  morrow cortex learnings",
+    "  morrow cortex rules [add \"<rule text>\" | remove <id>]",
+    "  morrow cortex forget [--all]",
+    "  morrow cortex explain <component | topic>",
+    "",
+    "Cortex stores repository intelligence: architecture, commands, conventions, decisions, risks, rules, and mission learnings.",
+  ].join("\n");
+  if (out.json) out.data({ help });
+  else out.print(help);
+  return EXIT.OK;
+}
+
 export async function cortexCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
+  if (sub === "help") return printCortexHelp(ctx.out);
+
   await ensureRunning(ctx);
   const api = ctx.api();
   const project = await resolveProject(ctx, api, { required: true, autoCreateMissing: true });
@@ -53,11 +79,11 @@ function freshnessLabel(ctx: Context, freshness: string): string {
 }
 
 async function status(ctx: Context, api: MorrowApi, projectId: string): Promise<number> {
+  const staleness = await api.intelligenceStaleness(projectId).catch(() => null);
   const intelligence = await loadIntelligence(ctx, api, projectId);
   if (!intelligence) return EXIT.OK;
   if (ctx.out.json) { ctx.out.data(intelligence); return EXIT.OK; }
 
-  const staleness = await api.intelligenceStaleness(projectId).catch(() => null);
   const conventions = intelligence.conventions;
   const approved = conventions.filter((c) => c.approval === "approved").length;
   const inferred = conventions.filter((c) => c.approval === "inferred").length;

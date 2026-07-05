@@ -90,6 +90,21 @@ describe("morrow cortex command", () => {
     expect(out).toContain("workspaces");
   });
 
+  it("checks staleness before rendering status freshness", async () => {
+    const state = intelligence();
+    const getIntelligence = vi.fn(async () => state);
+    const intelligenceStaleness = vi.fn(async () => {
+      (state.architecture as any).freshness = "possibly_stale";
+      return { changedScopes: ["entry_points"], itemsMarked: 1, architectureStale: true };
+    });
+    const fake = api({ getIntelligence, intelligenceStaleness });
+    await expect(cortexCommand(ctx(fake), "status", [])).resolves.toBe(0);
+    const out = printed.join("");
+    expect(out).toContain("possibly stale");
+    expect(out).toContain("entry_points");
+    expect(intelligenceStaleness.mock.invocationCallOrder[0]).toBeLessThan(getIntelligence.mock.invocationCallOrder[0]!);
+  });
+
   it("approves a convention using the shortened id displayed by the CLI", async () => {
     const fake = api();
     await expect(cortexCommand(ctx(fake), "conventions", ["approve", "abcdef12"])).resolves.toBe(0);

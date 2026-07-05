@@ -25,6 +25,7 @@ const SCOPE_PATTERNS: Record<string, RegExp[]> = {
   manifests: [/(^|\/)package\.json$/, /(^|\/)Cargo\.toml$/, /(^|\/)pyproject\.toml$/, /(^|\/)go\.mod$/, /(^|\/)composer\.json$/, /(^|\/)Gemfile$/],
   lockfiles: [/(^|\/)pnpm-lock\.yaml$/, /(^|\/)package-lock\.json$/, /(^|\/)yarn\.lock$/, /(^|\/)Cargo\.lock$/, /(^|\/)poetry\.lock$/, /(^|\/)go\.sum$/],
   workspaces: [/^pnpm-workspace\.yaml$/, /^lerna\.json$/, /^nx\.json$/, /^turbo\.json$/, /^rush\.json$/],
+  entry_points: [/(^|\/)src\/(?:index|main)\.(ts|tsx|js|jsx|mjs|cjs)$/, /(^|\/)(?:index|main|server|app)\.(ts|tsx|js|jsx|mjs|cjs)$/],
   build_config: [/^tsconfig.*\.json$/, /(^|\/)tsconfig.*\.json$/, /^vite\.config\./, /^webpack\.config\./, /^rollup\.config\./, /^esbuild\./, /^\.swcrc$/, /^babel\.config\./],
   test_config: [/(^|\/)vitest\.config\./, /(^|\/)jest\.config\./, /(^|\/)playwright\.config\./, /(^|\/)cypress\.config\./, /(^|\/)\.mocharc/],
   ci: [/^\.github\/workflows\/.+\.(yml|yaml)$/],
