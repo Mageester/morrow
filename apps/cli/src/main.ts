@@ -20,8 +20,8 @@ import { processesCommand } from "./commands/processes.js";
 import { worktreesCommand } from "./commands/worktrees.js";
 import { integrationsCommand } from "./commands/integrations.js";
 import { symbolsCommand } from "./commands/symbols.js";
-import { missionCommand } from "./commands/mission.js";
-import { cortexCommand } from "./commands/cortex.js";
+import { missionCommand, printMissionHelp } from "./commands/mission.js";
+import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -61,7 +61,10 @@ export async function run(argv: string[]): Promise<number> {
   const noColor = parsed.flags.color === false || flagBool(parsed.flags, "no-color");
   const out = new Output({ json: flagBool(parsed.flags, "json"), quiet: flagBool(parsed.flags, "quiet"), color: resolveColor({ noColorFlag: noColor, json: flagBool(parsed.flags, "json"), env: process.env, isTTY: Boolean(process.stdout.isTTY) }) });
   try {
-    if ((flagBool(parsed.flags, "help") && parsed.positionals.length === 0) || parsed.positionals[0] === "help") return printHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals.length === 0) return printHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return printCortexHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
+    if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });

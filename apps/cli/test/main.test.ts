@@ -110,6 +110,24 @@ describe("morrow root command", () => {
     expect(help).not.toContain("provider/model");
   });
 
+  it("exposes cortex help without starting the service", async () => {
+    await expect(run(["cortex", "--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    const err = stderr.mock.calls.map(([value]) => String(value)).join("");
+    expect(help).toContain("morrow cortex status");
+    expect(help).toContain("morrow cortex refresh");
+    expect(err).not.toContain("Morrow is ready");
+  });
+
+  it("exposes mission help without opening Mission Control", async () => {
+    await expect(run(["mission", "--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    const err = stderr.mock.calls.map(([value]) => String(value)).join("");
+    expect(help).toContain("morrow mission list");
+    expect(help).toContain("morrow mission failures");
+    expect(err).not.toContain("Morrow is ready");
+  });
+
   it("exposes a dry-run uninstall that removes launcher/app surfaces while preserving data by default", async () => {
     const oldHome = process.env.MORROW_HOME;
     const home = mkdtempSync(join(tmpdir(), "morrow-uninstall-test-"));

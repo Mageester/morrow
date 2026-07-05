@@ -1,8 +1,9 @@
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "../cli/context.js";
+import type { Output } from "../cli/output.js";
 import type { MorrowApi } from "../client/api.js";
-import type { Mission, MissionCriterion, MissionEvidence, MissionResult } from "@morrow/contracts";
+import type { Mission, MissionCriterion, MissionEvidence, MissionResult, MissionReview } from "@morrow/contracts";
 import { ensureRunning } from "../service/lifecycle.js";
 import { resolveProject, shortId } from "./common.js";
 import { chatCommand } from "./chat.js";
@@ -20,7 +21,33 @@ const STATE_GLYPH: Record<string, string> = {
  * accountable lifecycle: criteria → approval → execution → evidence-backed
  * verification → independent review → honest grade. Subcommands inspect state.
  */
+export function printMissionHelp(out: Output): number {
+  const help = [
+    "Morrow Mission",
+    "",
+    "Usage:",
+    "  morrow mission \"<objective>\"",
+    "  morrow mission list",
+    "  morrow mission show [id]",
+    "  morrow mission criteria [id]",
+    "  morrow mission evidence [id]",
+    "  morrow mission failures [id]",
+    "  morrow mission checkpoints [id]",
+    "  morrow mission impact [id]",
+    "  morrow mission plan [id]",
+    "  morrow mission revisions [id]",
+    "  morrow mission result [id]",
+    "",
+    "A bare `morrow mission` opens Mission Control in the terminal.",
+  ].join("\n");
+  if (out.json) out.data({ help });
+  else out.print(help);
+  return EXIT.OK;
+}
+
 export async function missionCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
+  if (sub === "help") return printMissionHelp(ctx.out);
+
   await ensureRunning(ctx);
   const api = ctx.api();
 
@@ -119,24 +146,51 @@ async function runMission(ctx: Context, api: MorrowApi, objective: string): Prom
   // 7. Independent review (a separate execution with isolated instructions).
   ctx.out.info("");
   ctx.out.info(ctx.out.gray("Requesting independent review…"));
-  const review = await api.reviewMission(mission.id);
+  let review = await api.reviewMission(mission.id);
+  let reviewCycles = 1;
   ctx.out.info(`  Review verdict: ${verdictLabel(ctx, review.verdict)}`);
 
+  const maxReviewCycles = Math.max(1, mission.budget.maxReviewCycles ?? 1);
+  let tasksCompleted = 1;
+  while (review.verdict === "revisions_required" && reviewCycles < maxReviewCycles) {
+    const findings = reviewFindings(review);
+    ctx.out.info("");
+    ctx.out.info(ctx.out.yellow("Reviewer requested revisions; running a bounded repair cycle before grading."));
+    await runAgentExecution(ctx, mission, findings);
+    tasksCompleted += 1;
+
+    ctx.out.info("");
+    ctx.out.info(ctx.out.gray("Re-verifying success criteria after reviewer revisions..."));
+    mission = await api.verifyMission(mission.id);
+    renderCriteria(ctx, mission.criteria, true);
+
+    ctx.out.info("");
+    ctx.out.info(ctx.out.gray("Requesting independent re-review..."));
+    review = await api.reviewMission(mission.id);
+    reviewCycles += 1;
+    ctx.out.info(`  Review verdict: ${verdictLabel(ctx, review.verdict)}`);
+  }
+
   // 8. Grade honestly and show the result.
-  mission = await api.finalizeMission(mission.id, { tasksCompleted: 1 });
+  mission = await api.finalizeMission(mission.id, { tasksCompleted });
   renderResult(ctx, mission);
 
   // A partial/blocked/failed grade is not a CLI error, but signal non-full.
   return mission.status === "completed" ? EXIT.OK : EXIT.OK;
 }
 
-async function runAgentExecution(ctx: Context, mission: Mission): Promise<void> {
+async function runAgentExecution(ctx: Context, mission: Mission, reviewerFindings: string[] = []): Promise<void> {
   const criteriaText = mission.criteria.map((c, i) => `${i + 1}. ${c.description}`).join("\n");
   const prompt = [
     `Mission objective: ${mission.objective}`,
     "",
     "You must satisfy ALL of these measurable success criteria:",
     criteriaText,
+    ...(reviewerFindings.length > 0 ? [
+      "",
+      "The independent reviewer requested revisions. Address these findings before stopping:",
+      ...reviewerFindings.map((finding, i) => `${i + 1}. ${finding}`),
+    ] : []),
     "",
     "Make the minimal correct changes to satisfy them. Preserve intended behaviour.",
     "Do not change unrelated files. When done, ensure the project runs.",
@@ -154,13 +208,58 @@ async function runAgentExecution(ctx: Context, mission: Mission): Promise<void> 
 }
 
 // ── subcommands ────────────────────────────────────────────────────────────
-async function resolveMission(ctx: Context, api: MorrowApi, id?: string): Promise<Mission> {
-  if (id) return api.getMission(id);
+function reviewFindings(review: MissionReview): string[] {
+  const items = [
+    ...review.concerns,
+    ...review.missingVerification,
+    ...review.suspiciousChanges,
+    ...review.criterionJudgments
+      .filter((j) => j.judgment !== "satisfied")
+      .map((j) => j.note),
+    review.summary,
+  ];
+  return [...new Set(items.map((v) => v.trim()).filter(Boolean))].slice(0, 8);
+}
+
+/**
+ * Resolve the mission a detail subcommand should act on. With no reference we
+ * return the most recent mission in the selected project. With a reference we
+ * resolve it against that project's missions, so the shortened ids printed by
+ * `morrow mission list` (e.g. `227f600f`) work as inputs — not just full ids.
+ */
+async function resolveMission(ctx: Context, api: MorrowApi, ref?: string): Promise<Mission> {
   const project = await resolveProject(ctx, api, { required: true });
   if (!project) throw notFound("No project selected.");
   const missions = await api.listMissions(project.id);
-  if (missions.length === 0) throw notFound("No missions in this project yet. Start one with `morrow mission \"<objective>\"`.");
-  return missions[0]!; // most recent
+  if (!ref || !ref.trim()) {
+    if (missions.length === 0) throw notFound("No missions in this project yet. Start one with `morrow mission \"<objective>\"`.");
+    return missions[0]!; // most recent
+  }
+  return resolveMissionRef(missions, ref);
+}
+
+/**
+ * Resolve a mission reference against the project's missions. Accepts a full id
+ * (`mission-227f600f-…`), the bare id without the `mission-` prefix, or the
+ * shortened id `morrow mission list` prints. A unique (possibly prefix) match
+ * wins; an ambiguous prefix lists the candidates; anything else fails cleanly.
+ */
+function resolveMissionRef(missions: Mission[], ref: string): Mission {
+  const lowered = ref.trim().toLowerCase();
+  const bare = lowered.replace(/^mission-/, "");
+  const matches = missions.filter((m) => {
+    const id = m.id.toLowerCase();
+    const withoutPrefix = id.replace(/^mission-/, "");
+    return id === lowered || withoutPrefix === bare || (bare.length > 0 && withoutPrefix.startsWith(bare));
+  });
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) {
+    throw usageError(
+      `Ambiguous mission id "${ref}" — it matches ${matches.length} missions.`,
+      `Use a longer id: ${matches.map((m) => shortId(m.id.replace(/^mission-/, ""))).join(", ")}`,
+    );
+  }
+  throw notFound(`No mission matching "${ref}" in this project.`);
 }
 
 async function listMissions(ctx: Context, api: MorrowApi): Promise<number> {
