@@ -6,6 +6,70 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.21] - 2026-07-05
+
+### Added — Morrow Advantage: Morrow Cortex
+
+- **Persistent project intelligence.** `morrow cortex` gives Morrow a durable,
+  inspectable understanding of a repository that compounds across missions:
+  `status`, `map`, `refresh`, `conventions`, `decisions`, `risks`, `learnings`,
+  `rules`, `explain`, and `forget`.
+- **Architecture maps** built deterministically from repository evidence —
+  languages, components, workspaces, commands, config, docs, and
+  generated/protected areas — on a canonical project-intelligence model.
+- **Conventions, decisions, risks, rules, and mission learnings** are persisted
+  as first-class knowledge. Inferred conventions are visibly distinct from
+  approved ones, and explicit repository rules outrank anything inferred.
+- **Stale-memory detection.** Scoped fingerprints label knowledge
+  `possibly_stale` when the files behind it change — including an `entry_points`
+  scope so an externally split entry module marks architecture knowledge stale
+  instead of being silently trusted. Missions refresh affected knowledge before
+  planning on it.
+- **Scoped refresh** re-maps only the intelligence a change actually affects
+  rather than discarding everything.
+- **Change-impact analysis.** Before executing, a mission surfaces likely
+  affected components/files, interfaces at risk, relevant history and failures,
+  repository rules, possible regressions, and required verification drawn from
+  persisted intelligence.
+- **Adaptive replanning.** A bounded plan revision is recorded when a mission
+  assumption is invalidated, capturing the task and verification changes.
+- **Specialist mission roles** are persisted per mission.
+- **Mission failure-ledger integration.** Real agent patch/tool failures
+  (patch-context mismatches, failed commands) are recorded and their recovery is
+  tracked, instead of reporting zero failures.
+
+### Fixed
+
+- **Independent review reliability.** Review completions request JSON-object mode
+  through OpenAI-compatible providers (review purpose only); a bounded
+  review-repair pass converts prose answers into the required schema, and invalid
+  output falls back to `insufficient_evidence` rather than guessing approval.
+- **Bounded post-review repair.** When a reviewer returns `revisions_required`,
+  Morrow runs one bounded autonomous repair seeded with the reviewer's findings,
+  then re-verifies and re-reviews, within a fixed cycle budget.
+- **Grounded success criteria.** Generated criteria that reference nonexistent
+  files or brittle inline `node -e` probes of guessed artifact shapes are
+  rejected in favor of real repository scripts and tests.
+- **Reviewer no-op filtering.** Placeholder risks like “none” or “no concerns”
+  no longer become fake unresolved risks, while genuine findings (e.g. “No test
+  coverage for…”) are preserved.
+- **Windows installer long-path hardening.** The installer extracts the release
+  archive with the .NET `ZipFile` extractor and uses short staging names, so
+  deeply nested production dependencies no longer hit `MAX_PATH`; safety guards
+  keep the regression from returning.
+- **Mission short-id usability.** `morrow mission show|result|evidence|failures|
+  revisions|checkpoints` accept the shortened mission ids printed by `mission
+  list` (unique-prefix resolution, with clear ambiguity and not-found errors);
+  `morrow mission --help` and `morrow cortex --help` render explicit help without
+  starting a mission or entering Mission Control.
+- **Windows filesystem reliability.** Atomic skill-directory installs retry
+  briefly on transient Windows `EPERM`/`EACCES`.
+- **Cross-platform Git stabilization.** Integration merges supply an explicit Git
+  identity so identity-less CI environments no longer fail.
+- **Cortex status freshness ordering.** The first `cortex status` after a change
+  runs staleness detection before rendering, so it reports updated freshness
+  honestly rather than only on a second call.
+
 ## [0.1.0-beta.20] - 2026-07-05
 
 ### Added — Morrow Advantage: Verified Missions
