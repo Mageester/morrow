@@ -544,5 +544,61 @@ export const migrations:Migration[]=[
     ALTER TABLE tasks ADD COLUMN mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL;
     CREATE INDEX tasks_mission_id_idx ON tasks(mission_id) WHERE mission_id IS NOT NULL;
   `}
+  ,{id:27,name:"cortex_project_intelligence",sql:`
+    CREATE TABLE project_intelligence (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      repository_fingerprint TEXT NOT NULL,
+      architecture_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      refreshed_at TEXT NOT NULL
+    );
+    CREATE TABLE intelligence_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      approval TEXT,
+      freshness TEXT NOT NULL DEFAULT 'current',
+      scope TEXT NOT NULL DEFAULT '.',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX intelligence_items_project_kind_idx ON intelligence_items(project_id, kind);
+    CREATE TABLE architecture_decisions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, label)
+    );
+    CREATE INDEX architecture_decisions_project_idx ON architecture_decisions(project_id, created_at);
+    CREATE TABLE project_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT '.',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX project_rules_project_idx ON project_rules(project_id, created_at);
+    CREATE TABLE mission_plan_revisions (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(mission_id, revision)
+    );
+    CREATE TABLE mission_impact_analyses (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_impact_analyses_mission_idx ON mission_impact_analyses(mission_id, created_at);
+  `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
