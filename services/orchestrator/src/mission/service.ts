@@ -28,12 +28,12 @@ export interface MissionServiceDeps {
   getWorkspacePath: (projectId: string) => string | undefined;
   /** Provider-backed completion (planning + review). Optional: without it,
    *  criteria fall back to heuristics and review yields insufficient_evidence. */
-  completion?: MissionCompletionFn;
+  completion?: MissionCompletionFn | undefined;
   /** Content-addressed checkpoint backup directory. */
   backupDir: string;
   /** Injectable clock + verification exec hooks (tests). */
-  now?: () => string;
-  runOptions?: Partial<RunOptions>;
+  now?: (() => string) | undefined;
+  runOptions?: Partial<RunOptions> | undefined;
 }
 
 export class MissionError extends Error {
@@ -145,7 +145,7 @@ export class MissionService {
     return this.repo.getCriterion(id)!;
   }
 
-  updateCriterion(missionId: string, criterionId: string, patch: { description?: string; state?: MissionCriterionState; verification?: MissionVerificationStrategy; waiverReason?: string }): MissionCriterion {
+  updateCriterion(missionId: string, criterionId: string, patch: { description?: string | undefined; state?: MissionCriterionState | undefined; verification?: MissionVerificationStrategy | undefined; waiverReason?: string | undefined }): MissionCriterion {
     const c = this.repo.getCriterion(criterionId);
     if (!c || c.missionId !== missionId) throw new MissionError("Criterion not found in mission", "not_found");
     const applied: Parameters<MissionsRepository["updateCriterion"]>[1] = {};

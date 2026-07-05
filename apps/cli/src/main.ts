@@ -20,6 +20,7 @@ import { processesCommand } from "./commands/processes.js";
 import { worktreesCommand } from "./commands/worktrees.js";
 import { integrationsCommand } from "./commands/integrations.js";
 import { symbolsCommand } from "./commands/symbols.js";
+import { missionCommand } from "./commands/mission.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -112,7 +113,12 @@ export async function run(argv: string[]): Promise<number> {
       case "yolo": { const p = promptOf(); return await chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
-      case "mission": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
+      case "mission": {
+        // A bare `morrow mission` (no objective/subcommand) opens the interactive
+        // shell / Mission Control; otherwise run the Verified Missions lifecycle.
+        if (!sub) return await chatWith({});
+        return await missionCommand(ctx, sub, args);
+      }
       case "model": return await modelsCommand(ctx, sub ?? "", args);
       case "settings": return await configCommand(ctx, sub ?? "list", args);
       case "auth": return await providersCommand(ctx, authSub(sub), args);

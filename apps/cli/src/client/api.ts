@@ -26,6 +26,16 @@ import type {
   SearchKind,
   Schedule,
   ScheduleTaskKind,
+  Mission,
+  MissionCriterion,
+  MissionEvidence,
+  MissionFailure,
+  MissionCheckpoint,
+  MissionReview,
+  MissionEvent,
+  MissionResult,
+  MissionVerificationStrategy,
+  CreateMissionInput,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
@@ -345,6 +355,65 @@ export class MorrowApi {
   }
   cancelIntegration(id: string) {
     return this.req<IntegrationAttempt>("POST", `/api/integrations/${encodeURIComponent(id)}/cancel`);
+  }
+
+  // ── Verified Missions ─────────────────────────────────────────────────────
+  createMission(projectId: string, input: CreateMissionInput) {
+    return this.req<Mission>("POST", `/api/projects/${projectId}/missions`, input);
+  }
+  listMissions(projectId: string) {
+    return this.req<Mission[]>("GET", `/api/projects/${projectId}/missions`);
+  }
+  getMission(missionId: string) {
+    return this.req<Mission>("GET", `/api/missions/${missionId}`);
+  }
+  getMissionEvents(missionId: string) {
+    return this.req<MissionEvent[]>("GET", `/api/missions/${missionId}/events`);
+  }
+  getMissionResult(missionId: string) {
+    return this.req<{ status: string; result: MissionResult | null; finalReview: MissionReview | null }>("GET", `/api/missions/${missionId}/result`);
+  }
+  generateMissionCriteria(missionId: string, repoSummary: string) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/criteria/generate`, { repoSummary });
+  }
+  addMissionCriterion(missionId: string, description: string, verification?: MissionVerificationStrategy) {
+    return this.req<MissionCriterion>("POST", `/api/missions/${missionId}/criteria`, { description, ...(verification ? { verification } : {}) });
+  }
+  updateMissionCriterion(missionId: string, criterionId: string, patch: { description?: string; state?: MissionCriterion["state"]; verification?: MissionVerificationStrategy; waiverReason?: string }) {
+    return this.req<MissionCriterion>("PATCH", `/api/missions/${missionId}/criteria/${criterionId}`, patch);
+  }
+  removeMissionCriterion(missionId: string, criterionId: string) {
+    return this.req<{ status: string; criterionId: string }>("DELETE", `/api/missions/${missionId}/criteria/${criterionId}`);
+  }
+  verifyMissionCriterion(missionId: string, criterionId: string) {
+    return this.req<{ criterion: MissionCriterion; evidence: MissionEvidence }>("POST", `/api/missions/${missionId}/criteria/${criterionId}/verify`);
+  }
+  approveMission(missionId: string) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/approve`);
+  }
+  verifyMission(missionId: string) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/verify`);
+  }
+  reviewMission(missionId: string) {
+    return this.req<MissionReview>("POST", `/api/missions/${missionId}/review`);
+  }
+  finalizeMission(missionId: string, body: { humanInterventions?: number; tasksCompleted?: number } = {}) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/finalize`, body);
+  }
+  createMissionCheckpoint(missionId: string, label: string, reason: string, files?: string[]) {
+    return this.req<MissionCheckpoint>("POST", `/api/missions/${missionId}/checkpoints`, { label, reason, ...(files ? { files } : {}) });
+  }
+  missionCheckpointDiff(missionId: string, checkpointId: string) {
+    return this.req<{ changes: string[] }>("GET", `/api/missions/${missionId}/checkpoints/${checkpointId}/diff`);
+  }
+  rollbackMission(missionId: string, checkpointId: string) {
+    return this.req<{ ok: boolean; restored: string[]; removed: string[]; missing: string[] }>("POST", `/api/missions/${missionId}/rollback`, { checkpointId });
+  }
+  cancelMission(missionId: string) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/cancel`);
+  }
+  resumeMission(missionId: string) {
+    return this.req<Mission>("POST", `/api/missions/${missionId}/resume`);
   }
 
   // ── Named workspace checkpoints ───────────────────────────────────────────

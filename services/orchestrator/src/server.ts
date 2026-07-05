@@ -85,6 +85,10 @@ import { TaskRunner } from "./runner.js";
 import { changeSetsRepository } from "./repositories/change-sets.js";
 import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
+import { missionsRepository } from "./repositories/missions.js";
+import { MissionService, MissionError } from "./mission/service.js";
+import { buildMissionCompletion } from "./mission/completion.js";
+import { CreateMissionSchema, AddMissionCriterionSchema, UpdateMissionCriterionSchema } from "@morrow/contracts";
 import { processesRepository } from "./repositories/processes.js";
 import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
@@ -207,6 +211,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
+  const missions = missionsRepository(deps.db);
+  const missionService = new MissionService({
+    repo: missions,
+    getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+    completion: buildMissionCompletion({ env: process.env }),
+    backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
+  });
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   // A `running` row from a previous orchestrator run is unobservable — mark it
@@ -1086,6 +1097,157 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     if (!checkpoints.remove(projectId, name)) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
     return { status: "deleted", name };
+  });
+
+  // ── Verified Missions ────────────────────────────────────────────────────
+  // A mission converts an objective into measurable, evidence-backed criteria,
+  // executes under supervision, records failures/recovery, checkpoints risky
+  // changes, obtains an independent review, and grades itself honestly. All
+  // state is durable so a restart reconstructs the mission from persistence.
+  const requireMission = (missionId: string) => {
+    const m = missions.get(missionId);
+    if (!m) throw new ApiError(404, "Mission not found", "NOT_FOUND");
+    return m;
+  };
+  const runMission = <T>(fn: () => T): T => {
+    try { return fn(); }
+    catch (e) {
+      if (e instanceof MissionError) {
+        const status = e.code === "not_found" ? 404 : e.code === "no_workspace" ? 409 : 400;
+        throw new ApiError(status, e.message, e.code.toUpperCase());
+      }
+      throw e;
+    }
+  };
+
+  app.post("/api/projects/:projectId/missions", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const parsed = CreateMissionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid mission request", "VALIDATION_ERROR");
+    const mission = missionService.create(projectId, parsed.data);
+    reply.status(201);
+    return mission;
+  });
+
+  app.get("/api/projects/:projectId/missions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return missionService.listByProject(projectId);
+  });
+
+  app.get("/api/missions/:missionId", async (request) => requireMission((request.params as { missionId: string }).missionId));
+
+  app.get("/api/missions/:missionId/criteria", async (request) => requireMission((request.params as { missionId: string }).missionId).criteria);
+  app.get("/api/missions/:missionId/evidence", async (request) => requireMission((request.params as { missionId: string }).missionId).evidence);
+  app.get("/api/missions/:missionId/failures", async (request) => requireMission((request.params as { missionId: string }).missionId).failures);
+  app.get("/api/missions/:missionId/checkpoints", async (request) => requireMission((request.params as { missionId: string }).missionId).checkpoints);
+  app.get("/api/missions/:missionId/result", async (request) => {
+    const m = requireMission((request.params as { missionId: string }).missionId);
+    return { status: m.status, result: m.result, finalReview: m.finalReview };
+  });
+  app.get("/api/missions/:missionId/events", async (request) => {
+    requireMission((request.params as { missionId: string }).missionId);
+    return missions.listEvents((request.params as { missionId: string }).missionId);
+  });
+
+  // Generate/regenerate criteria from the objective.
+  app.post("/api/missions/:missionId/criteria/generate", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { repoSummary?: string };
+    return runMission(() => missionService.generateCriteria(missionId, body.repoSummary ?? ""));
+  });
+
+  app.post("/api/missions/:missionId/criteria", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const parsed = AddMissionCriterionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid criterion", "VALIDATION_ERROR");
+    reply.status(201);
+    return runMission(() => missionService.addCriterion(missionId, parsed.data.description, parsed.data.verification));
+  });
+
+  app.patch("/api/missions/:missionId/criteria/:criterionId", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    const parsed = UpdateMissionCriterionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid criterion update", "VALIDATION_ERROR");
+    return runMission(() => missionService.updateCriterion(missionId, criterionId, parsed.data));
+  });
+
+  app.delete("/api/missions/:missionId/criteria/:criterionId", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    const removed = runMission(() => missionService.removeCriterion(missionId, criterionId));
+    if (!removed) throw new ApiError(404, "Criterion not found", "NOT_FOUND");
+    return { status: "deleted", criterionId };
+  });
+
+  app.post("/api/missions/:missionId/criteria/:criterionId/verify", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.verifyCriterion(missionId, criterionId));
+  });
+
+  app.post("/api/missions/:missionId/approve", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.approveCriteria(missionId));
+  });
+
+  app.post("/api/missions/:missionId/verify", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.verifyAll(missionId));
+  });
+
+  app.post("/api/missions/:missionId/review", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.runReview(missionId));
+  });
+
+  app.post("/api/missions/:missionId/finalize", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { humanInterventions?: number; tasksCompleted?: number };
+    return runMission(() => missionService.finalize(missionId, body));
+  });
+
+  app.post("/api/missions/:missionId/checkpoints", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { label?: string; reason?: string; files?: string[] };
+    if (!body.label) throw new ApiError(400, "A checkpoint label is required", "VALIDATION_ERROR");
+    reply.status(201);
+    return runMission(() => missionService.createCheckpoint(missionId, body.label!, body.reason ?? "manual checkpoint", body.files));
+  });
+
+  app.get("/api/missions/:missionId/checkpoints/:checkpointId/diff", async (request) => {
+    const { missionId, checkpointId } = request.params as { missionId: string; checkpointId: string };
+    requireMission(missionId);
+    return runMission(() => ({ changes: missionService.checkpointDiff(missionId, checkpointId) }));
+  });
+
+  app.post("/api/missions/:missionId/rollback", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { checkpointId?: string };
+    if (!body.checkpointId) throw new ApiError(400, "checkpointId is required", "VALIDATION_ERROR");
+    return runMission(() => missionService.rollback(missionId, body.checkpointId!));
+  });
+
+  app.post("/api/missions/:missionId/cancel", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.cancel(missionId));
+  });
+
+  app.post("/api/missions/:missionId/resume", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.resume(missionId));
   });
 
   // ── Background process registry ──────────────────────────────────────────
