@@ -18,6 +18,7 @@ import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
+import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -79,6 +80,8 @@ export class MissionService {
       objective: input.objective, autoApprove: input.autoApprove ?? false, budget,
     }, this.now());
     this.repo.appendEvent(id, "mission.created", `Mission created: ${input.objective.slice(0, 80)}`, {}, this.now());
+    const roles = buildMissionSpecialists(mission);
+    this.repo.appendEvent(id, "mission.specialists_planned", `Planned ${roles.length} Cortex specialist roles`, { roles }, this.now());
     return mission;
   }
 
@@ -90,6 +93,11 @@ export class MissionService {
 
   listByProject(projectId: string, limit?: number): Mission[] {
     return this.repo.listByProject(projectId, limit);
+  }
+
+  specialists(missionId: string) {
+    const mission = this.get(missionId);
+    return specialistsFromEvents(this.repo.listEvents(missionId), mission);
   }
 
   private transition(missionId: string, to: MissionStatus): Mission {

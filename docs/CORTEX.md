@@ -131,6 +131,25 @@ The revision limit prevents infinite replanning loops. Inspect revisions with:
 morrow mission revisions [mission-id]
 ```
 
+## Specialist Agents
+
+Each mission records a Cortex specialist-role manifest and provisions the
+project's named Cortex team through the existing agents API. The roles are:
+
+- repository mapper
+- planner
+- implementer
+- test engineer
+- security/regression reviewer
+- final reviewer
+
+Each role has a concrete objective, allowed tools, required inputs, structured
+output contract, budget, timeout, mission linkage, and completion criteria. They
+exchange structured artifacts, evidence, source references, verdicts, and
+limitations, not chain-of-thought. The named agents are visible from the existing
+project agents surface, while `/api/missions/<id>/specialists` exposes the
+mission-specific role manifest.
+
 ## Terminal Commands
 
 Inside the interactive terminal:
@@ -143,6 +162,7 @@ Inside the interactive terminal:
 /risks
 /learnings
 /rules
+/agents
 /impact
 /plan
 /revisions
@@ -188,8 +208,5 @@ provider and disclosed routing.
   competitor scores.
 - Planning-token and cost measurements are reported only when available from the
   configured runtime.
-- Specialist role separation is still generic through existing agents/subagents;
-  the named beta.21 repository-mapper/planner/implementer/tester/security/final
-  reviewer roles are not yet a completed release gate.
 - Installed three-journey acceptance and live public manifest publication remain
   release tasks, not unit-test substitutes.

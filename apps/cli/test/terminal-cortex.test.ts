@@ -93,6 +93,19 @@ function session(overrides: Partial<SessionDeps["backend"]> = {}) {
       createdAt: now,
     }]),
     getMissionRevisions: vi.fn(async () => []),
+    listAgents: vi.fn(async () => [{
+      version: 1 as const,
+      id: "agent-1",
+      projectId: "project-1",
+      name: "Cortex Planner",
+      role: "architect" as const,
+      instructions: "Objective: Turn Cortex impact into an implementation plan.",
+      providerOverride: null,
+      modelOverride: null,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    }]),
     patchConvention: vi.fn(),
     addRule: vi.fn(),
     removeRule: vi.fn(),
@@ -135,5 +148,14 @@ describe("terminal Cortex slash commands", () => {
     expect(viewer.title).toBe("change impact");
     expect(viewer.lines.join("\n")).toContain("apps/cli");
     expect(viewer.lines.join("\n")).toContain("Required verification");
+  });
+
+  it("renders persistent project agents", async () => {
+    const { app, backend } = session();
+    await (app as any).onSlash("/agents");
+    expect(backend.listAgents).toHaveBeenCalled();
+    const viewer = (app as any).outputViewer;
+    expect(viewer.title).toBe("agents");
+    expect(viewer.lines.join("\n")).toContain("Cortex Planner");
   });
 });

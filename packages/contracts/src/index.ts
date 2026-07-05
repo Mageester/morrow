@@ -709,7 +709,7 @@ export const MissionEventTypeSchema=z.enum([
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
   "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
   "mission.review_started","mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
-  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed",
+  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({
@@ -722,6 +722,28 @@ export const MissionEventSchema=z.object({
   createdAt:z.string().datetime(),
 }).strict();
 export type MissionEvent=z.infer<typeof MissionEventSchema>;
+
+export const MissionSpecialistRoleSchema=z.object({
+  id:z.enum(["repository-mapper","planner","implementer","test-engineer","security-regression-reviewer","final-reviewer"]),
+  name:z.string().min(1).max(120),
+  objective:z.string().min(1).max(1000),
+  allowedTools:z.array(z.string().min(1).max(120)).min(1),
+  requiredInputs:z.array(z.string().min(1).max(240)).min(1),
+  structuredOutput:z.string().min(1).max(1000),
+  budget:z.object({
+    maxToolCalls:z.number().int().positive(),
+    maxContextBytes:z.number().int().positive(),
+    maxUsd:z.number().nonnegative().nullable().default(null),
+  }).strict(),
+  timeoutMs:z.number().int().positive(),
+  missionId:z.string(),
+  taskId:z.string().nullable().default(null),
+  agentId:z.string().nullable().default(null),
+  status:z.enum(["pending","running","completed","failed","skipped"]).default("pending"),
+  completionCriteria:z.array(z.string().min(1).max(240)).min(1),
+  storesChainOfThought:z.literal(false),
+}).strict();
+export type MissionSpecialistRole=z.infer<typeof MissionSpecialistRoleSchema>;
 
 // ── Mission API inputs ─────────────────────────────────────────────────────
 export const CreateMissionSchema=z.object({

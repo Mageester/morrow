@@ -192,6 +192,60 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(listRes.json()).toHaveLength(1);
   });
 
+  it("creates Cortex specialist roles and exposes the named agent team for missions", async () => {
+    const wsDir = join(tempDir, "mission-ws");
+    mkdirSync(wsDir);
+    const projectRes = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Mission Project", workspacePath: wsDir },
+    });
+    const projectId = projectRes.json().id;
+
+    const missionRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${projectId}/missions`,
+      payload: { objective: "Repair the package boundary" },
+    });
+    expect(missionRes.statusCode).toBe(201);
+    const missionId = missionRes.json().id;
+
+    const specialistsRes = await app.inject({ method: "GET", url: `/api/missions/${missionId}/specialists` });
+    expect(specialistsRes.statusCode).toBe(200);
+    const specialists = specialistsRes.json();
+    expect(specialists.map((r: any) => r.id)).toEqual([
+      "repository-mapper",
+      "planner",
+      "implementer",
+      "test-engineer",
+      "security-regression-reviewer",
+      "final-reviewer",
+    ]);
+    expect(specialists.find((r: any) => r.id === "implementer")).toMatchObject({
+      storesChainOfThought: false,
+      status: "pending",
+    });
+    expect(specialists.find((r: any) => r.id === "implementer").allowedTools).toContain("propose_patch");
+
+    const agentsRes = await app.inject({ method: "GET", url: `/api/projects/${projectId}/agents` });
+    expect(agentsRes.statusCode).toBe(200);
+    const agents = agentsRes.json();
+    expect(agents.map((a: any) => a.name)).toEqual(expect.arrayContaining([
+      "Cortex Repository Mapper",
+      "Cortex Planner",
+      "Cortex Implementer",
+      "Cortex Test Engineer",
+      "Cortex Security Reviewer",
+      "Cortex Final Reviewer",
+    ]));
+    const implementer = agents.find((a: any) => a.name === "Cortex Implementer");
+    expect(implementer.instructions).toContain("Allowed tools");
+
+    const permsRes = await app.inject({ method: "GET", url: `/api/agents/${implementer.id}/tool-permissions` });
+    expect(permsRes.statusCode).toBe(200);
+    expect(permsRes.json().map((p: any) => p.toolName)).toContain("propose_patch");
+  });
+
   it("returns structured error for invalid workspace", async () => {
     const res = await app.inject({
       method: "POST",

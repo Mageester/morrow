@@ -79,6 +79,7 @@ export interface SessionBackend {
   removeRule?(ruleId: string): Promise<void>;
   getMissionImpact?(missionId: string): Promise<import("@morrow/contracts").ChangeImpactAnalysis[]>;
   getMissionRevisions?(missionId: string): Promise<import("@morrow/contracts").PlanRevision[]>;
+  listAgents?(): Promise<import("@morrow/contracts").Agent[]>;
 }
 
 export interface SessionSettings {
@@ -434,6 +435,9 @@ export class InteractiveSession {
         return void this.requestPaint(false);
       case "rules":
         await this.showRules(arg);
+        return void this.requestPaint(false);
+      case "agents":
+        await this.showAgents();
         return void this.requestPaint(false);
       case "impact":
       case "plan":
@@ -814,6 +818,27 @@ export class InteractiveSession {
       lines.push("");
     }
     this.outputViewer = { title: `plan revisions (${revisions.length})`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showAgents(): Promise<void> {
+    const named = await this.deps.backend.listAgents?.().catch(() => []) ?? [];
+    const active = this.term.agents;
+    const lines: string[] = [];
+    if (active.length > 0) {
+      lines.push("Active");
+      for (const a of active) lines.push(`  ${a.name} [${a.role}] ${a.status}${a.taskId ? ` task ${a.taskId}` : ""}`);
+      lines.push("");
+    }
+    if (named.length > 0) {
+      lines.push("Project agents");
+      for (const agent of named) {
+        lines.push(`  ${agent.name} [${agent.role}] ${agent.enabled ? "enabled" : "disabled"}`);
+        const firstInstruction = agent.instructions?.split(/\r?\n/).find((line) => line.trim().length > 0);
+        if (firstInstruction) lines.push(`    ${firstInstruction.slice(0, 120)}`);
+      }
+    }
+    this.outputViewer = { title: "agents", lines: lines.length ? lines : ["(no project agents or active subagents)"] };
     this.input = { ...this.input, overlay: "output" };
   }
 

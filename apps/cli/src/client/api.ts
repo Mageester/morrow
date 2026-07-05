@@ -1,5 +1,6 @@
 import type {
   Project,
+  Agent,
   Task,
   TaskEvent,
   Conversation,
@@ -43,6 +44,7 @@ import type {
   MissionReview,
   MissionEvent,
   MissionResult,
+  MissionSpecialistRole,
   MissionVerificationStrategy,
   CreateMissionInput,
 } from "@morrow/contracts";
@@ -282,6 +284,7 @@ export class MorrowApi {
   // ── Projects ──────────────────────────────────────────────────────────────
   listProjects() { return this.req<Project[]>("GET", "/api/projects"); }
   getProject(id: string) { return this.req<Project>("GET", `/api/projects/${id}`); }
+  listAgents(projectId: string) { return this.req<Agent[]>("GET", `/api/projects/${projectId}/agents`); }
   createProject(name: string, workspacePath: string) {
     return this.req<Project>("POST", "/api/projects", { name, workspacePath });
   }
@@ -379,6 +382,9 @@ export class MorrowApi {
   }
   getMissionEvents(missionId: string) {
     return this.req<MissionEvent[]>("GET", `/api/missions/${missionId}/events`);
+  }
+  getMissionSpecialists(missionId: string) {
+    return this.req<MissionSpecialistRole[]>("GET", `/api/missions/${missionId}/specialists`);
   }
   getMissionResult(missionId: string) {
     return this.req<{ status: string; result: MissionResult | null; finalReview: MissionReview | null }>("GET", `/api/missions/${missionId}/result`);

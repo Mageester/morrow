@@ -45,6 +45,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "risks", description: "show known project risks" },
   { name: "learnings", description: "show evidence-backed mission learnings" },
   { name: "rules", arg: "[add <text>|remove <id>]", description: "explicit repository rules (outrank inferred conventions)" },
+  { name: "agents", description: "show persistent project agents and active subagents" },
   { name: "impact", description: "show the active mission's change-impact analysis" },
   { name: "plan", description: "show the active mission's plan and impact analysis" },
   { name: "revisions", description: "show the active mission's plan revision history" },

@@ -203,6 +203,7 @@ async function runInteractiveSession(
     },
     getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
     getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
+    listAgents: () => api.listAgents(project.id).catch(() => []),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).

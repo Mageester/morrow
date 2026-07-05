@@ -89,6 +89,7 @@ import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { missionsRepository } from "./repositories/missions.js";
 import { MissionService, MissionError } from "./mission/service.js";
+import { ensureCortexSpecialistAgents } from "./mission/specialists.js";
 import { buildMissionCompletion } from "./mission/completion.js";
 import { intelligenceRepository } from "./repositories/intelligence.js";
 import { CortexService, CortexError } from "./cortex/service.js";
@@ -1146,6 +1147,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const parsed = CreateMissionSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError(400, "Invalid mission request", "VALIDATION_ERROR");
     const mission = missionService.create(projectId, parsed.data);
+    ensureCortexSpecialistAgents(projectId, agents);
     reply.status(201);
     return mission;
   });
@@ -1169,6 +1171,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/missions/:missionId/events", async (request) => {
     requireMission((request.params as { missionId: string }).missionId);
     return missions.listEvents((request.params as { missionId: string }).missionId);
+  });
+  app.get("/api/missions/:missionId/specialists", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.specialists(missionId));
   });
 
   // Generate/regenerate criteria from the objective.

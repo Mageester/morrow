@@ -53,6 +53,18 @@ describe("MissionService — creation and persistence", () => {
     expect(loaded.objective).toBe("Repair the game");
     expect(loaded.status).toBe("draft");
     expect(repo2.listEvents(m.id).some((e) => e.type === "mission.created")).toBe(true);
+    const roles = service.specialists(m.id);
+    expect(roles.map((r) => r.id)).toEqual([
+      "repository-mapper",
+      "planner",
+      "implementer",
+      "test-engineer",
+      "security-regression-reviewer",
+      "final-reviewer",
+    ]);
+    expect(roles.every((r) => r.allowedTools.length > 0 && r.requiredInputs.length > 0 && r.completionCriteria.length > 0)).toBe(true);
+    expect(roles.every((r) => r.storesChainOfThought === false)).toBe(true);
+    expect(repo2.listEvents(m.id).some((e) => e.type === "mission.specialists_planned")).toBe(true);
   });
 });
 

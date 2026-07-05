@@ -12,6 +12,7 @@ import {
   SendMessageSchema,
   ModelInfoSchema,
   OAuthFindingSchema,
+  MissionSpecialistRoleSchema,
 } from "@morrow/contracts";
 import { listPresets } from "../src/routing/presets.js";
 import { listProviderStatuses } from "../src/provider/registry.js";
@@ -42,6 +43,27 @@ describe("Contract schemas", () => {
     expect(() => ApprovalSchema.parse(approval)).not.toThrow();
     expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project" })).toThrow();
     expect(() => ResolveApprovalSchema.parse({ projectId: "project", decision: "trust_project", trustPattern: "pnpm test" })).not.toThrow();
+  });
+
+  it("requires specialist roles to exchange structured artifacts instead of chain-of-thought", () => {
+    const role = {
+      id: "planner",
+      name: "Cortex Planner",
+      objective: "Plan a mission",
+      allowedTools: ["read_file"],
+      requiredInputs: ["objective"],
+      structuredOutput: "JSON plan",
+      budget: { maxToolCalls: 4, maxContextBytes: 10000, maxUsd: null },
+      timeoutMs: 30000,
+      missionId: "mission-1",
+      taskId: null,
+      agentId: null,
+      status: "pending",
+      completionCriteria: ["Plan is evidence-backed"],
+      storesChainOfThought: false,
+    };
+    expect(() => MissionSpecialistRoleSchema.parse(role)).not.toThrow();
+    expect(() => MissionSpecialistRoleSchema.parse({ ...role, storesChainOfThought: true })).toThrow();
   });
 
   it("accepts every provider id in the disclosure schema", () => {

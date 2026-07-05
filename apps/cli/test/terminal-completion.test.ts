@@ -41,7 +41,7 @@ describe("slash-command completion", () => {
 
   it("exposes Cortex commands in help and completion metadata", () => {
     const names = SLASH_COMMANDS.map((c) => c.name);
-    for (const cmd of ["cortex", "map", "conventions", "decisions", "risks", "learnings", "rules", "impact", "plan", "revisions"]) {
+    for (const cmd of ["cortex", "map", "conventions", "decisions", "risks", "learnings", "rules", "agents", "impact", "plan", "revisions"]) {
       expect(names).toContain(cmd);
     }
     expect(filterCommands("/cort", SLASH_COMMANDS)[0]!.name).toBe("cortex");
