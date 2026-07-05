@@ -123,13 +123,19 @@ export class MissionService {
     return this.get(missionId);
   }
 
-  /** Heuristic criteria when no model is available — still measurable. */
+  /** Heuristic criteria when no model is available — every one is measurable
+   *  (has an executable verification), so a mission can actually reach a full
+   *  grade. We avoid vague "runtime" criteria that carry no runnable command. */
   private heuristicCriteria(objective: string, repoSummary: string): DraftCriterion[] {
     const drafts: DraftCriterion[] = [];
-    const hasPkg = /package\.json/.test(repoSummary);
-    const hasTest = /test|spec|vitest|jest|mocha/i.test(repoSummary);
-    drafts.push({ description: "The project's declared build or start entry runs without a fatal error", verification: { kind: "runtime", describe: "Start/build entry exits cleanly" } });
-    if (hasTest) drafts.push({ description: "The existing test suite passes", verification: { kind: "test", command: hasPkg ? "npm test" : "", describe: "Test suite exit code 0" } });
+    const hasTest = /"test"|test|spec|vitest|jest|mocha/i.test(repoSummary);
+    if (hasTest) {
+      drafts.push({ description: "The existing test suite passes", verification: { kind: "test", command: "npm test", describe: "Test suite exit code 0" } });
+    } else {
+      // No test script: prove the primary entry at least parses cleanly.
+      const entry = /server\.js/.test(repoSummary) ? "src/server.js" : /index\.js/.test(repoSummary) ? "src/index.js" : "index.js";
+      drafts.push({ description: `The entry file ${entry} parses without a syntax error`, verification: { kind: "command", command: `node --check ${entry}`, expectExitCode: 0 } });
+    }
     drafts.push({ description: "The final diff contains no unrelated changes outside the intended fix", verification: { kind: "diff", pathScope: "**", describe: "Changes stay within scope" } });
     drafts.push({ description: "An independent reviewer approves the change against the objective", verification: { kind: "review", describe: "Independent reviewer verdict" } });
     return drafts;
@@ -350,6 +356,24 @@ export class MissionService {
     this.repo.setReview(review);
     const budget = { ...mission.budget, reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1 };
     this.repo.updateBudget(missionId, budget, this.now());
+
+    // A `review`-kind criterion is proven by the reviewer itself: when the
+    // verdict is an approval, record the review as its evidence and verify it;
+    // a rejection fails it. Non-approvals leave it unverified (honest).
+    const approving = review.verdict === "approved" || review.verdict === "approved_with_risks";
+    for (const c of mission.criteria) {
+      if (c.verification.kind !== "review") continue;
+      const evidence = this.repo.addEvidence({
+        id: `ev-${randomUUID()}`, missionId, criterionIds: [c.id], type: "review",
+        summary: `Independent review: ${review.verdict.replace(/_/g, " ")}`,
+        command: null, exitCode: null, outputRef: null, artifactPath: null,
+        status: approving ? "passed" : review.verdict === "revisions_required" ? "failed" : "inconclusive",
+      });
+      this.repo.appendEvent(missionId, "mission.evidence_recorded", evidence.summary, { criterionId: c.id, status: evidence.status }, this.now());
+      if (approving) this.repo.updateCriterion(c.id, { state: "verified" }, this.now());
+      else if (review.verdict === "revisions_required") this.repo.updateCriterion(c.id, { state: "failed", failureReason: "Independent reviewer requested revisions" }, this.now());
+    }
+
     this.repo.appendEvent(missionId, "mission.review_completed", `Review verdict: ${review.verdict}`, { verdict: review.verdict }, this.now());
     return review;
   }

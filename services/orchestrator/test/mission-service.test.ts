@@ -260,6 +260,25 @@ describe("MissionService — independent review and honest grading", () => {
     expect(final.result!.unresolvedRisks).toContain("Only tested on Chromium");
   });
 
+  it("verifies a review-kind criterion when the reviewer approves, reaching full completion", async () => {
+    const completion: MissionCompletionFn = async (_m, opts) =>
+      opts.purpose === "review" ? { text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], summary: "ok" }) } : { text: "[]" };
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const m = service.create("p1", { objective: "Repair" });
+    const cmd = service.addCriterion(m.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    const rev = service.addCriterion(m.id, "independent reviewer approves", { kind: "review" });
+    service.approveCriteria(m.id);
+    await service.verifyCriterion(m.id, cmd.id);
+    await service.runReview(m.id);
+    // The review criterion is now verified with the review as its evidence.
+    const reviewCriterion = service.get(m.id).criteria.find((c) => c.id === rev.id)!;
+    expect(reviewCriterion.state).toBe("verified");
+    expect(reviewCriterion.evidenceIds.length).toBe(1);
+    const final = service.finalize(m.id);
+    expect(final.status).toBe("completed");
+  });
+
   it("refuses full completion when a criterion is unverified even if review approves", async () => {
     const completion: MissionCompletionFn = async (_m, opts) =>
       opts.purpose === "review" ? { text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], summary: "ok" }) } : { text: "[]" };
