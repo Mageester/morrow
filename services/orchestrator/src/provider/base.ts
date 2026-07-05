@@ -71,6 +71,7 @@ export interface StreamOptions {
   model?: string;
   temperature?: number | null;
   maxOutputTokens?: number | null;
+  responseFormat?: "json_object";
 }
 
 /** Capability flags surfaced to the UI and used by the router. */

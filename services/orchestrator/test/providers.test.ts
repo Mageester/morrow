@@ -3,6 +3,7 @@ import { OpenAiCompatibleProvider } from "../src/provider/openai-compatible.js";
 import { AnthropicProvider } from "../src/provider/anthropic.js";
 import { GeminiProvider } from "../src/provider/gemini.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "../src/provider/base.js";
+import { buildMissionCompletion } from "../src/mission/completion.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -113,6 +114,20 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(chunks.filter((c) => c.type === "text").map((c) => c.text).join("")).toBe("ok");
   });
 
+  it("requests JSON object output when responseFormat is set", async () => {
+    const ref = mockFetch(
+      sseResponse([
+        `data: {"choices":[{"delta":{"content":"{}"}}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ])
+    );
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" });
+    await collect(provider, userMessages, { responseFormat: "json_object" });
+
+    const sentBody = JSON.parse(ref.captured!.init.body);
+    expect(sentBody.response_format).toEqual({ type: "json_object" });
+  });
+
   it("emits a timeout error when the request exceeds timeoutMs", async () => {
     globalThis.fetch = ((_url: any, init: any) =>
       new Promise((_resolve, reject) => {
@@ -141,6 +156,34 @@ describe("OpenAI-compatible provider normalization", () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
     const chunks = await collect(provider, userMessages, { abortSignal: controller.signal });
     expect(chunks.at(-1)?.error?.kind).toBe("cancelled");
+  });
+});
+
+describe("mission completion routing", () => {
+  it("enables provider JSON mode for independent review completions only", async () => {
+    const ref = mockFetch(() =>
+      sseResponse([
+        `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"insufficient_evidence\\"}"}}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ])
+    );
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 });
+
+    let sentBody = JSON.parse(ref.captured!.init.body);
+    expect(sentBody.response_format).toEqual({ type: "json_object" });
+
+    await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json criteria" },
+    ], { purpose: "planning", temperature: 0.1 });
+
+    sentBody = JSON.parse(ref.captured!.init.body);
+    expect(sentBody.response_format).toBeUndefined();
   });
 });
 

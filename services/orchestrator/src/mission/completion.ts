@@ -36,6 +36,7 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
       temperature: o.temperature ?? 0.1,
       maxOutputTokens: 2000,
       model,
+      ...(o.purpose === "review" ? { responseFormat: "json_object" } : {}),
     });
     let text = "";
     for await (const chunk of opened.stream) {

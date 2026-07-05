@@ -94,6 +94,23 @@ describe("MissionService — criteria", () => {
     expect(after.criteria[1]!.description).not.toMatch(/make it better/i);
   });
 
+  it("drops brittle model-invented artifact checks from the criteria contract", async () => {
+    const completion: MissionCompletionFn = async () => ({
+      text: JSON.stringify([
+        { description: "Regeneration completes", verification: { kind: "command", command: "npm run generate", expectExitCode: 0 } },
+        { description: "Generated tax table has 5% for books", verification: { kind: "command", command: "node -e \"const d=require('./generated/taxTable.json'); process.exit(d.books===0.05?0:1);\"", expectExitCode: 0 } },
+        { description: "Inline generated artifact check", verification: { kind: "command", command: "node -e \"const d=require('./generated/tax-table.json'); process.exit(d.book===0.05?0:1);\"", expectExitCode: 0 } },
+      ]),
+    });
+    const { service, workspace } = setup({ completion });
+    mkdirSync(join(workspace, "generated"));
+    writeFileSync(join(workspace, "generated", "tax-table.json"), "{\"book\":0.13}\n");
+
+    const m = service.create("p1", { objective: "Repair tax table" });
+    const after = await service.generateCriteria(m.id, "package.json scripts: generate, test\ngenerated/tax-table.json");
+    expect(after.criteria.map((c) => c.verification.command)).toEqual(["npm run generate"]);
+  });
+
   it("auto-approves and starts running when autoApprove is set, persisting the contract", async () => {
     const { service } = setup();
     const m = service.create("p1", { objective: "Fix", autoApprove: true });
@@ -272,6 +289,23 @@ describe("MissionService — independent review and honest grading", () => {
     expect(final.result!.unresolvedRisks).toContain("Only tested on Chromium");
   });
 
+  it("does not surface no-op reviewer risk strings as unresolved risks", async () => {
+    const completion: MissionCompletionFn = async (_m, opts) =>
+      opts.purpose === "review"
+        ? { text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [], regressionRisks: ["None expected; tests cover this path."], suspiciousChanges: ["No suspicious changes found."], missingVerification: ["N/A"], concerns: ["No concerns identified."], summary: "ok" }) }
+        : { text: "[]" };
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const m = service.create("p1", { objective: "Repair" });
+    const c = service.addCriterion(m.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    service.approveCriteria(m.id);
+    await service.verifyCriterion(m.id, c.id);
+    await service.runReview(m.id);
+    const final = service.finalize(m.id);
+    expect(final.status).toBe("completed");
+    expect(final.result!.unresolvedRisks).toEqual([]);
+  });
+
   it("verifies a review-kind criterion when the reviewer approves, reaching full completion", async () => {
     const completion: MissionCompletionFn = async (_m, opts) =>
       opts.purpose === "review" ? { text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], summary: "ok" }) } : { text: "[]" };
@@ -287,6 +321,40 @@ describe("MissionService — independent review and honest grading", () => {
     const reviewCriterion = service.get(m.id).criteria.find((c) => c.id === rev.id)!;
     expect(reviewCriterion.state).toBe("verified");
     expect(reviewCriterion.evidenceIds.length).toBe(1);
+    const final = service.finalize(m.id);
+    expect(final.status).toBe("completed");
+  });
+
+  it("repairs unstructured reviewer output once before grading", async () => {
+    let reviewCalls = 0;
+    const completion: MissionCompletionFn = async (_m, opts) => {
+      if (opts.purpose !== "review") return { text: "[]" };
+      reviewCalls += 1;
+      if (reviewCalls === 1) return { text: "Final ruling: APPROVED. The command evidence proves the criterion." };
+      return {
+        text: JSON.stringify({
+          verdict: "approved",
+          recommendedStatus: "completed",
+          criterionJudgments: [{ index: 1, judgment: "satisfied", note: "Command evidence passed." }],
+          regressionRisks: [],
+          suspiciousChanges: [],
+          missingVerification: [],
+          concerns: [],
+          summary: "Approved after structured repair.",
+        }),
+      };
+    };
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const m = service.create("p1", { objective: "Repair" });
+    const cmd = service.addCriterion(m.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    const rev = service.addCriterion(m.id, "independent reviewer approves", { kind: "review" });
+    service.approveCriteria(m.id);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(reviewCalls).toBe(2);
+    expect(review.verdict).toBe("approved");
+    expect(service.get(m.id).criteria.find((c) => c.id === rev.id)!.state).toBe("verified");
     const final = service.finalize(m.id);
     expect(final.status).toBe("completed");
   });

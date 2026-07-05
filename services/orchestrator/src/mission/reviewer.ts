@@ -75,6 +75,22 @@ export function buildReviewMessages(ctx: ReviewContext): ChatMessage[] {
   ];
 }
 
+export function buildReviewRepairMessages(original: ChatMessage[], rawText: string): ChatMessage[] {
+  return [
+    ...original,
+    { role: "assistant", content: rawText.slice(0, 12000) },
+    {
+      role: "user",
+      content: [
+        "Your previous answer was not valid machine-readable JSON.",
+        "Convert your review into ONLY the JSON object requested in the system message.",
+        "Do not add markdown, prose, code fences, headings, or commentary.",
+        "If the evidence is insufficient, return verdict \"insufficient_evidence\" in that JSON shape.",
+      ].join("\n"),
+    },
+  ];
+}
+
 const VERDICTS: MissionReviewVerdict[] = ["approved", "approved_with_risks", "revisions_required", "insufficient_evidence"];
 const STATUSES: MissionStatus[] = ["completed", "completed_with_reservations", "partially_completed", "blocked", "failed"];
 
@@ -116,7 +132,12 @@ export function parseReviewVerdict(
         };
       }).filter((j: any) => j.criterionId)
     : [];
-  const strArr = (v: unknown): string[] => Array.isArray(v) ? v.filter((x) => typeof x === "string").map((x) => (x as string).slice(0, 500)).slice(0, 20) : [];
+  const strArr = (v: unknown): string[] => Array.isArray(v)
+    ? v.filter((x) => typeof x === "string")
+        .map((x) => (x as string).trim().slice(0, 500))
+        .filter((x) => x && !isNoopReviewListItem(x))
+        .slice(0, 20)
+    : [];
   return {
     verdict,
     criterionJudgments,
@@ -129,6 +150,14 @@ export function parseReviewVerdict(
   };
 }
 
+export function isReviewParseFailure(
+  parsed: Omit<MissionReview, "id" | "missionId" | "createdAt" | "reviewerProvider" | "reviewerModel">,
+): boolean {
+  return parsed.verdict === "insufficient_evidence"
+    && parsed.summary === "Reviewer output was not machine-readable; treated as insufficient evidence."
+    && parsed.missingVerification.includes("Reviewer output could not be parsed into a structured verdict");
+}
+
 function extractJsonObject(text: string): string | null {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fenced ? fenced[1]! : text;
@@ -136,4 +165,11 @@ function extractJsonObject(text: string): string | null {
   const end = body.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) return null;
   return body.slice(start, end + 1);
+}
+
+function isNoopReviewListItem(value: string): boolean {
+  const text = value.trim();
+  return /^(?:none|n\/a|not applicable)\b/i.test(text)
+    || /^none expected\b/i.test(text)
+    || /^no (?:regression )?(?:risks?|concerns?|issues?|problems?|suspicious changes?|missing verification|unresolved risks?)(?:\b|$)/i.test(text);
 }

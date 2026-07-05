@@ -50,6 +50,8 @@ export function buildCriteriaPrompt(objective: string, repoSummary: string): str
     "You are Morrow's mission planner. Convert the objective into 3-6 MEASURABLE, independently VERIFIABLE success criteria.",
     "Each criterion MUST be provable by a concrete action (a command with an exit code, a test, a build, a type-check, an HTTP probe, or a bounded diff inspection).",
     "Reject vague outcomes like 'make it better' or 'ensure quality'. Rewrite them into observable results.",
+    "Do not invent file names, object keys, package scripts, or artifact shapes. Prefer repository scripts/tests shown in the context over ad-hoc `node -e` checks.",
+    "If an exact artifact structure is not shown in the repository context, verify regeneration with the repository's generate/test commands instead of guessing a JSON property path.",
     "",
     "Return ONLY a JSON array. Each element: {\"description\": string, \"verification\": {\"kind\": one of command|test|build|typecheck|lint|runtime|http|diff|manual, \"command\"?: string, \"url\"?: string, \"expectStatus\"?: number, \"expectExitCode\"?: number, \"pathScope\"?: string, \"describe\"?: string}}.",
     "Prefer commands that run in this repository. Keep commands safe and non-destructive.",

@@ -67,6 +67,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
 
     if (typeof options.temperature === "number") body.temperature = options.temperature;
     if (typeof options.maxOutputTokens === "number") body.max_tokens = options.maxOutputTokens;
+    if (options.responseFormat === "json_object") body.response_format = { type: "json_object" };
 
     if (options.tools && options.tools.length > 0) {
       body.tools = options.tools.map((t) => ({

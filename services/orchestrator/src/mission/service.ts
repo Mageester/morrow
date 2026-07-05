@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import type {
   Mission, MissionStatus, MissionCriterion, MissionCriterionState, MissionEvidence,
   MissionFailure, MissionCheckpoint, MissionReview, MissionBudget, MissionResult,
@@ -13,7 +14,7 @@ import { buildCriteriaPrompt, parseCriteriaFromModel, isVagueCriterion, rewriteV
 import { runVerification, type RunOptions } from "./evidence-runner.js";
 import { categorizeFailure, normalizeSignature, planRecovery, type RecoveryPlan } from "./failures.js";
 import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candidateFiles, isGitRepo } from "./checkpoints.js";
-import { buildReviewMessages, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
+import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
 import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
 import type { CortexService } from "../cortex/service.js";
@@ -124,6 +125,7 @@ export class MissionService {
         ];
         const res = await this.deps.completion(messages, { purpose: "planning", temperature: 0.1 });
         drafts = parseCriteriaFromModel(res.text);
+        drafts = this.sanitizeModelCriteria(drafts, this.deps.getWorkspacePath(mission.projectId));
         if (res.usdCost) this.addSpend(missionId, res.usdCost);
       } catch {
         drafts = [];
@@ -154,6 +156,17 @@ export class MissionService {
     drafts.push({ description: "The final diff contains no unrelated changes outside the intended fix", verification: { kind: "diff", pathScope: "**", describe: "Changes stay within scope" } });
     drafts.push({ description: "An independent reviewer approves the change against the objective", verification: { kind: "review", describe: "Independent reviewer verdict" } });
     return drafts;
+  }
+
+  private sanitizeModelCriteria(drafts: DraftCriterion[], workspace: string | undefined): DraftCriterion[] {
+    if (!workspace) return drafts;
+    return drafts.filter((draft) => {
+      const command = draft.verification.command;
+      if (!command) return true;
+      if (hasMissingWorkspaceFileReference(command, workspace)) return false;
+      if (isBrittleInlineGeneratedArtifactCheck(command)) return false;
+      return true;
+    });
   }
 
   addCriterion(missionId: string, description: string, verification?: MissionVerificationStrategy): MissionCriterion {
@@ -405,6 +418,13 @@ export class MissionService {
         parsed = parseReviewVerdict(res.text, mission.criteria);
         provider = res.provider ?? null; model = res.model ?? null;
         if (res.usdCost) this.addSpend(missionId, res.usdCost);
+        if (isReviewParseFailure(parsed)) {
+          const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
+          const repairedParsed = parseReviewVerdict(repaired.text, mission.criteria);
+          if (!isReviewParseFailure(repairedParsed)) parsed = repairedParsed;
+          provider = repaired.provider ?? provider; model = repaired.model ?? model;
+          if (repaired.usdCost) this.addSpend(missionId, repaired.usdCost);
+        }
       } catch {
         parsed = parseReviewVerdict("", mission.criteria); // insufficient_evidence
       }
@@ -529,4 +549,44 @@ function gitDiff(workspace: string): string {
     out += `\n# untracked files:\n${untrackedList.stdout.trim()}`;
   }
   return out;
+}
+
+function hasMissingWorkspaceFileReference(command: string, workspace: string): boolean {
+  for (const ref of extractCommandFileReferences(command)) {
+    const target = isAbsolute(ref) ? normalize(ref) : resolve(workspace, ref);
+    const rel = relative(workspace, target);
+    if (rel.startsWith("..") || isAbsolute(rel)) return true;
+    if (!existsSync(target)) return true;
+  }
+  return false;
+}
+
+function extractCommandFileReferences(command: string): string[] {
+  const refs = new Set<string>();
+  const explicit = /(?:require|readFileSync|readFile)\(\s*["']([^"']+)["']/gi;
+  for (const match of command.matchAll(explicit)) {
+    const ref = normalizeCommandReference(match[1]);
+    if (ref) refs.add(ref);
+  }
+
+  const quotedPath = /["']((?:\.{1,2}[\\/])?[^"']+[\\/][^"']+\.[A-Za-z0-9]{1,12})["']/g;
+  for (const match of command.matchAll(quotedPath)) {
+    const ref = normalizeCommandReference(match[1]);
+    if (ref) refs.add(ref);
+  }
+  return [...refs];
+}
+
+function normalizeCommandReference(value: string | undefined): string | null {
+  if (!value) return null;
+  const ref = value.trim().split(/[?#]/, 1)[0] ?? "";
+  if (!ref || /^[a-z][a-z0-9+.-]*:/i.test(ref)) return null;
+  if (/[*!{}]/.test(ref)) return null;
+  if (!/[\\/]/.test(ref)) return null;
+  return ref;
+}
+
+function isBrittleInlineGeneratedArtifactCheck(command: string): boolean {
+  return /\bnode(?:\.exe)?\s+-(?:e|p)\b/i.test(command)
+    && /(?:require|readFileSync|readFile)\(\s*["']\.{1,2}[\\/]generated[\\/]/i.test(command);
 }
