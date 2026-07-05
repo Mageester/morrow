@@ -50,3 +50,10 @@ export { browserAuditSink, type BrowserAuditLog, type BrowserAuditContext } from
 export { pluginRegistry, type PluginManifest, type InstalledPlugin } from "./plugins/registry.js";
 export type { BrowserController, PageSnapshot, DomRef, BrowserEvidence, BrowserAuditEntry, BrowserAuditSink, BrowserActionOptions, BrowserDownload, BrowserDialogResponse } from "./browser/types.js";
 export { chainEntry, verifyChain, computeHash, GENESIS_HASH, type ChainedAuditEntry, type AuditEntryInput } from "./audit/log.js";
+// Verified Missions
+export { missionsRepository, type MissionsRepository } from "./repositories/missions.js";
+export { MissionService, MissionError, type MissionServiceDeps, type MissionCompletionFn } from "./mission/service.js";
+export { buildMissionCompletion } from "./mission/completion.js";
+export { categorizeFailure, normalizeSignature, planRecovery, LoopDetector } from "./mission/failures.js";
+export { runVerification, isDangerousCommand, type EvidenceOutcome, type RunOptions } from "./mission/evidence-runner.js";
+export { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff } from "./mission/checkpoints.js";
