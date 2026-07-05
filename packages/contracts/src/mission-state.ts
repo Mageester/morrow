@@ -34,9 +34,13 @@ export function canTransitionMission(from: MissionStatus, to: MissionStatus): bo
 }
 
 export class MissionTransitionError extends Error {
-  constructor(public readonly from: MissionStatus, public readonly to: MissionStatus) {
+  readonly from: MissionStatus;
+  readonly to: MissionStatus;
+  constructor(from: MissionStatus, to: MissionStatus) {
     super(`Invalid mission transition: ${from} -> ${to}`);
     this.name = "MissionTransitionError";
+    this.from = from;
+    this.to = to;
   }
 }
 

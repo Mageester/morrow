@@ -6,6 +6,50 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.20] - 2026-07-05
+
+### Added — Morrow Advantage: Verified Missions
+
+- **Missions.** `morrow mission "<objective>"` turns an objective into a durable,
+  accountable unit of work: it drafts measurable success criteria, shows the
+  contract, executes, verifies each criterion with concrete evidence, obtains an
+  independent review, and grades itself honestly. Subcommands: `mission
+  list|show|result|criteria|evidence|failures|checkpoints`.
+- **Success criteria** with states (proposed/approved/in_progress/verified/
+  failed/waived/unverified), per-criterion verification strategies, and evidence
+  references. Vague criteria (“make it better”) are rewritten into observable
+  outcomes.
+- **Evidence ledger.** A criterion is verified only when linked to evidence whose
+  status is `passed` (command exit code, HTTP probe, bounded diff, …) — never on
+  an agent's say-so. Evidence is persisted and viewable after completion.
+- **Failure intelligence & loop detection.** Failures are persisted with a
+  category and a normalized signature; recovery escalates deterministically
+  (patch-context: reread → reduce scope → targeted rewrite) and never repeats the
+  same failed operation forever, escalating to `blocked` when exhausted.
+- **Checkpoints & safe rollback.** Per-file content snapshots let rollback restore
+  only the captured files — never a blanket working-tree reset — and it works
+  after a restart.
+- **Independent review.** A separate reviewer execution with isolated
+  instructions returns a structured verdict (approved / approved_with_risks /
+  revisions_required / insufficient_evidence); insufficient evidence can never
+  become full completion.
+- **Honest grading** into completed / completed_with_reservations /
+  partially_completed / blocked / failed / cancelled, with a durable, resumable
+  mission result and an append-only mission event timeline.
+- **Mission REST API** and SQLite persistence (migration 25); state survives CLI
+  closure and service restart.
+- **Terminal Mission Control**: `/criteria`, `/evidence`, `/failures`,
+  `/checkpoints` in the interactive shell.
+- **Benchmark harness** (`benchmarks/morrow-evals`) measuring **final-claim
+  accuracy** — does a full-success grade match a hidden ground-truth check? —
+  across five deterministic scenarios. No fabricated competitor scores.
+
+### Fixed
+
+- `morrow projects select` now accepts the shortened project id shown by
+  `projects list` when it uniquely identifies a project, with a clear error
+  listing candidates when a prefix is ambiguous.
+
 ## [0.1.0-beta.19] - 2026-07-04
 
 ### Changed
