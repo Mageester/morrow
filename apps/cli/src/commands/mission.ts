@@ -9,6 +9,7 @@ import { chatCommand } from "./chat.js";
 import { Context as CliContext } from "../cli/context.js";
 import { flagBool, flagString } from "../cli/args.js";
 import { EXIT, usageError, notFound } from "../cli/errors.js";
+import { renderImpact, renderRevisions } from "./cortex.js";
 
 const STATE_GLYPH: Record<string, string> = {
   verified: "✓", failed: "✗", waived: "◦", in_progress: "…", approved: "•", proposed: "•", unverified: "⚠",
@@ -31,6 +32,9 @@ export async function missionCommand(ctx: Context, sub: string | undefined, args
     case "evidence": return showEvidence(ctx, api, args[0]);
     case "failures": return showFailures(ctx, api, args[0]);
     case "checkpoints": return showCheckpoints(ctx, api, args[0]);
+    case "impact":
+    case "plan": return showPlan(ctx, api, args[0]);
+    case "revisions": return showRevisions(ctx, api, args[0]);
     default: break;
   }
 
@@ -58,6 +62,25 @@ async function runMission(ctx: Context, api: MorrowApi, objective: string): Prom
 
   // 2. Show the mission contract before any substantial execution.
   renderContract(ctx, withCriteria);
+
+  // 2b. Stale intelligence is never silently trusted: if architecture-critical
+  // files changed since the last refresh, refresh before planning on it.
+  try {
+    const staleness = await api.intelligenceStaleness(project.id);
+    if (staleness.changedScopes.length > 0) {
+      ctx.out.info("");
+      ctx.out.info(ctx.out.yellow(`⚠ Repository changed since the last Cortex refresh (${staleness.changedScopes.join(", ")}). Refreshing affected knowledge before planning.`));
+      await api.refreshIntelligence(project.id);
+    }
+  } catch { /* no intelligence yet */ }
+
+  // 2c. Change-impact analysis from persisted project intelligence: what the
+  // objective likely touches, relevant history, rules, and verification. Runs
+  // best-effort — a project without Cortex intelligence simply skips it.
+  try {
+    const impact = await api.analyzeMissionImpact(created.id);
+    renderImpact(ctx, impact);
+  } catch { /* no intelligence yet; the mission proceeds with exploration */ }
 
   // 3. Approval gate. Autonomous missions auto-approve (and persist) the contract.
   let mission = withCriteria;
@@ -204,6 +227,28 @@ async function showFailures(ctx: Context, api: MorrowApi, id?: string): Promise<
     ctx.out.info(`  [${f.category}] ${f.operation.slice(0, 70)}  ${g}`);
     if (f.recoveryStrategy) ctx.out.info(ctx.out.gray(`     strategy: ${f.recoveryStrategy}  (attempt ${f.attempt})`));
   }
+  return EXIT.OK;
+}
+
+async function showPlan(ctx: Context, api: MorrowApi, id?: string): Promise<number> {
+  const mission = await resolveMission(ctx, api, id);
+  const impact = await api.listMissionImpact(mission.id);
+  const revisions = await api.listMissionRevisions(mission.id);
+  if (ctx.out.json) { ctx.out.data({ impact, revisions }); return EXIT.OK; }
+  if (impact.length === 0) ctx.out.info("No impact analysis was recorded for this mission.");
+  else renderImpact(ctx, impact[impact.length - 1]!);
+  if (revisions.length > 0) {
+    ctx.out.info("");
+    ctx.out.info(ctx.out.gray(`The plan was revised ${revisions.length} time(s); see \`morrow mission revisions\`.`));
+  }
+  return EXIT.OK;
+}
+
+async function showRevisions(ctx: Context, api: MorrowApi, id?: string): Promise<number> {
+  const mission = await resolveMission(ctx, api, id);
+  const revisions = await api.listMissionRevisions(mission.id);
+  if (ctx.out.json) { ctx.out.data(revisions); return EXIT.OK; }
+  renderRevisions(ctx, revisions);
   return EXIT.OK;
 }
 

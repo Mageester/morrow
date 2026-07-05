@@ -62,6 +62,7 @@ docs/
   architecture.md      Initial system architecture
   hermes-parity.md     Capability comparison and parity tracking
   benchmark-plan.md    Evidence required to prove improvement
+  CORTEX.md            Project intelligence, staleness, rules, and replanning
   privacy-model.md     Privacy and data-flow requirements
   design-principles.md Product and interface principles
   roadmap.md           Development stages

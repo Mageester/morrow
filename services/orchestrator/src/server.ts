@@ -16,6 +16,8 @@ import {
   UpdateAgentSchema,
   UpsertToolPermissionSchema,
   UpsertSkillAccessSchema,
+  CreateProjectRuleSchema,
+  PatchConventionSchema,
   type PresetId,
   type ProviderId,
   type RoutingDecision,
@@ -88,6 +90,9 @@ import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspa
 import { missionsRepository } from "./repositories/missions.js";
 import { MissionService, MissionError } from "./mission/service.js";
 import { buildMissionCompletion } from "./mission/completion.js";
+import { intelligenceRepository } from "./repositories/intelligence.js";
+import { CortexService, CortexError } from "./cortex/service.js";
+import { analyzeChangeImpact } from "./cortex/impact.js";
 import { CreateMissionSchema, AddMissionCriterionSchema, UpdateMissionCriterionSchema } from "@morrow/contracts";
 import { processesRepository } from "./repositories/processes.js";
 import { worktreesRepository } from "./repositories/worktrees.js";
@@ -212,11 +217,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
   const missions = missionsRepository(deps.db);
+  const intelligenceRepo = intelligenceRepository(deps.db);
+  const cortexService = new CortexService({
+    repo: intelligenceRepo,
+    getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+  });
   const missionService = new MissionService({
     repo: missions,
     getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
     completion: buildMissionCompletion({ env: process.env }),
     backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
+    cortex: cortexService,
   });
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
@@ -1257,6 +1268,147 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
     return runMission(() => missionService.resume(missionId));
+  });
+
+  // ── Morrow Cortex: persistent project intelligence ─────────────────────────
+  // Structured, evidence-backed repository knowledge with scoped staleness.
+  // Facts come from deterministic analysis; stale knowledge is labelled, never
+  // presented as certain; user rules outrank inferred conventions.
+  const requireProjectForCortex = (projectId: string) => {
+    const p = projects.getProjectById(projectId);
+    if (!p) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return p;
+  };
+  const runCortex = <T>(fn: () => T): T => {
+    try { return fn(); }
+    catch (e) {
+      if (e instanceof CortexError) {
+        const status = e.code === "not_found" ? 404 : e.code === "no_workspace" || e.code === "conflict" ? 409 : e.code === "limit" ? 429 : 400;
+        throw new ApiError(status, e.message, e.code.toUpperCase());
+      }
+      throw e;
+    }
+  };
+
+  app.get("/api/projects/:projectId/intelligence", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId));
+  });
+
+  app.post("/api/projects/:projectId/intelligence/refresh", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    reply.status(201);
+    return runCortex(() => cortexService.refresh(projectId));
+  });
+
+  app.get("/api/projects/:projectId/intelligence/staleness", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.detectStaleness(projectId));
+  });
+
+  app.delete("/api/projects/:projectId/intelligence", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    const { includeDurable } = (request.query ?? {}) as { includeDurable?: string };
+    runCortex(() => cortexService.forget(projectId, { includeDurable: includeDurable === "true" }));
+    return { forgotten: true };
+  });
+
+  app.get("/api/projects/:projectId/architecture", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).architecture);
+  });
+
+  app.get("/api/projects/:projectId/conventions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).conventions);
+  });
+
+  app.patch("/api/projects/:projectId/conventions/:conventionId", async (request) => {
+    const { projectId, conventionId } = request.params as { projectId: string; conventionId: string };
+    requireProjectForCortex(projectId);
+    const body = PatchConventionSchema.parse(request.body);
+    return runCortex(() => body.approval === "approved"
+      ? cortexService.approveConvention(projectId, conventionId)
+      : cortexService.rejectConvention(projectId, conventionId));
+  });
+
+  app.get("/api/projects/:projectId/decisions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).decisions);
+  });
+
+  app.get("/api/projects/:projectId/learnings", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).missionLearnings);
+  });
+
+  app.get("/api/projects/:projectId/risks", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).risks);
+  });
+
+  app.get("/api/projects/:projectId/rules", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return intelligenceRepo.listRules(projectId);
+  });
+
+  app.post("/api/projects/:projectId/rules", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    const body = CreateProjectRuleSchema.parse(request.body);
+    reply.status(201);
+    return runCortex(() => cortexService.addRule(projectId, body));
+  });
+
+  app.delete("/api/projects/:projectId/rules/:ruleId", async (request) => {
+    const { projectId, ruleId } = request.params as { projectId: string; ruleId: string };
+    requireProjectForCortex(projectId);
+    runCortex(() => cortexService.removeRule(projectId, ruleId));
+    return { deleted: true };
+  });
+
+  // Change-impact analysis: computed from persisted intelligence + the
+  // mission's prior failures, then recorded on the mission for auditability.
+  app.post("/api/missions/:missionId/impact", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = requireMission(missionId);
+    return runCortex(() => {
+      if (!cortexService.has(mission.projectId)) {
+        throw new CortexError("No project intelligence yet — refresh Cortex before running impact analysis", "not_found");
+      }
+      const analysis = analyzeChangeImpact({
+        missionId,
+        objective: mission.objective,
+        intelligence: cortexService.get(mission.projectId),
+        priorFailures: mission.failures,
+      });
+      cortexService.recordImpactAnalysis(analysis);
+      missions.appendEvent(missionId, "mission.impact_analyzed", `Impact: ${analysis.likelyComponents.length} component(s), ${analysis.requiredVerification.length} verification step(s)`, { components: analysis.likelyComponents.length }, new Date().toISOString());
+      reply.status(201);
+      return analysis;
+    });
+  });
+
+  app.get("/api/missions/:missionId/impact", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return cortexService.listImpactAnalyses(missionId);
+  });
+
+  app.get("/api/missions/:missionId/revisions", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return cortexService.listPlanRevisions(missionId);
   });
 
   // ── Background process registry ──────────────────────────────────────────

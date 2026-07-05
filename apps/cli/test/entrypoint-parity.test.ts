@@ -21,8 +21,8 @@ describe("installed launcher ↔ CLI command parity", () => {
     }
   });
 
-  it("delegates the previously-rejected product commands to the CLI", () => {
-    for (const command of ["yolo", "mission", "symbols", "processes", "worktrees", "integrate"]) {
+  it("delegates the product commands to the CLI", () => {
+    for (const command of ["yolo", "mission", "cortex", "symbols", "processes", "worktrees", "integrate"]) {
       expect(classify([command]).action).toBe("cli");
     }
   });

@@ -28,6 +28,8 @@ export interface Scenario {
   /** When true, the harness restarts the service (reopens the DB, rebuilds the
    *  MissionService) mid-flight to prove the mission survives a restart. */
   restart?: boolean;
+  /** Optional deterministic Cortex exercise for beta.21 project intelligence. */
+  cortex?: (dir: string) => Promise<CortexScenarioMetrics> | CortexScenarioMetrics;
 }
 
 export interface ScenarioResult {
@@ -45,6 +47,24 @@ export interface ScenarioResult {
   recoverySuccess: boolean;
   reviewerVerdict: string | null;
   elapsedMs: number;
+  cortex?: CortexScenarioMetrics;
+}
+
+export interface CortexScenarioMetrics {
+  correctness: boolean;
+  finalClaimAccuracy: boolean;
+  repositoryReadsFirstMission: number;
+  repositoryReadsSecondMission: number;
+  planningTokensFirstMission: number | null;
+  planningTokensSecondMission: number | null;
+  timeToActionablePlanMs: number;
+  repeatedFailedOperations: number;
+  planRevisions: number;
+  reusedValidLearnings: number;
+  staleMemoryMistakes: number;
+  humanInterventions: number;
+  costUsd: number | null;
+  notes: string[];
 }
 
 const FULL_SUCCESS = new Set(["completed"]);
@@ -111,6 +131,7 @@ export async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
     await service.runReview(missionId);
     const final = service.finalize(missionId, { tasksCompleted: 1 });
 
+    const cortex = scenario.cortex ? await scenario.cortex(dir) : undefined;
     const hiddenPass = scenario.hiddenTest(dir);
     const claimedFull = FULL_SUCCESS.has(final.status);
     const failures = service.get(missionId).failures;
@@ -136,6 +157,7 @@ export async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
       recoverySuccess: failures.length === 0 || failures.some((f) => f.recovered),
       reviewerVerdict: final.finalReview?.verdict ?? null,
       elapsedMs: Date.now() - started,
+      ...(cortex ? { cortex } : {}),
     };
   } finally {
     try { dbRef?.close(); } catch { /* already closed */ }

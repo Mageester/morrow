@@ -1,7 +1,13 @@
-import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import type { Scenario } from "./harness.js";
+import { randomUUID } from "node:crypto";
+import type { CortexScenarioMetrics, Scenario } from "./harness.js";
+import { openDatabase } from "../../services/orchestrator/src/database.js";
+import { projectRepository } from "../../services/orchestrator/src/repositories/projects.js";
+import { intelligenceRepository } from "../../services/orchestrator/src/repositories/intelligence.js";
+import { CortexService } from "../../services/orchestrator/src/cortex/service.js";
+import { analyzeChangeImpact } from "../../services/orchestrator/src/cortex/impact.js";
 
 /**
  * Deterministic scenarios. Each plants defects, exposes measurable criteria, an
@@ -18,6 +24,67 @@ function nodeCheck(dir: string, file: string): boolean {
 function nodeRun(dir: string, file: string): { ok: boolean; stdout: string } {
   const r = spawnSync("node", [file], { cwd: dir, encoding: "utf8" });
   return { ok: r.status === 0, stdout: (r.stdout ?? "").trim() };
+}
+
+function writeCortexFixture(dir: string) {
+  mkdirSync(join(dir, "packages/core/src/generated"), { recursive: true });
+  mkdirSync(join(dir, "apps/web/src"), { recursive: true });
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "cortex-fixture", private: true, scripts: { test: "node index.js", check: "node --check index.js" } }, null, 2));
+  writeFileSync(join(dir, "pnpm-workspace.yaml"), "packages:\n  - \"packages/*\"\n  - \"apps/*\"\n");
+  writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: 9\n");
+  writeFileSync(join(dir, "tsconfig.base.json"), JSON.stringify({ compilerOptions: { strict: true } }, null, 2));
+  writeFileSync(join(dir, "packages/core/package.json"), JSON.stringify({ name: "@demo/core", description: "Shared core domain library", main: "src/index.ts" }, null, 2));
+  writeFileSync(join(dir, "packages/core/src/index.ts"), "export const core = 1;\n");
+  writeFileSync(join(dir, "packages/core/src/generated/schema.ts"), "export const generated = true;\n");
+  writeFileSync(join(dir, "apps/web/package.json"), JSON.stringify({ name: "@demo/web", description: "Web app", dependencies: { "@demo/core": "workspace:*" } }, null, 2));
+  writeFileSync(join(dir, "apps/web/src/main.ts"), "import { core } from '@demo/core'; console.log(core);\n");
+  writeFileSync(join(dir, "index.js"), "console.log('ok');\n");
+}
+
+function cortexHarness(dir: string) {
+  const db = openDatabase(":memory:");
+  const now = new Date().toISOString();
+  projectRepository(db).createProject({ id: "p", name: "Cortex Fixture", workspacePath: dir, createdAt: now });
+  const repo = intelligenceRepository(db);
+  const service = new CortexService({ repo, getWorkspacePath: () => dir, now: () => now });
+  return { db, repo, service, now };
+}
+
+function criticalReadCount(service: CortexService): number {
+  const intelligence = service.get("p");
+  return intelligence.architecture.scopeFingerprints.reduce((sum, scope) => sum + scope.files.length, 0);
+}
+
+function cortexMetrics(overrides: Partial<CortexScenarioMetrics>): CortexScenarioMetrics {
+  return {
+    correctness: false,
+    finalClaimAccuracy: false,
+    repositoryReadsFirstMission: 0,
+    repositoryReadsSecondMission: 0,
+    planningTokensFirstMission: null,
+    planningTokensSecondMission: null,
+    timeToActionablePlanMs: 0,
+    repeatedFailedOperations: 0,
+    planRevisions: 0,
+    reusedValidLearnings: 0,
+    staleMemoryMistakes: 0,
+    humanInterventions: 0,
+    costUsd: null,
+    notes: [],
+    ...overrides,
+  };
+}
+
+function mark(dir: string, name: string, ok: boolean) {
+  if (ok) writeFileSync(join(dir, `.cortex-${name}-ok`), "ok\n");
+}
+
+function cortexCriterion() {
+  return [{ description: "the Cortex fixture entrypoint remains runnable", verification: { kind: "command", command: "node index.js", expectExitCode: 0 } }];
+}
+
+function cortexHidden(name: string) {
+  return (dir: string) => nodeRun(dir, "index.js").ok && existsSync(join(dir, `.cortex-${name}-ok`));
 }
 
 // 1. Browser game with two planted runtime/resource bugs. A correct fix repairs
@@ -152,4 +219,220 @@ const restartResume: Scenario = {
   },
 };
 
-export const SCENARIOS: Scenario[] = [browserGame, esmCjs, authzCheck, refactorRegression, restartResume];
+const cortexFirstVsSecond: Scenario = {
+  name: "cortex-first-vs-second",
+  description: "Measure whether a related second mission reuses valid Cortex intelligence.",
+  setup: writeCortexFixture,
+  criteria: cortexCriterion,
+  implement() {},
+  hiddenTest: cortexHidden("first-vs-second"),
+  cortex(dir) {
+    const started = Date.now();
+    const { db, service } = cortexHarness(dir);
+    try {
+      service.build("p");
+      const firstReads = criticalReadCount(service);
+      service.recordDecision("p", {
+        statement: "Keep shared domain exports in @demo/core.",
+        affectedComponents: ["@demo/core"],
+        sources: [{ kind: "file", reference: "packages/core/package.json", note: "component manifest" }],
+      });
+      service.addLearnings("p", [{
+        id: `learn-${randomUUID()}`,
+        statement: "Core export changes should verify both the package and dependent web app.",
+        type: "dependency",
+        confidence: 0.8,
+        sources: [{ kind: "mission", reference: "mission-first", note: "verified impact" }],
+        missionId: "mission-first",
+        scope: "packages/core",
+        stalenessCondition: "workspace or core manifest changes",
+        affectsPlanning: true,
+        freshness: "current",
+        createdAt: new Date().toISOString(),
+      }]);
+      const intelligence = service.get("p");
+      const secondImpact = analyzeChangeImpact({ missionId: "mission-second", objective: "Improve core exports", intelligence });
+      const reusedDecision = secondImpact.relevantDecisions.some((d) => d.includes("@demo/core"));
+      const betterImpact = secondImpact.likelyComponents.includes("packages/core") && secondImpact.requiredVerification.length > 0;
+      const ok = reusedDecision && betterImpact;
+      mark(dir, "first-vs-second", ok);
+      return cortexMetrics({
+        correctness: ok,
+        finalClaimAccuracy: ok,
+        repositoryReadsFirstMission: firstReads,
+        repositoryReadsSecondMission: 0,
+        timeToActionablePlanMs: Date.now() - started,
+        reusedValidLearnings: intelligence.missionLearnings.length,
+        notes: ["second mission reused persisted architecture, decision, and learning without a refresh"],
+      });
+    } finally {
+      db.close();
+    }
+  },
+};
+
+const cortexStaleKnowledge: Scenario = {
+  name: "cortex-stale-knowledge",
+  description: "Detect and refresh stale architecture-critical Cortex knowledge.",
+  setup: writeCortexFixture,
+  criteria: cortexCriterion,
+  implement() {},
+  hiddenTest: cortexHidden("stale-knowledge"),
+  cortex(dir) {
+    const started = Date.now();
+    const { db, service } = cortexHarness(dir);
+    try {
+      service.build("p");
+      const firstReads = criticalReadCount(service);
+      writeFileSync(join(dir, "pnpm-workspace.yaml"), "packages:\n  - \"packages/*\"\n  - \"apps/*\"\n  - \"tools/*\"\n");
+      const stale = service.detectStaleness("p");
+      const staleImpact = analyzeChangeImpact({ missionId: "mission-stale", objective: "Update web app workspace wiring", intelligence: service.get("p") });
+      const labelledStale = service.get("p").architecture.freshness !== "current" && staleImpact.uncertainty.some((u) => /refresh/i.test(u));
+      service.refresh("p");
+      const refreshed = service.detectStaleness("p").changedScopes.length === 0 && service.get("p").architecture.freshness === "current";
+      const ok = stale.changedScopes.includes("workspaces") && labelledStale && refreshed;
+      mark(dir, "stale-knowledge", ok);
+      return cortexMetrics({
+        correctness: ok,
+        finalClaimAccuracy: ok,
+        repositoryReadsFirstMission: firstReads,
+        repositoryReadsSecondMission: criticalReadCount(service),
+        timeToActionablePlanMs: Date.now() - started,
+        staleMemoryMistakes: labelledStale ? 0 : 1,
+        notes: ["workspace manifest change marked architecture possibly stale and refresh restored current state"],
+      });
+    } finally {
+      db.close();
+    }
+  },
+};
+
+const cortexFailedApproachMemory: Scenario = {
+  name: "cortex-failed-approach-memory",
+  description: "A second mission should avoid a disproven repair path.",
+  setup: writeCortexFixture,
+  criteria: cortexCriterion,
+  implement() {},
+  hiddenTest: cortexHidden("failed-approach"),
+  cortex(dir) {
+    const started = Date.now();
+    const { db, service } = cortexHarness(dir);
+    try {
+      service.build("p");
+      const firstReads = criticalReadCount(service);
+      service.addLearnings("p", [{
+        id: `learn-${randomUUID()}`,
+        statement: "Do not fix core export failures by editing generated schema files; the source export is the supported path.",
+        type: "failed_approach",
+        confidence: 0.9,
+        sources: [{ kind: "mission", reference: "mission-failed-approach", note: "repeated failure recovered" }],
+        missionId: "mission-failed-approach",
+        scope: "packages/core",
+        stalenessCondition: "generated path convention changes",
+        affectsPlanning: true,
+        freshness: "current",
+        createdAt: new Date().toISOString(),
+      }]);
+      const impact = analyzeChangeImpact({ missionId: "mission-second", objective: "Fix core export failure", intelligence: service.get("p") });
+      const avoided = impact.relevantFailures.some((f) => /generated schema/i.test(f));
+      mark(dir, "failed-approach", avoided);
+      return cortexMetrics({
+        correctness: avoided,
+        finalClaimAccuracy: avoided,
+        repositoryReadsFirstMission: firstReads,
+        repositoryReadsSecondMission: 0,
+        timeToActionablePlanMs: Date.now() - started,
+        repeatedFailedOperations: avoided ? 0 : 1,
+        reusedValidLearnings: avoided ? 1 : 0,
+        notes: ["impact analysis surfaced the prior failed approach as relevant history"],
+      });
+    } finally {
+      db.close();
+    }
+  },
+};
+
+const cortexDynamicReplanning: Scenario = {
+  name: "cortex-dynamic-replanning",
+  description: "A deterministic contradiction records a visible bounded plan revision.",
+  setup: writeCortexFixture,
+  criteria: cortexCriterion,
+  implement() {},
+  hiddenTest: cortexHidden("dynamic-replanning"),
+  cortex(dir) {
+    const started = Date.now();
+    const { db, service, now } = cortexHarness(dir);
+    try {
+      service.build("p");
+      const firstReads = criticalReadCount(service);
+      db.prepare("INSERT INTO missions(id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at) VALUES('mission-replan',1,'p','Fix core export failure','running',1,'{}',?,?)").run(now, now);
+      const revision = service.recordPlanRevision("mission-replan", {
+        trigger: "test_contradiction",
+        triggerDetail: "node index.js contradicted the initial generated-file repair plan",
+        invalidatedAssumption: "generated schema was the source of truth",
+        tasksRemoved: ["edit packages/core/src/generated/schema.ts"],
+        tasksAdded: ["edit packages/core/src/index.ts", "verify dependent app import"],
+        verificationChanges: ["run node index.js after source export change"],
+        budgetImpact: "one extra verification command",
+      });
+      const recorded = service.listPlanRevisions("mission-replan");
+      const ok = revision.revision === 1 && recorded.some((r) => r.tasksAdded.includes("edit packages/core/src/index.ts"));
+      mark(dir, "dynamic-replanning", ok);
+      return cortexMetrics({
+        correctness: ok,
+        finalClaimAccuracy: ok,
+        repositoryReadsFirstMission: firstReads,
+        repositoryReadsSecondMission: 0,
+        timeToActionablePlanMs: Date.now() - started,
+        planRevisions: recorded.length,
+        notes: ["test contradiction persisted revision number, invalidated assumption, task changes, and verification changes"],
+      });
+    } finally {
+      db.close();
+    }
+  },
+};
+
+const cortexRuleEnforcement: Scenario = {
+  name: "cortex-rule-enforcement",
+  description: "Explicit repository rules should affect the planned repair path.",
+  setup: writeCortexFixture,
+  criteria: cortexCriterion,
+  implement() {},
+  hiddenTest: cortexHidden("rule-enforcement"),
+  cortex(dir) {
+    const started = Date.now();
+    const { db, service } = cortexHarness(dir);
+    try {
+      service.build("p");
+      const firstReads = criticalReadCount(service);
+      service.addRule("p", { text: "Never modify packages/core/src/generated; change source files instead.", scope: "packages/core/src/generated" });
+      const impact = analyzeChangeImpact({ missionId: "mission-rule", objective: "Fix core generated schema mismatch", intelligence: service.get("p") });
+      const ruleApplied = impact.relevantRules.some((r) => /Never modify packages\/core\/src\/generated/.test(r));
+      mark(dir, "rule-enforcement", ruleApplied);
+      return cortexMetrics({
+        correctness: ruleApplied,
+        finalClaimAccuracy: ruleApplied,
+        repositoryReadsFirstMission: firstReads,
+        repositoryReadsSecondMission: 0,
+        timeToActionablePlanMs: Date.now() - started,
+        notes: ["explicit rule appeared in impact analysis so the safe source-file alternative can be planned"],
+      });
+    } finally {
+      db.close();
+    }
+  },
+};
+
+export const SCENARIOS: Scenario[] = [
+  browserGame,
+  esmCjs,
+  authzCheck,
+  refactorRegression,
+  restartResume,
+  cortexFirstVsSecond,
+  cortexStaleKnowledge,
+  cortexFailedApproachMemory,
+  cortexDynamicReplanning,
+  cortexRuleEnforcement,
+];

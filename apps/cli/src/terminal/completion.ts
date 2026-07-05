@@ -22,6 +22,7 @@ export interface ScoredCommand {
 export function matchScore(query: string, name: string): number | null {
   if (query.length === 0) return 1;
   if (name === query) return 1000;
+  if (query.length === 1 && name.length <= 3 && name.startsWith(query)) return 450 - name.length;
   if (name.startsWith(query)) return 500 - name.length;
   let qi = 0;
   for (let i = 0; i < name.length && qi < query.length; i++) {

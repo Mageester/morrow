@@ -71,6 +71,14 @@ export interface SessionBackend {
   /** Most recent mission for the active project, or null. Powers the mission
    *  status area and the /criteria|/evidence|/failures|/checkpoints commands. */
   getLatestMission?(): Promise<import("@morrow/contracts").Mission | null>;
+  /** Cortex: persistent project intelligence for /cortex /map /conventions
+   *  /decisions /risks /learnings /rules; null when not yet mapped. */
+  getIntelligence?(): Promise<import("@morrow/contracts").ProjectIntelligence | null>;
+  patchConvention?(conventionId: string, approval: "approved" | "rejected"): Promise<void>;
+  addRule?(text: string): Promise<void>;
+  removeRule?(ruleId: string): Promise<void>;
+  getMissionImpact?(missionId: string): Promise<import("@morrow/contracts").ChangeImpactAnalysis[]>;
+  getMissionRevisions?(missionId: string): Promise<import("@morrow/contracts").PlanRevision[]>;
 }
 
 export interface SessionSettings {
@@ -406,6 +414,34 @@ export class InteractiveSession {
       case "checkpoints":
         await this.showMissionCheckpoints();
         return void this.requestPaint(false);
+      case "cortex":
+        await this.showCortex();
+        return void this.requestPaint(false);
+      case "map":
+        await this.showCortexMap();
+        return void this.requestPaint(false);
+      case "conventions":
+        await this.showConventions(arg);
+        return void this.requestPaint(false);
+      case "decisions":
+        await this.showDecisions();
+        return void this.requestPaint(false);
+      case "risks":
+        await this.showRisks();
+        return void this.requestPaint(false);
+      case "learnings":
+        await this.showLearnings();
+        return void this.requestPaint(false);
+      case "rules":
+        await this.showRules(arg);
+        return void this.requestPaint(false);
+      case "impact":
+      case "plan":
+        await this.showMissionImpact();
+        return void this.requestPaint(false);
+      case "revisions":
+        await this.showMissionRevisions();
+        return void this.requestPaint(false);
       case "ps":
       case "processes": {
         const procs = this.term.processes;
@@ -609,6 +645,175 @@ export class InteractiveSession {
     if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
     const lines = m.checkpoints.map((c, i) => `${i + 1}. ${c.label}   ${c.affectedFiles.length} files · ${c.rollbackAvailable ? "rollback available" : "no rollback"}\n      ${c.reason}`);
     this.outputViewer = { title: `mission checkpoints (${m.checkpoints.length})`, lines: lines.length ? lines : ["(no checkpoints)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  // Morrow Cortex: persistent project intelligence.
+  private async intelligence() {
+    if (!this.deps.backend.getIntelligence) return null;
+    return this.deps.backend.getIntelligence().catch(() => null);
+  }
+
+  private async showCortex(): Promise<void> {
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const approved = pi.conventions.filter((c) => c.approval === "approved").length;
+    const inferred = pi.conventions.filter((c) => c.approval === "inferred").length;
+    const stale = [...pi.conventions, ...pi.missionLearnings, ...pi.risks].filter((i) => i.freshness !== "current").length
+      + (pi.architecture.freshness !== "current" ? 1 : 0);
+    const lines = [
+      `Architecture        ${pi.architecture.freshness.replace(/_/g, " ")}`,
+      `Components          ${pi.architecture.components.length}`,
+      `Conventions         ${approved} approved / ${inferred} inferred`,
+      `Decisions           ${pi.decisions.filter((d) => d.status === "accepted").length} active`,
+      `Known risks         ${pi.risks.length}`,
+      `Mission learnings   ${pi.missionLearnings.length}`,
+      `User rules          ${pi.userRules.filter((r) => r.active).length}`,
+      `Stale items         ${stale}`,
+      `Last refresh        ${pi.refreshedAt}`,
+    ];
+    if (pi.uncertainties.length > 0) {
+      lines.push("", "Uncertain about:");
+      for (const u of pi.uncertainties.slice(0, 5)) lines.push(`  - ${u.description}`);
+    }
+    this.outputViewer = { title: "morrow cortex", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showCortexMap(): Promise<void> {
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines: string[] = [];
+    if (pi.architecture.freshness !== "current") lines.push(`! architecture knowledge is ${pi.architecture.freshness.replace(/_/g, " ")}`, "");
+    for (const c of pi.architecture.components) {
+      lines.push(`${c.kind.padEnd(12)} ${c.path}${c.description ? `  - ${c.description}` : ""}`);
+      if (c.dependsOn.length > 0) lines.push(`             depends on: ${c.dependsOn.join(", ")}`);
+    }
+    const validation = pi.commands.filter((c) => ["test", "build", "check", "e2e"].includes(c.role) && c.cwd === ".");
+    if (validation.length > 0) {
+      lines.push("", "Validation:");
+      for (const c of validation) lines.push(`  - ${c.command}`);
+    }
+    this.outputViewer = { title: "project architecture", lines: lines.length ? lines : ["(no components mapped)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showConventions(arg: string): Promise<void> {
+    const parts = arg.trim().split(/\s+/).filter(Boolean);
+    if ((parts[0] === "approve" || parts[0] === "reject") && parts[1] && this.deps.backend.patchConvention) {
+      try {
+        await this.deps.backend.patchConvention(parts[1], parts[0] === "approve" ? "approved" : "rejected");
+        this.pushNotice("info", `Convention ${parts[0]}d.`);
+      } catch {
+        this.pushNotice("warn", `Could not ${parts[0]} convention ${parts[1]}.`);
+      }
+      return;
+    }
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines = pi.conventions.map((c) => {
+      const stale = c.freshness !== "current" ? "  ! " + c.freshness.replace(/_/g, " ") : "";
+      return `${c.id.replace(/^conv-/, "").slice(0, 8)}  [${c.approval}]  ${c.description}${stale}`;
+    });
+    lines.push("", "Approve with: /conventions approve <id>");
+    this.outputViewer = { title: `conventions (${pi.conventions.length})`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showDecisions(): Promise<void> {
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines = pi.decisions.map((d) => `${d.label}  [${d.status}]  ${d.statement}`);
+    this.outputViewer = { title: `decisions (${pi.decisions.length})`, lines: lines.length ? lines : ["(no decisions recorded yet)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showRisks(): Promise<void> {
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines = pi.risks.map((r) => `[${r.severity}] ${r.description}  (${r.area})`);
+    this.outputViewer = { title: `risks (${pi.risks.length})`, lines: lines.length ? lines : ["(no recorded risks)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showLearnings(): Promise<void> {
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines = pi.missionLearnings.map((l) => {
+      const stale = l.freshness !== "current" ? "  ! " + l.freshness.replace(/_/g, " ") : "";
+      return `[${l.type.replace(/_/g, " ")}] ${l.statement}${stale}`;
+    });
+    this.outputViewer = { title: `mission learnings (${pi.missionLearnings.length})`, lines: lines.length ? lines : ["(no learnings yet - extracted after each verified mission)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showRules(arg: string): Promise<void> {
+    const trimmed = arg.trim();
+    if (trimmed.startsWith("add ") && this.deps.backend.addRule) {
+      const text = trimmed.slice(4).trim().replace(/^["']|["']$/g, "");
+      if (!text) { this.pushNotice("warn", "Usage: /rules add \"<rule text>\""); return; }
+      try {
+        await this.deps.backend.addRule(text);
+        this.pushNotice("info", `Rule added: ${text}`);
+      } catch {
+        this.pushNotice("warn", "Could not add the rule.");
+      }
+      return;
+    }
+    if (trimmed.startsWith("remove ") && this.deps.backend.removeRule) {
+      try {
+        await this.deps.backend.removeRule(trimmed.slice(7).trim());
+        this.pushNotice("info", "Rule removed.");
+      } catch {
+        this.pushNotice("warn", "Could not remove the rule.");
+      }
+      return;
+    }
+    const pi = await this.intelligence();
+    if (!pi) { this.pushNotice("info", "No project intelligence yet. Run: morrow cortex refresh"); return; }
+    const lines = pi.userRules.filter((r) => r.active).map((r) => `${r.id.replace(/^rule-/, "").slice(0, 8)}  ${r.text}`);
+    lines.push("", "Explicit rules outrank inferred conventions.", "Add with: /rules add \"<text>\"");
+    this.outputViewer = { title: `repository rules`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionImpact(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
+    const analyses = this.deps.backend.getMissionImpact ? await this.deps.backend.getMissionImpact(m.id).catch(() => []) : [];
+    if (analyses.length === 0) { this.pushNotice("info", "No impact analysis was recorded for this mission."); return; }
+    const impact = analyses[analyses.length - 1]!;
+    const lines: string[] = [];
+    const section = (label: string, items: string[]) => {
+      if (items.length === 0) return;
+      lines.push(label + ":");
+      for (const i of items.slice(0, 8)) lines.push(`  - ${i}`);
+      lines.push("");
+    };
+    section("Likely affected", [...impact.likelyComponents, ...impact.likelyFiles.slice(0, 4)]);
+    section("Relevant history", [...impact.relevantDecisions, ...impact.relevantFailures]);
+    section("Repository rules", impact.relevantRules);
+    section("Possible regressions", impact.possibleRegressions);
+    section("Required verification", impact.requiredVerification);
+    section("Uncertain", impact.uncertainty);
+    this.outputViewer = { title: "change impact", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionRevisions(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
+    const revisions = this.deps.backend.getMissionRevisions ? await this.deps.backend.getMissionRevisions(m.id).catch(() => []) : [];
+    if (revisions.length === 0) { this.pushNotice("info", "No plan revisions - the original plan held."); return; }
+    const lines: string[] = [];
+    for (const r of revisions) {
+      lines.push(`PLAN REVISION ${r.revision}  (${r.trigger.replace(/_/g, " ")})`);
+      if (r.invalidatedAssumption) lines.push(`  invalidated: ${r.invalidatedAssumption}`);
+      for (const t of r.tasksRemoved) lines.push(`  - ${t}`);
+      for (const t of r.tasksAdded) lines.push(`  + ${t}`);
+      lines.push("");
+    }
+    this.outputViewer = { title: `plan revisions (${revisions.length})`, lines };
     this.input = { ...this.input, overlay: "output" };
   }
 

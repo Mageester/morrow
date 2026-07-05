@@ -21,6 +21,7 @@ import { worktreesCommand } from "./commands/worktrees.js";
 import { integrationsCommand } from "./commands/integrations.js";
 import { symbolsCommand } from "./commands/symbols.js";
 import { missionCommand } from "./commands/mission.js";
+import { cortexCommand } from "./commands/cortex.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -34,7 +35,7 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
 
 type Invocation =
@@ -113,6 +114,7 @@ export async function run(argv: string[]): Promise<number> {
       case "yolo": { const p = promptOf(); return await chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
+      case "cortex": return await cortexCommand(ctx, sub, args);
       case "mission": {
         // A bare `morrow mission` (no objective/subcommand) opens the interactive
         // shell / Mission Control; otherwise run the Verified Missions lifecycle.
@@ -200,6 +202,7 @@ function printHelp(out: Output): number {
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
     `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
+    `  morrow cortex                ${g("inspect repository intelligence")}`,
     `  morrow resume                ${g("resume the most recent session")}`,
     `  morrow new                   ${g("start a fresh session")}`,
     "",

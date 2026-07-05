@@ -9,7 +9,7 @@
  *     process, pidfile, and log directly.
  *   - `open` launches the browser UI.
  *   - Everything else - the interactive shell (no args) plus ask/fix/plan/yolo/
- *     mission/new/symbols/processes/worktrees/integrate/projects/chat/... - is the
+ *     mission/cortex/new/symbols/processes/worktrees/integrate/projects/chat/... - is the
  *     CLI's product surface and is delegated to the bundled CLI entrypoint.
  *
  * Keeping this a pure, dependency-free module lets the launcher and the test

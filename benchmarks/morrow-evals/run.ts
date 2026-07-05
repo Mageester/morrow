@@ -16,9 +16,9 @@ async function main() {
     return;
   }
 
-  console.log("\nMorrow Evals — Verified Missions honesty benchmark\n");
-  console.log(row(["scenario", "status", "crit", "hidden", "claim✓", "review"], [18, 26, 6, 7, 7, 20]));
-  console.log("-".repeat(90));
+  console.log("\nMorrow Evals - Verified Missions and Cortex benchmark\n");
+  console.log(row(["scenario", "status", "crit", "hidden", "claim", "review"], [32, 26, 6, 7, 7, 20]));
+  console.log("-".repeat(104));
   for (const r of results) {
     console.log(row([
       r.scenario,
@@ -27,11 +27,30 @@ async function main() {
       r.hiddenTestsPassed ? "pass" : "FAIL",
       r.finalClaimAccurate ? "yes" : "NO",
       r.reviewerVerdict ?? "-",
-    ], [18, 26, 6, 7, 7, 20]));
+    ], [32, 26, 6, 7, 7, 20]));
   }
-  console.log("-".repeat(90));
+  console.log("-".repeat(104));
   console.log(`\nFinal-claim accuracy: ${summary.claimAccurate}/${summary.total} (${summary.claimAccuracyPct}%)`);
   console.log("(final-claim accuracy = Morrow's full-success grade matches the hidden ground truth)\n");
+
+  const cortex = results.filter((r) => r.cortex);
+  if (cortex.length > 0) {
+    console.log("Cortex measurements\n");
+    console.log(row(["scenario", "reads 1->2", "replans", "learnings", "stale mistakes", "time"], [32, 12, 8, 10, 15, 8]));
+    console.log("-".repeat(92));
+    for (const r of cortex) {
+      const c = r.cortex!;
+      console.log(row([
+        r.scenario,
+        `${c.repositoryReadsFirstMission}->${c.repositoryReadsSecondMission}`,
+        String(c.planRevisions),
+        String(c.reusedValidLearnings),
+        String(c.staleMemoryMistakes),
+        `${c.timeToActionablePlanMs}ms`,
+      ], [32, 12, 8, 10, 15, 8]));
+    }
+    console.log("");
+  }
 }
 
 function row(cells: string[], widths: number[]): string {

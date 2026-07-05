@@ -18,6 +18,15 @@ import type {
   OAuthFinding,
   ToolSpec,
   PermissionProfile,
+  ProjectIntelligence,
+  ArchitectureMap,
+  RepositoryConvention,
+  ArchitectureDecision,
+  ProjectRule,
+  ProjectRisk,
+  MissionLearning,
+  ChangeImpactAnalysis,
+  PlanRevision,
   AuditEntry,
   ProviderTestResult,
   VerificationResult,
@@ -412,6 +421,56 @@ export class MorrowApi {
   }
   cancelMission(missionId: string) {
     return this.req<Mission>("POST", `/api/missions/${missionId}/cancel`);
+  }
+
+  // ── Morrow Cortex ──────────────────────────────────────────────────────────
+  getIntelligence(projectId: string) {
+    return this.req<ProjectIntelligence>("GET", `/api/projects/${projectId}/intelligence`);
+  }
+  refreshIntelligence(projectId: string) {
+    return this.req<ProjectIntelligence>("POST", `/api/projects/${projectId}/intelligence/refresh`);
+  }
+  intelligenceStaleness(projectId: string) {
+    return this.req<{ changedScopes: string[]; itemsMarked: number; architectureStale: boolean }>("GET", `/api/projects/${projectId}/intelligence/staleness`);
+  }
+  forgetIntelligence(projectId: string, includeDurable = false) {
+    return this.req<{ forgotten: boolean }>("DELETE", `/api/projects/${projectId}/intelligence${includeDurable ? "?includeDurable=true" : ""}`);
+  }
+  getArchitecture(projectId: string) {
+    return this.req<ArchitectureMap>("GET", `/api/projects/${projectId}/architecture`);
+  }
+  listConventions(projectId: string) {
+    return this.req<RepositoryConvention[]>("GET", `/api/projects/${projectId}/conventions`);
+  }
+  patchConvention(projectId: string, conventionId: string, approval: "approved" | "rejected") {
+    return this.req<RepositoryConvention>("PATCH", `/api/projects/${projectId}/conventions/${conventionId}`, { approval });
+  }
+  listDecisions(projectId: string) {
+    return this.req<ArchitectureDecision[]>("GET", `/api/projects/${projectId}/decisions`);
+  }
+  listLearnings(projectId: string) {
+    return this.req<MissionLearning[]>("GET", `/api/projects/${projectId}/learnings`);
+  }
+  listRisks(projectId: string) {
+    return this.req<ProjectRisk[]>("GET", `/api/projects/${projectId}/risks`);
+  }
+  listRules(projectId: string) {
+    return this.req<ProjectRule[]>("GET", `/api/projects/${projectId}/rules`);
+  }
+  addRule(projectId: string, text: string, scope?: string) {
+    return this.req<ProjectRule>("POST", `/api/projects/${projectId}/rules`, { text, ...(scope ? { scope } : {}) });
+  }
+  deleteRule(projectId: string, ruleId: string) {
+    return this.req<{ deleted: boolean }>("DELETE", `/api/projects/${projectId}/rules/${ruleId}`);
+  }
+  analyzeMissionImpact(missionId: string) {
+    return this.req<ChangeImpactAnalysis>("POST", `/api/missions/${missionId}/impact`);
+  }
+  listMissionImpact(missionId: string) {
+    return this.req<ChangeImpactAnalysis[]>("GET", `/api/missions/${missionId}/impact`);
+  }
+  listMissionRevisions(missionId: string) {
+    return this.req<PlanRevision[]>("GET", `/api/missions/${missionId}/revisions`);
   }
   resumeMission(missionId: string) {
     return this.req<Mission>("POST", `/api/missions/${missionId}/resume`);

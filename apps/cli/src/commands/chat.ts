@@ -38,6 +38,17 @@ export function resolveUnicode(ctx: Context): boolean {
   return process.env.MORROW_ASCII !== "1";
 }
 
+function resolveDisplayedRecordId(items: Array<{ id: string }>, ref: string, prefixes: string[]): string {
+  const lowered = ref.trim().toLowerCase();
+  const matches = items.filter((item) => {
+    const id = item.id.toLowerCase();
+    const withoutPrefix = prefixes.reduce((value, prefix) => value.replace(new RegExp(`^${prefix}-`), ""), id);
+    return id === lowered || id.startsWith(lowered) || withoutPrefix === lowered || withoutPrefix.startsWith(lowered);
+  });
+  if (matches.length !== 1) throw new Error(matches.length === 0 ? "not found" : "ambiguous");
+  return matches[0]!.id;
+}
+
 /**
  * Whether to auto-approve (YOLO): flag > config default > off. Only ever active
  * in agent mode — inspect/plan never request approvals, so auto-approve there
@@ -179,6 +190,19 @@ async function runInteractiveSession(
         .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
     recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
     getLatestMission: () => api.listMissions(project.id).then((ms) => ms[0] ?? null).catch(() => null),
+    getIntelligence: () => api.getIntelligence(project.id).catch(() => null),
+    patchConvention: async (conventionId, approval) => {
+      const intelligence = await api.getIntelligence(project.id);
+      const fullId = resolveDisplayedRecordId(intelligence.conventions, conventionId, ["conv"]);
+      await api.patchConvention(project.id, fullId, approval);
+    },
+    addRule: async (text) => { await api.addRule(project.id, text); },
+    removeRule: async (ruleId) => {
+      const fullId = resolveDisplayedRecordId(await api.listRules(project.id), ruleId, ["rule"]);
+      await api.deleteRule(project.id, fullId);
+    },
+    getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
+    getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
