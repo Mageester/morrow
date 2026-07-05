@@ -31,6 +31,14 @@ describe("slash-command completion", () => {
     expect(filterCommands("/zzz", SLASH_COMMANDS)).toHaveLength(0);
   });
 
+  it("exposes the verified-mission inspection commands", () => {
+    const names = SLASH_COMMANDS.map((c) => c.name);
+    for (const cmd of ["criteria", "evidence", "failures", "checkpoints", "result"]) {
+      expect(names).toContain(cmd);
+    }
+    expect(filterCommands("/crit", SLASH_COMMANDS)[0]!.name).toBe("criteria");
+  });
+
   it("renders a menu marking the selected row and showing descriptions", () => {
     const matches = filterCommands("/m", SLASH_COMMANDS);
     const lines = renderMenu(matches, plain, { selected: 0, max: 8, unicode: true });

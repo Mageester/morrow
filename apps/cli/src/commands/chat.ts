@@ -175,6 +175,7 @@ async function runInteractiveSession(
         .search(project.id, query, { limit: 25 })
         .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
     recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
+    getLatestMission: () => api.listMissions(project.id).then((ms) => ms[0] ?? null).catch(() => null),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).

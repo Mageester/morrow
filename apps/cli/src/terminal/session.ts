@@ -68,6 +68,9 @@ export interface SessionBackend {
   undoTask?(taskId: string): Promise<{ status: string; restoredFiles: string[] }>;
   search?(query: string): Promise<Array<{ kind: string; title: string; snippet: string }>>;
   recordSkillUse?(skillId: string): Promise<void>;
+  /** Most recent mission for the active project, or null. Powers the mission
+   *  status area and the /criteria|/evidence|/failures|/checkpoints commands. */
+  getLatestMission?(): Promise<import("@morrow/contracts").Mission | null>;
 }
 
 export interface SessionSettings {
@@ -391,6 +394,18 @@ export class InteractiveSession {
       case "checkpoint":
         this.pushNotice("info", "Named checkpoints: save/restore with /checkpoint save <name> or morrow checkpoint in your terminal.");
         return void this.requestPaint(false);
+      case "criteria":
+        await this.showMissionCriteria();
+        return void this.requestPaint(false);
+      case "evidence":
+        await this.showMissionEvidence();
+        return void this.requestPaint(false);
+      case "failures":
+        await this.showMissionFailures();
+        return void this.requestPaint(false);
+      case "checkpoints":
+        await this.showMissionCheckpoints();
+        return void this.requestPaint(false);
       case "ps":
       case "processes": {
         const procs = this.term.processes;
@@ -543,6 +558,57 @@ export class InteractiveSession {
     }
     const aggregate = await this.deps.backend.getTask(this.lastTaskId);
     this.outputViewer = { title: `result · ${this.lastTaskId}`, lines: formatMissionResult(aggregate) };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async latestMission() {
+    if (!this.deps.backend.getLatestMission) return null;
+    return this.deps.backend.getLatestMission().catch(() => null);
+  }
+
+  private async showMissionCriteria(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet. Start one with: morrow mission \"<objective>\""); return; }
+    const glyph: Record<string, string> = { verified: "✓", failed: "✗", waived: "◦", unverified: "⚠", in_progress: "…", approved: "•", proposed: "•" };
+    const lines = m.criteria.map((c, i) => {
+      const rows = [`${glyph[c.state] ?? "•"}  ${i + 1}. ${c.description}   [${c.state}]`];
+      if (c.failureReason) rows.push(`      ${c.failureReason}`);
+      return rows.join("\n");
+    });
+    this.outputViewer = { title: `criteria · ${m.status}`, lines: lines.length ? lines : ["(no criteria generated yet)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionEvidence(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
+    const lines = m.evidence.map((e) => {
+      const g = e.status === "passed" ? "✓" : e.status === "failed" ? "✗" : "⚠";
+      const rows = [`${g}  ${e.summary}`];
+      if (e.command) rows.push(`      ${e.command}${e.exitCode !== null ? `  → exit ${e.exitCode}` : ""}`);
+      return rows.join("\n");
+    });
+    this.outputViewer = { title: `evidence ledger (${m.evidence.length})`, lines: lines.length ? lines : ["(no evidence recorded yet)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionFailures(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
+    const lines = m.failures.map((f) => {
+      const rows = [`[${f.category}] ${f.operation}   ${f.recovered ? "recovered" : "unresolved"}`];
+      if (f.recoveryStrategy) rows.push(`      strategy: ${f.recoveryStrategy} (attempt ${f.attempt})`);
+      return rows.join("\n");
+    });
+    this.outputViewer = { title: `failures & recovery (${m.failures.length})`, lines: lines.length ? lines : ["(no failures recorded)"] };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  private async showMissionCheckpoints(): Promise<void> {
+    const m = await this.latestMission();
+    if (!m) { this.pushNotice("info", "No mission in this project yet."); return; }
+    const lines = m.checkpoints.map((c, i) => `${i + 1}. ${c.label}   ${c.affectedFiles.length} files · ${c.rollbackAvailable ? "rollback available" : "no rollback"}\n      ${c.reason}`);
+    this.outputViewer = { title: `mission checkpoints (${m.checkpoints.length})`, lines: lines.length ? lines : ["(no checkpoints)"] };
     this.input = { ...this.input, overlay: "output" };
   }
 
