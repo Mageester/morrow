@@ -13,12 +13,12 @@ try { $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $BaseUrl = 'https://morrowproject.getaxiom.ca'
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'Morrow'
 $ManifestUrl = "$BaseUrl/releases/latest.json"
-# Stage outside the install root, with a unique name, so a failed run never
-# leaves a half-written tree inside %LOCALAPPDATA%\Morrow and never collides
-# with a concurrent or previous attempt.
-$StagingId = [Guid]::NewGuid().ToString('N')
-$Staging = Join-Path $env:TEMP "morrow-staging-$StagingId"
-$Archive = Join-Path $env:TEMP "morrow-$StagingId.zip"
+# Stage outside the install root, with a short unique name, so a failed run
+# never leaves a half-written tree inside %LOCALAPPDATA%\Morrow and nested
+# package dependencies keep enough Windows path-length headroom while extracting.
+$StagingId = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+$Staging = Join-Path $env:TEMP "mrw-s-$StagingId"
+$Archive = Join-Path $env:TEMP "mrw-a-$StagingId.zip"
 
 function Fail([string]$Message) { throw "Morrow installation failed: $Message" }
 
@@ -26,6 +26,10 @@ function Cleanup {
   Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
   # Sweep up staging/archive debris left by any earlier failed run.
+  Get-ChildItem -LiteralPath $env:TEMP -Filter 'mrw-s-*' -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $env:TEMP -Filter 'mrw-a-*.zip' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
   Get-ChildItem -LiteralPath $env:TEMP -Filter 'morrow-staging-*' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   Get-ChildItem -LiteralPath $env:TEMP -Filter 'morrow-*.zip' -ErrorAction SilentlyContinue |
@@ -268,7 +272,8 @@ try {
 
   Write-Host 'Checksum verified. Extracting archive...'
   New-Item -ItemType Directory -Path $Staging -Force | Out-Null
-  Expand-Archive -LiteralPath $Archive -DestinationPath $Staging -Force
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Staging)
 
   # Resolve and validate the runtime root BEFORE touching the existing install.
   $package = Resolve-PackageRoot $Staging

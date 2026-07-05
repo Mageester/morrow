@@ -43,5 +43,36 @@ export function installerSafetyFailures(script) {
     );
   }
 
+  // 4. PowerShell's Expand-Archive uses legacy path handling and emits
+  //    MAX_PATH errors for production node_modules entries in the release ZIP.
+  //    The installer must use the .NET extractor, matching the release
+  //    integration test and avoiding noisy/incomplete public installs.
+  if (/\bExpand-Archive\b/i.test(script)) {
+    failures.push(
+      "install.ps1 must not use Expand-Archive for the release artifact; it hits Windows MAX_PATH on nested production dependencies.",
+    );
+  }
+  if (!/\[(?:System\.)?IO\.Compression\.ZipFile\]::ExtractToDirectory/.test(script)) {
+    failures.push(
+      "install.ps1 must extract the release artifact with [System.IO.Compression.ZipFile]::ExtractToDirectory.",
+    );
+  }
+
+  const stagingIdMatch = script.match(
+    /\$StagingId\s*=\s*\[Guid\]::NewGuid\(\)\.ToString\('N'\)(?:\.Substring\(0,\s*(\d+)\))?/,
+  );
+  const stagingIdLength = stagingIdMatch?.[1] ? Number(stagingIdMatch[1]) : 32;
+  const stagingMatch = script.match(/\$Staging\s*=\s*Join-Path\s+\$env:TEMP\s+"([^"]*\$StagingId[^"]*)"/);
+  if (!stagingMatch) {
+    failures.push("install.ps1 must stage release extraction under a temp path derived from $StagingId.");
+  } else {
+    const stagingNameLength = stagingMatch[1].replace("$StagingId", "").length + stagingIdLength;
+    if (stagingNameLength > 24) {
+      failures.push(
+        `install.ps1 staging directory name is too long (${stagingNameLength} chars); keep it at or below 24 chars to preserve Windows path-length headroom for nested package dependencies.`,
+      );
+    }
+  }
+
   return failures;
 }
