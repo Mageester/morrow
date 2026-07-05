@@ -709,6 +709,7 @@ export const MissionEventTypeSchema=z.enum([
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
   "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
   "mission.review_started","mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
+  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({

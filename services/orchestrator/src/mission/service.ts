@@ -15,6 +15,9 @@ import { categorizeFailure, normalizeSignature, planRecovery, type RecoveryPlan 
 import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candidateFiles, isGitRepo } from "./checkpoints.js";
 import { buildReviewMessages, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
 import { buildMissionResult } from "./result.js";
+import { extractMissionLearnings } from "./learning-extractor.js";
+import type { CortexService } from "../cortex/service.js";
+import { CortexError } from "../cortex/service.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -34,6 +37,10 @@ export interface MissionServiceDeps {
   /** Injectable clock + verification exec hooks (tests). */
   now?: (() => string) | undefined;
   runOptions?: Partial<RunOptions> | undefined;
+  /** Cortex integration: plan revisions on evidence contradictions/loops and
+   *  post-review learning extraction. Optional so missions degrade gracefully
+   *  when project intelligence is not in play (tests, minimal deployments). */
+  cortex?: CortexService | undefined;
 }
 
 export class MissionError extends Error {
@@ -216,12 +223,25 @@ export class MissionService {
   /** Verify every approved/in-progress criterion whose strategy is executable. */
   async verifyAll(missionId: string): Promise<Mission> {
     const mission = this.get(missionId);
+    const failedNow: string[] = [];
     for (const c of mission.criteria) {
       if (c.state === "waived" || c.state === "verified") continue;
       // Manual/browser/review strategies cannot be auto-proven here.
       if (c.verification.kind === "manual" || c.verification.kind === "browser") continue;
       if (c.verification.kind === "review") continue; // proven by the reviewer phase
-      await this.verifyCriterion(missionId, c.id);
+      const { criterion } = await this.verifyCriterion(missionId, c.id);
+      if (criterion.state === "failed") failedNow.push(`${criterion.description.slice(0, 120)} — ${criterion.failureReason?.slice(0, 120) ?? "failed"}`);
+    }
+    // Evidence contradicted the plan's assumption of completion: one revision
+    // for the whole verification pass, listing what must actually change.
+    if (failedNow.length > 0) {
+      this.revisePlan(missionId, {
+        trigger: "test_contradiction",
+        triggerDetail: `${failedNow.length} criterion(s) failed evidence-backed verification`,
+        invalidatedAssumption: "The implementation satisfies all approved criteria.",
+        tasksAdded: failedNow.map((f) => `Fix and re-verify: ${f}`),
+        verificationChanges: ["Re-run full criterion verification after the fix"],
+      });
     }
     return this.get(missionId);
   }
@@ -267,6 +287,17 @@ export class MissionService {
 
     if (attempt >= 3) {
       this.repo.appendEvent(missionId, "mission.loop_detected", `Repeated failure detected (${attempt}×): ${signature}`, { signature, attempt }, this.now());
+      // Exactly one plan revision per looping signature: reality disproved the
+      // current approach, so the plan must change rather than retry forever.
+      if (attempt === 3) {
+        this.revisePlan(missionId, {
+          trigger: "repeated_tool_failure",
+          triggerDetail: `${category} failed ${attempt}× (${signature.slice(0, 160)})`,
+          invalidatedAssumption: `The operation "${operation.slice(0, 160)}" can succeed as attempted.`,
+          tasksRemoved: [`Retry: ${operation.slice(0, 120)}`],
+          tasksAdded: plan.steps,
+        });
+      }
     }
     this.repo.appendEvent(missionId, "mission.recovery_applied", `Recovery: ${plan.strategy}`, { strategy: plan.strategy, steps: plan.steps }, this.now());
 
@@ -281,6 +312,26 @@ export class MissionService {
 
   markRecovered(missionId: string, failureId: string, strategy: string): void {
     this.repo.markFailureRecovered(failureId, strategy);
+  }
+
+  /** Record a bounded plan revision through Cortex. Hitting the revision limit
+   *  blocks the mission — the alternative is an endless replan loop. */
+  private revisePlan(missionId: string, input: Parameters<CortexService["recordPlanRevision"]>[1]): void {
+    if (!this.deps.cortex) return;
+    try {
+      const revision = this.deps.cortex.recordPlanRevision(missionId, input);
+      this.repo.appendEvent(missionId, "mission.plan_revised", `Plan revision ${revision.revision}: ${input.trigger.replace(/_/g, " ")}`, { revision: revision.revision, trigger: input.trigger }, this.now());
+    } catch (err) {
+      if (err instanceof CortexError && err.code === "limit") {
+        this.repo.appendEvent(missionId, "mission.loop_detected", "Plan revision limit reached; blocking for human input", {}, this.now());
+        const mission = this.get(missionId);
+        if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, "blocked")) {
+          this.transition(missionId, "blocked");
+        }
+        return;
+      }
+      // Revision bookkeeping must never break mission execution.
+    }
   }
 
   // ── checkpoints + rollback ───────────────────────────────────────────────
@@ -379,6 +430,15 @@ export class MissionService {
     }
 
     this.repo.appendEvent(missionId, "mission.review_completed", `Review verdict: ${review.verdict}`, { verdict: review.verdict }, this.now());
+    if (review.verdict === "revisions_required") {
+      this.revisePlan(missionId, {
+        trigger: "review_revisions",
+        triggerDetail: "Independent reviewer requested revisions",
+        invalidatedAssumption: "The current diff is ready for completion.",
+        tasksAdded: parsed.concerns.slice(0, 5).map((r) => `Address reviewer finding: ${r.slice(0, 160)}`),
+        verificationChanges: ["Repeat independent review after revisions"],
+      });
+    }
     return review;
   }
 
@@ -400,6 +460,20 @@ export class MissionService {
       this.transition(missionId, status);
     }
     this.repo.appendEvent(missionId, "mission.completed", result.summary, { status }, this.now());
+
+    // Learning extraction runs last — after evidence and review — so only
+    // ledger-backed conclusions become durable project memory. Extraction
+    // problems never break finalization.
+    if (this.deps.cortex) {
+      try {
+        const finished = this.get(missionId);
+        const learnings = extractMissionLearnings(finished, this.now);
+        if (learnings.length > 0) {
+          this.deps.cortex.addLearnings(mission.projectId, learnings);
+          this.repo.appendEvent(missionId, "mission.learnings_extracted", `Extracted ${learnings.length} evidence-backed learning(s)`, { count: learnings.length }, this.now());
+        }
+      } catch { /* extraction is best-effort by design */ }
+    }
     return this.get(missionId);
   }
 
