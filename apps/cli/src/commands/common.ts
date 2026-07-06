@@ -257,24 +257,24 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
   ctx.out.info("Morrow will not inspect files until a project is explicit.");
   const recent = projects.filter((p) => isSafeProjectRoot(p.workspacePath).safe);
   const choices = [
-    ...(recent.length > 0 ? ["Open recent project"] : []),
-    "Select a directory",
-    "Register current directory",
-    "Start filesystem-disabled chat",
+    ...(recent.length > 0 ? ["Open an existing project"] : []),
+    "Register this folder",
+    "Initialize this folder",
+    "Continue without a project",
     "Exit",
   ];
   const choice = choices[await select(ctx, "When launched outside a project", choices, (item) => item)]!;
-  if (choice === "Open recent project") {
+  if (choice === "Open an existing project") {
     const idx = await select(ctx, "Recent projects", recent, (p) => `${p.name}  ${ctx.out.gray(p.workspacePath)}`);
     return recent[idx]!;
   }
-  if (choice === "Select a directory") {
+  if (choice === "Initialize this folder") {
     const path = await ask("Project directory: ");
     if (!path) return null;
     return autoCreateProjectForPath(ctx, api, path);
   }
-  if (choice === "Register current directory") return autoCreateProjectForPath(ctx, api, process.cwd());
-  if (choice === "Start filesystem-disabled chat") {
+  if (choice === "Register this folder") return autoCreateProjectForPath(ctx, api, process.cwd());
+  if (choice === "Continue without a project") {
     const quick = await api.quickChat();
     ctx.out.info(`Using filesystem-disabled chat workspace: ${quick.workspacePath}`);
     return api.getProject(quick.projectId);
