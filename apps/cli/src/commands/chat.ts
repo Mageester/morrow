@@ -205,6 +205,7 @@ async function runInteractiveSession(
     getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
     getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
     listAgents: () => api.listAgents(project.id).catch(() => []),
+    getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
@@ -406,6 +407,12 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     case "help":
       printReplHelp(ctx);
       return {};
+    case "capabilities": {
+      const { reportCapabilities, capabilityLines } = await import("./capabilities.js");
+      const report = await reportCapabilities(api);
+      for (const l of capabilityLines(report, out, resolveUnicode(ctx))) out.print(l);
+      return {};
+    }
     case "exit":
     case "quit":
       out.info("Goodbye.");
@@ -1009,6 +1016,7 @@ function printReplHelp(ctx: Context) {
   out.heading("Chat commands");
   const rows: Array<[string, string]> = [
     ["/help", "show this help"],
+    ["/capabilities", "what this build can actually do right now"],
     ["/new [title]", "start a new conversation"],
     ["/resume [id]", "list or resume a conversation"],
     ["/sessions", "list recent conversations"],

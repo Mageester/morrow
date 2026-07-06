@@ -80,6 +80,8 @@ export interface SessionBackend {
   getMissionImpact?(missionId: string): Promise<import("@morrow/contracts").ChangeImpactAnalysis[]>;
   getMissionRevisions?(missionId: string): Promise<import("@morrow/contracts").PlanRevision[]>;
   listAgents?(): Promise<import("@morrow/contracts").Agent[]>;
+  /** Live capability report for /capabilities — what this build can do now. */
+  getCapabilities?(): Promise<import("../commands/capabilities.js").CapabilityReport>;
 }
 
 export interface SessionSettings {
@@ -382,6 +384,17 @@ export class InteractiveSession {
       case "status":
         this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
         return void this.requestPaint(false);
+      case "capabilities": {
+        if (!this.deps.backend.getCapabilities) {
+          this.pushNotice("info", "Run `morrow capabilities` for the full report.");
+          return void this.requestPaint(false);
+        }
+        const report = await this.deps.backend.getCapabilities();
+        const { capabilityLines } = await import("../commands/capabilities.js");
+        this.outputViewer = { title: "capabilities", lines: capabilityLines(report, this.deps.out, this.deps.unicode) };
+        this.input = { ...this.input, overlay: "output" };
+        return void this.requestPaint(false);
+      }
       case "search":
         await this.showSearch(arg);
         return void this.requestPaint(false);

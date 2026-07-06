@@ -39,6 +39,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "failures", description: "show the active mission's failures and recovery" },
   { name: "checkpoints", description: "show the active mission's checkpoints" },
   { name: "cortex", description: "show Morrow's persistent understanding of this repository" },
+  { name: "capabilities", description: "what this build can actually do right now" },
   { name: "map", description: "show the project architecture map" },
   { name: "conventions", arg: "[approve|reject <id>]", description: "inspect or approve inferred repository conventions" },
   { name: "decisions", description: "show the architecture decision ledger" },
