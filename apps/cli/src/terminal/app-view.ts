@@ -13,6 +13,7 @@ import type { SlashCommand } from "./commands.js";
 import { filterCommands, renderMenu } from "./completion.js";
 import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
 import { completionActive, type InputState } from "./input-state.js";
+import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
 import {
   activityGroupLine,
@@ -187,8 +188,73 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
   }
 }
 
+/**
+ * The first-run/empty-state welcome panel. Shown only before any conversation
+ * exists, while the session is idle. Surfaces the six things a new user must
+ * understand — what Morrow is, whether a project is selected, whether a provider
+ * is configured, which model and mode are active, and what to type next — plus
+ * adaptive guidance for the common blocked paths (no provider, non-Git dir).
+ *
+ * Pure: derives entirely from `SessionMeta` so it is deterministic at startup
+ * before any git.state/routing event has folded in.
+ */
+export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): string[] {
+  const g = glyphs(unicode);
+  const lines: string[] = [];
+  const dot = out.gray(g.dot);
+
+  lines.push("  " + out.bold("Welcome to Morrow") + out.gray(" — private intelligence, built around you."));
+  lines.push("");
+
+  // Project + git posture.
+  const projectVal =
+    meta.gitRepo === false
+      ? `${out.cyan(meta.projectName)}  ${out.gray("· not a Git repository")}`
+      : `${out.cyan(meta.projectName)}  ${out.gray("· " + meta.branch)}`;
+  lines.push(`  ${out.gray("Project ")}  ${projectVal}`);
+
+  // Provider posture.
+  const providerVal =
+    meta.providerConfigured === false
+      ? out.yellow("not configured")
+      : `${out.cyan(meta.provider)}  ${out.gray("· " + meta.privacy)}`;
+  lines.push(`  ${out.gray("Provider")}  ${providerVal}`);
+  lines.push(`  ${out.gray("Model   ")}  ${meta.providerConfigured === false ? out.gray("—") : out.cyan(meta.model)}`);
+  lines.push(`  ${out.gray("Mode    ")}  ${meta.mode}`);
+  lines.push("");
+
+  // Adaptive guidance for blocked paths, most important first.
+  if (meta.providerConfigured === false) {
+    lines.push("  " + out.yellow(`${g.warn} No model provider is configured.`));
+    lines.push("  " + out.gray(`   Connect one with `) + out.cyan("morrow auth login") + out.gray(" (or ") + out.cyan("/model") + out.gray(" once connected)."));
+    lines.push("");
+  }
+  if (meta.gitRepo === false) {
+    lines.push("  " + out.gray(`${g.dot} Not a Git repo — change tracking, /diff, and /undo are unavailable. Run `) + out.cyan("git init") + out.gray(" to enable them."));
+    lines.push("");
+  }
+  if (meta.resumed) {
+    lines.push("  " + out.gray(`${g.dot} Resumed your last session. Type to continue, or `) + out.cyan("/new") + out.gray(" for a fresh one."));
+    lines.push("");
+  }
+
+  // What to type next.
+  const suggestions =
+    meta.providerConfigured === false
+      ? [out.cyan("morrow auth login"), out.cyan("? help")]
+      : [out.gray("ask a question"), out.cyan("/model"), out.cyan("/mode"), out.cyan("? help")];
+  lines.push("  " + out.gray("Try:  ") + suggestions.join(`  ${dot}  `));
+  lines.push("  " + out.gray("Type your first message below to begin."));
+  return lines;
+}
+
 function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
   const lines: string[] = [];
+
+  // First-run/empty state: no conversation yet and nothing streaming → welcome.
+  if (term.meta && term.conversation.length === 0 && term.plan.length === 0 && term.status === "idle" && term.tools.length === 0) {
+    return welcomeLines(term.meta, out, unicode);
+  }
 
   // Progress stage banner.
   const stage = stageBanner(term.progressStage, term.progressDetail, out, unicode);

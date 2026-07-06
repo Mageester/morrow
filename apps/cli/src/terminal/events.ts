@@ -43,6 +43,14 @@ export interface SessionMeta {
   mode: string;
   memory: boolean;
   autoApprove: boolean;
+  /** Whether a usable model provider is configured. Drives onboarding guidance
+   *  in the empty-state welcome panel; undefined means "not probed". */
+  providerConfigured?: boolean;
+  /** Whether the workspace is a Git repository. Drives onboarding guidance;
+   *  undefined means "not probed". */
+  gitRepo?: boolean;
+  /** Whether this session resumed prior conversation history. */
+  resumed?: boolean;
 }
 
 /** Git state snapshot shown in header/status. */

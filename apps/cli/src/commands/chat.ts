@@ -129,6 +129,9 @@ async function runInteractiveSession(
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
   const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
+  // Onboarding facts: whether a provider is really configured and whether we
+  // resumed prior history, so the empty-state welcome can guide honestly.
+  const priorMessages = await api.listMessages(conversation.id).then((m) => m.length).catch(() => 0);
 
   const meta: SessionMeta = {
     greeting: greeting(new Date()),
@@ -142,6 +145,9 @@ async function runInteractiveSession(
     mode: modeLabel(session.mode, session.autoApprove),
     memory: session.useMemory,
     autoApprove: session.autoApprove,
+    ...(providerStatus ? { providerConfigured: providerStatus.configured } : {}),
+    gitRepo: git.branch !== null,
+    resumed: priorMessages > 0,
   };
   const settings: SessionSettings = {
     mode: session.mode,

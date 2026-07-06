@@ -46,3 +46,4 @@ export { shouldUseInteractive, resolveUnicodeFlag, type CapabilityInput } from "
 export { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 export { filterCommands, matchScore, renderMenu, clampSelection } from "./completion.js";
 export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./prompt.js";
+export { composeApp, welcomeLines, type AppFrame, type AppFrameOptions, type AppFrameContext } from "./app-view.js";
