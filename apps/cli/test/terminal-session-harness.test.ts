@@ -7,7 +7,7 @@ import type { SessionMeta } from "../src/terminal/events.js";
 import type { RawTaskEvent } from "../src/terminal/task-event-adapter.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
-const tick = () => new Promise((r) => setTimeout(r, 2));
+const tick = () => new Promise((r) => setTimeout(r, 20));
 
 class FakeTermIO implements TermIO {
   writes: string[] = [];
