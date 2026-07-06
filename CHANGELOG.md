@@ -6,6 +6,63 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.22] - 2026-07-06
+
+### Added — Morrow Terminal: CLI-First Coding Agent
+
+- **CLI-only product direction.** The terminal is the product. Bare `morrow`
+  launches the interactive terminal session directly — no browser, no web
+  dashboard, no local server UI required.
+- **Ask / Plan / Build / Mission modes.** Four purposeful modes replace the
+  generic "agent" mode. Ask explores without touching files. Plan produces a
+  repair plan without modifying anything. Build executes with approvals.
+  Mission runs verified, accountable work with evidence.
+- **Consumer onboarding.** A first-launch welcome panel guides new users through
+  provider setup, project registration, and mode selection with plain-language
+  instructions.
+- **Responsive single-line status bar.** A compact status bar shows project,
+  branch, provider, model, mode, and privacy state in one line that adapts to
+  terminal width.
+- **Model picker.** `/model` presents an honest picker listing only
+  known-capable models for each configured provider, with clear labels for
+  unconfigured providers.
+- **Safe permission prompts.** Tool approvals render in-frame with clear
+  descriptions. Enter never approves — a deliberate keypress is required.
+- **Grouped tool activity.** `/activity` shows a compact, grouped view of
+  session work — tool calls, their status, and results — instead of a flat log.
+- **Input and paste reliability.** Bracketed-paste detection prevents
+  multi-line paste from being interpreted as a submission. Cursor-position
+  correction eliminates off-by-one caret drift after paste and line edits.
+- **Streaming, cancellation, and resize.** Assistant tokens stream live into
+  the transcript. Ctrl+C cancels a running task (first press) then exits
+  (second press). Terminal resize recomposes the frame without corruption.
+- **Resume.** `/resume` restores a prior session's conversation and context
+  after relaunch, with Git drift detection and Cortex staleness warnings so
+  Morrow does not blindly resume against a changed repository.
+- **Session management.** `/new` starts a fresh session. `/branch` forks the
+  current conversation. `/changes` shows the session's file changes. `/status`
+  reports project, provider, model, and session state. `/cost` shows token and
+  cost accounting.
+- **Git drift awareness.** When the repository changes externally between
+  sessions, Morrow detects the drift and warns before resuming.
+- **Cortex staleness warnings.** Scoped fingerprints label project intelligence
+  as `possibly_stale` when the files behind it change, including entry-point
+  scope so an externally split entry module marks knowledge stale.
+- **Human-readable error handling.** Common failures (provider unreachable,
+  rate limited, context window exceeded, missing API key) produce plain-language
+  guidance instead of raw stack traces.
+- **`morrow capabilities`.** An honest live capability report showing what is
+  configured, what is available, and what is not yet supported.
+
+### Fixed
+
+- **Lockfile consistency.** Regenerated `pnpm-lock.yaml` after the removal of
+  `@playwright/test` from root devDependencies so `pnpm install
+  --frozen-lockfile` succeeds on fresh clones and CI.
+- **Resize test stability.** Increased the tick timeout in the session harness
+  test to exceed the paint coalescer's minimum interval, eliminating a flaky
+  resize repaint assertion under parallel test load.
+
 ## [0.1.0-beta.21] - 2026-07-05
 
 ### Added — Morrow Advantage: Morrow Cortex
