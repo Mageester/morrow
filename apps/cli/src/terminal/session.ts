@@ -23,6 +23,7 @@ import { completionActive, initialInputState, reduceKey, type InputState, type K
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
+import { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine } from "./approvals.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
@@ -1041,25 +1042,18 @@ export class InteractiveSession {
   private handleApprovalKey(k: { str?: string | undefined; name?: string | undefined; ctrl?: boolean | undefined }): void {
     const ap = this.pendingApproval;
     if (!ap) return;
-    const ch = (k.str ?? "").toLowerCase();
-    let decision: string | null = null;
+    // Only an explicit y/s/p/n or Ctrl+C decides; Enter/Space/etc. are no-ops so
+    // a queued keystroke from streaming can never accidentally approve.
+    const decision = approvalDecisionForKey(k);
+    if (decision === null) return;
+
     let trust: string | undefined;
-    if (ch === "y") decision = "allow_once";
-    else if (ch === "s") {
-      // Trust session: approve similar commands for the rest of this session.
-      decision = "trust_session";
-      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
+    if ((decision === "trust_session" || decision === "trust_project") && ap.kind === "command") {
+      trust = String((ap.details as any).pattern ?? "");
     }
-    else if (ch === "p") {
-      decision = "trust_project";
-      if (ap.kind === "command") trust = String((ap.details as any).pattern ?? "");
-    }
-    else if (ch === "n" || (k.ctrl && k.name === "c")) decision = "deny";
-    else return;
 
     this.pendingApproval = null;
-    const source = decision === "deny" ? "denied" : decision === "trust_project" ? "trusted (project)" : decision === "trust_session" ? "trusted (session)" : "approved";
-    this.pushNotice(decision === "deny" ? "warn" : "info", `${ap.kind === "command" ? "Command" : "Patch"} ${source}.`);
+    this.pushNotice(decision === "deny" ? "warn" : "info", `${ap.kind === "command" ? "Command" : "Patch"} ${approvalDecisionLabel(decision)}.`);
     void this.deps.backend.resolveApproval(ap.id, decision, trust).catch((err) => this.pushNotice("error", `Approval failed: ${err instanceof Error ? err.message : String(err)}`));
     this.requestPaint(true);
   }
@@ -1154,7 +1148,9 @@ export class InteractiveSession {
         lines.push(out.gray("  Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
         lines.push("");
       }
-      lines.push(out.yellow("  [y] approve once   [s] trust session   [p] trust project   [n] deny"));
+      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.yellow(approvalActionsLine("approve")));
+      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     } else {
       const d = ap.details as any;
       lines.push(out.bold("  Patch approval"));
@@ -1178,7 +1174,9 @@ export class InteractiveSession {
         lines.push(out.gray("  Hard blocks: external writes, credential files, system paths."));
         lines.push("");
       }
-      lines.push(out.yellow("  [y] apply once   [s] trust session   [p] trust project   [n] deny"));
+      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.yellow(approvalActionsLine("apply")));
+      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     }
     return lines;
   }

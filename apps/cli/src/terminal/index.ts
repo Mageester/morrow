@@ -47,3 +47,5 @@ export { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 export { filterCommands, matchScore, renderMenu, clampSelection } from "./completion.js";
 export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./prompt.js";
 export { composeApp, welcomeLines, type AppFrame, type AppFrameOptions, type AppFrameContext } from "./app-view.js";
+export { modelPickerLines, modelFactsLine, formatContextWindow, type ModelSelection } from "./model-picker.js";
+export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
