@@ -396,7 +396,7 @@ export function composeFrame(state: TerminalState, out: Output, unicode: boolean
     for (const cl of toolCardLines(card, out, unicode, opts.tick, workspace)) live.push(cl);
   }
 
-  const footer = statusFooter(state, out, unicode, opts.hint);
+  const footer = statusFooter(state, out, unicode, opts.columns, opts.hint);
 
   // Budget rows: header is fixed at top; conversation + live share the middle;
   // footer is fixed at the bottom. Keep the most recent content when clipped.
@@ -412,17 +412,121 @@ export function composeFrame(state: TerminalState, out: Output, unicode: boolean
   return lines.map((l) => clipToWidth(l, opts.columns));
 }
 
-function statusFooter(state: TerminalState, out: Output, unicode: boolean, hint?: string): string[] {
+function statusFooter(state: TerminalState, out: Output, unicode: boolean, columns: number, hint?: string): string[] {
+  return [
+    statusBar(state, out, unicode, columns),
+    hint ? out.gray(`  ${hint}`) : out.gray("  Ctrl+C cancel · Ctrl+L repaint · /help"),
+  ];
+}
+
+/** One status-bar field: its plain text (for width math) and a colouriser. */
+interface StatusField {
+  /** Visible text used for width budgeting (no ANSI). */
+  plain: string;
+  /** Rendered (possibly coloured) text. */
+  render: string;
+}
+
+/**
+ * Build the ordered status-bar fields from real state only — no invented cost
+ * or mission numbers. Order is by importance; the fitter drops from the end
+ * (least important) first, so the state glyph, brand, and mode survive longest.
+ */
+export function statusBarFields(state: TerminalState, out: Output, unicode: boolean): StatusField[] {
   const g = glyphs(unicode);
-  const status =
+  const fields: StatusField[] = [];
+  const push = (plain: string, render: string) => fields.push({ plain, render });
+
+  // 0. Live state glyph + word (connection/activity). Always first.
+  const stateWord =
     state.status === "streaming"
-      ? out.cyan(`${g.run} working`)
+      ? "working"
       : state.status === "completed"
-        ? out.green(`${g.ok} ready`)
+        ? "ready"
         : state.status === "failed"
-          ? out.red(`${g.fail} failed`)
-          : state.status === "cancelled" || state.status === "interrupted"
-            ? out.yellow(state.status)
-            : out.gray("idle");
-  return [`  ${status}`, hint ? out.gray(`  ${hint}`) : out.gray("  Ctrl+C cancel · Ctrl+L repaint · /help")];
+          ? "failed"
+          : state.status === "cancelled" || state.status === "interrupted" || state.status === "budget-reached" || state.status === "stalled"
+            ? state.status
+            : "idle";
+  const stateGlyph =
+    state.status === "streaming"
+      ? out.cyan(g.run)
+      : state.status === "completed"
+        ? out.green(g.ok)
+        : state.status === "failed" || state.status === "stalled"
+          ? out.red(g.fail)
+          : state.status === "cancelled" || state.status === "interrupted" || state.status === "budget-reached"
+            ? out.yellow(g.warn)
+            : out.gray(g.dot);
+  const stateColor = (s: string): string =>
+    stateWord === "working" ? out.cyan(s) : stateWord === "ready" ? out.green(s) : stateWord === "idle" ? out.gray(s) : out.yellow(s);
+  push(`${g.run} ${stateWord}`, `${stateGlyph} ${stateColor(stateWord)}`);
+
+  // 1. Brand.
+  push("Morrow", out.bold("Morrow"));
+
+  const m = state.meta;
+  // 2. Mode (short word) + YOLO chip when auto-approving.
+  if (m?.mode) {
+    const word = m.mode.split("·")[0]?.trim() || m.mode;
+    if (m.autoApprove) {
+      push(`${word} YOLO`, `${out.yellow(word)} ${out.yellow("YOLO")}`);
+    } else {
+      push(word, out.cyan(word));
+    }
+  }
+
+  // 3. Model.
+  if (m?.model && m.model !== "auto") push(m.model, out.gray(m.model));
+
+  // 4. Git branch + dirty/ahead/behind.
+  if (state.git) {
+    const gi = state.git;
+    let plain = gi.branch + (gi.dirty ? "*" : "");
+    if (gi.ahead > 0) plain += ` +${gi.ahead}`;
+    if (gi.behind > 0) plain += ` -${gi.behind}`;
+    const render = out.gray(gi.branch) + (gi.dirty ? out.yellow("*") : "") + (gi.ahead > 0 ? out.gray(` +${gi.ahead}`) : "") + (gi.behind > 0 ? out.gray(` -${gi.behind}`) : "");
+    push(plain, render);
+  } else if (m?.branch) {
+    push(m.branch, out.gray(m.branch));
+  }
+
+  // 5. Context usage.
+  if (state.contextUsage && state.contextUsage.maxTokens > 0) {
+    const u = state.contextUsage;
+    const pct = Math.round((u.usedTokens / u.maxTokens) * 100);
+    const color = (s: string): string => (pct >= 90 ? out.red(s) : pct >= 70 ? out.yellow(s) : out.gray(s));
+    push(`ctx ${pct}%`, color(`ctx ${pct}%`));
+  }
+
+  // 6. Active agents.
+  const runningAgents = state.agents.filter((a) => a.status === "running").length;
+  if (runningAgents > 0) {
+    const label = `${runningAgents} agent${runningAgents === 1 ? "" : "s"}`;
+    push(label, out.gray(label));
+  }
+
+  return fields;
+}
+
+/**
+ * Render the responsive single-line status bar. Fields are dropped from the end
+ * (least important first) until the visible width fits `columns`; the line never
+ * wraps. Pure and snapshot-testable.
+ */
+export function statusBar(state: TerminalState, out: Output, unicode: boolean, columns: number): string {
+  const g = glyphs(unicode);
+  const sep = ` ${g.dot} `;
+  const fields = statusBarFields(state, out, unicode);
+  const indent = 2;
+  const budget = Number.isFinite(columns) ? Math.max(0, columns - indent) : Number.POSITIVE_INFINITY;
+
+  // Drop from the end until the joined plain width fits. Always keep the first
+  // field (live state) so the bar never vanishes entirely.
+  let kept = fields;
+  const width = (fs: StatusField[]) => fs.reduce((w, f) => w + f.plain.length, 0) + Math.max(0, fs.length - 1) * sep.length;
+  while (kept.length > 1 && width(kept) > budget) kept = kept.slice(0, -1);
+
+  const rendered = kept.map((f) => f.render).join(out.gray(sep));
+  return "  " + rendered;
 }

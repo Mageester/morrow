@@ -28,6 +28,8 @@ export {
   patchLines,
   completionLines,
   composeFrame,
+  statusBar,
+  statusBarFields,
   clipToWidth,
   formatElapsed,
   glyphs,

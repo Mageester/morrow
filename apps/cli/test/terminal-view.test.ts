@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Output } from "../src/cli/output.js";
 import { initialState, reduce, type TerminalState } from "../src/terminal/state.js";
-import { activityLine, activityGroupLine, completionLines, composeFrame, groupActivities, headerLines, toolCardLines, formatElapsed, clipToWidth, relativePath, stageBanner } from "../src/terminal/view.js";
+import { activityLine, activityGroupLine, completionLines, composeFrame, groupActivities, headerLines, toolCardLines, formatElapsed, clipToWidth, relativePath, stageBanner, statusBar } from "../src/terminal/view.js";
 import type { TerminalEvent, SessionMeta } from "../src/terminal/events.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
@@ -100,6 +100,62 @@ describe("terminal views (ASCII, no color)", () => {
     expect(frame[frame.length - 1]).toContain("Ctrl+C cancel");
     // No line exceeds the column budget.
     expect(frame.every((l) => l.length <= 60)).toBe(true);
+  });
+});
+
+// ── Responsive status bar ─────────────────────────────────────────────────────
+
+describe("responsive status bar", () => {
+  const baseMeta: SessionMeta = { ...meta, mode: "Build · approvals required", autoApprove: false };
+  const full = build([
+    { type: "session.started", meta: baseMeta },
+    { type: "git.state", git: { branch: "main", dirty: true, ahead: 2, behind: 0 } },
+    { type: "context.usage", usage: { usedTokens: 1800, maxTokens: 10000, method: "estimate", compactedGroups: 0, removedGroups: 0 } },
+    { type: "agent.update", agents: [
+      { id: "a1", name: "Impl", role: "subagent", status: "running" },
+      { id: "a2", name: "Test", role: "subagent", status: "running" },
+    ] },
+    { type: "assistant.delta", text: "…" }, // → streaming
+  ]);
+
+  it("shows every real field at full width (no invented cost/mission)", () => {
+    const bar = statusBar(full, plain, false, 200);
+    expect(bar).toContain("working");
+    expect(bar).toContain("Morrow");
+    expect(bar).toContain("Build");
+    expect(bar).toContain("deepseek-chat");
+    expect(bar).toContain("main*"); // dirty marker
+    expect(bar).toContain("ctx 18%");
+    expect(bar).toContain("2 agents");
+    expect(bar).not.toContain("$"); // cost is not fabricated
+  });
+
+  it("is a single line that never exceeds the column budget", () => {
+    for (const cols of [80, 40, 24, 12]) {
+      const bar = statusBar(full, plain, false, cols);
+      expect(bar.split("\n")).toHaveLength(1);
+      expect(bar.length).toBeLessThanOrEqual(cols);
+    }
+  });
+
+  it("drops least-important fields first, keeping live state + brand", () => {
+    const narrow = statusBar(full, plain, false, 24);
+    expect(narrow).toContain("Morrow");
+    expect(narrow).not.toContain("2 agents"); // agents drop before brand
+  });
+
+  it("marks a YOLO session and an idle/clean tree honestly", () => {
+    const yolo = build([{ type: "session.started", meta: { ...meta, mode: "Build · YOLO (auto-approves)", autoApprove: true } }]);
+    expect(statusBar(yolo, plain, false, 200)).toContain("YOLO");
+
+    const clean = build([
+      { type: "session.started", meta: baseMeta },
+      { type: "git.state", git: { branch: "main", dirty: false, ahead: 0, behind: 0 } },
+    ]);
+    const bar = statusBar(clean, plain, false, 200);
+    expect(bar).toContain("idle");
+    expect(bar).toContain("main");
+    expect(bar).not.toContain("main*");
   });
 });
 
