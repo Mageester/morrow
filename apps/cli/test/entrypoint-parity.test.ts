@@ -16,7 +16,7 @@ describe("installed launcher ↔ CLI command parity", () => {
   it("routes every CLI command to a launcher lifecycle verb or the bundled CLI", () => {
     for (const command of COMMANDS) {
       const { action } = classify([command]);
-      const handled = action === "cli" || (action === "lifecycle" && LAUNCHER_LIFECYCLE.has(command)) || action === "open";
+      const handled = action === "cli" || (action === "lifecycle" && LAUNCHER_LIFECYCLE.has(command));
       expect(handled, `command "${command}" must be handled by the launcher`).toBe(true);
     }
   });
@@ -38,11 +38,10 @@ describe("installed launcher ↔ CLI command parity", () => {
     expect(needsService(result.action)).toBe(true);
   });
 
-  it("keeps process lifecycle in the launcher and browser UI on `open`", () => {
+  it("keeps process lifecycle in the launcher", () => {
     for (const command of ["start", "stop", "restart", "status", "doctor", "uninstall"]) {
       expect(classify([command]).action).toBe("lifecycle");
     }
-    expect(classify(["open"]).action).toBe("open");
   });
 
   it("answers version/help locally as meta actions", () => {

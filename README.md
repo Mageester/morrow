@@ -4,7 +4,7 @@
 
 Morrow is a self-hosted, deeply customizable personal AI agent. Local-first, provider-neutral, with visible execution, explicit permissions, and persistent memory.
 
-> **Status:** v0.1.0-beta.22 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
+> **Status:** v0.1.0-beta.23 Early Access. Windows 10/11 x64 supported. Linux via source build. macOS planned.
 
 ## Quick Install (Windows)
 
@@ -16,7 +16,7 @@ iex (irm https://morrowproject.getaxiom.ca/install.ps1)
 
 The installer handles Node.js, downloads, checksum verification, shortcuts, and launch automatically. No Git, pnpm, or manual steps required.
 
-After install, run `morrow` (or `morrow open`) to launch the local GUI. Configure API keys in **Settings → Providers**; they are stored locally by Morrow and take effect without a restart.
+After install, run `morrow` to open the terminal agent shell, or `morrow onboard` for guided setup. Configure API keys with `morrow providers configure`; they are stored locally by Morrow and take effect without a restart.
 
 **Official website:** https://morrowproject.getaxiom.ca
 

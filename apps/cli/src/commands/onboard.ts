@@ -3,7 +3,7 @@ import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { Context } from "../cli/context.js";
 import { EXIT, CliError } from "../cli/errors.js";
-import { ensureRunning, stop, isRunning } from "../service/lifecycle.js";
+import { ensureRunning, isRunning } from "../service/lifecycle.js";
 import { ask, askSecret, confirm, select, validateDirectory } from "./common.js";
 import { writeSecret } from "../config/env.js";
 import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
@@ -300,8 +300,6 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         }
       }
 
-      ctx.out.info("Restarting service to load credentials…");
-      await stop(ctx);
       await ensureRunning(ctx);
       return true;
     }

@@ -24,6 +24,8 @@ describe("morrow root command", () => {
     expect(help).toContain("morrow resume");
     expect(help).toContain("morrow onboard");
     expect(help).toContain("morrow auth");
+    expect(help).not.toContain("morrow open");
+    expect(help).not.toContain("browser");
     // Advanced/admin commands are de-emphasized but discoverable.
     expect(help).toContain("projects");
     expect(help).not.toContain("completion");
@@ -46,7 +48,7 @@ describe("morrow root command", () => {
   });
 
   it("recognizes lifecycle commands instead of routing them into chat", () => {
-    for (const command of ["start", "stop", "restart", "status", "open", "doctor", "uninstall"]) {
+    for (const command of ["start", "stop", "restart", "status", "doctor", "uninstall"]) {
       expect(resolveInvocation([command])).toEqual({ kind: "command", root: command, sub: undefined, args: [] });
     }
     expect(resolveInvocation(["install-now"])).toEqual({ kind: "command", root: "install-now", sub: undefined, args: [] });
@@ -58,6 +60,10 @@ describe("morrow root command", () => {
       kind: "prompt",
       prompt: "Return JSON",
     });
+  });
+
+  it("does not expose open as a browser command", () => {
+    expect(resolveInvocation(["open"])).toEqual({ kind: "prompt", prompt: "open" });
   });
 
   it("treats sessions as a top-level command alias", () => {

@@ -6,6 +6,20 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.23] - 2026-07-06
+
+### Fixed
+
+- **P0 onboarding health false negative.** CLI onboarding no longer restarts the
+  packaged service after provider setup. The delegated packaged CLI is not
+  allowed to autostart the service, so the old restart path could stop a healthy
+  service and then report it unreachable even though `morrow doctor` recovered
+  and passed immediately afterward.
+- Added timestamped lifecycle diagnostics around service start, stop, PID
+  recovery, and health polling to make future restart failures reproducible.
+- Removed the source CLI `morrow open` browser command and help text so Morrow's
+  help no longer implies a browser application.
+
 ## [0.1.0-beta.22] - 2026-07-06
 
 ### Added — Morrow Terminal: CLI-First Coding Agent

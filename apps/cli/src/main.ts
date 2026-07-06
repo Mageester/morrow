@@ -36,8 +36,8 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
-const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
+export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
   | { kind: "interactive" }
@@ -72,7 +72,7 @@ export async function run(argv: string[]): Promise<number> {
     const invocation = resolveInvocation(parsed.positionals);
 
     // Auto-detect first launch
-    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "open", "doctor", "uninstall", "logs", "capabilities"].includes(invocation.root);
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "doctor", "uninstall", "logs", "capabilities"].includes(invocation.root);
     if (!isSetupCmd) {
       let onboarded = config.get("user.onboarded") === true;
       if (!onboarded) {
@@ -97,8 +97,6 @@ export async function run(argv: string[]): Promise<number> {
     }
     switch (invocation.kind) {
       case "interactive":
-        // Bare `morrow` opens the terminal agent shell; `morrow open` remains the
-        // explicit browser launch path.
         return await chatCommand(ctx);
       case "prompt": {
         if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
@@ -139,7 +137,6 @@ export async function run(argv: string[]): Promise<number> {
       case "start": await serveDetached(ctx); return EXIT.OK;
       case "stop": return await serviceStop(ctx);
       case "restart": return await restart(ctx);
-      case "open": return await open(ctx);
       case "uninstall": return await uninstallCommand(ctx);
       case "logs": return await logs(ctx);
       case "config": return await configCommand(ctx, sub, args);
@@ -234,7 +231,6 @@ function printHelp(out: Output): number {
     `  morrow settings              ${g("view or change preferences")}`,
     `  morrow doctor                ${g("check your environment")}`,
     `  morrow start|stop|restart    ${g("manage the local service")}`,
-    `  morrow open                  ${g("open the local app in your browser")}`,
     `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
@@ -312,17 +308,6 @@ async function update(ctx: Context): Promise<number> {
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
-async function open(ctx: Context): Promise<number> {
-  await ensureRunning(ctx);
-  const url = ctx.service.baseUrl;
-  const { spawn } = await import("node:child_process");
-  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
-  if (ctx.out.json) ctx.out.data({ opened: url }); else ctx.out.success(`Opened ${url}`);
-  return EXIT.OK;
-}
 async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }
 
 async function configCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {

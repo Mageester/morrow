@@ -57,11 +57,11 @@ describe("bare morrow launch", () => {
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
-  it("keeps morrow open as the explicit browser command", async () => {
+  it("treats morrow open as a natural-language prompt, not a browser command", async () => {
     await expect(run(["open"])).resolves.toBe(0);
 
-    expect(mocks.chatCommand).not.toHaveBeenCalled();
-    expect(mocks.ensureRunning).toHaveBeenCalledTimes(1);
-    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    expect(mocks.chatCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.ensureRunning).not.toHaveBeenCalled();
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 });
