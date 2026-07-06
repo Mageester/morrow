@@ -24,6 +24,7 @@ import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine } from "./approvals.js";
+import { activityDetailLines } from "./activity-view.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
@@ -469,6 +470,10 @@ export class InteractiveSession {
       case "agents":
         await this.showAgents();
         return void this.requestPaint(false);
+      case "activity":
+      case "details":
+        this.showActivityDetail();
+        return void this.requestPaint(false);
       case "impact":
       case "plan":
         await this.showMissionImpact();
@@ -527,6 +532,12 @@ export class InteractiveSession {
         this.pushNotice("warn", `Unknown command: /${cmd}. Type /help for available commands.`);
         return void this.requestPaint(false);
     }
+  }
+
+  private showActivityDetail(): void {
+    const lines = activityDetailLines(this.term, this.deps.out, this.deps.unicode, this.meta.workspacePath);
+    this.outputViewer = { title: "activity", lines };
+    this.input = { ...this.input, overlay: "output" };
   }
 
   private async showModelPicker(): Promise<void> {

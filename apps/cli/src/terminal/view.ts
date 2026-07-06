@@ -116,6 +116,11 @@ export function relativePath(abs: string, workspace?: string): string {
  * Renders a compact progress-stage banner line (e.g. "Understanding project...").
  * Returns empty string if no stage is set.
  */
+/** Human label for a progress stage (e.g. "understanding" → "Understanding project"). */
+export function stageLabel(stage: ProgressStage): string {
+  return STAGE_LABEL[stage] ?? stage;
+}
+
 export function stageBanner(stage: ProgressStage | undefined, detail: string | undefined, out: Output, unicode: boolean): string | null {
   if (!stage) return null;
   const g = glyphs(unicode);

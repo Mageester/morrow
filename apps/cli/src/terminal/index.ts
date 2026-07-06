@@ -49,3 +49,5 @@ export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./promp
 export { composeApp, welcomeLines, type AppFrame, type AppFrameOptions, type AppFrameContext } from "./app-view.js";
 export { modelPickerLines, modelFactsLine, formatContextWindow, type ModelSelection } from "./model-picker.js";
 export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
+export { activityDetailLines, activityGroupSummary, agentDetailLine } from "./activity-view.js";
+export { stageLabel } from "./view.js";
