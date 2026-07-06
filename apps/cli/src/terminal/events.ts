@@ -51,6 +51,8 @@ export interface SessionMeta {
   gitRepo?: boolean;
   /** Whether this session resumed prior conversation history. */
   resumed?: boolean;
+  /** Count of prior messages restored on resume (for the resume digest). */
+  priorMessages?: number;
 }
 
 /** Git state snapshot shown in header/status. */

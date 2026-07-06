@@ -12,10 +12,12 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "help", description: "show available commands" },
   { name: "new", arg: "[title]", description: "start a new conversation" },
-  { name: "resume", arg: "[id]", description: "list or resume a conversation" },
+  { name: "resume", description: "review session freshness — repo & Cortex drift — before continuing" },
   { name: "sessions", description: "list recent conversations" },
   { name: "search", arg: "<query>", description: "full-text search across this project" },
   { name: "project", description: "show the active project" },
+  { name: "branch", description: "show the current Git branch, dirty state, and ahead/behind" },
+  { name: "changes", description: "show staged, modified, and untracked files" },
   { name: "provider", arg: "[id]", description: "show or set the active provider" },
   { name: "model", arg: "[id]", description: "show or set the active model" },
   { name: "preset", arg: "[id]", description: "show or set the active preset" },

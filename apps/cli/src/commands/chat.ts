@@ -20,7 +20,7 @@ import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
-import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
+import { gitSummary, gitSummaryText, gitStatus } from "../cli/gitinfo.js";
 import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
@@ -148,6 +148,7 @@ async function runInteractiveSession(
     ...(providerStatus ? { providerConfigured: providerStatus.configured } : {}),
     gitRepo: git.branch !== null,
     resumed: priorMessages > 0,
+    priorMessages,
   };
   const settings: SessionSettings = {
     mode: session.mode,
@@ -213,6 +214,8 @@ async function runInteractiveSession(
     listAgents: () => api.listAgents(project.id).catch(() => []),
     getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
     listModels: () => api.listModels(),
+    getGitStatus: async () => gitStatus(project.workspacePath),
+    getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).

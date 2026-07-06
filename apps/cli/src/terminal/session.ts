@@ -19,6 +19,7 @@ import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
 import { composeApp } from "./app-view.js";
+import { glyphs } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -87,6 +88,10 @@ export interface SessionBackend {
   getCapabilities?(): Promise<import("../commands/capabilities.js").CapabilityReport>;
   /** Known model registry for the /model picker (facts, not guesses). */
   listModels?(): Promise<import("@morrow/contracts").ModelStatus[]>;
+  /** Read-only categorized Git status for /branch, /changes, and resume digest. */
+  getGitStatus?(): Promise<import("../cli/gitinfo.js").GitStatus | null>;
+  /** Cortex staleness for the resume freshness check. */
+  getCortexStaleness?(): Promise<import("./resume.js").ResumeStaleness | null>;
 }
 
 export interface SessionSettings {
@@ -178,6 +183,8 @@ export class InteractiveSession {
     }, this.minIntervalMs * 2);
     if (typeof this.heartbeat.unref === "function") this.heartbeat.unref();
     this.paint();
+    // Advisory: surface repository/Cortex drift on resume without blocking input.
+    void this.checkResumeFreshness();
     await new Promise<void>((resolve) => {
       this.resolveDone = resolve;
     });
@@ -345,9 +352,15 @@ export class InteractiveSession {
         this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
       case "continue":
-      case "resume":
         await this.continueTask();
         return;
+      case "resume":
+        await this.showResumeDigest();
+        return void this.requestPaint(false);
+      case "new":
+        this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [], plan: [], status: "idle" };
+        this.pushNotice("info", "Cleared this session's transcript. Prior history is still saved; /resume to review it.");
+        return void this.fullRepaint();
       case "model":
         if (arg) {
           this.settings.model = arg === "auto" ? undefined : arg;
@@ -381,6 +394,12 @@ export class InteractiveSession {
           `${this.meta.projectName}  ·  ${this.meta.workspacePath}  ·  ${this.meta.branch}  ·  ${modeLabel(this.settings.mode, this.settings.autoApprove)}`
         );
         return void this.requestPaint(false);
+      case "branch":
+        await this.showBranchDetail();
+        return void this.requestPaint(false);
+      case "changes":
+        await this.showChangesDetail();
+        return void this.requestPaint(false);
       case "context": {
         if (this.term.contextUsage) {
           const u = this.term.contextUsage;
@@ -411,7 +430,7 @@ export class InteractiveSession {
         return void this.requestPaint(false);
       }
       case "status":
-        this.pushNotice("info", `${this.meta.projectName} · ${this.meta.provider}/${this.meta.model} · ${modeLabel(this.settings.mode, this.settings.autoApprove)} · memory ${this.settings.useMemory ? "on" : "off"}`);
+        await this.showStatusDetail();
         return void this.requestPaint(false);
       case "capabilities": {
         if (!this.deps.backend.getCapabilities) {
@@ -533,12 +552,14 @@ export class InteractiveSession {
         this.pushNotice("info", "Session export: run morrow conversations export to save this session.");
         return void this.requestPaint(false);
       case "audit":
-      case "cost":
       case "bench":
       case "bugs":
       case "versions":
       case "connect":
         this.pushNotice("info", `/${cmd} — run morrow ${cmd} in your terminal for detailed analytics.`);
+        return void this.requestPaint(false);
+      case "cost":
+        await this.showCostDetail();
         return void this.requestPaint(false);
       default:
         if (cmd && cmd.startsWith("skill:")) {
@@ -552,6 +573,170 @@ export class InteractiveSession {
         }
         this.pushNotice("warn", `Unknown command: /${cmd}. Type /help for available commands.`);
         return void this.requestPaint(false);
+    }
+  }
+
+  private async buildResumeDigest(): Promise<import("./resume.js").ResumeDigest> {
+    const [git, staleness] = await Promise.all([
+      this.deps.backend.getGitStatus?.().catch(() => null) ?? Promise.resolve(null),
+      this.deps.backend.getCortexStaleness?.().catch(() => null) ?? Promise.resolve(null),
+    ]);
+    return {
+      priorMessages: this.meta.priorMessages ?? 0,
+      git: git ? { branch: git.branch, dirty: git.staged.length + git.modified.length + git.untracked.length, ahead: git.ahead, behind: git.behind } : null,
+      staleness: staleness ?? null,
+    };
+  }
+
+  private async showResumeDigest(): Promise<void> {
+    const { resumeDigestLines } = await import("./resume.js");
+    const digest = await this.buildResumeDigest();
+    this.outputViewer = { title: "resume", lines: resumeDigestLines(digest, this.deps.out, this.deps.unicode) };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** On resume, surface repository/Cortex drift as a one-line notice — non-blocking. */
+  private async checkResumeFreshness(): Promise<void> {
+    if (!this.meta.resumed) return;
+    if (!this.deps.backend.getGitStatus && !this.deps.backend.getCortexStaleness) return;
+    try {
+      const { resumeHasWarnings, resumeNoticeText } = await import("./resume.js");
+      const digest = await this.buildResumeDigest();
+      if (resumeHasWarnings(digest)) {
+        this.pushNotice("warn", resumeNoticeText(digest));
+        this.requestPaint(false);
+      }
+    } catch {
+      /* freshness is advisory; never block resume on it */
+    }
+  }
+
+  /** /branch — compact branch, dirty state, and ahead/behind. */
+  private async showBranchDetail(): Promise<void> {
+    if (!this.deps.backend.getGitStatus) {
+      this.pushNotice("info", `Branch: ${this.meta.branch ?? "—"}`);
+      return;
+    }
+    const git = await this.deps.backend.getGitStatus().catch(() => null);
+    if (!git || !git.isRepo) {
+      this.pushNotice("info", "Not a Git repository.");
+      return;
+    }
+    const o = this.deps.out;
+    const dirty = git.staged.length + git.modified.length + git.untracked.length;
+    const dirtyLabel = dirty === 0 ? o.green("clean") : o.yellow(`${dirty} changed`);
+    const lines = [
+      `${o.gray("branch")}  ${o.cyan(git.branch ?? "(detached)")}`,
+      `${o.gray("state")}   ${dirtyLabel}`,
+    ];
+    if (git.ahead > 0 || git.behind > 0) {
+      lines.push(`${o.gray("remote")}  ${git.ahead} ahead · ${git.behind} behind`);
+    }
+    this.outputViewer = { title: "branch", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** /changes — categorized file lists (staged / modified / untracked). */
+  private async showChangesDetail(): Promise<void> {
+    if (!this.deps.backend.getGitStatus) {
+      this.pushNotice("info", "Git change tracking isn't available in this session.");
+      return;
+    }
+    const git = await this.deps.backend.getGitStatus().catch(() => null);
+    if (!git || !git.isRepo) {
+      this.pushNotice("info", "Not a Git repository.");
+      return;
+    }
+    const o = this.deps.out;
+    const g = glyphs(this.deps.unicode);
+    const lines: string[] = [];
+    const section = (label: string, files: string[]) => {
+      lines.push(o.bold(label));
+      if (files.length === 0) {
+        lines.push(`  ${o.gray("(none)")}`);
+      } else {
+        for (const f of files) lines.push(`  ${g.bullet} ${f}`);
+      }
+      lines.push("");
+    };
+    section("Staged", git.staged);
+    section("Modified", git.modified);
+    section("Untracked", git.untracked);
+    this.outputViewer = { title: "changes", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** /status — multi-field session overview in the output viewer. */
+  private async showStatusDetail(): Promise<void> {
+    const o = this.deps.out;
+    const g = glyphs(this.deps.unicode);
+    const mode = modeLabel(this.settings.mode, this.settings.autoApprove);
+    const lines: string[] = [
+      o.bold("Morrow session"),
+      `${o.gray("project")}   ${this.meta.projectName}`,
+      `${o.gray("workspace")} ${this.meta.workspacePath}`,
+      `${o.gray("mode")}       ${mode}`,
+      `${o.gray("model")}      ${this.meta.provider}/${this.meta.model}`,
+      `${o.gray("branch")}     ${this.meta.branch ?? "—"}`,
+    ];
+    // Git dirty state (cheap if getGitStatus is available).
+    if (this.deps.backend.getGitStatus) {
+      const git = await this.deps.backend.getGitStatus().catch(() => null);
+      if (git && git.isRepo) {
+        const dirty = git.staged.length + git.modified.length + git.untracked.length;
+        lines.push(`${o.gray("git")}        ${dirty === 0 ? o.green("clean") : o.yellow(`${dirty} changed`)}${git.ahead > 0 || git.behind > 0 ? `  ·  ${git.ahead}↑ ${git.behind}↓` : ""}`);
+      }
+    }
+    // Context usage if available.
+    if (this.term.contextUsage) {
+      const u = this.term.contextUsage;
+      const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
+      lines.push(`${o.gray("context")}    ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)`);
+    } else {
+      lines.push(`${o.gray("context")}    ${o.gray("not available yet")}`);
+    }
+    // Permission state.
+    const perm = this.settings.autoApprove ? o.yellow("YOLO (auto-approve)") : "approval-gated";
+    lines.push(`${o.gray("permissions")} ${perm}`);
+    lines.push(`${o.gray("memory")}      ${this.settings.useMemory ? "on" : "off"}`);
+    // Session cost if we have a task to query.
+    if (this.lastTaskId) {
+      try {
+        const agg = await this.deps.backend.getTask(this.lastTaskId);
+        if (agg.disclosure?.estimatedCostUsd) {
+          lines.push(`${o.gray("cost")}       ${agg.disclosure.estimatedCostUsd}`);
+        }
+      } catch { /* cost is best-effort */ }
+    }
+    this.outputViewer = { title: "status", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** /cost — honest session cost from the latest task disclosure. */
+  private async showCostDetail(): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task has run yet in this session.");
+      return;
+    }
+    const o = this.deps.out;
+    try {
+      const agg = await this.deps.backend.getTask(this.lastTaskId);
+      const cost = agg.disclosure?.estimatedCostUsd;
+      if (!cost) {
+        this.pushNotice("info", "Cost not metered for this task. Local/deterministic executions report $0.00.");
+        return;
+      }
+      const lines = [
+        o.bold("Session cost"),
+        `${o.gray("latest task")}  ${this.lastTaskId}`,
+        `${o.gray("provider")}    ${agg.disclosure?.provider ?? "unknown"}`,
+        `${o.gray("estimated")}   ${cost}`,
+      ];
+      if (agg.routing?.model) lines.push(`${o.gray("model")}        ${agg.routing.model}`);
+      this.outputViewer = { title: "cost", lines };
+      this.input = { ...this.input, overlay: "output" };
+    } catch {
+      this.pushNotice("warn", "Couldn't retrieve cost data for the last task. It may still be running.");
     }
   }
 
