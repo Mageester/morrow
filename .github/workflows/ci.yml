@@ -24,4 +24,6 @@ jobs:
       # Repository-level guards (installer data-safety, version drift, installer
       # ASCII/UTF-8). pnpm check runs the validator on the real files; this also
       # exercises the negative cases so the guards can't silently rot.
-      - run: node --test scripts/validate-repository.test.mjs
+      # installer-cli-only proves no browser, no localhost, no web/index.html.
+      # install-activation drives the real atomic activation/rollback code paths.
+      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs

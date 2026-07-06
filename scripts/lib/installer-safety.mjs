@@ -74,5 +74,30 @@ export function installerSafetyFailures(script) {
     }
   }
 
+  // 5. CLI-only product: the installer must never open a browser.
+  if (/Start-Process\s+['"]http/i.test(script)) {
+    failures.push(
+      "install.ps1 must not call Start-Process with a URL; Morrow is a CLI-only product and the installer must never open a browser.",
+    );
+  }
+
+  // 6. The installer must not require web/index.html — the package has no web assets.
+  if (/web\\\\index\.html|web\/index\.html/i.test(script)) {
+    failures.push(
+      "install.ps1 must not require web/index.html; the Morrow package is CLI-only and contains no web assets.",
+    );
+  }
+
+  // 7. The post-install message must tell the user to run `morrow`, not visit localhost.
+  if (!/morrow\b/.test(script) || /localhost|127\.0\.0\.1.*get\s+started|open.*127\.0\.0\.1/i.test(script)) {
+    // Check for a positive CLI instruction rather than just absence of bad text.
+    // The installer must print a message directing the user to run `morrow`.
+    if (!/Open a new PowerShell window and run:/.test(script)) {
+      failures.push(
+        "install.ps1 must print CLI-only post-install instructions directing the user to run `morrow` in a new shell, not visit localhost or open a browser.",
+      );
+    }
+  }
+
   return failures;
 }

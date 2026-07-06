@@ -33,7 +33,8 @@ const skip = !process.env.MORROW_RUN_INSTALL_ITEST
     : false;
 
 // Required files, relative to the package root, that install.ps1 validates.
-const REQUIRED = ["morrow.mjs", "runtime\\node.exe", "orchestrator\\dist\\src\\index.js", "web\\index.html"];
+// Morrow is CLI-only: no web/index.html, but dispatch.mjs is bundled.
+const REQUIRED = ["morrow.mjs", "dispatch.mjs", "runtime\\node.exe", "orchestrator\\dist\\src\\index.js"];
 
 /** Build a minimal synthetic package whose morrow.cmd is a valid no-op launcher. */
 function makePackage(dir, versionTag) {
@@ -130,7 +131,7 @@ test("a corrupt upgrade is rejected and rolls back to the previous app + data", 
     // Corrupt the new package: drop a required file so validation must reject it.
     const bad = join(work, "pkgbad");
     makePackage(bad, "v2");
-    rmSync(join(bad, "web", "index.html"), { force: true });
+    rmSync(join(bad, "dispatch.mjs"), { force: true });
     const r = activate(bad, root);
 
     assert.notEqual(r.code, 0, "corrupt activation must fail");
@@ -152,7 +153,7 @@ test("interrupted activation restores a valid previous app before rejecting a co
     writeFileSync(join(root, "data", "morrow.db"), "USERDATA");
     const bad = join(work, "pkgbad");
     makePackage(bad, "v2");
-    rmSync(join(bad, "web", "index.html"), { force: true });
+    rmSync(join(bad, "dispatch.mjs"), { force: true });
 
     const r = activate(bad, root);
 
@@ -196,7 +197,7 @@ test("activation can upgrade after recovering a promoted app.new with a stale ap
     makePackage(join(root, "app.new"), "v2");
     const bad = join(work, "pkgbad");
     makePackage(bad, "v3-bad");
-    rmSync(join(bad, "web", "index.html"), { force: true });
+    rmSync(join(bad, "dispatch.mjs"), { force: true });
     assert.notEqual(activate(bad, root).code, 0, "first run recovers v2 and rejects the bad package");
 
     makePackage(join(work, "pkg3"), "v3");
@@ -223,7 +224,7 @@ test("interrupted activation rejects invalid app.new and keeps the valid previou
     for (const version of ["v3", "v4"]) {
       const bad = join(work, `bad-${version}`);
       makePackage(bad, version);
-      rmSync(join(bad, "web", "index.html"), { force: true });
+      rmSync(join(bad, "dispatch.mjs"), { force: true });
       const r = activate(bad, root);
       assert.notEqual(r.code, 0, `corrupt package ${version} must be rejected`);
       assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v1", "previous app remains restored");

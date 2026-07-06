@@ -38,12 +38,16 @@ function Cleanup {
 
 # The required runtime files, relative to the package root. The installer never
 # hard-codes a versioned directory name; it discovers the root by these files.
+# Morrow is a CLI-only product. The package contains no web assets; the
+# installer must never require or open a browser UI. The required files are
+# the launcher, the dispatcher, the bundled runtime, and the orchestrator
+# entrypoint -- the minimum set for a runnable terminal install.
 $RequiredFiles = @(
   'morrow.cmd',
   'morrow.mjs',
+  'dispatch.mjs',
   'runtime\node.exe',
-  'orchestrator\dist\src\index.js',
-  'web\index.html'
+  'orchestrator\dist\src\index.js'
 )
 
 # Resolve the package root inside the extracted staging tree. Supports both
@@ -308,7 +312,7 @@ try {
   $shortcut.Save()
 
   Write-Host 'Starting Morrow...'
-  # The localhost health poll below is the real success gate. Wrap the launch so a
+  # The health poll below is the real success gate. Wrap the launch so a
   # failing service that writes to stderr (which PowerShell turns into a
   # terminating NativeCommandError under ErrorActionPreference=Stop) cannot bypass
   # the health-check rollback by throwing straight to the outer catch.
@@ -330,12 +334,18 @@ try {
       try { & (Join-Path $installedApp 'morrow.cmd') start *>$null } catch {}
       Fail 'The new version did not pass its health check; the previous version was restored and restarted. Run "morrow doctor" for details.'
     }
-    Fail 'Morrow did not pass its localhost health check. Run "morrow doctor" for details.'
+    Fail 'Morrow did not pass its health check. Run "morrow doctor" for details.'
   }
 
   # Success: the new version is healthy. Discard the preserved previous version.
   Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
-  Start-Process 'http://127.0.0.1:4317/onboarding'
+  Write-Host ''
+  Write-Host 'Morrow installed successfully.'
+  Write-Host ''
+  Write-Host 'Open a new PowerShell window and run:'
+  Write-Host ''
+  Write-Host '  morrow'
+  Write-Host ''
   Write-Host "Morrow $($manifest.version) installed to $InstallRoot. It is an unsigned beta."
 } catch {
   Cleanup
