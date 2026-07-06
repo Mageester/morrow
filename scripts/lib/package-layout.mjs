@@ -27,7 +27,6 @@ export const REQUIRED_PACKAGE_FILES = [
   // The bundled CLI is the installed launcher's product surface (ask/fix/yolo/…).
   "orchestrator/cli/bin/morrow.mjs",
   "orchestrator/cli/src/main.js",
-  "web/index.html",
   "skills/coding/SKILL.md",
   "VERSION",
 ];

@@ -96,7 +96,9 @@ export async function run(argv: string[]): Promise<number> {
     }
     switch (invocation.kind) {
       case "interactive":
-        return open(ctx);
+        // Bare `morrow` opens the terminal agent shell; `morrow open` remains the
+        // explicit browser launch path.
+        return await chatCommand(ctx);
       case "prompt": {
         if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
         const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });

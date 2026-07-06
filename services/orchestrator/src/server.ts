@@ -24,7 +24,7 @@ import {
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
-import { extname, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
 import { agentsRepository } from "./repositories/agents.js";
 import { taskRepository } from "./repositories/tasks.js";
@@ -171,19 +171,10 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
-  /** Directory containing the built single-page web application for packaged installs. */
-  webDir?: string | undefined;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
   const app = Fastify({ logger: false });
-
-  // The single origin this service is reachable on. When a packaged web bundle
-  // is present the UI is served from this same process/port (default 4317), so
-  // the advertised UI URL must point here -- never at the Vite dev server
-  // (5173), which does not exist in an installed build.
-  const servicePort = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 4317;
-  const uiUrl = deps.webDir ? `http://127.0.0.1:${servicePort}` : "http://127.0.0.1:5173";
 
   // Reject requests that aren't trustworthy local clients BEFORE any routing,
   // body parsing, or handler runs. This protects the loopback API from hostile
@@ -299,17 +290,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   // Liveness + schema probe. Used by the CLI to detect a running service and by
-  // `morrow doctor` to report migration state. Exposes no secrets. In a packaged
-  // build the web bundle owns "/" (see the SPA handler below), so this JSON probe
-  // is only registered in dev/test where there is no bundled UI to serve.
-  if (!deps.webDir) {
-    app.get("/", async () => ({
-      name: "morrow-orchestrator",
-      status: "healthy",
-      ui: uiUrl,
-      health: "/api/health",
-    }));
-  }
+  // `morrow doctor` to report migration state. Exposes no secrets. Morrow is a
+  // terminal-first product with no bundled web UI, so "/" is always this JSON
+  // probe.
+  app.get("/", async () => ({
+    name: "morrow-orchestrator",
+    status: "healthy",
+    health: "/api/health",
+  }));
 
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
@@ -319,10 +307,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
       ownerPid: process.pid,
-      // The reachable web UI origin. Doctor and the installer validate this URL,
-      // so it must reflect where the UI is actually served, not a dev default.
-      ui: uiUrl,
-      uiServed: Boolean(deps.webDir),
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };
@@ -2291,35 +2275,5 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { success: true };
   });
 
-  // The portable Windows package is a single local service: it owns both the
-  // API and the built SPA. Development keeps using Vite, so this is opt-in.
-  // API paths never fall back to HTML; a typo remains a truthful API 404.
-  if (deps.webDir) {
-    const webRoot = resolve(deps.webDir);
-    const indexFile = resolve(webRoot, "index.html");
-    const serveSpa = async (request: FastifyRequest, reply: FastifyReply) => {
-      const pathname = decodeURIComponent(request.url.split("?", 1)[0] ?? "/");
-      if (pathname.startsWith("/api/")) {
-        reply.status(404).send({ version: 1, error: { code: "NOT_FOUND", message: "API route not found" } });
-        return;
-      }
-      const requested = resolve(webRoot, `.${pathname}`);
-      const contained = relative(webRoot, requested) && !relative(webRoot, requested).startsWith("..");
-      const file = contained && existsSync(requested) && lstatSync(requested).isFile() ? requested : indexFile;
-      if (!existsSync(file)) throw new ApiError(503, "The bundled web interface is missing.", "WEB_UI_UNAVAILABLE");
-      const type = contentType(extname(file));
-      reply.type(type).send(readFileSync(file));
-    };
-    // Serve the SPA at the root and for every non-API path. Registering "/"
-    // explicitly guarantees that opening the bare origin (what `morrow open`
-    // does) renders the app instead of a raw JSON probe.
-    app.get("/", serveSpa);
-    app.get("/*", serveSpa);
-  }
-
   return app;
-}
-
-function contentType(extension: string): string {
-  return ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon" } as Record<string, string>)[extension] ?? "application/octet-stream";
 }

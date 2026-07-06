@@ -12,7 +12,6 @@
  *     orchestrator/dist/src/index.js     (service entrypoint)
  *     orchestrator/node_modules/...      (production deps only, flat npm install)
  *       @morrow/contracts/dist/index.js  (COMPILED workspace dep, never .ts source)
- *     web/index.html                     (web UI assets)
  *     VERSION, CHANNEL, THIRD_PARTY_NOTICES.txt, uninstall.ps1
  *
  * The package contract is asserted (scripts/lib/package-layout.mjs) before the
@@ -241,13 +240,7 @@ try {
   throw new Error("The bundled CLI failed to run under the bundled runtime.");
 }
 
-// ── 5. Web app ───────────────────────────────────────────────────────────
-console.log("\n[5/8] Bundling web app...");
-const webSrc = join(ROOT, "apps", "web", "dist");
-if (!existsSync(join(webSrc, "index.html"))) throw new Error("Web app is not built (missing apps/web/dist/index.html).");
-cpSync(webSrc, join(PKG_DIR, "web"), { recursive: true });
-
-// ── 5b. Skills (so the packaged agent can find_skill / load_skill) ────────
+// ── 5. Skills (so the packaged agent can find_skill / load_skill) ─────────
 // The agent reads each skill's SKILL.md (and manifest/permissions) at runtime
 // from MORROW_SKILLS_DIR, which the launcher points at this bundled directory.
 // Offensive LLM-jailbreak/attack skills are deliberately NOT shipped in the

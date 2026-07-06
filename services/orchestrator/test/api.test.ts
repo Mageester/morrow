@@ -27,13 +27,12 @@ describe("REST API and Task Runner Vertical Slice", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("returns a truthful API root summary in dev (no bundled UI)", async () => {
+  it("returns a truthful API root summary (terminal-first, no bundled UI)", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       name: "morrow-orchestrator",
       status: "healthy",
-      ui: "http://127.0.0.1:5173",
       health: "/api/health",
     });
   });
@@ -84,43 +83,19 @@ describe("REST API and Task Runner Vertical Slice", () => {
     expect(JSON.stringify(res.json().context)).not.toContain("secret");
   });
 
-  it("health advertises the dev UI URL when no bundle is present", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/health" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().ui).toBe("http://127.0.0.1:5173");
-    expect(res.json().uiServed).toBe(false);
-  });
+  it("serves a JSON liveness probe at the root and advertises no web UI", async () => {
+    // Morrow is terminal-first: the service exposes an API only, never a bundled
+    // web dashboard, so "/" is always a JSON probe and health carries no UI URL.
+    const rootRoute = await app.inject({ method: "GET", url: "/" });
+    expect(rootRoute.statusCode).toBe(200);
+    expect(rootRoute.json().name).toBe("morrow-orchestrator");
+    expect(rootRoute.json().health).toBe("/api/health");
 
-  it("serves the packaged web app at the root and app routes, advertising its own origin", async () => {
-    const webDir = join(tempDir, "web");
-    mkdirSync(webDir);
-    writeFileSync(join(webDir, "index.html"), "<main>Morrow app</main>");
-    const prevPort = process.env.PORT;
-    process.env.PORT = "4317";
-    const packaged = buildServer({ db, runner, webDir });
-    try {
-      // Regression: opening the bare origin (what `morrow open` does) must render
-      // the SPA, never a raw JSON probe advertising a non-existent dev server.
-      const rootRoute = await packaged.inject({ method: "GET", url: "/" });
-      expect(rootRoute.statusCode).toBe(200);
-      expect(rootRoute.body).toContain("Morrow app");
-      expect(rootRoute.headers["content-type"]).toContain("text/html");
-
-      const appRoute = await packaged.inject({ method: "GET", url: "/onboarding" });
-      expect(appRoute.statusCode).toBe(200);
-      expect(appRoute.body).toContain("Morrow app");
-
-      const apiRoute = await packaged.inject({ method: "GET", url: "/api/health" });
-      expect(apiRoute.statusCode).toBe(200);
-      expect(apiRoute.json().ok).toBe(true);
-      // Regression for beta.8: health must advertise the real served origin, not 5173.
-      expect(apiRoute.json().ui).toBe("http://127.0.0.1:4317");
-      expect(apiRoute.json().uiServed).toBe(true);
-    } finally {
-      await packaged.close();
-      if (prevPort === undefined) delete process.env.PORT;
-      else process.env.PORT = prevPort;
-    }
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json().ok).toBe(true);
+    expect(health.json()).not.toHaveProperty("ui");
+    expect(health.json()).not.toHaveProperty("uiServed");
   });
 
   it("lists discoverable skills from MORROW_SKILLS_DIR (manifest and frontmatter formats)", async () => {

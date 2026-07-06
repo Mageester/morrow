@@ -14,11 +14,9 @@
     "check": "turbo check && node scripts/validate-repository.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "test": "turbo run test",
-    "test:watch": "turbo run test --watch",
-    "test:e2e": "playwright test"
+    "test:watch": "turbo run test --watch"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.0",
     "turbo": "2.6.3"
   }
 }
