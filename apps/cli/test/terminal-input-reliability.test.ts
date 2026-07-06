@@ -162,6 +162,21 @@ describe("frame cursor math and narrow-terminal rendering", () => {
     expect(caretLine).toContain("third");
   });
 
+  it("clips a long streamed transcript to the row budget without overflow", () => {
+    const base: TerminalState = reduce(initialState(), { type: "session.started", meta });
+    let s = reduce(base, { type: "user.message", text: "explain everything" });
+    // A very long streamed assistant answer (many wide lines).
+    const long = Array.from({ length: 200 }, (_, i) => `line ${i} ${"x".repeat(120)}`).join("\n");
+    s = reduce(s, { type: "assistant.delta", text: long });
+    for (const [columns, rows] of [[80, 24], [40, 12]] as const) {
+      const frame = composeApp(s, initialInputState(), plain, false, { commands: [], paletteItems: [] }, {
+        columns, rows, tick: 0, promptLabel: "› ", promptWidth: 2,
+      });
+      expect(frame.lines.length).toBeLessThanOrEqual(rows);
+      for (const line of frame.lines) expect(stripAnsi(line).length).toBeLessThanOrEqual(columns);
+    }
+  });
+
   it("never emits a line wider than the terminal, even when narrow", () => {
     const buffer = "a very long single line of input that clearly exceeds a narrow terminal width";
     const input = { ...initialInputState(), buffer, cursor: buffer.length };
