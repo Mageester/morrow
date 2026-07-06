@@ -7,7 +7,7 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
-import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
+import { largeWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
 import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
@@ -26,7 +26,8 @@ import { formatContextStatus, formatMissionResult, formatTaskTree } from "../ter
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
   if (flagBool(ctx.flags, "plan")) return "plan-only";
-  if (flagBool(ctx.flags, "read-only") || flagBool(ctx.flags, "inspect")) return "read-only";
+  if (flagBool(ctx.flags, "ask") || flagBool(ctx.flags, "read-only") || flagBool(ctx.flags, "inspect")) return "read-only";
+  if (flagBool(ctx.flags, "build")) return "agent";
   const configured = ctx.config.get("defaults.mode") as AgentMode | undefined;
   return configured ?? "agent";
 }
@@ -479,24 +480,32 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     }
     case "mode": {
       if (!arg) {
-        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}`);
+        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}  ·  switch: /mode ask|plan|build|mission`);
         return {};
       }
-      const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
-      if (next !== "agent" && next !== "read-only" && next !== "plan-only") {
-        out.warn("Usage: /mode [agent|inspect|plan]");
+      const next = parseModeName(arg);
+      if (next === null) {
+        out.warn("Usage: /mode [ask|plan|build|mission]");
+        return {};
+      }
+      if (next === "mission") {
+        // Mission is the distinct verified-objective flow. Start one from the
+        // shell prompt or `morrow mission "<objective>"`, then inspect it with
+        // /tree, /result, and /context.
+        out.info("Mission mode runs a verified autonomous objective with criteria, evidence, and review.");
+        out.info(`Start one with:  ${out.cyan('morrow mission "<objective>"')}   ·   inspect with /tree /result /context`);
         return {};
       }
       session.mode = next as AgentMode;
-      // Leaving agent mode makes auto-approve meaningless; turn it off so the
-      // label can never claim YOLO for a mode that does not execute.
+      // Leaving Build (agent) mode makes auto-approve meaningless; turn it off so
+      // the label can never claim YOLO for a mode that does not execute.
       if (session.mode !== "agent" && session.autoApprove) session.autoApprove = false;
       out.success(`Mode set to ${modeLabel(session.mode, session.autoApprove)}.`);
       return {};
     }
     case "yolo": {
       if (session.mode !== "agent") {
-        out.warn(`YOLO only applies in agent mode (current: ${modeLabel(session.mode)}). Switch with /mode agent first.`);
+        out.warn(`YOLO only applies in Build mode (current: ${modeLabel(session.mode)}). Switch with /mode build first.`);
         return {};
       }
       session.autoApprove = arg === "on" ? true : arg === "off" ? false : !session.autoApprove;
@@ -1007,8 +1016,8 @@ function printReplHelp(ctx: Context) {
     ["/provider [id]", "show providers or set the active provider"],
     ["/model [id]", "show models or set the active model"],
     ["/preset [id]", "show presets or set the active preset"],
-    ["/mode [kind]", "show or set agent | inspect | plan"],
-    ["/yolo [on|off]", "toggle auto-approve (agent mode); denied actions stay blocked"],
+    ["/mode [kind]", "show or set ask | plan | build | mission"],
+    ["/yolo [on|off]", "toggle auto-approve (Build mode); denied actions stay blocked"],
     ["/tools", "list available read-only tools"],
     ["/permissions", "show the permission profile"],
     ["/status", "show service and session status"],

@@ -55,16 +55,50 @@ export function largeWordmark(out: Output, unicode: boolean): string[] {
 export type CapabilityMode = "agent" | "read-only" | "plan-only" | string;
 
 /**
+ * The four product modes the user sees. Ask / Plan / Build map onto the wire
+ * `AgentMode` (`read-only` / `plan-only` / `agent`); Mission is the distinct
+ * verified-objective flow. The wire enum is intentionally unchanged so the
+ * server, database, and existing tests stay stable — only the vocabulary the
+ * user reads and types is unified here.
+ */
+export const PRODUCT_MODES = ["ask", "plan", "build", "mission"] as const;
+
+/**
+ * Parse a user-typed mode name (or legacy alias) into a wire `AgentMode`.
+ * Returns "mission" verbatim for the mission flow, or null when unrecognised.
+ */
+export function parseModeName(input: string): CapabilityMode | "mission" | null {
+  switch (input.trim().toLowerCase()) {
+    case "build":
+    case "agent":
+      return "agent";
+    case "ask":
+    case "inspect":
+    case "read-only":
+    case "readonly":
+      return "read-only";
+    case "plan":
+    case "plan-only":
+    case "planonly":
+      return "plan-only";
+    case "mission":
+      return "mission";
+    default:
+      return null;
+  }
+}
+
+/**
  * Truthful, human mode label. Never describes an execution-capable session as
- * "read-only". In agent mode, `autoApprove` flips the label to YOLO so the user
+ * "read-only". In Build mode, `autoApprove` flips the label to YOLO so the user
  * is never misled into thinking approvals still gate execution.
  */
 export function modeLabel(mode: CapabilityMode, autoApprove = false): string {
   switch (mode) {
     case "agent":
-      return autoApprove ? "Agent · YOLO (auto-approves edits & commands)" : "Agent · approvals required";
+      return autoApprove ? "Build · YOLO (auto-approves edits & commands)" : "Build · approvals required";
     case "read-only":
-      return "Inspect · read-only";
+      return "Ask · read-only";
     case "plan-only":
       return "Plan · no changes";
     default:
@@ -72,13 +106,13 @@ export function modeLabel(mode: CapabilityMode, autoApprove = false): string {
   }
 }
 
-/** Short mode word for compact contexts. */
+/** Short mode word for compact contexts (status bar, prompt). */
 export function modeWord(mode: CapabilityMode): string {
   switch (mode) {
     case "agent":
-      return "Agent";
+      return "Build";
     case "read-only":
-      return "Inspect";
+      return "Ask";
     case "plan-only":
       return "Plan";
     default:

@@ -39,9 +39,10 @@ export function staticPaletteItems(commands: SlashCommand[]): PaletteItem[] {
     run: `/${c.name}`,
   }));
   const modeItems: PaletteItem[] = [
-    { kind: "mode", label: "Agent mode", hint: "approval-gated execution", run: "/mode agent" },
-    { kind: "mode", label: "Inspect mode", hint: "read-only", run: "/mode inspect" },
-    { kind: "mode", label: "Plan mode", hint: "no changes", run: "/mode plan" },
+    { kind: "mode", label: "Ask mode", hint: "explain & inspect · no changes", run: "/mode ask" },
+    { kind: "mode", label: "Plan mode", hint: "produce a plan · no changes", run: "/mode plan" },
+    { kind: "mode", label: "Build mode", hint: "edit files & run tools · approval-gated", run: "/mode build" },
+    { kind: "mode", label: "Mission", hint: "verified autonomous objective", run: "/mode mission" },
     { kind: "mode", label: "YOLO on", hint: "auto-approve edits & commands", run: "/yolo on" },
     { kind: "mode", label: "YOLO off", hint: "require approvals", run: "/yolo off" },
   ];

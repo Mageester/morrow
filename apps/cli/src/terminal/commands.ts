@@ -19,7 +19,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "provider", arg: "[id]", description: "show or set the active provider" },
   { name: "model", arg: "[id]", description: "show or set the active model" },
   { name: "preset", arg: "[id]", description: "show or set the active preset" },
-  { name: "mode", arg: "[agent|inspect|plan]", description: "show or set the capability mode" },
+  { name: "mode", arg: "[ask|plan|build|mission]", description: "show or set the product mode" },
   { name: "yolo", arg: "[on|off|status|policy]", description: "manage project-scoped autonomy" },
   { name: "tools", description: "list available read-only tools" },
   { name: "permissions", description: "show the permission profile" },

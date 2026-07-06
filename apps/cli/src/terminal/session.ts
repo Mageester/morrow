@@ -15,7 +15,7 @@
 import readline from "node:readline";
 import type { Output } from "../cli/output.js";
 import type { AgentMode } from "@morrow/contracts";
-import { modeLabel } from "../cli/identity.js";
+import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
 import { composeApp } from "./app-view.js";
@@ -272,11 +272,21 @@ export class InteractiveSession {
         this.pushNotice("info", this.commands.map((c) => "/" + c.name).join(" "));
         return void this.requestPaint(false);
       case "mode": {
-        const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
-        if (next !== "agent" && next !== "read-only" && next !== "plan-only") {
-          this.pushNotice("warn", "Usage: /mode [agent|inspect|plan]");
+        if (!arg) {
+          this.pushNotice("info", `Mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}  ·  switch: /mode ask|plan|build|mission`);
+          return void this.requestPaint(false);
+        }
+        const parsed = parseModeName(arg);
+        if (parsed === null) {
+          this.pushNotice("warn", "Usage: /mode [ask|plan|build|mission]");
+        } else if (parsed === "mission") {
+          // Mission is the distinct verified-objective flow, not an AgentMode;
+          // open Mission Control so it can be seen and driven from here.
+          this.pushNotice("info", "Mission: verified autonomous objective — opening Mission Control.");
+          await this.showMissionControl();
+          return;
         } else {
-          this.settings.mode = next as AgentMode;
+          this.settings.mode = parsed as AgentMode;
           if (this.settings.mode !== "agent") this.settings.autoApprove = false;
           this.refreshModeLabel();
           this.pushNotice("info", `Mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`);
@@ -285,7 +295,7 @@ export class InteractiveSession {
       }
       case "yolo": {
         if (this.settings.mode !== "agent") {
-          this.pushNotice("warn", "YOLO only applies in agent mode. Use /mode agent first.");
+          this.pushNotice("warn", "YOLO only applies in Build mode. Use /mode build first.");
         } else {
           if (arg === "status") {
             this.pushNotice("info", yoloStatusText(this.settings.autoApprove));
@@ -363,7 +373,7 @@ export class InteractiveSession {
           `Permissions: ${mode}`,
           yolo ? "  • Edits & commands auto-approved (YOLO)" : "  • Approvals required for commands & patches",
           `  • Workspace: ${this.meta.workspacePath}`,
-          "  • Mode glyphs: ⚡ YOLO  🔍 Inspect  📋 Plan  ● Agent",
+          "  • Modes: Ask (read-only) · Plan (no changes) · Build (approval-gated) · Mission (verified)",
         ];
         this.outputViewer = { title: "permissions", lines };
         this.input = { ...this.input, overlay: "output" };

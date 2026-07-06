@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Output } from "../src/cli/output.js";
-import { greeting, compactWordmark, largeWordmark, modeLabel, modeWord, privacyLabel, isLocalProvider, TAGLINE } from "../src/cli/identity.js";
+import { greeting, compactWordmark, largeWordmark, modeLabel, modeWord, parseModeName, privacyLabel, isLocalProvider, TAGLINE } from "../src/cli/identity.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
 
@@ -29,12 +29,24 @@ describe("Morrow identity", () => {
     expect(/[^\x00-\x7F]/.test(ascii)).toBe(false);
   });
 
-  it("uses truthful mode labels (never calls an agent session read-only)", () => {
-    expect(modeLabel("agent")).toBe("Agent · approvals required");
-    expect(modeLabel("read-only")).toBe("Inspect · read-only");
+  it("uses truthful product-mode labels (Ask/Plan/Build; never calls an executing session read-only)", () => {
+    expect(modeLabel("agent")).toBe("Build · approvals required");
+    expect(modeLabel("agent", true)).toBe("Build · YOLO (auto-approves edits & commands)");
+    expect(modeLabel("read-only")).toBe("Ask · read-only");
     expect(modeLabel("plan-only")).toBe("Plan · no changes");
-    expect(modeWord("agent")).toBe("Agent");
-    expect(modeWord("read-only")).toBe("Inspect");
+    expect(modeWord("agent")).toBe("Build");
+    expect(modeWord("read-only")).toBe("Ask");
+    expect(modeWord("plan-only")).toBe("Plan");
+  });
+
+  it("parses product-mode names and legacy aliases", () => {
+    expect(parseModeName("build")).toBe("agent");
+    expect(parseModeName("agent")).toBe("agent");
+    expect(parseModeName("ask")).toBe("read-only");
+    expect(parseModeName("inspect")).toBe("read-only");
+    expect(parseModeName("plan")).toBe("plan-only");
+    expect(parseModeName("mission")).toBe("mission");
+    expect(parseModeName("nonsense")).toBeNull();
   });
 
   it("labels provider privacy honestly", () => {

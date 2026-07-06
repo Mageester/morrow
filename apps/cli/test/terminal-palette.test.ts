@@ -22,7 +22,7 @@ describe("staticPaletteItems", () => {
     const items = staticPaletteItems(SLASH_COMMANDS);
     expect(items.filter((i) => i.kind === "command")).toHaveLength(SLASH_COMMANDS.length);
     const modeRuns = items.filter((i) => i.kind === "mode").map((i) => i.run);
-    expect(modeRuns).toEqual(["/mode agent", "/mode inspect", "/mode plan", "/yolo on", "/yolo off"]);
+    expect(modeRuns).toEqual(["/mode ask", "/mode plan", "/mode build", "/mode mission", "/yolo on", "/yolo off"]);
     // Every item resolves to a runnable slash line — nothing decorative.
     for (const item of items) expect(item.run.startsWith("/")).toBe(true);
   });

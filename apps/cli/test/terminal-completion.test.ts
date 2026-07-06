@@ -53,7 +53,7 @@ describe("slash-command completion", () => {
     const lines = renderMenu(matches, plain, { selected: 0, max: 8, unicode: true });
     expect(lines.length).toBeGreaterThan(0);
     expect(lines[0]).toContain("›"); // pointer on the selected row
-    expect(lines.join("\n")).toContain("set the capability mode");
+    expect(lines.join("\n")).toContain("set the product mode");
   });
 
   it("caps the menu and reports the overflow", () => {
