@@ -54,3 +54,4 @@ export { stageLabel } from "./view.js";
 export { PasteDecoder, normalizePaste, PASTE_START, PASTE_END, type PasteResult } from "./paste.js";
 export { insertPaste } from "./input-state.js";
 export { resumeDigestLines, resumeNoticeText, resumeHasWarnings, type ResumeDigest, type ResumeGitState, type ResumeStaleness } from "./resume.js";
+export { interpretError, formatInterpretedError, type InterpretedError } from "./errors.js";

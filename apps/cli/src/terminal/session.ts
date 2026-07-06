@@ -1184,7 +1184,16 @@ export class InteractiveSession {
       }
       this.applyEvent({ type: "assistant.end" });
     } catch (err) {
-      this.applyEvent({ type: "task.failed", message: err instanceof Error ? err.message : String(err) });
+      const msg = err instanceof Error ? err.message : String(err);
+      this.applyEvent({ type: "task.failed", message: msg });
+      // Surface a human-friendly interpreted error as a notice (in addition
+      // to the raw message stored in lastError for /details).
+      try {
+        const { interpretError, formatInterpretedError } = await import("./errors.js");
+        this.pushNotice("error", formatInterpretedError(interpretError(msg)));
+      } catch {
+        this.pushNotice("error", msg);
+      }
     } finally {
       this.busy = false;
       this.currentTaskId = null;

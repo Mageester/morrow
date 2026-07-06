@@ -182,7 +182,20 @@ export async function run(argv: string[]): Promise<number> {
       if (error.hint) out.diag(`  ${error.hint}`);
       return error.exitCode;
     }
-    out.error(error instanceof Error ? error.message : String(error));
+    // For non-CliError exceptions, surface a human-friendly interpreted error
+    // instead of a raw stack trace. The raw message is still available via
+    // --verbose or /details in the interactive session.
+    const raw = error instanceof Error ? error.message : String(error);
+    try {
+      const { interpretError } = await import("./terminal/errors.js");
+      const interpreted = interpretError(raw);
+      out.error(interpreted.title);
+      out.print();
+      out.print(`  ${interpreted.body}`);
+      if (interpreted.hint) { out.print(); out.print(`  ${out.cyan(interpreted.hint)}`); }
+    } catch {
+      out.error(raw);
+    }
     return EXIT.ERROR;
   }
 }
