@@ -19,7 +19,8 @@ import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
 import { composeApp } from "./app-view.js";
-import { completionActive, initialInputState, reduceKey, type InputState, type KeyContext } from "./input-state.js";
+import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
+import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
@@ -135,6 +136,7 @@ export class InteractiveSession {
   private missionCache: { tree?: string[]; result?: string[]; cockpit?: string[] } = {};
   private resolveDone: (() => void) | null = null;
   private readonly now: () => number;
+  private readonly pasteDecoder = new PasteDecoder();
   /** Source event ids survive SSE reconnects; never fold the same event twice. */
   private readonly seenSourceEvents = new Set<string>();
   private readonly minIntervalMs: number;
@@ -185,6 +187,14 @@ export class InteractiveSession {
 
   private handleKey(str: string | undefined, key: readline.Key): void {
     if (!this.active) return;
+
+    // Bracketed paste: fold the span between the paste markers into one atomic,
+    // multi-line insertion so pasted newlines never submit. Normal keystrokes
+    // pass straight through, so typed input is unchanged.
+    const paste = this.pasteDecoder.feed(str, key ?? {});
+    if (paste.kind === "buffering") return;
+    if (paste.kind === "paste") return void this.applyPaste(paste.text);
+
     const k = { str, name: key?.name, ctrl: key?.ctrl, meta: key?.meta, shift: key?.shift };
 
     if (this.pendingApproval) return void this.handleApprovalKey(k);
@@ -240,6 +250,17 @@ export class InteractiveSession {
       case "none":
         break;
     }
+  }
+
+  /** Insert a completed bracketed paste as one atomic, multi-line edit. Pastes
+   *  are ignored while a task streams, an approval is pending, or an overlay is
+   *  open — the same contexts where typed editing is suppressed. */
+  private applyPaste(text: string): void {
+    if (this.busy || this.pendingApproval || this.input.overlay !== "none") return;
+    const clean = normalizePaste(text);
+    if (!clean) return;
+    this.input = insertPaste(this.input, clean);
+    this.requestPaint(false);
   }
 
   private interruptBusy(): void {

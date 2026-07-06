@@ -356,3 +356,18 @@ function sanitizePrintable(str: string): string {
   // eslint-disable-next-line no-control-regex
   return str.replace(/[\x00-\x1f\x7f]/g, "");
 }
+
+/**
+ * Insert already-normalized paste text (newlines preserved) at the cursor. This
+ * is the multi-line counterpart to printable insertion: a bracketed paste is one
+ * atomic edit, so it never triggers submit and never collapses its line breaks.
+ */
+export function insertPaste(state: InputState, text: string): InputState {
+  if (!text) return state;
+  const s: InputState = { ...state, confirmExit: false };
+  s.buffer = s.buffer.slice(0, s.cursor) + text + s.buffer.slice(s.cursor);
+  s.cursor += text.length;
+  s.completionSelected = 0;
+  s.completionDismissed = false;
+  return s;
+}

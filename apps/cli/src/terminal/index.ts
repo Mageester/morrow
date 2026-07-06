@@ -51,3 +51,5 @@ export { modelPickerLines, modelFactsLine, formatContextWindow, type ModelSelect
 export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
 export { activityDetailLines, activityGroupSummary, agentDetailLine } from "./activity-view.js";
 export { stageLabel } from "./view.js";
+export { PasteDecoder, normalizePaste, PASTE_START, PASTE_END, type PasteResult } from "./paste.js";
+export { insertPaste } from "./input-state.js";

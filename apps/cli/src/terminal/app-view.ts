@@ -334,7 +334,9 @@ function buildInputBlock(
     inputLines.push((i === 0 ? opts.promptLabel + seg : "  " + seg));
   }
 
-  // Cursor row/col within this block (offset by 1 for the separator).
+  // Cursor row/col within this block. `cursorRow` is the 1-based line the caret
+  // sits on; because the separator occupies block index 0, segment N lands at
+  // block index N, so the block-relative caret row equals `cursorRow`.
   const before = input.buffer.slice(0, input.cursor).split("\n");
   const cursorRow = before.length;
   const lastSeg = before[before.length - 1] ?? "";
@@ -345,7 +347,7 @@ function buildInputBlock(
     const matches = filterCommands(input.buffer, ctx.commands);
     for (const ml of renderMenu(matches, out, { selected: input.completionSelected, max: 8, unicode })) lines.push(ml);
   }
-  return { lines, cursor: { row: cursorRow - 1, col: cursorCol } };
+  return { lines, cursor: { row: cursorRow, col: cursorCol } };
 }
 
 function recentNotices(term: TerminalState, out: Output, unicode: boolean): string[] {
