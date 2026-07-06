@@ -82,6 +82,8 @@ export interface SessionBackend {
   listAgents?(): Promise<import("@morrow/contracts").Agent[]>;
   /** Live capability report for /capabilities — what this build can do now. */
   getCapabilities?(): Promise<import("../commands/capabilities.js").CapabilityReport>;
+  /** Known model registry for the /model picker (facts, not guesses). */
+  listModels?(): Promise<import("@morrow/contracts").ModelStatus[]>;
 }
 
 export interface SessionSettings {
@@ -327,8 +329,12 @@ export class InteractiveSession {
         if (arg) {
           this.settings.model = arg === "auto" ? undefined : arg;
           this.meta.model = this.settings.model ?? "auto";
-          this.pushNotice("info", `Model: ${this.settings.model ?? "auto"}`);
-        } else this.pushNotice("info", `Model: ${this.settings.model ?? "auto"} (use /model <id>)`);
+          // Changing the model mutates routing only; the conversation, task
+          // history, and streaming state are all preserved.
+          this.pushNotice("info", `Model set to ${this.settings.model ?? "auto (preset routing)"} — session preserved.`);
+          return void this.requestPaint(false);
+        }
+        await this.showModelPicker();
         return void this.requestPaint(false);
       case "provider":
         if (arg) {
@@ -520,6 +526,27 @@ export class InteractiveSession {
         this.pushNotice("warn", `Unknown command: /${cmd}. Type /help for available commands.`);
         return void this.requestPaint(false);
     }
+  }
+
+  private async showModelPicker(): Promise<void> {
+    if (!this.deps.backend.listModels) {
+      this.pushNotice("info", `Model: ${this.settings.model ?? "auto (preset routing)"} — run \`morrow model\` for the full picker.`);
+      return;
+    }
+    const models = await this.deps.backend.listModels().catch(() => null);
+    if (models === null) {
+      this.pushNotice("warn", "Could not load models — is the orchestrator reachable?");
+      return;
+    }
+    const { modelPickerLines } = await import("./model-picker.js");
+    const lines = modelPickerLines(
+      models,
+      { provider: this.settings.provider, model: this.settings.model },
+      this.deps.out,
+      this.deps.unicode
+    );
+    this.outputViewer = { title: "models", lines };
+    this.input = { ...this.input, overlay: "output" };
   }
 
   private async showSearch(query: string): Promise<void> {

@@ -212,6 +212,7 @@ async function runInteractiveSession(
     getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
     listAgents: () => api.listAgents(project.id).catch(() => []),
     getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
+    listModels: () => api.listModels(),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
@@ -472,11 +473,11 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     case "model": {
       if (arg) {
         session.model = arg === "auto" ? undefined : arg;
-        out.success(`Model set to ${session.model ?? "auto (preset routing)"}.`);
+        out.success(`Model set to ${session.model ?? "auto (preset routing)"} — session preserved.`);
       } else {
         const models = await api.listModels();
-        out.heading("Models");
-        models.filter((m) => m.available).forEach((m) => out.print(`  ${out.cyan(m.model.id)}  ${out.gray(m.model.label)}`));
+        const { modelPickerLines } = await import("../terminal/model-picker.js");
+        for (const l of modelPickerLines(models, { provider: session.provider, model: session.model }, out, resolveUnicode(ctx))) out.print(l);
       }
       return {};
     }
