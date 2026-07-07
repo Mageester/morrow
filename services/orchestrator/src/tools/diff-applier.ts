@@ -16,6 +16,29 @@ export interface PatchChunk {
   lines: string[];
 }
 
+export type PatchConflictCategory =
+  | "context_mismatch"
+  | "ambiguous_context"
+  | "malformed_patch";
+
+export class PatchApplicationError extends Error {
+  readonly category: PatchConflictCategory;
+  readonly hunk: PatchChunk;
+  readonly expected: string;
+  readonly actual: string;
+  readonly line: number;
+
+  constructor(message: string, details: { category: PatchConflictCategory; hunk: PatchChunk; expected: string; actual: string; line: number }) {
+    super(message);
+    this.name = "PatchApplicationError";
+    this.category = details.category;
+    this.hunk = details.hunk;
+    this.expected = details.expected;
+    this.actual = details.actual;
+    this.line = details.line;
+  }
+}
+
 export function hashString(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
@@ -263,44 +286,114 @@ export function applyUnifiedPatch(
   fileContent: string | null, // null if file is being created
   chunks: PatchChunk[]
 ): string {
+  const newline = fileContent !== null && fileContent.includes("\r\n") ? "\r\n" : "\n";
   let fileLines = fileContent !== null ? fileContent.split(/\r?\n/) : [];
 
   // Sort chunks by oldStart descending to apply modifications from bottom to top
   const sortedChunks = [...chunks].sort((a, b) => b.oldStart - a.oldStart);
 
   for (const chunk of sortedChunks) {
-    const startIdx = chunk.oldStart - 1;
-    let fileIdx = startIdx;
+    const application = findChunkApplication(fileLines, chunk);
+    const startIdx = application.startIdx;
     const newLinesToInsert: string[] = [];
-
-    // Verify context and deletion lines match exactly
-    for (const chunkLine of chunk.lines) {
-      const prefix = chunkLine.charAt(0);
-      const lineText = chunkLine.slice(1);
-
-      if (prefix === " " || prefix === "-") {
-        if (fileIdx < 0 || fileIdx >= fileLines.length || fileLines[fileIdx] !== lineText) {
-          throw new Error(
-            `Patch conflict: expected "${lineText}" at line ${fileIdx + 1} but found "${
-              fileIdx >= 0 && fileIdx < fileLines.length ? fileLines[fileIdx] : "EOF"
-            }"`
-          );
-        }
-        fileIdx++;
-      }
-    }
 
     // Build the insertion segment
     for (const chunkLine of chunk.lines) {
       const prefix = chunkLine.charAt(0);
       const lineText = chunkLine.slice(1);
-      if (prefix === " " || prefix === "+") {
+      if (application.replaceDeletedOnly) {
+        if (prefix === "+") newLinesToInsert.push(lineText);
+      } else if (prefix === " " || prefix === "+") {
         newLinesToInsert.push(lineText);
       }
     }
 
-    fileLines.splice(startIdx, chunk.oldLines, ...newLinesToInsert);
+    fileLines.splice(startIdx, application.removeLines, ...newLinesToInsert);
   }
 
-  return fileLines.join("\n");
+  return fileLines.join(newline);
+}
+
+function oldComparableLines(chunk: PatchChunk): string[] {
+  return chunk.lines
+    .filter((line) => line.startsWith(" ") || line.startsWith("-"))
+    .map((line) => line.slice(1));
+}
+
+function deletedLines(chunk: PatchChunk): string[] {
+  return chunk.lines
+    .filter((line) => line.startsWith("-"))
+    .map((line) => line.slice(1));
+}
+
+function matchesAt(fileLines: string[], startIdx: number, expected: string[], normalize: (line: string) => string): boolean {
+  if (startIdx < 0 || startIdx + expected.length > fileLines.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (normalize(fileLines[startIdx + i]!) !== normalize(expected[i]!)) return false;
+  }
+  return true;
+}
+
+function findMatches(fileLines: string[], expected: string[], normalize: (line: string) => string): number[] {
+  if (expected.length === 0) return [];
+  const matches: number[] = [];
+  for (let i = 0; i <= fileLines.length - expected.length; i++) {
+    if (matchesAt(fileLines, i, expected, normalize)) matches.push(i);
+  }
+  return matches;
+}
+
+function uniqueMatch(fileLines: string[], expected: string[], normalize: (line: string) => string): number | null {
+  const matches = findMatches(fileLines, expected, normalize);
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length > 1) return -1;
+  return null;
+}
+
+function findChunkApplication(fileLines: string[], chunk: PatchChunk): { startIdx: number; removeLines: number; replaceDeletedOnly: boolean } {
+  const anchored = chunk.oldStart - 1;
+  const oldLines = oldComparableLines(chunk);
+  if (oldLines.length === 0) return { startIdx: anchored, removeLines: chunk.oldLines, replaceDeletedOnly: false };
+  const exact = (line: string) => line;
+  const trimRight = (line: string) => line.replace(/[ \t]+$/g, "");
+
+  if (matchesAt(fileLines, anchored, oldLines, exact)) return { startIdx: anchored, removeLines: chunk.oldLines, replaceDeletedOnly: false };
+
+  const strategies: Array<{ lines: string[]; normalize: (line: string) => string; label: string }> = [
+    { lines: oldLines, normalize: exact, label: "shifted context" },
+    { lines: oldLines, normalize: trimRight, label: "trailing whitespace" },
+  ];
+  const deleted = deletedLines(chunk);
+  if (deleted.length > 0 && deleted.length < oldLines.length) {
+    strategies.push({ lines: deleted, normalize: exact, label: "unique deletion target" });
+    strategies.push({ lines: deleted, normalize: trimRight, label: "unique deletion target with trailing whitespace" });
+  }
+
+  for (const strategy of strategies) {
+    const match = uniqueMatch(fileLines, strategy.lines, strategy.normalize);
+    if (match === -1) {
+      throw new PatchApplicationError(`Patch conflict: ambiguous ${strategy.label} for hunk starting at line ${chunk.oldStart}`, {
+        category: "ambiguous_context",
+        hunk: chunk,
+        expected: strategy.lines.join("\n"),
+        actual: "multiple matches",
+        line: chunk.oldStart,
+      });
+    }
+    if (match !== null) {
+      if (strategy.lines === deleted) {
+        return { startIdx: match, removeLines: deleted.length, replaceDeletedOnly: true };
+      }
+      return { startIdx: match, removeLines: chunk.oldLines, replaceDeletedOnly: false };
+    }
+  }
+
+  const actual = anchored >= 0 && anchored < fileLines.length ? fileLines[anchored]! : "EOF";
+  throw new PatchApplicationError(`Patch conflict: expected "${oldLines[0] ?? ""}" at line ${anchored + 1} but found "${actual}"`, {
+    category: "context_mismatch",
+    hunk: chunk,
+    expected: oldLines[0] ?? "",
+    actual,
+    line: anchored + 1,
+  });
 }
