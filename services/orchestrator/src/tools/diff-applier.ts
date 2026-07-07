@@ -73,7 +73,7 @@ export function buildCreationDiff(relPath: string, content: string): string {
  * dialect, so it would accept `C:\\Windows\\...` when the service runs on
  * Linux/WSL. Reject both forms before any containment calculation.
  */
-function isAnyAbsolutePath(candidate: string): boolean {
+export function isAnyAbsolutePath(candidate: string): boolean {
   return posix.isAbsolute(candidate) || win32.isAbsolute(candidate);
 }
 

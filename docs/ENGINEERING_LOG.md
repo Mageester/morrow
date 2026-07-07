@@ -2,6 +2,35 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-07 - beta.25 tool-argument recovery
+
+- **Issue:** during acceptance, DeepSeek `deepseek-v4-flash` emitted malformed
+  tool-call arguments and the run failed before completing an ordinary coding
+  task. The prior behavior returned only a bare "Invalid tool arguments format"
+  error with no repair and no schema guidance.
+- **Implementation:** new `tools/tool-argument-repair.ts` draws a hard line
+  between repairable formatting noise and ambiguous/partial input. A single
+  conservative repair pass strips markdown code fences, extracts one JSON object
+  from surrounding prose, and removes trailing commas — exactly one repaired
+  parse is attempted, never an iterative best-guess. Truncated JSON, multiple
+  merged objects, unescaped Windows paths (never rewritten — doubling
+  backslashes could silently change a security-sensitive path), and otherwise
+  unparseable input are classified and refused. Parsed arguments for the
+  workspace-mutating tools (`create_file`, `propose_patch`, `create_directory`)
+  are schema-validated for required fields, wrong types, and absolute paths
+  *before* dispatch, so a malformed argument can never reach `applying_changes`.
+- **Bounded correction:** malformed/invalid-argument failures return structured
+  feedback (tool name, reason/invalid field, expected schema hint, retry count)
+  and are counted per tool. One corrective retry is offered; the second failure
+  is marked exhausted with a stop-cleanly instruction. A new
+  `tool.arguments_rejected` event records each rejection. No source/secret
+  content is included in the feedback.
+- **Tests:** added `tool-argument-repair.test.ts` (23 deterministic parser/
+  schema cases) and `agent-tool-argument-repair.test.ts` (fenced repair,
+  truncated + corrected retry, second-retry stop, missing field, absolute path,
+  wrong type, merged calls, no-mutation-before-validation, exact state
+  sequence). No paid provider calls in the deterministic suite.
+
 ## 2026-07-07 - beta.25 patch recovery hardening
 
 - **Issue:** a second improvement pass could hit stale patch context after files

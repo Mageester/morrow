@@ -23,6 +23,7 @@ import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs 
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
+import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
@@ -1126,6 +1127,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const seenToolSignatures = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
   const patchFailureCountsByHash = new Map<string, number>();
+  // Bounded correction budget for malformed / schema-invalid tool arguments,
+  // keyed by tool name so a provider that keeps emitting broken JSON for the
+  // same tool is stopped after one corrective retry instead of looping.
+  const malformedArgAttemptsByTool = new Map<string, number>();
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
@@ -1490,16 +1495,64 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         let args: any = {};
 
         try {
-          try {
-            args = JSON.parse(tc.arguments || "{}");
-          } catch {
+          const toolDef = tools.find((t) => t.name === tc.name);
+          const parsedArgs = repairAndParseToolArguments(tc.arguments);
+          if (!parsedArgs.ok) {
+            const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
+            malformedArgAttemptsByTool.set(tc.name, attempts);
+            const retryExhausted = attempts >= 2;
+            event("tool.arguments_rejected", { toolName: tc.name, reason: parsedArgs.reason, attempts, retryExhausted });
             throw new AgentToolFailure("Invalid tool arguments format", {
               error: "Invalid tool arguments format",
               kind: "malformed_tool_arguments",
               toolName: tc.name,
-              instruction: "Call the tool again with valid JSON arguments that match the tool schema.",
+              reason: parsedArgs.reason satisfies ToolArgFailureReason,
+              detail: parsedArgs.detail,
+              expectedSchema: describeToolSchema(toolDef) ?? undefined,
+              attempts,
               retryLimit: 2,
+              retryExhausted,
+              instruction: retryExhausted
+                ? "Stop cleanly and report that the tool arguments could not be parsed. Do not resend the same malformed call."
+                : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });
+          }
+          args = parsedArgs.value;
+
+          // Reject required-field, wrong-type, and absolute-path defects for the
+          // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
+          // argument can never reach the applying_changes state. One bounded
+          // correction is offered; the second failure stops cleanly.
+          if (toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
+            // Curated load-bearing fields only â€” the executor tolerates omitted
+            // explanation/files on propose_patch, so we don't newly reject them.
+            const criticalRequired: Record<string, string[]> = {
+              create_file: ["path", "content"],
+              create_directory: ["path"],
+              propose_patch: ["patch"],
+            };
+            const problem = validateToolArguments(toolDef, args, criticalRequired[tc.name]);
+            if (problem) {
+              const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
+              malformedArgAttemptsByTool.set(tc.name, attempts);
+              const retryExhausted = attempts >= 2;
+              event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
+              throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
+                error: `Invalid argument "${problem.field}" for ${tc.name}`,
+                kind: "invalid_tool_arguments",
+                toolName: tc.name,
+                invalidField: problem.field,
+                problem: problem.problem,
+                expected: problem.expected,
+                expectedSchema: describeToolSchema(toolDef) ?? undefined,
+                attempts,
+                retryLimit: 2,
+                retryExhausted,
+                instruction: retryExhausted
+                  ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
+                  : `Fix the "${problem.field}" argument and call the tool once more.`,
+              });
+            }
           }
 
           // Defense in depth: execution/write tools are only ever permitted in
