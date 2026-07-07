@@ -6,6 +6,33 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.25] - 2026-07-07
+
+### Fixed — agent patch & tool-call reliability
+
+- **Multi-file change state transitions** are stabilized: proposing a patch now
+  transitions through `proposing_changes` before the dry-run, so multi-file and
+  iterative edits follow a valid, predictable state sequence.
+- **Stale patch recovery.** When a patch no longer applies cleanly (the file
+  changed earlier in the run), Morrow returns bounded, structured feedback — the
+  target file, failed hunk, conflict category, and a current-file hash/content
+  preview — so the model regenerates against current contents instead of
+  resending a stale diff. Recovery only accepts conservative *unique* matches
+  (line-number drift, CRLF/LF differences, harmless trailing whitespace, a
+  unique changed-context deletion target); ambiguous matches are rejected.
+- **Malformed tool-argument recovery.** Invalid provider tool-call arguments are
+  no longer a hard failure. A single conservative repair pass fixes code fences,
+  surrounding prose, and trailing commas; truncated, merged, escaped-path, or
+  otherwise unparseable input is classified and refused with a bounded
+  correction opportunity. Write-tool arguments are schema-validated before
+  dispatch, so a malformed argument can never reach `applying_changes`.
+- **Bounded retries.** Repeated stale patches or malformed arguments are limited
+  to one corrective retry per patch hash / tool, then stop cleanly instead of
+  looping.
+- **No-op patch rejection.** An approved edit patch that produces no content
+  change is rejected as `patch_no_effect` before it can be recorded as a
+  successful edit.
+
 ## [0.1.0-beta.24] - 2026-07-07
 
 ### Changed — YOLO is workspace-autonomous for normal development
