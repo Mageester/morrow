@@ -21,6 +21,30 @@ export function hashString(content: string): string {
 }
 
 /**
+ * Build a unified-diff that creates a brand-new file from raw content. Models
+ * are unreliable at hand-authoring `@@ -0,0 +1,N @@` creation hunks (the line
+ * count must match exactly), so the `create_file` tool takes plain
+ * `path` + `content` and synthesizes the diff here, then feeds it through the
+ * same validate → approve → apply → change-set pipeline as an edit patch. That
+ * keeps a single code path (backups, undo, `/diff`, `/changes`) instead of a
+ * parallel write mechanism.
+ *
+ * Line endings are normalized to LF to match the rest of the patch pipeline,
+ * which reads and writes with `\n`.
+ */
+export function buildCreationDiff(relPath: string, content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const target = relPath.replace(/\\/g, "/");
+  if (normalized.length === 0) {
+    // Empty file: an empty hunk creates a zero-length file.
+    return `--- /dev/null\n+++ b/${target}\n@@ -0,0 +0,0 @@\n`;
+  }
+  const lines = normalized.split("\n");
+  const body = lines.map((line) => `+${line}`).join("\n");
+  return `--- /dev/null\n+++ b/${target}\n@@ -0,0 +1,${lines.length} @@\n${body}\n`;
+}
+
+/**
  * Model and user supplied paths can use either path dialect regardless of the
  * host Morrow is running on. `path.isAbsolute` only understands the host
  * dialect, so it would accept `C:\\Windows\\...` when the service runs on
@@ -168,15 +192,16 @@ export function validatePatchPaths(
   };
 
   for (const file of files) {
-    // File creation (--- /dev/null) and deletion (+++ /dev/null) are not yet
-    // implemented or tested; reject them rather than half-applying.
-    if (file.oldPath === "/dev/null") {
-      throw new Error("File creation is not supported yet");
-    }
+    // File creation (`--- /dev/null`) is supported: the apply path treats a
+    // null old side as an empty original and writes the new file (creating
+    // parent directories), and the change-set undo path removes a created file
+    // to restore the prior absent state. Only the new side is validated for
+    // containment in that case. Deletion (`+++ /dev/null`) remains unsupported —
+    // reject it rather than half-applying.
     if (file.newPath === "/dev/null") {
       throw new Error("File deletion is not supported yet");
     }
-    check(file.oldPath);
+    if (file.oldPath !== "/dev/null") check(file.oldPath);
     check(file.newPath);
   }
 }

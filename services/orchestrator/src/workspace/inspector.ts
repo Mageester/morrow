@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { posix, win32, relative, resolve, sep } from "node:path";
 import { createGitignoreMatcher, isBuiltInIgnoredName } from "./ignore.js";
+import { isWithinWorkspace } from "./path-boundary.js";
 
 export class WorkspaceInspectionError extends Error {
   readonly code = "workspace_inspection_rejected";
@@ -11,7 +12,7 @@ export type WorkspaceEntry = { path: string; type: "file"; size?: number };
 export type WorkspaceInspection = { entries: WorkspaceEntry[]; truncatedByDepth: boolean; truncatedByCount: boolean; inaccessibleEntryCount: number };
 export type WorkspaceInspectionOptions = { startPath?: string; maxDepth: number; maxResults: number };
 
-function contained(root: string, target: string) { return target === root || target.startsWith(`${root}${sep}`); }
+function contained(root: string, target: string) { return isWithinWorkspace(root, target); }
 function normalized(root: string, target: string) { return relative(root, target).split(sep).join("/"); }
 function isAnyAbsolutePath(candidate: string) { return posix.isAbsolute(candidate) || win32.isAbsolute(candidate); }
 

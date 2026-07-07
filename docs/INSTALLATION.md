@@ -1,16 +1,22 @@
 # Morrow Installation
 
-Morrow v0.1.0-beta.18 is an unsigned Windows 10/11 x64 Early Access release.
-Install with PowerShell:
+Morrow v0.1.0-beta.24 is an unsigned Windows 10/11 x64 Early Access release.
+Morrow is a CLI-only terminal product. Install with PowerShell:
 
 ```powershell
-iex (irm https://morrowproject.getaxiom.ca/install.ps1)
+irm https://morrowproject.getaxiom.ca/install.ps1 | iex
 ```
 
-The installer verifies the release checksum, creates the `morrow` command and
-Start Menu shortcut, starts the local service, and opens the GUI. Configure an
-API key in **Settings → Providers**; no environment variables or restart are
-needed. Linux remains source-build only and macOS is not available.
+The installer verifies the release checksum, extracts the release, creates the
+`morrow` command on your PATH, and starts the local service. It does not open a
+browser. When it finishes, open a new PowerShell window and run:
+
+```powershell
+morrow
+```
+
+Choose a model and configure your provider from inside the terminal onboarding.
+Linux remains source-build only and macOS is not available.
 
 ## Prerequisites
 

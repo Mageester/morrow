@@ -1,5 +1,6 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
 import { posix, win32, relative, resolve, sep, extname } from "node:path";
+import { isWithinWorkspace } from "./path-boundary.js";
 
 export class SafeReadError extends Error {
   readonly code = "safe_read_rejected";
@@ -11,7 +12,7 @@ function isAnyAbsolutePath(candidate: string): boolean {
 }
 
 function contained(root: string, target: string) {
-  return target === root || target.startsWith(`${root}${sep}`);
+  return isWithinWorkspace(root, target);
 }
 
 const SUPPORTED_EXTENSIONS = new Set([

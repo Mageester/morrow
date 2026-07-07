@@ -6,6 +6,62 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.24] - 2026-07-07
+
+### Changed — YOLO is workspace-autonomous for normal development
+
+- **YOLO now permits ordinary development operations inside the active
+  workspace** without prompting: creating directories and files, editing files,
+  running package-manager commands (`npm`/`pnpm`/`yarn`, including `install`),
+  running builds and tests, and running safe non-destructive project commands.
+  Autonomy is **workspace-scoped**, not machine-wide.
+- **Hard safety boundaries are unchanged and still enforced in YOLO.** Morrow
+  still refuses to delete home/system directories, read or exfiltrate
+  credentials, modify anything outside the workspace, escalate privilege, run
+  destructive global commands (`format`/`shutdown`/`rm -rf`), rewrite or
+  force-push Git history, or transmit data over the network. This is
+  workspace-scoped autonomy with protections — **not** unrestricted system
+  access.
+
+### Added — reliable file/directory creation tools
+
+- `create_file` (plain path + content) and `create_directory` tools give the
+  agent a dependable, cross-platform way to scaffold a project. They flow
+  through the same approval, change-set, backup, and undo pipeline as patches,
+  so `/changes` and `/diff` reflect created files and creation is reversible.
+  New-file creation via `propose_patch` (`--- /dev/null` hunks) is also now
+  supported.
+
+### Fixed — Windows command handling and workspace paths
+
+- **Windows-safe command handling.** Bare `mkdir`/`md` (Windows shell built-ins,
+  not executables) no longer fail opaquely; they are declined with a pointer to
+  `create_directory`. A narrow, strictly-validated `powershell New-Item` form for
+  creating a workspace file/directory is permitted; general shell invocation
+  stays denied. Guidance now steers the agent away from `&&` chaining and
+  interactive scaffolders.
+- **Workspace path normalization.** Containment checks are case-insensitive on
+  Windows and computed via `path.relative`, fixing false
+  "outside the configured workspace" errors — including for **OneDrive**-based
+  project paths where `realpath` can differ in drive-letter case.
+- **Long tool summaries no longer crash a run.** Approval summaries longer than
+  the 240-character schema limit are truncated before validation instead of
+  throwing.
+- **Repeated denied-command recovery is improved.** Denials return actionable
+  messages naming the allowed equivalent, and `install`/`build`/`test` commands
+  get a longer execution timeout so ordinary `npm install` / `npm run build` no
+  longer time out.
+
+### Verified
+
+- **Consumer Todo-app acceptance passed.** From an empty directory, Morrow
+  autonomously created a React + Vite + TypeScript Todo app (localStorage,
+  light/dark, add/edit/delete/complete, responsive CSS, no backend, no UI
+  library), ran `npm install` and `npm run build` (both exit 0), with all files
+  contained in the workspace and `/changes`/`/diff` matching the created files.
+- **Morrow remains CLI-only.** No browser is opened, no dashboard/localhost is
+  advertised, and no web application assets are bundled or required.
+
 ## [0.1.0-beta.23] - 2026-07-06
 
 ### Fixed

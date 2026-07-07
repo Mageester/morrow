@@ -19,10 +19,10 @@ import { taskContinuationsRepository } from "../repositories/task-continuations.
 import { contextSummariesRepository } from "../repositories/context-summaries.js";
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
-import { classifyCommand, canonicalCommandTrustKey } from "../tools/command-policy.js";
+import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
-import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath } from "../tools/diff-applier.js";
+import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff } from "../tools/diff-applier.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
@@ -537,8 +537,32 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "create_file",
+      description: "Create a NEW file in the workspace from plain text content. This is the reliable way to add new files â€” prefer it over propose_patch for creation (no diff hunks to author). Parent directories are created automatically. Rejects absolute paths, traversal, secret names, and overwriting an existing file (edit those with propose_patch instead).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path to create (e.g. 'src/App.tsx')" },
+          content: { type: "string", description: "Full text content of the new file" },
+          purpose: { type: "string", description: "Optional reason for creating this file" }
+        },
+        required: ["path", "content"]
+      }
+    },
+    {
+      name: "create_directory",
+      description: "Create a directory (recursively) in the workspace. Use this instead of shell 'mkdir' or PowerShell 'New-Item' â€” those are not available. Note: creating a file with create_file already makes its parent directories, so this is only needed for otherwise-empty directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative directory path to create (e.g. 'src/components')" }
+        },
+        required: ["path"]
+      }
+    },
+    {
       name: "propose_patch",
-      description: "Propose a unified diff patch to modify workspace files. Rejects absolute paths, binary files, traversal, and unauthorized directories.",
+      description: "Propose a unified diff patch to modify EXISTING workspace files (or create new ones via a '--- /dev/null' hunk). To create a new file from scratch, prefer create_file. Rejects absolute paths, binary files, traversal, and unauthorized directories.",
       parameters: {
         type: "object",
         properties: {
@@ -611,7 +635,20 @@ You are running in an environment scoped to the project: ${projectName} located 
 You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
-You must run test/verification commands using run_command, and propose file modifications using propose_patch.
+You must run test/verification commands using run_command, and modify files using the file tools.
+
+File & directory operations â€” use the dedicated tools, NOT the shell:
+- Create a new file: call create_file with a relative path and full content. Parent directories are created automatically.
+- Create an empty directory: call create_directory. (Not needed before create_file â€” that already makes parents.)
+- Edit an existing file: call propose_patch with a unified diff.
+- Do NOT try to create files/directories with run_command. Shell built-ins and shells (mkdir, md, cmd, powershell/pwsh with New-Item, bash, sh) are unavailable and will be denied â€” creating a file or directory that way will fail. Use create_file / create_directory instead.
+
+Running commands with run_command (each argument is a separate array element; the shell does NOT interpret them):
+- Do NOT chain commands with && or ; or pipes, and do NOT wrap them in a shell. Issue one command per run_command call.
+- Package managers work directly: run_command executable "npm" args ["install"]; executable "npm" args ["run","build"]; executable "npm" args ["test"]. Same for pnpm/yarn/node/git.
+- Avoid interactive scaffolders (e.g. "npm create vite") â€” they hang waiting for input. Instead write the project files yourself with create_file and install dependencies with npm install.
+- If a command is denied, do not repeat it. Switch to the allowed equivalent (a file tool, or a non-shell command) described in the error.
+
 Morrow ships installed skills (reusable expert workflows). They ARE available â€” never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
 
@@ -679,8 +716,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
 
       transitionAgentState("executing_tool", { tool: "run_command" });
+      // Dependency installs, builds, and test runs legitimately take minutes;
+      // the default 30s ceiling was too tight for `npm install` / `npm run build`
+      // and made ordinary project setup time out. Give those a generous ceiling
+      // while keeping short-lived commands snappy.
       const runOptions: Parameters<typeof runProcessSafe>[4] = {
-        timeoutMs: 30000,
+        timeoutMs: longRunningCommandTimeoutMs(exec, cmdArgs),
         maxOutputBytes: 65536,
       };
       if (abortSignal) {
@@ -795,6 +836,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         appliedFiles: files,
         diffHash
       });
+    } else if (toolName === "create_directory") {
+      const relPath = args.path;
+      // Re-assert containment immediately before touching the filesystem
+      // (defense in depth against a symlinked ancestor appearing after approval).
+      const destPath = assertContainedRealPath(workspacePath, relPath);
+      transitionAgentState("executing_tool", { tool: "create_directory" });
+      const created = !existsSync(destPath);
+      mkdirSync(destPath, { recursive: true });
+      records.appendEvidence({
+        id: randomUUID(),
+        taskId,
+        type: "file",
+        path: relPath,
+        metadata: { action: "created_directory", alreadyExisted: !created },
+        createdAt: now(),
+      });
+      event("evidence.persisted", { path: relPath, size: 0 });
+      return JSON.stringify({ status: "success", path: relPath, created });
     } else if (toolName === "find_skill") {
       const query = (args.query || "").toLowerCase().trim();
       if (!query) return JSON.stringify({ skills: [] });
@@ -1319,7 +1378,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // Defense in depth: execution/write tools are only ever permitted in
           // agent mode, even if a provider hallucinates a call the mode never
           // exposed.
-          if ((tc.name === "run_command" || tc.name === "propose_patch") && activeToolProfile !== "agent") {
+          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "create_directory") && activeToolProfile !== "agent") {
             throw new Error(`Tool "${tc.name}" is not permitted in ${agentMode} mode`);
           }
 
@@ -1546,14 +1605,35 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             if (isApproved) {
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
-          } else if (tc.name === "propose_patch") {
-            const patch = args.patch;
-            const explanation = args.explanation;
-            const files = args.files || [];
-
-            if (typeof patch !== "string") {
-              throw new Error("Missing required argument: patch");
+          } else if (tc.name === "propose_patch" || tc.name === "create_file") {
+            // create_file is a thin, reliable front end over propose_patch: it
+            // takes plain path + content and synthesizes a creation diff, then
+            // flows through the identical validate/approve/apply/change-set
+            // pipeline (so /diff, /changes, backups, and undo all work).
+            let patch: string;
+            let explanation: string;
+            let files: string[];
+            if (tc.name === "create_file") {
+              const relPath = args.path;
+              if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
+              if (typeof args.content !== "string") throw new Error("Missing required argument: content");
+              // Fail fast with a clear message on containment/denied-name before
+              // synthesizing a diff. Parent directories are created on apply.
+              validatePatchPaths(project.workspacePath, [{ oldPath: "/dev/null", newPath: relPath, chunks: [] }], PERMISSION_PROFILE.deniedNamePatterns);
+              patch = buildCreationDiff(relPath, args.content);
+              explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Create ${relPath}`;
+              files = [relPath];
+            } else {
+              patch = args.patch;
+              explanation = args.explanation;
+              files = args.files || [];
+              if (typeof patch !== "string") {
+                throw new Error("Missing required argument: patch");
+              }
             }
+            // Normalized args for approval/continuation/execution so a create_file
+            // resumes and executes as the propose_patch change it really is.
+            const patchArgs = { patch, explanation, files };
 
             // 1. Parse unified diff. A patch that parses to zero files is
             // malformed input, not an empty success â€” beta.20 recorded these
@@ -1579,16 +1659,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                   throw new Error(`File found missing: ${pf.oldPath}`);
                 }
               } else {
-                originalHashes[pf.oldPath] = "";
+                // Creation hunk. Key the "was absent" marker by the NEW path so
+                // undo can remove exactly the file we create; a bare "/dev/null"
+                // key would leave created files un-undoable. Refuse to clobber an
+                // existing file through a creation diff â€” that would overwrite
+                // without a backup and make undo delete a pre-existing file.
+                const destPath = assertContainedRealPath(project.workspacePath, pf.newPath);
+                if (existsSync(destPath)) {
+                  throw new Error(`Cannot create ${pf.newPath}: it already exists. Use an edit patch against the existing file instead.`);
+                }
+                originalHashes[pf.newPath] = "";
               }
             }
 
             // 3. Dry-run verify it applies cleanly
             for (const pf of patchFiles) {
-              const fullPath = assertContainedRealPath(project.workspacePath, pf.oldPath);
               let originalContent: string | null = null;
-              if (pf.oldPath !== "/dev/null" && existsSync(fullPath)) {
-                originalContent = readFileSync(fullPath, "utf8");
+              if (pf.oldPath !== "/dev/null") {
+                const fullPath = assertContainedRealPath(project.workspacePath, pf.oldPath);
+                if (existsSync(fullPath)) {
+                  originalContent = readFileSync(fullPath, "utf8");
+                }
               }
               // This throws if there is a conflict
               applyUnifiedPatch(originalContent, pf.chunks);
@@ -1651,12 +1742,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                   throw new Error(`Patch application denied by user.`);
                 }
               } else {
-                // Persist continuation state
+                // Persist continuation state. Always resume as propose_patch
+                // with the normalized diff args â€” a create_file is a change_set
+                // and executeApprovedTool only knows how to replay propose_patch.
                 continuationsRepo.save({
                   taskId,
                   toolCallId: tc.id,
-                  toolName: tc.name,
-                  args: args
+                  toolName: "propose_patch",
+                  args: patchArgs
                 });
 
                 // Transition to waiting_for_approval
@@ -1680,7 +1773,53 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
-              resultStr = await executeApprovedTool(tc.name, args, tc.id);
+              resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
+            }
+          } else if (tc.name === "create_directory") {
+            const relPath = args.path;
+            if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
+            // Reject absolute paths, traversal, symlink escape, and denied names
+            // before any approval is created (categorical: cannot be bypassed).
+            assertContainedRealPath(project.workspacePath, relPath);
+            const dirArgs = { path: relPath };
+
+            const existingApprovals = approvals.listByTask(taskId);
+            let approvalRecord = existingApprovals.find(a =>
+              a.kind === "command" && a.details.tool === "create_directory" && a.details.path === relPath
+            );
+            let isApproved = false;
+            if (approvalRecord) {
+              if (approvalRecord.status === "approved" && (approvalRecord.decision === "trust_project" || approvalRecord.details.toolCallId === tc.id)) {
+                isApproved = true;
+              } else if (approvalRecord.status === "denied") {
+                throw new Error(`Directory creation denied by user.`);
+              }
+            }
+            if (!isApproved && !approvalRecord) {
+              approvalRecord = approvals.create({
+                id: randomUUID(),
+                taskId,
+                projectId: project.id,
+                kind: "command",
+                summary: `Create directory: ${relPath}`,
+                createdAt: now(),
+                details: { tool: "create_directory", path: relPath, risk: "low", toolCallId: tc.id },
+              });
+              if (autoApprove) {
+                isApproved = autoResolveApproval(approvalRecord.id);
+                if (!isApproved) throw new Error(`Directory creation denied by user.`);
+              } else {
+                continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: "create_directory", args: dirArgs });
+                transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
+                event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+                await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
+                continuationsRepo.delete(taskId);
+                if (approvals.get(approvalRecord.id)!.status === "approved") isApproved = true;
+                else throw new Error(`Directory creation denied by user.`);
+              }
+            }
+            if (isApproved) {
+              resultStr = await executeApprovedTool("create_directory", dirArgs, tc.id);
             }
           } else if (tc.name === "find_skill" || tc.name === "load_skill") {
             // Read-only skill discovery/loading: no approval needed. (These were

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyCommand } from "../src/tools/command-policy.js";
+import { classifyCommand, longRunningCommandTimeoutMs } from "../src/tools/command-policy.js";
 
 describe("command policy", () => {
   it("marks status, diff, and project verification commands as trustable after project approval", () => {
@@ -56,5 +56,59 @@ describe("command policy", () => {
     for (const command of ["dir", "cd", "copy", "del", "set", "cls"]) {
       expect(classifyCommand(command, [])).toMatchObject({ risk: "denied", reason: expect.stringMatching(/shell built-in/i) });
     }
+  });
+
+  it("denies bare mkdir/md with a pointer to the create_directory tool", () => {
+    for (const command of ["mkdir", "md", "makedir"]) {
+      const d = classifyCommand(command, ["src"]);
+      expect(d.risk).toBe("denied");
+      expect(d.reason).toMatch(/create_directory/i);
+    }
+  });
+
+  it("allows the narrow, safe PowerShell New-Item form for workspace paths", () => {
+    for (const exec of ["powershell", "pwsh", "powershell.exe"]) {
+      expect(classifyCommand(exec, ["-NoProfile", "-Command", "New-Item -ItemType Directory -Force -Path 'src'"]))
+        .toMatchObject({ risk: "approval_required", pattern: expect.stringMatching(/New-Item/) });
+    }
+    // File creation and double quotes and nested relative paths are also fine.
+    expect(classifyCommand("powershell", ["-NoProfile", "-NonInteractive", "-Command", 'New-Item -ItemType File -Path "src/app/index.ts"']))
+      .toMatchObject({ risk: "approval_required" });
+    expect(classifyCommand("powershell", ["-Command", "New-Item -ItemType Directory -Path 'src/components'"]))
+      .toMatchObject({ risk: "approval_required" });
+  });
+
+  it("still denies general PowerShell and any New-Item smuggling attempt", () => {
+    // Arbitrary command payloads remain denied.
+    expect(classifyCommand("powershell", ["-Command", "Remove-Item -Recurse -Force C:\\"]))
+      .toMatchObject({ risk: "denied" });
+    expect(classifyCommand("powershell", ["-Command", "Get-Content secrets.txt"]))
+      .toMatchObject({ risk: "denied" });
+    // Command chaining / expansion inside an otherwise-New-Item payload is rejected.
+    expect(classifyCommand("powershell", ["-Command", "New-Item -ItemType Directory -Path 'src'; Remove-Item x"]))
+      .toMatchObject({ risk: "denied" });
+    expect(classifyCommand("powershell", ["-Command", "New-Item -ItemType Directory -Path '../escape'"]))
+      .toMatchObject({ risk: "denied" });
+    expect(classifyCommand("powershell", ["-Command", "New-Item -ItemType Directory -Path 'C:\\Windows\\evil'"]))
+      .toMatchObject({ risk: "denied" });
+    // Extra positional args (e.g. a second -Command, or an -EncodedCommand) disqualify.
+    expect(classifyCommand("powershell", ["-EncodedCommand", "ZQBjAGgAbwA="]))
+      .toMatchObject({ risk: "denied" });
+    expect(classifyCommand("pwsh", ["-Command", "New-Item -ItemType Directory -Path 'src'", "-Command", "iex 'bad'"]))
+      .toMatchObject({ risk: "denied" });
+    // A plain interactive shell is still denied.
+    expect(classifyCommand("powershell", [])).toMatchObject({ risk: "denied" });
+    expect(classifyCommand("bash", ["-c", "ls"])).toMatchObject({ risk: "denied" });
+  });
+
+  it("grants installs, builds, and test runs a long timeout but keeps one-offs short", () => {
+    expect(longRunningCommandTimeoutMs("npm", ["install"])).toBe(300_000);
+    expect(longRunningCommandTimeoutMs("npm", ["run", "build"])).toBe(300_000);
+    expect(longRunningCommandTimeoutMs("pnpm", ["test"])).toBe(300_000);
+    expect(longRunningCommandTimeoutMs("npm", [])).toBe(300_000); // bare npm ~ install
+    expect(longRunningCommandTimeoutMs("node", ["build.mjs"])).toBe(300_000);
+    // Short-lived / unknown commands keep the tight default.
+    expect(longRunningCommandTimeoutMs("git", ["status"])).toBe(30_000);
+    expect(longRunningCommandTimeoutMs("npm", ["run", "start"])).toBe(30_000);
   });
 });

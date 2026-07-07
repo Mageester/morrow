@@ -477,11 +477,15 @@ describe("Agent Alpha", () => {
         }
       };
 
+      // Budget is comfortably larger than the mandatory system prompt + latest
+      // request (~600 tokens) but far smaller than either ~1800-token old
+      // message, so both stale turns must be trimmed while the system prompt and
+      // latest request survive.
       await executeAgentChatTask({
         db,
         taskId: "task-1",
         provider,
-        maxContextBytes: 1800
+        maxContextBytes: 3600
       });
 
       const sent = captured[0]!.map((message) => message.content).join("\n");
@@ -491,7 +495,7 @@ describe("Agent Alpha", () => {
       expect(sent).not.toContain("OLD_ASSISTANT_CONTEXT");
 
       const trimEvent = taskRecordsRepository(db).listEvents("task-1").find((event) => event.type === "context.trimmed");
-      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 450 });
+      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 900 });
     });
 
     it("compacts old history into a persisted summary before falling back to raw history trimming", async () => {

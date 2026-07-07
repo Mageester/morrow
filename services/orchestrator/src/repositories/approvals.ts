@@ -9,6 +9,21 @@ import {
 } from "@morrow/contracts";
 
 type CreateApprovalInput = Omit<Approval, "version" | "status" | "decision" | "decisionNote" | "resolvedAt">;
+
+/**
+ * The approval summary is a human-facing label whose schema caps it at 240
+ * characters. A long command line (a big `npm install …` argv) or a verbose
+ * patch explanation can exceed that, and an unclamped value made
+ * `ApprovalSchema.parse` throw — crashing the whole agent run instead of merely
+ * shortening a label. Clamp defensively at the single write path so no caller
+ * can ever trip the schema, preserving as much leading context as fits and
+ * marking the truncation with an ellipsis.
+ */
+export const MAX_APPROVAL_SUMMARY = 240;
+export function clampApprovalSummary(summary: string): string {
+  if (summary.length <= MAX_APPROVAL_SUMMARY) return summary;
+  return `${summary.slice(0, MAX_APPROVAL_SUMMARY - 1)}…`;
+}
 type ResolveApprovalInput = { decision: ApprovalDecision; note?: string; resolvedAt: string };
 type GrantTrustInput = Omit<CommandTrust, "version" | "updatedAt">;
 
@@ -53,7 +68,7 @@ export function approvalsRepository(db: Database.Database) {
     create(input: CreateApprovalInput): Approval {
       const task = db.prepare("SELECT project_id FROM tasks WHERE id=?").get(input.taskId) as { project_id?: string } | undefined;
       if (!task || task.project_id !== input.projectId) throw new Error("Approval task does not belong to project");
-      const value = ApprovalSchema.parse({ ...input, version: 1, status: "pending", decision: null, decisionNote: null, resolvedAt: null });
+      const value = ApprovalSchema.parse({ ...input, summary: clampApprovalSummary(input.summary), version: 1, status: "pending", decision: null, decisionNote: null, resolvedAt: null });
       db.prepare("INSERT INTO approvals(id,schema_version,task_id,project_id,kind,status,summary,details_json,decision,decision_note,created_at,resolved_at) VALUES(?,1,?,?,?,?,?,?,?,?,?,?)")
         .run(value.id, value.taskId, value.projectId, value.kind, value.status, value.summary, JSON.stringify(value.details), null, null, value.createdAt, null);
       return this.get(value.id)!;
