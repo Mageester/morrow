@@ -92,6 +92,59 @@ export function resolvePackageRoot(entries) {
 }
 
 /**
+ * Patterns that must NEVER appear among Morrow's OWN bundled files (i.e. package
+ * paths outside third-party `node_modules/`). These guard the "CLI-only, no
+ * secrets, no dev cruft" release invariants so a regression cannot silently ship
+ * a dev/acceptance harness, a Morrow web dashboard, credentials, a local
+ * database, the Git repo, or uncompiled TypeScript source.
+ *
+ * They are deliberately scoped to Morrow's own files: `node_modules/` is
+ * third-party and legitimately contains HTML (e.g. a dependency's internal Vite
+ * dashboard), test certificates, and `.ts`/`.d.ts` — none of which is a Morrow
+ * surface, so scoping avoids false positives.
+ */
+export const FORBIDDEN_OWN_FILE_PATTERNS = [
+  { pattern: /(^|\/)dist\/scripts\//, why: "compiled dev/smoke/acceptance script" },
+  { pattern: /todo-app-/i, why: "consumer acceptance harness" },
+  { pattern: /(^|\/)\.git(\/|$)/, why: "Git repository data" },
+  { pattern: /(^|\/)\.env(\.(?!example)[^/]*)?$/i, why: "environment/secrets file" },
+  { pattern: /(^|\/)(secrets?|credentials?)\.(json|txt|ya?ml)$/i, why: "secrets/credentials file" },
+  { pattern: /(^|\/)id_rsa(\.pub)?$/i, why: "private key" },
+  { pattern: /\.(db|sqlite3?)$/i, why: "local database" },
+  { pattern: /(^|\/)web\/index\.html$/i, why: "Morrow web dashboard (Morrow is CLI-only)" },
+];
+
+/**
+ * Return forbidden-content violations among Morrow's OWN bundled files.
+ *
+ * Third-party `node_modules/` is exempt (it legitimately carries HTML, test
+ * certs, and .ts/.d.ts), but Morrow's own code injected under
+ * `node_modules/@morrow/**` is NOT exempt — it must obey the same no-dev-cruft
+ * rules. Pure and zip-free so it is directly unit-testable.
+ *
+ * @param {string[]} entries archive entry names (any slash style)
+ * @param {string} root package-root prefix ("" or "Dir/")
+ * @returns {{ entry: string, why: string }[]}
+ */
+export function forbiddenOwnFileViolations(entries, root = "") {
+  const isThirdPartyNodeModules = (rel) => {
+    const idx = rel.lastIndexOf("node_modules/");
+    if (idx === -1) return false;
+    return !rel.slice(idx + "node_modules/".length).startsWith("@morrow/");
+  };
+  const violations = [];
+  for (const raw of entries) {
+    const entry = raw.replace(/\\/g, "/");
+    const rel = root && entry.startsWith(root) ? entry.slice(root.length) : entry;
+    if (isThirdPartyNodeModules(rel)) continue;
+    for (const { pattern, why } of FORBIDDEN_OWN_FILE_PATTERNS) {
+      if (pattern.test(rel)) { violations.push({ entry, why }); break; }
+    }
+  }
+  return violations;
+}
+
+/**
  * Assert that a built artifact satisfies the package contract.
  * Throws with a descriptive message on the first violation.
  */
@@ -112,5 +165,13 @@ export function assertArtifactLayout(zipPath) {
     const missing = REQUIRED_PACKAGE_FILES.filter((rel) => !set.has(prefix + rel));
     throw new Error(`Archive is missing required files: ${missing.join(", ")}`);
   }
+
+  // Reject forbidden content among Morrow's own files.
+  const violations = forbiddenOwnFileViolations(entries, root);
+  if (violations.length > 0) {
+    const v = violations[0];
+    throw new Error(`Archive contains forbidden ${v.why}: ${v.entry}`);
+  }
+
   return { root, entryCount: entries.length };
 }

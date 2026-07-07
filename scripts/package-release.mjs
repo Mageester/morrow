@@ -104,7 +104,10 @@ const orchDst = join(PKG_DIR, "orchestrator");
 ensure(orchDst);
 cpSync(join(orchSrc, "dist"), join(orchDst, "dist"), {
   recursive: true,
-  filter: (src) => !/[\\/]Morrow-v[^\\/]*[\\/]?/.test(src) && !/[\\/]scripts[\\/].*smoke/i.test(src) && !/\.test\.js$/.test(src),
+  // Never ship compiled dev tooling: the entire dist/scripts subtree (smoke
+  // suites, acceptance harnesses like todo-app-*, one-off proofs) is build-time
+  // only. Also drop any stray nested package dir and compiled test files.
+  filter: (src) => !/[\\/]Morrow-v[^\\/]*[\\/]?/.test(src) && !/[\\/]dist[\\/]scripts[\\/]/.test(src) && !/[\\/]scripts$/.test(src) && !/\.test\.js$/.test(src),
 });
 const orchPkg = JSON.parse(readFileSync(join(orchSrc, "package.json"), "utf8"));
 
@@ -224,7 +227,13 @@ for (const [dep, distSrc, main] of [
   const depDst = join(orchDst, "node_modules", "@morrow", dep);
   rmSync(depDst, { recursive: true, force: true });
   ensure(depDst);
-  cpSync(distSrc, join(depDst, "dist"), { recursive: true });
+  // Same exclusion as the primary orchestrator/dist copy: never ship compiled
+  // dev/smoke/acceptance scripts (dist/scripts) or test files inside the
+  // injected workspace dependency either.
+  cpSync(distSrc, join(depDst, "dist"), {
+    recursive: true,
+    filter: (src) => !/[\\/]scripts$/.test(src) && !/[\\/]dist[\\/]scripts[\\/]/.test(src) && !/\.test\.js$/.test(src),
+  });
   writeFileSync(join(depDst, "package.json"), JSON.stringify({
     name: `@morrow/${dep}`, version: VERSION, private: true, type: "module",
     exports: { ".": `./dist/${main}`, "./lib": `./dist/${main}` },
