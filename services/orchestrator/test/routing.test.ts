@@ -6,9 +6,9 @@ import { listModels } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
 
 describe("Model registry currency", () => {
-  it("exposes the current OpenAI and DeepSeek lineups and drops retired ids", () => {
+  it("exposes the current OpenAI, DeepSeek, and OpenRouter lineups and drops retired ids", () => {
     const ids = new Set(listModels().map((m) => m.id));
-    for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"]) {
+    for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]) {
       expect(ids.has(id), `expected model ${id} to be present`).toBe(true);
     }
     for (const retired of ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"]) {
@@ -71,6 +71,8 @@ describe("Provider registry", () => {
   it("exposes default models for known providers", () => {
     expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.4-mini");
     expect(getProviderDefaultModel("anthropic", {})).toBe("claude-3-5-sonnet-20241022");
+    expect(getProviderDefaultModel("deepseek", {})).toBe("deepseek-v4-flash");
+    expect(getProviderDefaultModel("openrouter", {})).toBe("openrouter/auto");
   });
 });
 

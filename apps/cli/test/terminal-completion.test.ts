@@ -31,12 +31,29 @@ describe("slash-command completion", () => {
     expect(filterCommands("/zzz", SLASH_COMMANDS)).toHaveLength(0);
   });
 
+  it("exposes the verified-mission inspection commands", () => {
+    const names = SLASH_COMMANDS.map((c) => c.name);
+    for (const cmd of ["criteria", "evidence", "failures", "checkpoints", "result"]) {
+      expect(names).toContain(cmd);
+    }
+    expect(filterCommands("/crit", SLASH_COMMANDS)[0]!.name).toBe("criteria");
+  });
+
+  it("exposes Cortex commands in help and completion metadata", () => {
+    const names = SLASH_COMMANDS.map((c) => c.name);
+    for (const cmd of ["cortex", "map", "conventions", "decisions", "risks", "learnings", "rules", "agents", "impact", "plan", "revisions"]) {
+      expect(names).toContain(cmd);
+    }
+    expect(filterCommands("/cort", SLASH_COMMANDS)[0]!.name).toBe("cortex");
+    expect(filterCommands("/ma", SLASH_COMMANDS)[0]!.name).toBe("map");
+  });
+
   it("renders a menu marking the selected row and showing descriptions", () => {
     const matches = filterCommands("/m", SLASH_COMMANDS);
     const lines = renderMenu(matches, plain, { selected: 0, max: 8, unicode: true });
     expect(lines.length).toBeGreaterThan(0);
     expect(lines[0]).toContain("›"); // pointer on the selected row
-    expect(lines.join("\n")).toContain("set the capability mode");
+    expect(lines.join("\n")).toContain("set the product mode");
   });
 
   it("caps the menu and reports the overflow", () => {

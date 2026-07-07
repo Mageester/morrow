@@ -43,12 +43,12 @@
 | Slash-command autocomplete | TUI | VERIFIED | `terminal/commands.ts`, `completion.ts`, `terminal-completion.test.ts` | — |
 | Command history | TUI | VERIFIED | in-session ring (`prompt.ts`) + persisted `terminal/history.ts` (load/append, dedup, trim, ignore noise) wired into the session via `onHistory`/`history`. `test/terminal-history.test.ts` (5) | — |
 | Streaming tool cards | TUI streaming | VERIFIED | `terminal/state.ts` ToolCard, `terminal-view.test.ts` | — |
-| Live task tree | Hermes plan view | MISSING | plan steps render flat | Nested child-task tree |
+| Live task tree | Hermes plan view | VERIFIED | `GET /api/tasks/:id/tree` + terminal Mission Control `/tree` render nested child tasks. `services/orchestrator/test/subagents.test.ts`, `apps/cli/test/mission-control.test.ts` | Parent/child terminal-state reconciliation remains tracked in runtime docs |
 | Bounded transcript | TUI scrollback cap | PARTIAL | `state.ts` transcript cap | Verify cap + `/output` overflow |
 | `/output` viewer | TUI | VERIFIED | `commands.ts` + bounded viewer commit `60d72ce` | — |
 | `/diff` | TUI diff | VERIFIED | `commands.ts`, server `/api/tasks/:id/diff`, integration test | — |
 | `/undo` | TUI undo | VERIFIED | `commands.ts`, server `/api/tasks/:id/undo`, integration test | — |
-| Ctrl+K palette | — | MISSING | — | Command palette |
+| Ctrl+K palette | — | VERIFIED | `terminal/palette.ts` (static items = all slash commands + capability modes; fuzzy subsequence ranking, prefix-boosted) + `input-state.ts` Ctrl+K overlay (type-to-filter, ↑/↓/Tab navigation, Enter runs the item through the normal dispatch, Esc/Ctrl+C close, Ctrl+U clears, in-progress buffer preserved) rendered by `app-view.ts`. `test/terminal-palette.test.ts` (11) | Dynamic items (models/projects/sessions) supplied by the session controller where available |
 | Resize handling | TUI | PARTIAL | `renderer.ts` width clip | SIGWINCH reflow test |
 | No-color / ASCII fallback | TUI | VERIFIED | `capabilities.ts`, `view.ts` glyphs, `terminal-capabilities.test.ts` | — |
 | Clean Ctrl+C | TUI | PARTIAL | `runtime.ts` signal handling | Double-Ctrl-C abort test |
@@ -74,10 +74,10 @@
 | Retry | `retry_utils.py` | VERIFIED | `records.retryTask` (fresh attempt: resets to queued, clears continuation + agent state + assistant message; preserves event audit), `POST /api/tasks/:id/retry` (409 unless failed/interrupted; never resurrects cancelled), CLI `MorrowApi.retryTask`. `test/retry.test.ts` | — |
 | Adaptive budgets | `iteration_budget.py` | VERIFIED | `execution/adaptive-budget.ts`, commit `c2f74ca` | — |
 | Loop detection | Hermes | VERIFIED | `execution/loop-detector.ts` (stable-signature sliding window) wired into `execution/agent.ts`; interrupts with reason `loop_detected` before false success. Tests: `test/loop-detector.test.ts` (11) + `test/agent-loop.test.ts` (2) | — |
-| Background PTY processes | Hermes terminal backends | MISSING | synchronous exec only | Background process registry |
+| Background PTY processes | Hermes terminal backends | VERIFIED | Durable process registry: migration 20 `processes` table + `processes/supervisor.ts` (owned children, bounded per-stream log capture under `MORROW_HOME/process-logs`, incremental byte-offset retrieval, graceful→forced tree kill, timeout, restart reconciliation marks prior-run rows `lost` with pid-liveness detail — a row never claims liveness). API `POST/GET /api/projects/:id/processes`, `GET /api/processes/:id[/output]`, `POST …/terminate`; policy deny-list enforced; `process.started`/`process.exited` task events. CLI `morrow processes|ps` (list/start/show/logs `--follow`/kill) + `/ps`. `test/processes.test.ts` (10, real child processes) + CLI `api-processes.test.ts` | PTY mode requires optional `node-pty` (honest refusal when absent, never silent pipe fallback) |
 | Crash/reboot recovery | Hermes resume | PARTIAL | `recovery.ts` `reconcileTasksOnStartup`: `running->interrupted`, **re-dispatches orphaned `queued` tasks** (no duplicate exec — executor's first write is `queued->running`), parent/child consistency (terminal-parent orphans cancelled). E2E restart test in `recovery.test.ts` resumes a `queued` task to `verified`. | Cancel-across-restart interface acceptance + reconnect dedup |
 | Scheduled jobs (cron) | `cron/` | VERIFIED | `schedule/cron.ts` (pure UTC engine) + `repositories/schedules.ts` + `schedule/ticker.ts` (isolated runs via the task runner) + API + CLI `schedule`. `test/cron.test.ts` (7) + `test/schedules.test.ts` (8) | — |
-| Idempotency | Hermes | VERIFIED | `tasks(project_id, idempotency_key)` partial unique index (migration 12), `findByIdempotencyKey`, `Idempotency-Key` header/body on task creation returns the original task. `test/tasks.test.ts` + `test/idempotency-api.test.ts` | Extend to the agent-chat creation path |
+| Idempotency | Hermes | VERIFIED | `tasks(project_id, idempotency_key)` partial unique index (migration 12), `findByIdempotencyKey`, `Idempotency-Key` header/body on inspect-workspace **and** the agent-chat message send (`POST /api/conversations/:id/messages`; replay returns the original task/messages/routing with 200 + `replayed:true`; task created before messages so a lost race can't duplicate the user message; `idempotencyKey` added to `SendMessageSchema`). `test/tasks.test.ts` + `test/idempotency-api.test.ts` (6) | — |
 | Session search (FTS) | `agent/memory_manager.py` FTS5 | VERIFIED | `repositories/search.ts`, migration 10 triggers, `/api/projects/:id/search`, `test/search.test.ts` (13) + `test/search-api.test.ts` (4) + CLI `test/api-search.test.ts` (3) | — |
 
 ## 4. Execution backends
@@ -128,13 +128,13 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Project index | `coding_context.py` | PARTIAL | `workspace/inspector.ts` | Persisted symbol index |
-| Semantic search | Hermes | PARTIAL | `workspace/search.ts` (text) | Symbol/semantic search |
+| Project index | `coding_context.py` | VERIFIED | Parser-backed persisted symbol index: migration 24 `symbol_index_files` + `symbols`, `repositories/symbols.ts`, `workspace/symbol-index.ts` using the TypeScript compiler API for TS/JS/TSX/JSX and parsed JSON config keys. Supports rebuild, refresh, changed/deleted/renamed cleanup, ignore rules, diagnostics, cancellation, resource limits, search, definition lookup, file symbols, API, CLI `morrow symbols`, and read-only/agent `search_symbols`. Tests: `symbol-index.test.ts`, `symbol-index-api.test.ts`, `agent-alpha.test.ts`, `tools-catalog.test.ts`, CLI `api-symbols.test.ts`, `symbols-command.test.ts` | Broader semantic/vector search remains separate |
+| Semantic search | Hermes | PARTIAL | `workspace/search.ts` (text) + symbol lookup through `search_symbols` | Embedding/semantic ranking beyond literal text and symbol metadata |
 | LSP diagnostics | `agent/lsp/` | VERIFIED | `workspace/diagnostics.ts` normalizes tsc + eslint output into structured `Diagnostic[]`; `GET /api/projects/:id/diagnostics` (injectable runner). `test/diagnostics.test.ts` (9) + `test/diagnostics-api.test.ts` (3) | Real LSP stdio client is a later enhancement |
 | Baseline-before-write verify | `file_safety.py` | PARTIAL | `workspace/validator.ts` (hash capture) + `compareBaseline` (regression detection, error-count aware, line-shift tolerant) tested in `test/diagnostics.test.ts` | Wire `compareBaseline` into the agent write path to auto-block regressions |
-| Git worktrees / parallel agents | Hermes | MISSING | — | Worktree manager |
+| Git worktrees / parallel agents | Hermes | VERIFIED | Migration 21 `worktrees` table + `repositories/worktrees.ts` + `workspace/worktrees.ts`: creates per-agent/task branches and checked-out worktrees under Morrow control, dispatches agent execution inside the assigned worktree, preserves task/worktree linkage, and exposes worktree lifecycle through API, CLI `morrow worktrees`, `/worktrees`, and `morrow chat --worktree`. Tests: `services/orchestrator/test/worktrees.test.ts`, `apps/cli/test/api-worktrees.test.ts`, `apps/cli/test/worktrees-command.test.ts` | Source worktrees are intentionally preserved after integration until explicit cleanup lands |
 | Commit / PR prep | Hermes | PARTIAL | `tools/git.ts` | PR body generation |
-| Conflict handling | Hermes | MISSING | — | Merge/conflict detection |
+| Conflict handling | Hermes | VERIFIED | Migration 22 `integration_attempts` table + `repositories/integrations.ts` + `workspace/integrations.ts`: records isolated worktree integration checks, dry-runs merges in a temporary local clone, reports clean/conflicted/failed status with conflicted files, refuses dirty targets, refuses stale target HEADs, applies only previously clean attempts with `--no-ff`, and preserves the source worktree/branch. API under `/api/worktrees/:id/integrations/check`, `/api/projects/:id/integrations`, `/api/integrations/:id/apply|cancel`; CLI `morrow integrate`. Tests: `services/orchestrator/test/integrations.test.ts`, `apps/cli/test/api-integrations.test.ts`, `apps/cli/test/integrations-command.test.ts` | Conflict resolution UI is still manual; this slice detects and records conflicts safely |
 
 ## 9. Browser & desktop control
 
@@ -170,24 +170,24 @@
 | Multi-provider | `providers/`, `agent/*_adapter.py` | VERIFIED | `provider/{anthropic,openai,gemini,openai-compatible,mock}.ts` | — |
 | Health checks | Hermes | VERIFIED | `provider/connectivity.ts`, `/providers/:id/test` | — |
 | Fallback | Hermes | VERIFIED | `provider/fallback.ts` `openStreamWithFallback` (retryable-only, no mid-stream switch) wired into `execution/agent.ts`; primary failure falls back to the next configured candidate and emits `provider.fallback`. Tests: `provider-fallback.test.ts` (8) + `agent-fallback.test.ts` (2) | — |
-| Rate limits | `nous_rate_guard.py`, `rate_limit_tracker.py` | MISSING | — | Rate guard |
+| Rate limits | `nous_rate_guard.py`, `rate_limit_tracker.py` | VERIFIED | `provider/rate-guard.ts` (`RateGuard`: per-provider cooldown, Retry-After honored, exponential backoff 2s→5m cap, success reset; advisory not blocking) wired into `openStreamWithFallback` (rate-limited candidates deprioritized, never skipped) + `execution/agent.ts` (`provider.rate_limited` event) + `GET /api/providers/rate-limits`. Adapters parse `Retry-After` into the 429 payload. `test/rate-guard.test.ts` (13) | Persisted cross-restart cooldowns intentionally omitted (stale-state risk) |
 | Local/cloud routing | Hermes | VERIFIED | `routing/presets.ts` privacy classes | — |
-| Context limits | `context_engine.py` | PARTIAL | preset `contextBudgetBytes` | Token-accurate trimming |
+| Context limits | `context_engine.py` | VERIFIED | `execution/context-budget.ts` now provides a provider-neutral context manager: exact offline `js-tiktoken` counts for OpenAI-family models, conservative labeled estimates for unsupported/unknown providers, centralized model-window/output/tool/framing/safety reservations, valid message-group trimming, deterministic redacted compaction into persisted `context_summaries`, hard refusal before oversized provider calls, metadata-only context events, task aggregate `context`, Mission Control context lines, and `/context`. Tests: `context-budget.test.ts`, `agent-alpha.test.ts`, `api.test.ts`, `mission-control.test.ts`. | Exact tokenization is OpenAI-family only; Anthropic/Gemini/Ollama/OpenAI-compatible unknown models use conservative estimates. Model-assisted summaries remain optional future polish; deterministic compaction is the default. |
 | Profiles | Hermes | VERIFIED | `routing/presets.ts`, `presets.test.ts` | — |
 
 ## 13. Distribution
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Windows install (no git/pnpm knowledge) | `install.ps1` | MISSING | — | One-command installer |
-| Ubuntu install | `install.sh` | MISSING | — | One-command installer |
+| Windows install (no git/pnpm knowledge) | `install.ps1` | VERIFIED | `installer/install.ps1` — one-command (`iex (irm …/install.ps1)`), atomic data-preserving upgrade with rollback + crash-window recovery (ADR-0004). Tested: `scripts/install-activation.test.mjs` (9, real Windows) + `scripts/install-integration.test.mjs` (full 47 MB artifact → install → health → `morrow doctor`) + CI static safety guard (`scripts/lib/installer-safety.mjs`) | Health-failure rollback path lacks an automated test (needs deliberately unhealthy artifact) |
+| Ubuntu install | `install.sh` | MISSING | — | One-command installer (source build documented in README) |
 | Onboarding | `agent/onboarding.py` | VERIFIED | `commands/onboard.ts`, `onboard.test.ts`, commit `bf8ae79` | — |
 | Provider setup wizard | `hermes setup` | PARTIAL | onboarding provider step | — |
 | Update / rollback | `hermes update` | PARTIAL | `service/update.ts` (`compareSemver`, `checkForUpdate`, injectable `fetchLatestVersion`) + `morrow update` command. `test/doctor-update.test.ts` | Apply-update (git pull+install) automation + rollback |
-| Uninstall | Hermes | MISSING | — | — |
+| Uninstall | Hermes | VERIFIED | `installer/templates/uninstall.ps1` — removes app/bin/shortcuts/PATH entry; data preserved by default with explicit `-PurgeData`/`-KeepData` flags and a safe-default prompt. Covered by `scripts/package-command.test.mjs` + `validate-repository` checks | No automated end-to-end uninstall run on CI (needs Windows artifact) |
 | Service management | Hermes | VERIFIED | `service/lifecycle.ts`, `service-lifecycle.test.ts` | — |
 | Doctor | `hermes doctor` | VERIFIED | `morrow doctor` (node/pnpm/home/migrations/providers checks) with testable `service/doctor-checks.ts` `aggregateDoctor`. `test/doctor-update.test.ts` | — |
-| Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` real package: `parseHermesEnv` + `mapToMorrow` (known keys only; unknowns → `unmapped`; secret *names* not values) + `summarizeImport` (no secret leak). `test/import.test.ts` (4) | CLI `morrow import` + session/skill import |
+| Migration / import | `hermes claw migrate`, `hermes-compat` | PARTIAL | `@morrow/hermes-compat` (`parseHermesEnv`/`mapToMorrow`/`summarizeImport`, `test/import.test.ts` 4) + CLI `morrow import hermes <path>` (`apps/cli/src/commands/import.ts`): offline dry-run report by default, `--apply` maps provider aliases (claude→anthropic, google→gemini, …) and configures provider+model+key through the same service path as `providers configure`; secret values never printed in human or JSON output. `test/import-command.test.ts` (6) | Session/skill import |
 
 ## 14. Cross-cutting
 
@@ -195,7 +195,7 @@
 |---|---|---|---|---|
 | Subagents / delegation | Hermes spawn | VERIFIED | `POST /api/tasks/:id/subagents` spawns an isolated child task run via the normal runner; composes with persistent named agents (`repositories/agents.ts`, committed `feat(agents)`). `test/subagents.test.ts` (6) | — |
 | Model routing | Hermes | VERIFIED | `routing/router.ts`, `models.ts` | — |
-| Checkpoints | Hermes | PARTIAL | `change-sets.ts` | Named checkpoints + restore |
+| Checkpoints | Hermes | VERIFIED | Named workspace checkpoints: migration 19 `checkpoints` table + `repositories/checkpoints.ts` + `workspace/checkpoints.ts` (content-addressed snapshots sharing the undo backup store; containment-gated; restore verifies all blobs up front and auto-saves an `auto/pre-restore-…` safety checkpoint so restores are reversible). API: POST/GET/restore/DELETE under `/api/projects/:id/checkpoints` (`CreateCheckpointSchema` in contracts). CLI: `/checkpoint save|list|restore|delete`. Tests: `test/checkpoints.test.ts` (8) + `apps/cli/test/api-checkpoints.test.ts` (3) | Interactive TUI mode points to line mode for now |
 | Diff / undo | Hermes | VERIFIED | server diff/undo + integration test | — |
 | Recovery | Hermes | PARTIAL | `recovery.ts` `reconcileTasksOnStartup` + e2e restart test (orphaned `queued` resumes to `verified`); cancellation propagation + agent continuation resume covered in `cancellation-lifecycle.test.ts` | Mid-stream reconnect/dedup and richer visible recovery UX |
 

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400">
+  <rect width="800" height="400" fill="#0f172a" rx="12"/>
+  <text x="400" y="35" fill="white" font-size="18" font-weight="bold" text-anchor="middle" font-family="Arial">Activity Grouping: Before → After</text>
+  <rect x="30" y="60" width="350" height="310" fill="#1e293b" stroke="#ef4444" stroke-width="1.5" rx="8"/>
+  <text x="205" y="85" fill="#ef4444" font-size="14" font-weight="bold" text-anchor="middle" font-family="Arial">Before (raw tool calls)</text>
+  <line x1="50" y1="94" x2="360" y2="94" stroke="#ef4444" stroke-width="0.5"/>
+  <text x="45" y="115" fill="#94a3b8" font-size="9" font-family="monospace">  - reading index.html</text>
+  <text x="45" y="133" fill="#94a3b8" font-size="9" font-family="monospace">  - reading package.json</text>
+  <text x="45" y="151" fill="#94a3b8" font-size="9" font-family="monospace">  - reading tsconfig.json</text>
+  <text x="45" y="169" fill="#94a3b8" font-size="9" font-family="monospace">  - reading src/index.ts</text>
+  <text x="45" y="187" fill="#94a3b8" font-size="9" font-family="monospace">  - reading src/collision.ts</text>
+  <text x="45" y="205" fill="#94a3b8" font-size="9" font-family="monospace">  - searching collision 3 results</text>
+  <text x="45" y="223" fill="#94a3b8" font-size="9" font-family="monospace">  - inspecting src/</text>
+  <text x="45" y="255" fill="#64748b" font-size="9" font-family="monospace">7 individual lines · IDs visible · No context</text>
+  <text x="45" y="275" fill="#ef4444" font-size="9" font-family="monospace">Each tool call = 1 line of noise</text>
+  <text x="45" y="300" fill="#ef4444" font-size="10" font-weight="bold" font-family="monospace">7 LINES</text>
+
+  <text x="395" y="225" fill="#fbbf24" font-size="24" text-anchor="middle" font-family="Arial">→</text>
+
+  <rect x="420" y="60" width="350" height="310" fill="#1e293b" stroke="#34d399" stroke-width="2" rx="8"/>
+  <text x="595" y="85" fill="#34d399" font-size="14" font-weight="bold" text-anchor="middle" font-family="Arial">After (grouped activity)</text>
+  <line x1="440" y1="94" x2="750" y2="94" stroke="#34d399" stroke-width="0.5"/>
+  <text x="435" y="120" fill="white" font-size="10" font-family="monospace">Understanding project…</text>
+  <text x="435" y="145" fill="#22d3ee" font-size="9" font-family="monospace">  ◦ reading 5 files</text>
+  <text x="450" y="163" fill="#64748b" font-size="9" font-family="monospace">· index.html, package.json, tsconfig.json +2 more</text>
+  <text x="435" y="188" fill="#22d3ee" font-size="9" font-family="monospace">  ◦ searching 1 result</text>
+  <text x="450" y="206" fill="#64748b" font-size="9" font-family="monospace">· collision</text>
+  <text x="435" y="231" fill="#22d3ee" font-size="9" font-family="monospace">  ◦ inspecting · src/</text>
+  <text x="435" y="260" fill="#34d399" font-size="9" font-family="monospace">3 grouped lines · No IDs · Stage context</text>
+  <text x="435" y="280" fill="#34d399" font-size="9" font-family="monospace">Same info, collapsed intelligently</text>
+  <text x="435" y="305" fill="#34d399" font-size="10" font-weight="bold" font-family="monospace">3 LINES</text>
+</svg>

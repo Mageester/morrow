@@ -6,6 +6,7 @@ import {
   classifyHttpStatus,
   classifyThrownError,
 } from "./base.js";
+import { parseRetryAfter } from "./rate-guard.js";
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -163,7 +164,7 @@ export class AnthropicProvider implements AiProvider {
       } catch {
         /* keep raw */
       }
-      yield { type: "error", error: classifyHttpStatus(response.status, errMsg) };
+      yield { type: "error", error: classifyHttpStatus(response.status, errMsg, parseRetryAfter(response.headers.get("retry-after"))) };
       return;
     }
 

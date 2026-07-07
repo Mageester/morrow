@@ -19,6 +19,7 @@ import {
   listZipEntries,
   resolvePackageRoot,
   assertArtifactLayout,
+  forbiddenOwnFileViolations,
 } from "./lib/package-layout.mjs";
 
 function locateArtifact() {
@@ -54,6 +55,35 @@ test("release archive satisfies the Morrow package contract", { skip: artifact ?
     !entries.has(root + "orchestrator/node_modules/@morrow/contracts/src/index.ts"),
     "bundled @morrow/contracts must not ship TypeScript source (exports must resolve to dist/index.js)",
   );
+});
+
+test("forbidden-content contract rejects dev/acceptance cruft in Morrow's own files", () => {
+  const R = "Morrow-v9.9.9-windows-x64/";
+  // Acceptance/dev scripts must be flagged in BOTH the primary orchestrator dist
+  // and the injected @morrow/orchestrator workspace-dep copy under node_modules.
+  const leaks = [
+    R + "orchestrator/dist/scripts/todo-app-consumer-proof.js",
+    R + "orchestrator/dist/scripts/sqlite-smoke.js",
+    R + "orchestrator/node_modules/@morrow/orchestrator/dist/scripts/todo-app-files.js",
+    R + "web/index.html",
+    R + ".env",
+    R + "orchestrator/data.sqlite",
+  ];
+  for (const leak of leaks) {
+    const v = forbiddenOwnFileViolations([R + "morrow.cmd", leak], R);
+    assert.equal(v.length, 1, `expected ${leak} to be flagged`);
+  }
+  // Third-party node_modules content and legitimate Morrow files are NOT flagged.
+  const allowed = [
+    R + "morrow.cmd",
+    R + "orchestrator/dist/src/lib.js",
+    R + "orchestrator/node_modules/playwright-core/lib/vite/dashboard/index.html",
+    R + "orchestrator/node_modules/@morrow/contracts/dist/index.d.ts",
+    R + "orchestrator/node_modules/@morrow/orchestrator/dist/src/lib.js",
+    R + ".env.example",
+    R + "skills/coding/SKILL.md",
+  ];
+  assert.deepEqual(forbiddenOwnFileViolations(allowed, R), [], "no false positives on legitimate files");
 });
 
 test("package layout resolver handles root-level and single-top-dir shapes", () => {

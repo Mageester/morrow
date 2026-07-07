@@ -2,6 +2,185 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-02 - Hermes-parity slice: symbol index completed
+
+- **Project symbol index:** added migration 24 with `symbol_index_files` and
+  `symbols`, plus `repositories/symbols.ts` and `workspace/symbol-index.ts`.
+  The indexer uses the TypeScript compiler API for TS/JS/TSX/JSX declarations
+  and parsed JSON objects for configuration keys. Stored metadata includes
+  project, file path, language, fingerprint, symbol/fq name, kind, location,
+  parent, export status, indexed time, indexer version, and parser version.
+- **Operations and safety:** supports full rebuild, incremental refresh,
+  changed-file detection, deleted-file cleanup, rename handling as delete+add,
+  symbol search, definition lookup, file-symbol listing, status, parse
+  diagnostics, cancellation, resource limits, `.gitignore`, `.morrowignore`,
+  default dependency/build/cache ignores, and generated-file skips.
+- **Agent/API/CLI:** added project-scoped REST routes under
+  `/api/projects/:id/symbols/*`, CLI `morrow symbols`/`morrow symbol-index`
+  for status/rebuild/refresh/search/definition/file output, and read-only
+  `search_symbols` in both inspect/read-only and agent modes. Tool results are
+  concise metadata locations, not source-file bodies.
+- **Privacy/security impact:** indexing remains local and project-scoped. It
+  stores code symbol metadata and parser diagnostics in SQLite, not file
+  contents. Existing safe path deny rules and additional dependency/build/cache
+  ignores keep secret-like paths, `.morrow`, `node_modules`, build output, and
+  generated files out of the index.
+- **Tests:** `symbol-index.test.ts` covers realistic TS/TSX/JSON fixtures,
+  nested symbols, exports, duplicates, parse errors, ignore rules, deleted and
+  renamed files, incremental refresh, and cancellation. API, agent tool,
+  catalog, CLI client, and CLI command tests cover public reachability.
+- **Validation:** focused orchestrator symbol/API/agent/catalog tests PASS
+  (408 orchestrator tests reported); focused CLI symbol tests PASS (180 CLI
+  tests reported); `pnpm check` PASS; `pnpm test` PASS (orchestrator 408,
+  CLI 180, web 22, contracts and hermes-compat green); `pnpm build` PASS;
+  orchestrator `smoke:vertical-slice`, `smoke:agent-alpha`, and
+  `smoke:providers` PASS; `git diff --check` PASS.
+
+## 2026-07-02 - Hermes-parity slice: context management completed
+
+- **Context manager:** expanded `execution/context-budget.ts` from a basic
+  trimmer into a provider-neutral context preparation layer. It now returns
+  labeled exact/estimated token counts, resolves model-aware budgets centrally,
+  reserves output/tool/framing/safety tokens, validates provider message ordering,
+  keeps assistant tool calls with their tool results, compacts older eligible
+  history before dropping it, and refuses provider calls when mandatory context
+  cannot fit.
+- **Tokenizers:** added offline `js-tiktoken` support for OpenAI-family model
+  IDs using `o200k_base`. Anthropic, Gemini, Ollama, OpenAI-compatible unknown
+  models, and unknown custom IDs use Morrow's conservative deterministic
+  estimator and are never labeled exact.
+- **Compaction and privacy:** migration 23 adds `context_summaries`.
+  Deterministic summaries preserve goals, constraints, file paths, commands,
+  errors, decisions, and unresolved work while redacting secret-like material.
+  Summary records are idempotent by conversation/source hash and store provenance
+  indexes/counts without deleting raw conversation history.
+- **Observability and UX:** added metadata-only `context.*` task events,
+  aggregate `context` summaries, Mission Control context lines, and `/context`
+  line-mode output. Events and API responses exclude summary content by default.
+- **Tests:** `context-budget.test.ts` covers exact and estimated count paths,
+  known/unknown/user-override model budgets, reservations, message ordering,
+  multi-tool grouping, compaction, redaction, and minimum-context refusal.
+  `agent-alpha.test.ts` proves persisted compaction, no secret event content,
+  retry-safe pre-provider refusal, and valid provider payloads. `api.test.ts`
+  proves aggregate JSON purity. `mission-control.test.ts` proves user surfacing.
+- **Validation:** focused context/API/CLI tests PASS; `pnpm check` PASS;
+  `pnpm test` PASS (orchestrator 403, CLI 177, web 22, contracts and
+  hermes-compat green); `pnpm build` PASS; orchestrator
+  `smoke:vertical-slice`, `smoke:agent-alpha`, and `smoke:providers` PASS.
+
+## 2026-07-02 - Hermes-parity slice: token-aware context trimming begins
+
+- **Context limits (section 12, still PARTIAL):** added
+  `execution/context-budget.ts`, which derives an input-token budget from preset
+  bytes, known model context windows, output-token reservations, and a safety
+  reserve. Agent prompt assembly now trims before every provider call, preserving
+  system messages and the newest conversational/tool segment while dropping older
+  history first.
+- **Evidence:** added typed `context.trimmed` task events carrying original/final
+  token estimates, max input tokens, and trimmed message count. Added pure tests
+  for budget derivation, old-history trimming, and assistant-tool-output grouping;
+  added an agent provider-capture regression proving oversized old history is not
+  sent while the latest user request is preserved.
+- **Remaining gap:** token counts use a deterministic estimator, not provider-
+  specific tokenizer packages yet; dropped context is not semantically summarized
+  into memory/UI yet.
+- **Validation:** `pnpm --filter @morrow/orchestrator test --
+  test/context-budget.test.ts test/agent-alpha.test.ts` PASS (395 orchestrator
+  tests); `pnpm check` PASS; `pnpm test` PASS (orchestrator 395, CLI 177, web 22,
+  contracts/hermes-compat green); `pnpm build` PASS.
+
+## 2026-07-02 - Hermes-parity slices: worktree isolation and safe integration attempts
+
+- **Git worktrees / parallel agents (section 8, MISSING->VERIFIED):** migration
+  21 adds durable `worktrees` rows; `workspace/worktrees.ts` creates per-agent
+  task branches and checked-out worktrees under Morrow control; agent tasks can
+  execute inside an assigned worktree; API + CLI `morrow worktrees`, `/worktrees`,
+  and `morrow chat --worktree` expose the lifecycle. Source worktrees are
+  preserved until explicit cleanup.
+- **Conflict handling (section 8, MISSING->VERIFIED):** migration 22 adds
+  `integration_attempts`; `workspace/integrations.ts` records isolated merge
+  checks, dry-runs merges in a temporary local clone, reports clean/conflicted/
+  failed outcomes with conflicted files, refuses dirty or stale targets, applies
+  only previously clean attempts with `--no-ff`, and preserves the source branch
+  and worktree. API routes under `/api/worktrees/:id/integrations/check`,
+  `/api/projects/:id/integrations`, and `/api/integrations/:id/apply|cancel`;
+  CLI command `morrow integrate`.
+- **Tests:** worktrees coverage in `services/orchestrator/test/worktrees.test.ts`,
+  `apps/cli/test/api-worktrees.test.ts`, `apps/cli/test/worktrees-command.test.ts`;
+  integration coverage in `services/orchestrator/test/integrations.test.ts`,
+  `apps/cli/test/api-integrations.test.ts`, and
+  `apps/cli/test/integrations-command.test.ts`.
+- **Validation:** `pnpm --filter @morrow/orchestrator test --
+  test/integrations.test.ts` PASS (391 orchestrator tests);
+  `pnpm --filter @morrow/cli test -- test/api-integrations.test.ts
+  test/integrations-command.test.ts` PASS (177 CLI tests); `pnpm check` PASS;
+  `pnpm test` PASS (all repo packages); `pnpm build` PASS.
+
+## 2026-07-02 - Hermes-parity slice batch: rate guard, import CLI, checkpoints, chat idempotency, palette evidence
+
+- **Baseline:** full validation on `product/mission-control` before changes:
+  `pnpm check`/`test` (523)/`build`, all four orchestrator smokes, Playwright
+  11/11 — all green. Work landed on `product/hermes-parity` (stacked on the
+  unmerged PR #22 branch).
+- **Provider rate-limit guard (§12, was the last MISSING row):**
+  `provider/rate-guard.ts` tracks per-provider cooldowns (Retry-After wins,
+  else exponential backoff 2s→5m cap, reset on success). Advisory by design —
+  `openStreamWithFallback` deprioritizes cooling providers instead of refusing
+  them, reports 429s/successes to the shared guard, and now rethrows start
+  error chunks as classified `ProviderError`s. Adapters parse `Retry-After`.
+  New `provider.rate_limited` task event + `GET /api/providers/rate-limits`.
+  `test/rate-guard.test.ts` (13).
+- **`morrow import hermes <path>` (§13):** wires `@morrow/hermes-compat` into a
+  real command — offline dry-run report by default; `--apply` maps provider
+  aliases (claude→anthropic, google→gemini, …) and configures provider/model/
+  key through the same path as `providers configure`. Secret values never
+  printed (human or JSON). `test/import-command.test.ts` (6).
+- **Named workspace checkpoints (§14, PARTIAL→VERIFIED):** migration 19 +
+  `repositories/checkpoints.ts` + `workspace/checkpoints.ts` — content-
+  addressed snapshots sharing the undo backup store, containment-gated,
+  all-blobs-verified-before-first-write restore, and an automatic
+  `auto/pre-restore-…` safety checkpoint so every restore is reversible.
+  API under `/api/projects/:id/checkpoints` (shared `CreateCheckpointSchema`),
+  CLI `/checkpoint save|list|restore|delete`. `test/checkpoints.test.ts` (8),
+  `apps/cli/test/api-checkpoints.test.ts` (3).
+- **Agent-chat idempotency (§3 gap):** `POST /api/conversations/:id/messages`
+  honors `Idempotency-Key` (header or body; field added to the strict
+  `SendMessageSchema`). Replay returns the original task/messages/routing with
+  200 + `replayed:true`; the task row is created before messages so a lost
+  race on the unique index can't leave a duplicate user message.
+  `idempotency-api.test.ts` +3.
+- **Ctrl+K palette:** the matrix claimed MISSING but a complete implementation
+  ships; what was missing was proof. Added `test/terminal-palette.test.ts`
+  (11) covering open/filter/navigate/submit/close plus render states.
+- **Hygiene:** refreshed stale MORROW_STATUS/CONTINUATION snapshots; corrected
+  stale §13 rows (Windows installer + uninstaller are shipped and tested, not
+  MISSING); `database.test.ts` migration count 18→19.
+- **Validation:** see MORROW_STATUS for the dated green run (final counts:
+  orchestrator 368 · CLI 169 · web 22 · contracts 4 · hermes-compat 4).
+
+## 2026-06-30 - Terminal Mission Control entrypoint + mission evidence views
+
+- **Issue:** Morrow had real terminal session mechanics, task trees, diffs, undo,
+  approvals, and task aggregates, but no primary product entrypoint that named the
+  experience as Mission Control. Users also had to leave the session to inspect a
+  subagent tree or final mission evidence.
+- **Implementation:** Added `morrow mission` as a top-level alias for the
+  terminal Mission Control session. Added `/tree` and `/result` slash commands in
+  interactive TUI and line-mode chat. `/tree` renders `GET /api/tasks/:id/tree`
+  as a compact nested task tree; `/result` summarizes status, provider/model,
+  mode/privacy, plan, files affected, command/tool evidence, verification,
+  approvals, and the next safe action (`/diff`, `/undo`, `/continue`, or retry
+  guidance depending on status).
+- **Scope choice:** The first primary real interface is CLI/TUI because it already
+  owns streaming task events, approvals, cancellation, diffs, undo, output, and
+  provider/mode controls. Web MissionControl remains useful but is not yet the
+  live mission cockpit.
+- **Tests:** Added CLI formatter coverage for nested task trees and mission
+  result summaries, plus root-command coverage for `morrow mission`.
+- **Validation:** `corepack pnpm --filter @morrow/cli test -- main.test.ts
+  mission-control.test.ts` -> 149 tests passed. `corepack pnpm --filter
+  @morrow/cli check` -> PASS.
+
 ## 2026-06-30 - Cancellation lifecycle route semantics + Windows process-tree proof
 
 - **Issue:** Cancellation behavior was stronger in the runner than in the API

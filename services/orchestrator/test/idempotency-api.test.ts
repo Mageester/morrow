@@ -58,3 +58,68 @@ describe("idempotent task creation", () => {
     expect(second.json().replayed).toBe(true);
   });
 });
+
+describe("idempotent agent-chat message send", () => {
+  let db: any;
+  let app: any;
+  let ws: string;
+  let conversationId: string;
+  let prevMock: string | undefined;
+
+  beforeEach(async () => {
+    prevMock = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    ws = mkdtempSync(join(tmpdir(), "morrow-idem-chat-"));
+    db = openDatabase(":memory:");
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: ws, createdAt: new Date().toISOString() });
+    const conv = await app.inject({ method: "POST", url: "/api/projects/p1/conversations", payload: { title: "T" } });
+    conversationId = conv.json().id;
+  });
+
+  afterEach(() => {
+    if (prevMock === undefined) delete process.env.MOCK_PROVIDER;
+    else process.env.MOCK_PROVIDER = prevMock;
+    app.close();
+    db.close();
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  it("replays the original task and messages instead of dispatching twice", async () => {
+    const payload = { content: "hello there", idempotencyKey: "send-1" };
+    const first = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload });
+    expect(first.statusCode).toBe(202);
+    const firstBody = first.json();
+
+    const second = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json();
+    expect(secondBody.replayed).toBe(true);
+    expect(secondBody.task.id).toBe(firstBody.task.id);
+    expect(secondBody.assistantMessage.id).toBe(firstBody.assistantMessage.id);
+    expect(secondBody.userMessage.id).toBe(firstBody.userMessage.id);
+    expect(secondBody.routing?.providerId).toBe("mock");
+
+    // Exactly one task and one user/assistant message pair exist.
+    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
+    const msgs = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/messages` });
+    expect(msgs.json()).toHaveLength(2);
+  });
+
+  it("honors the Idempotency-Key header on the message route too", async () => {
+    const headers = { "Idempotency-Key": "send-h" };
+    const first = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, headers, payload: { content: "hi" } });
+    const second = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, headers, payload: { content: "hi" } });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().task.id).toBe(first.json().task.id);
+    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
+  });
+
+  it("different keys and keyless sends still create distinct tasks", async () => {
+    const a = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "a", idempotencyKey: "ka" } });
+    const b = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "b", idempotencyKey: "kb" } });
+    const c = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "c" } });
+    const ids = new Set([a, b, c].map((r) => r.json().task.id));
+    expect(ids.size).toBe(3);
+  });
+});

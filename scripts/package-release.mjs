@@ -12,7 +12,6 @@
  *     orchestrator/dist/src/index.js     (service entrypoint)
  *     orchestrator/node_modules/...      (production deps only, flat npm install)
  *       @morrow/contracts/dist/index.js  (COMPILED workspace dep, never .ts source)
- *     web/index.html                     (web UI assets)
  *     VERSION, CHANNEL, THIRD_PARTY_NOTICES.txt, uninstall.ps1
  *
  * The package contract is asserted (scripts/lib/package-layout.mjs) before the
@@ -105,7 +104,10 @@ const orchDst = join(PKG_DIR, "orchestrator");
 ensure(orchDst);
 cpSync(join(orchSrc, "dist"), join(orchDst, "dist"), {
   recursive: true,
-  filter: (src) => !/[\\/]Morrow-v[^\\/]*[\\/]?/.test(src) && !/[\\/]scripts[\\/].*smoke/i.test(src) && !/\.test\.js$/.test(src),
+  // Never ship compiled dev tooling: the entire dist/scripts subtree (smoke
+  // suites, acceptance harnesses like todo-app-*, one-off proofs) is build-time
+  // only. Also drop any stray nested package dir and compiled test files.
+  filter: (src) => !/[\\/]Morrow-v[^\\/]*[\\/]?/.test(src) && !/[\\/]dist[\\/]scripts[\\/]/.test(src) && !/[\\/]scripts$/.test(src) && !/\.test\.js$/.test(src),
 });
 const orchPkg = JSON.parse(readFileSync(join(orchSrc, "package.json"), "utf8"));
 
@@ -173,13 +175,81 @@ for (const dep of Object.keys(orchPkg.dependencies || {}).filter((n) => n.starts
   }, null, 2));
 }
 
-// ── 5. Web app ───────────────────────────────────────────────────────────
-console.log("\n[5/8] Bundling web app...");
-const webSrc = join(ROOT, "apps", "web", "dist");
-if (!existsSync(join(webSrc, "index.html"))) throw new Error("Web app is not built (missing apps/web/dist/index.html).");
-cpSync(webSrc, join(PKG_DIR, "web"), { recursive: true });
+// ── 4b. Bundled CLI (product surface for the installed launcher) ──────────
+// The packaged launcher delegates every non-lifecycle command (ask/fix/plan/
+// yolo/mission/new/symbols/processes/worktrees/integrate/projects/chat/...) to
+// this CLI, so the installed `morrow` exposes the SAME surface as development.
+//
+// The CLI is compiled to plain JS and placed UNDER orchestrator/ so its
+// `@morrow/*` and runtime dependencies resolve from the orchestrator's flat
+// node_modules with no extra path wiring. We inject the two workspace deps the
+// orchestrator install does not already provide: `@morrow/orchestrator` itself
+// (pointed at its compiled lib) and `@morrow/hermes-compat`.
+console.log("\n[4b/8] Compiling and bundling the CLI...");
+const cliSrc = join(ROOT, "apps", "cli");
+const cliDst = join(orchDst, "cli");
+rmSync(cliDst, { recursive: true, force: true });
+ensure(cliDst);
+// Compile TS → JS (source only; tests are excluded via a temporary tsconfig).
+const cliBuildTsconfig = join(cliSrc, "tsconfig.pkg.json");
+writeFileSync(cliBuildTsconfig, JSON.stringify({
+  extends: "./tsconfig.json",
+  compilerOptions: { noEmit: false, declaration: false, sourceMap: false, incremental: false, outDir: join(cliDst, "src").replace(/\\/g, "/") },
+  include: ["src"],
+}, null, 2));
+try {
+  const tsc = join(cliSrc, "node_modules", "typescript", "bin", "tsc");
+  if (!existsSync(tsc)) throw new Error(`CLI TypeScript compiler is missing: ${tsc}. Run pnpm install.`);
+  execFileSync(process.execPath, [tsc, "-p", cliBuildTsconfig], { cwd: cliSrc, stdio: "inherit" });
+} finally {
+  rmSync(cliBuildTsconfig, { force: true });
+}
+if (!existsSync(join(cliDst, "src", "main.js"))) throw new Error("CLI did not compile (missing cli/src/main.js).");
+// Plain-node launcher for the compiled CLI (no tsx; the source is already JS).
+ensure(join(cliDst, "bin"));
+writeFileSync(join(cliDst, "bin", "morrow.mjs"), [
+  "#!/usr/bin/env node",
+  'import { fileURLToPath, pathToFileURL } from "node:url";',
+  'import { dirname, resolve } from "node:path";',
+  'if (process.argv.includes("--version") || process.argv.includes("-v")) { process.stdout.write("' + VERSION + '\\n"); process.exit(0); }',
+  'const here = dirname(fileURLToPath(import.meta.url));',
+  'const { run } = await import(pathToFileURL(resolve(here, "../src/main.js")).href);',
+  'const code = await run(process.argv.slice(2));',
+  'if (typeof code === "number" && code !== 0) process.exitCode = code;',
+  "",
+].join("\n"));
+// Inject the workspace deps the CLI needs that orchestrator's install lacks.
+for (const [dep, distSrc, main] of [
+  ["orchestrator", join(orchSrc, "dist"), "src/lib.js"],
+  ["hermes-compat", join(ROOT, "packages", "hermes-compat", "dist"), "index.js"],
+]) {
+  if (!existsSync(join(distSrc, main))) throw new Error(`Workspace dep @morrow/${dep} is not built (missing ${join(distSrc, main)}). Run pnpm build.`);
+  const depDst = join(orchDst, "node_modules", "@morrow", dep);
+  rmSync(depDst, { recursive: true, force: true });
+  ensure(depDst);
+  // Same exclusion as the primary orchestrator/dist copy: never ship compiled
+  // dev/smoke/acceptance scripts (dist/scripts) or test files inside the
+  // injected workspace dependency either.
+  cpSync(distSrc, join(depDst, "dist"), {
+    recursive: true,
+    filter: (src) => !/[\\/]scripts$/.test(src) && !/[\\/]dist[\\/]scripts[\\/]/.test(src) && !/\.test\.js$/.test(src),
+  });
+  writeFileSync(join(depDst, "package.json"), JSON.stringify({
+    name: `@morrow/${dep}`, version: VERSION, private: true, type: "module",
+    exports: { ".": `./dist/${main}`, "./lib": `./dist/${main}` },
+  }, null, 2));
+}
+// Hard gate: the compiled CLI must load and route under the bundled runtime,
+// resolving @morrow/* + native deps from the co-located node_modules. This turns
+// a broken-bundle regression into a build-time failure.
+console.log("  Verifying the bundled CLI loads under the bundled runtime...");
+try {
+  execFileSync(BUNDLED_NODE, [join(cliDst, "bin", "morrow.mjs"), "--help"], { cwd: orchDst, stdio: "ignore", env: { ...process.env, MORROW_NO_AUTOSTART: "1" } });
+} catch {
+  throw new Error("The bundled CLI failed to run under the bundled runtime.");
+}
 
-// ── 5b. Skills (so the packaged agent can find_skill / load_skill) ────────
+// ── 5. Skills (so the packaged agent can find_skill / load_skill) ─────────
 // The agent reads each skill's SKILL.md (and manifest/permissions) at runtime
 // from MORROW_SKILLS_DIR, which the launcher points at this bundled directory.
 // Offensive LLM-jailbreak/attack skills are deliberately NOT shipped in the
@@ -216,6 +286,8 @@ console.log(`  Bundled ${bundledSkills} skills${skippedSkills ? `, excluded ${sk
 // ── 6. Launchers + metadata (from versioned templates) ───────────────────
 console.log("\n[6/8] Writing launchers and metadata...");
 cpSync(join(TEMPLATES, "morrow.mjs"), join(PKG_DIR, "morrow.mjs"));
+// The launcher imports ./dispatch.mjs for command classification; ship it too.
+cpSync(join(TEMPLATES, "dispatch.mjs"), join(PKG_DIR, "dispatch.mjs"));
 cpSync(join(TEMPLATES, "morrow.cmd"), join(PKG_DIR, "morrow.cmd"));
 cpSync(join(TEMPLATES, "uninstall.ps1"), join(PKG_DIR, "uninstall.ps1"));
 writeFileSync(join(PKG_DIR, "VERSION"), VERSION);
@@ -224,9 +296,31 @@ const notices = join(ROOT, "THIRD_PARTY_NOTICES.txt");
 writeFileSync(join(PKG_DIR, "THIRD_PARTY_NOTICES.txt"), existsSync(notices) ? readFileSync(notices, "utf8") : "Morrow bundles Node.js and third-party npm dependencies under their respective licenses.\n");
 
 // ── 7. Archive ───────────────────────────────────────────────────────────
+// Zip via .NET ZipFile from a temp stage OUTSIDE the project tree. Compress-Archive
+// reads each source file with a BinaryReader, which throws "Stream was not readable"
+// when the source lives under a synced folder (OneDrive) whose files are cloud
+// placeholders or transiently locked by the sync client. Staging to %TEMP% forces
+// local hydration and removes the sync client from the archive path entirely.
 console.log("\n[7/8] Creating archive...");
 if (existsSync(ZIP_PATH)) rmSync(ZIP_PATH, { force: true });
-ps(`Compress-Archive -Path '${PKG_DIR}' -DestinationPath '${ZIP_PATH}' -CompressionLevel Optimal -Force`);
+const zipStage = join(process.env.TEMP || process.env.TMP || DIST, `morrow-pkgzip-${Date.now()}`);
+ps([
+  `$ErrorActionPreference='Stop'`,
+  `$stage=${JSON.stringify(zipStage)}`,
+  `if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }`,
+  `[void](New-Item -ItemType Directory -Path $stage)`,
+  `$dest=Join-Path $stage ${JSON.stringify(PKG_NAME)}`,
+  `robocopy ${JSON.stringify(PKG_DIR)} $dest /E /NFL /NDL /NJH /NJS /NP | Out-Null`,
+  `if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`,
+  `Add-Type -AssemblyName System.IO.Compression.FileSystem`,
+  // tmpZip must live OUTSIDE $stage so CreateFromDirectory does not try to archive
+  // its own output. includeBaseDirectory=false → archive root holds PKG_NAME/ only.
+  `$tmpZip="$stage.zip"`,
+  `if (Test-Path $tmpZip) { Remove-Item -Force $tmpZip }`,
+  `[IO.Compression.ZipFile]::CreateFromDirectory($stage, $tmpZip, [IO.Compression.CompressionLevel]::Optimal, $false)`,
+  `Move-Item -Force $tmpZip ${JSON.stringify(ZIP_PATH)}`,
+  `Remove-Item -Recurse -Force $stage`,
+].join("; "));
 
 // ── 8. Validate contract, checksums, manifest ────────────────────────────
 console.log("\n[8/8] Validating package contract and writing manifest...");

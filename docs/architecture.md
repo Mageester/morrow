@@ -77,6 +77,25 @@ A narrow compatibility layer for importing supported Hermes configuration, skill
 - Extensions run with declared capabilities.
 - External model providers receive only the context selected for that request.
 
+## Context management
+
+Agent model requests pass through the local context manager before provider
+execution. The manager resolves model-aware budgets, counts tokens with exact
+offline tokenizers where available and labeled conservative estimates elsewhere,
+preserves system instructions and tool-call groups, compacts older eligible
+history into redacted persisted summaries, and refuses provider calls when the
+minimum viable prompt cannot fit. See [context-management.md](context-management.md).
+
+## Symbol index
+
+Project code intelligence uses a local symbol index rather than sending whole
+repositories to a model. The orchestrator scans only inside the registered
+project root, applies `.gitignore`, `.morrowignore`, dependency/build/cache
+ignores, and secret-like path denial, then persists symbol metadata and parser
+diagnostics in SQLite. TS/JS/TSX/JSX symbols are extracted with the TypeScript
+compiler API; JSON config keys are parsed as structured objects. Agent access is
+read-only through concise symbol locations. See [symbol-index.md](symbol-index.md).
+
 ## Initial vertical slice
 
 The first implementation should prove:

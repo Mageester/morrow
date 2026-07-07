@@ -15,6 +15,14 @@ import { skillsCommand } from "./commands/skills.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
 import { onboardCommand } from "./commands/onboard.js";
+import { importCommand } from "./commands/import.js";
+import { processesCommand } from "./commands/processes.js";
+import { worktreesCommand } from "./commands/worktrees.js";
+import { integrationsCommand } from "./commands/integrations.js";
+import { symbolsCommand } from "./commands/symbols.js";
+import { missionCommand, printMissionHelp } from "./commands/mission.js";
+import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
+import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -26,10 +34,10 @@ import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/up
 // update checker's notion of the current version.
 export const VERSION = MORROW_VERSION;
 
-const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines"];
+const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "auth", "model", "settings", "start", "stop", "restart", "status", "open", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules"]);
-const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "open", "serve", "logs"];
+export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
   | { kind: "interactive" }
@@ -54,14 +62,17 @@ export async function run(argv: string[]): Promise<number> {
   const noColor = parsed.flags.color === false || flagBool(parsed.flags, "no-color");
   const out = new Output({ json: flagBool(parsed.flags, "json"), quiet: flagBool(parsed.flags, "quiet"), color: resolveColor({ noColorFlag: noColor, json: flagBool(parsed.flags, "json"), env: process.env, isTTY: Boolean(process.stdout.isTTY) }) });
   try {
-    if ((flagBool(parsed.flags, "help") && parsed.positionals.length === 0) || parsed.positionals[0] === "help") return printHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals.length === 0) return printHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return printCortexHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
+    if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const config = ConfigStore.load();
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
     const invocation = resolveInvocation(parsed.positionals);
 
     // Auto-detect first launch
-    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "open", "doctor", "uninstall", "logs"].includes(invocation.root);
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "doctor", "uninstall", "logs", "capabilities"].includes(invocation.root);
     if (!isSetupCmd) {
       let onboarded = config.get("user.onboarded") === true;
       if (!onboarded) {
@@ -86,11 +97,11 @@ export async function run(argv: string[]): Promise<number> {
     }
     switch (invocation.kind) {
       case "interactive":
-        return open(ctx);
+        return await chatCommand(ctx);
       case "prompt": {
         if (!invocation.prompt) throw usageError("Missing prompt.", "Run `morrow \"Explain this repository\"` or `morrow run \"…\"`.");
         const promptCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, message: invocation.prompt } });
-        return chatCommand(promptCtx);
+        return await chatCommand(promptCtx);
       }
       case "command":
         break;
@@ -102,48 +113,64 @@ export async function run(argv: string[]): Promise<number> {
     const chatWith = (extra: Record<string, string | boolean>) =>
       chatCommand(new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, ...extra } }));
     switch (root) {
-      case "ask": { const p = promptOf(); return chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
-      case "fix": { const p = promptOf(); return chatWith({ ...(p ? { message: p } : {}) }); }
-      case "yolo": { const p = promptOf(); return chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
-      case "plan": { const p = promptOf(); return chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
-      case "new": return chatWith({ new: true });
-      case "model": return modelsCommand(ctx, sub ?? "", args);
-      case "settings": return configCommand(ctx, sub ?? "list", args);
-      case "auth": return providersCommand(ctx, authSub(sub), args);
-      case "status": return status(ctx);
-      case "doctor": return doctor(ctx);
-      case "update": return update(ctx);
-      case "onboard": return onboardCommand(ctx, sub ?? "", args);
-      case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : serveForeground(ctx);
+      case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
+      case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
+      case "yolo": { const p = promptOf(); return await chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
+      case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
+      case "new": return await chatWith({ new: true });
+      case "cortex": return await cortexCommand(ctx, sub, args);
+      case "capabilities": return await capabilitiesCommand(ctx);
+      case "mission": {
+        // A bare `morrow mission` (no objective/subcommand) opens the interactive
+        // shell / Mission Control; otherwise run the Verified Missions lifecycle.
+        if (!sub) return await chatWith({});
+        return await missionCommand(ctx, sub, args);
+      }
+      case "model": return await modelsCommand(ctx, sub ?? "", args);
+      case "settings": return await configCommand(ctx, sub ?? "list", args);
+      case "auth": return await providersCommand(ctx, authSub(sub), args);
+      case "status": return await status(ctx);
+      case "doctor": return await doctor(ctx);
+      case "update": return await update(ctx);
+      case "onboard": return await onboardCommand(ctx, sub ?? "", args);
+      case "serve": return flagBool(parsed.flags, "detach") ? (await serveDetached(ctx), EXIT.OK) : await serveForeground(ctx);
       case "start": await serveDetached(ctx); return EXIT.OK;
-      case "stop": return serviceStop(ctx);
-      case "restart": return restart(ctx);
-      case "open": return open(ctx);
-      case "uninstall": return uninstallCommand(ctx);
-      case "logs": return logs(ctx);
-      case "config": return configCommand(ctx, sub, args);
-      case "projects": return projectsCommand(ctx, sub ?? "", args);
-      case "init": return initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
-      case "chat": return chatCommand(ctx);
-      case "conversations": return conversationsCommand(ctx, sub ?? "", args);
-      case "conversation": return conversationsCommand(ctx, sub ?? "", args);
-      case "sessions": return conversationsCommand(ctx, "list", []);
-      case "session": return conversationsCommand(ctx, sub ?? "list", args);
+      case "stop": return await serviceStop(ctx);
+      case "restart": return await restart(ctx);
+      case "uninstall": return await uninstallCommand(ctx);
+      case "logs": return await logs(ctx);
+      case "config": return await configCommand(ctx, sub, args);
+      case "projects": return await projectsCommand(ctx, sub ?? "", args);
+      case "init": return await initCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
+      case "chat": return await chatCommand(ctx);
+      case "conversations": return await conversationsCommand(ctx, sub ?? "", args);
+      case "conversation": return await conversationsCommand(ctx, sub ?? "", args);
+      case "sessions": return await conversationsCommand(ctx, "list", []);
+      case "session": return await conversationsCommand(ctx, sub ?? "list", args);
       case "resume": {
         const resumeCtx = new Context({ out, config, paths: config.paths, flags: { ...parsed.flags, resume: sub ?? "" } });
-        return chatCommand(resumeCtx);
+        return await chatCommand(resumeCtx);
       }
-      case "providers": return providersCommand(ctx, sub ?? "", args);
-      case "models": return modelsCommand(ctx, sub ?? "", args);
-      case "presets": return presetsCommand(ctx, sub, args);
-      case "tools": return toolsCommand(ctx, sub, args);
-      case "permissions": return permissionsCommand(ctx, sub);
-      case "audit": return auditCommand(ctx, sub, args);
-      case "memory": return memoryCommand(ctx, sub, args);
-      case "panic": return panicCommand(ctx);
-      case "skills": return skillsCommand(ctx, sub, args);
+      case "providers": return await providersCommand(ctx, sub ?? "", args);
+      case "models": return await modelsCommand(ctx, sub ?? "", args);
+      case "presets": return await presetsCommand(ctx, sub, args);
+      case "tools": return await toolsCommand(ctx, sub, args);
+      case "permissions": return await permissionsCommand(ctx, sub);
+      case "audit": return await auditCommand(ctx, sub, args);
+      case "memory": return await memoryCommand(ctx, sub, args);
+      case "panic": return await panicCommand(ctx);
+      case "skills": return await skillsCommand(ctx, sub, args);
+      case "import": return await importCommand(ctx, sub ?? "", args);
+      case "processes":
+      case "ps": return await processesCommand(ctx, sub ?? "", args);
+      case "worktrees":
+      case "worktree": return await worktreesCommand(ctx, sub ?? "", args);
+      case "integrate":
+      case "integrations": return await integrationsCommand(ctx, sub ?? "", args);
+      case "symbols":
+      case "symbol-index": return await symbolsCommand(ctx, sub ?? "", args);
       case "schedule":
-      case "schedules": return scheduleCommand(ctx, sub, args);
+      case "schedules": return await scheduleCommand(ctx, sub, args);
       default: throw usageError(`Unknown command: ${root}`, "Run `morrow --help` for commands.");
     }
   } catch (error) {
@@ -152,7 +179,20 @@ export async function run(argv: string[]): Promise<number> {
       if (error.hint) out.diag(`  ${error.hint}`);
       return error.exitCode;
     }
-    out.error(error instanceof Error ? error.message : String(error));
+    // For non-CliError exceptions, surface a human-friendly interpreted error
+    // instead of a raw stack trace. The raw message is still available via
+    // --verbose or /details in the interactive session.
+    const raw = error instanceof Error ? error.message : String(error);
+    try {
+      const { interpretError } = await import("./terminal/errors.js");
+      const interpreted = interpretError(raw);
+      out.error(interpreted.title);
+      out.print();
+      out.print(`  ${interpreted.body}`);
+      if (interpreted.hint) { out.print(); out.print(`  ${out.cyan(interpreted.hint)}`); }
+    } catch {
+      out.error(raw);
+    }
     return EXIT.ERROR;
   }
 }
@@ -173,11 +213,14 @@ function printHelp(out: Output): number {
     `${b("MORROW")} ${g("· private intelligence, built around you")}`,
     "",
     b("Start here"),
-    `  morrow                       ${g("start Morrow and open the app")}`,
+    `  morrow                       ${g("open the terminal agent shell")}`,
+    `  morrow mission               ${g("open Mission Control in the terminal")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
     `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
+    `  morrow cortex                ${g("inspect repository intelligence")}`,
+    `  morrow capabilities          ${g("what this build can actually do right now")}`,
     `  morrow resume                ${g("resume the most recent session")}`,
     `  morrow new                   ${g("start a fresh session")}`,
     "",
@@ -188,13 +231,12 @@ function printHelp(out: Output): number {
     `  morrow settings              ${g("view or change preferences")}`,
     `  morrow doctor                ${g("check your environment")}`,
     `  morrow start|stop|restart    ${g("manage the local service")}`,
-    `  morrow open                  ${g("open the local app in your browser")}`,
     `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
-    `  ${g("/help /mode /yolo /model /diff /undo /output /panic /status /memory /permissions /resume /exit")}`,
+    `  ${g("/help /mode /yolo /model /branch /changes /status /cost /diff /undo /tree /result /context /resume /new /clear /activity /permissions /panic /exit")}`,
     "",
-    g("More: morrow projects | conversations | presets | tools | audit | skills | serve | logs"),
+    g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
@@ -266,17 +308,6 @@ async function update(ctx: Context): Promise<number> {
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
-async function open(ctx: Context): Promise<number> {
-  await ensureRunning(ctx);
-  const url = ctx.service.baseUrl;
-  const { spawn } = await import("node:child_process");
-  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
-  if (ctx.out.json) ctx.out.data({ opened: url }); else ctx.out.success(`Opened ${url}`);
-  return EXIT.OK;
-}
 async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }
 
 async function configCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {

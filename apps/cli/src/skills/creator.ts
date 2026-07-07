@@ -143,6 +143,23 @@ function writeFiles(dir: string, files: Record<string, string>): void {
   }
 }
 
+function renameWithRetry(source: string, target: string): void {
+  const deadline = Date.now() + 2_000;
+  let lastError: unknown;
+  while (Date.now() <= deadline) {
+    try {
+      renameSync(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+      if (process.platform !== "win32" || (code !== "EPERM" && code !== "EACCES")) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+  throw lastError;
+}
+
 export interface InstallResult {
   installed: boolean;
   directory: string;
@@ -167,7 +184,7 @@ export function installSkill(root: string, generated: GeneratedSkill, opts: { ov
     const verdict = verifySkill(staging);
     if (!verdict.ok) return { installed: false, directory: finalDir, issues: verdict.issues };
     if (existsSync(finalDir)) rmSync(finalDir, { recursive: true, force: true });
-    renameSync(staging, finalDir);
+    renameWithRetry(staging, finalDir);
     return { installed: true, directory: finalDir, issues: [] };
   } finally {
     if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });

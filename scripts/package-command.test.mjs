@@ -43,7 +43,7 @@ function runMorrow(cmd, args = [], options = {}) {
 }
 
 function expandArtifact(artifact, appDir) {
-  const extractDir = join(appDir, "..", ".extract-" + Date.now());
+  const extractDir = join(appDir, "..", ".x" + (Date.now() % 100000));
   mkdirSync(extractDir, { recursive: true });
   execFileSync("powershell.exe", [
     "-NoProfile",
@@ -92,14 +92,21 @@ test("packaged morrow.cmd handles uninstall before any prompt/chat fallback", {
   skip: process.platform === "win32" && artifact ? false : "requires Windows and a built Morrow artifact",
   timeout: 60000,
 }, () => {
-  const root = join(tmpdir(), `morrow-package-command-${process.pid}-${Date.now()}`);
+  // Keep the scratch root SHORT: the bundled dependency tree contains deep
+  // vendored paths (e.g. fast-json-stringify's json-schema-test-suite), and a
+  // long temp prefix plus the install layout would push Expand-Archive past the
+  // Windows MAX_PATH (260) limit — a limitation of this test's extraction, not
+  // the long-path-safe production installer.
+  const root = join(tmpdir(), `mpc${process.pid}`);
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
   try {
     let installed = installFromArtifact(artifact, root);
     const help = runMorrow(installed.cmd, ["--help"]);
-    assert.match(help, /Morrow packaged launcher/);
-    assert.match(help, /morrow uninstall \[--yes\] \[--purge-data\]/);
+    assert.match(help, /MORROW .*private intelligence, built around you/);
+    assert.match(help, /morrow yolo/);
+    assert.match(help, /morrow mission/);
+    assert.match(help, /morrow uninstall\s+guided uninstall; preserves user data unless --purge-data/);
 
     const uninstallHelp = runMorrow(installed.cmd, ["uninstall", "--help"]);
     assert.match(uninstallHelp, /Morrow uninstall/);

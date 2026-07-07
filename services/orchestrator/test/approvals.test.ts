@@ -8,6 +8,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
 import { canonicalCommandTrustKey } from "../src/tools/command-policy.js";
+import { clampApprovalSummary, MAX_APPROVAL_SUMMARY } from "../src/repositories/approvals.js";
 
 describe("approvals", () => {
   const createdAt = "2026-06-21T00:00:00.000Z";
@@ -16,6 +17,39 @@ describe("approvals", () => {
     projectRepository(db).createProject({ id: "project", name: "Project", workspacePath: "C:/workspace", createdAt });
     taskRepository(db).createTask({ id: "task", projectId: "project", kind: "agent_chat", status: "queued", createdAt });
   }
+
+  it("clamps an over-long summary instead of crashing schema validation", () => {
+    const db = openDatabase(":memory:");
+    seed(db);
+    const approvals = approvalsRepository(db);
+    // A long command line (e.g. a big `npm install …` argv) exceeds the 240-char
+    // schema cap; before the clamp this threw ZodError and crashed the whole run.
+    const longSummary = "Run command: npm " + "install some-really-long-package-name ".repeat(20);
+    expect(longSummary.length).toBeGreaterThan(MAX_APPROVAL_SUMMARY);
+    let created!: ReturnType<typeof approvals.create>;
+    expect(() => {
+      created = approvals.create({
+        id: "long-approval",
+        taskId: "task",
+        projectId: "project",
+        kind: "command",
+        summary: longSummary,
+        details: {},
+        createdAt,
+      });
+    }).not.toThrow();
+    expect(created.summary.length).toBeLessThanOrEqual(MAX_APPROVAL_SUMMARY);
+    expect(created.summary.endsWith("…")).toBe(true);
+    // The persisted row also round-trips back through schema validation.
+    expect(approvals.get("long-approval")!.summary).toBe(created.summary);
+    db.close();
+  });
+
+  it("clampApprovalSummary leaves short summaries untouched", () => {
+    expect(clampApprovalSummary("pnpm test")).toBe("pnpm test");
+    expect(clampApprovalSummary("x".repeat(MAX_APPROVAL_SUMMARY))).toHaveLength(MAX_APPROVAL_SUMMARY);
+    expect(clampApprovalSummary("x".repeat(MAX_APPROVAL_SUMMARY + 50))).toHaveLength(MAX_APPROVAL_SUMMARY);
+  });
 
   it("persists one-time approval decisions and revocable project trust", () => {
     const db = openDatabase(":memory:");

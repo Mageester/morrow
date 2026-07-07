@@ -7,7 +7,7 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
-import { largeWordmark, greeting, modeLabel, privacyLabel } from "../cli/identity.js";
+import { largeWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
 import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
@@ -20,12 +20,14 @@ import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
-import { gitSummary, gitSummaryText } from "../cli/gitinfo.js";
+import { gitSummary, gitSummaryText, gitStatus } from "../cli/gitinfo.js";
+import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
   if (flagBool(ctx.flags, "plan")) return "plan-only";
-  if (flagBool(ctx.flags, "read-only") || flagBool(ctx.flags, "inspect")) return "read-only";
+  if (flagBool(ctx.flags, "ask") || flagBool(ctx.flags, "read-only") || flagBool(ctx.flags, "inspect")) return "read-only";
+  if (flagBool(ctx.flags, "build")) return "agent";
   const configured = ctx.config.get("defaults.mode") as AgentMode | undefined;
   return configured ?? "agent";
 }
@@ -35,6 +37,17 @@ export function resolveUnicode(ctx: Context): boolean {
   const cfg = ctx.config.get("ui.unicode") as boolean | undefined;
   if (cfg !== undefined) return cfg;
   return process.env.MORROW_ASCII !== "1";
+}
+
+function resolveDisplayedRecordId(items: Array<{ id: string }>, ref: string, prefixes: string[]): string {
+  const lowered = ref.trim().toLowerCase();
+  const matches = items.filter((item) => {
+    const id = item.id.toLowerCase();
+    const withoutPrefix = prefixes.reduce((value, prefix) => value.replace(new RegExp(`^${prefix}-`), ""), id);
+    return id === lowered || id.startsWith(lowered) || withoutPrefix === lowered || withoutPrefix.startsWith(lowered);
+  });
+  if (matches.length !== 1) throw new Error(matches.length === 0 ? "not found" : "ambiguous");
+  return matches[0]!.id;
 }
 
 /**
@@ -52,6 +65,8 @@ interface SessionState {
   preset: string;
   provider: string | undefined;
   model: string | undefined;
+  worktreeId: string | undefined;
+  missionId: string | undefined;
   mode: AgentMode;
   useMemory: boolean;
   autoApprove: boolean;
@@ -68,6 +83,8 @@ export async function chatCommand(ctx: Context): Promise<number> {
     preset: ctx.preset(),
     provider: ctx.provider(),
     model: ctx.model(),
+    worktreeId: flagString(ctx.flags, "worktree"),
+    missionId: flagString(ctx.flags, "mission"),
     mode,
     useMemory: (ctx.config.get("defaults.useMemory") as boolean | undefined) ?? true,
     autoApprove: resolveAutoApprove(ctx, mode),
@@ -77,6 +94,12 @@ export async function chatCommand(ctx: Context): Promise<number> {
 
   const message = flagString(ctx.flags, "message") ?? flagString(ctx.flags, "m");
   if (message) {
+    // Make the target explicit before any one-shot work so a command can never
+    // silently act on a different project than the user expects.
+    if (!ctx.out.json) {
+      const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
+      ctx.out.diag(ctx.out.gray(`  ${projectName}  ${project.workspacePath}  ·  ${modeLabel(session.mode, session.autoApprove)}`));
+    }
     return runOneShot(ctx, api, conversation, message, session);
   }
 
@@ -106,6 +129,9 @@ async function runInteractiveSession(
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
   const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
+  // Onboarding facts: whether a provider is really configured and whether we
+  // resumed prior history, so the empty-state welcome can guide honestly.
+  const priorMessages = await api.listMessages(conversation.id).then((m) => m.length).catch(() => 0);
 
   const meta: SessionMeta = {
     greeting: greeting(new Date()),
@@ -119,6 +145,10 @@ async function runInteractiveSession(
     mode: modeLabel(session.mode, session.autoApprove),
     memory: session.useMemory,
     autoApprove: session.autoApprove,
+    ...(providerStatus ? { providerConfigured: providerStatus.configured } : {}),
+    gitRepo: git.branch !== null,
+    resumed: priorMessages > 0,
+    priorMessages,
   };
   const settings: SessionSettings = {
     mode: session.mode,
@@ -138,6 +168,8 @@ async function runInteractiveSession(
         mode: opts.mode,
         useMemory: opts.useMemory,
         ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
+        ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
+        ...(session.missionId ? { missionId: session.missionId } : {}),
       });
       return { taskId: sent.task.id };
     },
@@ -154,11 +186,36 @@ async function runInteractiveSession(
         .then(() => undefined),
     getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
     getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
+    getTask: (taskId) => api.getTask(taskId),
+    getTaskTree: (taskId) => api.getTaskTree(taskId),
+    getTaskDiff: (taskId) =>
+      api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
+    undoTask: (taskId) =>
+      api.undoTask(taskId).then((u) => ({ status: u.status, restoredFiles: u.restoredFiles })),
     search: (query) =>
       api
         .search(project.id, query, { limit: 25 })
         .then((res) => res.hits.map((h) => ({ kind: h.kind, title: h.title, snippet: h.snippet }))),
     recordSkillUse: (skillId) => api.recordSkillUse(project.id, skillId).then(() => undefined),
+    getLatestMission: () => api.listMissions(project.id).then((ms) => ms[0] ?? null).catch(() => null),
+    getIntelligence: () => api.getIntelligence(project.id).catch(() => null),
+    patchConvention: async (conventionId, approval) => {
+      const intelligence = await api.getIntelligence(project.id);
+      const fullId = resolveDisplayedRecordId(intelligence.conventions, conventionId, ["conv"]);
+      await api.patchConvention(project.id, fullId, approval);
+    },
+    addRule: async (text) => { await api.addRule(project.id, text); },
+    removeRule: async (ruleId) => {
+      const fullId = resolveDisplayedRecordId(await api.listRules(project.id), ruleId, ["rule"]);
+      await api.deleteRule(project.id, fullId);
+    },
+    getMissionImpact: (missionId) => api.listMissionImpact(missionId).catch(() => []),
+    getMissionRevisions: (missionId) => api.listMissionRevisions(missionId).catch(() => []),
+    listAgents: () => api.listAgents(project.id).catch(() => []),
+    getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
+    listModels: () => api.listModels(),
+    getGitStatus: async () => gitStatus(project.workspacePath),
+    getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
@@ -227,6 +284,8 @@ function sendOptions(s: SessionState) {
     preset: s.preset,
     ...(s.provider ? { providerId: s.provider } : {}),
     ...(s.model ? { model: s.model } : {}),
+    ...(s.worktreeId ? { worktreeId: s.worktreeId } : {}),
+    ...(s.missionId ? { missionId: s.missionId } : {}),
     mode: s.mode,
     useMemory: s.useMemory,
     // Only send autoApprove when it is meaningfully on (agent mode); the server
@@ -283,6 +342,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     ["Branch", gitSummaryText(git)],
     ["Model", `${modelName}  ${out.gray("·")}  ${privacyLabel(providerName)}`],
     ["Mode", modeLabel(session.mode, session.autoApprove)],
+    ...(session.worktreeId ? [["Worktree", shortId(session.worktreeId)] as [string, string]] : []),
     ["Memory", session.useMemory ? "project context on" : "off"],
     ["Session", `${conversation.title}  ${out.gray(shortId(conversation.id))}${resuming ? out.gray("  · resumed") : ""}`],
   ]);
@@ -357,6 +417,12 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     case "help":
       printReplHelp(ctx);
       return {};
+    case "capabilities": {
+      const { reportCapabilities, capabilityLines } = await import("./capabilities.js");
+      const report = await reportCapabilities(api);
+      for (const l of capabilityLines(report, out, resolveUnicode(ctx))) out.print(l);
+      return {};
+    }
     case "exit":
     case "quit":
       out.info("Goodbye.");
@@ -410,11 +476,11 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     case "model": {
       if (arg) {
         session.model = arg === "auto" ? undefined : arg;
-        out.success(`Model set to ${session.model ?? "auto (preset routing)"}.`);
+        out.success(`Model set to ${session.model ?? "auto (preset routing)"} — session preserved.`);
       } else {
         const models = await api.listModels();
-        out.heading("Models");
-        models.filter((m) => m.available).forEach((m) => out.print(`  ${out.cyan(m.model.id)}  ${out.gray(m.model.label)}`));
+        const { modelPickerLines } = await import("../terminal/model-picker.js");
+        for (const l of modelPickerLines(models, { provider: session.provider, model: session.model }, out, resolveUnicode(ctx))) out.print(l);
       }
       return {};
     }
@@ -431,24 +497,32 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     }
     case "mode": {
       if (!arg) {
-        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}`);
+        out.info(`Mode: ${modeLabel(session.mode, session.autoApprove)}  ·  switch: /mode ask|plan|build|mission`);
         return {};
       }
-      const next = arg === "inspect" ? "read-only" : arg === "plan" ? "plan-only" : arg;
-      if (next !== "agent" && next !== "read-only" && next !== "plan-only") {
-        out.warn("Usage: /mode [agent|inspect|plan]");
+      const next = parseModeName(arg);
+      if (next === null) {
+        out.warn("Usage: /mode [ask|plan|build|mission]");
+        return {};
+      }
+      if (next === "mission") {
+        // Mission is the distinct verified-objective flow. Start one from the
+        // shell prompt or `morrow mission "<objective>"`, then inspect it with
+        // /tree, /result, and /context.
+        out.info("Mission mode runs a verified autonomous objective with criteria, evidence, and review.");
+        out.info(`Start one with:  ${out.cyan('morrow mission "<objective>"')}   ·   inspect with /tree /result /context`);
         return {};
       }
       session.mode = next as AgentMode;
-      // Leaving agent mode makes auto-approve meaningless; turn it off so the
-      // label can never claim YOLO for a mode that does not execute.
+      // Leaving Build (agent) mode makes auto-approve meaningless; turn it off so
+      // the label can never claim YOLO for a mode that does not execute.
       if (session.mode !== "agent" && session.autoApprove) session.autoApprove = false;
       out.success(`Mode set to ${modeLabel(session.mode, session.autoApprove)}.`);
       return {};
     }
     case "yolo": {
       if (session.mode !== "agent") {
-        out.warn(`YOLO only applies in agent mode (current: ${modeLabel(session.mode)}). Switch with /mode agent first.`);
+        out.warn(`YOLO only applies in Build mode (current: ${modeLabel(session.mode)}). Switch with /mode build first.`);
         return {};
       }
       session.autoApprove = arg === "on" ? true : arg === "off" ? false : !session.autoApprove;
@@ -505,6 +579,125 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         if (ev.type === "workspace.inspected") out.success(`Inspected workspace (${(ev.payload as any).resultCount} entries).`);
       }
       return {};
+    }
+    case "ps": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      try {
+        if (parts[0] === "kill") {
+          if (!parts[1]) { out.warn("Usage: /ps kill <id>"); return {}; }
+          const all = await api.listProcesses(projectId);
+          const matches = all.filter((p) => p.id === parts[1] || p.id.startsWith(parts[1]!));
+          if (matches.length !== 1) { out.warn(matches.length === 0 ? `No process matching "${parts[1]}".` : `"${parts[1]}" is ambiguous.`); return {}; }
+          await api.terminateProcess(matches[0]!.id, true);
+          out.success(`Terminating ${matches[0]!.id.slice(0, 8)}.`);
+          return {};
+        }
+        const processes = await api.listProcesses(projectId);
+        if (processes.length === 0) { out.info("No background processes. Start one with `morrow processes start -- <cmd> …`."); return {}; }
+        out.heading(`Processes (${processes.length})`);
+        for (const p of processes) {
+          const cmd = [p.command, ...p.args].join(" ").slice(0, 60);
+          out.print(`  ${p.id.slice(0, 8)}  ${p.status.padEnd(9)}  ${cmd}${p.exitCode !== null ? out.gray(`  exit ${p.exitCode}`) : ""}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
+    case "worktrees":
+    case "worktree": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const ref = parts[1];
+      try {
+        const all = await api.listWorktrees(projectId);
+        const resolve = (value: string | undefined) => {
+          if (!value) return undefined;
+          const matches = all.filter((w) => w.id === value || w.id.startsWith(value) || w.branch === value || w.branch === `morrow/${value}`);
+          return matches.length === 1 ? matches[0] : null;
+        };
+        if (verb === "show") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees show <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          const status = await api.getWorktree(match.id);
+          out.heading(`Worktree ${status.branch}`);
+          out.keyValue([
+            ["status", status.status],
+            ["path", status.path],
+            ["dirty", status.dirty ? `yes (${status.dirtyFiles.length})` : "no"],
+            ["commits ahead", String(status.aheadCommits.length)],
+            ["task", status.taskId ?? "-"],
+            ["agent", status.agentId ?? "-"],
+          ]);
+          for (const f of status.dirtyFiles.slice(0, 10)) out.print(`  M ${f}`);
+          return {};
+        }
+        if (verb === "remove") {
+          const match = resolve(ref);
+          if (match === undefined) { out.warn("Usage: /worktrees remove <id|name>"); return {}; }
+          if (match === null) { out.warn(`No unambiguous worktree matching "${ref}".`); return {}; }
+          await api.removeWorktree(match.id, parts.includes("--preserve"));
+          out.success(`Removed worktree ${match.branch} (branch retained).`);
+          return {};
+        }
+        if (all.length === 0) { out.info("No worktrees. Create one with `morrow worktrees create <name>`."); return {}; }
+        out.heading(`Worktrees (${all.length})`);
+        for (const w of all) {
+          const assoc = [w.taskId ? `task ${w.taskId.slice(0, 8)}` : "", w.agentId ? `agent ${w.agentId.slice(0, 8)}` : ""].filter(Boolean).join(", ");
+          out.print(`  ${w.id.slice(0, 8)}  ${w.status.padEnd(9)}  ${w.branch}  ${out.gray(assoc || w.path)}`);
+        }
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
+    }
+    case "checkpoint": {
+      const parts = (arg ?? "").split(/\s+/).filter(Boolean);
+      const verb = parts[0] ?? "list";
+      const name = parts[1];
+      const usage = "Usage: /checkpoint save <name> [file …] | list | restore <name> | delete <name>";
+      try {
+        if (verb === "list") {
+          const list = await api.listCheckpoints(projectId);
+          if (list.length === 0) {
+            out.info("No checkpoints yet. Create one with /checkpoint save <name>.");
+            return {};
+          }
+          out.heading(`Checkpoints (${list.length})`);
+          for (const cp of list) {
+            out.print(`  ${out.bold(cp.name)}  ${out.gray(`${cp.fileCount} file${cp.fileCount === 1 ? "" : "s"} · ${cp.createdAt}`)}`);
+          }
+          return {};
+        }
+        if (!name) { out.warn(usage); return {}; }
+        if (verb === "save") {
+          const files = parts.slice(2);
+          const created = await api.createCheckpoint(projectId, { name, ...(files.length > 0 ? { files } : {}) });
+          out.success(`Checkpoint "${created.name}" saved (${created.fileCount} file${created.fileCount === 1 ? "" : "s"}).`);
+          for (const s of created.skipped) out.warn(`Skipped ${s.path}: ${s.reason}`);
+          return {};
+        }
+        if (verb === "restore") {
+          const res = await api.restoreCheckpoint(projectId, name);
+          const total = res.restoredFiles.length + res.deletedFiles.length;
+          out.success(total === 0 ? `Workspace already matches "${name}".` : `Restored "${name}" (${res.restoredFiles.length} written, ${res.deletedFiles.length} removed).`);
+          if (res.safetyCheckpoint) out.info(`Previous state saved as "${res.safetyCheckpoint}" — restore it to undo.`);
+          return {};
+        }
+        if (verb === "delete") {
+          await api.deleteCheckpoint(projectId, name);
+          out.success(`Deleted checkpoint "${name}".`);
+          return {};
+        }
+        out.warn(usage);
+        return {};
+      } catch (e: any) {
+        out.error(e?.message ?? String(e));
+        return {};
+      }
     }
     case "diff": {
       const msgs = await api.listMessages(conversation.id);
@@ -584,6 +777,36 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       } else {
         out.info("Rollback cancelled.");
       }
+      return {};
+    }
+    case "tree": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission task exists yet.");
+        return {};
+      }
+      const tree = await api.getTaskTree(taskId);
+      for (const line of formatTaskTree(tree)) out.print(line);
+      return {};
+    }
+    case "result": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission result exists yet.");
+        return {};
+      }
+      const aggregate = await api.getTask(taskId);
+      for (const line of formatMissionResult(aggregate)) out.print(line);
+      return {};
+    }
+    case "context": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No mission context exists yet.");
+        return {};
+      }
+      const aggregate = await api.getTask(taskId);
+      for (const line of formatContextStatus(aggregate)) out.print(line);
       return {};
     }
     case "cancel":
@@ -803,6 +1026,7 @@ function printReplHelp(ctx: Context) {
   out.heading("Chat commands");
   const rows: Array<[string, string]> = [
     ["/help", "show this help"],
+    ["/capabilities", "what this build can actually do right now"],
     ["/new [title]", "start a new conversation"],
     ["/resume [id]", "list or resume a conversation"],
     ["/sessions", "list recent conversations"],
@@ -810,8 +1034,8 @@ function printReplHelp(ctx: Context) {
     ["/provider [id]", "show providers or set the active provider"],
     ["/model [id]", "show models or set the active model"],
     ["/preset [id]", "show presets or set the active preset"],
-    ["/mode [kind]", "show or set agent | inspect | plan"],
-    ["/yolo [on|off]", "toggle auto-approve (agent mode); denied actions stay blocked"],
+    ["/mode [kind]", "show or set ask | plan | build | mission"],
+    ["/yolo [on|off]", "toggle auto-approve (Build mode); denied actions stay blocked"],
     ["/tools", "list available read-only tools"],
     ["/permissions", "show the permission profile"],
     ["/status", "show service and session status"],
@@ -819,6 +1043,9 @@ function printReplHelp(ctx: Context) {
     ["/inspect", "run a safe workspace inspection"],
     ["/diff", "show the current session's latest Morrow-owned applied change"],
     ["/undo", "rollback the latest Morrow-owned change in the session"],
+    ["/tree", "show the current mission task tree"],
+    ["/result", "show final evidence and next action"],
+    ["/context", "show context usage, compaction, and token-count confidence"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],
@@ -827,4 +1054,9 @@ function printReplHelp(ctx: Context) {
     ["/exit", "quit"],
   ];
   out.keyValue(rows);
+}
+
+async function latestTaskId(api: MorrowApi, conversationId: string): Promise<string | null> {
+  const messages = await api.listMessages(conversationId);
+  return [...messages].reverse().find((message) => Boolean(message.taskId))?.taskId ?? null;
 }

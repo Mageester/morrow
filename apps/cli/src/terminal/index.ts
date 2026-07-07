@@ -6,7 +6,7 @@
  *
  * See docs/decisions/0003-terminal-runtime.md for the renderer decision.
  */
-export type { TerminalEvent, TerminalEventType, ActivityKind, ApprovalSource, SessionMeta } from "./events.js";
+export type { TerminalEvent, TerminalEventType, ActivityKind, ApprovalSource, SessionMeta, GitStateInfo, ContextUsageInfo, ProcessInfo, WorktreeInfo, AgentInfo, IntegrationInfo, ProgressStage } from "./events.js";
 export {
   reduce,
   initialState,
@@ -22,12 +22,19 @@ export {
   headerLines,
   toolCardLines,
   activityLine,
+  activityGroupLine,
+  groupActivities,
+  type ActivityGroup,
   patchLines,
   completionLines,
   composeFrame,
+  statusBar,
+  statusBarFields,
   clipToWidth,
   formatElapsed,
   glyphs,
+  relativePath,
+  stageBanner,
   type FrameOptions,
   type Glyphs,
 } from "./view.js";
@@ -39,3 +46,12 @@ export { shouldUseInteractive, resolveUnicodeFlag, type CapabilityInput } from "
 export { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 export { filterCommands, matchScore, renderMenu, clampSelection } from "./completion.js";
 export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./prompt.js";
+export { composeApp, welcomeLines, type AppFrame, type AppFrameOptions, type AppFrameContext } from "./app-view.js";
+export { modelPickerLines, modelFactsLine, formatContextWindow, type ModelSelection } from "./model-picker.js";
+export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
+export { activityDetailLines, activityGroupSummary, agentDetailLine } from "./activity-view.js";
+export { stageLabel } from "./view.js";
+export { PasteDecoder, normalizePaste, PASTE_START, PASTE_END, type PasteResult } from "./paste.js";
+export { insertPaste } from "./input-state.js";
+export { resumeDigestLines, resumeNoticeText, resumeHasWarnings, type ResumeDigest, type ResumeGitState, type ResumeStaleness } from "./resume.js";
+export { interpretError, formatInterpretedError, type InterpretedError } from "./errors.js";

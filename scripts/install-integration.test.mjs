@@ -123,30 +123,32 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     }
     assert.ok(health && health.ok === true, "GET /api/health returned ok:true");
     assert.equal(health.service, "morrow-orchestrator");
-    // Regression (beta.8): health must advertise the real served origin, never
-    // the Vite dev server, and must declare that it is serving the UI itself.
-    assert.equal(health.ui, "http://127.0.0.1:4317", "health advertises the packaged UI origin");
-    assert.equal(health.uiServed, true, "health declares the bundled UI is served");
+    // Morrow is terminal-first: the service exposes an API only. Health must NOT
+    // advertise any web UI origin, and there is no bundled dashboard to serve.
+    assert.ok(!("ui" in health), "health does not advertise a web UI origin");
+    assert.ok(!("uiServed" in health), "health does not claim to serve a web UI");
 
-    // Regression (beta.8): the bare origin -- what `morrow open` launches -- must
-    // render the app (HTML), not a raw JSON probe pointing at a dead dev URL.
+    // The bare origin is a truthful JSON liveness probe, never an HTML app and
+    // never a reference to the retired Vite dev server.
     const rootRes = await fetch("http://127.0.0.1:4317/");
     assert.equal(rootRes.status, 200, "GET / is 200");
-    assert.match(rootRes.headers.get("content-type") || "", /text\/html/, "GET / serves HTML");
+    assert.match(rootRes.headers.get("content-type") || "", /application\/json/, "GET / serves JSON");
     const rootBody = await rootRes.text();
-    assert.match(rootBody, /<html|<!doctype html/i, "GET / returns an HTML document");
+    assert.match(rootBody, /"name"\s*:\s*"morrow-orchestrator"/, "GET / returns the JSON probe");
     assert.doesNotMatch(rootBody, /127\.0\.0\.1:5173/, "GET / must not reference the dev server");
 
-    const onboarding = await fetch("http://127.0.0.1:4317/onboarding");
-    assert.equal(onboarding.status, 200, "GET /onboarding is 200");
+    // An unknown API path stays a truthful API 404, not an HTML fallback.
+    const unknownApi = await fetch("http://127.0.0.1:4317/api/does-not-exist");
+    assert.equal(unknownApi.status, 404, "unknown API path is 404");
 
     // 5c. The packaged `morrow doctor` must pass on a healthy install: it gates
-    // its exit code on the offline file checks plus the running service serving
-    // the UI, so a non-zero exit (which ps() turns into a throw) is a real defect.
+    // its exit code on the offline file checks plus a reachable local service, so
+    // a non-zero exit (which ps() turns into a throw) is a real defect.
     const doctorOut = ps(`& '${installedCmd}' doctor`);
     assert.doesNotMatch(doctorOut, /^FAIL\b/m, `morrow doctor reported a failure:\n${doctorOut}`);
     assert.match(doctorOut, /bundled Node/, "doctor reports on the bundled Node runtime");
-    assert.match(doctorOut, /web UI serving/, "doctor reports on UI serving");
+    assert.match(doctorOut, /terminal CLI/, "doctor reports on the bundled terminal CLI");
+    assert.doesNotMatch(doctorOut, /web UI/, "doctor makes no web UI claims");
 
     // 6. stop
     ps(`& '${installedCmd}' stop`);

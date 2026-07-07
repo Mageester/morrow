@@ -16,13 +16,15 @@ import {
   UpdateAgentSchema,
   UpsertToolPermissionSchema,
   UpsertSkillAccessSchema,
+  CreateProjectRuleSchema,
+  PatchConventionSchema,
   type PresetId,
   type ProviderId,
   type RoutingDecision,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
-import { extname, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { projectRepository } from "./repositories/projects.js";
 import { agentsRepository } from "./repositories/agents.js";
 import { taskRepository } from "./repositories/tasks.js";
@@ -37,7 +39,7 @@ import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
-import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema } from "@morrow/contracts";
+import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -47,17 +49,70 @@ const defaultDiagnosticsRunner: DiagnosticsRunner = async (tool, cwd) => {
   const result = await runProcessSafe("npx", args, cwd, process.env, { timeoutMs: 120000, maxOutputBytes: 4_000_000 });
   return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
 };
+
+function contextUsageFromEvents(events: Array<{ type: string; payload: Record<string, unknown> }>, summary: { id: string; method: string; sourceMessageCount: number; createdAt: string } | undefined) {
+  const budget = [...events].reverse().find((event) => event.type === "context.budget_calculated")?.payload;
+  const trim = [...events].reverse().find((event) => event.type === "context.history_trimmed" || event.type === "context.trimmed")?.payload;
+  const count = [...events].reverse().find((event) => event.type === "context.exact_count_used" || event.type === "context.estimate_used")?.payload;
+  const lastContext = [...events].reverse().find((event) => event.type.startsWith("context."));
+  if (!budget && !trim && !count && !summary) return null;
+  const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const bool = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
+  const exact = bool(count?.exact) ?? bool(trim?.exact);
+  const method = str(count?.method) ?? str(trim?.countingMethod);
+  return {
+    providerId: str(budget?.provider) ?? str(count?.provider) ?? "unknown",
+    model: str(budget?.model) ?? str(count?.model) ?? "unknown",
+    contextWindowTokens: num(budget?.contextWindowTokens) ?? 0,
+    contextWindowSource: str(budget?.contextWindowSource) ?? "fallback",
+    maxInputTokens: num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
+    reservedTokens: num(budget?.reservedTokens) ?? 0,
+    inputTokensBefore: num(trim?.inputTokensBefore) ?? num(count?.tokens),
+    inputTokensAfter: num(trim?.inputTokensAfter) ?? num(trim?.finalTokens) ?? null,
+    countingMethod: method,
+    exact,
+    compactedGroups: num(trim?.compactedGroups) ?? 0,
+    removedGroups: num(trim?.removedGroups) ?? 0,
+    lastOperation: lastContext?.type ?? null,
+    warning: exact === false ? "estimated token count" : null,
+    lastSummary: summary
+      ? { id: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, createdAt: summary.createdAt }
+      : null,
+  };
+}
 import { approvalsRepository } from "./repositories/approvals.js";
 import { recoverRunningTasks } from "./recovery.js";
 import { TaskRunner } from "./runner.js";
 import { changeSetsRepository } from "./repositories/change-sets.js";
+import { checkpointsRepository } from "./repositories/checkpoints.js";
+import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
+import { missionsRepository } from "./repositories/missions.js";
+import { MissionService, MissionError } from "./mission/service.js";
+import { ensureCortexSpecialistAgents } from "./mission/specialists.js";
+import { buildMissionCompletion } from "./mission/completion.js";
+import { intelligenceRepository } from "./repositories/intelligence.js";
+import { CortexService, CortexError } from "./cortex/service.js";
+import { analyzeChangeImpact } from "./cortex/impact.js";
+import { CreateMissionSchema, AddMissionCriterionSchema, UpdateMissionCriterionSchema } from "@morrow/contracts";
+import { processesRepository } from "./repositories/processes.js";
+import { worktreesRepository } from "./repositories/worktrees.js";
+import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
+import { integrationsRepository } from "./repositories/integrations.js";
+import { contextSummariesRepository } from "./repositories/context-summaries.js";
+import { symbolIndexRepository } from "./repositories/symbols.js";
+import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
+import { SymbolIndex } from "./workspace/symbol-index.js";
+import { ProcessSupervisor } from "./processes/supervisor.js";
+
 import { ApprovalContinuationRegistry } from "./execution/continuation.js";
 import { hashString, assertContainedRealPath } from "./tools/diff-applier.js";
-import { canonicalCommandTrustKey } from "./tools/command-policy.js";
+import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-policy.js";
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listProviderStatuses } from "./provider/registry.js";
+import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
 import { listModels } from "./routing/models.js";
@@ -102,6 +157,8 @@ function parseEventCursor(value: string): number {
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
+  /** Injectable background-process supervisor (tests point its logs at a temp dir). */
+  supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
   /** Injectable so the diagnostics route is fast and deterministic in tests. */
   diagnosticsRunner?: DiagnosticsRunner;
@@ -114,19 +171,10 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
-  /** Directory containing the built single-page web application for packaged installs. */
-  webDir?: string | undefined;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
   const app = Fastify({ logger: false });
-
-  // The single origin this service is reachable on. When a packaged web bundle
-  // is present the UI is served from this same process/port (default 4317), so
-  // the advertised UI URL must point here -- never at the Vite dev server
-  // (5173), which does not exist in an installed build.
-  const servicePort = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 4317;
-  const uiUrl = deps.webDir ? `http://127.0.0.1:${servicePort}` : "http://127.0.0.1:5173";
 
   // Reject requests that aren't trustworthy local clients BEFORE any routing,
   // body parsing, or handler runs. This protects the loopback API from hostile
@@ -159,6 +207,51 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
+  const checkpoints = checkpointsRepository(deps.db);
+  const missions = missionsRepository(deps.db);
+  const intelligenceRepo = intelligenceRepository(deps.db);
+  const cortexService = new CortexService({
+    repo: intelligenceRepo,
+    getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+  });
+  const missionService = new MissionService({
+    repo: missions,
+    getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+    completion: buildMissionCompletion({ env: process.env }),
+    backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
+    cortex: cortexService,
+  });
+  const processesRepo = processesRepository(deps.db);
+  const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
+  // A `running` row from a previous orchestrator run is unobservable — mark it
+  // lost before serving any traffic so no stale row masquerades as live.
+  supervisor.reconcileOnStartup();
+  const worktreesRepo = worktreesRepository(deps.db);
+  const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
+  const integrationsRepo = integrationsRepository(deps.db);
+  const contextSummariesRepo = contextSummariesRepository(deps.db);
+  const symbolIndexRepo = symbolIndexRepository(deps.db);
+  const symbolIndex = new SymbolIndex(symbolIndexRepo);
+  const integrationManager = new IntegrationManager(
+    integrationsRepo,
+    worktreesRepo,
+    (projectId) => projects.getProjectById(projectId)?.workspacePath
+  );
+  // Abandoned-worktree reconciliation: a row whose directory vanished is
+  // marked (branch retained) before any traffic is served.
+  worktreeManager.reconcile((projectId) => projects.getProjectById(projectId)?.workspacePath);
+  supervisor.onExit((record) => {
+    if (!record.taskId) return;
+    try {
+      records.appendEvent({
+        id: crypto.randomUUID(),
+        taskId: record.taskId,
+        type: "process.exited",
+        payload: { processId: record.id, status: record.status, exitCode: record.exitCode, detail: record.detail },
+        createdAt: new Date().toISOString(),
+      });
+    } catch { /* the task may be gone; never break the supervisor */ }
+  });
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof z.ZodError) {
@@ -197,17 +290,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   });
 
   // Liveness + schema probe. Used by the CLI to detect a running service and by
-  // `morrow doctor` to report migration state. Exposes no secrets. In a packaged
-  // build the web bundle owns "/" (see the SPA handler below), so this JSON probe
-  // is only registered in dev/test where there is no bundled UI to serve.
-  if (!deps.webDir) {
-    app.get("/", async () => ({
-      name: "morrow-orchestrator",
-      status: "healthy",
-      ui: uiUrl,
-      health: "/api/health",
-    }));
-  }
+  // `morrow doctor` to report migration state. Exposes no secrets. Morrow is a
+  // terminal-first product with no bundled web UI, so "/" is always this JSON
+  // probe.
+  app.get("/", async () => ({
+    name: "morrow-orchestrator",
+    status: "healthy",
+    health: "/api/health",
+  }));
 
   app.get("/api/health", async () => {
     const row = deps.db.prepare("SELECT MAX(id) AS latest, COUNT(*) AS applied FROM schema_migrations").get() as { latest: number | null; applied: number };
@@ -217,10 +307,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
       ownerPid: process.pid,
-      // The reachable web UI origin. Doctor and the installer validate this URL,
-      // so it must reflect where the UI is actually served, not a dev default.
-      ui: uiUrl,
-      uiServed: Boolean(deps.webDir),
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };
@@ -405,7 +491,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const agg = records.getAggregate(taskId);
     const toolCalls = convs.listToolCallsForTask(taskId);
     const routing = routingRepo.get(taskId)?.decision ?? null;
-    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), routing };
+    const latestSummary = contextSummariesRepo.latestForTask(taskId);
+    const context = contextUsageFromEvents(agg.events, latestSummary);
+    return { ...agg, toolCalls, approvals: approvals.listByTask(taskId), integrations: integrationsRepo.listByTask(taskId), context, routing };
   });
 
   app.get("/api/tasks/:taskId/events", async (request, reply) => {
@@ -577,6 +665,43 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     
     const body = SendMessageSchema.parse(request.body);
 
+    // Idempotent replay: a repeated send with the same key returns the original
+    // task and messages (200) instead of dispatching the agent a second time.
+    const idempotencyKey = readIdempotencyKey(request);
+    if (idempotencyKey) {
+      const existing = tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey);
+      if (existing) {
+        const msgs = convs.listMessages(conversationId);
+        const assistantIndex = msgs.findIndex((m) => m.taskId === existing.id && m.role === "assistant");
+        const assistantMessage = assistantIndex >= 0 ? msgs[assistantIndex] : null;
+        const userMessage = assistantIndex >= 0 ? [...msgs.slice(0, assistantIndex)].reverse().find((m) => m.role === "user") ?? null : null;
+        reply.status(200);
+        return {
+          task: existing,
+          userMessage,
+          assistantMessage,
+          routing: routingRepo.get(existing.id)?.decision ?? null,
+          aggregateUrl: `/api/tasks/${existing.id}`,
+          sseUrl: `/api/tasks/${existing.id}/events/stream`,
+          replayed: true,
+        };
+      }
+    }
+
+    if (body.worktreeId) {
+      const wt = worktreesRepo.get(body.worktreeId);
+      if (!wt || wt.projectId !== conversation.projectId) throw new ApiError(404, "Worktree not found in this project", "NOT_FOUND");
+      if (wt.status !== "active") throw new ApiError(409, `Worktree is ${wt.status}; create a fresh one`, "CONFLICT");
+    }
+
+    // A mission-linked task routes agent tool failures into that mission's
+    // failure ledger. Reject cross-project links so a mission can never
+    // accumulate failures from another project's execution.
+    if (body.missionId) {
+      const mission = missions.get(body.missionId);
+      if (!mission || mission.projectId !== conversation.projectId) throw new ApiError(404, "Mission not found in this project", "NOT_FOUND");
+    }
+
     const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
     const mode = body.mode ?? "agent";
     const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
@@ -621,6 +746,36 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
     const timestamp = new Date().toISOString();
 
+    // Create the task before appending any messages so a lost race on the
+    // idempotency unique index can't leave a duplicate user message behind.
+    let task;
+    try {
+      task = tasks.createTask({
+        id: crypto.randomUUID(),
+        projectId: conversation.projectId,
+        kind: "agent_chat",
+        status: "queued",
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
+        ...(body.missionId ? { missionId: body.missionId } : {}),
+        createdAt: timestamp,
+      });
+    } catch (e) {
+      // Concurrent duplicate with the same key: replay the winner.
+      const winner = idempotencyKey ? tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey) : undefined;
+      if (!winner) throw e;
+      reply.status(200);
+      return {
+        task: winner,
+        userMessage: null,
+        assistantMessage: null,
+        routing: routingRepo.get(winner.id)?.decision ?? null,
+        aggregateUrl: `/api/tasks/${winner.id}`,
+        sseUrl: `/api/tasks/${winner.id}/events/stream`,
+        replayed: true,
+      };
+    }
+
     const userMsg = convs.appendMessage({
       id: crypto.randomUUID(),
       conversationId,
@@ -628,14 +783,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       content: body.content,
       createdAt: timestamp,
       updatedAt: timestamp,
-    });
-
-    const task = tasks.createTask({
-      id: crypto.randomUUID(),
-      projectId: conversation.projectId,
-      kind: "agent_chat",
-      status: "queued",
-      createdAt: timestamp,
     });
     records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
 
@@ -847,6 +994,666 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     };
   });
 
+  // ── Named workspace checkpoints ──────────────────────────────────────────
+  // Snapshot a set of workspace files under a project-unique name; restore
+  // rewrites them to the captured state (auto-snapshotting the current state
+  // first so a restore is itself reversible).
+
+  const checkpointSummary = (cp: ReturnType<typeof checkpoints.getByName> & object) => ({
+    id: cp.id,
+    name: cp.name,
+    taskId: cp.taskId,
+    fileCount: Object.keys(cp.files).length,
+    files: Object.keys(cp.files),
+    createdAt: cp.createdAt,
+  });
+
+  app.post("/api/projects/:projectId/checkpoints", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+
+    const parsed = CreateCheckpointSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid checkpoint request", "VALIDATION_ERROR");
+    const { name, files, taskId } = parsed.data;
+    if (!isValidCheckpointName(name)) {
+      throw new ApiError(400, "Checkpoint names may use letters, digits, dot, dash, underscore, and slash (max 100 chars)", "VALIDATION_ERROR");
+    }
+    if (checkpoints.getByName(projectId, name)) {
+      throw new ApiError(409, `A checkpoint named "${name}" already exists in this project`, "CONFLICT");
+    }
+    if (taskId && !tasks.getTaskById(taskId)) throw new ApiError(404, "Task not found", "NOT_FOUND");
+
+    // Default file set: everything Morrow's change sets have ever touched in
+    // this project — the surface a user most plausibly wants to protect.
+    let fileList = files ?? [];
+    if (fileList.length === 0) {
+      const touched = new Set<string>();
+      for (const cs of changeSets.listByProject(projectId)) {
+        for (const f of Object.keys(cs.originalHashes)) if (f !== "/dev/null") touched.add(f);
+      }
+      fileList = [...touched];
+    }
+    if (fileList.length === 0) {
+      throw new ApiError(400, "Nothing to checkpoint: no Morrow-modified files exist yet; pass an explicit files list", "VALIDATION_ERROR");
+    }
+    if (fileList.length > 500) throw new ApiError(400, "A checkpoint may cover at most 500 files", "VALIDATION_ERROR");
+
+    const backupsDir = join(resolveMorrowHome(process.env), "backups");
+    let snapshot;
+    try {
+      snapshot = snapshotFiles(project.workspacePath, backupsDir, fileList);
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+    const created = checkpoints.create({ id: crypto.randomUUID(), projectId, name, taskId: taskId ?? null, files: snapshot.files });
+    reply.status(201);
+    return { ...checkpointSummary(created), skipped: snapshot.skipped };
+  });
+
+  app.get("/api/projects/:projectId/checkpoints", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return checkpoints.listByProject(projectId).map(checkpointSummary);
+  });
+
+  app.post("/api/projects/:projectId/checkpoints/:name/restore", async (request) => {
+    const { projectId, name } = request.params as { projectId: string; name: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const checkpoint = checkpoints.getByName(projectId, name);
+    if (!checkpoint) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
+
+    const backupsDir = join(resolveMorrowHome(process.env), "backups");
+
+    // Reversibility: capture the current state of the same file set first.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const safetyName = `auto/pre-restore-${name}-${stamp}`.slice(0, 100);
+    let safety;
+    try {
+      safety = snapshotFiles(project.workspacePath, backupsDir, Object.keys(checkpoint.files));
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+    if (safety.skipped.length > 0) {
+      throw new ApiError(409, `Cannot restore safely: current state of ${safety.skipped.map((s) => s.path).join(", ")} could not be captured`, "CONFLICT");
+    }
+    const safetyCheckpoint = checkpoints.getByName(projectId, safetyName)
+      ? null
+      : checkpoints.create({ id: crypto.randomUUID(), projectId, name: safetyName, taskId: null, files: safety.files });
+
+    let restored;
+    try {
+      restored = restoreSnapshot(project.workspacePath, backupsDir, checkpoint.files);
+    } catch (e: any) {
+      throw new ApiError(409, `Restore failed: ${e?.message ?? e}`, "CONFLICT");
+    }
+    return {
+      status: "success",
+      name: checkpoint.name,
+      restoredFiles: restored.restoredFiles,
+      deletedFiles: restored.deletedFiles,
+      safetyCheckpoint: safetyCheckpoint?.name ?? null,
+    };
+  });
+
+  app.delete("/api/projects/:projectId/checkpoints/:name", async (request) => {
+    const { projectId, name } = request.params as { projectId: string; name: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    if (!checkpoints.remove(projectId, name)) throw new ApiError(404, `No checkpoint named "${name}" in this project`, "NOT_FOUND");
+    return { status: "deleted", name };
+  });
+
+  // ── Verified Missions ────────────────────────────────────────────────────
+  // A mission converts an objective into measurable, evidence-backed criteria,
+  // executes under supervision, records failures/recovery, checkpoints risky
+  // changes, obtains an independent review, and grades itself honestly. All
+  // state is durable so a restart reconstructs the mission from persistence.
+  const requireMission = (missionId: string) => {
+    const m = missions.get(missionId);
+    if (!m) throw new ApiError(404, "Mission not found", "NOT_FOUND");
+    return m;
+  };
+  const runMission = <T>(fn: () => T): T => {
+    try { return fn(); }
+    catch (e) {
+      if (e instanceof MissionError) {
+        const status = e.code === "not_found" ? 404 : e.code === "no_workspace" ? 409 : 400;
+        throw new ApiError(status, e.message, e.code.toUpperCase());
+      }
+      throw e;
+    }
+  };
+
+  app.post("/api/projects/:projectId/missions", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const parsed = CreateMissionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid mission request", "VALIDATION_ERROR");
+    const mission = missionService.create(projectId, parsed.data);
+    ensureCortexSpecialistAgents(projectId, agents);
+    reply.status(201);
+    return mission;
+  });
+
+  app.get("/api/projects/:projectId/missions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return missionService.listByProject(projectId);
+  });
+
+  app.get("/api/missions/:missionId", async (request) => requireMission((request.params as { missionId: string }).missionId));
+
+  app.get("/api/missions/:missionId/criteria", async (request) => requireMission((request.params as { missionId: string }).missionId).criteria);
+  app.get("/api/missions/:missionId/evidence", async (request) => requireMission((request.params as { missionId: string }).missionId).evidence);
+  app.get("/api/missions/:missionId/failures", async (request) => requireMission((request.params as { missionId: string }).missionId).failures);
+  app.get("/api/missions/:missionId/checkpoints", async (request) => requireMission((request.params as { missionId: string }).missionId).checkpoints);
+  app.get("/api/missions/:missionId/result", async (request) => {
+    const m = requireMission((request.params as { missionId: string }).missionId);
+    return { status: m.status, result: m.result, finalReview: m.finalReview };
+  });
+  app.get("/api/missions/:missionId/events", async (request) => {
+    requireMission((request.params as { missionId: string }).missionId);
+    return missions.listEvents((request.params as { missionId: string }).missionId);
+  });
+  app.get("/api/missions/:missionId/specialists", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.specialists(missionId));
+  });
+
+  // Generate/regenerate criteria from the objective.
+  app.post("/api/missions/:missionId/criteria/generate", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { repoSummary?: string };
+    return runMission(() => missionService.generateCriteria(missionId, body.repoSummary ?? ""));
+  });
+
+  app.post("/api/missions/:missionId/criteria", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const parsed = AddMissionCriterionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid criterion", "VALIDATION_ERROR");
+    reply.status(201);
+    return runMission(() => missionService.addCriterion(missionId, parsed.data.description, parsed.data.verification));
+  });
+
+  app.patch("/api/missions/:missionId/criteria/:criterionId", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    const parsed = UpdateMissionCriterionSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError(400, "Invalid criterion update", "VALIDATION_ERROR");
+    return runMission(() => missionService.updateCriterion(missionId, criterionId, parsed.data));
+  });
+
+  app.delete("/api/missions/:missionId/criteria/:criterionId", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    const removed = runMission(() => missionService.removeCriterion(missionId, criterionId));
+    if (!removed) throw new ApiError(404, "Criterion not found", "NOT_FOUND");
+    return { status: "deleted", criterionId };
+  });
+
+  app.post("/api/missions/:missionId/criteria/:criterionId/verify", async (request) => {
+    const { missionId, criterionId } = request.params as { missionId: string; criterionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.verifyCriterion(missionId, criterionId));
+  });
+
+  app.post("/api/missions/:missionId/approve", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.approveCriteria(missionId));
+  });
+
+  app.post("/api/missions/:missionId/verify", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.verifyAll(missionId));
+  });
+
+  app.post("/api/missions/:missionId/review", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.runReview(missionId));
+  });
+
+  app.post("/api/missions/:missionId/finalize", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { humanInterventions?: number; tasksCompleted?: number };
+    return runMission(() => missionService.finalize(missionId, body));
+  });
+
+  app.post("/api/missions/:missionId/checkpoints", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { label?: string; reason?: string; files?: string[] };
+    if (!body.label) throw new ApiError(400, "A checkpoint label is required", "VALIDATION_ERROR");
+    reply.status(201);
+    return runMission(() => missionService.createCheckpoint(missionId, body.label!, body.reason ?? "manual checkpoint", body.files));
+  });
+
+  app.get("/api/missions/:missionId/checkpoints/:checkpointId/diff", async (request) => {
+    const { missionId, checkpointId } = request.params as { missionId: string; checkpointId: string };
+    requireMission(missionId);
+    return runMission(() => ({ changes: missionService.checkpointDiff(missionId, checkpointId) }));
+  });
+
+  app.post("/api/missions/:missionId/rollback", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    const body = (request.body ?? {}) as { checkpointId?: string };
+    if (!body.checkpointId) throw new ApiError(400, "checkpointId is required", "VALIDATION_ERROR");
+    return runMission(() => missionService.rollback(missionId, body.checkpointId!));
+  });
+
+  app.post("/api/missions/:missionId/cancel", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.cancel(missionId));
+  });
+
+  app.post("/api/missions/:missionId/resume", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return runMission(() => missionService.resume(missionId));
+  });
+
+  // ── Morrow Cortex: persistent project intelligence ─────────────────────────
+  // Structured, evidence-backed repository knowledge with scoped staleness.
+  // Facts come from deterministic analysis; stale knowledge is labelled, never
+  // presented as certain; user rules outrank inferred conventions.
+  const requireProjectForCortex = (projectId: string) => {
+    const p = projects.getProjectById(projectId);
+    if (!p) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return p;
+  };
+  const runCortex = <T>(fn: () => T): T => {
+    try { return fn(); }
+    catch (e) {
+      if (e instanceof CortexError) {
+        const status = e.code === "not_found" ? 404 : e.code === "no_workspace" || e.code === "conflict" ? 409 : e.code === "limit" ? 429 : 400;
+        throw new ApiError(status, e.message, e.code.toUpperCase());
+      }
+      throw e;
+    }
+  };
+
+  app.get("/api/projects/:projectId/intelligence", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId));
+  });
+
+  app.post("/api/projects/:projectId/intelligence/refresh", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    reply.status(201);
+    return runCortex(() => cortexService.refresh(projectId));
+  });
+
+  app.get("/api/projects/:projectId/intelligence/staleness", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.detectStaleness(projectId));
+  });
+
+  app.delete("/api/projects/:projectId/intelligence", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    const { includeDurable } = (request.query ?? {}) as { includeDurable?: string };
+    runCortex(() => cortexService.forget(projectId, { includeDurable: includeDurable === "true" }));
+    return { forgotten: true };
+  });
+
+  app.get("/api/projects/:projectId/architecture", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).architecture);
+  });
+
+  app.get("/api/projects/:projectId/conventions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).conventions);
+  });
+
+  app.patch("/api/projects/:projectId/conventions/:conventionId", async (request) => {
+    const { projectId, conventionId } = request.params as { projectId: string; conventionId: string };
+    requireProjectForCortex(projectId);
+    const body = PatchConventionSchema.parse(request.body);
+    return runCortex(() => body.approval === "approved"
+      ? cortexService.approveConvention(projectId, conventionId)
+      : cortexService.rejectConvention(projectId, conventionId));
+  });
+
+  app.get("/api/projects/:projectId/decisions", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).decisions);
+  });
+
+  app.get("/api/projects/:projectId/learnings", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).missionLearnings);
+  });
+
+  app.get("/api/projects/:projectId/risks", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return runCortex(() => cortexService.get(projectId).risks);
+  });
+
+  app.get("/api/projects/:projectId/rules", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    return intelligenceRepo.listRules(projectId);
+  });
+
+  app.post("/api/projects/:projectId/rules", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    requireProjectForCortex(projectId);
+    const body = CreateProjectRuleSchema.parse(request.body);
+    reply.status(201);
+    return runCortex(() => cortexService.addRule(projectId, body));
+  });
+
+  app.delete("/api/projects/:projectId/rules/:ruleId", async (request) => {
+    const { projectId, ruleId } = request.params as { projectId: string; ruleId: string };
+    requireProjectForCortex(projectId);
+    runCortex(() => cortexService.removeRule(projectId, ruleId));
+    return { deleted: true };
+  });
+
+  // Change-impact analysis: computed from persisted intelligence + the
+  // mission's prior failures, then recorded on the mission for auditability.
+  app.post("/api/missions/:missionId/impact", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = requireMission(missionId);
+    return runCortex(() => {
+      if (!cortexService.has(mission.projectId)) {
+        throw new CortexError("No project intelligence yet — refresh Cortex before running impact analysis", "not_found");
+      }
+      const analysis = analyzeChangeImpact({
+        missionId,
+        objective: mission.objective,
+        intelligence: cortexService.get(mission.projectId),
+        priorFailures: mission.failures,
+      });
+      cortexService.recordImpactAnalysis(analysis);
+      missions.appendEvent(missionId, "mission.impact_analyzed", `Impact: ${analysis.likelyComponents.length} component(s), ${analysis.requiredVerification.length} verification step(s)`, { components: analysis.likelyComponents.length }, new Date().toISOString());
+      reply.status(201);
+      return analysis;
+    });
+  });
+
+  app.get("/api/missions/:missionId/impact", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return cortexService.listImpactAnalyses(missionId);
+  });
+
+  app.get("/api/missions/:missionId/revisions", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    requireMission(missionId);
+    return cortexService.listPlanRevisions(missionId);
+  });
+
+  // ── Background process registry ──────────────────────────────────────────
+  // Start, observe, and terminate long-running commands owned by the
+  // orchestrator. Rows never claim liveness across a restart (reconciled to
+  // `lost` at startup), and output is captured bounded per stream.
+
+  app.post("/api/projects/:projectId/processes", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = StartProcessSchema.parse(request.body ?? {});
+    if (body.taskId) {
+      const task = tasks.getTaskById(body.taskId);
+      if (!task || task.projectId !== projectId) throw new ApiError(404, "Task not found in this project", "NOT_FOUND");
+    }
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+
+    // The categorical deny list applies even to explicit user requests —
+    // shells, privilege escalation, and destructive commands stay blocked.
+    const policy = classifyCommand(body.command, body.args);
+    if (policy.risk === "denied") {
+      throw new ApiError(403, `Command refused by policy: ${policy.reason}`, "FORBIDDEN");
+    }
+
+    // cwd is workspace-relative and containment-checked; default is the root.
+    let cwd: string;
+    try {
+      cwd = body.cwd ? assertContainedRealPath(project.workspacePath, body.cwd) : realpathSync(project.workspacePath);
+    } catch (e: any) {
+      throw new ApiError(403, `Path containment violation: ${e?.message ?? e}`, "FORBIDDEN");
+    }
+
+    let record;
+    try {
+      record = await supervisor.start({
+        projectId,
+        taskId: body.taskId ?? null,
+        agentId: body.agentId ?? null,
+        command: body.command,
+        args: body.args,
+        cwd,
+        mode: body.mode,
+        ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
+      });
+    } catch (e: any) {
+      throw new ApiError(400, e?.message ?? "Failed to start process", "PROCESS_START_FAILED");
+    }
+    if (record.taskId) {
+      records.appendEvent({
+        id: crypto.randomUUID(),
+        taskId: record.taskId,
+        type: "process.started",
+        payload: { processId: record.id, command: record.command, args: record.args, pid: record.pid },
+        createdAt: new Date().toISOString(),
+      });
+    }
+    reply.status(201);
+    return record;
+  });
+
+  app.get("/api/projects/:projectId/processes", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["running", "exited", "failed", "cancelled", "lost"].includes(status)) {
+      throw new ApiError(400, "Invalid process status filter", "VALIDATION_ERROR");
+    }
+    return processesRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/processes/:processId", async (request) => {
+    const { processId } = request.params as { processId: string };
+    const record = processesRepo.get(processId);
+    if (!record) throw new ApiError(404, "Process not found", "NOT_FOUND");
+    return record;
+  });
+
+  app.get("/api/processes/:processId/output", async (request) => {
+    const { processId } = request.params as { processId: string };
+    if (!processesRepo.get(processId)) throw new ApiError(404, "Process not found", "NOT_FOUND");
+    const q = request.query as { stream?: string; offset?: string; limit?: string };
+    const stream = q.stream === "stderr" ? "stderr" : "stdout";
+    const offset = q.offset ? Number(q.offset) : 0;
+    const limit = q.limit ? Math.min(Number(q.limit), 1024 * 1024) : 64 * 1024;
+    if (!Number.isFinite(offset) || offset < 0 || !Number.isFinite(limit) || limit <= 0) {
+      throw new ApiError(400, "offset and limit must be non-negative numbers", "VALIDATION_ERROR");
+    }
+    return { processId, stream, ...supervisor.readOutput(processId, stream, offset, limit) };
+  });
+
+  app.post("/api/processes/:processId/terminate", async (request, reply) => {
+    const { processId } = request.params as { processId: string };
+    const { force } = (request.body ?? {}) as { force?: boolean };
+    const result = await supervisor.terminate(processId, { force: force === true });
+    if (result.ok) {
+      reply.status(202);
+      return { status: "terminating", processId, forced: force === true };
+    }
+    if (result.reason === "not_found") throw new ApiError(404, "Process not found", "NOT_FOUND");
+    if (result.reason?.startsWith("not_running")) {
+      throw new ApiError(409, `Process is not running (${result.reason.split(":")[1]})`, "PROCESS_NOT_RUNNING");
+    }
+    throw new ApiError(409, "Process is not controlled by this orchestrator instance (marked from a previous run); terminate it manually if it is still alive", "PROCESS_NOT_OWNED");
+  });
+
+  // ── Git worktrees ─────────────────────────────────────────────────────────
+  // Isolated checkouts on deterministic morrow/<name> branches. Removal never
+  // deletes the branch, and dirty trees are preserved-by-commit or refused.
+
+  const worktreeApiError = (e: unknown): never => {
+    if (e instanceof WorktreeError) {
+      if (e.code === "not_found") throw new ApiError(404, e.message, "NOT_FOUND");
+      if (e.code === "conflict") throw new ApiError(409, e.message, "CONFLICT");
+      if (e.code === "dirty") throw new ApiError(409, e.message, "WORKTREE_DIRTY");
+      if (e.code === "not_a_repo" || e.code === "invalid_name") throw new ApiError(400, e.message, "VALIDATION_ERROR");
+      throw new ApiError(500, e.message, "GIT_FAILED");
+    }
+    throw e;
+  };
+
+  app.post("/api/projects/:projectId/worktrees", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const body = CreateWorktreeSchema.parse(request.body ?? {});
+    if (body.taskId) {
+      const task = tasks.getTaskById(body.taskId);
+      if (!task || task.projectId !== projectId) throw new ApiError(404, "Task not found in this project", "NOT_FOUND");
+    }
+    if (body.agentId) {
+      const agent = agents.get(body.agentId);
+      if (!agent || agent.projectId !== projectId) throw new ApiError(404, "Agent not found in this project", "NOT_FOUND");
+    }
+    try {
+      const record = worktreeManager.create({
+        projectId,
+        workspacePath: project.workspacePath,
+        ...(body.name ? { name: body.name } : {}),
+        taskId: body.taskId ?? null,
+        agentId: body.agentId ?? null,
+        ...(body.baseRef ? { baseRef: body.baseRef } : {}),
+      });
+      reply.status(201);
+      return record;
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.get("/api/projects/:projectId/worktrees", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["active", "removed", "abandoned"].includes(status)) {
+      throw new ApiError(400, "Invalid worktree status filter", "VALIDATION_ERROR");
+    }
+    return worktreesRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/worktrees/:worktreeId", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    try {
+      const report = worktreeManager.status(worktreeId);
+      return { ...report.record, exists: report.exists, dirty: report.dirty, dirtyFiles: report.dirtyFiles, aheadCommits: report.aheadCommits };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.get("/api/worktrees/:worktreeId/diff", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    try {
+      return { worktreeId, ...worktreeManager.diff(worktreeId) };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  app.delete("/api/worktrees/:worktreeId", async (request) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    const { preserve } = request.query as { preserve?: string };
+    try {
+      const result = worktreeManager.remove(worktreeId, { preserve: preserve === "true" });
+      return { status: "removed", worktree: result.record, preservedCommit: result.preservedCommit };
+    } catch (e) {
+      return worktreeApiError(e);
+    }
+  });
+
+  // ── Git integrations ──────────────────────────────────────────────────────
+  // Check runs in a temporary local clone; apply is explicit and refuses dirty
+  // or moved targets. Failed/conflicted checks never delete source worktrees.
+
+  const integrationApiError = (e: unknown): never => {
+    if (e instanceof IntegrationError) {
+      if (e.code === "not_found") throw new ApiError(404, e.message, "NOT_FOUND");
+      if (e.code === "conflict") throw new ApiError(409, e.message, "CONFLICT");
+      if (e.code === "validation") throw new ApiError(400, e.message, "VALIDATION_ERROR");
+      throw new ApiError(500, e.message, "GIT_FAILED");
+    }
+    throw e;
+  };
+
+  app.post("/api/worktrees/:worktreeId/integrations/check", async (request, reply) => {
+    const { worktreeId } = request.params as { worktreeId: string };
+    const body = z.object({ targetBranch: z.string().trim().min(1).max(200).optional() }).strict().parse(request.body ?? {});
+    try {
+      const attempt = integrationManager.check(worktreeId, body.targetBranch ? { targetBranch: body.targetBranch } : {});
+      reply.status(201);
+      return attempt;
+    } catch (e) {
+      return integrationApiError(e);
+    }
+  });
+
+  app.get("/api/projects/:projectId/integrations", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const { status } = request.query as { status?: string };
+    if (status && !["pending", "clean", "conflicted", "applied", "failed", "cancelled"].includes(status)) {
+      throw new ApiError(400, "Invalid integration status filter", "VALIDATION_ERROR");
+    }
+    return integrationsRepo.listByProject(projectId, status as any);
+  });
+
+  app.get("/api/integrations/:integrationId", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    const attempt = integrationsRepo.get(integrationId);
+    if (!attempt) throw new ApiError(404, "Integration attempt not found", "NOT_FOUND");
+    return attempt;
+  });
+
+  app.post("/api/integrations/:integrationId/apply", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    try {
+      return integrationManager.apply(integrationId);
+    } catch (e) {
+      return integrationApiError(e);
+    }
+  });
+
+  app.post("/api/integrations/:integrationId/cancel", async (request) => {
+    const { integrationId } = request.params as { integrationId: string };
+    try {
+      return integrationManager.cancel(integrationId);
+    } catch (e) {
+      return integrationApiError(e);
+    }
+  });
+
   app.get("/api/projects/:projectId/approvals", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
@@ -945,6 +1752,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Full provider status list (configured/available, capabilities, endpoint host).
   app.get("/api/providers", async () => listProviderStatuses());
+
+  // Live rate-limit guard state: which providers are cooling down and for how long.
+  app.get("/api/providers/rate-limits", async () => globalRateGuard.snapshot());
 
   // Capability matrix for the UI.
   app.get("/api/providers/capabilities", async () =>
@@ -1151,6 +1961,49 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       ...(q.conversationId ? { conversationId: q.conversationId } : {}),
       ...(q.limit ? { limit: q.limit } : {}),
     });
+  });
+
+  app.post("/api/projects/:projectId/symbols/rebuild", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndex.rebuildProject(projectId, project.workspacePath);
+  });
+
+  app.post("/api/projects/:projectId/symbols/refresh", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndex.refreshProject(projectId, project.workspacePath);
+  });
+
+  app.get("/api/projects/:projectId/symbols/status", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return symbolIndexRepo.status(projectId);
+  });
+
+  app.get("/api/projects/:projectId/symbols/search", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ q: z.string().max(200).optional().default(""), limit: z.coerce.number().int().positive().max(200).optional() }).parse(request.query);
+    return { version: 1, query: query.q, projectId, symbols: symbolIndexRepo.search(projectId, query.q, query.limit === undefined ? {} : { limit: query.limit }) };
+  });
+
+  app.get("/api/projects/:projectId/symbols/definition", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.query);
+    const symbol = symbolIndexRepo.findDefinition(projectId, query.name);
+    if (!symbol) throw new ApiError(404, "Symbol not found", "NOT_FOUND");
+    return symbol;
+  });
+
+  app.get("/api/projects/:projectId/symbols/file", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    const query = z.object({ path: z.string().trim().min(1).max(1024) }).parse(request.query);
+    return { version: 1, projectId, filePath: query.path, symbols: symbolIndexRepo.listFileSymbols(projectId, query.path) };
   });
 
   const messageAdapters = deps.messageAdapters ?? loadAdaptersFromEnv(process.env);
@@ -1422,35 +2275,5 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { success: true };
   });
 
-  // The portable Windows package is a single local service: it owns both the
-  // API and the built SPA. Development keeps using Vite, so this is opt-in.
-  // API paths never fall back to HTML; a typo remains a truthful API 404.
-  if (deps.webDir) {
-    const webRoot = resolve(deps.webDir);
-    const indexFile = resolve(webRoot, "index.html");
-    const serveSpa = async (request: FastifyRequest, reply: FastifyReply) => {
-      const pathname = decodeURIComponent(request.url.split("?", 1)[0] ?? "/");
-      if (pathname.startsWith("/api/")) {
-        reply.status(404).send({ version: 1, error: { code: "NOT_FOUND", message: "API route not found" } });
-        return;
-      }
-      const requested = resolve(webRoot, `.${pathname}`);
-      const contained = relative(webRoot, requested) && !relative(webRoot, requested).startsWith("..");
-      const file = contained && existsSync(requested) && lstatSync(requested).isFile() ? requested : indexFile;
-      if (!existsSync(file)) throw new ApiError(503, "The bundled web interface is missing.", "WEB_UI_UNAVAILABLE");
-      const type = contentType(extname(file));
-      reply.type(type).send(readFileSync(file));
-    };
-    // Serve the SPA at the root and for every non-API path. Registering "/"
-    // explicitly guarantees that opening the bare origin (what `morrow open`
-    // does) renders the app instead of a raw JSON probe.
-    app.get("/", serveSpa);
-    app.get("/*", serveSpa);
-  }
-
   return app;
-}
-
-function contentType(extension: string): string {
-  return ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".json": "application/json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon" } as Record<string, string>)[extension] ?? "application/octet-stream";
 }

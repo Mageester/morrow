@@ -1,8 +1,9 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { classify, needsService } from "./dispatch.mjs";
 
 const app = dirname(fileURLToPath(import.meta.url));
 const install = dirname(app);
@@ -11,29 +12,61 @@ const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
 const skillsDir = join(app, "skills");
+// The bundled CLI (product surface). It is co-located under orchestrator/ so its
+// `@morrow/*` and runtime dependencies resolve from the orchestrator's flat
+// node_modules with no extra wiring. Present in packaged installs; when absent
+// (older package) we degrade gracefully to the browser UI instead of erroring.
+const cliEntry = join(app, "orchestrator", "cli", "bin", "morrow.mjs");
 const pidFile = join(data, "morrow.pid");
 const logFile = join(logs, "orchestrator.log");
-const url = "http://127.0.0.1:4317";
-const commands = new Set(["start", "stop", "restart", "status", "open", "doctor", "uninstall", "help"]);
+const host = "127.0.0.1";
+const port = 4317;
+const url = `http://${host}:${port}`;
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
+
+/** Environment that points the delegated CLI at THIS packaged install/service. */
+function cliEnv() {
+  return {
+    ...process.env,
+    MORROW_HOME: data,
+    MORROW_SKILLS_DIR: skillsDir,
+    MORROW_BIND_HOST: host,
+    PORT: String(port),
+    // The launcher owns the service; the CLI must never try to spawn its own.
+    MORROW_NO_AUTOSTART: "1",
+    NODE_ENV: "production",
+  };
+}
+
+/**
+ * Delegate a command to the bundled CLI, inheriting stdio so the interactive
+ * terminal shell, prompts, and streaming all work. Returns the CLI exit code.
+ */
+function delegateToCli(args) {
+  if (!existsSync(cliEntry)) {
+    // Morrow is a terminal-only product; every current package bundles the CLI.
+    // A package without it is broken, not a browser-UI fallback situation.
+    console.error("This Morrow package is missing the bundled terminal CLI. Reinstall to repair it.");
+    return 1;
+  }
+  const result = spawnSync(runtime, [cliEntry, ...args], { stdio: "inherit", env: cliEnv() });
+  if (result.error) throw result.error;
+  return result.status ?? 0;
+}
 
 function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { return 0; } }
 async function health() { try { const response = await fetch(url + "/api/health"); return response.ok ? await response.json() : null; } catch { return null; } }
 async function healthy() { return Boolean(await health()); }
-// Confirm the bare origin renders the web app (HTML), not a JSON probe. This is
-// the exact URL `morrow open` launches, so a green here means the user lands on
-// a real UI rather than a connection error or raw JSON.
-async function uiServesHtml() {
-  try {
-    const response = await fetch(url + "/");
-    if (!response.ok) return false;
-    return (response.headers.get("content-type") || "").includes("text/html");
-  } catch { return false; }
-}
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
 function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
 function printHelp() {
-  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow start\n  morrow stop\n  morrow restart\n  morrow status\n  morrow open\n  morrow doctor\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
+  // Delegate to the CLI's full help when available so the two never drift; fall
+  // back to the launcher-only surface for packages without the bundled CLI.
+  if (existsSync(cliEntry)) {
+    delegateToCli(["--help"]);
+    return;
+  }
+  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow                        open the terminal agent shell\n  morrow ask|fix|plan|yolo "…"  run the agent\n  morrow mission                open Mission Control\n  morrow cortex                 inspect repository intelligence\n  morrow start|stop|restart     manage the local service\n  morrow status                 service status\n  morrow doctor                 environment checks\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
 }
 function printUninstallHelp() {
   console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data | --keep-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - interactively asks whether to also delete ALL your data (conversations,\n    memory, provider keys, backups, logs, cache)\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt; keep data unless --purge-data is also given\n  --purge-data  delete local user data as well (no prompt)\n  --keep-data   keep local user data (no prompt)`);
@@ -46,7 +79,7 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_WEB_DIR: join(app, "web"), MORROW_SKILLS_DIR: skillsDir, NODE_ENV: "production" } });
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
@@ -86,20 +119,17 @@ async function doctor() {
   const files = [
     ["bundled Node", existsSync(runtime)],
     ["orchestrator", existsSync(entry)],
+    ["terminal CLI", existsSync(cliEntry)],
     ["data", existsSync(data)],
-    ["web UI files", existsSync(join(app, "web", "index.html"))],
     [`agent skills (${skillCount})`, skillCount > 0],
   ];
   const running = await healthy();
-  // The UI-serving check only applies while the service is up. When stopped it is
-  // reported as a skip, not a failure, so doctor stays green on a healthy install.
-  const uiOk = running ? await uiServesHtml() : null;
   for (const [name, ok] of files) console.log((ok ? "OK   " : "FAIL ") + name);
   console.log((running ? "OK   " : "SKIP ") + "service running" + (running ? "" : " (run 'morrow start')"));
-  console.log(uiOk === null ? "SKIP web UI serving (service stopped)" : (uiOk ? "OK   web UI serving at " + url : "FAIL web UI serving at " + url));
   const filesOk = files.every(([, ok]) => ok);
-  // Fail only on missing files, or a running service that cannot serve the UI.
-  process.exitCode = filesOk && uiOk !== false ? 0 : 1;
+  // Morrow is terminal-only: a healthy install is bundled files present plus a
+  // reachable local service. There is no web UI to probe.
+  process.exitCode = filesOk ? 0 : 1;
 }
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
@@ -143,21 +173,47 @@ async function uninstall() {
 }
 
 try {
-  const command = process.argv[2] ?? "start";
-  if (command === "--help" || command === "-h" || command === "help") { printHelp(); }
-  else if (!commands.has(command)) { console.error("Unknown command: " + command); printHelp(); process.exitCode = 2; }
-  else {
-    switch (command) {
-      case "start": await start(); break;
-      case "stop": await stop(); break;
-      case "restart": await stop(); await start(); break;
-      case "status": await status(); break;
-      case "open": if (!await healthy()) await start(); open(); break;
-      case "doctor": await doctor(); break;
-      case "uninstall": await uninstall(); break;
-    }
+  const { action, command, args } = classify(process.argv.slice(2));
+
+  // Product commands and the interactive shell need the service up first; the
+  // launcher owns starting it so the delegated CLI always finds it healthy.
+  if (needsService(action) && !(await healthy())) await start();
+
+  switch (action) {
+    case "meta":
+      if (command === "version" || command === "--version" || command === "-v") {
+        if (existsSync(cliEntry)) delegateToCli(["--version"]);
+        else console.log(readVersion());
+      } else {
+        printHelp();
+      }
+      break;
+    case "interactive":
+      // Bare `morrow` opens the terminal agent shell, not the browser.
+      process.exitCode = delegateToCli([]);
+      break;
+    case "cli":
+      process.exitCode = delegateToCli([command, ...args]);
+      break;
+    case "open":
+      open();
+      break;
+    case "lifecycle":
+      switch (command) {
+        case "start": await start(); break;
+        case "stop": await stop(); break;
+        case "restart": await stop(); await start(); break;
+        case "status": await status(); break;
+        case "doctor": await doctor(); break;
+        case "uninstall": await uninstall(); break;
+      }
+      break;
   }
 } catch (error) {
   console.error("Morrow: " + (error instanceof Error ? error.message : String(error)));
   process.exitCode = 1;
+}
+
+function readVersion() {
+  try { return readFileSync(join(app, "VERSION"), "utf8").trim(); } catch { return "unknown"; }
 }

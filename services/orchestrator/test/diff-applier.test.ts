@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath } from "../src/tools/diff-applier.js";
+import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff } from "../src/tools/diff-applier.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -95,9 +95,36 @@ Binary files a/img.png and b/img.png differ
     }).toThrow(/denied path pattern/);
   });
 
-  it("rejects file creation and deletion patches", () => {
-    expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "/dev/null", newPath: "new.txt", chunks: [] }], [])).toThrow(/creation is not supported/i);
+  it("allows file creation but still rejects deletion patches", () => {
+    // Creation (`--- /dev/null`) is supported: only the new side is validated.
+    expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "/dev/null", newPath: "new.txt", chunks: [] }], [])).not.toThrow();
+    // A created file still honors denied-name patterns on the new path.
+    expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "/dev/null", newPath: ".env", chunks: [] }], ["*.env", ".env*"])).toThrow(/denied path pattern/i);
+    // Deletion (`+++ /dev/null`) remains unsupported.
     expect(() => validatePatchPaths("C:\\workspace", [{ oldPath: "gone.txt", newPath: "/dev/null", chunks: [] }], [])).toThrow(/deletion is not supported/i);
+  });
+
+  it("buildCreationDiff produces a valid creation hunk for the new path", () => {
+    const content = "import React from 'react';\n\nexport function App() {\n  return <div>hi</div>;\n}\n";
+    const files = parseUnifiedDiff(buildCreationDiff("src/App.tsx", content));
+    expect(files).toHaveLength(1);
+    expect(files[0]!.oldPath).toBe("/dev/null");
+    expect(files[0]!.newPath).toBe("src/App.tsx");
+  });
+
+  it("buildCreationDiff content survives a parse+apply round trip exactly (LF-normalized)", () => {
+    for (const content of [
+      "single line no newline",
+      "a\nb\nc\n",
+      "a\nb\nc",
+      "line with trailing spaces   \n\tindented\n",
+      "a\r\nb\r\n",
+    ]) {
+      const files = parseUnifiedDiff(buildCreationDiff("f.txt", content));
+      const applied = applyUnifiedPatch(null, files[0]!.chunks);
+      expect(applied).toBe(content.replace(/\r\n/g, "\n"));
+      expect(applied).not.toContain("\r");
+    }
   });
 });
 

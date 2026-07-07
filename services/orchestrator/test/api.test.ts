@@ -27,54 +27,75 @@ describe("REST API and Task Runner Vertical Slice", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("returns a truthful API root summary in dev (no bundled UI)", async () => {
+  it("returns a truthful API root summary (terminal-first, no bundled UI)", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       name: "morrow-orchestrator",
       status: "healthy",
-      ui: "http://127.0.0.1:5173",
       health: "/api/health",
     });
   });
 
-  it("health advertises the dev UI URL when no bundle is present", async () => {
-    const res = await app.inject({ method: "GET", url: "/api/health" });
+  it("includes context usage metadata in task aggregates without message content", async () => {
+    const now = "2026-07-02T03:00:00.000Z";
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "Project", tempDir, now, now);
+    db.prepare("INSERT INTO tasks(id,schema_version,project_id,type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run("task-ctx", 1, "p1", "agent_chat", "completed", now, now);
+    db.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)").run("c1", "p1", "Context", now, now);
+    db.prepare("INSERT INTO context_summaries(id,project_id,conversation_id,task_id,method,content,source_start_index,source_end_index,source_message_count,source_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("summary-1", "p1", "c1", "task-ctx", "deterministic", "secret should not be returned", 0, 1, 2, "hash", now);
+    const insertEvent = db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,?,?,?,?,?,?)");
+    insertEvent.run("ev1", 1, "task-ctx", 1, "context.budget_calculated", JSON.stringify({
+      provider: "mock",
+      model: "mock-model",
+      contextWindowTokens: 32768,
+      contextWindowSource: "fallback",
+      reservedTokens: 4096,
+      maxInputTokens: 900,
+    }), now);
+    insertEvent.run("ev2", 1, "task-ctx", 2, "context.history_trimmed", JSON.stringify({
+      inputTokensBefore: 1800,
+      inputTokensAfter: 620,
+      compactedGroups: 2,
+      removedGroups: 1,
+    }), now);
+    insertEvent.run("ev3", 1, "task-ctx", 3, "context.estimate_used", JSON.stringify({
+      method: "estimate",
+      exact: false,
+    }), now);
+
+    const res = await app.inject({ method: "GET", url: "/api/tasks/task-ctx" });
     expect(res.statusCode).toBe(200);
-    expect(res.json().ui).toBe("http://127.0.0.1:5173");
-    expect(res.json().uiServed).toBe(false);
+    expect(res.json().context).toMatchObject({
+      providerId: "mock",
+      model: "mock-model",
+      contextWindowTokens: 32768,
+      contextWindowSource: "fallback",
+      maxInputTokens: 900,
+      inputTokensBefore: 1800,
+      inputTokensAfter: 620,
+      countingMethod: "estimate",
+      exact: false,
+      compactedGroups: 2,
+      removedGroups: 1,
+      lastSummary: { id: "summary-1", method: "deterministic", sourceMessageCount: 2 },
+    });
+    expect(JSON.stringify(res.json().context)).not.toContain("secret");
   });
 
-  it("serves the packaged web app at the root and app routes, advertising its own origin", async () => {
-    const webDir = join(tempDir, "web");
-    mkdirSync(webDir);
-    writeFileSync(join(webDir, "index.html"), "<main>Morrow app</main>");
-    const prevPort = process.env.PORT;
-    process.env.PORT = "4317";
-    const packaged = buildServer({ db, runner, webDir });
-    try {
-      // Regression: opening the bare origin (what `morrow open` does) must render
-      // the SPA, never a raw JSON probe advertising a non-existent dev server.
-      const rootRoute = await packaged.inject({ method: "GET", url: "/" });
-      expect(rootRoute.statusCode).toBe(200);
-      expect(rootRoute.body).toContain("Morrow app");
-      expect(rootRoute.headers["content-type"]).toContain("text/html");
+  it("serves a JSON liveness probe at the root and advertises no web UI", async () => {
+    // Morrow is terminal-first: the service exposes an API only, never a bundled
+    // web dashboard, so "/" is always a JSON probe and health carries no UI URL.
+    const rootRoute = await app.inject({ method: "GET", url: "/" });
+    expect(rootRoute.statusCode).toBe(200);
+    expect(rootRoute.json().name).toBe("morrow-orchestrator");
+    expect(rootRoute.json().health).toBe("/api/health");
 
-      const appRoute = await packaged.inject({ method: "GET", url: "/onboarding" });
-      expect(appRoute.statusCode).toBe(200);
-      expect(appRoute.body).toContain("Morrow app");
-
-      const apiRoute = await packaged.inject({ method: "GET", url: "/api/health" });
-      expect(apiRoute.statusCode).toBe(200);
-      expect(apiRoute.json().ok).toBe(true);
-      // Regression for beta.8: health must advertise the real served origin, not 5173.
-      expect(apiRoute.json().ui).toBe("http://127.0.0.1:4317");
-      expect(apiRoute.json().uiServed).toBe(true);
-    } finally {
-      await packaged.close();
-      if (prevPort === undefined) delete process.env.PORT;
-      else process.env.PORT = prevPort;
-    }
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json().ok).toBe(true);
+    expect(health.json()).not.toHaveProperty("ui");
+    expect(health.json()).not.toHaveProperty("uiServed");
   });
 
   it("lists discoverable skills from MORROW_SKILLS_DIR (manifest and frontmatter formats)", async () => {
@@ -144,6 +165,60 @@ describe("REST API and Task Runner Vertical Slice", () => {
 
     const listRes = await app.inject({ method: "GET", url: "/api/projects" });
     expect(listRes.json()).toHaveLength(1);
+  });
+
+  it("creates Cortex specialist roles and exposes the named agent team for missions", async () => {
+    const wsDir = join(tempDir, "mission-ws");
+    mkdirSync(wsDir);
+    const projectRes = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { name: "Mission Project", workspacePath: wsDir },
+    });
+    const projectId = projectRes.json().id;
+
+    const missionRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${projectId}/missions`,
+      payload: { objective: "Repair the package boundary" },
+    });
+    expect(missionRes.statusCode).toBe(201);
+    const missionId = missionRes.json().id;
+
+    const specialistsRes = await app.inject({ method: "GET", url: `/api/missions/${missionId}/specialists` });
+    expect(specialistsRes.statusCode).toBe(200);
+    const specialists = specialistsRes.json();
+    expect(specialists.map((r: any) => r.id)).toEqual([
+      "repository-mapper",
+      "planner",
+      "implementer",
+      "test-engineer",
+      "security-regression-reviewer",
+      "final-reviewer",
+    ]);
+    expect(specialists.find((r: any) => r.id === "implementer")).toMatchObject({
+      storesChainOfThought: false,
+      status: "pending",
+    });
+    expect(specialists.find((r: any) => r.id === "implementer").allowedTools).toContain("propose_patch");
+
+    const agentsRes = await app.inject({ method: "GET", url: `/api/projects/${projectId}/agents` });
+    expect(agentsRes.statusCode).toBe(200);
+    const agents = agentsRes.json();
+    expect(agents.map((a: any) => a.name)).toEqual(expect.arrayContaining([
+      "Cortex Repository Mapper",
+      "Cortex Planner",
+      "Cortex Implementer",
+      "Cortex Test Engineer",
+      "Cortex Security Reviewer",
+      "Cortex Final Reviewer",
+    ]));
+    const implementer = agents.find((a: any) => a.name === "Cortex Implementer");
+    expect(implementer.instructions).toContain("Allowed tools");
+
+    const permsRes = await app.inject({ method: "GET", url: `/api/agents/${implementer.id}/tool-permissions` });
+    expect(permsRes.statusCode).toBe(200);
+    expect(permsRes.json().map((p: any) => p.toolName)).toContain("propose_patch");
   });
 
   it("returns structured error for invalid workspace", async () => {

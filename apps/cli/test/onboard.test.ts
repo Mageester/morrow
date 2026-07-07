@@ -200,6 +200,44 @@ describe("CLI Onboarding Command", () => {
     expect(testMock).toHaveBeenCalledWith("openai");
   });
 
+  it("completes clean provider onboarding without restarting the packaged service", async () => {
+    const lifecycle = await import("../src/service/lifecycle.js");
+
+    vi.mocked(ask).mockResolvedValueOnce("");
+    vi.mocked(ask).mockResolvedValueOnce("Alex");
+    vi.mocked(select).mockResolvedValueOnce(0);
+    vi.mocked(select).mockResolvedValueOnce(0);
+    vi.mocked(askSecret).mockResolvedValueOnce("sk-test-clean-install");
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+    vi.mocked(select).mockResolvedValueOnce(2);
+    vi.mocked(select).mockResolvedValueOnce(2);
+    vi.mocked(select).mockResolvedValueOnce(2);
+    vi.mocked(select).mockResolvedValueOnce(2);
+    vi.mocked(select).mockResolvedValueOnce(4);
+
+    const testProvider = vi.fn().mockResolvedValue({ ok: true, latencyMs: 42 });
+    ctx.api = () => ({
+      health: vi.fn().mockResolvedValue({ ok: true }),
+      listProjects: vi.fn().mockResolvedValue([]),
+      getProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
+      createProject: vi.fn().mockResolvedValue({ id: "p1", name: "Test Project", workspacePath: "/test" }),
+      listProviders: vi.fn().mockResolvedValue([
+        { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
+      ]),
+      testProvider,
+      saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
+      createConversation: vi.fn().mockResolvedValue({ id: "c1", projectId: "p1", title: "First Mission" }),
+    } as any);
+
+    const exitCode = await onboardCommand(ctx, "", []);
+
+    expect(exitCode).toBe(EXIT.OK);
+    expect(testProvider).toHaveBeenCalledWith("openai");
+    expect(lifecycle.ensureRunning).toHaveBeenCalled();
+    expect(lifecycle.stop).not.toHaveBeenCalled();
+    expect(config.get("user.onboarded")).toBe(true);
+  });
+
   it("registers process.cwd() when choosing current-directory option", async () => {
     config.set("user.onboardingStep", "project", "user");
     // resume -> yes
@@ -252,5 +290,4 @@ describe("CLI Onboarding Command", () => {
     expect(config.get("defaults.project")).toBe("fallback-cwd-proj");
   });
 });
-
 

@@ -64,7 +64,7 @@
 | 24 | Diagnostics | 3 | M,D | doctor + diagnostics API; no single support-bundle export |
 | 25 | Logging & observability | 3 | M,D | Hash-chain audit + events + SSE; redaction breadth unproven |
 | 26 | CLI UX | 3 | D | Rich terminal app; full-frame/palette gaps |
-| 27 | TUI UX | 3 | D | Same surface; resize reflow + double-Ctrl-C unproven |
+| 27 | TUI UX | 3 | D,U | Mission Control entrypoint + `/tree` + `/result`; resize reflow + double-Ctrl-C unproven |
 | 28 | Web UX | 3 | M,D | MissionControl/onboarding/providers/skills/health; dead-UI audit pending |
 | 29 | Accessibility | 1 | M | No evidence of a11y work (focus order, ARIA, contrast, keyboard) |
 | 30 | Security | 3 | M,D | Command policy, injection guard, audit, local-guard; broad review pending |
@@ -154,7 +154,8 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 - **Exists:** `POST /api/tasks/:id/subagents`, `tasks.parent_task_id`, `GET /api/tasks/:id/tree`, named agents (`repositories/agents.ts`).
 - **Works:** Spawn child task, build descendant tree (`subagents.test.ts`, 6).
 - **Incomplete:** No concurrency limit; parent synthesis of child results remains thin.
-- **Unsafe:** Child failures and parent synthesis still need a visible Mission Control path.
+- **Incomplete:** Child failures and parent synthesis remain thin, but terminal
+  Mission Control now exposes the persisted descendant tree through `/tree`.
 - **Proof:** M, U.
 - **Next:** Real delegated mission flow with visible tree, bounded context, and parent synthesis.
 
@@ -187,12 +188,17 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 - **Proof:** M, U.
 - **Next:** Surface resume vs retry clearly in Mission Control and CLI flows.
 
-### 17. Crash recovery — 2 ← **first slice target**
+### 17. Crash recovery — 3
 - **Exists:** `recovery.ts#recoverRunningTasks` (called in `index.ts` at startup), interrupts `running` tasks + interrupted-streaming messages.
 - **Works:** `running→interrupted` once, idempotent, leaves other states intact (`recovery.test.ts`, 2).
-- **Incomplete/Unsafe:** **`queued` tasks are orphaned** — nothing re-dispatches them after restart; the runner only runs a task via an explicit API call, and `index.ts` never re-queues. A task created and queued before a crash **never executes**. Subagent children (created `queued`) inherit this. No parent/child reconciliation.
-- **Proof:** M, U (read `index.ts`, `runner.ts`, `server.ts` dispatch sites; confirmed executor requires `queued` then transitions `running`, so re-dispatch is side-effect-safe).
-- **Next:** Deterministic startup reconciliation that re-dispatches orphaned `queued` work idempotently with no duplicate execution (**this slice**).
+- **Works:** Startup reconciliation re-dispatches orphaned `queued` tasks, clears
+  partial pre-running artifacts, and handles parent/child consistency for
+  recovered or terminal parents. Restart acceptance proves a queued deterministic
+  task reaches `verified` after service restart.
+- **Incomplete/Unsafe:** Mid-stream reconnect/dedup and cancel-across-restart UX
+  remain interface-level gaps.
+- **Proof:** M, U.
+- **Next:** Reconnect/cancel recovery acceptance through Mission Control.
 
 ### 18. Sessions & conversation history — 3
 - **Exists/Works:** `repositories/conversations.ts`, persisted messages, FTS search.
@@ -235,8 +241,8 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 - **Proof:** M, D. **Next:** Redaction audit + remove stray debug logging.
 
 ### 26–28. CLI / TUI / Web UX — 3
-- **Exists/Works:** Real terminal app (`apps/cli/src/terminal/*`: events→reduce→state→view→renderer), slash autocomplete, history, streaming tool cards, `/output`/`/diff`/`/undo`, no-color fallback; web `MissionControl`, `OnboardingWizard`, `ProviderManager`, `SkillsControlCenter`, `SystemHealth`.
-- **Incomplete:** Full-frame alt-screen + Ctrl+K palette MISSING; resize reflow + double-Ctrl-C abort unproven; live nested task tree MISSING; web dead-UI/disconnected-state audit pending.
+- **Exists/Works:** Real terminal app (`apps/cli/src/terminal/*`: events→reduce→state→view→renderer), `morrow mission`, slash autocomplete, history, streaming tool cards, `/tree`, `/result`, `/output`/`/diff`/`/undo`, no-color fallback; web `MissionControl`, `OnboardingWizard`, `ProviderManager`, `SkillsControlCenter`, `SystemHealth`.
+- **Incomplete:** Full-frame alt-screen + Ctrl+K palette MISSING; resize reflow + double-Ctrl-C abort unproven; `/result` is a compact evidence summary rather than a full tool timeline; web dead-UI/disconnected-state audit pending.
 - **Proof:** M, D. **Next:** Phase 5 observability views; web button-by-button audit.
 
 ### 29. Accessibility — 1
@@ -265,14 +271,12 @@ UI-reachable / Undocumented / Unsafe / Proof / Next milestone.**
 Ordered by user value × operational risk, matching the assignment's execution
 priority:
 
-1. **Crash recovery (17)** — re-dispatch orphaned `queued` work; parent/child
-   consistency; idempotent, no duplicate execution. ← **slice 1, in progress.**
-2. **Cancellation & process lifecycle (15, 10)** — cancel-across-restart
+1. **Cancellation & process lifecycle (15, 10)** — cancel-across-restart
    acceptance and interface wording for lifecycle outcomes.
-3. **Retry/resume correctness (16)** — interface-level resume/retry distinction.
-4. **Toolchain reproducibility (Phase 3C)** — Corepack-pin enforcement.
-5. **Autonomous coding loop (6–9)** — verification gating, baseline auto-block.
-6. **Observability (24, 25)** — task/tool timeline, support bundle, redaction.
+2. **Retry/resume correctness (16)** — interface-level resume/retry distinction.
+3. **Toolchain reproducibility (Phase 3C)** — Corepack-pin enforcement.
+4. **Autonomous coding loop (6–9)** — verification gating, baseline auto-block.
+5. **Observability (24, 25)** — task/tool timeline, support bundle, redaction.
 
 Each slice must move a real user journey in `docs/USER_JOURNEYS.md`, ship with a
 regression test + one acceptance test, and update `docs/HERMES_PARITY_MATRIX.md`.

@@ -13,12 +13,12 @@ try { $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $BaseUrl = 'https://morrowproject.getaxiom.ca'
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'Morrow'
 $ManifestUrl = "$BaseUrl/releases/latest.json"
-# Stage outside the install root, with a unique name, so a failed run never
-# leaves a half-written tree inside %LOCALAPPDATA%\Morrow and never collides
-# with a concurrent or previous attempt.
-$StagingId = [Guid]::NewGuid().ToString('N')
-$Staging = Join-Path $env:TEMP "morrow-staging-$StagingId"
-$Archive = Join-Path $env:TEMP "morrow-$StagingId.zip"
+# Stage outside the install root, with a short unique name, so a failed run
+# never leaves a half-written tree inside %LOCALAPPDATA%\Morrow and nested
+# package dependencies keep enough Windows path-length headroom while extracting.
+$StagingId = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+$Staging = Join-Path $env:TEMP "mrw-s-$StagingId"
+$Archive = Join-Path $env:TEMP "mrw-a-$StagingId.zip"
 
 function Fail([string]$Message) { throw "Morrow installation failed: $Message" }
 
@@ -26,6 +26,10 @@ function Cleanup {
   Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
   # Sweep up staging/archive debris left by any earlier failed run.
+  Get-ChildItem -LiteralPath $env:TEMP -Filter 'mrw-s-*' -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $env:TEMP -Filter 'mrw-a-*.zip' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
   Get-ChildItem -LiteralPath $env:TEMP -Filter 'morrow-staging-*' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   Get-ChildItem -LiteralPath $env:TEMP -Filter 'morrow-*.zip' -ErrorAction SilentlyContinue |
@@ -34,12 +38,16 @@ function Cleanup {
 
 # The required runtime files, relative to the package root. The installer never
 # hard-codes a versioned directory name; it discovers the root by these files.
+# Morrow is a CLI-only product. The package contains no web assets; the
+# installer must never require or open a browser UI. The required files are
+# the launcher, the dispatcher, the bundled runtime, and the orchestrator
+# entrypoint -- the minimum set for a runnable terminal install.
 $RequiredFiles = @(
   'morrow.cmd',
   'morrow.mjs',
+  'dispatch.mjs',
   'runtime\node.exe',
-  'orchestrator\dist\src\index.js',
-  'web\index.html'
+  'orchestrator\dist\src\index.js'
 )
 
 # Resolve the package root inside the extracted staging tree. Supports both
@@ -268,7 +276,8 @@ try {
 
   Write-Host 'Checksum verified. Extracting archive...'
   New-Item -ItemType Directory -Path $Staging -Force | Out-Null
-  Expand-Archive -LiteralPath $Archive -DestinationPath $Staging -Force
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Staging)
 
   # Resolve and validate the runtime root BEFORE touching the existing install.
   $package = Resolve-PackageRoot $Staging
@@ -303,7 +312,7 @@ try {
   $shortcut.Save()
 
   Write-Host 'Starting Morrow...'
-  # The localhost health poll below is the real success gate. Wrap the launch so a
+  # The health poll below is the real success gate. Wrap the launch so a
   # failing service that writes to stderr (which PowerShell turns into a
   # terminating NativeCommandError under ErrorActionPreference=Stop) cannot bypass
   # the health-check rollback by throwing straight to the outer catch.
@@ -325,12 +334,18 @@ try {
       try { & (Join-Path $installedApp 'morrow.cmd') start *>$null } catch {}
       Fail 'The new version did not pass its health check; the previous version was restored and restarted. Run "morrow doctor" for details.'
     }
-    Fail 'Morrow did not pass its localhost health check. Run "morrow doctor" for details.'
+    Fail 'Morrow did not pass its health check. Run "morrow doctor" for details.'
   }
 
   # Success: the new version is healthy. Discard the preserved previous version.
   Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
-  Start-Process 'http://127.0.0.1:4317/onboarding'
+  Write-Host ''
+  Write-Host 'Morrow installed successfully.'
+  Write-Host ''
+  Write-Host 'Open a new PowerShell window and run:'
+  Write-Host ''
+  Write-Host '  morrow'
+  Write-Host ''
   Write-Host "Morrow $($manifest.version) installed to $InstallRoot. It is an unsigned beta."
 } catch {
   Cleanup

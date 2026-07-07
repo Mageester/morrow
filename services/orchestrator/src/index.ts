@@ -33,7 +33,7 @@ if (reconciliation.interrupted || reconciliation.requeued || reconciliation.canc
     `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled`
   );
 }
-const app = buildServer({ db, runner, secretsFile: join(resolveMorrowHome(process.env), "secrets.env"), webDir: process.env.MORROW_WEB_DIR });
+const app = buildServer({ db, runner, secretsFile: join(resolveMorrowHome(process.env), "secrets.env") });
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence
 // is governed by each schedule's next_run_at, so a missed minute simply runs at

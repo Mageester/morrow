@@ -168,7 +168,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     kind: "api-key",
     capabilities: caps({ vision: true, customEndpoint: true }),
     defaultModel: "openrouter/auto",
-    models: ["openrouter/auto", "anthropic/claude-3.5-sonnet", "openai/gpt-5.4", "google/gemini-flash-1.5"],
+    models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "anthropic/claude-3.5-sonnet", "openai/gpt-5.4", "google/gemini-flash-1.5"],
     setupHint: "Set OPENROUTER_API_KEY.",
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
@@ -193,7 +193,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     label: "DeepSeek",
     kind: "api-key",
     capabilities: caps({ customEndpoint: true }),
-    defaultModel: "deepseek-chat",
+    defaultModel: "deepseek-v4-flash",
     models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
     setupHint: "Set DEEPSEEK_API_KEY.",
     note: null,

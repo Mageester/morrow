@@ -51,7 +51,7 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const db = openDatabase(ctx.service.dbPath);
   const recovered = recoverRunningTasks(db);
   const runner = new TaskRunner(db);
-  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile, webDir: process.env.MORROW_WEB_DIR });
+  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 
@@ -101,8 +101,10 @@ export async function serveForeground(ctx: Context): Promise<number> {
 
 /** Start the orchestrator as a detached background process and wait until healthy. */
 export async function serveDetached(ctx: Context): Promise<void> {
+  ctx.out.diag(`[${lifecycleTimestamp()}] service start requested (${ctx.service.baseUrl})`);
   if (await isRunning(ctx)) {
     ctx.out.info(`Service already running at ${displayUrl(ctx.service.baseUrl)}.`);
+    ctx.out.diag(`[${lifecycleTimestamp()}] service start skipped; health endpoint already reachable`);
     return;
   }
   mkdirSync(ctx.paths.home, { recursive: true });
@@ -123,16 +125,19 @@ export async function serveDetached(ctx: Context): Promise<void> {
   });
   child.unref();
   if (child.pid) writeFileSync(ctx.paths.pidFile, String(child.pid));
+  ctx.out.diag(`[${lifecycleTimestamp()}] spawned service process pid ${child.pid ?? "unknown"}; polling health`);
 
   const api = new MorrowApi(ctx.service.baseUrl);
   try {
     for (let i = 0; i < 50; i++) {
       if (await api.ping(500)) {
         ctx.out.success(`Service started at ${displayUrl(ctx.service.baseUrl)} (pid ${child.pid}).`);
+        ctx.out.diag(`[${lifecycleTimestamp()}] service health reachable after ${i + 1} poll(s)`);
         return;
       }
       await sleep(200);
     }
+    ctx.out.diag(`[${lifecycleTimestamp()}] service health polling timed out`);
     throw new CliError("Service did not become healthy in time.", {
       code: "SERVICE_START_FAILED",
       exitCode: EXIT.SERVICE_UNAVAILABLE,
@@ -164,6 +169,16 @@ export async function serveDetached(ctx: Context): Promise<void> {
  */
 export async function ensureRunning(ctx: Context): Promise<void> {
   if (await isRunning(ctx)) return;
+  // In a packaged install the launcher owns the service process, so the CLI must
+  // never spawn its own (it has no dev toolchain to do so). It sets this flag and
+  // guarantees the service is up before delegating.
+  if (process.env.MORROW_NO_AUTOSTART === "1") {
+    throw new CliError(`The Morrow service at ${ctx.service.baseUrl} is not reachable.`, {
+      code: "SERVICE_UNREACHABLE",
+      exitCode: EXIT.SERVICE_UNAVAILABLE,
+      hint: "Start it with `morrow start`, then retry.",
+    });
+  }
   const isExternal = ctx.service.baseUrl !== `http://${ctx.service.host}:${ctx.service.port}`;
   if (isExternal) {
     throw new CliError(`The configured Morrow service at ${ctx.service.baseUrl} is not reachable.`, {
@@ -177,8 +192,10 @@ export async function ensureRunning(ctx: Context): Promise<void> {
 }
 
 export async function stop(ctx: Context): Promise<boolean> {
+  ctx.out.diag(`[${lifecycleTimestamp()}] service stop requested (${ctx.service.baseUrl})`);
   let pid = readPid(ctx.paths.pidFile);
   const running = await isRunning(ctx);
+  ctx.out.diag(`[${lifecycleTimestamp()}] pid file ${pid ?? "missing"}; health reachable: ${running ? "yes" : "no"}`);
   if ((!pid || !processAlive(pid)) && running) {
     const health = await new MorrowApi(ctx.service.baseUrl).health();
     pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl));
@@ -186,11 +203,13 @@ export async function stop(ctx: Context): Promise<boolean> {
       mkdirSync(dirname(ctx.paths.pidFile), { recursive: true });
       writeFileSync(ctx.paths.pidFile, String(pid));
       ctx.out.info(`Recovered the local service pid (${pid}).`);
+      ctx.out.diag(`[${lifecycleTimestamp()}] recovered local service pid from health response`);
     }
   }
   if (!pid || !processAlive(pid)) {
     if (!running) {
       rmSync(ctx.paths.pidFile, { force: true });
+      ctx.out.diag(`[${lifecycleTimestamp()}] service already stopped`);
       return false;
     }
     if (pid) rmSync(ctx.paths.pidFile, { force: true });
@@ -202,6 +221,7 @@ export async function stop(ctx: Context): Promise<boolean> {
   }
   try {
     process.kill(pid, "SIGTERM");
+    ctx.out.diag(`[${lifecycleTimestamp()}] sent SIGTERM to service pid ${pid}`);
   } catch {
     /* ignore */
   }
@@ -213,11 +233,13 @@ export async function stop(ctx: Context): Promise<boolean> {
   if (processAlive(pid)) {
     try {
       process.kill(pid, "SIGKILL");
+      ctx.out.diag(`[${lifecycleTimestamp()}] sent SIGKILL to service pid ${pid}`);
     } catch {
       /* ignore */
     }
   }
   rmSync(ctx.paths.pidFile, { force: true });
+  ctx.out.diag(`[${lifecycleTimestamp()}] service stop completed`);
   return true;
 }
 
@@ -237,6 +259,10 @@ export function tailLog(ctx: Context, lines: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function lifecycleTimestamp(): string {
+  return new Date().toISOString();
 }
 
 function displayUrl(input: string): string {

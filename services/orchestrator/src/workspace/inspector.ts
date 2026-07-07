@@ -1,5 +1,7 @@
-import { readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { posix, win32, relative, resolve, sep } from "node:path";
+import { createGitignoreMatcher, isBuiltInIgnoredName } from "./ignore.js";
+import { isWithinWorkspace } from "./path-boundary.js";
 
 export class WorkspaceInspectionError extends Error {
   readonly code = "workspace_inspection_rejected";
@@ -10,7 +12,7 @@ export type WorkspaceEntry = { path: string; type: "file"; size?: number };
 export type WorkspaceInspection = { entries: WorkspaceEntry[]; truncatedByDepth: boolean; truncatedByCount: boolean; inaccessibleEntryCount: number };
 export type WorkspaceInspectionOptions = { startPath?: string; maxDepth: number; maxResults: number };
 
-function contained(root: string, target: string) { return target === root || target.startsWith(`${root}${sep}`); }
+function contained(root: string, target: string) { return isWithinWorkspace(root, target); }
 function normalized(root: string, target: string) { return relative(root, target).split(sep).join("/"); }
 function isAnyAbsolutePath(candidate: string) { return posix.isAbsolute(candidate) || win32.isAbsolute(candidate); }
 
@@ -26,6 +28,9 @@ export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspec
   let truncatedByDepth = false;
   let truncatedByCount = false;
   let inaccessibleEntryCount = 0;
+  const ignoredByGitignore = createGitignoreMatcher(root, (path) => {
+    try { return readFileSync(path, "utf8"); } catch { return null; }
+  });
 
   const walk = (directory: string, depth: number) => {
     if (visited.has(directory)) return;
@@ -34,9 +39,11 @@ export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspec
     try { children = readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name)); }
     catch { inaccessibleEntryCount++; return; }
     for (const child of children) {
-      if (child.name === ".morrow") continue;
+      if (isBuiltInIgnoredName(child.name, child.isDirectory())) continue;
       if (entries.length >= options.maxResults) { truncatedByCount = true; return; }
       const candidate = resolve(directory, child.name);
+      const rel = normalized(root, candidate);
+      if (ignoredByGitignore(rel, child.isDirectory())) continue;
       let target: string;
       try { target = realpathSync(candidate); } catch { inaccessibleEntryCount++; continue; }
       if (!contained(root, target)) throw new WorkspaceInspectionError();

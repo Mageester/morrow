@@ -3,10 +3,10 @@ import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { Context } from "../cli/context.js";
 import { EXIT, CliError } from "../cli/errors.js";
-import { ensureRunning, stop, isRunning } from "../service/lifecycle.js";
+import { ensureRunning, isRunning } from "../service/lifecycle.js";
 import { ask, askSecret, confirm, select, validateDirectory } from "./common.js";
 import { writeSecret } from "../config/env.js";
-import { discoverSkills } from "../skills/registry.js";
+import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
 import { chatCommand } from "./chat.js";
 
@@ -300,8 +300,6 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         }
       }
 
-      ctx.out.info("Restarting service to load credentials…");
-      await stop(ctx);
       await ensureRunning(ctx);
       return true;
     }
@@ -349,37 +347,65 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
 
     case "skills": {
       const skills = discoverSkills(localSkillsRoot());
+      const safe = skills.filter((s) => isSafeDefaultSkill(s.id, s.manifest.riskClass));
+      const highRisk = skills.filter((s) => !isSafeDefaultSkill(s.id, s.manifest.riskClass));
+
       ctx.out.print("Skills are local scripts carrying out task operations on your files.");
       ctx.out.print("All skills run 100% locally. Morrow does not support remote skills or hosted marketplaces.");
       ctx.out.print();
 
-      ctx.out.print(ctx.out.bold("Available Local Skills:"));
-      for (const skill of skills) {
-        ctx.out.print(`  ${ctx.out.cyan(skill.id)} (${skill.manifest.version})`);
-        ctx.out.print(`    ${ctx.out.gray("Enables:")} ${skill.manifest.description}`);
+      ctx.out.print(ctx.out.bold("Safe default skills:"));
+      for (const skill of safe) {
+        ctx.out.print(`  ${ctx.out.cyan(skill.id)} ${ctx.out.gray(`(${skill.manifest.riskClass} risk)`)}`);
+        ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
+      }
+      ctx.out.print();
+
+      if (highRisk.length > 0) {
+        ctx.out.print(ctx.out.bold(ctx.out.yellow("High-risk / red-team skills (disabled by default):")));
         ctx.out.print(
-          `    ${ctx.out.gray("Requested permissions:")} ${skill.manifest.requestedTools.join(
-            ", "
-          )}`
+          ctx.out.gray(
+            "  These probe or bypass model safety and can send data to external providers."
+          )
         );
+        ctx.out.print(ctx.out.gray("  They are never enabled by a blanket recommendation and must be approved one by one."));
         ctx.out.print();
       }
 
       const actions = [
-        "Enable all local skills (Recommended)",
+        "Enable the safe default skills (Recommended)",
         "Review and select skills individually",
         "Skip / Leave current setup",
       ];
       const actionIdx = await select(ctx, "Choose Skill Setup Action:", actions, (item) => item);
 
       if (actionIdx === 0) {
-        for (const skill of skills) {
-          ctx.config.set(`skills.${skill.id}.enabled`, "true", "user");
+        // Recommended path enables ONLY vetted safe-default skills; every
+        // high-risk skill is explicitly left disabled.
+        for (const skill of safe) ctx.config.set(`skills.${skill.id}.enabled`, "true", "user");
+        for (const skill of highRisk) ctx.config.set(`skills.${skill.id}.enabled`, "false", "user");
+        ctx.out.success(`Enabled ${safe.length} safe default skill${safe.length === 1 ? "" : "s"}.`);
+        if (highRisk.length > 0) {
+          ctx.out.info(
+            `Left ${highRisk.length} high-risk skill${highRisk.length === 1 ? "" : "s"} disabled. Enable individually later with \`morrow skills enable <id>\`.`
+          );
         }
-        ctx.out.success("All local skills enabled.");
       } else if (actionIdx === 1) {
-        for (const skill of skills) {
-          const enable = await confirm(`Enable skill '${skill.manifest.name}'?`, true);
+        // Safe skills default to on; high-risk skills default to off and show
+        // their risk and requested permissions before the individual prompt.
+        for (const skill of safe) {
+          const enable = await confirm(`Enable safe skill '${skill.manifest.name}'?`, true);
+          ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
+        }
+        for (const skill of highRisk) {
+          ctx.out.print();
+          ctx.out.warn(`${skill.manifest.name} — ${skill.manifest.riskClass} risk`);
+          ctx.out.print(`    ${ctx.out.gray(skill.manifest.description)}`);
+          ctx.out.print(`    ${ctx.out.gray("Requested permissions:")} ${skill.manifest.requestedTools.join(", ")}`);
+          if (skill.manifest.requestedNetworkDomains.length > 0) {
+            ctx.out.print(`    ${ctx.out.gray("Network:")} ${skill.manifest.requestedNetworkDomains.join(", ")}`);
+          }
+          const enable = await confirm(`Enable HIGH-RISK skill '${skill.manifest.name}'?`, false);
           ctx.config.set(`skills.${skill.id}.enabled`, String(enable), "user");
         }
       }

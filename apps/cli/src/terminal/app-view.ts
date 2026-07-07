@@ -13,15 +13,19 @@ import type { SlashCommand } from "./commands.js";
 import { filterCommands, renderMenu } from "./completion.js";
 import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
 import { completionActive, type InputState } from "./input-state.js";
+import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
 import {
-  activityLine,
+  activityGroupLine,
   clipToWidth,
   completionLines,
   formatElapsed,
   glyphs,
+  groupActivities,
   headerLines,
   patchLines,
+  relativePath,
+  stageBanner,
   toolCardLines,
 } from "./view.js";
 
@@ -53,14 +57,10 @@ export function composeApp(
   ctx: AppFrameContext,
   opts: AppFrameOptions
 ): AppFrame {
-  // ── Fixed top: header ──────────────────────────────────────────────────────
-  const top: string[] = [];
-  for (const l of headerLines(term, out)) top.push(l);
-  const statusBits: string[] = [statusWord(term, out, unicode)];
-  if (opts.elapsedMs !== undefined && term.status === "streaming") statusBits.push(out.gray(formatElapsed(opts.elapsedMs)));
-  if (opts.jobCount) statusBits.push(out.gray(`${opts.jobCount} job${opts.jobCount === 1 ? "" : "s"}`));
-  top.push(`  ${statusBits.join(out.gray("  ·  "))}`);
-  top.push(out.gray("  " + "─".repeat(Math.min(opts.columns - 2, 60))));
+  const workspace = term.meta?.workspacePath;
+
+  // ── Fixed top: Morrow chrome ───────────────────────────────────────────────
+  const top = buildTopChrome(term, out, unicode, opts);
 
   // ── Fixed bottom: notices + input/overlay + footer ─────────────────────────
   const footer = footerLine(input, out, unicode);
@@ -78,7 +78,6 @@ export function composeApp(
       columns: opts.columns,
     });
     bottom = [...noticeLines, ...palette];
-    // Cursor sits at the end of the palette query line (second palette line).
     cursorWithinBottom = { row: noticeLines.length + 1, col: stripAnsi(palette[1] ?? "").length };
   } else {
     const built = buildInputBlock(input, out, unicode, ctx, opts);
@@ -87,7 +86,7 @@ export function composeApp(
   }
 
   // ── Middle: transcript + live region, tail-clipped to remaining rows ────────
-  const middle = buildMiddle(term, out, unicode, opts);
+  const middle = buildMiddle(term, out, unicode, opts, workspace);
   const reserved = top.length + 1 /*blank*/ + bottom.length + footer.length + 1 /*blank*/;
   const available = Math.max(1, opts.rows - reserved);
   const clippedMiddle = middle.length > available ? middle.slice(middle.length - available) : middle;
@@ -100,6 +99,72 @@ export function composeApp(
   };
 
   return { lines: lines.map((l) => clipToWidth(l, opts.columns)), cursor };
+}
+
+/** Build the chrome at the top: MORROW brand, project, and live status. */
+function buildTopChrome(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
+  const g = glyphs(unicode);
+  const lines: string[] = [];
+  const m = term.meta;
+
+  // Line 1: MORROW branding + project
+  if (m) {
+    const brand = out.bold("MORROW");
+    const projectPart = out.cyan(m.projectName);
+    const pathPart = out.gray(m.workspacePath);
+    lines.push(`  ${brand}  ${projectPart}  ${pathPart}`);
+  }
+
+  // Line 2: mode · model · git · memory
+  if (m) {
+    const bits: string[] = [];
+    bits.push(out.gray(modeGlyph(m.mode, m.autoApprove) + " " + m.mode));
+    bits.push(out.gray(`${m.provider}/${m.model}`));
+    if (term.git) {
+      const gitBits = [term.git.branch];
+      if (term.git.dirty) gitBits.push(out.yellow("dirty"));
+      if (term.git.ahead > 0) gitBits.push(`+${term.git.ahead}`);
+      if (term.git.behind > 0) gitBits.push(`-${term.git.behind}`);
+      bits.push(out.gray(gitBits.join(" ")));
+    }
+    if (m.memory) bits.push(out.gray("mem"));
+    // Context usage if available.
+    if (term.contextUsage) {
+      const u = term.contextUsage;
+      const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
+      bits.push(out.gray(`${pct}% ctx`));
+    }
+    lines.push(`  ${bits.join(out.gray("  " + g.dot + "  "))}`);
+  }
+
+  // Line 3: status + elapsed + job count + agents/processes hints
+  const statusBits: string[] = [statusWord(term, out, unicode)];
+  if (opts.elapsedMs !== undefined && term.status === "streaming") {
+    statusBits.push(out.gray(formatElapsed(opts.elapsedMs)));
+  }
+  if (opts.jobCount) {
+    statusBits.push(out.gray(`${opts.jobCount} job${opts.jobCount === 1 ? "" : "s"}`));
+  }
+  const activeAgents = term.agents.filter((a) => a.status === "running");
+  if (activeAgents.length > 0) {
+    statusBits.push(out.gray(`${activeAgents.length} agent${activeAgents.length === 1 ? "" : "s"}`));
+  }
+  const runningProcs = term.processes.filter((p) => p.status === "running");
+  if (runningProcs.length > 0) {
+    statusBits.push(out.gray(`${runningProcs.length} proc`));
+  }
+  lines.push(`  ${statusBits.join(out.gray("  " + g.dot + "  "))}`);
+
+  // Divider.
+  lines.push(out.gray("  " + "─".repeat(Math.min(opts.columns - 2, 60))));
+  return lines;
+}
+
+function modeGlyph(mode: string, autoApprove: boolean): string {
+  if (autoApprove) return "⚡";
+  if (mode.toLowerCase().includes("inspect") || mode.toLowerCase().includes("read-only")) return "🔍";
+  if (mode.toLowerCase().includes("plan")) return "📋";
+  return "●";
 }
 
 function statusWord(term: TerminalState, out: Output, unicode: boolean): string {
@@ -123,8 +188,82 @@ function statusWord(term: TerminalState, out: Output, unicode: boolean): string 
   }
 }
 
-function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
+/**
+ * The first-run/empty-state welcome panel. Shown only before any conversation
+ * exists, while the session is idle. Surfaces the six things a new user must
+ * understand — what Morrow is, whether a project is selected, whether a provider
+ * is configured, which model and mode are active, and what to type next — plus
+ * adaptive guidance for the common blocked paths (no provider, non-Git dir).
+ *
+ * Pure: derives entirely from `SessionMeta` so it is deterministic at startup
+ * before any git.state/routing event has folded in.
+ */
+export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): string[] {
+  const g = glyphs(unicode);
   const lines: string[] = [];
+  const dot = out.gray(g.dot);
+
+  lines.push("  " + out.bold("Welcome to Morrow") + out.gray(" — private intelligence, built around you."));
+  lines.push("");
+
+  // Project + git posture.
+  const projectVal =
+    meta.gitRepo === false
+      ? `${out.cyan(meta.projectName)}  ${out.gray("· not a Git repository")}`
+      : `${out.cyan(meta.projectName)}  ${out.gray("· " + meta.branch)}`;
+  lines.push(`  ${out.gray("Project ")}  ${projectVal}`);
+
+  // Provider posture.
+  const providerVal =
+    meta.providerConfigured === false
+      ? out.yellow("not configured")
+      : `${out.cyan(meta.provider)}  ${out.gray("· " + meta.privacy)}`;
+  lines.push(`  ${out.gray("Provider")}  ${providerVal}`);
+  lines.push(`  ${out.gray("Model   ")}  ${meta.providerConfigured === false ? out.gray("—") : out.cyan(meta.model)}`);
+  lines.push(`  ${out.gray("Mode    ")}  ${meta.mode}`);
+  lines.push("");
+
+  // Adaptive guidance for blocked paths, most important first.
+  if (meta.providerConfigured === false) {
+    lines.push("  " + out.yellow(`${g.warn} No model provider is configured.`));
+    lines.push("  " + out.gray(`   Connect one with `) + out.cyan("morrow auth login") + out.gray(" (or ") + out.cyan("/model") + out.gray(" once connected)."));
+    lines.push("");
+  }
+  if (meta.gitRepo === false) {
+    lines.push("  " + out.gray(`${g.dot} Not a Git repo — change tracking, /diff, and /undo are unavailable. Run `) + out.cyan("git init") + out.gray(" to enable them."));
+    lines.push("");
+  }
+  if (meta.resumed) {
+    lines.push("  " + out.gray(`${g.dot} Resumed your last session. Type to continue, or `) + out.cyan("/new") + out.gray(" for a fresh one."));
+    lines.push("");
+  }
+
+  // What to type next.
+  const suggestions =
+    meta.providerConfigured === false
+      ? [out.cyan("morrow auth login"), out.cyan("? help")]
+      : [out.gray("ask a question"), out.cyan("/model"), out.cyan("/mode"), out.cyan("? help")];
+  lines.push("  " + out.gray("Try:  ") + suggestions.join(`  ${dot}  `));
+  lines.push("  " + out.gray("Type your first message below to begin."));
+  return lines;
+}
+
+function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
+  const lines: string[] = [];
+
+  // First-run/empty state: no conversation yet and nothing streaming → welcome.
+  if (term.meta && term.conversation.length === 0 && term.plan.length === 0 && term.status === "idle" && term.tools.length === 0) {
+    return welcomeLines(term.meta, out, unicode);
+  }
+
+  // Progress stage banner.
+  const stage = stageBanner(term.progressStage, term.progressDetail, out, unicode);
+  if (stage) {
+    lines.push(stage);
+    lines.push("");
+  }
+
+  // Plan summary.
   if (term.plan.length > 0) {
     lines.push(out.bold("  Plan"));
     for (const step of term.plan) {
@@ -133,25 +272,45 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     }
     lines.push("");
   }
+
+  // Conversation.
   for (const entry of term.conversation) {
     const label = entry.role === "user" ? out.green("you › ") : out.magenta("morrow › ");
     const body = entry.text.length ? entry.text : entry.streaming ? out.gray("…") : "";
     const segs = body.split("\n");
     for (const [i, seg] of segs.entries()) lines.push((i === 0 ? label : "        ") + seg);
   }
-  // Completed/failed tool cards and patches form the recent transcript tail.
+
+  // Completed/failed tool cards and patches.
   for (const card of term.tools) {
-    if (card.status !== "running") for (const cl of toolCardLines(card, out, unicode)) lines.push(cl);
+    if (card.status !== "running") for (const cl of toolCardLines(card, out, unicode, 0, workspace)) lines.push(cl);
   }
-  for (const patch of term.patches) for (const pl of patchLines(patch, out, unicode)) lines.push(pl);
-  // Live region: recent activity + running tool cards (animated).
-  for (const a of term.activity.slice(-3)) lines.push(activityLine(a, out, unicode));
+  for (const patch of term.patches) for (const pl of patchLines(patch, out, unicode, workspace)) lines.push(pl);
+
+  // Live region: grouped activity + running tool cards.
+  const groups = groupActivities(term.activity);
+  for (const g of groups.slice(-3)) lines.push(activityGroupLine(g, out, unicode));
   for (const card of term.tools) {
-    if (card.status === "running") for (const cl of toolCardLines(card, out, unicode, opts.tick)) lines.push(cl);
+    if (card.status === "running") for (const cl of toolCardLines(card, out, unicode, opts.tick, workspace)) lines.push(cl);
   }
+
+  // Completion summary.
   if (term.status === "completed" || term.status === "failed") {
     lines.push("");
     for (const cl of completionLines(term, out, unicode)) lines.push(cl);
+  }
+
+  // Recovery hints for non-successful task states.
+  if (term.status === "failed" || term.status === "interrupted" || term.status === "cancelled" || term.status === "stalled" || term.status === "budget-reached") {
+    lines.push("");
+    lines.push(out.yellow("  Recovery"));
+    const hints: string[] = [];
+    hints.push("/continue to resume");
+    hints.push("/diff to inspect changes");
+    hints.push("/undo to rollback");
+    hints.push("/result for details");
+    hints.push("/output to see outputs");
+    lines.push(`  ${out.gray(hints.join(" · "))}`);
   }
   return lines;
 }
@@ -163,14 +322,25 @@ function buildInputBlock(
   ctx: AppFrameContext,
   opts: AppFrameOptions
 ): { lines: string[]; cursor: { row: number; col: number } } {
+  const g = glyphs(unicode);
   const segs = input.buffer.split("\n");
-  const inputLines = segs.map((seg, i) => (i === 0 ? opts.promptLabel + seg : "  " + seg));
+  const inputLines: string[] = [];
 
-  // Cursor row/col within this block.
+  // Visual separator bar above the input.
+  inputLines.push(out.gray("  " + "─".repeat(Math.min(opts.columns - 2, 40))));
+
+  // The input line(s).
+  for (const [i, seg] of segs.entries()) {
+    inputLines.push((i === 0 ? opts.promptLabel + seg : "  " + seg));
+  }
+
+  // Cursor row/col within this block. `cursorRow` is the 1-based line the caret
+  // sits on; because the separator occupies block index 0, segment N lands at
+  // block index N, so the block-relative caret row equals `cursorRow`.
   const before = input.buffer.slice(0, input.cursor).split("\n");
-  const cursorRow = before.length - 1;
+  const cursorRow = before.length;
   const lastSeg = before[before.length - 1] ?? "";
-  const cursorCol = (cursorRow === 0 ? opts.promptWidth : 2) + lastSeg.length;
+  const cursorCol = (cursorRow === 1 ? opts.promptWidth : 2) + lastSeg.length;
 
   const lines = [...inputLines];
   if (completionActive(input)) {
@@ -194,6 +364,14 @@ function footerLine(input: InputState, out: Output, unicode: boolean): string[] 
   const hint =
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"
-      : "/ commands · Ctrl+K palette · Ctrl+C cancel/exit · Ctrl+L repaint";
+      : input.overlay === "output"
+        ? "Esc closes · output retained in task record"
+        : input.overlay === "tasktree"
+          ? "Esc closes · task tree from last mission"
+          : input.overlay === "mission"
+            ? "← → or 1/2/3 tabs · Esc close"
+            : input.overlay === "history"
+            ? "type to search · Enter recall · Esc close"
+            : "/ commands · Ctrl+K palette · Ctrl+T mission · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
   return [out.gray("  " + hint)];
 }
