@@ -25,7 +25,7 @@ describe("Unified Diff Parser & Applier", () => {
     expect(applied).toBe("line 1\nline 2\nline three\nline 4\nline 5");
   });
 
-  it("fails if context lines do not match exactly (rejects best-effort)", () => {
+  it("fails if context lines do not match exactly and no unique recovery target exists", () => {
     const original = "line 1\nline 2\nline mismatch\nline 4\nline 5";
     const diff = `
 --- a/test.txt
@@ -40,6 +40,121 @@ describe("Unified Diff Parser & Applier", () => {
     expect(() => {
       applyUnifiedPatch(original, patches[0]!.chunks);
     }).toThrow(/Patch conflict/);
+  });
+
+  it("applies exact-context patches successfully", () => {
+    const original = "alpha\nbeta\ngamma\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " alpha",
+      "-beta",
+      "+BETA",
+      " gamma",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("alpha\nBETA\ngamma\n");
+  });
+
+  it("applies a patch whose context shifted after an earlier edit", () => {
+    const original = "inserted\nalpha\nbeta\ngamma\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " alpha",
+      "-beta",
+      "+BETA",
+      " gamma",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("inserted\nalpha\nBETA\ngamma\n");
+  });
+
+  it("applies two sequential hunks to the same file", () => {
+    const original = "one\ntwo\nthree\nfour\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,2 +1,2 @@",
+      " one",
+      "-two",
+      "+TWO",
+      "@@ -3,2 +3,2 @@",
+      " three",
+      "-four",
+      "+FOUR",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("one\nTWO\nthree\nFOUR\n");
+  });
+
+  it("preserves CRLF line endings when patch input uses LF", () => {
+    const original = "alpha\r\nbeta\r\ngamma\r\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " alpha",
+      "-beta",
+      "+BETA",
+      " gamma",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("alpha\r\nBETA\r\ngamma\r\n");
+  });
+
+  it("tolerates harmless trailing-whitespace differences only when the target is unique", () => {
+    const original = "alpha   \nbeta\t\ngamma\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " alpha",
+      "-beta",
+      "+BETA",
+      " gamma",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("alpha\nBETA\ngamma\n");
+  });
+
+  it("uses a unique changed-context target when the deletion line is unambiguous", () => {
+    const original = "heading\nold target\nfooter changed\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " heading",
+      "-old target",
+      "+new target",
+      " footer",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(applyUnifiedPatch(original, patches[0]!.chunks)).toBe("heading\nnew target\nfooter changed\n");
+  });
+
+  it("rejects ambiguous repeated fuzzy context", () => {
+    const original = "heading\nold target\nfooter changed\nheading\nold target\nfooter changed\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -1,3 +1,3 @@",
+      " heading",
+      "-old target",
+      "+new target",
+      " footer",
+      "",
+    ].join("\n");
+    const patches = parseUnifiedDiff(diff);
+    expect(() => applyUnifiedPatch(original, patches[0]!.chunks)).toThrow(/ambiguous/i);
   });
 
   it("rejects forbidden features (mode changes, binary files, renames)", () => {

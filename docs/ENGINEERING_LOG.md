@@ -2,6 +2,35 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-07 - beta.25 patch recovery hardening
+
+- **Issue:** a second improvement pass could hit stale patch context after files
+  were created or changed earlier in the same agent run. Morrow returned only a
+  bare tool error, so the model could retry the same stale diff instead of
+  regenerating against the current file.
+- **Implementation:** patch application now accepts only conservative unique
+  recovery matches: line-number drift, CRLF/LF input differences, harmless
+  trailing whitespace, and a unique changed-context deletion target. Ambiguous
+  repeated targets remain rejected. Patch failures now emit
+  `patch.recovery_feedback` and return bounded model-facing feedback with the
+  target file, failed hunk, conflict category, current-file hash/content preview,
+  retry count, retry limit, and a regenerate-against-current-contents
+  instruction. Repeated unchanged failures are marked exhausted after 2 attempts.
+  Approved edit patches that produce no content change are rejected as
+  `patch_no_effect` before evidence/write completion is recorded.
+- **Provider malformed arguments:** invalid tool-call JSON now returns a
+  structured `malformed_tool_arguments` correction opportunity and never enters
+  patch application state.
+- **Privacy/security impact:** recovery stays inside existing workspace
+  containment and denied-name checks. Current-file feedback is limited to a
+  16 KiB preview plus hash/size/truncation metadata; it is sent only as the
+  result of the user-authorized workspace-edit tool flow.
+- **Tests:** added `agent-patch-recovery.test.ts`; expanded
+  `diff-applier.test.ts` for exact success, shifted context, sequential hunks,
+  CRLF preservation, trailing whitespace, unique fuzzy match, and ambiguous
+  rejection. Focused orchestrator validation passed: 79 files / 576 tests.
+  `pnpm check` passed.
+
 ## 2026-07-02 - Hermes-parity slice: symbol index completed
 
 - **Project symbol index:** added migration 24 with `symbol_index_files` and

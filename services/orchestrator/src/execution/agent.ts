@@ -22,7 +22,7 @@ import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
-import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff } from "../tools/diff-applier.js";
+import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
@@ -202,6 +202,81 @@ type Dependencies = {
   maxContextBytes?: number;
   abortSignal?: AbortSignal;
 };
+
+class AgentToolFailure extends Error {
+  readonly resultJson: string;
+  readonly errorType: "tool_failed" | "safe_read_rejected";
+
+  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" = "tool_failed") {
+    super(message);
+    this.name = "AgentToolFailure";
+    this.resultJson = JSON.stringify(result);
+    this.errorType = errorType;
+  }
+}
+
+function patchFailureFeedback(
+  workspacePath: string,
+  patchFiles: PatchFile[],
+  error: unknown,
+  attemptsForPatch: number,
+): { message: string; result: Record<string, unknown> } {
+  const currentContentLimit = 16 * 1024;
+  const patchError = error instanceof PatchApplicationError ? error : null;
+  const target = patchFiles.find((pf) => pf.oldPath !== "/dev/null") ?? patchFiles[0];
+  const targetFile = target?.oldPath !== "/dev/null" ? target?.oldPath : target?.newPath;
+  let current: Record<string, unknown> | null = null;
+  if (targetFile && targetFile !== "/dev/null") {
+    try {
+      const fullPath = assertContainedRealPath(workspacePath, targetFile);
+      const content = existsSync(fullPath) ? readFileSync(fullPath, "utf8") : "";
+      const bytes = Buffer.byteLength(content, "utf8");
+      current = {
+        path: targetFile,
+        hash: hashString(content),
+        bytes,
+        lineEnding: content.includes("\r\n") ? "CRLF" : "LF",
+        content: content.slice(0, currentContentLimit),
+        truncated: bytes > currentContentLimit,
+      };
+    } catch (readErr) {
+      current = {
+        path: targetFile,
+        readError: readErr instanceof Error ? readErr.message : String(readErr),
+      };
+    }
+  }
+  const category = patchError?.category ?? (/Malformed patch|Hunk line count mismatch/i.test(error instanceof Error ? error.message : String(error)) ? "malformed_patch" : "context_mismatch");
+  const retryExhausted = attemptsForPatch >= 2;
+  const message = patchError
+    ? `Patch conflict in ${targetFile ?? "unknown file"}: ${patchError.category}`
+    : error instanceof Error ? error.message : String(error);
+  return {
+    message,
+    result: {
+      error: message,
+      kind: "patch_recovery_feedback",
+      conflictCategory: category,
+      targetFile,
+      failedHunk: patchError ? {
+        oldStart: patchError.hunk.oldStart,
+        oldLines: patchError.hunk.oldLines,
+        newStart: patchError.hunk.newStart,
+        newLines: patchError.hunk.newLines,
+        expected: patchError.expected,
+        actual: patchError.actual,
+        line: patchError.line,
+      } : null,
+      currentFile: current,
+      attemptsForPatch,
+      retryLimit: 2,
+      retryExhausted,
+      instruction: retryExhausted
+        ? "Stop cleanly and report the patch conflict. Do not resend this same patch again."
+        : "Regenerate the patch against currentFile.content. Do not resend the stale patch unchanged.",
+    },
+  };
+}
 
 export async function executeAgentChatTask({
   db,
@@ -828,7 +903,36 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           backupReferences[pf.oldPath] = h;
         }
 
-        const newContent = applyUnifiedPatch(originalContent, pf.chunks);
+        let newContent: string;
+        try {
+          newContent = applyUnifiedPatch(originalContent, pf.chunks);
+        } catch (patchErr) {
+          const attempts = (patchFailureCountsByHash.get(diffHash) ?? 0) + 1;
+          patchFailureCountsByHash.set(diffHash, attempts);
+          const feedback = patchFailureFeedback(workspacePath, patchFiles, patchErr, attempts);
+          event("patch.recovery_feedback", {
+            targetFile: pf.oldPath !== "/dev/null" ? pf.oldPath : pf.newPath,
+            conflictCategory: (feedback.result as any).conflictCategory,
+            attemptsForPatch: attempts,
+            retryExhausted: (feedback.result as any).retryExhausted,
+          });
+          throw new AgentToolFailure(feedback.message, feedback.result);
+        }
+        if (pf.oldPath !== "/dev/null" && originalContent !== null && hashString(newContent) === hashString(originalContent)) {
+          throw new AgentToolFailure(`Patch produced no content changes for: ${pf.newPath}`, {
+            error: `Patch produced no content changes for: ${pf.newPath}`,
+            kind: "patch_no_effect",
+            targetFile: pf.newPath,
+            currentFile: {
+              path: pf.newPath,
+              hash: hashString(originalContent),
+              bytes: Buffer.byteLength(originalContent, "utf8"),
+              truncated: Buffer.byteLength(originalContent, "utf8") > 16 * 1024,
+              content: originalContent.slice(0, 16 * 1024),
+            },
+            instruction: "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
+          });
+        }
         const destPath = assertContainedRealPath(workspacePath, pf.newPath);
         mkdirSync(dirname(destPath), { recursive: true });
         writeFileSync(destPath, newContent, "utf8");
@@ -1021,6 +1125,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
+  const patchFailureCountsByHash = new Map<string, number>();
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
@@ -1388,7 +1493,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           try {
             args = JSON.parse(tc.arguments || "{}");
           } catch {
-            throw new Error("Invalid tool arguments format");
+            throw new AgentToolFailure("Invalid tool arguments format", {
+              error: "Invalid tool arguments format",
+              kind: "malformed_tool_arguments",
+              toolName: tc.name,
+              instruction: "Call the tool again with valid JSON arguments that match the tool schema.",
+              retryLimit: 2,
+            });
           }
 
           // Defense in depth: execution/write tools are only ever permitted in
@@ -1688,6 +1799,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               }
             }
 
+            transitionAgentState("proposing_changes");
+
             // 3. Dry-run verify it applies cleanly
             for (const pf of patchFiles) {
               let originalContent: string | null = null;
@@ -1698,7 +1811,20 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 }
               }
               // This throws if there is a conflict
-              applyUnifiedPatch(originalContent, pf.chunks);
+              try {
+                applyUnifiedPatch(originalContent, pf.chunks);
+              } catch (patchErr) {
+                const attempts = (patchFailureCountsByHash.get(diffHash) ?? 0) + 1;
+                patchFailureCountsByHash.set(diffHash, attempts);
+                const feedback = patchFailureFeedback(project.workspacePath, patchFiles, patchErr, attempts);
+                event("patch.recovery_feedback", {
+                  targetFile: pf.oldPath !== "/dev/null" ? pf.oldPath : pf.newPath,
+                  conflictCategory: (feedback.result as any).conflictCategory,
+                  attemptsForPatch: attempts,
+                  retryExhausted: (feedback.result as any).retryExhausted,
+                });
+                throw new AgentToolFailure(feedback.message, feedback.result);
+              }
             }
 
             // 4. Check if there is already an approval decision for this change set in this task
@@ -1718,8 +1844,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               }
             } else {
               // Transition through proposing_changes -> waiting_for_approval
-              transitionAgentState("proposing_changes");
-              
               // We must request approval!
               const approvalId = randomUUID();
               approvalRecord = approvals.create({
@@ -1850,9 +1974,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
         } catch (err: any) {
           isSuccess = false;
-          errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
+          errorType = err instanceof AgentToolFailure
+            ? err.errorType
+            : err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
           errorMessage = err.message || "Unknown error";
-          resultStr = JSON.stringify({ error: errorMessage });
+          resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: tc.name, message: errorMessage });
           missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
         }
