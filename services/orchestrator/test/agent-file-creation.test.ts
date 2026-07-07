@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { TaskRunner } from "../src/runner.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -30,6 +30,15 @@ function seedYolo(db: any, workspacePath: string) {
 }
 
 const tool = (id: string, name: string, args: unknown) => ({ type: "tool_call" as const, toolCalls: [{ id, index: 0, type: "function" as const, function: { name, arguments: JSON.stringify(args) } }] });
+const tools = (...calls: Array<{ id: string; name: string; args: unknown }>) => ({
+  type: "tool_call" as const,
+  toolCalls: calls.map((call, index) => ({
+    id: call.id,
+    index,
+    type: "function" as const,
+    function: { name: call.name, arguments: JSON.stringify(call.args) },
+  })),
+});
 const done = { type: "done" as const };
 const text = (t: string) => ({ type: "text" as const, text: t });
 
@@ -93,6 +102,62 @@ describe("agent file creation under YOLO", () => {
     }
     expect(appliedFiles.has("package.json")).toBe(true);
     expect(appliedFiles.has("src/App.tsx")).toBe(true);
+  });
+
+  it("applies multiple file proposals emitted in one model turn without an invalid state transition", async () => {
+    seedYolo(db, ws);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const provider = new MockProvider({
+      chunks: [
+        [
+          tools(
+            { id: "f1", name: "create_file", args: { path: "index.html", content: "<!doctype html>\n<div>Hello</div>\n", purpose: "page" } },
+            { id: "f2", name: "create_file", args: { path: "style.css", content: "body { font-family: sans-serif; }\n", purpose: "styles" } },
+            { id: "f3", name: "create_file", args: { path: "script.js", content: "console.log('ready');\n", purpose: "script" } },
+          ),
+          done,
+        ],
+        [tool("l1", "list_files", { path: "." }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    try {
+      const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+      runner.run("t");
+      await runner.waitFor("t");
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+      const toolCalls = conversationsRepository(db).listToolCallsForTask("t");
+      for (const tc of toolCalls) {
+        expect(tc.status, `${tc.toolName} should not fail: ${tc.errorMessage ?? ""}`).toBe("completed");
+      }
+      expect(readFileSync(join(ws, "index.html"), "utf8")).toContain("Hello");
+      expect(readFileSync(join(ws, "style.css"), "utf8")).toContain("font-family");
+      expect(readFileSync(join(ws, "script.js"), "utf8")).toContain("ready");
+
+      expect(taskRecordsRepository(db).listAgentStates("t").map((state: any) => state.state)).toEqual([
+        "idle",
+        "understanding",
+        "planning",
+        "executing_tool",
+        "proposing_changes",
+        "applying_changes",
+        "observing",
+        "proposing_changes",
+        "applying_changes",
+        "observing",
+        "proposing_changes",
+        "applying_changes",
+        "observing",
+        "executing_tool",
+        "observing",
+        "completed",
+      ]);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes("agent_state_transition_rejected"))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("refuses to clobber an existing file through create_file", async () => {

@@ -283,8 +283,25 @@ export async function executeAgentChatTask({
     agentId: (task as { agentId?: string | null }).agentId ?? null,
     log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
   });
-  const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) =>
-    records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: now() });
+  let turn = 0;
+  const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) => {
+    const timestamp = now();
+    try {
+      return records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: timestamp });
+    } catch (err) {
+      const previous = records.getAgentState(taskId)?.state ?? null;
+      console.warn("[agent_state_transition_rejected]", JSON.stringify({
+        taskId,
+        turn,
+        previous,
+        requested: state,
+        event: typeof details.event === "string" ? details.event : "agent_state_transition",
+        toolCallId: typeof details.toolCallId === "string" ? details.toolCallId : null,
+        timestamp,
+      }));
+      throw err;
+    }
+  };
 
   // YOLO / auto-approve: resolve a freshly-created approval as approved without
   // blocking on a human. The approval record is still created and persisted so
@@ -1001,7 +1018,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
-  let turn = 0;
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
@@ -1870,6 +1886,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           elapsedMs: Date.now() - toolStartedAt,
           summary,
           ...(isSuccess ? { outputRef: tc.id } : { error: errorMessage ?? summary }),
+        });
+        transitionAgentState("observing", {
+          event: "tool_completed",
+          toolCallId: tc.id,
+          toolName: tc.name,
+          status: isSuccess ? "completed" : "failed",
         });
 
         chatMessages.push({
