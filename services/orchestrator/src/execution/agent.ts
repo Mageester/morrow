@@ -1869,6 +1869,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             let patch: string;
             let explanation: string;
             let files: string[];
+            // Set when a create_file call targeting an existing file was
+            // automatically converted into a whole-file replacement edit, so the
+            // final tool result can report the conversion truthfully.
+            let createConvertedToEdit = false;
             if (tc.name === "create_file") {
               const relPath = args.path;
               if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
@@ -1885,9 +1889,35 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // as patch_no_effect at apply time, which is the honest signal.)
               const createDest = assertContainedRealPath(project.workspacePath, relPath);
               if (existsSync(createDest)) {
+                // Only a *regular file* may be auto-overwritten. A directory (or
+                // other special node) at the path is a hard error, never a
+                // silent clobber.
+                const destStat = statSync(createDest);
+                if (!destStat.isFile()) {
+                  throw new Error(`Cannot create ${relPath}: a non-file already exists at that path.`);
+                }
                 const existingContent = readFileSync(createDest, "utf8");
+                // Destructive-overwrite guard: refuse to replace a NON-empty file
+                // with empty or whitespace-only content. create_file's contract is
+                // "full intended content", so an empty body against real content is
+                // almost certainly a mistake, and there is nothing to justify
+                // destroying the file. The model must use an explicit propose_patch
+                // (or create_directory + delete) if emptying is truly intended.
+                const existingIsNonEmpty = existingContent.trim().length > 0;
+                const replacementIsEmpty = args.content.trim().length === 0;
+                if (existingIsNonEmpty && replacementIsEmpty) {
+                  event("tool.strategy_switch", { tool: "create_file", from: "create", to: "rejected", path: relPath, reason: "empty_overwrite" });
+                  throw new AgentToolFailure(`Refusing to overwrite non-empty ${relPath} with empty content`, {
+                    error: `Refusing to overwrite non-empty ${relPath} with empty content`,
+                    kind: "unsafe_overwrite_rejected",
+                    targetFile: relPath,
+                    existingBytes: Buffer.byteLength(existingContent, "utf8"),
+                    instruction: "The file already has content. If you intend to change it, call create_file with the complete new content, or propose_patch with an explicit diff. An empty replacement of a non-empty file is not applied automatically.",
+                  });
+                }
                 patch = buildReplacementDiff(relPath, existingContent, args.content);
                 explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Overwrite existing ${relPath}`;
+                createConvertedToEdit = true;
                 event("tool.strategy_switch", { tool: "create_file", from: "create", to: "edit", path: relPath, reason: "target_exists" });
               } else {
                 patch = buildCreationDiff(relPath, args.content);
@@ -2076,6 +2106,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
             if (isApproved) {
               resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
+              // Report the createâ†’edit conversion in the tool result so the model
+              // (and /output) see that create_file landed as a backed-up edit of
+              // an existing file rather than a fresh creation.
+              if (createConvertedToEdit) {
+                try {
+                  const applied = JSON.parse(resultStr) as Record<string, unknown>;
+                  applied.strategy = "create_to_edit";
+                  applied.convertedToEdit = true;
+                  applied.note = `create_file target ${files[0]} already existed; applied as a backed-up, undoable whole-file edit.`;
+                  resultStr = JSON.stringify(applied);
+                } catch { /* non-JSON result â€” leave as-is */ }
+              }
             }
           } else if (tc.name === "create_directory") {
             const relPath = args.path;
