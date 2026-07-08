@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { relative } from "node:path";
 import { isDeniedWorkspacePath } from "../workspace/safe-reader.js";
 
 export class GitInspectionError extends Error {
@@ -17,6 +18,7 @@ const DEFAULT_TIMEOUT_MS = 1_000;
 const DEFAULT_LOG_LIMIT = 20;
 
 type ProcessResult = { stdout: string; stderr: string; exitCode: number | null; truncated: boolean; timedOut: boolean };
+type GitScope = { gitRoot: string | null; pathspec: string | null; workspacePrefix: string | null; ancestorGitRoot: boolean };
 
 function bounded(value: number | undefined, fallback: number, name: string): number {
   const result = value ?? fallback;
@@ -109,24 +111,41 @@ async function runGit(root: string, args: string[], options: GitInspectionOption
   });
 }
 
+async function resolveGitScope(root: string, options: GitInspectionOptions = {}): Promise<GitScope> {
+  const rootResult = await runGit(root, ["rev-parse", "--show-toplevel"], options);
+  if (rootResult.exitCode !== 0) return { gitRoot: null, pathspec: null, workspacePrefix: null, ancestorGitRoot: false };
+  const gitRoot = rootResult.stdout.trim();
+  const workspace = realpathSync(root);
+  const rel = relative(gitRoot, workspace).replace(/\\/g, "/");
+  if (!rel || rel.startsWith("..")) return { gitRoot, pathspec: null, workspacePrefix: null, ancestorGitRoot: false };
+  const prefix = rel.replace(/\/+$/g, "");
+  return { gitRoot, pathspec: `:(top)${prefix}`, workspacePrefix: `${prefix}/`, ancestorGitRoot: true };
+}
+
 function ensureSuccess(result: ProcessResult): ProcessResult {
   if (result.timedOut || result.truncated || result.exitCode === 0) return result;
   throw new GitInspectionError(redactSecrets(result.stderr.trim() || "Git command failed"));
 }
 
 export async function gitStatus(root: string, options: GitInspectionOptions = {}): Promise<GitStatusResult> {
-  const result = ensureSuccess(await runGit(root, ["status", "--porcelain=v1", "--branch"], options));
+  const scope = await resolveGitScope(root, options);
+  const args = ["status", "--porcelain=v1", ...(scope.ancestorGitRoot ? [] : ["--branch"]), "--untracked-files=all", ...(scope.pathspec ? ["--", scope.pathspec] : [])];
+  const result = ensureSuccess(await runGit(root, args, options));
   const lines = result.stdout.split(/\r?\n/).filter((line) => {
     if (!line) return false;
     if (line.startsWith("## ")) return true;
     return safePath(line.slice(3));
-  }).map(redactSecrets);
+  }).map((line) => redactSecrets(scope.workspacePrefix ? stripWorkspacePrefix(line, scope.workspacePrefix) : line));
+  if (scope.ancestorGitRoot) {
+    lines.unshift("## ancestor Git repository detected; status scoped to the registered workspace");
+  }
   return { lines, truncated: result.truncated, timedOut: result.timedOut };
 }
 
 export async function gitDiff(root: string, options: GitInspectionOptions = {}): Promise<GitDiffResult> {
   const maxOutputBytes = bounded(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, "maxOutputBytes");
-  const names = ensureSuccess(await runGit(root, ["diff", "--name-only", "-z"], { ...options, maxOutputBytes }));
+  const scope = await resolveGitScope(root, { ...options, maxOutputBytes });
+  const names = ensureSuccess(await runGit(root, ["diff", "--name-only", "-z", ...(scope.pathspec ? ["--", scope.pathspec] : [])], { ...options, maxOutputBytes }));
   const paths = names.stdout.split("\0").filter(safePath);
   const files: Array<{ path: string; diff: string }> = [];
   let remaining = maxOutputBytes;
@@ -140,8 +159,8 @@ export async function gitDiff(root: string, options: GitInspectionOptions = {}):
       break;
     }
     const result = ensureSuccess(await runGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--unified=3", "--", path], { ...options, maxOutputBytes: remaining }));
-    const diff = redactSecrets(result.stdout);
-    files.push({ path, diff });
+    const diff = redactSecrets(scope.workspacePrefix ? stripWorkspacePrefix(result.stdout, scope.workspacePrefix) : result.stdout);
+    files.push({ path: scope.workspacePrefix ? stripPlainPathPrefix(path, scope.workspacePrefix) : path, diff });
     remaining -= Buffer.byteLength(diff, "utf8");
     truncated ||= result.truncated;
     timedOut ||= result.timedOut;
@@ -152,10 +171,21 @@ export async function gitDiff(root: string, options: GitInspectionOptions = {}):
 
 export async function gitLog(root: string, options: GitInspectionOptions = {}): Promise<GitLogResult> {
   const limit = bounded(options.limit, DEFAULT_LOG_LIMIT, "limit");
-  const result = ensureSuccess(await runGit(root, ["log", "--no-decorate", `-n${limit}`, "--format=%H%x09%s%x09%aI"], options));
+  const scope = await resolveGitScope(root, options);
+  const result = ensureSuccess(await runGit(root, ["log", "--no-decorate", `-n${limit}`, "--format=%H%x09%s%x09%aI", ...(scope.pathspec ? ["--", scope.pathspec] : [])], options));
   const commits = result.stdout.split(/\r?\n/).filter(Boolean).map(redactSecrets).flatMap((line) => {
     const [hash, subject, committedAt] = line.split("\t");
     return hash && subject && committedAt ? [{ hash, subject, committedAt }] : [];
   });
   return { commits, truncated: result.truncated, timedOut: result.timedOut };
+}
+
+function stripWorkspacePrefix(line: string, prefix: string): string {
+  if (line.startsWith("## ")) return line;
+  if (line.length <= 3) return line;
+  return `${line.slice(0, 3)}${stripPlainPathPrefix(line.slice(3), prefix)}`;
+}
+
+function stripPlainPathPrefix(path: string, prefix: string): string {
+  return path.replace(/\\/g, "/").startsWith(prefix) ? path.replace(/\\/g, "/").slice(prefix.length) : path;
 }
