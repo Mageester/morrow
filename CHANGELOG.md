@@ -6,6 +6,40 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.26] - 2026-07-08
+
+### Fixed - consumer onboarding and execution flow
+
+- **Multiline initial missions are preserved.** Custom onboarding missions now
+  use an explicit multiline prompt, so pasted task requirements are retained
+  instead of being truncated at the first line.
+- **YOLO carries into the first mission.** Choosing YOLO during onboarding now
+  persists the auto-approval default and launches the initial mission in the
+  selected project with that scoped autonomy.
+- **Approval rendering is defensive.** Missing or malformed approval metadata no
+  longer crashes the terminal renderer; command and change-set approvals are
+  displayed through a safe view model with conservative fallbacks.
+- **Child workspaces stay exact.** When Morrow is launched from an ancestor
+  repository while a registered child workspace is selected, the child project
+  wins so parent sessions and parent Git changes are not reused accidentally.
+- **Nested Git status is scoped.** Header/status Git reads now use a top-anchored
+  pathspec for child workspaces and record ancestor-root context instead of
+  presenting unrelated parent dirty counts as child changes.
+- **Progress and terminal outcomes are clearer.** Stall detection now treats
+  changed tool observations as meaningful progress, emits a warning before a
+  stall, and keeps completed/stalled/cancelled/failed/interrupted terminal
+  outcomes mutually exclusive in the CLI presentation state.
+- **Large edit recovery is bounded.** Valid large `create_file` and
+  `propose_patch` arguments are capped only in model-facing context after the
+  raw tool call is persisted, while malformed patch parse failures return
+  actionable bounded feedback or stop cleanly.
+
+### Security
+
+- Codex Security diff scan completed with preflight ready, 12/12 discovery rows
+  reviewed, and 0 reportable findings. Evidence is preserved under
+  `docs/security/beta26-scan/`.
+
 ## [0.1.0-beta.25] - 2026-07-07
 
 ### Fixed — agent patch & tool-call reliability
