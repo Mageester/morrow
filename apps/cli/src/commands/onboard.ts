@@ -343,7 +343,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       if (choice.id === "yolo") {
         ctx.out.print();
         ctx.out.info(
-          "YOLO mode enabled. Morrow will run with project-scoped autonomy. Hard safety denials protect your secrets and system, while full audit logs, diffs, and undo commands remain active."
+          "YOLO mode enabled. Morrow is workspace-autonomous: it edits, runs, and verifies inside the workspace without prompting — not unlimited system access. Hard safety denials protect your secrets and system, while full audit logs, diffs, and undo commands remain active."
         );
       }
       return true;

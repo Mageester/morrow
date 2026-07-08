@@ -160,7 +160,7 @@ describe("agent file creation under YOLO", () => {
     }
   });
 
-  it("refuses to clobber an existing file through create_file", async () => {
+  it("automatically switches create_file to a backed-up edit when the target already exists", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -174,12 +174,44 @@ describe("agent file creation under YOLO", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    // The original content is preserved; the second create_file failed cleanly.
-    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("original\n");
+    // The second create_file switched strategy to an edit and overwrote cleanly,
+    // rather than dead-ending on "it already exists".
+    expect(readFileSync(join(ws, "keep.txt"), "utf8")).toBe("overwrite\n");
     const calls = conversationsRepository(db).listToolCallsForTask("t").filter((c: any) => c.toolName === "create_file");
     expect(calls[0]!.status).toBe("completed");
-    expect(calls[1]!.status).toBe("failed");
-    expect(calls[1]!.errorMessage).toMatch(/already exists/i);
+    expect(calls[1]!.status).toBe("completed");
+
+    // The strategy switch was observable and the overwrite is an undoable change set
+    // (the original content is backed up so /undo can restore it).
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "tool.strategy_switch" && (e.payload as any).to === "edit")).toBe(true);
+    const changeSets = changeSetsRepository(db).listByTask("t");
+    const editChange = changeSets.find((cs) => Object.keys(cs.postApplyHashes ?? {}).includes("keep.txt") && Object.keys(cs.backupReferences ?? {}).includes("keep.txt"));
+    expect(editChange, "the overwrite should be captured as a backed-up change set").toBeTruthy();
+  });
+
+  it("reports patch_no_effect when an edit would leave an existing file unchanged", async () => {
+    seedYolo(db, ws);
+    // create_file "same.txt", then a propose_patch whose result is identical to
+    // what's on disk. The edit fallback / patch apply must refuse a no-op rather
+    // than record a hollow success.
+    const noOpPatch = "--- a/same.txt\n+++ b/same.txt\n@@ -1,1 +1,1 @@\n-identical\n+identical\n";
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: "same.txt", content: "identical\n" }), done],
+        [tool("f2", "propose_patch", { patch: noOpPatch, explanation: "no-op", files: ["same.txt"] }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(readFileSync(join(ws, "same.txt"), "utf8")).toBe("identical\n");
+    const patchCall = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.toolName === "propose_patch");
+    expect(patchCall!.status).toBe("failed");
+    expect(JSON.parse(patchCall!.resultJson!).kind).toBe("patch_no_effect");
   });
 
   it("enforces an explicit user only-file contract and rejects auxiliary scratch files", async () => {

@@ -68,6 +68,30 @@ export function buildCreationDiff(relPath: string, content: string): string {
 }
 
 /**
+ * Build a unified diff that replaces an existing file's entire contents. This
+ * is the automatic fallback when `create_file` targets a path that already
+ * exists: instead of failing with "it already exists, use an edit patch", the
+ * runtime synthesizes this whole-file edit and flows it through the identical
+ * validate → approve → apply → change-set pipeline, so the existing file is
+ * backed up and the change is undoable.
+ *
+ * The old side (`-` lines) is split with the same `/\r?\n/`-equivalent
+ * normalization the applier uses, so the deletion context matches the file on
+ * disk regardless of CRLF/LF. Line endings in the written result are chosen by
+ * `applyUnifiedPatch` from the original file, matching the rest of the pipeline.
+ */
+export function buildReplacementDiff(relPath: string, oldContent: string, newContent: string): string {
+  const target = relPath.replace(/\\/g, "/");
+  const oldLines = oldContent.replace(/\r\n/g, "\n").split("\n");
+  const newLines = newContent.replace(/\r\n/g, "\n").split("\n");
+  const body = [
+    ...oldLines.map((line) => `-${line}`),
+    ...newLines.map((line) => `+${line}`),
+  ].join("\n");
+  return `--- a/${target}\n+++ b/${target}\n@@ -1,${oldLines.length} +1,${newLines.length} @@\n${body}\n`;
+}
+
+/**
  * Model and user supplied paths can use either path dialect regardless of the
  * host Morrow is running on. `path.isAbsolute` only understands the host
  * dialect, so it would accept `C:\\Windows\\...` when the service runs on

@@ -54,6 +54,18 @@ describe("workspace inspector", () => {
       expect(() => inspectWorkspace(item.root, { startPath: "..\\escape", maxDepth: 1, maxResults: 1 })).toThrow(WorkspaceInspectionError);
     } finally { item.remove(); rmSync(outside, { recursive: true, force: true }); }
   });
+  it("treats a file start path as a single-file scope instead of erroring", () => {
+    const item = workspace();
+    try {
+      mkdirSync(join(item.root, "src"));
+      writeFileSync(join(item.root, "src", "app.ts"), "export const x = 1;\n");
+      writeFileSync(join(item.root, "other.ts"), "export const y = 2;\n");
+      // A concrete file as the start path used to throw
+      // "Workspace start path must be a directory"; it now returns just that file.
+      const result = inspectWorkspace(item.root, { startPath: "src/app.ts", maxDepth: 8, maxResults: 10 });
+      expect(result.entries.map((entry) => entry.path)).toEqual(["src/app.ts"]);
+    } finally { item.remove(); }
+  });
   it("excludes morrow data and rejects external symlinks", () => {
     const item = workspace(); const outside = `${item.root}-other`;
     try {

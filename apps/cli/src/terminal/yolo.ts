@@ -1,12 +1,12 @@
-/** Honest, compact disclosures for the autonomous project-scoped mode. */
+/** Honest, compact disclosures for the workspace-autonomous mode. */
 export function yoloStatusText(enabled: boolean): string {
   return enabled
-    ? "YOLO on · project-scoped autonomy; every approval is recorded."
+    ? "YOLO on · Workspace-autonomous — edits, runs, and verifies inside the workspace without prompting; every approval is recorded. Not unlimited system access."
     : "YOLO off · commands and patches require approval.";
 }
 
 export function yoloPolicyText(): string {
-  return "YOLO may inspect, search, verify, and apply workspace-contained changes. It always blocks secret access, workspace escape, privilege escalation, destructive disk actions, destructive Git, force push, and unauthorized network transmission.";
+  return "Workspace-autonomous YOLO auto-approves normal in-workspace development: creating, editing, and deleting workspace files and directories; running npm/pnpm/node, git status/diff, builds and tests; applying patches; and rerunning failed commands. It always blocks workspace escape, secret and credential reads, privilege escalation, destructive disk actions, destructive Git history, force push, and unauthorized network transmission.";
 }
 
 /** Risk level used for color-coding approval prompts. */

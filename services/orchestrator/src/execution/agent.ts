@@ -22,7 +22,7 @@ import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
-import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
+import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
 import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
@@ -1310,6 +1310,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   let completedWithoutMoreTools = false;
   let totalBytesRead = 0;
+  // Tracks the outcome of the most recent workspace-mutating or verification
+  // action so a natural end-of-conversation stop can be gated: the model must
+  // not report "completed" when the last patch/file write failed, or the last
+  // verification command exited non-zero. A subsequent successful mutation or a
+  // clean verification clears it (the model recovered). See the completion gate
+  // at the end of the loop.
+  let lastVerificationFailure: { tool: string; detail: string } | null = null;
+  const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "create_directory"]);
   const steps = records.listPlanSteps(taskId);
 
   const planningStep = steps[0]!;
@@ -1869,8 +1877,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // Fail fast with a clear message on containment/denied-name before
               // synthesizing a diff. Parent directories are created on apply.
               validatePatchPaths(project.workspacePath, [{ oldPath: "/dev/null", newPath: relPath, chunks: [] }], PERMISSION_PROFILE.deniedNamePatterns);
-              patch = buildCreationDiff(relPath, args.content);
-              explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Create ${relPath}`;
+              // Automatic edit fallback: if the target already exists, create_file
+              // would otherwise dead-end on "it already exists, use an edit patch".
+              // Instead switch strategy here and synthesize a whole-file
+              // replacement diff so the model's create_file call still lands as a
+              // real, backed-up, undoable edit. (Identical content still surfaces
+              // as patch_no_effect at apply time, which is the honest signal.)
+              const createDest = assertContainedRealPath(project.workspacePath, relPath);
+              if (existsSync(createDest)) {
+                const existingContent = readFileSync(createDest, "utf8");
+                patch = buildReplacementDiff(relPath, existingContent, args.content);
+                explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Overwrite existing ${relPath}`;
+                event("tool.strategy_switch", { tool: "create_file", from: "create", to: "edit", path: relPath, reason: "target_exists" });
+              } else {
+                patch = buildCreationDiff(relPath, args.content);
+                explanation = typeof args.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : `Create ${relPath}`;
+              }
               files = [relPath];
             } else {
               patch = args.patch;
@@ -2125,6 +2147,26 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);
 
+        // Completion-gate bookkeeping: a run_command that returns a non-zero
+        // exit code is a *successful tool call* (it ran) but a *failed
+        // verification* â€” the classic "tests failed yet the task said
+        // completed" hole. Treat mutations/verifications that either threw or
+        // exited non-zero as an outstanding failure; a clean one clears it.
+        if (VERIFY_OR_WRITE_TOOLS.has(tc.name)) {
+          let failedOutcome: string | null = null;
+          if (!isSuccess) {
+            failedOutcome = errorMessage ?? "tool failed";
+          } else if (tc.name === "run_command") {
+            try {
+              const parsedRun = JSON.parse(resultStr) as { exitCode?: number | null };
+              if (parsedRun.exitCode !== undefined && parsedRun.exitCode !== null && parsedRun.exitCode !== 0) {
+                failedOutcome = `${args.executable ?? "command"} exited ${parsedRun.exitCode}`;
+              }
+            } catch { /* non-JSON result â€” treat as clean */ }
+          }
+          lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
+        }
+
         const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
         if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
 
@@ -2225,6 +2267,20 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if (activeStepId) {
       records.updatePlanStepStatus(activeStepId, "skipped", now());
     }
+    return;
+  }
+
+  // Completion gate: the model stopped emitting tool calls (its "I'm done"
+  // signal), but the last workspace mutation or verification it ran failed and
+  // was never recovered. Reporting "completed" here would be dishonest â€” the
+  // required change or check did not actually pass. Stop cleanly with an
+  // incomplete status instead, so the CLI and /output show the truth.
+  if (completedWithoutMoreTools && lastVerificationFailure) {
+    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
+    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return;
   }
 
