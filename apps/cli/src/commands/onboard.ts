@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { Context } from "../cli/context.js";
 import { EXIT, CliError } from "../cli/errors.js";
 import { ensureRunning, isRunning } from "../service/lifecycle.js";
-import { ask, askSecret, confirm, select, validateDirectory } from "./common.js";
+import { ask, askMultiline, askSecret, confirm, select, validateDirectory } from "./common.js";
 import { writeSecret } from "../config/env.js";
 import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
@@ -36,6 +36,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     ctx.config.unset("user.useCase", "user");
     ctx.config.unset("user.name", "user");
     ctx.config.unset("defaults.mode", "user");
+    ctx.config.unset("defaults.autoApprove", "user");
     ctx.config.unset("defaults.project", "user");
 
     try {
@@ -65,6 +66,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
     const name = (ctx.config.get("user.name") as string) || "None";
     const useCase = (ctx.config.get("user.useCase") as string) || "None";
     const mode = (ctx.config.get("defaults.mode") as string) || "None";
+    const autoApprove = ctx.config.get("defaults.autoApprove") === true;
     const project = (ctx.config.get("defaults.project") as string) || "None";
 
     ctx.out.heading("Morrow Onboarding Status");
@@ -74,6 +76,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
       ["Name", name],
       ["Use Case", useCase],
       ["Default Mode", mode],
+      ["Auto Approve", autoApprove ? ctx.out.yellow("YOLO") : "No"],
       ["Default Project", project],
     ]);
     return EXIT.OK;
@@ -335,6 +338,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       const choice = options[idx]!;
       const mappedMode = choice.id === "yolo" ? "agent" : choice.id;
       ctx.config.set("defaults.mode", mappedMode, "user");
+      ctx.config.set("defaults.autoApprove", String(choice.id === "yolo"), "user");
 
       if (choice.id === "yolo") {
         ctx.out.print();
@@ -548,7 +552,11 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       if (idx === 3) {
         missionText = "";
         while (!missionText) {
-          missionText = await ask("What would you like Morrow to help you with? ");
+          missionText = await askMultiline("What would you like Morrow to help you with?");
+          if (!missionText.trim()) {
+            ctx.out.warn("Mission prompt cannot be empty.");
+            missionText = "";
+          }
         }
       }
 
@@ -572,6 +580,8 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
           ...ctx.flags,
           message: missionText,
           resume: conv.id,
+          project: project.id,
+          ...(ctx.config.get("defaults.autoApprove") === true ? { yolo: true } : {}),
         },
       });
 

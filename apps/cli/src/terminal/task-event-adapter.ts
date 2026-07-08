@@ -97,6 +97,9 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       return withSource([{ type: "notice", level: "warn", text: `${name} failed: ${message}` }]);
     }
 
+    case "task.progress_warning":
+      return withSource([{ type: "notice", level: "warn", text: str(p.message) ?? "No new observable progress yet." }]);
+
     case "task.failed":
       return withSource([{ type: "task.failed", message: str(p.message) ?? "unknown error" }]);
     case "task.completed":

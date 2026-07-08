@@ -73,6 +73,24 @@ describe("agent tool-argument recovery", () => {
     expect(argEvents(db)).toHaveLength(0);
   });
 
+  it("accepts a large valid create_file payload without entering repair", async () => {
+    seedYolo(db, ws);
+    const content = "invoice-line\n".repeat(8000);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("large", "create_file", { path: "script.js", content }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(readFileSync(join(ws, "script.js"), "utf8")).toBe(content);
+    expect(calls(db).find((c: any) => c.id === "large")!.status).toBe("completed");
+    expect(argEvents(db)).toHaveLength(0);
+  });
+
   it("returns structured feedback for truncated arguments, then applies a corrected retry", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({

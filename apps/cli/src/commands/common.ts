@@ -40,6 +40,23 @@ export async function resolveProject(
   // 2. A registered project matching (or containing) the current directory takes
   //    precedence over the configured default. This is the isolation guarantee:
   //    being inside B's workspace selects B, regardless of what default is saved.
+  const configured = ctx.config.get("defaults.project") as string | undefined;
+  const configuredProject = configured ? projects.find((p) => p.id === configured || p.name === configured) : undefined;
+  if (configuredProject) {
+    const configuredPath = canonicalProjectPath(configuredProject.workspacePath);
+    const safety = isSafeProjectRoot(configuredProject.workspacePath);
+    if (!safety.safe) {
+      throw usageError(
+        `Default project "${configuredProject.name}" points at an unsafe workspace (${safety.reason}).`,
+        "Run `morrow init` inside a repository or `morrow projects select` to choose a safe project."
+      );
+    }
+    // Onboarding can be launched from a parent repository while registering a
+    // clean child workspace. In that case the explicit default is narrower than
+    // cwd and must win over the ancestor project so sessions do not cross roots.
+    if (containsPath(cwd, configuredPath)) return configuredProject;
+  }
+
   const cwdProject = nearestContainingProject(projects, cwd);
   if (cwdProject) return cwdProject;
 
@@ -54,19 +71,8 @@ export async function resolveProject(
   }
 
   // 4. The configured default project (only when cwd is not itself a workspace).
-  const configured = ctx.config.get("defaults.project") as string | undefined;
   if (configured) {
-    const byConfig = projects.find((p) => p.id === configured || p.name === configured);
-    if (byConfig) {
-      const safety = isSafeProjectRoot(byConfig.workspacePath);
-      if (!safety.safe) {
-        throw usageError(
-          `Default project "${byConfig.name}" points at an unsafe workspace (${safety.reason}).`,
-          "Run `morrow init` inside a repository or `morrow projects select` to choose a safe project."
-        );
-      }
-      return byConfig;
-    }
+    if (configuredProject) return configuredProject;
     // A stale default (project since removed) should not hard-fail resolution;
     // fall through to explicit interactive selection or a clear refusal below.
   }
@@ -290,6 +296,24 @@ export function ask(question: string): Promise<string> {
     rl.question(question, (answer) => {
       rl.close();
       resolve(answer.trim());
+    });
+  });
+}
+
+export function askMultiline(question: string, opts: { endMarker?: string } = {}): Promise<string> {
+  const endMarker = opts.endMarker ?? ".";
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const lines: string[] = [];
+  process.stderr.write(question);
+  process.stderr.write(`\nEnd with a single ${JSON.stringify(endMarker)} on its own line.\n`);
+  return new Promise((resolve) => {
+    rl.on("line", (line) => {
+      if (line === endMarker) {
+        rl.close();
+        resolve(lines.join("\n"));
+        return;
+      }
+      lines.push(line);
     });
   });
 }

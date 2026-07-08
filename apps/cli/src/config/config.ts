@@ -29,6 +29,7 @@ export interface MorrowConfig {
     model?: string;
     useMemory?: boolean;
     mode?: string;
+    autoApprove?: boolean;
   };
   service?: {
     host?: string;
@@ -57,6 +58,7 @@ const ALLOWED_KEYS = new Set([
   "defaults.model",
   "defaults.useMemory",
   "defaults.mode",
+  "defaults.autoApprove",
   "service.host",
   "service.port",
   "service.dbPath",
@@ -218,7 +220,7 @@ function coerce(key: string, value: string): unknown {
     }
     return n;
   }
-  if (key === "ui.color" || key === "ui.unicode" || key === "defaults.useMemory" || key === "user.onboarded" || (key.startsWith("skills.") && key.endsWith(".enabled"))) {
+  if (key === "ui.color" || key === "ui.unicode" || key === "defaults.useMemory" || key === "defaults.autoApprove" || key === "user.onboarded" || (key.startsWith("skills.") && key.endsWith(".enabled"))) {
     if (value === "true" || value === true as any) return true;
     if (value === "false" || value === false as any) return false;
     throw new CliError(`${key} must be "true" or "false" (got "${value}")`, { code: "CONFIG_INVALID_VALUE", exitCode: EXIT.USAGE });
