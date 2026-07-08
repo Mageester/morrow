@@ -163,7 +163,10 @@ describe("agent patch recovery", () => {
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     const second = JSON.parse(calls.find((c: any) => c.id === "stale-2")!.resultJson!);
     expect(second.retryExhausted).toBe(true);
-    expect(second.instruction).toMatch(/Stop cleanly/);
+    // Two failures on the same file now escalate to a whole-file create_file
+    // rewrite (a safe, backed-up edit) rather than a bare "stop cleanly".
+    expect(second.switchToCreateFile).toBe(true);
+    expect(second.instruction).toMatch(/create_file/);
     const recoveryEvents = taskRecordsRepository(db).listEvents("t").filter((e: any) => e.type === "patch.recovery_feedback");
     expect(recoveryEvents).toHaveLength(2);
   });
