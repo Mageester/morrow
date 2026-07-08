@@ -34,7 +34,11 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - **Large edit recovery is bounded.** Valid large `create_file` and
   `propose_patch` arguments are capped only in model-facing context after the
   raw tool call is persisted, while malformed patch parse failures return
-  actionable bounded feedback or stop cleanly.
+  actionable bounded feedback or stop cleanly. Turns containing only failed
+  tool calls no longer reset progress just because the model narrated the retry.
+- **Explicit file-only missions are enforced.** When a mission says to use only
+  named deliverable files, auxiliary scratch writes are rejected and the model is
+  directed to verify with commands such as `node -e` instead.
 
 ### Security
 
