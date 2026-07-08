@@ -10,6 +10,8 @@ import { stripAnsi } from "../cli/output.js";
 import type { ActivityKind, ProgressStage } from "./events.js";
 import type { ActivityEntry, PatchEntry, TerminalState, ToolCard } from "./state.js";
 
+export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed";
+
 export interface Glyphs {
   ok: string;
   fail: string;
@@ -25,6 +27,28 @@ export function glyphs(unicode: boolean): Glyphs {
   return unicode
     ? { ok: "✓", fail: "✖", run: "•", arrow: "↳", bullet: "◦", dot: "·", warn: "⚠", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
     : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", spinner: ["-", "\\", "|", "/"] };
+}
+
+export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean; color: Output }): string {
+  const out = opts.color;
+  if (!opts.unicode) {
+    if (state === "completed") return out.green("[M+]");
+    if (state === "failed") return out.red("[M!]");
+    if (state === "thinking" || state === "running-tool") return out.cyan("[M*]");
+    return out.gray("[M]");
+  }
+  switch (state) {
+    case "completed":
+      return out.green("\u25C8M");
+    case "failed":
+      return out.red("\u25C7M!");
+    case "thinking":
+      return out.cyan("\u25C7M");
+    case "running-tool":
+      return out.cyan("\u25C9M");
+    default:
+      return out.gray("\u25C7M");
+  }
 }
 
 const ACTIVITY_LABEL: Record<ActivityKind, string> = {
@@ -74,6 +98,112 @@ export function formatElapsed(ms: number): string {
   const m = Math.floor(ms / 60_000);
   const s = Math.round((ms % 60_000) / 1000);
   return `${m}m${s.toString().padStart(2, "0")}s`;
+}
+
+function formatTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) return "unknown";
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return String(tokens);
+}
+
+function plainMode(mode: string): "Ask" | "Plan" | "Build" {
+  const lower = mode.toLowerCase();
+  if (lower.includes("plan")) return "Plan";
+  if (lower.includes("ask") || lower.includes("read-only") || lower.includes("inspect")) return "Ask";
+  return "Build";
+}
+
+function autonomyLabel(state: TerminalState): string {
+  return state.meta?.autoApprove ? "Workspace-autonomous YOLO" : "approvals required";
+}
+
+function shortAutonomyLabel(state: TerminalState): string {
+  return state.meta?.autoApprove ? "YOLO" : "approvals";
+}
+
+function gitLabel(state: TerminalState): string {
+  const g = state.git;
+  if (!g) return state.meta?.branch ?? "unknown";
+  let text = g.branch + (g.dirty ? "*" : "");
+  if (g.ahead > 0) text += ` +${g.ahead}`;
+  if (g.behind > 0) text += ` -${g.behind}`;
+  if (g.dirty) text += " dirty";
+  return text;
+}
+
+function usageLabel(state: TerminalState): string {
+  const u = state.usage;
+  if (!u) return "Tokens unknown";
+  const parts = [`${formatTokens(u.inputTokens)} in`, `${formatTokens(u.outputTokens)} out`];
+  if (u.cachedInputTokens > 0) parts.push(`${formatTokens(u.cachedInputTokens)} cached`);
+  return `Tokens ${parts.join(" - ")}`;
+}
+
+function costLabel(state: TerminalState): string {
+  const cost = state.usage?.estimatedCostUsd;
+  if (cost === undefined || cost === null) return "Cost unknown";
+  return `Cost $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+}
+
+function contextLimit(state: TerminalState): number | null {
+  const u = state.contextUsage;
+  if (!u) return null;
+  if (u.contextLimitTokens !== undefined) return u.contextLimitTokens;
+  return u.contextWindowSource === "fallback" ? null : u.maxTokens;
+}
+
+function contextLabel(state: TerminalState): string {
+  const u = state.contextUsage;
+  if (!u) return "Context unknown";
+  const limit = contextLimit(state);
+  if (!limit || limit <= 0) return `Context ${formatTokens(u.usedTokens)} / unknown`;
+  const pct = u.percent ?? Math.round((u.usedTokens / limit) * 100);
+  return `Context ${formatTokens(u.usedTokens)} / ${formatTokens(limit)} - ${pct}%`;
+}
+
+function toolsLabel(state: TerminalState): string {
+  const failed = state.tools.filter((t) => t.status === "failed").length;
+  return `Tools ${state.tools.length} calls - ${failed} failed`;
+}
+
+function taskLabel(state: TerminalState): string {
+  return state.status === "streaming" ? "running" : state.status;
+}
+
+function liveStateLabel(state: TerminalState): string {
+  if (state.status === "streaming") return "working";
+  if (state.status === "completed") return "ready";
+  if (state.status === "failed") return "failed";
+  if (state.status === "cancelled" || state.status === "interrupted" || state.status === "budget-reached" || state.status === "stalled") return state.status;
+  return "idle";
+}
+
+function agentsLabel(state: TerminalState): string | null {
+  const running = state.agents.filter((agent) => agent.status === "running");
+  if (running.length === 0) return null;
+  return `Agents ${running.map((agent) => agent.name).join(", ")}`;
+}
+
+function processesLabel(state: TerminalState): string | null {
+  const running = state.processes.filter((process) => process.status === "running");
+  if (running.length === 0) return null;
+  return `Processes ${running.length} running`;
+}
+
+function avatarState(state: TerminalState): MorrowAvatarState {
+  if (state.status === "failed" || state.status === "stalled") return "failed";
+  if (state.status === "completed") return "completed";
+  if (state.tools.some((t) => t.status === "running")) return "running-tool";
+  if (state.status === "streaming") return "thinking";
+  return "idle";
+}
+
+function joinHeaderFields(out: Output, fields: string[], unicode: boolean): string {
+  return fields.filter(Boolean).join(out.gray(` ${glyphs(unicode).dot} `));
 }
 
 function approvalLabel(approval: ToolCard["approval"] | PatchEntry["approval"]): string | null {
@@ -201,45 +331,48 @@ export function activityGroupLine(group: ActivityGroup, out: Output, unicode: bo
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
+export interface HeaderOptions {
+  unicode?: boolean;
+  columns?: number;
+  elapsedMs?: number;
+}
+
 /** The session header: identity + the live facts a user steers by. */
-export function headerLines(state: TerminalState, out: Output): string[] {
+export function headerLines(state: TerminalState, out: Output, opts: HeaderOptions = {}): string[] {
   const m = state.meta;
   if (!m) return [];
-  const rows: Array<[string, string]> = [
-    ["Project", `${m.projectName}  ${out.gray(m.workspacePath)}`],
+  const unicode = opts.unicode ?? true;
+  const columns = opts.columns ?? 80;
+  const avatar = morrowAvatar(avatarState(state), { unicode, color: out });
+  const mode = plainMode(m.mode);
+  const providerModel = `${m.provider}/${m.model}`;
+  const memory = m.memory ? "Memory on" : "Memory off";
+  const elapsed = opts.elapsedMs !== undefined ? `Time ${formatElapsed(opts.elapsedMs)}` : "";
+  const cost = costLabel(state);
+
+  if (columns < 56) {
+    return [
+      clipToWidth(`  MORROW ${avatar} ${mode} ${m.model}`, columns),
+      clipToWidth(`  ${shortAutonomyLabel(state)} ${contextLabel(state)}`, columns),
+    ];
+  }
+
+  if (columns < 100) {
+    const medium = [
+      clipToWidth(`  MORROW ${avatar}  ${m.projectName}  ${out.gray(gitLabel(state))}`, columns),
+      clipToWidth(`  ${joinHeaderFields(out, [`${mode} - ${shortAutonomyLabel(state)}`, m.model, `Task ${taskLabel(state)}`, contextLabel(state), toolsLabel(state), elapsed], unicode)}`, columns),
+    ];
+    const extras = [agentsLabel(state), processesLabel(state)].filter((field): field is string => Boolean(field));
+    if (extras.length > 0) medium.push(clipToWidth(`  ${joinHeaderFields(out, extras, unicode)}`, columns));
+    return medium;
+  }
+
+  const liveFields = [memory, `Task ${taskLabel(state)}`, agentsLabel(state), processesLabel(state)].filter((field): field is string => Boolean(field));
+  return [
+    clipToWidth(`  ${out.bold("MORROW")} ${avatar}  ${out.cyan(m.projectName)}  ${out.gray(m.workspacePath)}`, columns),
+    clipToWidth(`  ${joinHeaderFields(out, [`${mode} - ${autonomyLabel(state)}`, providerModel, `Git ${gitLabel(state)}`, ...liveFields], unicode)}`, columns),
+    clipToWidth(`  ${joinHeaderFields(out, [usageLabel(state), contextLabel(state), toolsLabel(state), elapsed, cost], unicode)}`, columns),
   ];
-  // Git state (from git.state event, or the session meta branch)
-  if (state.git) {
-    const g = state.git;
-    const gitParts = [g.branch];
-    if (g.dirty) gitParts.push("dirty");
-    if (g.ahead > 0) gitParts.push(`+${g.ahead}`);
-    if (g.behind > 0) gitParts.push(`-${g.behind}`);
-    rows.push(["Branch", gitParts.join(" ")]);
-  } else {
-    rows.push(["Branch", m.branch]);
-  }
-  rows.push(["Model", `${m.provider} · ${m.model}  ${out.gray(m.privacy)}`]);
-  rows.push(["Mode", m.mode]);
-  rows.push(["Memory", m.memory ? "project context on" : "off"]);
-  // Context usage
-  if (state.contextUsage) {
-    const u = state.contextUsage;
-    const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-    rows.push(["Context", `${u.usedTokens}/${u.maxTokens} (${pct}%) · ${u.method}`]);
-  }
-  // Active agents
-  const activeAgents = state.agents.filter((a) => a.status === "running");
-  if (activeAgents.length > 0) {
-    rows.push(["Agents", activeAgents.map((a) => `${a.name} (${a.role})`).join(", ")]);
-  }
-  // Background processes
-  const runningProcs = state.processes.filter((p) => p.status === "running");
-  if (runningProcs.length > 0) {
-    rows.push(["Processes", `${runningProcs.length} running`]);
-  }
-  const width = rows.reduce((w, [k]) => Math.max(w, k.length), 0);
-  return rows.map(([k, v]) => `  ${out.gray((k + ":").padEnd(width + 1))} ${v}`);
 }
 
 // ── Tool card ─────────────────────────────────────────────────────────────────
@@ -519,19 +652,58 @@ export function statusBarFields(state: TerminalState, out: Output, unicode: bool
  * (least important first) until the visible width fits `columns`; the line never
  * wraps. Pure and snapshot-testable.
  */
-export function statusBar(state: TerminalState, out: Output, unicode: boolean, columns: number): string {
+export interface StatusBarOptions {
+  elapsedMs?: number;
+}
+
+export function statusBar(state: TerminalState, out: Output, unicode: boolean, columns: number, opts: StatusBarOptions = {}): string {
   const g = glyphs(unicode);
   const sep = ` ${g.dot} `;
-  const fields = statusBarFields(state, out, unicode);
-  const indent = 2;
-  const budget = Number.isFinite(columns) ? Math.max(0, columns - indent) : Number.POSITIVE_INFINITY;
-
-  // Drop from the end until the joined plain width fits. Always keep the first
-  // field (live state) so the bar never vanishes entirely.
-  let kept = fields;
-  const width = (fs: StatusField[]) => fs.reduce((w, f) => w + f.plain.length, 0) + Math.max(0, fs.length - 1) * sep.length;
-  while (kept.length > 1 && width(kept) > budget) kept = kept.slice(0, -1);
-
-  const rendered = kept.map((f) => f.render).join(out.gray(sep));
-  return "  " + rendered;
+  const beta28Fields: StatusField[] = [];
+  const pushBeta = (plain: string, render: string) => beta28Fields.push({ plain, render });
+  const avatar = morrowAvatar(avatarState(state), { unicode, color: out });
+  pushBeta(stripAnsi(avatar), avatar);
+  pushBeta("Morrow", out.bold("Morrow"));
+  const live = liveStateLabel(state);
+  pushBeta(live, live === "working" ? out.cyan(live) : live === "ready" ? out.green(live) : live === "failed" ? out.red(live) : out.gray(live));
+  if (state.meta) {
+    const mode = plainMode(state.meta.mode);
+    pushBeta(`${mode} - ${shortAutonomyLabel(state)}`, `${out.cyan(mode)} ${out.gray("-")} ${state.meta.autoApprove ? out.yellow("YOLO") : out.gray("approvals")}`);
+    if (state.meta.model && state.meta.model !== "auto") pushBeta(state.meta.model, out.gray(state.meta.model));
+  }
+  if (state.contextUsage) {
+    const limit = contextLimit(state);
+    const label = limit ? `${formatTokens(state.contextUsage.usedTokens)}/${formatTokens(limit)}` : `${formatTokens(state.contextUsage.usedTokens)}/unknown`;
+    pushBeta(label, out.gray(label));
+  }
+  const failed = state.tools.filter((t) => t.status === "failed").length;
+  if (state.tools.length > 0) {
+    const label = `Tools ${state.tools.length}/${failed}`;
+    pushBeta(label, failed > 0 ? out.yellow(label) : out.gray(label));
+  }
+  if (opts.elapsedMs !== undefined) {
+    const label = formatElapsed(opts.elapsedMs);
+    pushBeta(label, out.gray(label));
+  }
+  if (state.usage) {
+    const label = `${formatTokens(state.usage.totalTokens)} tok`;
+    pushBeta(label, out.gray(label));
+  }
+  if (state.git) {
+    const branch = state.git.branch + (state.git.dirty ? "*" : "");
+    pushBeta(branch, state.git.dirty ? out.yellow(branch) : out.gray(branch));
+  } else if (state.meta?.branch) {
+    pushBeta(state.meta.branch, out.gray(state.meta.branch));
+  }
+  const runningAgents = state.agents.filter((agent) => agent.status === "running").length;
+  if (runningAgents > 0) {
+    const label = `${runningAgents} agent${runningAgents === 1 ? "" : "s"}`;
+    pushBeta(label, out.gray(label));
+  }
+  const betaBudget = Number.isFinite(columns) ? Math.max(0, columns - 2) : Number.POSITIVE_INFINITY;
+  const betaWidth = (fs: StatusField[]) => fs.reduce((w, f) => w + f.plain.length, 0) + Math.max(0, fs.length - 1) * sep.length;
+  let betaKept = beta28Fields;
+  while (betaKept.length > 2 && betaWidth(betaKept) > betaBudget) betaKept = betaKept.slice(0, -1);
+  if (betaKept.length === 2 && betaWidth(betaKept) > betaBudget) betaKept = betaKept.slice(0, 1);
+  return "  " + betaKept.map((f) => f.render).join(out.gray(sep));
 }

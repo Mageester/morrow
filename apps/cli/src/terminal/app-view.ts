@@ -19,13 +19,13 @@ import {
   activityGroupLine,
   clipToWidth,
   completionLines,
-  formatElapsed,
   glyphs,
   groupActivities,
   headerLines,
   patchLines,
   relativePath,
   stageBanner,
+  statusBar,
   toolCardLines,
 } from "./view.js";
 
@@ -63,7 +63,7 @@ export function composeApp(
   const top = buildTopChrome(term, out, unicode, opts);
 
   // ── Fixed bottom: notices + input/overlay + footer ─────────────────────────
-  const footer = footerLine(input, out, unicode);
+  const footer = footerLine(term, input, out, unicode, opts);
   const noticeLines = recentNotices(term, out, unicode);
 
   let bottom: string[];
@@ -103,89 +103,9 @@ export function composeApp(
 
 /** Build the chrome at the top: MORROW brand, project, and live status. */
 function buildTopChrome(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
-  const g = glyphs(unicode);
-  const lines: string[] = [];
-  const m = term.meta;
-
-  // Line 1: MORROW branding + project
-  if (m) {
-    const brand = out.bold("MORROW");
-    const projectPart = out.cyan(m.projectName);
-    const pathPart = out.gray(m.workspacePath);
-    lines.push(`  ${brand}  ${projectPart}  ${pathPart}`);
-  }
-
-  // Line 2: mode · model · git · memory
-  if (m) {
-    const bits: string[] = [];
-    bits.push(out.gray(modeGlyph(m.mode, m.autoApprove) + " " + m.mode));
-    bits.push(out.gray(`${m.provider}/${m.model}`));
-    if (term.git) {
-      const gitBits = [term.git.branch];
-      if (term.git.dirty) gitBits.push(out.yellow("dirty"));
-      if (term.git.ahead > 0) gitBits.push(`+${term.git.ahead}`);
-      if (term.git.behind > 0) gitBits.push(`-${term.git.behind}`);
-      bits.push(out.gray(gitBits.join(" ")));
-    }
-    if (m.memory) bits.push(out.gray("mem"));
-    // Context usage if available.
-    if (term.contextUsage) {
-      const u = term.contextUsage;
-      const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-      bits.push(out.gray(`${pct}% ctx`));
-    }
-    lines.push(`  ${bits.join(out.gray("  " + g.dot + "  "))}`);
-  }
-
-  // Line 3: status + elapsed + job count + agents/processes hints
-  const statusBits: string[] = [statusWord(term, out, unicode)];
-  if (opts.elapsedMs !== undefined && term.status === "streaming") {
-    statusBits.push(out.gray(formatElapsed(opts.elapsedMs)));
-  }
-  if (opts.jobCount) {
-    statusBits.push(out.gray(`${opts.jobCount} job${opts.jobCount === 1 ? "" : "s"}`));
-  }
-  const activeAgents = term.agents.filter((a) => a.status === "running");
-  if (activeAgents.length > 0) {
-    statusBits.push(out.gray(`${activeAgents.length} agent${activeAgents.length === 1 ? "" : "s"}`));
-  }
-  const runningProcs = term.processes.filter((p) => p.status === "running");
-  if (runningProcs.length > 0) {
-    statusBits.push(out.gray(`${runningProcs.length} proc`));
-  }
-  lines.push(`  ${statusBits.join(out.gray("  " + g.dot + "  "))}`);
-
-  // Divider.
-  lines.push(out.gray("  " + "─".repeat(Math.min(opts.columns - 2, 60))));
-  return lines;
-}
-
-function modeGlyph(mode: string, autoApprove: boolean): string {
-  if (autoApprove) return "⚡";
-  if (mode.toLowerCase().includes("inspect") || mode.toLowerCase().includes("read-only")) return "🔍";
-  if (mode.toLowerCase().includes("plan")) return "📋";
-  return "●";
-}
-
-function statusWord(term: TerminalState, out: Output, unicode: boolean): string {
-  const g = glyphs(unicode);
-  switch (term.status) {
-    case "streaming":
-      return out.cyan(`${g.run} working`);
-    case "completed":
-      return out.green(`${g.ok} ready`);
-    case "failed":
-      return out.red(`${g.fail} failed`);
-    case "cancelled":
-    case "interrupted":
-      return out.yellow(term.status);
-    case "budget-reached":
-      return out.yellow("budget reached");
-    case "stalled":
-      return out.yellow("stalled");
-    default:
-      return out.gray("idle");
-  }
+  const beta28 = headerLines(term, out, { unicode, columns: opts.columns, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) });
+  beta28.push(out.gray("  " + "-".repeat(Math.min(opts.columns - 2, 60))));
+  return beta28;
 }
 
 /**
@@ -359,8 +279,10 @@ function recentNotices(term: TerminalState, out: Output, unicode: boolean): stri
   });
 }
 
-function footerLine(input: InputState, out: Output, unicode: boolean): string[] {
-  if (input.confirmExit) return [out.yellow("  Press Ctrl+C again to exit.")];
+function footerLine(term: TerminalState, input: InputState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
+  const statusOpts = opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs };
+  const beta28Status = statusBar(term, out, unicode, opts.columns, statusOpts);
+  if (input.confirmExit) return [beta28Status, out.yellow("  Press Ctrl+C again to exit.")];
   const hint =
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"
@@ -373,5 +295,5 @@ function footerLine(input: InputState, out: Output, unicode: boolean): string[] 
             : input.overlay === "history"
             ? "type to search · Enter recall · Esc close"
             : "/ commands · Ctrl+K palette · Ctrl+T mission · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
-  return [out.gray("  " + hint)];
+  return [beta28Status, out.gray("  " + hint)];
 }

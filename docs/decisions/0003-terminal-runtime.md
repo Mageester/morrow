@@ -1,6 +1,6 @@
 # ADR 0003: Event-Driven Terminal Runtime
 
-- **Status:** Accepted
+- **Status:** Accepted, updated 2026-07-08 for beta.28 terminal UX
 - **Date:** 2026-06-22
 
 ## Context
@@ -52,8 +52,8 @@ No React/Ink, no Blessed. Rationale, weighted for our constraints:
   re-rendering a component tree per token.
 - **Testing.** The reducer and views are pure functions, so the *entire* screen
   is snapshot-testable with a no-color `Output` and no terminal. The interactive
-  runtime takes an injectable `TermIO`, so lifecycle (alt-screen, cursor,
-  resize, cleanup) is testable against a fake stream with zero real TTY.
+  runtime takes an injectable `TermIO`, so lifecycle (normal-buffer painting,
+  cursor, resize, cleanup) is testable against a fake stream with zero real TTY.
 - **Dependency cost & control.** Zero new runtime dependencies, and we keep
   total control of layout, glyph degradation (Unicode↔ASCII), and color modes.
 
@@ -77,10 +77,15 @@ two implementations.
   output, CI, JSON mode, unsupported terminals, and accessibility. It owns the
   stdout answer stream and the stderr activity stream.
 - **`runtime.ts`** — `InteractiveRenderer`: a bounded-FPS frame renderer over an
-  injectable `TermIO` with alternate-screen entry/exit, cursor ownership,
-  resize-driven recompose, and deterministic cleanup on stop / signal / crash.
+  injectable `TermIO` that paints in the normal terminal buffer, owns the cursor,
+  recomposes on resize, and performs deterministic cleanup on stop / signal /
+  crash. The main chat does not enter the alternate screen buffer because final
+  answers, tool activity, and recovery context must remain available in
+  terminal scrollback where practical.
 - **`task-event-adapter.ts`** — maps orchestrator SSE `TaskEvent`s into
   `TerminalEvent`s, so the agent runtime and the terminal stay decoupled.
+- **`output-report.ts`** — builds sanitized durable task reports for Ctrl+O,
+  `/output`, `/output full`, `/output failures`, and `/export`.
 
 `capabilities.ts` decides interactive vs. line rendering from TTY, `--json`,
 `NO_COLOR`/`MORROW_ASCII`, dumb terminals, and an explicit `MORROW_TUI` opt-in.
@@ -96,3 +101,24 @@ two implementations.
   at parity, so the working REPL is never destabilized.
 - We own flicker/resize/cleanup correctness rather than delegating to a
   framework — more code, but no Windows surprises.
+
+## Beta.28 terminal update
+
+The beta.28 CLI keeps the custom renderer but changes the main chat from
+alternate-screen rendering to normal-buffer rendering. This makes ordinary
+terminal scrollback and selection useful again in Windows Terminal, PowerShell,
+cmd.exe, and common ANSI terminals. Short-lived interactive pickers may still
+render as bounded overlays inside the frame, but important answers and report
+content cannot exist only in an ephemeral viewport.
+
+The terminal header and status bar now show Morrow identity, project/workspace,
+mode/autonomy, provider/model, git cleanliness, memory/task state, elapsed time,
+tool counts, token usage, known context windows, and cost only when the backing
+data is available. Unknown token usage, context limits, and pricing are rendered
+as `unknown` rather than guessed.
+
+Privacy/security impact: durable reports are intentionally sanitized. They do
+not include hidden reasoning, raw API keys, uncontrolled ANSI control
+sequences, or unbounded file dumps. Exports are written under Morrow's contained
+reports directory unless the caller supplies a safe basename, and the YOLO
+workspace boundary remains unchanged.

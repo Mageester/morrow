@@ -164,6 +164,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
               usage: {
                 promptTokens: parsed.usage.prompt_tokens ?? 0,
                 completionTokens: parsed.usage.completion_tokens ?? 0,
+                ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}),
               },
             };
           }

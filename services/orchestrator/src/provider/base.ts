@@ -61,6 +61,7 @@ export interface ProviderChunk {
   usage?: {
     promptTokens: number;
     completionTokens: number;
+    cachedPromptTokens?: number;
   };
 }
 

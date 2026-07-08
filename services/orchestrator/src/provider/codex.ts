@@ -208,8 +208,9 @@ export class CodexProvider implements AiProvider {
             }
             case "response.completed": {
               const usage = evt.response?.usage;
+              const cachedPromptTokens = usage?.input_tokens_details?.cached_tokens;
               if (usage) { promptTokens = usage.input_tokens ?? 0; completionTokens = usage.output_tokens ?? 0; }
-              yield { type: "done", usage: { promptTokens, completionTokens } };
+              yield { type: "done", usage: { promptTokens, completionTokens, ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}) } };
               break;
             }
             case "response.incomplete":

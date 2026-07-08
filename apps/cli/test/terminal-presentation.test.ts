@@ -94,9 +94,9 @@ describe("unified terminal presentation: header", () => {
       { type: "session.started", meta },
       { type: "context.usage", usage: { usedTokens: 100, maxTokens: 1000, method: "estimate", compactedGroups: 0, removedGroups: 0 } },
     ]);
-    const lines = headerLines(state, fakeOutput());
+    const lines = headerLines(state, fakeOutput(), { columns: 120 });
     expect(lines.some((l) => l.includes("Context"))).toBe(true);
-    expect(lines.some((l) => l.includes("100/1000"))).toBe(true);
+    expect(lines.some((l) => l.includes("100 / 1k"))).toBe(true);
   });
 
   it("header includes git dirty state when present", () => {

@@ -76,7 +76,6 @@ function makeBackend(gate: EventGate, cancel: () => void): SessionBackend {
     getApproval: async () => ({ id: "a", kind: "command", details: {}, projectId: "p" }),
     resolveApproval: async () => {},
     getPlan: async () => [],
-    getOutput: async () => [],
     getTask: async () => ({} as any),
     getTaskTree: async () => ({} as any),
   };

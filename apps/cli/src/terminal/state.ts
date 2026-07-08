@@ -6,7 +6,7 @@
  * fold the same events through it, so their content can never diverge. History
  * and activity are bounded so a long session cannot grow memory without limit.
  */
-import type { ActivityKind, ApprovalSource, SessionMeta, TerminalEvent } from "./events.js";
+import type { ActivityKind, ApprovalSource, SessionMeta, TerminalEvent, UsageInfo } from "./events.js";
 
 export type SessionStatus = "idle" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted" | "budget-reached" | "stalled";
 
@@ -77,6 +77,7 @@ export interface TerminalState {
   notices: NoticeEntry[];
   status: SessionStatus;
   lastError?: string;
+  usage?: UsageInfo;
   git?: import("./events.js").GitStateInfo;
   contextUsage?: import("./events.js").ContextUsageInfo;
   progressStage?: import("./events.js").ProgressStage;
@@ -252,6 +253,37 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         ...(event.level === "error" ? { lastError: event.text } : {}),
       };
 
+    case "usage.reported": {
+      const previous = state.usage;
+      const providerKey = `${event.provider}/${event.model}`;
+      const providerChanges = previous
+        ? previous.providerChanges.includes(providerKey)
+          ? previous.providerChanges
+          : [...previous.providerChanges, providerKey]
+        : [providerKey];
+      const inputTokens = (previous?.inputTokens ?? 0) + event.inputTokens;
+      const outputTokens = (previous?.outputTokens ?? 0) + event.outputTokens;
+      const cachedInputTokens = (previous?.cachedInputTokens ?? 0) + (event.cachedInputTokens ?? 0);
+      const estimatedCostUsd =
+        event.estimatedCostUsd === undefined || event.estimatedCostUsd === null || previous?.estimatedCostUsd === null
+          ? null
+          : (previous?.estimatedCostUsd ?? 0) + event.estimatedCostUsd;
+      return {
+        ...state,
+        usage: {
+          provider: event.provider,
+          model: event.model,
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+          cachedInputTokens,
+          estimatedCostUsd,
+          calls: (previous?.calls ?? 0) + 1,
+          providerChanges,
+        },
+      };
+    }
+
     case "task.completed":
       return { ...state, status: "completed" };
 
@@ -272,8 +304,12 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "git.state":
       return { ...state, git: event.git };
 
-    case "context.usage":
-      return { ...state, contextUsage: event.usage };
+    case "context.usage": {
+      const merged = { ...state.contextUsage, ...event.usage };
+      const limit = merged.contextLimitTokens ?? (merged.contextWindowSource === "fallback" ? null : merged.maxTokens);
+      const percent = limit && limit > 0 ? Math.round((merged.usedTokens / limit) * 100) : null;
+      return { ...state, contextUsage: { ...merged, contextLimitTokens: limit ?? null, percent } };
+    }
 
     case "progress.stage":
       return {

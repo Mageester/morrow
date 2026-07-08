@@ -71,7 +71,6 @@ function session(overrides: Partial<SessionDeps["backend"]> = {}) {
     getApproval: vi.fn(),
     resolveApproval: vi.fn(),
     getPlan: vi.fn(),
-    getOutput: vi.fn(),
     getTask: vi.fn(),
     getTaskTree: vi.fn(),
     getLatestMission: vi.fn(async () => ({ id: "mission-abc12345" } as any)),

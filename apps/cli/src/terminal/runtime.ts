@@ -1,7 +1,7 @@
 /**
  * The interactive renderer: a bounded-FPS frame renderer that owns the screen.
  *
- * It enters the alternate screen buffer, hides the cursor, recomposes on resize,
+ * It paints in the normal terminal buffer, hides the cursor, recomposes on resize,
  * coalesces repaints to a frame budget, and restores the terminal deterministically
  * on stop — and on process exit, so a crash never leaves a broken terminal. All
  * terminal I/O goes through an injectable `TermIO`, so the whole lifecycle is
@@ -16,8 +16,6 @@ import type { Renderer } from "./renderer.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { composeFrame } from "./view.js";
 
-const ALT_SCREEN_ENTER = "\x1b[?1049h";
-const ALT_SCREEN_LEAVE = "\x1b[?1049l";
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
 const CURSOR_HOME = "\x1b[H";
@@ -86,9 +84,7 @@ export class InteractiveRenderer implements Renderer {
   start(): void {
     if (this.active) return;
     this.active = true;
-    if (this.io.isTTY) {
-      this.io.write(ALT_SCREEN_ENTER + CURSOR_HIDE + CURSOR_HOME + CLEAR_BELOW);
-    }
+    if (this.io.isTTY) this.io.write(CURSOR_HIDE + CURSOR_HOME + CLEAR_BELOW);
     this.io.on("resize", this.onResize);
     process.once("exit", this.onExit);
     // Animate spinners while work is in flight.
@@ -135,9 +131,7 @@ export class InteractiveRenderer implements Renderer {
     }
     this.io.off("resize", this.onResize);
     process.removeListener("exit", this.onExit);
-    if (this.io.isTTY) {
-      this.io.write(CURSOR_SHOW + ALT_SCREEN_LEAVE);
-    }
+    if (this.io.isTTY) this.io.write(CURSOR_SHOW);
   }
 
   private requestPaint(force: boolean): void {

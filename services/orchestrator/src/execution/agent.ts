@@ -29,10 +29,11 @@ import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
-import { createProvider, providerCapabilities } from "../provider/registry.js";
+import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
+import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
@@ -1474,6 +1475,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         event("provider.rate_limited", { deprioritized: opened.deprioritizedRateLimited, servedBy: opened.servedBy });
       }
       const stream = opened.stream;
+      const servedModel = opened.servedBy === providerType
+        ? (resolvedModel || assistantMessageRow.model || contextModel)
+        : (getProviderDefaultModel(opened.servedBy as ProviderId, process.env) ?? `${opened.servedBy}-model`);
 
       for await (const chunk of stream) {
         if (checkCancelled()) {
@@ -1483,6 +1487,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
         if (chunk.type === "error") {
           throw new Error(chunk.error?.message || "Model provider error");
+        }
+
+        if (chunk.type === "done" && chunk.usage) {
+          const cost = calculateUsageCost({
+            inputTokens: chunk.usage.promptTokens,
+            outputTokens: chunk.usage.completionTokens,
+            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
+          }, resolveModelMetadata(opened.servedBy, servedModel));
+          event("provider.usage", {
+            provider: opened.servedBy,
+            model: servedModel,
+            inputTokens: chunk.usage.promptTokens,
+            outputTokens: chunk.usage.completionTokens,
+            totalTokens: chunk.usage.promptTokens + chunk.usage.completionTokens,
+            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
+            ...(cost.known ? { estimatedCostUsd: cost.usd } : {}),
+          });
         }
 
         if (chunk.type === "text" && chunk.text) {

@@ -139,8 +139,11 @@ export class LineRenderer implements Renderer {
       case "context.usage":
         if (opts.showActivity) {
           this.flushPendingNewline();
-          const pct = event.usage.maxTokens > 0 ? Math.round((event.usage.usedTokens / event.usage.maxTokens) * 100) : 0;
-          out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} context · ${event.usage.usedTokens}/${event.usage.maxTokens} tokens (${pct}%) · ${event.usage.method}`));
+          const limit = event.usage.contextLimitTokens ?? (event.usage.contextWindowSource === "fallback" ? null : event.usage.maxTokens);
+          const detail = limit && limit > 0
+            ? `${event.usage.usedTokens}/${limit} tokens (${Math.round((event.usage.usedTokens / limit) * 100)}%)`
+            : `${event.usage.usedTokens}/unknown tokens`;
+          out.diag(out.gray(`  ${glyphs(opts.unicode).bullet} context · ${detail} · ${event.usage.method}`));
         }
         break;
 

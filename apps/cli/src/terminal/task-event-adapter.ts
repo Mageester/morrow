@@ -97,6 +97,25 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       return withSource([{ type: "notice", level: "warn", text: `${name} failed: ${message}` }]);
     }
 
+    case "provider.usage": {
+      const inputTokens = num(p.inputTokens);
+      const outputTokens = num(p.outputTokens);
+      const provider = str(p.provider);
+      const model = str(p.model);
+      if (!provider || !model || inputTokens === undefined || outputTokens === undefined) return [];
+      const cachedInputTokens = num(p.cachedInputTokens);
+      const estimatedCostUsd = num(p.estimatedCostUsd);
+      return withSource([{
+        type: "usage.reported",
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
+        ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+        ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+      }]);
+    }
+
     case "task.progress_warning":
       return withSource([{ type: "notice", level: "warn", text: str(p.message) ?? "No new observable progress yet." }]);
 
@@ -116,12 +135,47 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       return withSource([{ type: "task.interrupted" }]);
 
     // ── Extended presentation events ──────────────────────────────────────
-    case "context.budget_calculated":
+    case "context.budget_calculated": {
+      const maxInput = num(p.maxInputTokens) ?? 0;
+      const window = num(p.contextWindowTokens) ?? 0;
+      const source = str(p.contextWindowSource) as import("./events.js").ContextUsageInfo["contextWindowSource"] | undefined;
+      const knownLimit = source === "fallback" ? null : window || null;
+      return withSource([{
+        type: "context.usage",
+        usage: {
+          usedTokens: 0,
+          maxTokens: knownLimit ?? maxInput,
+          contextLimitTokens: knownLimit,
+          contextWindowSource: source ?? "fallback",
+          method: "estimate",
+          compactedGroups: 0,
+          removedGroups: 0,
+        },
+      }]);
+    }
+
+    case "context.exact_count_used":
+    case "context.estimate_used": {
+      const used = num(p.tokens);
+      if (used === undefined) return [];
+      return withSource([{
+        type: "context.usage",
+        usage: {
+          usedTokens: used,
+          maxTokens: 0,
+          method: event.type === "context.exact_count_used" || p.exact === true ? "exact" : "estimate",
+          compactedGroups: 0,
+          removedGroups: 0,
+        },
+      }]);
+    }
+
     case "context.trimmed":
+    case "context.history_trimmed":
     case "context.compaction_completed": {
       const used = num(p.finalTokens ?? p.tokens);
-      const max = num(p.maxInputTokens);
-      if (used === undefined || max === undefined) return [];
+      const max = num(p.maxInputTokens) ?? 0;
+      if (used === undefined) return [];
       return withSource([{
         type: "context.usage",
         usage: {

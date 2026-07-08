@@ -67,9 +67,26 @@ export interface GitStateInfo {
 export interface ContextUsageInfo {
   usedTokens: number;
   maxTokens: number;
+  /** Known model context window. Null means the registry could not assert it. */
+  contextLimitTokens?: number | null;
+  contextWindowSource?: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  /** Percent of the known context window consumed; null when the limit is unknown. */
+  percent?: number | null;
   method: "exact" | "estimate";
   compactedGroups: number;
   removedGroups: number;
+}
+
+export interface UsageInfo {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  estimatedCostUsd: number | null;
+  calls: number;
+  providerChanges: string[];
 }
 
 /** Background process info. */
@@ -158,6 +175,7 @@ export type TerminalEvent =
   | { type: "patch.applied"; files: string[]; approval?: ApprovalSource }
   | { type: "approval.auto"; id: string; summary: string }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
+  | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null }
   | { type: "task.completed" }
   | { type: "task.failed"; message: string }
   | { type: "task.cancelled" }

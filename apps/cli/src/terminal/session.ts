@@ -31,9 +31,8 @@ import { activityDetailLines } from "./activity-view.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
+import { buildTaskReport, type ReportKind } from "./output-report.js";
 
-const ALT_ENTER = "\x1b[?1049h";
-const ALT_LEAVE = "\x1b[?1049l";
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
 const HOME = "\x1b[H";
@@ -66,8 +65,9 @@ export interface SessionBackend {
   getApproval(id: string): Promise<ApprovalView>;
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
-  getOutput(taskId: string, toolId?: string): Promise<Array<{ id: string; toolName: string; resultJson?: string | null; errorMessage?: string | null }>>;
   getTask(taskId: string): Promise<import("../client/api.js").TaskAggregate>;
+  getFinalAnswer?(taskId: string): Promise<string | null>;
+  exportReport?(taskId: string, kind: ReportKind, finalAnswer: string | null, requestedName?: string): Promise<string>;
   getTaskTree(taskId: string): Promise<import("../client/api.js").TaskTreeNode>;
   getTaskDiff?(taskId: string): Promise<{ diff: string | null; files: string[] }>;
   undoTask?(taskId: string): Promise<{ status: string; restoredFiles: string[] }>;
@@ -115,6 +115,7 @@ export interface SessionDeps {
   commands?: SlashCommand[];
   extraPaletteItems?: PaletteItem[];
   history?: string[];
+  initialTaskId?: string | null;
   /** Persist a submitted line (best-effort; called for non-empty input). */
   onHistory?: (line: string) => void;
   now?: () => number;
@@ -163,13 +164,14 @@ export class InteractiveSession {
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
     this.keyCtx = { commands: this.commands, paletteItems };
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
+    this.lastTaskId = deps.initialTaskId ?? null;
   }
 
   /** Run the session until the user exits. Resolves on clean exit. */
   async run(): Promise<void> {
     const { io, stdin } = this.deps;
     this.active = true;
-    if (io.isTTY) io.write(ALT_ENTER + HOME + CLEAR_BELOW + PASTE_ON);
+    if (io.isTTY) io.write(PASTE_ON);
     io.on("resize", this.onResize);
     process.once("exit", this.onExit);
     readline.emitKeypressEvents(stdin);
@@ -231,6 +233,15 @@ export class InteractiveSession {
     if (k.ctrl && k.name === "t" && !k.meta && !k.shift) {
       void this.showMissionControl();
       return void this.requestPaint(false);
+    }
+
+    if (k.ctrl && k.name === "o" && !k.meta && !k.shift) {
+      if (this.input.overlay === "output") {
+        this.input = { ...this.input, overlay: "none" };
+        return void this.requestPaint(true);
+      }
+      void this.showTaskReport("summary");
+      return;
     }
 
     // `?` on empty buffer shows help
@@ -448,7 +459,10 @@ export class InteractiveSession {
         await this.showSearch(arg);
         return void this.requestPaint(false);
       case "output":
-        await this.showOutput(arg || undefined);
+        await this.showTaskReport(arg === "full" ? "full" : arg === "failures" ? "failures" : "summary");
+        return void this.requestPaint(false);
+      case "export":
+        await this.exportTaskReport(arg || undefined);
         return void this.requestPaint(false);
       case "tree":
       case "tasks":
@@ -791,27 +805,49 @@ export class InteractiveSession {
     this.input = { ...this.input, overlay: "output" };
   }
 
-  private async showOutput(toolId?: string): Promise<void> {
+  private async showTaskReport(kind: ReportKind): Promise<void> {
     if (!this.lastTaskId) {
-      this.pushNotice("info", "No command output yet in this session.");
+      this.pushNotice("info", "No task output is available yet.");
       return;
     }
-    const toolCalls = await this.deps.backend.getOutput(this.lastTaskId, toolId);
-    const selected = toolId ? toolCalls.find((call) => call.id === toolId) : [...toolCalls].reverse().find((call) => call.toolName === "run_command");
-    if (!selected) {
-      this.pushNotice("info", toolId ? `No output for tool ${toolId}.` : "No command output yet in this session.");
-      return;
-    }
-    let raw = selected.errorMessage ?? selected.resultJson ?? "(no output captured)";
-    try {
-      const parsed = JSON.parse(raw) as { stdout?: string; stderr?: string; error?: string; exitCode?: number | null };
-      raw = [parsed.exitCode !== undefined ? `exit ${parsed.exitCode ?? "unknown"}` : "", parsed.stdout ?? "", parsed.stderr ?? "", parsed.error ?? ""].filter(Boolean).join("\n");
-    } catch { /* retained output may be plain text */ }
-    const allLines = raw.split(/\r?\n/);
-    const lines = allLines.slice(0, 200).map((line, i) => `${String(i + 1).padStart(4, " ")}  ${line}`);
-    if (allLines.length > lines.length) lines.push("… output capped at 200 lines");
-    this.outputViewer = { title: `${selected.toolName} · ${selected.id}`, lines };
+    const aggregate = await this.deps.backend.getTask(this.lastTaskId).catch((error) => {
+      this.pushNotice("error", `Could not load output: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (!aggregate) return;
+    const finalAnswer = await this.reportFinalAnswer(this.lastTaskId);
+    const report = buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) });
+    this.outputViewer = { title: kind === "summary" ? "task report" : `task report ${kind}`, lines: report.split(/\r?\n/) };
     this.input = { ...this.input, overlay: "output" };
+    this.emitScrollbackReport(report);
+  }
+
+  private async exportTaskReport(requestedName?: string): Promise<void> {
+    if (!this.lastTaskId) {
+      this.pushNotice("info", "No task output is available yet.");
+      return;
+    }
+    if (!this.deps.backend.exportReport) {
+      this.pushNotice("warn", "Report export is not available in this session.");
+      return;
+    }
+    const finalAnswer = await this.reportFinalAnswer(this.lastTaskId);
+    const path = await this.deps.backend.exportReport(this.lastTaskId, "full", finalAnswer, requestedName).catch((error) => {
+      this.pushNotice("error", `Export failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (path) this.pushNotice("info", `Exported report: ${path}`);
+  }
+
+  private async reportFinalAnswer(taskId: string): Promise<string | null> {
+    const current = [...this.term.conversation].reverse().find((entry) => entry.role === "assistant" && entry.text.trim());
+    if (current) return current.text;
+    return this.deps.backend.getFinalAnswer?.(taskId).catch(() => null) ?? null;
+  }
+
+  private emitScrollbackReport(report: string): void {
+    if (!this.deps.io.isTTY) return;
+    this.deps.io.write("\r\n" + report.replace(/\n/g, "\r\n") + "\r\n");
   }
 
   private async showMissionControl(): Promise<void> {
@@ -1498,7 +1534,7 @@ export class InteractiveSession {
     }
     stdin.pause();
     process.removeListener("exit", this.onExit);
-    if (io.isTTY) io.write(PASTE_OFF + CURSOR_SHOW + ALT_LEAVE);
+    if (io.isTTY) io.write(PASTE_OFF + CURSOR_SHOW);
   }
 
   // Test accessors.
