@@ -239,4 +239,27 @@ describe("agent patch recovery", () => {
     expect(feedback.currentFile.content).toContain("<h1>current</h1>");
     expect(feedback.instruction).toMatch(/Re-read|reread|currentFile\.content/i);
   });
+
+  it("does not count narration around failed patch calls as observable progress", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "index.html", content: "<main>\n  <h1>current</h1>\n</main>\n" }), done],
+        [text("Trying a visual improvement."), tool("bad-1", "propose_patch", { patch: malformedHunkPatch, explanation: "bad hunk 1", files: ["index.html"] }), done],
+        [text("Trying again with more detail."), tool("bad-2", "propose_patch", { patch: malformedHunkPatch.replace("+  <h1>improved</h1>", "+  <h1>better</h1>"), explanation: "bad hunk 2", files: ["index.html"] }), done],
+        [text("One more attempt."), tool("bad-3", "propose_patch", { patch: malformedHunkPatch.replace("+  <h1>improved</h1>", "+  <h1>best</h1>"), explanation: "bad hunk 3", files: ["index.html"] }), done],
+        [text("should not reach this turn"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(readFileSync(join(ws, "index.html"), "utf8")).toBe("<main>\n  <h1>current</h1>\n</main>\n");
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.progress_warning")).toBe(true);
+    expect(conversationsRepository(db).listMessages("c").find((m: any) => m.id === "ma")?.streamingState).toBe("interrupted");
+  });
 });

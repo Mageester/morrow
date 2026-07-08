@@ -322,6 +322,29 @@ function malformedPatchFilesFromDiff(patch: string): PatchFile[] {
   return files;
 }
 
+function extractOnlyFileContract(prompt: string): Set<string> | null {
+  const match = /\b(?:using|with)\s+only\s+([^\n]{1,300})/i.exec(prompt);
+  if (!match) return null;
+  const files = [...match[1]!.matchAll(/\b[\w.-]+\.[A-Za-z0-9]{1,8}\b/g)]
+    .map((m) => m[0].replace(/\\/g, "/"))
+    .filter((name) => !name.includes("/"));
+  return files.length > 0 ? new Set(files) : null;
+}
+
+function assertWriteAllowedByFileContract(path: string, allowedFiles: Set<string> | null): void {
+  if (!allowedFiles) return;
+  const normalized = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!allowedFiles.has(normalized)) {
+    throw new AgentToolFailure(`File ${path} is outside the user's explicit allowed file list`, {
+      error: `File ${path} is outside the user's explicit allowed file list`,
+      kind: "file_contract_violation",
+      path,
+      allowedFiles: [...allowedFiles],
+      instruction: `Do not create or modify auxiliary files. Use only these deliverable files: ${[...allowedFiles].join(", ")}. For verification, run commands like node --check script.js or node -e without writing temporary files.`,
+    });
+  }
+}
+
 export async function executeAgentChatTask({
   db,
   taskId,
@@ -762,6 +785,8 @@ export async function executeAgentChatTask({
   // Load conversation messages before this task's assistant message
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
+  const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+  const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   
   // System instructions
   chatMessages.push({
@@ -772,6 +797,7 @@ You have access to tools to inspect the workspace, read files, run safe project 
 You MUST choose relevant files, do NOT automatically ingest the entire repository.
 If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
 You must run test/verification commands using run_command, and modify files using the file tools.
+${allowedWriteFiles ? `The user explicitly constrained deliverable files to ONLY: ${[...allowedWriteFiles].join(", ")}. Treat this as a hard write contract: do not create or modify auxiliary files, test files, temp files, logs, package files, or directories outside that list. For calculations or checks, use run_command with node -e or existing files; do not write scratch verification files.` : ""}
 
 File & directory operations â€” use the dedicated tools, NOT the shell:
 - Create a new file: call create_file with a relative path and full content. Parent directories are created automatically.
@@ -793,7 +819,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // call find_skill. The model is told to load the best match first; that
   // produces a visible load_skill tool call and grounds it in a real workflow.
   if (agentMode !== "plan-only" && activeToolProfile !== "none") {
-    const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
     const relevantSkills = discoverRelevantSkills(latestUserPrompt, workspacePath, process.env);
     if (relevantSkills.length > 0) {
       const list = relevantSkills.map((s) => `- ${s.id}: ${s.description || s.name}`).join("\n");
@@ -1840,6 +1865,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const relPath = args.path;
               if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
               if (typeof args.content !== "string") throw new Error("Missing required argument: content");
+              assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
               // Fail fast with a clear message on containment/denied-name before
               // synthesizing a diff. Parent directories are created on apply.
               validatePatchPaths(project.workspacePath, [{ oldPath: "/dev/null", newPath: relPath, chunks: [] }], PERMISSION_PROFILE.deniedNamePatterns);
@@ -1878,6 +1904,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
             if (patchFiles.length === 0) {
               throw new Error("Malformed patch: could not parse any file hunks from the unified diff");
+            }
+            for (const pf of patchFiles) {
+              assertWriteAllowedByFileContract(pf.oldPath !== "/dev/null" ? pf.oldPath : pf.newPath, allowedWriteFiles);
+              assertWriteAllowedByFileContract(pf.newPath, allowedWriteFiles);
             }
 
             // 2. Validate paths containment and safety
@@ -2028,6 +2058,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           } else if (tc.name === "create_directory") {
             const relPath = args.path;
             if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
+            assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
             // Reject absolute paths, traversal, symlink escape, and denied names
             // before any approval is created (categorical: cannot be bypassed).
             assertContainedRealPath(project.workspacePath, relPath);
@@ -2159,7 +2190,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
 
     const madeProgress = turnMadeProgress({
-      responseChars: responseContent.length - responseLengthAtTurnStart,
+      responseChars: currentToolCalls.length > 0 ? 0 : responseContent.length - responseLengthAtTurnStart,
       completedToolSignatures,
       repeatedToolSignatures,
     });

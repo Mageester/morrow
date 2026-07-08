@@ -15,10 +15,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 /** Seed an agent-mode task with YOLO (autoApprove) against a real workspace. */
-function seedYolo(db: any, workspacePath: string) {
+function seedYolo(db: any, workspacePath: string, prompt = "build it") {
   projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
   conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: "build it", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
@@ -180,5 +180,40 @@ describe("agent file creation under YOLO", () => {
     expect(calls[0]!.status).toBe("completed");
     expect(calls[1]!.status).toBe("failed");
     expect(calls[1]!.errorMessage).toMatch(/already exists/i);
+  });
+
+  it("enforces an explicit user only-file contract and rejects auxiliary scratch files", async () => {
+    seedYolo(db, ws, "Create an invoice generator using only index.html, style.css, and script.js.");
+    const provider = new MockProvider({
+      chunks: [
+        [
+          tools(
+            { id: "f1", name: "create_file", args: { path: "index.html", content: "<!doctype html>\n", purpose: "page" } },
+            { id: "f2", name: "create_file", args: { path: "style.css", content: "body { color: white; }\n", purpose: "styles" } },
+            { id: "f3", name: "create_file", args: { path: "script.js", content: "console.log('ready');\n", purpose: "script" } },
+          ),
+          done,
+        ],
+        [tool("scratch", "create_file", { path: "calc_test.js", content: "console.log(203.40);\n", purpose: "scratch calculation" }), done],
+        [tool("verify", "run_command", { executable: "node", args: ["-e", "console.log((2*100*(1-.10)*1.13).toFixed(2))"], purpose: "verify calculation without writing files" }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 10 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(existsSync(join(ws, "index.html"))).toBe(true);
+    expect(existsSync(join(ws, "style.css"))).toBe(true);
+    expect(existsSync(join(ws, "script.js"))).toBe(true);
+    expect(existsSync(join(ws, "calc_test.js"))).toBe(false);
+
+    const scratch = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.id === "scratch");
+    expect(scratch).toMatchObject({ toolName: "create_file", status: "failed" });
+    expect(scratch?.errorMessage).toMatch(/outside the user's explicit allowed file list/i);
+
+    const verify = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.id === "verify");
+    expect(verify).toMatchObject({ toolName: "run_command", status: "completed" });
   });
 });
