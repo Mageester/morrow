@@ -6,6 +6,37 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.27] - 2026-07-08
+
+### Fixed - reliable consumer edit recovery
+
+- **File-scoped search works.** `search_text`, `search_files`, and `list_files`
+  now accept a contained file path as their scope instead of failing with
+  "Workspace start path must be a directory"; a file path searches just that
+  file. Containment and traversal checks are unchanged and still run first.
+- **`create_file` recovers into an edit.** When `create_file` targets a file
+  that already exists, Morrow automatically switches to a whole-file edit that
+  flows through the same approve/apply/change-set pipeline, so the original is
+  backed up and the overwrite is undoable. Only regular files are overwritten;
+  a directory at the path is a hard error, blank content will not replace a
+  non-empty file, and identical content is reported as a no-op. The tool result
+  records the conversion.
+- **The malformed-patch loop is broken.** When a model repeatedly proposes a
+  diff with a wrong hunk line count — each attempt differently broken, so no
+  per-hash retry ceiling ever trips — Morrow now counts failures per target file
+  and, after two, tells the model to stop authoring diffs and call `create_file`
+  with the complete file contents, which applies as a safe backed-up edit. This
+  is the escape hatch out of the beta.26 second-pass edit loop.
+- **Failed verification cannot report success.** A `run_command` that exits
+  non-zero is a failed verification even though the tool ran. A task no longer
+  ends as `completed` when the last required change or verification failed and
+  was not recovered; it stops cleanly as interrupted. A later successful run
+  clears the outstanding failure.
+- **Honest YOLO wording.** YOLO is described as workspace-autonomous — it edits,
+  runs, and verifies inside the workspace without prompting, and is explicitly
+  not unlimited system access — across the status line, `/yolo policy`, the
+  command list, and onboarding.
+
 ## [0.1.0-beta.26] - 2026-07-08
 
 ### Fixed - consumer onboarding and execution flow
