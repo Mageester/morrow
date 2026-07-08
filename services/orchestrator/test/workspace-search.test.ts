@@ -38,6 +38,18 @@ describe("workspace search", () => {
     expect(searchFiles(fixture(), "credential").matches).toEqual([]);
   });
 
+  it("searches inside a single file when path points to a file, not a directory", () => {
+    // Regression: passing a concrete file path as the search scope previously
+    // failed with "Workspace start path must be a directory".
+    const root = fixture();
+    const text = searchText(root, "needle", { path: "src/app.ts" });
+    expect(text.matches.map((match) => match.path)).toEqual(["src/app.ts"]);
+    expect(text.scannedFiles).toBe(1);
+
+    const files = searchFiles(root, "app", { path: "src/app.ts" });
+    expect(files.matches.map((match) => match.path)).toEqual(["src/app.ts"]);
+  });
+
   it("stops immediately when cancelled", () => {
     const controller = new AbortController();
     controller.abort();

@@ -30,6 +30,18 @@ function makeRepo(): string {
   return dir;
 }
 
+// Each test here spawns ~10 real `git` subprocesses (init, add, commit,
+// `git worktree add`, an isolated merge check, and a real apply/merge) plus a
+// real Fastify server. That is inherently slow on Windows and OneDrive-backed
+// temp dirs, and under the parallel `pnpm test` load (turbo runs the CLI suite
+// and the real-provider mission benchmarks concurrently) the heaviest case
+// exceeds vitest's 5s default even though it finishes in ~1s uncontended. This
+// is real filesystem/Git integration work with bounded cleanup (afterEach
+// removes every temp dir), not a production hang — every git call is status-
+// checked and the server injects are bounded — so a generous ceiling is
+// correct. 20s is well under any real deadlock, which would still fail promptly.
+const INTEGRATION_TEST_TIMEOUT_MS = 20_000;
+
 describe("integration attempts (real git)", () => {
   let db: any;
   let app: any;
@@ -92,7 +104,7 @@ describe("integration attempts (real git)", () => {
     });
   }
 
-  it("checks and applies a clean worktree integration without deleting the source worktree", async () => {
+  it("checks and applies a clean worktree integration without deleting the source worktree", { timeout: INTEGRATION_TEST_TIMEOUT_MS }, async () => {
     const wt = createWorktree("clean-feature");
     writeFileSync(join(wt.path, "feature.ts"), "export const feature = true;\n", "utf8");
     git(wt.path, "add", "-A");
@@ -110,7 +122,7 @@ describe("integration attempts (real git)", () => {
     expect(existsSync(wt.path)).toBe(true);
   });
 
-  it("surfaces task-associated integration attempts in task inspection", async () => {
+  it("surfaces task-associated integration attempts in task inspection", { timeout: INTEGRATION_TEST_TIMEOUT_MS }, async () => {
     const task = taskRepository(db).createTask({
       id: "task-1",
       projectId: "p1",
@@ -134,7 +146,7 @@ describe("integration attempts (real git)", () => {
     expect(aggregate.json().integrations.map((x: any) => x.id)).toContain(check.json().id);
   });
 
-  it("detects conflicts in an isolated dry run and leaves the target repository clean", async () => {
+  it("detects conflicts in an isolated dry run and leaves the target repository clean", { timeout: INTEGRATION_TEST_TIMEOUT_MS }, async () => {
     const wt = createWorktree("conflict-feature");
     writeFileSync(join(wt.path, "app.ts"), "export const value = 2;\n", "utf8");
     git(wt.path, "add", "-A");
@@ -152,7 +164,7 @@ describe("integration attempts (real git)", () => {
     expect(existsSync(join(ws, ".git", "MERGE_HEAD"))).toBe(false);
   });
 
-  it("records a failed check instead of integrating into a dirty target tree", async () => {
+  it("records a failed check instead of integrating into a dirty target tree", { timeout: INTEGRATION_TEST_TIMEOUT_MS }, async () => {
     const wt = createWorktree("dirty-target");
     writeFileSync(join(wt.path, "feature.ts"), "export const feature = true;\n", "utf8");
     git(wt.path, "add", "-A");

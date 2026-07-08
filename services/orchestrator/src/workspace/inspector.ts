@@ -57,7 +57,20 @@ export function inspectWorkspace(canonicalRoot: string, options: WorkspaceInspec
       }
     }
   };
-  if (!statSync(start).isDirectory()) throw new WorkspaceInspectionError("Workspace start path must be a directory");
+  // A start path that resolves to a file is treated as a single-file scope
+  // rather than an error. Models routinely pass a concrete file path to
+  // search_text/search_files/list_files ("search inside foo.ts"); throwing
+  // "Workspace start path must be a directory" turned that natural request into
+  // an opaque tool failure. Containment and traversal were already enforced
+  // above, so returning just the file is safe. gitignore is intentionally not
+  // applied to an explicitly requested file — the caller asked for it by name.
+  const startStat = statSync(start);
+  if (!startStat.isDirectory()) {
+    if (startStat.isFile()) {
+      entries.push({ path: normalized(root, start), type: "file", size: startStat.size });
+    }
+    return { entries, truncatedByDepth, truncatedByCount, inaccessibleEntryCount };
+  }
   walk(start, 0);
   return { entries, truncatedByDepth, truncatedByCount, inaccessibleEntryCount };
 }
