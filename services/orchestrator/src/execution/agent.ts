@@ -243,11 +243,18 @@ class AgentToolFailure extends Error {
   }
 }
 
+/** The file a patch targets (old side, or new side for a creation hunk). */
+function patchTargetFileName(patchFiles: PatchFile[]): string | undefined {
+  const target = patchFiles.find((pf) => pf.oldPath !== "/dev/null") ?? patchFiles[0];
+  return target?.oldPath !== "/dev/null" ? target?.oldPath : target?.newPath;
+}
+
 function patchFailureFeedback(
   workspacePath: string,
   patchFiles: PatchFile[],
   error: unknown,
   attemptsForPatch: number,
+  attemptsForFile = 0,
 ): { message: string; result: Record<string, unknown> } {
   const currentContentLimit = 16 * 1024;
   const patchError = error instanceof PatchApplicationError ? error : null;
@@ -276,6 +283,14 @@ function patchFailureFeedback(
   }
   const category = patchError?.category ?? (/Malformed patch|Hunk line count mismatch/i.test(error instanceof Error ? error.message : String(error)) ? "malformed_patch" : "context_mismatch");
   const retryExhausted = attemptsForPatch >= 2;
+  // After repeated diff failures against the SAME file â€” regardless of hash â€”
+  // the model is stuck hand-authoring unified diffs it cannot get right (the
+  // classic beta.26 loop: each attempt has a different, still-wrong hunk header,
+  // so no per-hash counter ever trips). Escalate to a strategy the model cannot
+  // botch: call create_file with the complete file contents, which Morrow
+  // applies as a safe, backed-up whole-file edit. This is the escape hatch out
+  // of the malformed-patch loop.
+  const switchToCreateFile = attemptsForFile >= 2 && targetFile !== undefined && targetFile !== "/dev/null";
   const message = patchError
     ? `Patch conflict in ${targetFile ?? "unknown file"}: ${patchError.category}`
     : error instanceof Error ? error.message : String(error);
@@ -297,9 +312,13 @@ function patchFailureFeedback(
       } : null,
       currentFile: current,
       attemptsForPatch,
+      attemptsForFile,
       retryLimit: 2,
       retryExhausted,
-      instruction: retryExhausted
+      switchToCreateFile,
+      instruction: switchToCreateFile
+        ? `Editing ${targetFile} as a unified diff has now failed ${attemptsForFile} times. Stop authoring diffs for this file. Call create_file with path "${targetFile}" and content set to the COMPLETE, final text of the file (take currentFile.content and apply your intended change to it). Morrow will apply it as a safe, backed-up whole-file edit.`
+        : retryExhausted
         ? "Stop cleanly and report the patch conflict. Do not resend this same patch again."
         : "Regenerate the patch against currentFile.content. Do not resend the stale patch unchanged.",
     },
@@ -978,7 +997,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         } catch (patchErr) {
           const attempts = (patchFailureCountsByHash.get(diffHash) ?? 0) + 1;
           patchFailureCountsByHash.set(diffHash, attempts);
-          const feedback = patchFailureFeedback(workspacePath, patchFiles, patchErr, attempts);
+          const targetName = patchTargetFileName(patchFiles);
+          const fileAttempts = targetName ? (patchFailureCountsByFile.get(targetName) ?? 0) + 1 : 0;
+          if (targetName) patchFailureCountsByFile.set(targetName, fileAttempts);
+          const feedback = patchFailureFeedback(workspacePath, patchFiles, patchErr, attempts, fileAttempts);
           event("patch.recovery_feedback", {
             targetFile: pf.oldPath !== "/dev/null" ? pf.oldPath : pf.newPath,
             conflictCategory: (feedback.result as any).conflictCategory,
@@ -1196,6 +1218,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
   const patchFailureCountsByHash = new Map<string, number>();
+  // Failed diff attempts keyed by TARGET FILE (not patch hash). A model that
+  // keeps emitting differently-broken diffs for the same file never trips the
+  // per-hash ceiling; this counter drives the escalation to create_file.
+  const patchFailureCountsByFile = new Map<string, number>();
   // Bounded correction budget for malformed / schema-invalid tool arguments,
   // keyed by tool name so a provider that keeps emitting broken JSON for the
   // same tool is stopped after one corrective retry instead of looping.
@@ -1945,7 +1971,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             } catch (patchErr) {
               const attempts = (patchFailureCountsByHash.get(hashString(patch)) ?? 0) + 1;
               patchFailureCountsByHash.set(hashString(patch), attempts);
-              const feedback = patchFailureFeedback(project.workspacePath, malformedPatchFilesFromDiff(patch), patchErr, attempts);
+              const malformedFiles = malformedPatchFilesFromDiff(patch);
+              const targetName = patchTargetFileName(malformedFiles);
+              const fileAttempts = targetName ? (patchFailureCountsByFile.get(targetName) ?? 0) + 1 : 0;
+              if (targetName) patchFailureCountsByFile.set(targetName, fileAttempts);
+              const feedback = patchFailureFeedback(project.workspacePath, malformedFiles, patchErr, attempts, fileAttempts);
               event("patch.recovery_feedback", {
                 targetFile: (feedback.result as any).targetFile,
                 conflictCategory: (feedback.result as any).conflictCategory,
@@ -2008,7 +2038,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               } catch (patchErr) {
                 const attempts = (patchFailureCountsByHash.get(diffHash) ?? 0) + 1;
                 patchFailureCountsByHash.set(diffHash, attempts);
-                const feedback = patchFailureFeedback(project.workspacePath, patchFiles, patchErr, attempts);
+                const targetName = patchTargetFileName(patchFiles);
+                const fileAttempts = targetName ? (patchFailureCountsByFile.get(targetName) ?? 0) + 1 : 0;
+                if (targetName) patchFailureCountsByFile.set(targetName, fileAttempts);
+                const feedback = patchFailureFeedback(project.workspacePath, patchFiles, patchErr, attempts, fileAttempts);
                 event("patch.recovery_feedback", {
                   targetFile: pf.oldPath !== "/dev/null" ? pf.oldPath : pf.newPath,
                   conflictCategory: (feedback.result as any).conflictCategory,

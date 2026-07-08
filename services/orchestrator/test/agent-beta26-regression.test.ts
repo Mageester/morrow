@@ -134,4 +134,46 @@ describe("beta.26 public failure — deterministic regression", () => {
     expect(events.some((e: any) => e.type === "task.completed")).toBe(true);
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
+
+  it("escalates to create_file after repeated differently-broken diffs on the same file (the live loop)", async () => {
+    seed(db, ws, "Improve the styling of style.css.");
+    // Two malformed patches with DIFFERENT headers (different hashes) — the
+    // real DeepSeek Flash loop, where no per-hash counter ever trips. The
+    // per-file counter must trip on the second and steer to create_file.
+    const bad1 = "--- a/style.css\n+++ b/style.css\n@@ -1,5 +1,9 @@\n body {\n-  color: black;\n";
+    const bad2 = "--- a/style.css\n+++ b/style.css\n@@ -2,4 +2,7 @@\n  color: black;\n+  color: navy;\n";
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "style.css", content: STYLE_V1 }), done],
+        [tool("p1", "propose_patch", { patch: bad1, explanation: "restyle", files: ["style.css"] }), done],
+        [tool("p2", "propose_patch", { patch: bad2, explanation: "restyle again", files: ["style.css"] }), done],
+        // The model follows the escalation: full-content create_file.
+        [tool("c2", "create_file", { path: "style.css", content: STYLE_V2, purpose: "apply styling" }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const calls = conversationsRepository(db).listToolCallsForTask("t");
+    const p1 = calls.find((c: any) => c.id === "p1")!;
+    const p2 = calls.find((c: any) => c.id === "p2")!;
+    expect(p1.status).toBe("failed");
+    expect(p2.status).toBe("failed");
+    // Both are different patches (different hashes) yet the SECOND failure on the
+    // same file escalates — proving per-file, not per-hash, counting.
+    const p1r = JSON.parse(p1.resultJson!);
+    const p2r = JSON.parse(p2.resultJson!);
+    expect(p1r.switchToCreateFile).toBe(false);
+    expect(p2r.switchToCreateFile).toBe(true);
+    expect(p2r.attemptsForFile).toBe(2);
+    expect(p2r.instruction).toMatch(/create_file/);
+
+    // The escalation worked: the improvement is applied via create→edit.
+    expect(readFileSync(join(ws, "style.css"), "utf8")).toBe(STYLE_V2);
+    expect(calls.find((c: any) => c.id === "c2")!.status).toBe("completed");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
 });
