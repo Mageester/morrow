@@ -24,7 +24,9 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
   wins so parent sessions and parent Git changes are not reused accidentally.
 - **Nested Git status is scoped.** Header/status Git reads now use a top-anchored
   pathspec for child workspaces and record ancestor-root context instead of
-  presenting unrelated parent dirty counts as child changes.
+  presenting unrelated parent dirty counts as child changes. Agent-facing Git
+  inspection tools also scope status, diff, and log reads to the registered
+  workspace when it sits inside an ancestor repository.
 - **Progress and terminal outcomes are clearer.** Stall detection now treats
   changed tool observations as meaningful progress, emits a warning before a
   stall, and keeps completed/stalled/cancelled/failed/interrupted terminal
