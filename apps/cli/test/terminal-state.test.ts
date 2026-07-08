@@ -72,6 +72,27 @@ describe("terminal state reducer", () => {
     expect(state.lastError).toBe("Task turn budget reached (10)");
   });
 
+  it("keeps completed and stalled mutually exclusive after the first terminal outcome", () => {
+    const completedThenStalled = fold([
+      { type: "task.completed" },
+      { type: "task.stalled", message: "Task stalled after three turns without new observable progress." },
+    ]);
+    expect(completedThenStalled.status).toBe("completed");
+    expect(completedThenStalled.lastError).toBeUndefined();
+
+    const stalledThenCompleted = fold([
+      { type: "task.stalled", message: "Task stalled after three turns without new observable progress." },
+      { type: "task.completed" },
+    ]);
+    expect(stalledThenCompleted.status).toBe("stalled");
+    expect(stalledThenCompleted.lastError).toContain("Task stalled");
+  });
+
+  it("keeps cancelled and completed mutually exclusive after the first terminal outcome", () => {
+    expect(fold([{ type: "task.cancelled" }, { type: "task.completed" }]).status).toBe("cancelled");
+    expect(fold([{ type: "task.completed" }, { type: "task.cancelled" }]).status).toBe("completed");
+  });
+
   it("stores the observable task plan for the interactive frame", () => {
     const state = fold([{ type: "plan.snapshot", steps: [
       { id: "p1", title: "Understand repository", status: "completed" },

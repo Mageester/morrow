@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine } from "../src/terminal/approvals.js";
+import { changeSetApprovalView, commandApprovalView } from "../src/terminal/approval-view-model.js";
 
 describe("approval key semantics (safety)", () => {
   it("approves/denies only on explicit letter keys", () => {
@@ -48,5 +49,35 @@ describe("approval key semantics (safety)", () => {
     expect(row).toContain("[s] trust session");
     expect(row).toContain("[n] deny");
     expect(approvalActionsLine("apply")).toContain("[y] apply once");
+  });
+
+  it("coerces missing command approval arrays to safe defaults", () => {
+    const view = commandApprovalView({ executable: "node", purpose: "syntax check" });
+
+    expect(view.executable).toBe("node");
+    expect(view.args).toEqual([]);
+    expect(view.commandLine).toBe("node");
+    expect(view.cwd).toBe("(workspace root)");
+    expect(view.purpose).toBe("syntax check");
+    expect(view.risk).toBe("medium");
+  });
+
+  it("renders concise fallback copy for malformed command approvals", () => {
+    const view = commandApprovalView({ args: "not-array", risk: "impossible" });
+
+    expect(view.executable).toBe("(unknown command)");
+    expect(view.commandLine).toBe("(unknown command)");
+    expect(view.purpose).toBe("(not specified)");
+    expect(view.risk).toBe("medium");
+  });
+
+  it("coerces missing patch file arrays to safe defaults", () => {
+    const view = changeSetApprovalView({ explanation: "apply fix", additions: 3, deletions: 1 });
+
+    expect(view.files).toEqual([]);
+    expect(view.filesLabel).toBe("(no files listed)");
+    expect(view.explanation).toBe("apply fix");
+    expect(view.additions).toBe(3);
+    expect(view.deletions).toBe(1);
   });
 });

@@ -1,0 +1,107 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "3526d2b8039abc1daf3fe802c26053ef22d6f0bf12839839c6a5504cfb55faf2"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "239ae33234eb85020410e8a0b0065c8570977e46e76af6c22868cebe792380e9"
+      },
+      {
+        "mediaType": "application/octet-stream",
+        "path": "artifacts/02_discovery/work_ledger.jsonl",
+        "sha256": "e5842a4d4770d4b521819e1621b90cfc87a2fa1280e44d2a54cdaedbcafe06fc"
+      }
+    ],
+    "completedAt": "2026-07-08T15:15:50.011639Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "id": "97c3df2b-6e3c-41a9-b8f3-9f8f3a487537",
+    "producer": {
+      "name": "Codex Security",
+      "version": "0.1.10"
+    },
+    "scope": {
+      "artifactsReviewed": [
+        "artifacts/01_context/threat_model.md",
+        "artifacts/02_discovery/deep_review_input.jsonl",
+        "artifacts/02_discovery/work_ledger.jsonl",
+        "artifacts/02_discovery/finding_discovery_report.md"
+      ],
+      "context": "Preflight status was ready. The scan reviewed 12 runtime/source rows from the working-tree snapshot, including the untracked approval view-model source file added as a supporting diff row.",
+      "excludePaths": [],
+      "includePaths": [
+        "apps/cli/src/cli/gitinfo.ts",
+        "apps/cli/src/commands/common.ts",
+        "apps/cli/src/commands/onboard.ts",
+        "apps/cli/src/commands/stream.ts",
+        "apps/cli/src/config/config.ts",
+        "apps/cli/src/terminal/session.ts",
+        "apps/cli/src/terminal/state.ts",
+        "apps/cli/src/terminal/task-event-adapter.ts",
+        "packages/contracts/src/index.ts",
+        "services/orchestrator/src/execution/adaptive-budget.ts",
+        "services/orchestrator/src/execution/agent.ts",
+        "apps/cli/src/terminal/approval-view-model.ts"
+      ],
+      "limitations": [
+        "Test-only files and the planning document were excluded from runtime security discovery but are listed in coverage exclusions."
+      ],
+      "runtimeStatus": "pnpm check, pnpm test, pnpm build, and git diff --check passed before security scan continuation.",
+      "summary": "Diff scan of Morrow beta.26 consumer-flow hardening changes touching CLI onboarding, project identity, approval rendering, terminal state, shared task-event contracts, and orchestrator tool recovery/progress behavior.",
+      "validationMode": "Discovery-only diff scan; validation and attack-path phases were skipped because no plausible candidates survived discovery."
+    },
+    "sealedAt": "2026-07-08T15:15:50.011639Z",
+    "startedAt": "2026-07-08T15:07:37.249108Z",
+    "status": "completed",
+    "target": {
+      "baseRevision": "db1071b04271110d066d24539bbc64d743106100",
+      "displayName": "Morrow",
+      "headRevision": "db1071b04271110d066d24539bbc64d743106100",
+      "kind": "git_diff",
+      "snapshotDigest": "codex-security-snapshot/v1:sha256:5d9205ae5381e43b092af5c42a1fd34eb534aaa1960d60b0de55a8846fbc7bcd",
+      "targetId": "target_sha256_d9b94860d07472ccc8afca5e5128306b8ba6affd1fc89ee1073338f9f52c7314"
+    },
+    "threatModel": {
+      "assets": [
+        "local files and repositories",
+        "provider credentials and secret handles",
+        "conversation and memory records",
+        "approval decisions and command trust patterns",
+        "task evidence and execution audit history",
+        "release artifacts and installer metadata"
+      ],
+      "assumptions": [
+        "The scan is diff-scoped to the selected working-tree snapshot",
+        "Morrow remains local-first beta software and not a hosted multi-tenant control plane",
+        "No reportable finding is emitted without candidate ledger receipts; no candidates survived discovery in this scan"
+      ],
+      "attackerCapabilities": [
+        "malicious prompt, repository content, file name, terminal output, browser page, model tool argument, generated patch, imported Hermes data, or local web request",
+        "operator misconfiguration or overbroad trust pattern",
+        "malformed SSE/task-event or approval details"
+      ],
+      "securityObjectives": [
+        "models cannot grant themselves permissions",
+        "filesystem and terminal tools stay inside explicit project/workspace boundaries",
+        "secrets are never exposed in prompts/logs/reports",
+        "external provider disclosure is explicit",
+        "task status and approval UI remain crash-resistant and honest"
+      ],
+      "summary": "Morrow is a local-first personal AI agent whose sensitive boundaries are local project files, provider credentials, memory, approvals, tool execution, model context, schedules, plugins, browser/process control, and release artifacts.",
+      "trustBoundaries": [
+        "CLI/browser clients to orchestrator API",
+        "untrusted model output to local tool runtime",
+        "registered project roots and worktrees to host filesystem",
+        "local context manager to external model providers",
+        "plugin/skill/MCP capability declarations to execution authority"
+      ]
+    }
+  },
+  "schemaVersion": "1.0"
+}

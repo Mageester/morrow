@@ -102,6 +102,7 @@ function bounded<T>(items: T[], max: number): T[] {
 
 /** Fold one event into a new state. Pure: no mutation of `state`, no I/O. */
 export function reduce(state: TerminalState, event: TerminalEvent, now: () => number = Date.now): TerminalState {
+  if (isTerminalStatus(state.status) && isTerminalTaskEvent(event.type)) return state;
   switch (event.type) {
     case "session.started":
       return { ...state, meta: event.meta };
@@ -305,6 +306,14 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return state;
     }
   }
+}
+
+function isTerminalStatus(status: SessionStatus): boolean {
+  return ["completed", "failed", "cancelled", "interrupted", "budget-reached", "stalled"].includes(status);
+}
+
+function isTerminalTaskEvent(type: TerminalEvent["type"]): boolean {
+  return ["task.completed", "task.failed", "task.cancelled", "task.interrupted", "task.budget_reached", "task.stalled"].includes(type);
 }
 
 function sameFiles(a: string[], b: string[]): boolean {

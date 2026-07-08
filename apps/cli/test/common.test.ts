@@ -38,6 +38,31 @@ describe("resolveProject", () => {
     expect(api.createProject).not.toHaveBeenCalled();
   });
 
+  it("uses the configured child workspace instead of an ancestor project when launched from the ancestor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-cli-project-"));
+    const ancestor = join(root, "ancestor");
+    const child = join(ancestor, "Tests", "Invoice-Generator");
+    mkdirSync(join(ancestor, ".git"), { recursive: true });
+    mkdirSync(child, { recursive: true });
+    tempDirs.push(root);
+    process.chdir(ancestor);
+
+    const parentProject = { id: "parent", name: "Morrow", workspacePath: ancestor };
+    const childProject = { id: "child", name: "Invoice", workspacePath: child };
+    const api = {
+      listProjects: vi.fn().mockResolvedValue([parentProject, childProject]),
+      createProject: vi.fn(),
+    };
+    const ctx = {
+      flags: {},
+      config: { get: (key: string) => key === "defaults.project" ? "child" : undefined },
+      out: { info: vi.fn() },
+    } as any;
+
+    await expect(resolveProject(ctx, api as any, { required: true })).resolves.toEqual(childProject);
+    expect(api.createProject).not.toHaveBeenCalled();
+  });
+
   it("does not silently auto-register an arbitrary current directory", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "morrow-cli-project-"));
     tempDirs.push(cwd);

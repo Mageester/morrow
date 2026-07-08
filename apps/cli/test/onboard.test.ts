@@ -14,12 +14,17 @@ vi.mock("../src/commands/common.js", async (importOriginal) => {
   return {
     ...actual,
     ask: vi.fn(),
+    askMultiline: vi.fn(),
     askSecret: vi.fn(),
     confirm: vi.fn(),
     select: vi.fn(),
     validateDirectory: vi.fn((p) => p),
   };
 });
+
+vi.mock("../src/commands/chat.js", () => ({
+  chatCommand: vi.fn().mockResolvedValue(0),
+}));
 
 // Mock lifecycle
 vi.mock("../src/service/lifecycle.js", async (importOriginal) => {
@@ -42,6 +47,7 @@ vi.mock("node:os", async (importOriginal) => {
 });
 
 import { ask, confirm, select, askSecret } from "../src/commands/common.js";
+import { chatCommand } from "../src/commands/chat.js";
 
 describe("CLI Onboarding Command", () => {
   const tempRoots: string[] = [];
@@ -136,6 +142,53 @@ describe("CLI Onboarding Command", () => {
     expect(config.get("user.name")).toBe("Alex");
     expect(config.get("user.useCase")).toBe("Software Development");
     expect(config.get("defaults.mode")).toBe("agent");
+  });
+
+  it("persists YOLO auto-approve and launches the initial mission in the exact registered project", async () => {
+    config.set("user.onboardingStep", "mode", "user");
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    // mode: YOLO
+    vi.mocked(select).mockResolvedValueOnce(3);
+    // skills: skip
+    vi.mocked(select).mockResolvedValueOnce(2);
+    // project: custom path
+    vi.mocked(select).mockResolvedValueOnce(1);
+    vi.mocked(ask).mockResolvedValueOnce("C:/work/invoice");
+    // mission: custom prompt
+    vi.mocked(select).mockResolvedValueOnce(3);
+
+    const mission =
+      "Create a polished browser-based invoice generator\n\nRequirements:\n- Keep all files inside this workspace";
+    const common = await import("../src/commands/common.js") as any;
+    vi.mocked(ask).mockResolvedValueOnce("Create a polished browser-based invoice generator");
+    vi.mocked(common.askMultiline).mockResolvedValueOnce(mission);
+
+    const createProjectMock = vi.fn().mockResolvedValue({ id: "invoice-project", name: "Invoice", workspacePath: "C:/work/invoice" });
+    const getProjectMock = vi.fn().mockResolvedValue({ id: "invoice-project", name: "Invoice", workspacePath: "C:/work/invoice" });
+    ctx.api = () => ({
+      health: vi.fn().mockResolvedValue({ ok: true }),
+      listProjects: vi.fn().mockResolvedValue([]),
+      createProject: createProjectMock,
+      getProject: getProjectMock,
+      saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
+      createConversation: vi.fn().mockResolvedValue({ id: "mission-conv", projectId: "invoice-project", title: "First Mission" }),
+    } as any);
+
+    const exitCode = await onboardCommand(ctx, "", []);
+
+    expect(exitCode).toBe(EXIT.OK);
+    expect(config.get("defaults.mode")).toBe("agent");
+    expect(config.get("defaults.autoApprove")).toBe(true);
+    expect(common.askMultiline).toHaveBeenCalled();
+    expect(chatCommand).toHaveBeenCalledTimes(1);
+    const launchedCtx = vi.mocked(chatCommand).mock.calls[0]![0] as Context;
+    expect(launchedCtx.flags).toMatchObject({
+      message: mission,
+      resume: "mission-conv",
+      project: "invoice-project",
+      yolo: true,
+    });
   });
 
   it("supports resuming onboarding from an interrupted step", async () => {
@@ -290,4 +343,3 @@ describe("CLI Onboarding Command", () => {
     expect(config.get("defaults.project")).toBe("fallback-cwd-proj");
   });
 });
-

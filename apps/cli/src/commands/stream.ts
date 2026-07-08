@@ -7,6 +7,7 @@ import { ask } from "./common.js";
 import { LineRenderer } from "../terminal/line-renderer.js";
 import { mapTaskEvent } from "../terminal/task-event-adapter.js";
 import { resolveUnicodeFlag } from "../terminal/capabilities.js";
+import { changeSetApprovalView, commandApprovalView } from "../terminal/approval-view-model.js";
 
 export interface StreamResult {
   status: string;
@@ -100,13 +101,13 @@ async function handleApproval(
     const approval = await api.getApproval(approvalId);
 
     if (kind === "command") {
-      const details = approval.details as any;
+      const details = commandApprovalView(approval.details as Record<string, unknown>);
       out.print();
       out.heading("Command Approval Request");
       out.keyValue([
-        ["Command", `${details.executable} ${details.args.join(" ")}`],
-        ["Cwd", details.cwd || "(workspace root)"],
-        ["Purpose", details.purpose || "(not specified)"],
+        ["Command", details.commandLine],
+        ["Cwd", details.cwd],
+        ["Purpose", details.purpose],
         ["Risk", details.risk],
       ]);
       out.print();
@@ -119,17 +120,19 @@ async function handleApproval(
         else if (answer === "t" || answer === "trust") decision = "trust_project";
       }
 
-      const trustPattern = decision === "trust_project" ? details.pattern : undefined;
-      await api.resolveApproval(approvalId, { projectId: approval.projectId, decision: decision as any, trustPattern });
+      const approvalDecision = decision as "allow_once" | "trust_project" | "deny";
+      const payload: Parameters<typeof api.resolveApproval>[1] = { projectId: approval.projectId, decision: approvalDecision };
+      if (approvalDecision === "trust_project") payload.trustPattern = details.pattern;
+      await api.resolveApproval(approvalId, payload);
       if (decision === "deny") out.error("Command denied.");
       else out.success(`Command approved (${decision}). Resuming task…`);
     } else if (kind === "change_set") {
-      const details = approval.details as any;
-      const proposedDiff: string | undefined = typeof details.diff === "string" ? details.diff : undefined;
+      const details = changeSetApprovalView(approval.details as Record<string, unknown>);
+      const proposedDiff = details.diffPreview;
       out.print();
       out.heading("Patch Proposal Approval Request");
       out.print(`${out.bold("Explanation:")} ${details.explanation}`);
-      out.print(`${out.bold("Files to change:")} ${details.files.join(", ")}`);
+      out.print(`${out.bold("Files to change:")} ${details.filesLabel}`);
       out.print();
       out.print(out.bold("Unified Diff:"));
       if (proposedDiff) {

@@ -1,0 +1,157 @@
+{
+  "completeness": "complete",
+  "deferred": [],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [
+    {
+      "pattern": "**/test/**",
+      "reason": "Test changes verify the runtime hardening but are not deployed runtime attack surfaces for this diff scan."
+    },
+    {
+      "pattern": "docs/superpowers/plans/**",
+      "reason": "Planning artifact only; no runtime code or execution boundary."
+    }
+  ],
+  "includePaths": [
+    "apps/cli/src/cli/gitinfo.ts",
+    "apps/cli/src/commands/common.ts",
+    "apps/cli/src/commands/onboard.ts",
+    "apps/cli/src/commands/stream.ts",
+    "apps/cli/src/config/config.ts",
+    "apps/cli/src/terminal/session.ts",
+    "apps/cli/src/terminal/state.ts",
+    "apps/cli/src/terminal/task-event-adapter.ts",
+    "packages/contracts/src/index.ts",
+    "services/orchestrator/src/execution/adaptive-budget.ts",
+    "services/orchestrator/src/execution/agent.ts",
+    "apps/cli/src/terminal/approval-view-model.ts"
+  ],
+  "inventoryStrategy": "diff",
+  "mode": "working_tree",
+  "openQuestions": [],
+  "scanId": "97c3df2b-6e3c-41a9-b8f3-9f8f3a487537",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "no_issue_found",
+      "id": "review-001",
+      "label": "apps/cli/src/cli/gitinfo.ts",
+      "notes": "Full file reviewed. Change uses no-shell git status with a top-anchored pathspec for child workspaces; display-only dirty count does not alter project authority or command execution.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Git status display scoping"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-002",
+      "label": "apps/cli/src/commands/common.ts",
+      "notes": "Full file reviewed. Configured child project is selected only when it is contained by the launch cwd and passes existing safe-project checks; multiline input preserves user text and does not feed shell or path sinks.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Project resolution and multiline input"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-003",
+      "label": "apps/cli/src/commands/onboard.ts",
+      "notes": "Full file reviewed. YOLO persistence stores an explicit boolean default and initial chat passes the exact registered project id; this narrows workspace selection rather than expanding authority.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Onboarding default project and YOLO persistence"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-004",
+      "label": "apps/cli/src/commands/stream.ts",
+      "notes": "Full file reviewed. Approval details now flow through safe view-model coercion, and trustPattern is omitted unless the trust decision is selected, preserving existing server-side approval validation.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Approval rendering and resolution"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-005",
+      "label": "apps/cli/src/config/config.ts",
+      "notes": "Full file reviewed. New defaults.autoApprove key is parsed as a boolean through the same strict config coercion used for other booleans; no secret or external data flow is introduced.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Configuration parsing"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-006",
+      "label": "apps/cli/src/terminal/session.ts",
+      "notes": "Full file reviewed. Approval display now uses the same coerced view model as stream mode, preventing crashes on malformed arrays without changing approval authority or auto-approval behavior.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Interactive terminal approval display"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-007",
+      "label": "apps/cli/src/terminal/state.ts",
+      "notes": "Full file reviewed. Terminal task terminal events are ignored after an already-terminal status, preventing contradictory display state; this is a presentation guard and does not hide persisted orchestrator events.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Terminal task outcome state"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-008",
+      "label": "apps/cli/src/terminal/task-event-adapter.ts",
+      "notes": "Full file reviewed. New progress_warning maps to a warning notice only; it does not mutate permissions, approvals, task status, or tool authority.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Task event mapping"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-009",
+      "label": "packages/contracts/src/index.ts",
+      "notes": "Full file reviewed. The contract only adds task.progress_warning to the typed event enum; payload remains an unknown record and no trust boundary is relaxed.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Shared task-event contract"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-010",
+      "label": "services/orchestrator/src/execution/adaptive-budget.ts",
+      "notes": "Full file reviewed. Result-aware progress hashes bounded observations with SHA-256; it does not expose raw observations beyond existing tool-result context or change permission enforcement.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Progress accounting"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-011",
+      "label": "services/orchestrator/src/execution/agent.ts",
+      "notes": "Full file reviewed. Raw tool arguments and outputs remain persisted; only model-facing oversized create_file/propose_patch arguments are replaced with compact placeholders after execution. Malformed patch recovery still reads current file content through assertContainedRealPath before feedback.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Tool argument context capping and patch recovery"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "review-012",
+      "label": "apps/cli/src/terminal/approval-view-model.ts",
+      "notes": "Full file reviewed. New view model accepts malformed approval details without throwing, defaults missing risk to medium, and returns display strings only; it does not approve, execute, or broaden trusted command patterns.",
+      "receiptRefs": [
+        "artifacts/02_discovery/work_ledger.jsonl"
+      ],
+      "riskArea": "Approval detail coercion"
+    }
+  ]
+}

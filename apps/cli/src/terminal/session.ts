@@ -26,6 +26,7 @@ import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine } from "./approvals.js";
+import { changeSetApprovalView, commandApprovalView } from "./approval-view-model.js";
 import { activityDetailLines } from "./activity-view.js";
 import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
@@ -1351,15 +1352,15 @@ export class InteractiveSession {
     lines.push("");
 
     if (ap.kind === "command") {
-      const d = ap.details as any;
+      const d = commandApprovalView(ap.details);
       const risk = riskLabel(d.risk);
       const glyph = riskGlyph(risk);
       const colorFn = out[riskColor(risk)];
 
       lines.push(out.bold(`  Command approval  ${colorFn(glyph + " " + risk + " risk")}`));
-      lines.push(`    ${out.gray("run:")} ${d.executable} ${(d.args ?? []).join(" ")}`);
-      if (d.workingDir) lines.push(`    ${out.gray("dir:")} ${d.workingDir}`);
-      lines.push(`    ${out.gray("why:")} ${d.purpose ?? "(not specified)"}`);
+      lines.push(`    ${out.gray("run:")} ${d.commandLine}`);
+      lines.push(`    ${out.gray("dir:")} ${d.cwd}`);
+      lines.push(`    ${out.gray("why:")} ${d.purpose}`);
       if (d.preview) {
         lines.push(out.gray("    ── preview ──"));
         for (const previewLine of String(d.preview).split(/\r?\n/).slice(0, 5)) {
@@ -1378,14 +1379,14 @@ export class InteractiveSession {
       lines.push(out.yellow(approvalActionsLine("approve")));
       lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     } else {
-      const d = ap.details as any;
+      const d = changeSetApprovalView(ap.details);
       lines.push(out.bold("  Patch approval"));
-      lines.push(`    ${out.gray("files:")} ${(d.files ?? []).join(", ")}`);
+      lines.push(`    ${out.gray("files:")} ${d.filesLabel}`);
       if (d.additions !== undefined || d.deletions !== undefined) {
         const churn = [d.additions > 0 ? out.green(`+${d.additions}`) : "", d.deletions > 0 ? out.red(`-${d.deletions}`) : ""].filter(Boolean).join(" ");
         if (churn) lines.push(`    ${out.gray("changes:")} ${churn}`);
       }
-      lines.push(`    ${out.gray("why:")} ${d.explanation ?? "(not specified)"}`);
+      lines.push(`    ${out.gray("why:")} ${d.explanation}`);
       if (d.diffPreview) {
         lines.push(out.gray("    ── diff preview ──"));
         for (const diffLine of String(d.diffPreview).split(/\r?\n/).slice(0, 8)) {

@@ -34,7 +34,7 @@ import { openStreamWithFallback, type FallbackCandidate } from "../provider/fall
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { MockProvider } from "../provider/mock.js";
-import { adaptiveTurnCeiling, turnMadeProgress } from "./adaptive-budget.js";
+import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
 import { prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
@@ -187,6 +187,33 @@ function capToolResult(toolName: string, result: string): string {
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: bytes, head, tail });
 }
 
+function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
+  const bytes = Buffer.byteLength(rawArguments, "utf8");
+  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
+  try {
+    const parsed = JSON.parse(rawArguments) as Record<string, unknown>;
+    if (toolName === "create_file" && typeof parsed.content === "string") {
+      return JSON.stringify({
+        ...parsed,
+        content: `[omitted ${Buffer.byteLength(parsed.content, "utf8")} bytes already provided to create_file]`,
+        truncatedForContext: true,
+        originalArgumentBytes: bytes,
+      });
+    }
+    if (toolName === "propose_patch" && typeof parsed.patch === "string") {
+      return JSON.stringify({
+        ...parsed,
+        patch: `[omitted ${Buffer.byteLength(parsed.patch, "utf8")} bytes already provided to propose_patch]`,
+        truncatedForContext: true,
+        originalArgumentBytes: bytes,
+      });
+    }
+  } catch {
+    // Fall through to a compact opaque placeholder.
+  }
+  return JSON.stringify({ truncatedForContext: true, tool: toolName, originalArgumentBytes: bytes });
+}
+
 function duplicateToolResult(toolName: string, previousBytes: number): string {
   return JSON.stringify({ duplicate: true, tool: toolName, previousResultBytes: previousBytes, note: "Identical tool call already ran in this task. Morrow reused the previous observation and omitted duplicate output to preserve context." });
 }
@@ -277,6 +304,22 @@ function patchFailureFeedback(
         : "Regenerate the patch against currentFile.content. Do not resend the stale patch unchanged.",
     },
   };
+}
+
+function malformedPatchFilesFromDiff(patch: string): PatchFile[] {
+  const files: PatchFile[] = [];
+  const lines = patch.split(/\r?\n/);
+  let oldPath = "";
+  for (const line of lines) {
+    if (line.startsWith("--- ")) {
+      oldPath = line.slice(4).trim().replace(/^a\//, "");
+    } else if (line.startsWith("+++ ")) {
+      const newPath = line.slice(4).trim().replace(/^b\//, "");
+      files.push({ oldPath: oldPath || newPath, newPath, chunks: [] });
+      oldPath = "";
+    }
+  }
+  return files;
 }
 
 export async function executeAgentChatTask({
@@ -1125,6 +1168,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   let noProgressTurns = 0;
   const seenToolSignatures = new Set<string>();
+  const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
   const patchFailureCountsByHash = new Map<string, number>();
   // Bounded correction budget for malformed / schema-invalid tool arguments,
@@ -1461,7 +1505,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         toolCalls: currentToolCalls.map(tc => ({
           id: tc.id,
           type: "function",
-          function: { name: tc.name, arguments: tc.arguments }
+          function: { name: tc.name, arguments: capToolArgumentsForContext(tc.name, tc.arguments) }
         }))
       });
 
@@ -1481,8 +1525,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         });
         const toolSignature = `${tc.name}:${tc.arguments}`;
         const repeatedTool = seenToolSignatures.has(toolSignature);
-        if (repeatedTool) repeatedToolSignatures.push(toolSignature);
-        else seenToolSignatures.add(toolSignature);
+        if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
         if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
         const toolStartedAt = Date.now();
@@ -1818,7 +1861,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             // 1. Parse unified diff. A patch that parses to zero files is
             // malformed input, not an empty success â€” beta.20 recorded these
             // as successful applications of nothing.
-            const patchFiles = parseUnifiedDiff(patch);
+            let patchFiles: PatchFile[];
+            try {
+              patchFiles = parseUnifiedDiff(patch);
+            } catch (patchErr) {
+              const attempts = (patchFailureCountsByHash.get(hashString(patch)) ?? 0) + 1;
+              patchFailureCountsByHash.set(hashString(patch), attempts);
+              const feedback = patchFailureFeedback(project.workspacePath, malformedPatchFilesFromDiff(patch), patchErr, attempts);
+              event("patch.recovery_feedback", {
+                targetFile: (feedback.result as any).targetFile,
+                conflictCategory: (feedback.result as any).conflictCategory,
+                attemptsForPatch: attempts,
+                retryExhausted: (feedback.result as any).retryExhausted,
+              });
+              throw new AgentToolFailure(feedback.message, feedback.result);
+            }
             if (patchFiles.length === 0) {
               throw new Error("Malformed patch: could not parse any file hunks from the unified diff");
             }
@@ -2050,7 +2107,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage,
           completedAt: now()
         });
-        if (isSuccess) completedToolSignatures.push(toolSignature);
+        if (isSuccess) {
+          const progressFingerprint = toolProgressFingerprint(tc.name, args, contextResultStr);
+          if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
+          else seenProgressFingerprints.add(progressFingerprint);
+          completedToolSignatures.push(progressFingerprint);
+        }
         let summary = isSuccess ? "completed" : "failed";
         try {
           const parsed = JSON.parse(resultStr) as { exitCode?: number | null; stdout?: string; stderr?: string; error?: string };
@@ -2102,6 +2164,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       repeatedToolSignatures,
     });
     noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
+    if (noProgressTurns === 2) {
+      event("task.progress_warning", {
+        reason: "no_progress",
+        message: "No new observable progress yet. Change strategy, gather new evidence, or finish with the verified result.",
+        turns: turn,
+      });
+    }
     if (noProgressTurns >= 3) {
       const message = "Task stalled after three turns without new observable progress.";
       transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });

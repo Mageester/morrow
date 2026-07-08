@@ -64,6 +64,17 @@ const noOpPatch = [
   "",
 ].join("\n");
 
+const malformedHunkPatch = [
+  "--- a/index.html",
+  "+++ b/index.html",
+  "@@ -1,3 +1,5 @@",
+  " <main>",
+  "-  <h1>current</h1>",
+  "+  <h1>improved</h1>",
+  " </main>",
+  "",
+].join("\n");
+
 describe("agent patch recovery", () => {
   let db: any;
   let ws: string;
@@ -200,5 +211,32 @@ describe("agent patch recovery", () => {
       kind: "patch_no_effect",
       targetFile: "index.html",
     });
+  });
+
+  it("returns actionable feedback for malformed hunk line-count mismatches", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "index.html", content: "<main>\n  <h1>current</h1>\n</main>\n" }), done],
+        [tool("bad-hunk", "propose_patch", { patch: malformedHunkPatch, explanation: "bad hunk", files: ["index.html"] }), done],
+        [text("stopped cleanly"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 6 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(readFileSync(join(ws, "index.html"), "utf8")).toBe("<main>\n  <h1>current</h1>\n</main>\n");
+    const bad = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.id === "bad-hunk")!;
+    expect(bad.status).toBe("failed");
+    const feedback = JSON.parse(bad.resultJson!);
+    expect(feedback).toMatchObject({
+      kind: "patch_recovery_feedback",
+      conflictCategory: "malformed_patch",
+      targetFile: "index.html",
+    });
+    expect(feedback.currentFile.content).toContain("<h1>current</h1>");
+    expect(feedback.instruction).toMatch(/Re-read|reread|currentFile\.content/i);
   });
 });
