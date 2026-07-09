@@ -57,8 +57,9 @@ export async function resolveProject(
     if (containsPath(cwd, configuredPath)) return configuredProject;
   }
 
-  const cwdProject = nearestContainingProject(projects, cwd);
-  if (cwdProject) return cwdProject;
+  const cwdProjects = nearestContainingProjects(projects, cwd);
+  if (cwdProjects.length === 1) return cwdProjects[0]!;
+  if (cwdProjects.length > 1) throw usageError("Multiple registered projects match this directory.", "Pass --project <id> to choose one explicitly.");
 
   // 3. When launched from a subdirectory, select the registered project whose
   //    workspace is the nearest parent Git root. This avoids using stale defaults
@@ -71,8 +72,20 @@ export async function resolveProject(
   }
 
   // 4. The configured default project (only when cwd is not itself a workspace).
+  // This directory has no registered project of its own, so falling back to
+  // the default is reasonable — but it must never be a *silent* switch. If
+  // the default happens to be some unrelated project from days ago, the user
+  // should find out from the terminal, not by noticing later that changes
+  // landed somewhere unexpected.
   if (configured) {
-    if (configuredProject) return configuredProject;
+    if (configuredProject) {
+      if (!ctx.out.json) {
+        ctx.out.warn(
+          `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`
+        );
+      }
+      return configuredProject;
+    }
     // A stale default (project since removed) should not hard-fail resolution;
     // fall through to explicit interactive selection or a clear refusal below.
   }
@@ -236,12 +249,18 @@ function containsPath(parent: string, child: string): boolean {
   return rel === "" || (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function nearestContainingProject(projects: Project[], cwd: string): Project | null {
+/** All registered projects whose workspace contains `cwd`, tied for the
+ *  deepest (most specific) match — usually one, but more than one means two
+ *  projects were registered at the same path and the caller must refuse
+ *  rather than arbitrarily pick the first, same as the Git-root fallback below. */
+function nearestContainingProjects(projects: Project[], cwd: string): Project[] {
   const matches = projects
     .map((project) => ({ project, path: canonicalProjectPath(project.workspacePath), safety: isSafeProjectRoot(project.workspacePath) }))
     .filter((item) => item.safety.safe && containsPath(item.path, cwd))
     .sort((a, b) => b.path.length - a.path.length);
-  return matches[0]?.project ?? null;
+  if (matches.length === 0) return [];
+  const bestLength = matches[0]!.path.length;
+  return matches.filter((item) => item.path.length === bestLength).map((item) => item.project);
 }
 
 function containsManyGitRepos(path: string, threshold: number): boolean {

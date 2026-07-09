@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { Output, stripAnsi } from "../src/cli/output.js";
-import { composePaintBody } from "../src/terminal/paint.js";
+import { composePaintBody, positionAndClearBelow } from "../src/terminal/paint.js";
 import { clipToWidth } from "../src/terminal/view.js";
 import { InteractiveRenderer, type TermIO } from "../src/terminal/runtime.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../src/terminal/session.js";
@@ -189,6 +189,35 @@ describe("composePaintBody: clear-before-write ordering", () => {
   });
 });
 
+describe("positionAndClearBelow: safe out-of-band writes (P0-1)", () => {
+  it("writes from a clean absolute position, never eating stale content mid-line", () => {
+    const columns = 40;
+    const term = new MiniTerm(columns, 10);
+    // Simulate a prior frame's footer sitting on row 4.
+    term.write(composePaintBody(["one", "two", "three", "◈M · Morrow · ready · Build - approvals"], 0));
+    // A one-time out-of-band write, positioned right after that frame.
+    term.write(positionAndClearBelow(5) + "\r\n# Morrow Task Report\r\n");
+    expect(term.lineText(3)).toBe("◈M · Morrow · ready · Build - approvals");
+    expect(term.lineText(4)).toBe("");
+    expect(term.lineText(5)).toBe("# Morrow Task Report");
+    // No fusion of the new text with old content, unlike the pre-fix bug
+    // where a bare `"\r\n" + report` written from an arbitrary mid-frame
+    // cursor position produced "# Morrow Task Reporty · Build - approvals…".
+    expect(term.lineText(5)).not.toContain("Reporty");
+  });
+
+  it("clears leftover content at and below the target row", () => {
+    const columns = 40;
+    const term = new MiniTerm(columns, 10);
+    term.write(composePaintBody(["one", "two", "stale row that should vanish", "also stale"], 0));
+    term.write(positionAndClearBelow(3) + "\r\nfresh\r\n");
+    expect(term.lineText(0)).toBe("one");
+    expect(term.lineText(1)).toBe("two");
+    expect(term.lineText(2)).toBe("");
+    expect(term.lineText(3)).toBe("fresh");
+  });
+});
+
 // ── Integration: real frames, real widths, real width-of-terminal fidelity ──
 
 class FakeTermIO implements TermIO {
@@ -296,16 +325,35 @@ function fakeStdin(): any {
   return e;
 }
 
+/** A controllable SSE stream: push events, end it, and honour aborts. */
 class EventGate {
+  private queue: any[] = [];
+  private waiters: Array<(r: IteratorResult<any>) => void> = [];
   private ended = false;
-  async *iterate(signal: AbortSignal): AsyncIterable<never> {
-    await new Promise<void>((res) => {
-      if (this.ended || signal.aborted) return res();
-      signal.addEventListener("abort", () => res(), { once: true });
-    });
+  push(ev: any): void {
+    const w = this.waiters.shift();
+    if (w) w({ value: ev, done: false });
+    else this.queue.push(ev);
   }
   end(): void {
     this.ended = true;
+    let w: ((r: IteratorResult<any>) => void) | undefined;
+    while ((w = this.waiters.shift())) w({ value: undefined as any, done: true });
+  }
+  async *iterate(signal: AbortSignal): AsyncIterable<any> {
+    while (true) {
+      if (this.queue.length) {
+        yield this.queue.shift();
+        continue;
+      }
+      if (this.ended || signal.aborted) return;
+      const next = await new Promise<IteratorResult<any>>((res) => {
+        this.waiters.push(res);
+        signal.addEventListener("abort", () => res({ value: undefined as any, done: true }), { once: true });
+      });
+      if (next.done) return;
+      yield next.value;
+    }
   }
 }
 
@@ -321,6 +369,25 @@ function makeBackend(gate: EventGate): SessionBackend {
     getTask: async () => ({}) as any,
     getTaskTree: async () => ({}) as any,
   };
+}
+
+function fakeAggregate(): any {
+  return {
+    task: { id: "task-1", projectId: "project-1", kind: "agent_chat", status: "completed", createdAt: "2026-07-08T10:00:00.000Z", updatedAt: "2026-07-08T10:01:00.000Z" },
+    plan: [{ id: "p1", position: 1, title: "Answer the question", description: "", status: "completed" }],
+    events: [],
+    agentStates: [],
+    approvals: [],
+    evidence: [],
+    integrations: [],
+    context: null,
+    toolCalls: [],
+    routing: null,
+  };
+}
+
+function makeBackendWithReport(gate: EventGate): SessionBackend {
+  return { ...makeBackend(gate), getTask: async () => fakeAggregate() };
 }
 
 function typeText(stdin: any, text: string): void {
@@ -441,6 +508,221 @@ describe("InteractiveSession: live paint fidelity", () => {
     ctrlC(stdin);
     ctrlC(stdin);
     gate.end();
+    await done;
+  });
+});
+
+// ── Output-report render-mode ownership (P0-1) ──────────────────────────────
+
+const CTRL_O = "\x0f";
+const ESC = "\x1b";
+
+async function completeOneTask(stdin: any, gate: EventGate): Promise<void> {
+  typeText(stdin, "hi");
+  await tick();
+  stdin.emit("keypress", undefined, { name: "return" });
+  await tick();
+  gate.push({ type: "evidence.persisted", payload: { deltaText: "hello there" } } as any);
+  await tick();
+  gate.push({ type: "task.completed", payload: {} } as any);
+  gate.end();
+  await tick();
+}
+
+describe("InteractiveSession: output-report render-mode ownership (P0-1)", () => {
+  it("Ctrl+O does not fuse the report onto stale footer content", async () => {
+    const io = new FakeTermIO();
+    io.columns = 90;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackendWithReport(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await completeOneTask(stdin, gate);
+
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true }); // Ctrl+O
+    await tick();
+
+    const term = new MiniTerm(io.columns, 60);
+    term.write(io.all());
+    const full = Array.from({ length: 60 }, (_, i) => term.lineText(i)).join("\n");
+    expect(full).toContain("# Morrow Task Report");
+    // The exact corruption observed live: the report's first line fusing
+    // with the tail of a stale status-bar row ("...Reporty · Build...").
+    expect(full).not.toMatch(/Report\w/);
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("repeated report views do not duplicate the live frame into scrollback", async () => {
+    const io = new FakeTermIO();
+    io.columns = 90;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackendWithReport(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await completeOneTask(stdin, gate);
+
+    // View the report four different ways in a row, exactly as in the live
+    // reproduction: Ctrl+O, Ctrl+O (close), /output, esc, /output full.
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true });
+    await tick();
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true });
+    await tick();
+    typeText(stdin, "/output");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+    stdin.emit("keypress", undefined, { name: "escape" });
+    await tick();
+    typeText(stdin, "/output full");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+
+    const term = new MiniTerm(io.columns, 300);
+    term.write(io.all());
+    const full = Array.from({ length: 300 }, (_, i) => term.lineText(i)).join("\n");
+
+    // The live-frame header line (project name from `longMeta()`) must
+    // appear at most once — not once per report view. Before the fix, every
+    // report view forced an uncontrolled scroll that pushed a full extra
+    // copy of the live chat frame into scrollback: four views meant four
+    // near-identical header blocks piling up.
+    const headerOccurrences = full.split(meta.projectName).length - 1;
+    expect(headerOccurrences).toBeLessThanOrEqual(1);
+    // The report content itself is still genuinely rendered, not lost.
+    expect(full).toContain("# Morrow Task Report");
+    expect(full).toContain("hello there");
+    // And nothing fused across writes into the old corruption pattern.
+    expect(full).not.toMatch(/Report\w/);
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("draft input survives opening and closing the output overlay", async () => {
+    const io = new FakeTermIO();
+    io.columns = 90;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackendWithReport(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await completeOneTask(stdin, gate);
+
+    typeText(stdin, "my unsent draft");
+    await tick();
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true }); // open
+    await tick();
+    stdin.emit("keypress", undefined, { name: "escape" }); // close
+    await tick();
+
+    const term = new MiniTerm(io.columns, 40);
+    term.write(io.all());
+    const full = Array.from({ length: 40 }, (_, i) => term.lineText(i)).join("\n");
+    expect(full).toContain("my unsent draft");
+
+    backspace(stdin, 20);
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("resizing while the report overlay is open does not corrupt the terminal", async () => {
+    const io = new FakeTermIO();
+    io.columns = 90;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackendWithReport(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await completeOneTask(stdin, gate);
+
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true });
+    await tick();
+    io.columns = 50;
+    io.emitResize();
+    await tick();
+
+    const term = new MiniTerm(io.columns, 40);
+    term.write(io.all());
+    const full = Array.from({ length: 40 }, (_, i) => term.lineText(i)).join("\n");
+    expect(full).not.toMatch(/Report\w/);
+    expect(full).toContain("Output");
+
+    stdin.emit("keypress", undefined, { name: "escape" });
+    await tick();
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+});
+
+// ── /output never hangs (P0-2) ──────────────────────────────────────────────
+
+describe("InteractiveSession: showTaskReport surfaces failure instead of hanging (P0-2)", () => {
+  it("a rejected getTask() (e.g. a timed-out request) shows a clear error notice, not a stuck UI", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const backend: SessionBackend = {
+      ...makeBackend(gate),
+      getTask: async () => {
+        throw new Error("Cannot reach the Morrow service at http://127.0.0.1:9999.");
+      },
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await completeOneTask(stdin, gate);
+
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true }); // Ctrl+O
+    await tick();
+
+    const snap = app.snapshot();
+    const errorNotice = snap.notices.find((n) => n.level === "error" && n.text.includes("Could not load output"));
+    expect(errorNotice).toBeDefined();
+    // No overlay was ever shown for content that never arrived.
+    expect(app.snapshot().status).not.toBe("streaming");
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("no prior task at all shows a clear message immediately, never a hang", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackend(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await tick();
+
+    // Fresh session, nothing ever ran — Ctrl+O before any task exists.
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true });
+    await tick();
+
+    const snap = app.snapshot();
+    expect(snap.notices.some((n) => n.text.includes("No task output is available yet"))).toBe(true);
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
     await done;
   });
 });

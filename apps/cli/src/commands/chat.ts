@@ -1,4 +1,4 @@
-import type { AgentMode, Conversation } from "@morrow/contracts";
+import type { AgentMode, Conversation, Project } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
 import type { MorrowApi, TaskAggregate } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
@@ -109,7 +109,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     throw usageError("No message provided and not running in an interactive terminal.", "Use --message \"…\" for non-interactive use.");
   }
 
-  return runRepl(ctx, api, project.id, conversation, session);
+  return runRepl(ctx, api, project, conversation, session);
 }
 
 /**
@@ -119,21 +119,26 @@ export async function chatCommand(ctx: Context): Promise<number> {
 async function runInteractiveSession(
   ctx: Context,
   api: MorrowApi,
-  projectId: string,
+  project: Project,
   conversation: Conversation,
   session: SessionState,
   unicode: boolean
 ): Promise<number> {
-  const project = await api.getProject(projectId);
-  const providerStatus = await api.providerStatus().catch(() => null);
+  // `project` is already the object `chatCommand` resolved — no need to fetch
+  // it again. Start both network reads *before* the synchronous git
+  // inspection below: `fetch()` hands its request off to the OS immediately,
+  // so those responses can arrive while this thread is blocked spawning git,
+  // rather than waiting for git to finish before either request is even sent.
+  const providerStatusPromise = api.providerStatus().catch(() => null);
+  const priorHistoryPromise = api.listMessages(conversation.id).catch(() => []);
+  const git = gitSummary(project.workspacePath);
+  const [providerStatus, priorHistory] = await Promise.all([providerStatusPromise, priorHistoryPromise]);
   const providerName = session.provider ?? providerStatus?.provider ?? "auto";
   const modelName = session.model ?? providerStatus?.model ?? "auto";
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
-  const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
   // Onboarding facts: whether a provider is really configured and whether we
   // resumed prior history, so the empty-state welcome can guide honestly.
-  const priorHistory = await api.listMessages(conversation.id).catch(() => []);
   const priorMessages = priorHistory.length;
   const initialTaskId = findLatestTaskId(priorHistory);
 
@@ -266,15 +271,29 @@ async function runInteractiveSession(
   return EXIT.OK;
 }
 
-async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
+export async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
   const resumeId = flagString(ctx.flags, "resume");
   if (resumeId !== undefined) {
     if (resumeId) {
+      let conversation: Conversation;
       try {
-        return await api.getConversation(resumeId);
+        conversation = await api.getConversation(resumeId);
       } catch {
         throw new CliError(`Conversation not found: ${resumeId}`, { code: "NOT_FOUND", exitCode: EXIT.NOT_FOUND });
       }
+      // Never cross a project boundary silently: a conversation id from a
+      // different project than the one just resolved (by --project, cwd, or
+      // default) is almost certainly a mistake, not an intentional jump —
+      // and jumping there anyway is exactly the failure mode this guards
+      // against. Require the explicit --project that actually owns it.
+      if (conversation.projectId !== projectId) {
+        throw new CliError(`Conversation ${resumeId} belongs to a different project.`, {
+          code: "PROJECT_MISMATCH",
+          exitCode: EXIT.USAGE,
+          hint: `Pass --project ${conversation.projectId} to resume it explicitly.`,
+        });
+      }
+      return conversation;
     }
     const existing = await api.listConversations(projectId);
     if (existing.length === 0) return api.createConversation(projectId, "New Conversation");
@@ -343,7 +362,7 @@ async function runOneShot(ctx: Context, api: MorrowApi, conversation: Conversati
   return result.status === "completed" ? EXIT.OK : result.status === "cancelled" ? EXIT.CANCELLED : EXIT.ERROR;
 }
 
-async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial: Conversation, session: SessionState): Promise<number> {
+async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: Conversation, session: SessionState): Promise<number> {
   let conversation = initial;
   const out = ctx.out;
   const unicode = resolveUnicode(ctx);
@@ -351,16 +370,18 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   // Capable interactive terminal → the full-screen event-driven session app.
   // Everything else (redirected, CI, JSON, dumb, MORROW_TUI=0) → line renderer.
   if (shouldUseInteractive({ json: out.json, isTTY: Boolean(process.stdout.isTTY), stdinIsTTY: Boolean(process.stdin.isTTY), env: process.env })) {
-    return runInteractiveSession(ctx, api, projectId, conversation, session, unicode);
+    return runInteractiveSession(ctx, api, project, conversation, session, unicode);
   }
 
-  const project = await api.getProject(projectId);
-  const providerStatus = await api.providerStatus().catch(() => null);
+  // `project` is already resolved — start the network read and the
+  // synchronous git inspection together rather than sequentially.
+  const providerStatusPromise = api.providerStatus().catch(() => null);
+  const git = gitSummary(project.workspacePath);
+  const providerStatus = await providerStatusPromise;
 
   const providerName = session.provider ?? providerStatus?.provider ?? "auto";
   const modelName = session.model ?? providerStatus?.model ?? "auto";
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
-  const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
   const history = await api.listMessages(conversation.id);
   const resuming = history.length > 0;
@@ -407,7 +428,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     if (!line) continue;
 
     if (line.startsWith("/")) {
-      const result = await handleSlash(ctx, api, projectId, conversation, session, line);
+      const result = await handleSlash(ctx, api, project.id, conversation, session, line);
       if (result.exit) return EXIT.OK;
       if (result.conversation) conversation = result.conversation;
       continue;

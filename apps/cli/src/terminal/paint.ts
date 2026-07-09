@@ -35,3 +35,15 @@ export function composePaintBody(lines: readonly string[], previousFrameRows: nu
   }
   return out;
 }
+
+/**
+ * Move to column 1 of an absolute row and clear everything from there down.
+ * For the rare cases something needs to write *outside* the per-frame paint
+ * loop (e.g. leaving a one-time record in real scrollback) — an absolute
+ * cursor position is the only way to do that without depending on wherever
+ * the cursor happens to have been left by the last unrelated repaint, which
+ * can land mid-line on stale content or force an uncontrolled scroll.
+ */
+export function positionAndClearBelow(row: number): string {
+  return `\x1b[${row};1H` + CLEAR_BELOW;
+}

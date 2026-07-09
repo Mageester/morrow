@@ -32,7 +32,7 @@ import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
 import { buildTaskReport, type ReportKind } from "./output-report.js";
-import { composePaintBody } from "./paint.js";
+import { composePaintBody, positionAndClearBelow } from "./paint.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
@@ -94,6 +94,16 @@ export interface SessionBackend {
   getCortexStaleness?(): Promise<import("./resume.js").ResumeStaleness | null>;
 }
 
+/**
+ * Exactly one subsystem owns the terminal at a time. `live_chat` and
+ * `overlay` both paint through the same per-frame loop (safe: overlays are
+ * just a different `lines` source into the same clear-then-write pipeline).
+ * `output_report` is the brief, atomic window of a one-time out-of-band
+ * scrollback write — the per-frame loop must not run during it.
+ * `shutting_down` mirrors `!active` so cleanup can never race a repaint.
+ */
+export type RenderMode = "live_chat" | "output_report" | "overlay" | "shutting_down";
+
 export interface SessionSettings {
   mode: AgentMode;
   autoApprove: boolean;
@@ -137,7 +147,14 @@ export class InteractiveSession {
   private lastTaskId: string | null = null;
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
-  private confirmExitWhileBusy = false;
+  /** True once we've told the user this busy stretch that their keystroke isn't
+   *  being applied yet — so we notify once per stretch, not once per keystroke. */
+  private busyInputNotified = false;
+  /** True only for the brief, atomic window where a one-time out-of-band
+   *  scrollback write is in flight (see `emitScrollbackReport`). The normal
+   *  per-frame paint loop must not run during that window — two subsystems
+   *  writing to the terminal at once is exactly what corrupted the screen. */
+  private reportWriteInProgress = false;
   private missionTab = 0; // 0=tree, 1=activity, 2=result
   private missionCache: { tree?: string[]; result?: string[]; cockpit?: string[] } = {};
   private resolveDone: (() => void) | null = null;
@@ -225,7 +242,14 @@ export class InteractiveSession {
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
       if (k.ctrl && k.name === "t") return void this.showMissionControl();
-      this.confirmExitWhileBusy = false;
+      this.input = { ...this.input, confirmExit: false };
+      // Never silently drop input: tell the user once per busy stretch (not
+      // once per keystroke) that typing isn't being applied yet.
+      if (!this.busyInputNotified) {
+        this.busyInputNotified = true;
+        this.pushNotice("info", "Morrow is still working. Press Ctrl+C to stop it or wait before submitting.");
+        this.requestPaint(false);
+      }
       return;
     }
 
@@ -283,10 +307,17 @@ export class InteractiveSession {
   }
 
   private interruptBusy(): void {
-    if (this.confirmExitWhileBusy) return this.exit();
+    if (this.input.confirmExit) return this.exit();
     if (this.currentTaskId && this.streamAbort) {
       void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
-      this.confirmExitWhileBusy = true;
+      // Arm the SAME exit-confirmation the idle path uses (`input.confirmExit`),
+      // not a separate busy-only flag. Cancellation can (and did, in testing)
+      // resolve between this keypress and the next one, flipping `this.busy`
+      // to false before the user's next Ctrl+C arrives — which would route
+      // that keypress into the idle confirm-exit machinery instead of this
+      // one. Two independent flags meant that race could silently swallow
+      // the "press again" the UI had just promised. One flag can't race itself.
+      this.input = { ...this.input, confirmExit: true };
       this.pushNotice("warn", "Cancelling… (Ctrl+C again to exit)");
     } else {
       this.exit();
@@ -845,9 +876,34 @@ export class InteractiveSession {
     return this.deps.backend.getFinalAnswer?.(taskId).catch(() => null) ?? null;
   }
 
+  /**
+   * Leave a one-time, permanent copy of the report in real terminal
+   * scrollback (so it survives after the overlay is closed, and stays
+   * selectable/copyable — this never uses the alternate screen buffer).
+   *
+   * This used to write raw text from wherever the cursor happened to be
+   * left by the last unrelated repaint. That could land mid-line on top of
+   * stale content (fusing "# Morrow Task Report" with the tail of an old
+   * footer row into "# Morrow Task Reporty · Build - approvals…") and force
+   * an uncontrolled scroll that duplicated the entire live frame into
+   * scrollback. Fix is render-ownership, not cursor tricks: claim the
+   * `output_report` render mode so the normal per-frame loop can't paint
+   * over us mid-write, cancel any repaint already scheduled, then write from
+   * an absolute position — one row past the current live frame's last
+   * painted line — instead of an implicit, possibly stale cursor position.
+   */
   private emitScrollbackReport(report: string): void {
-    if (!this.deps.io.isTTY) return;
-    this.deps.io.write("\r\n" + report.replace(/\n/g, "\r\n") + "\r\n");
+    const { io } = this.deps;
+    if (!io.isTTY) return;
+    this.reportWriteInProgress = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + report.replace(/\n/g, "\r\n") + "\r\n";
+    io.write(body);
+    this.reportWriteInProgress = false;
+    this.requestPaint(true);
   }
 
   private async showMissionControl(): Promise<void> {
@@ -1195,7 +1251,8 @@ export class InteractiveSession {
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
     this.streamStart = this.now();
-    this.confirmExitWhileBusy = false;
+    this.busyInputNotified = false;
+    this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
     this.requestPaint(true);
@@ -1246,6 +1303,8 @@ export class InteractiveSession {
     }
     this.busy = true;
     this.streamStart = this.now();
+    this.busyInputNotified = false;
+    this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
     this.currentTaskId = this.lastTaskId;
@@ -1332,8 +1391,24 @@ export class InteractiveSession {
     this.term = reduce(this.term, { type: "notice", level, text }, this.now);
   }
 
+  /**
+   * Which subsystem owns the terminal right now. Derived — never a second,
+   * separately maintained flag — so it can't drift out of sync with the
+   * state it describes. Exactly one thing may write to the terminal at a
+   * time; `paint()` and `requestPaint()` both consult this before doing
+   * anything, so the normal per-frame loop and a one-time out-of-band write
+   * (`emitScrollbackReport`) can never interleave and corrupt each other.
+   */
+  private renderMode(): RenderMode {
+    if (!this.active) return "shutting_down";
+    if (this.reportWriteInProgress) return "output_report";
+    if (this.pendingApproval || this.input.overlay !== "none") return "overlay";
+    return "live_chat";
+  }
+
   private requestPaint(force: boolean): void {
-    if (!this.active) return;
+    const mode = this.renderMode();
+    if (mode === "shutting_down" || mode === "output_report") return;
     const since = this.now() - this.lastPaintAt;
     if (force && since >= this.minIntervalMs) return void this.paint();
     if (this.timer) return;
@@ -1346,6 +1421,7 @@ export class InteractiveSession {
   }
 
   private fullRepaint(): void {
+    if (this.renderMode() === "output_report") return;
     const { io } = this.deps;
     if (io.isTTY) io.write("\x1b[2J" + HOME);
     this.paint();
@@ -1353,7 +1429,8 @@ export class InteractiveSession {
 
   /** Compose and write the frame, position the caret, manage cursor visibility. */
   private paint(): void {
-    if (!this.active) return;
+    const mode = this.renderMode();
+    if (mode === "shutting_down" || mode === "output_report") return;
     this.lastPaintAt = this.now();
     const { io, out, unicode } = this.deps;
     const promptLabel = out.green(unicode ? "› " : "> ");

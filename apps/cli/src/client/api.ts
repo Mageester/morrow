@@ -297,7 +297,10 @@ export class MorrowApi {
   listTasks(projectId: string) { return this.req<Task[]>("GET", `/api/projects/${projectId}/tasks`); }
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
-  getTask(taskId: string) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`); }
+  // Bounded: /output must never hang the terminal indefinitely on a slow or
+  // stalled service — the caller always gets a definite answer (data or a
+  // clear, actionable error) within this window, never silence.
+  getTask(taskId: string, timeoutMs = 8000) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`, undefined, { timeoutMs }); }
   getTaskTree(taskId: string) { return this.req<TaskTreeNode>("GET", `/api/tasks/${taskId}/tree`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
   resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/resume`); }
@@ -526,8 +529,11 @@ export class MorrowApi {
   updateConversation(id: string, patch: { title?: string; archived?: boolean }) {
     return this.req<Conversation>("PATCH", `/api/conversations/${id}`, patch);
   }
-  listMessages(conversationId: string) {
-    return this.req<ConversationMessage[]>("GET", `/api/conversations/${conversationId}/messages`);
+  // Bounded for the same reason as getTask(): this feeds both startup task
+  // resolution (findLatestTaskId) and the /output final-answer lookup, both
+  // on the direct path to "does /output ever return."
+  listMessages(conversationId: string, timeoutMs = 8000) {
+    return this.req<ConversationMessage[]>("GET", `/api/conversations/${conversationId}/messages`, undefined, { timeoutMs });
   }
   sendMessage(conversationId: string, content: string, options: SendMessageOptions = {}) {
     return this.req<SendMessageResult>("POST", `/api/conversations/${conversationId}/messages`, { content, ...options });
