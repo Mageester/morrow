@@ -46,7 +46,8 @@ Morrow is being designed to support:
 
 ```text
 apps/
-  web/                 Main web application
+  cli/                 Main terminal application and service client
+  landing/             Public download and setup site
   desktop/             Native desktop shell
 services/
   orchestrator/        Tasks, plans, agents, scheduling, and recovery
@@ -111,7 +112,7 @@ pnpm install
 
 ### Running Individual Services
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
-- **Web App**: `pnpm --filter @morrow/web dev`
+- **Landing site**: `pnpm --filter @morrow/landing dev`
 
 ### Data Storage
 Morrow stores data locally. By default, global service state lives under `~/.morrow/`, including the primary SQLite database at `~/.morrow/morrow.db`. Project-local `.morrow/` remains available for workspace metadata.
@@ -144,12 +145,11 @@ Morrow runs a conversation-first agent through a provider-neutral runtime:
 **Configuring a provider** takes about a minute and never requires PowerShell,
 environment variables, or a service restart:
 
-- **In the app:** Settings → Providers → *Configure*. Paste an API key, save,
-  *Test connection*, pick a default model. The change applies to the running
-  service immediately.
 - **From the CLI:** `morrow providers configure deepseek --key <KEY>` (add
   `--model <id>` to set a default), then `morrow providers test deepseek`.
   Remove a key with `morrow providers remove deepseek`.
+- **From onboarding:** run `morrow onboard` and follow the provider setup step.
+  The change applies to the running service immediately.
 
 Keys are stored server-side in Morrow's owner-readable secrets file and are
 never written to the browser (no `localStorage`), the database, logs, or task

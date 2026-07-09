@@ -47,12 +47,12 @@ pnpm build
 ```
 
 ### Start the Services
-To start both the background orchestrator service and the Web interface dev server:
+To start both the background orchestrator service and the landing-site dev server:
 ```bash
 pnpm dev
 ```
 
-The Web application will be accessible at: [http://localhost:5173](http://localhost:5173)
+The landing site will be accessible at: [http://localhost:5173](http://localhost:5173)
 The background orchestrator service will listen at: [http://localhost:4317](http://localhost:4317)
 
 ---

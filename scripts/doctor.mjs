@@ -9,7 +9,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
 import { homedir, platform, arch, cpus, totalmem, freemem } from "node:os";
 import { join } from "node:path";
 
@@ -51,7 +51,7 @@ async function run() {
   // ── Data directory ───────────────────────────────────────────────────
   if (existsSync(MORROW_HOME)) {
     try {
-      const files = require("fs").readdirSync(MORROW_HOME);
+      const files = readdirSync(MORROW_HOME);
       ok("Data directory", `${MORROW_HOME} (${files.length} items)`);
     } catch {
       warn("Data directory", `Exists but cannot read: ${MORROW_HOME}`);
@@ -83,7 +83,7 @@ async function run() {
       fail("API Health", `HTTP ${res.status}`, "Check orchestrator logs");
     }
   } catch {
-    fail("API Health", `Cannot reach ${API_URL}`, "Start the orchestrator: node morrow.mjs");
+    fail("API Health", `Cannot reach ${API_URL}`, "Start Morrow with: morrow start");
   }
 
   // ── Provider configuration ───────────────────────────────────────────
@@ -95,7 +95,7 @@ async function run() {
       if (configured.length > 0) {
         ok("Providers", `${configured.length} configured: ${configured.join(", ")}`);
       } else {
-        warn("Providers", "No providers configured", "Set API keys in environment or secrets.env");
+        warn("Providers", "No providers configured", "Run: morrow providers configure <provider>");
       }
     }
   } catch {
@@ -122,7 +122,7 @@ async function run() {
   const skillsDir = join(MORROW_HOME, "skills");
   if (existsSync(skillsDir)) {
     try {
-      const dirs = require("fs").readdirSync(skillsDir, { withFileTypes: true })
+      const dirs = readdirSync(skillsDir, { withFileTypes: true })
         .filter(d => d.isDirectory() && existsSync(join(skillsDir, d.name, "SKILL.md")));
       ok("Skills", `${dirs.length} skills installed in ${skillsDir}`);
     } catch {
@@ -162,7 +162,7 @@ async function run() {
     if (EXPORT_MODE) {
       const exportPath = join(MORROW_HOME, "diagnostics", `morrow-doctor-${Date.now()}.json`);
       const exportDir = join(MORROW_HOME, "diagnostics");
-      if (!existsSync(exportDir)) require("fs").mkdirSync(exportDir, { recursive: true });
+      if (!existsSync(exportDir)) mkdirSync(exportDir, { recursive: true });
       writeFileSync(exportPath, JSON.stringify(output, null, 2));
       console.log(`Diagnostic export written to: ${exportPath}`);
       console.log("(No secrets are included in diagnostic exports)");

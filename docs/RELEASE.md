@@ -61,7 +61,7 @@ Override with `MORROW_HOME` environment variable.
 | Setting | Default |
 |---------|---------|
 | API port | 4317 |
-| Web URL | `http://localhost:4317` |
+| Local API URL | `http://localhost:4317` |
 | Bind address | `127.0.0.1` (localhost only) |
 | Browser | Chromium (Playwright-bundled) |
 
@@ -69,7 +69,7 @@ Override with `MORROW_HOME` environment variable.
 
 ```
 morrow install   — Set up data directories, register shortcuts
-morrow start     — Launch orchestrator + open browser
+morrow start     — Launch the local orchestrator service
 morrow stop      — Gracefully stop orchestrator
 morrow restart   — Stop + start
 morrow status    — Show running state and health
@@ -82,7 +82,7 @@ morrow uninstall — Remove application, prompt about user data
 ## Security
 
 - Default bind: `127.0.0.1` only. No LAN or internet exposure.
-- Provider API keys: stored in environment or `%USERPROFILE%\.morrow\secrets.env`
+- Provider API keys: stored via `morrow providers configure` under `MORROW_HOME\secrets.env`, or supplied by environment variables before service start
 - Secrets never in browser localStorage, logs, or diagnostic exports
 - Workspace containment: agent operations scoped to approved paths
 - Plugin execution: disabled by default, opt-in per plugin

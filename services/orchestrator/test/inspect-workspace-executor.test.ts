@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -45,6 +45,7 @@ describe("inspect workspace executor", () => {
     const root = mkdtempSync(join(tmpdir(), "morrow-executor-"));
     const databaseDirectory = mkdtempSync(join(tmpdir(), "morrow-executor-db-"));
     const database = join(databaseDirectory, "state.db");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       mkdirSync(join(root, "nested")); mkdirSync(join(root, ".morrow"));
       writeFileSync(join(root, "nested", "file.txt"), "content"); writeFileSync(join(root, ".morrow", "morrow.db"), "private");
@@ -59,8 +60,9 @@ describe("inspect workspace executor", () => {
       expect(aggregate.verification?.details).toMatchObject({ resultCount: 1, depthTruncated: false, countTruncated: false, inaccessibleEntryCount: 0 });
       expect(aggregate.events.map((event) => event.sequence)).toEqual(aggregate.events.map((_, index) => index + 1));
       expect(aggregate.events.map((event) => event.type)).toEqual(["plan.created", "task.running", "step.started", "step.completed", "step.started", "workspace.inspected", "evidence.persisted", "step.completed", "step.started", "verification.completed", "step.completed", "task.verified"]);
+      expect(log).not.toHaveBeenCalledWith("INSPECTING WORKSPACE PATH:", root);
       db.close();
       const reopened = openDatabase(database); expect(taskRecordsRepository(reopened).getAggregate("task").task.status).toBe("verified"); reopened.close();
-    } finally { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); try { rmSync(databaseDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* Windows may retain a short-lived SQLite file handle. */ } }
+    } finally { log.mockRestore(); rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); try { rmSync(databaseDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch { /* Windows may retain a short-lived SQLite file handle. */ } }
   });
 });

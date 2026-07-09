@@ -22,21 +22,19 @@ error classification (`auth`, `rate_limit`, `timeout`, `network`, `cancelled`,
 
 ## Configuring a provider
 
-There are three ways to give Morrow a provider credential. None require
-PowerShell, manually setting environment variables, or restarting the service.
+There are two primary ways to give Morrow a provider credential. Neither
+requires manually setting environment variables or restarting the service.
 
-1. **In the app (recommended).** Settings → Providers → *Configure*. Paste the
-   API key, optionally set a custom endpoint and default model, then *Save*. The
-   key is sent once to the local orchestrator, persisted to the secrets file, and
-   applied to the running process immediately. *Test connection* verifies it.
-2. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
+1. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
    (optionally `--url <endpoint>` and `--model <id>`). This goes through the same
    running-service endpoint, so it also takes effect with no restart. Use
    `morrow providers test <provider>` to verify and `morrow providers remove
    <provider>` to delete the credential.
+2. **Terminal onboarding.** `morrow onboard` walks through the same local
+   credential flow and applies the saved key immediately.
 3. **Pre-seeded environment.** Any of the env vars below set in the shell *before*
    the service starts are honored as well. A shell-set variable takes precedence
-   over a saved one; the app and CLI warn you when that shadowing happens.
+   over a saved one; Morrow warns you when that shadowing happens.
 
 Keys are stored server-side in the owner-readable secrets file and never reach
 the browser (no `localStorage`), the database, logs, errors, or task events.
@@ -59,8 +57,8 @@ Ollama is an explicit opt-in: Morrow does not claim a local server exists unless
 `OLLAMA_BASE_URL` is set.
 
 Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
-`OPENAI_MODEL`) that sets the default model. Setting a default model in the app
-or via `--model` writes this value.
+`OPENAI_MODEL`) that sets the default model. Setting a default model during
+onboarding or via `--model` writes this value.
 
 DeepSeek defaults to `deepseek-v4-flash` and advertises both
 `deepseek-v4-flash` and `deepseek-v4-pro`. OpenRouter is also a first-class
@@ -112,22 +110,19 @@ provider end-to-end, set exactly one key and drive the stack. **Never print
 secret values.**
 
 ```powershell
-# 1. Configure one provider (example: OpenAI). Set this in the orchestrator's
-#    environment only — do not commit it.
-$env:OPENAI_API_KEY = "sk-..."   # your key; do not echo it
+# 1. Start the local service.
+morrow start
 
-# 2. Start the stack (orchestrator + web).
-pnpm --filter @morrow/orchestrator start    # in one terminal
-pnpm --filter @morrow/web dev               # in another terminal
+# 2. Configure one provider (example: OpenAI). Do not echo or commit the key.
+morrow providers configure openai --key "<your key>"
+morrow providers test openai
 
 # 3. Confirm provider/preset status without revealing secrets.
 curl http://127.0.0.1:4317/api/providers      # openai -> "configured": true, host only
 curl http://127.0.0.1:4317/api/presets        # balanced -> available, resolved openai
 
-# 4. In the browser (http://localhost:5173): create a project pointed at a repo,
-#    open a conversation, and ask:
-#    "Summarize the architecture of this project. Identify the major packages,
-#     explain how tasks are executed, and cite the most important files you inspected."
+# 4. In a workspace directory, ask a read-only question.
+morrow ask "Summarize the architecture of this project. Identify the major packages, explain how tasks are executed, and cite the most important files you inspected."
 ```
 
 Confirm: the response streams; the actual provider/model is shown; read-only

@@ -63,6 +63,16 @@ export function resolveAutoApprove(ctx: Context, mode: AgentMode): boolean {
   return (ctx.config.get("defaults.autoApprove") as boolean | undefined) ?? false;
 }
 
+export function formatDisclosureCost(value: string | undefined | null): string {
+  const cost = value?.trim();
+  return cost ? cost : "not yet calculated";
+}
+
+export function providerConnectHint(providerId: string, label?: string): string {
+  const name = label && label !== providerId ? `${label} (${providerId})` : providerId;
+  return `Configure ${name} with \`morrow providers configure ${providerId}\`; it applies without restarting. Verify with \`morrow providers test ${providerId}\`.`;
+}
+
 interface SessionState {
   preset: string;
   provider: string | undefined;
@@ -931,7 +941,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         try {
           const agg = await api.getTask(tid);
           if (agg.disclosure?.estimatedCostUsd) {
-            total = `$${agg.disclosure.estimatedCostUsd}`;
+            total = formatDisclosureCost(agg.disclosure.estimatedCostUsd);
             break;
           }
         } catch {}
@@ -1023,7 +1033,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       const match = providers.find(p => p.id === arg);
       if (!match) { out.warn(`Provider "${arg}" not found. Use /provider to list available.`); return {}; }
       if (match.configured) { out.info(`Provider "${arg}" is already configured.`); return {}; }
-      out.info(`To configure ${match.label || arg}, set the ${match.id.toUpperCase()}_API_KEY environment variable and restart.`);
+      out.info(providerConnectHint(match.id, match.label));
       return {};
     }
     case "share": {

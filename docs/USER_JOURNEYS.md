@@ -145,8 +145,9 @@
 - `⛔` **No single support-bundle export** (redacted logs + versions + task
   timeline in one artifact). A user diagnosing a stuck task still lacks a full
   chronological tool-call timeline and parent synthesis view (Phase 9).
-- `⛔` **Stray debug logging** (`console.log("INSPECTING WORKSPACE PATH:" …)`,
-  `inspect-workspace.ts:26`) leaks workspace paths to stdout.
+- **Fixed 2026-07-09:** the stray `console.log("INSPECTING WORKSPACE PATH:" ...)`
+  was removed from workspace inspection, so normal runs no longer print the
+  absolute workspace path to stdout.
 
 ---
 
@@ -161,5 +162,5 @@
 | 5 | Terminal/duplicate cancellation route semantics need richer CLI/web wording | Cancellation | P2 | Mission Control |
 | 6 | No baseline-regression auto-block | Coding | P2 | Phase 4 |
 | 7 | No support bundle / tool timeline | Diagnosis | P2 | Phase 9 |
-| 8 | Stray workspace-path debug log | Diagnosis | P3 | quick fix |
+| 8 | ~~Stray workspace-path debug log~~ fixed 2026-07-09 | Diagnosis | P3 | quick fix |
 | 9 | No continuous onboarding→first-task thread | Onboarding | P2 | Phase 2/5 |

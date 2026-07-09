@@ -69,7 +69,7 @@ function App() {
           {[
             { title: "Code & Develop", desc: "Read, search, and understand codebases. Plan refactors. Review pull requests. Debug issues with full context." },
             { title: "Research & Browse", desc: "Read-only workspace inspection and provider-backed conversations show their evidence and routing." },
-            { title: "Provider Setup", desc: "Paste an API key in Settings → Providers, test it, then choose a default model. No shell setup or restart." },
+            { title: "Provider Setup", desc: "Save an API key with morrow providers configure, test it, then choose a default model. No manual environment setup or restart." },
             { title: "Stay Private", desc: "Everything runs locally. Your API keys never leave your machine. No telemetry. No cloud dependency." },
             { title: "Control Permissions", desc: "Read-only tools are visible and scoped. Write and terminal tools remain gated in this beta." },
             { title: "Skills Preview", desc: "Browse available skills and their compatibility before enabling broader integrations." },
@@ -185,7 +185,7 @@ function App() {
         <p style={{ textAlign: "center", color: "#a6a7af", fontSize: 15, margin: "0 auto 28px", maxWidth: 540 }}>
           Open <strong>PowerShell</strong> and paste this. It downloads Morrow,
           verifies the checksum, adds the <code style={{ background: "#1d1d23", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>morrow</code> command
-          and a Start Menu shortcut, starts the local service, and opens the app.
+          and a Start Menu shortcut, starts the local service, and prepares the terminal app.
           No Git, Node, or manual steps.
         </p>
         <div style={{ maxWidth: 560, margin: "0 auto 36px", background: "#0f0f13", border: "1px solid rgba(61,123,253,0.25)", borderRadius: 10, padding: "16px 18px", fontFamily: "monospace", fontSize: 13.5, color: "#edeef1", overflowX: "auto" }}>
@@ -193,9 +193,9 @@ function App() {
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 540, margin: "0 auto" }}>
           {[
-            { step: "1", title: "Install", desc: "Paste the command above. When it finishes, Morrow opens in your browser at http://127.0.0.1:4317." },
-            { step: "2", title: "Configure a provider", desc: "In Settings → Providers, paste an API key (e.g. DeepSeek), test the connection, and pick a default model. No restart needed." },
-            { step: "3", title: "Run a mission", desc: "Open a workspace and start your first mission — inspect your code, research a topic, or automate a task. Plans, tools, and evidence are visible." },
+            { step: "1", title: "Install", desc: "Paste the command above. When it finishes, open a new PowerShell window and run morrow." },
+            { step: "2", title: "Configure a provider", desc: "Run morrow providers configure deepseek, paste an API key, test the connection, and pick a default model. No restart needed." },
+            { step: "3", title: "Run a mission", desc: "Open a workspace from the terminal shell and start your first mission. Plans, tools, and evidence are visible." },
           ].map(item => (
             <div key={item.step} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(61,123,253,0.15)", color: "#3d7bfd", display: "grid", placeItems: "center", fontWeight: 700, fontSize: 14, flex: "none" }}>{item.step}</div>
