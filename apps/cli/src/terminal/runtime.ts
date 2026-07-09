@@ -15,11 +15,11 @@ import type { TerminalEvent } from "./events.js";
 import type { Renderer } from "./renderer.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { composeFrame } from "./view.js";
+import { composePaintBody } from "./paint.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
 const CURSOR_HOME = "\x1b[H";
-const CLEAR_TO_EOL = "\x1b[K";
 const CLEAR_BELOW = "\x1b[J";
 
 /** The minimal terminal surface the runtime needs. `process.stdout` satisfies it. */
@@ -160,8 +160,7 @@ export class InteractiveRenderer implements Renderer {
     this.lastPaintAt = this.now();
     const frame = this.frame();
     if (this.io.isTTY) {
-      const body = frame.map((l) => l + CLEAR_TO_EOL).join("\r\n");
-      this.io.write(CURSOR_HOME + body + CLEAR_BELOW);
+      this.io.write(composePaintBody(frame, this.lastFrameRows));
     } else {
       // Non-TTY fallback: emit the frame once (used only if misconfigured).
       this.io.write(frame.join("\n") + "\n");

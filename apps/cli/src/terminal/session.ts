@@ -32,12 +32,11 @@ import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
 import { buildTaskReport, type ReportKind } from "./output-report.js";
+import { composePaintBody } from "./paint.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
 const HOME = "\x1b[H";
-const CLEAR_EOL = "\x1b[K";
-const CLEAR_BELOW = "\x1b[J";
 const PASTE_ON = "\x1b[?2004h";
 const PASTE_OFF = "\x1b[?2004l";
 
@@ -150,6 +149,7 @@ export class InteractiveSession {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private lastPaintAt = 0;
+  private lastFrameRows = 0;
   private readonly onResize = () => this.requestPaint(true);
   private readonly onExit = () => this.teardown();
   private readonly onKey = (str: string | undefined, key: readline.Key) => this.handleKey(str, key);
@@ -1371,8 +1371,8 @@ export class InteractiveSession {
       io.write(lines.join("\n") + "\n");
       return;
     }
-    const body = lines.map((l) => l + CLEAR_EOL).join("\r\n");
-    let out2 = CURSOR_HIDE + HOME + body + CLEAR_BELOW;
+    let out2 = CURSOR_HIDE + composePaintBody(lines, this.lastFrameRows);
+    this.lastFrameRows = lines.length;
     if (!this.busy && !this.pendingApproval) {
       // Place a real caret in the input area and show it.
       out2 += `\x1b[${frame.cursor.row + 1};${frame.cursor.col + 1}H` + CURSOR_SHOW;
