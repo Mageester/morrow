@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../provider/base.js";
 import { getEncoding } from "js-tiktoken";
-import { getModel } from "../routing/models.js";
+import { resolveModelMetadata } from "../routing/models.js";
 
 export interface ContextBudget {
   maxInputTokens: number;
@@ -172,7 +172,7 @@ export function resolveContextBudget(input: {
   toolCount?: number;
   safetyMarginTokens?: number;
 }): ResolvedContextBudget {
-  const knownWindow = getModel(input.model)?.contextWindow ?? null;
+  const knownWindow = resolveModelMetadata(input.providerId, input.model).contextWindow;
   const contextWindowTokens = input.userContextWindowTokens ?? knownWindow ?? DEFAULT_FALLBACK_CONTEXT_WINDOW;
   const contextWindowSource: ContextWindowSource = input.userContextWindowTokens ? "user-config" : knownWindow ? "known-model" : "fallback";
   const outputBudgetTokens = input.outputBudgetTokens ?? 2048;

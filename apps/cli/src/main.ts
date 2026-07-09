@@ -234,7 +234,7 @@ function printHelp(out: Output): number {
     `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
-    `  ${g("/help /mode /yolo /model /branch /changes /status /cost /diff /undo /tree /result /context /resume /new /clear /activity /permissions /panic /exit")}`,
+    `  ${g("/help /mode /yolo /model /branch /changes /status /cost /diff /undo /tree /result /context /output /resume /new /clear /activity /permissions /panic /exit")}`,
     "",
     g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),

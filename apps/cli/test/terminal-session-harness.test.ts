@@ -76,7 +76,6 @@ function makeBackend(gate: EventGate, cancel: () => void): SessionBackend {
     getApproval: async () => ({ id: "a", kind: "command", details: {}, projectId: "p" }),
     resolveApproval: async () => {},
     getPlan: async () => [],
-    getOutput: async () => [],
     getTask: async () => ({} as any),
     getTaskTree: async () => ({} as any),
   };
@@ -151,6 +150,80 @@ describe("interactive session: streaming, cancellation, resize", () => {
     gate.end();
     await done;
     expect(resolved).toBe(true);
+  });
+
+  it("does not require a third Ctrl+C when cancellation completes between presses (P1-3 race)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const cancel = vi.fn();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, cancel), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
+    await tick();
+
+    // First Ctrl+C while streaming → cancel requested, arms exit-confirm.
+    ctrlC(stdin);
+    await tick();
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    // Cancellation completes FAST: the stream ends and `busy` flips back to
+    // false BEFORE the user's next keypress — the exact race that used to
+    // route the next Ctrl+C into a separate, unarmed idle exit-confirm flag.
+    gate.end();
+    await tick();
+
+    let resolved = false;
+    void done.then(() => { resolved = true; });
+
+    // Second Ctrl+C, exactly as "Cancelling… (Ctrl+C again to exit)" said.
+    // Must exit now — a third press should never be necessary.
+    ctrlC(stdin);
+    await done;
+    expect(resolved).toBe(true);
+  });
+
+  it("busy keystrokes never silently disappear: one clear notice, no buffering (P1-1)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
+    await tick();
+
+    // Type a whole sentence while busy — none of it should land in the input
+    // line (it never reaches the pure InputState/buffer, and never appears
+    // anywhere in the rendered frame)...
+    typeText(stdin, "this message should not silently disappear");
+    await tick();
+    const snap = app.snapshot();
+    expect(snap.status).toBe("streaming");
+    expect(io.writes.join("")).not.toContain("this message should not silently disappear");
+
+    // ...and the user gets told exactly once, not once per keystroke.
+    const busyNotices = snap.notices.filter((n) => n.text.includes("still working"));
+    expect(busyNotices.length).toBe(1);
+
+    ctrlC(stdin); // cancel
+    gate.end();
+    await tick();
+    ctrlC(stdin); // exit (armed by the same flag the cancel used)
+    await done;
   });
 
   it("recomposes on resize without corrupting the frame", async () => {

@@ -1,6 +1,6 @@
-import type { AgentMode, Conversation } from "@morrow/contracts";
+import type { AgentMode, Conversation, Project } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
-import type { MorrowApi } from "../client/api.js";
+import type { MorrowApi, TaskAggregate } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
 import { resolveProject, ask, isInteractive, select, shortId, relativeTime } from "./common.js";
 import { streamChatTask } from "./stream.js";
@@ -14,7 +14,8 @@ import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
 import { skillsAsSlashCommands } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
 import { loadHistory, appendHistory } from "../terminal/history.js";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { nodeTermIO } from "../terminal/runtime.js";
 import { shouldUseInteractive } from "../terminal/capabilities.js";
 import { streamTaskEvents } from "../client/sse.js";
@@ -22,6 +23,7 @@ import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText, gitStatus } from "../cli/gitinfo.js";
 import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
+import { buildTaskReport, defaultReportFilename, findLatestTaskId, type ReportKind } from "../terminal/output-report.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
@@ -107,7 +109,7 @@ export async function chatCommand(ctx: Context): Promise<number> {
     throw usageError("No message provided and not running in an interactive terminal.", "Use --message \"…\" for non-interactive use.");
   }
 
-  return runRepl(ctx, api, project.id, conversation, session);
+  return runRepl(ctx, api, project, conversation, session);
 }
 
 /**
@@ -117,21 +119,28 @@ export async function chatCommand(ctx: Context): Promise<number> {
 async function runInteractiveSession(
   ctx: Context,
   api: MorrowApi,
-  projectId: string,
+  project: Project,
   conversation: Conversation,
   session: SessionState,
   unicode: boolean
 ): Promise<number> {
-  const project = await api.getProject(projectId);
-  const providerStatus = await api.providerStatus().catch(() => null);
+  // `project` is already the object `chatCommand` resolved — no need to fetch
+  // it again. Start both network reads *before* the synchronous git
+  // inspection below: `fetch()` hands its request off to the OS immediately,
+  // so those responses can arrive while this thread is blocked spawning git,
+  // rather than waiting for git to finish before either request is even sent.
+  const providerStatusPromise = api.providerStatus().catch(() => null);
+  const priorHistoryPromise = api.listMessages(conversation.id).catch(() => []);
+  const git = gitSummary(project.workspacePath);
+  const [providerStatus, priorHistory] = await Promise.all([providerStatusPromise, priorHistoryPromise]);
   const providerName = session.provider ?? providerStatus?.provider ?? "auto";
   const modelName = session.model ?? providerStatus?.model ?? "auto";
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
-  const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
   // Onboarding facts: whether a provider is really configured and whether we
   // resumed prior history, so the empty-state welcome can guide honestly.
-  const priorMessages = await api.listMessages(conversation.id).then((m) => m.length).catch(() => 0);
+  const priorMessages = priorHistory.length;
+  const initialTaskId = findLatestTaskId(priorHistory);
 
   const meta: SessionMeta = {
     greeting: greeting(new Date()),
@@ -185,8 +194,15 @@ async function runInteractiveSession(
         .resolveApproval(id, { projectId: project.id, decision: decision as any, ...(trustPattern ? { trustPattern } : {}) })
         .then(() => undefined),
     getPlan: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.plan),
-    getOutput: (taskId) => api.getTask(taskId).then((aggregate) => aggregate.toolCalls),
     getTask: (taskId) => api.getTask(taskId),
+    getFinalAnswer: async (taskId) => {
+      const messages = await api.listMessages(conversation.id);
+      return [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
+    },
+    exportReport: async (taskId, kind, finalAnswer, requestedName) => {
+      const aggregate = await api.getTask(taskId);
+      return writeTaskReport(ctx, taskId, aggregate, kind, finalAnswer, requestedName);
+    },
     getTaskTree: (taskId) => api.getTaskTree(taskId),
     getTaskDiff: (taskId) =>
       api.getTaskDiff(taskId).then((d) => ({ diff: d.diff, files: d.files })),
@@ -245,6 +261,7 @@ async function runInteractiveSession(
     extraPaletteItems,
     history: loadHistory(historyFile),
     onHistory: (line) => appendHistory(historyFile, line),
+    initialTaskId,
   });
   try {
     await app.run();
@@ -254,15 +271,29 @@ async function runInteractiveSession(
   return EXIT.OK;
 }
 
-async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
+export async function resolveConversation(ctx: Context, api: MorrowApi, projectId: string): Promise<Conversation> {
   const resumeId = flagString(ctx.flags, "resume");
   if (resumeId !== undefined) {
     if (resumeId) {
+      let conversation: Conversation;
       try {
-        return await api.getConversation(resumeId);
+        conversation = await api.getConversation(resumeId);
       } catch {
         throw new CliError(`Conversation not found: ${resumeId}`, { code: "NOT_FOUND", exitCode: EXIT.NOT_FOUND });
       }
+      // Never cross a project boundary silently: a conversation id from a
+      // different project than the one just resolved (by --project, cwd, or
+      // default) is almost certainly a mistake, not an intentional jump —
+      // and jumping there anyway is exactly the failure mode this guards
+      // against. Require the explicit --project that actually owns it.
+      if (conversation.projectId !== projectId) {
+        throw new CliError(`Conversation ${resumeId} belongs to a different project.`, {
+          code: "PROJECT_MISMATCH",
+          exitCode: EXIT.USAGE,
+          hint: `Pass --project ${conversation.projectId} to resume it explicitly.`,
+        });
+      }
+      return conversation;
     }
     const existing = await api.listConversations(projectId);
     if (existing.length === 0) return api.createConversation(projectId, "New Conversation");
@@ -294,6 +325,25 @@ function sendOptions(s: SessionState) {
   };
 }
 
+function writeTaskReport(
+  ctx: Context,
+  taskId: string,
+  aggregate: TaskAggregate,
+  kind: ReportKind,
+  finalAnswer: string | null,
+  requestedName?: string
+): string {
+  const reportsDir = join(ctx.paths.home, "reports");
+  mkdirSync(reportsDir, { recursive: true });
+  const safeRequested = requestedName ? basename(requestedName).replace(/[^A-Za-z0-9_.-]+/g, "-") : "";
+  const filename = safeRequested && safeRequested !== "." && safeRequested !== ".."
+    ? (safeRequested.toLowerCase().endsWith(".md") ? safeRequested : `${safeRequested}.md`)
+    : defaultReportFilename(taskId);
+  const path = join(reportsDir, filename);
+  writeFileSync(path, buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) }), "utf8");
+  return path;
+}
+
 async function runOneShot(ctx: Context, api: MorrowApi, conversation: Conversation, message: string, session: SessionState): Promise<number> {
   const sent = await api.sendMessage(conversation.id, message, sendOptions(session));
   const result = await streamChatTask(ctx, api, sent.task.id, sent.routing, { showActivity: !ctx.out.json });
@@ -312,7 +362,7 @@ async function runOneShot(ctx: Context, api: MorrowApi, conversation: Conversati
   return result.status === "completed" ? EXIT.OK : result.status === "cancelled" ? EXIT.CANCELLED : EXIT.ERROR;
 }
 
-async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial: Conversation, session: SessionState): Promise<number> {
+async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: Conversation, session: SessionState): Promise<number> {
   let conversation = initial;
   const out = ctx.out;
   const unicode = resolveUnicode(ctx);
@@ -320,16 +370,18 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
   // Capable interactive terminal → the full-screen event-driven session app.
   // Everything else (redirected, CI, JSON, dumb, MORROW_TUI=0) → line renderer.
   if (shouldUseInteractive({ json: out.json, isTTY: Boolean(process.stdout.isTTY), stdinIsTTY: Boolean(process.stdin.isTTY), env: process.env })) {
-    return runInteractiveSession(ctx, api, projectId, conversation, session, unicode);
+    return runInteractiveSession(ctx, api, project, conversation, session, unicode);
   }
 
-  const project = await api.getProject(projectId);
-  const providerStatus = await api.providerStatus().catch(() => null);
+  // `project` is already resolved — start the network read and the
+  // synchronous git inspection together rather than sequentially.
+  const providerStatusPromise = api.providerStatus().catch(() => null);
+  const git = gitSummary(project.workspacePath);
+  const providerStatus = await providerStatusPromise;
 
   const providerName = session.provider ?? providerStatus?.provider ?? "auto";
   const modelName = session.model ?? providerStatus?.model ?? "auto";
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
-  const git = gitSummary(project.workspacePath);
   const name = (ctx.config.get("user.name") as string | undefined)?.trim();
   const history = await api.listMessages(conversation.id);
   const resuming = history.length > 0;
@@ -376,7 +428,7 @@ async function runRepl(ctx: Context, api: MorrowApi, projectId: string, initial:
     if (!line) continue;
 
     if (line.startsWith("/")) {
-      const result = await handleSlash(ctx, api, projectId, conversation, session, line);
+      const result = await handleSlash(ctx, api, project.id, conversation, session, line);
       if (result.exit) return EXIT.OK;
       if (result.conversation) conversation = result.conversation;
       continue;
@@ -809,6 +861,30 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       for (const line of formatContextStatus(aggregate)) out.print(line);
       return {};
     }
+    case "output": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No task output is available yet.");
+        return {};
+      }
+      const kind: ReportKind = arg === "full" ? "full" : arg === "failures" ? "failures" : "summary";
+      const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
+      const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
+      out.print(buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) }));
+      return {};
+    }
+    case "export": {
+      const taskId = await latestTaskId(api, conversation.id);
+      if (!taskId) {
+        out.info("No task output is available yet.");
+        return {};
+      }
+      const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
+      const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
+      const path = writeTaskReport(ctx, taskId, aggregate, "full", finalAnswer, arg || undefined);
+      out.success(`Exported report: ${path}`);
+      return {};
+    }
     case "cancel":
       out.info("Nothing is currently streaming (cancel works during a response with Ctrl+C).");
       return {};
@@ -979,18 +1055,6 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
     }
     case "compact":
       return compact(ctx, api, conversation);
-    case "export": {
-      const { exportConversationToText } = await import("./conversations.js");
-      const text = await exportConversationToText(api, conversation.id);
-      if (arg) {
-        const { writeFileSync } = await import("node:fs");
-        writeFileSync(arg, text);
-        out.success(`Exported to ${arg}.`);
-      } else {
-        out.print(text);
-      }
-      return {};
-    }
     default:
       out.warn(`Unknown command: /${cmd}. Type /help.`);
       return {};
@@ -1046,10 +1110,11 @@ function printReplHelp(ctx: Context) {
     ["/tree", "show the current mission task tree"],
     ["/result", "show final evidence and next action"],
     ["/context", "show context usage, compaction, and token-count confidence"],
+    ["/output [full|failures]", "show the durable final report for the latest task"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],
-    ["/export [file]", "export the conversation as text"],
+    ["/export [file]", "export a sanitized task report"],
     ["/clear", "clear the screen"],
     ["/exit", "quit"],
   ];

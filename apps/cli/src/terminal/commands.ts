@@ -59,7 +59,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "continue", description: "resume the latest paused task" },
   { name: "memory", description: "toggle memory for this session" },
   { name: "compact", description: "summarize history into a memory note" },
-  { name: "export", arg: "[file]", description: "export the conversation as text" },
+  { name: "export", arg: "[file]", description: "export a sanitized task report" },
   { name: "clear", description: "clear the screen" },
   { name: "exit", description: "quit" },
 
@@ -78,5 +78,5 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "connect", arg: "<provider>", description: "quick-connect a model provider" },
   { name: "share", arg: "[format]", description: "export session as markdown or html" },
   { name: "shortcuts", description: "show keyboard shortcuts reference" },
-  { name: "output", arg: "[tool-id]", description: "view last command output" },
+  { name: "output", arg: "[full|failures]", description: "show the durable task report" },
 ];

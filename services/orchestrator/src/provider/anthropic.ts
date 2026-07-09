@@ -179,6 +179,7 @@ export class AnthropicProvider implements AiProvider {
     let buffer = "";
     let promptTokens = 0;
     let completionTokens = 0;
+    let cachedPromptTokens = 0;
     // Map Anthropic content-block index -> contiguous tool-call ordinal.
     const blockToToolOrdinal = new Map<number, number>();
     let nextToolOrdinal = 0;
@@ -204,6 +205,7 @@ export class AnthropicProvider implements AiProvider {
           switch (evt.type) {
             case "message_start":
               promptTokens = evt.message?.usage?.input_tokens ?? 0;
+              cachedPromptTokens = evt.message?.usage?.cache_read_input_tokens ?? 0;
               break;
             case "content_block_start": {
               const block = evt.content_block;
@@ -234,7 +236,7 @@ export class AnthropicProvider implements AiProvider {
               if (evt.usage?.output_tokens !== undefined) completionTokens = evt.usage.output_tokens;
               break;
             case "message_stop":
-              yield { type: "done", usage: { promptTokens, completionTokens } };
+              yield { type: "done", usage: { promptTokens, completionTokens, ...(cachedPromptTokens > 0 ? { cachedPromptTokens } : {}) } };
               break;
             case "error": {
               const apiType = evt.error?.type ?? "provider_error";

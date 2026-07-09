@@ -34,13 +34,13 @@ describe("terminal views (ASCII, no color)", () => {
   it("renders the header from session meta", () => {
     const s = build([{ type: "session.started", meta }]);
     const lines = headerLines(s, plain);
-    expect(lines).toEqual([
-      "  Project: PlaceHolder  C:/work/PlaceHolder",
-      "  Branch:  feat/x ✱",
-      "  Model:   deepseek · deepseek-chat  cloud",
-      "  Mode:    Agent · YOLO (auto-approves edits & commands)",
-      "  Memory:  project context on",
-    ]);
+    const text = lines.join("\n");
+    expect(text).toContain("MORROW");
+    expect(text).toContain("PlaceHolder");
+    expect(text).toContain("feat/x");
+    expect(text).toContain("Build");
+    expect(text).toContain("YOLO");
+    expect(text).toContain("deepseek-chat");
   });
 
   it("renders a completed tool card with provenance and summary", () => {
@@ -94,7 +94,8 @@ describe("terminal views (ASCII, no color)", () => {
       { type: "activity", kind: "reading", detail: "evidence.txt" },
     ]);
     const frame = composeFrame(s, plain, false, { columns: 60, rows: 20, tick: 0 });
-    expect(frame[0]).toContain("Project: PlaceHolder");
+    expect(frame[0]).toContain("MORROW");
+    expect(frame[0]).toContain("PlaceHolder");
     expect(frame.join("\n")).toContain("you › fix the bug");
     expect(frame.join("\n")).toContain("morrow › Working on it");
     expect(frame[frame.length - 1]).toContain("Ctrl+C cancel");
@@ -125,7 +126,7 @@ describe("responsive status bar", () => {
     expect(bar).toContain("Build");
     expect(bar).toContain("deepseek-chat");
     expect(bar).toContain("main*"); // dirty marker
-    expect(bar).toContain("ctx 18%");
+    expect(bar).toContain("1.8k/10k");
     expect(bar).toContain("2 agents");
     expect(bar).not.toContain("$"); // cost is not fabricated
   });

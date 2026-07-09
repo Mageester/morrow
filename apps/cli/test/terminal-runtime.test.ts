@@ -54,11 +54,11 @@ const seed: TerminalEvent[] = [
 ];
 
 describe("InteractiveRenderer lifecycle", () => {
-  it("enters the alternate screen and hides the cursor on start", () => {
+  it("paints in the normal buffer and hides the cursor on start", () => {
     const io = new FakeTermIO();
     const r = new InteractiveRenderer(io, plain, { unicode: false, immediate: true });
     r.start();
-    expect(io.all()).toContain(ALT_ENTER);
+    expect(io.all()).not.toContain(ALT_ENTER);
     expect(io.all()).toContain(CURSOR_HIDE);
     expect(io.all()).toContain(CURSOR_HOME);
     r.stop();
@@ -70,7 +70,8 @@ describe("InteractiveRenderer lifecycle", () => {
     r.start();
     for (const ev of seed) r.apply(ev);
     const painted = io.all();
-    expect(painted).toContain("Project: PlaceHolder");
+    expect(painted).toContain("MORROW");
+    expect(painted).toContain("PlaceHolder");
     expect(painted).toContain("you › fix it");
     expect(painted).toContain("morrow › On it");
     r.stop();
@@ -94,7 +95,7 @@ describe("InteractiveRenderer lifecycle", () => {
     r.start();
     r.stop();
     expect(io.all()).toContain(CURSOR_SHOW);
-    expect(io.all()).toContain(ALT_LEAVE);
+    expect(io.all()).not.toContain(ALT_LEAVE);
     const after = io.writes.length;
     r.stop(); // second stop writes nothing more
     expect(io.writes.length).toBe(after);

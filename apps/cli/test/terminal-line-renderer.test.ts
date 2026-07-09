@@ -78,4 +78,26 @@ describe("LineRenderer (non-interactive)", () => {
     expect(stderr).toContain("Result:");
     expect(stderr).toContain("completed");
   });
+
+  it("labels unknown context limits instead of rendering a zero-token denominator", () => {
+    const { stderr } = capture(
+      stream([
+        {
+          type: "context.usage",
+          usage: {
+            usedTokens: 1023,
+            maxTokens: 0,
+            contextLimitTokens: null,
+            contextWindowSource: "fallback",
+            method: "estimate",
+            compactedGroups: 0,
+            removedGroups: 0,
+          },
+        },
+      ]),
+      { showActivity: true, showSummary: false }
+    );
+    expect(stderr).toContain("1023/unknown tokens");
+    expect(stderr).not.toContain("/0 tokens");
+  });
 });
