@@ -113,8 +113,12 @@ export class InteractiveRenderer implements Renderer {
 
   end(): string {
     this.stop();
-    const last = [...this.state.conversation].reverse().find((c) => c.role === "assistant");
-    return last?.text ?? "";
+    const assistantEntries = [...this.state.conversation].reverse().filter((c) => c.role === "assistant");
+    const final = assistantEntries.find((c) => c.final);
+    // No turn was ever marked final (task aborted mid-turn, or a legacy
+    // stream with no turn boundaries at all) — fall back to the last
+    // assistant entry rather than reporting nothing.
+    return (final ?? assistantEntries[0])?.text ?? "";
   }
 
   /** Restore the terminal. Idempotent and safe to call from an exit handler. */

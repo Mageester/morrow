@@ -24,7 +24,7 @@ describe("terminal usage state", () => {
   });
 
   it("keeps usage unknown when the provider does not report it", () => {
-    const state = fold([{ type: "assistant.delta", text: "hello" }]);
+    const state = fold([{ type: "assistant.turn_start", turnId: "t1" }, { type: "assistant.delta", turnId: "t1", text: "hello" }]);
     expect(state.usage).toBeUndefined();
   });
 

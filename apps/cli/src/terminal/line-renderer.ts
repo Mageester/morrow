@@ -54,12 +54,16 @@ export class LineRenderer implements Renderer {
         }
         break;
 
+      case "assistant.turn_start":
+        break;
+
       case "assistant.delta":
         this.answer += event.text;
         out.write(event.text);
         this.wroteText = true;
         break;
 
+      case "assistant.turn_end":
       case "assistant.end":
         this.flushPendingNewline();
         break;

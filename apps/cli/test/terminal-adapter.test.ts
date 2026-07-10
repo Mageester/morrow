@@ -3,8 +3,40 @@ import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
 
 describe("task event adapter", () => {
   it("retains the source event identity for session-level de-duplication", () => {
-    const source = { id: "evt-1", sequence: 4, type: "evidence.persisted", payload: { deltaText: "hi" } };
-    expect(mapTaskEvent(source)).toEqual([{ type: "assistant.delta", text: "hi", sourceEventId: "evt-1" }]);
+    const source = { id: "evt-1", sequence: 4, type: "evidence.persisted", payload: { deltaText: "hi", turnId: "t1" } };
+    expect(mapTaskEvent(source)).toEqual([{ type: "assistant.delta", turnId: "t1", text: "hi", sourceEventId: "evt-1" }]);
+  });
+
+  it("retains source event identity on turn events too (reconnect must not duplicate a turn)", () => {
+    expect(mapTaskEvent({ id: "evt-9", sequence: 9, type: "assistant.turn_started", payload: { turnId: "t1" } })).toEqual([
+      { type: "assistant.turn_start", turnId: "t1", sourceEventId: "evt-9" },
+    ]);
+    expect(mapTaskEvent({ id: "evt-10", sequence: 10, type: "assistant.turn_completed", payload: { turnId: "t1", text: "done", final: true, hasToolCalls: false } })).toEqual([
+      { type: "assistant.turn_end", turnId: "t1", final: true, sourceEventId: "evt-10" },
+    ]);
+  });
+
+  it("maps turn-start and turn-completed events with their turnId", () => {
+    expect(mapTaskEvent({ type: "assistant.turn_started", payload: { turnId: "t1" } })).toEqual([
+      { type: "assistant.turn_start", turnId: "t1" },
+    ]);
+    expect(mapTaskEvent({ type: "assistant.turn_completed", payload: { turnId: "t1", text: "done", final: true, hasToolCalls: false } })).toEqual([
+      { type: "assistant.turn_end", turnId: "t1", final: true },
+    ]);
+    expect(mapTaskEvent({ type: "assistant.turn_completed", payload: { turnId: "t2", text: "cut off", final: false, hasToolCalls: false, aborted: true } })).toEqual([
+      { type: "assistant.turn_end", turnId: "t2", final: false, aborted: true },
+    ]);
+  });
+
+  it("ignores turn-start/turn-completed events with no turnId rather than crashing", () => {
+    expect(mapTaskEvent({ type: "assistant.turn_started", payload: {} })).toEqual([]);
+    expect(mapTaskEvent({ type: "assistant.turn_completed", payload: { text: "x" } })).toEqual([]);
+  });
+
+  it("falls back to a 'legacy' turnId sentinel when a backend predates turn boundaries", () => {
+    expect(mapTaskEvent({ type: "evidence.persisted", payload: { deltaText: "hi" } })).toEqual([
+      { type: "assistant.delta", turnId: "legacy", text: "hi" },
+    ]);
   });
 
   it("renders turn-budget exhaustion as a recoverable outcome", () => {
@@ -19,8 +51,10 @@ describe("task event adapter", () => {
     ]);
   });
 
-  it("maps streamed assistant text to a delta", () => {
-    expect(mapTaskEvent({ type: "evidence.persisted", payload: { deltaText: "hi" } })).toEqual([{ type: "assistant.delta", text: "hi" }]);
+  it("maps streamed assistant text to a delta scoped to its turn", () => {
+    expect(mapTaskEvent({ type: "evidence.persisted", payload: { deltaText: "hi", turnId: "t7" } })).toEqual([
+      { type: "assistant.delta", turnId: "t7", text: "hi" },
+    ]);
   });
 
   it("maps evidence file reads to reading activity with size", () => {

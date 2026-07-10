@@ -28,6 +28,15 @@ export interface ConversationEntry {
   role: "user" | "assistant";
   text: string;
   streaming: boolean;
+  /** Present on assistant entries created via `assistant.turn_start`. Absent
+   *  on entries reconstructed from a pre-turn-boundary (legacy) event stream. */
+  turnId?: string;
+  /** True only for the turn that produced no further tool calls — the
+   *  user-facing canonical answer. Unset while streaming or for intermediate
+   *  turns. */
+  final?: boolean;
+  /** The turn ended without completing normally (cancelled/errored mid-stream). */
+  aborted?: boolean;
 }
 
 export interface ActivityEntry {
@@ -101,6 +110,20 @@ function bounded<T>(items: T[], max: number): T[] {
   return items.length > max ? items.slice(items.length - max) : items;
 }
 
+/** The still-open assistant entry for `turnId`, searched from the end since
+ *  it is always at or near the tail. Never matches a closed turn — a delta
+ *  or end for an already-finished turn is a dropped/duplicated event, not a
+ *  continuation of it. */
+function findActiveTurnIndex(conversation: ConversationEntry[], turnId: string): number {
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    const entry = conversation[i]!;
+    if (entry.role !== "assistant") continue;
+    if (entry.turnId === turnId && entry.streaming) return i;
+    if (entry.turnId === turnId) return -1; // matched but already closed
+  }
+  return -1;
+}
+
 /** Fold one event into a new state. Pure: no mutation of `state`, no I/O. */
 export function reduce(state: TerminalState, event: TerminalEvent, now: () => number = Date.now): TerminalState {
   if (isTerminalStatus(state.status) && isTerminalTaskEvent(event.type)) return state;
@@ -134,28 +157,77 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         status: "streaming",
       };
 
-    case "assistant.delta": {
-      const last = state.conversation[state.conversation.length - 1];
-      if (last && last.role === "assistant" && last.streaming) {
-        const updated = [...state.conversation];
-        updated[updated.length - 1] = { ...last, text: last.text + event.text };
-        return { ...state, conversation: updated, status: "streaming" };
+    case "assistant.turn_start": {
+      // Defensively close a still-open turn first — a well-formed stream always
+      // sends turn_end before the next turn_start, but a dropped event must
+      // never let two turns' deltas merge into one message.
+      let conversation = state.conversation;
+      const prior = conversation[conversation.length - 1];
+      if (prior && prior.role === "assistant" && prior.streaming) {
+        conversation = [...conversation];
+        conversation[conversation.length - 1] = { ...prior, streaming: false, aborted: true };
       }
       return {
         ...state,
         conversation: bounded(
-          [...state.conversation, { role: "assistant", text: event.text, streaming: true }],
+          [...conversation, { role: "assistant", text: "", streaming: true, turnId: event.turnId }],
           MAX_CONVERSATION
         ),
         status: "streaming",
       };
     }
 
+    case "assistant.delta": {
+      const idx = findActiveTurnIndex(state.conversation, event.turnId);
+      if (idx >= 0) {
+        const updated = [...state.conversation];
+        const entry = updated[idx]!;
+        updated[idx] = { ...entry, text: entry.text + event.text };
+        return { ...state, conversation: updated, status: "streaming" };
+      }
+      // `"legacy"` is the adapter's explicit sentinel for "this backend
+      // predates turn boundaries" (see task-event-adapter.ts) — auto-opening
+      // a turn for it is a recognized fallback, not a guess. Any other
+      // unmatched turnId is a real mismatch and is dropped, not merged.
+      if (event.turnId === "legacy") {
+        return {
+          ...state,
+          conversation: bounded(
+            [...state.conversation, { role: "assistant", text: event.text, streaming: true, turnId: "legacy" }],
+            MAX_CONVERSATION
+          ),
+          status: "streaming",
+        };
+      }
+      return {
+        ...state,
+        notices: bounded(
+          [...state.notices, { level: "warn", text: `Discarded assistant text for an unrecognized turn (${event.turnId}).` }],
+          MAX_NOTICES
+        ),
+      };
+    }
+
+    case "assistant.turn_end": {
+      const idx = findActiveTurnIndex(state.conversation, event.turnId);
+      if (idx < 0) return state;
+      const updated = [...state.conversation];
+      updated[idx] = {
+        ...updated[idx]!,
+        streaming: false,
+        final: event.final,
+        ...(event.aborted ? { aborted: true } : {}),
+      };
+      return { ...state, conversation: updated };
+    }
+
     case "assistant.end": {
+      // Generic safety net (no turnId): close whatever is still open. Only
+      // ever needed if a turn_end was dropped or the stream predates turns.
       const last = state.conversation[state.conversation.length - 1];
       if (last && last.role === "assistant" && last.streaming) {
         const updated = [...state.conversation];
-        updated[updated.length - 1] = { ...last, streaming: false };
+        updated[updated.length - 1] = { ...last, streaming: false, final: last.final ?? true };
         return { ...state, conversation: updated };
       }
       return state;

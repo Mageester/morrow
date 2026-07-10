@@ -167,7 +167,8 @@ describe("frame cursor math and narrow-terminal rendering", () => {
     let s = reduce(base, { type: "user.message", text: "explain everything" });
     // A very long streamed assistant answer (many wide lines).
     const long = Array.from({ length: 200 }, (_, i) => `line ${i} ${"x".repeat(120)}`).join("\n");
-    s = reduce(s, { type: "assistant.delta", text: long });
+    s = reduce(s, { type: "assistant.turn_start", turnId: "t1" });
+    s = reduce(s, { type: "assistant.delta", turnId: "t1", text: long });
     for (const [columns, rows] of [[80, 24], [40, 12]] as const) {
       const frame = composeApp(s, initialInputState(), plain, false, { commands: [], paletteItems: [] }, {
         columns, rows, tick: 0, promptLabel: "› ", promptWidth: 2,

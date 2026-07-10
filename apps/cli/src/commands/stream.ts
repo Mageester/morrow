@@ -7,6 +7,7 @@ import { ask } from "./common.js";
 import { LineRenderer } from "../terminal/line-renderer.js";
 import { mapTaskEvent } from "../terminal/task-event-adapter.js";
 import { resolveUnicodeFlag } from "../terminal/capabilities.js";
+import { selectCanonicalFinalAnswer } from "../terminal/output-report.js";
 import { changeSetApprovalView, commandApprovalView } from "../terminal/approval-view-model.js";
 
 export interface StreamResult {
@@ -75,8 +76,16 @@ export async function streamChatTask(
     process.removeListener("SIGINT", onSigint);
   }
 
-  const content = renderer.end();
+  // `renderer.end()` is the raw text streamed to stdout — every turn's
+  // narration, concatenated, which is correct for a human/log-following
+  // reader but not for a single machine-readable "content" field (that was
+  // the exact shape of the real duplication bug in exported reports). Prefer
+  // the canonical final turn from the persisted event log; only fall back to
+  // the raw stream for legacy tasks with no turn markers.
+  const streamed = renderer.end();
   const aggregate = await api.getTask(taskId);
+  const canonical = selectCanonicalFinalAnswer(aggregate, streamed);
+  const content = canonical.kind === "final" ? canonical.text : "";
   return { status: aggregate.task.status, content, aggregate };
 }
 

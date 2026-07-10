@@ -846,8 +846,8 @@ export class InteractiveSession {
       return null;
     });
     if (!aggregate) return;
-    const finalAnswer = await this.reportFinalAnswer(this.lastTaskId);
-    const report = buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) });
+    const legacyFinalAnswerFallback = await this.reportFinalAnswer(this.lastTaskId);
+    const report = buildTaskReport(aggregate, { kind, ...(legacyFinalAnswerFallback ? { legacyFinalAnswerFallback } : {}) });
     this.outputViewer = { title: kind === "summary" ? "task report" : `task report ${kind}`, lines: report.split(/\r?\n/) };
     this.input = { ...this.input, overlay: "output" };
     this.emitScrollbackReport(report);
@@ -862,16 +862,23 @@ export class InteractiveSession {
       this.pushNotice("warn", "Report export is not available in this session.");
       return;
     }
-    const finalAnswer = await this.reportFinalAnswer(this.lastTaskId);
-    const path = await this.deps.backend.exportReport(this.lastTaskId, "full", finalAnswer, requestedName).catch((error) => {
+    const legacyFinalAnswerFallback = await this.reportFinalAnswer(this.lastTaskId);
+    const path = await this.deps.backend.exportReport(this.lastTaskId, "full", legacyFinalAnswerFallback, requestedName).catch((error) => {
       this.pushNotice("error", `Export failed: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     });
     if (path) this.pushNotice("info", `Exported report: ${path}`);
   }
 
+  /**
+   * Best-effort fallback only, used when a task's persisted event log has no
+   * turn-boundary events at all (a legacy task, or the report is requested
+   * before this task's events are persisted). `buildTaskReport` prefers the
+   * turn explicitly marked final in `aggregate.events` over this value.
+   */
   private async reportFinalAnswer(taskId: string): Promise<string | null> {
-    const current = [...this.term.conversation].reverse().find((entry) => entry.role === "assistant" && entry.text.trim());
+    const assistantEntries = [...this.term.conversation].reverse().filter((entry) => entry.role === "assistant" && entry.text.trim());
+    const current = assistantEntries.find((entry) => entry.final) ?? assistantEntries[0];
     if (current) return current.text;
     return this.deps.backend.getFinalAnswer?.(taskId).catch(() => null) ?? null;
   }

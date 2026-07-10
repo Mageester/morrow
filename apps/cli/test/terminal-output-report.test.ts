@@ -5,6 +5,7 @@ import {
   defaultReportFilename,
   findLatestTaskId,
   sanitizeReportText,
+  selectCanonicalFinalAnswer,
 } from "../src/terminal/output-report.js";
 import type { TaskAggregate } from "../src/client/api.js";
 
@@ -58,7 +59,7 @@ function aggregate(overrides: Partial<TaskAggregate> = {}): TaskAggregate {
 
 describe("durable terminal output reports", () => {
   it("builds a copyable summary report from the task aggregate", () => {
-    const report = buildTaskReport(aggregate(), { kind: "summary", finalAnswer: "Created the three files." });
+    const report = buildTaskReport(aggregate(), { kind: "summary", legacyFinalAnswerFallback: "Created the three files." });
     expect(report).toContain("# Morrow Task Report");
     expect(report).toContain("Created the three files.");
     expect(report).toContain("deepseek/deepseek-v4-flash");
@@ -68,7 +69,7 @@ describe("durable terminal output reports", () => {
   });
 
   it("builds a full report with sanitized tool output and truncation markers", () => {
-    const report = buildTaskReport(aggregate(), { kind: "full", finalAnswer: "Done.", maxToolOutputLines: 1 });
+    const report = buildTaskReport(aggregate(), { kind: "full", legacyFinalAnswerFallback: "Done.", maxToolOutputLines: 1 });
     expect(report).toContain("## Tool Activity");
     expect(report).toContain("run_command");
     expect(report).not.toContain("\u001b[31m");
@@ -78,11 +79,23 @@ describe("durable terminal output reports", () => {
   });
 
   it("builds a failures report with recovery attempts", () => {
-    const report = buildTaskReport(aggregate(), { kind: "failures", finalAnswer: "Done." });
-    expect(report).toContain("## Failures And Recovery");
+    const report = buildTaskReport(aggregate(), { kind: "failures", legacyFinalAnswerFallback: "Done." });
+    expect(report).toContain("## Recovery Summary");
     expect(report).toContain("run_command");
     expect(report).toContain("exit 1");
     expect(report).toContain("reread-target");
+  });
+
+  it("labels a legacy (pre-turn-boundary) final answer as reconstructed, not silently as canonical", () => {
+    const report = buildTaskReport(aggregate(), { kind: "summary", legacyFinalAnswerFallback: "Old-style final text." });
+    expect(report).toContain("Old-style final text.");
+    expect(report).toContain("Reconstructed from a task record with no turn boundaries");
+  });
+
+  it("reports no final answer honestly instead of guessing when the task never reached one", () => {
+    const report = buildTaskReport(aggregate(), { kind: "summary" });
+    expect(report).toContain("No final answer:");
+    expect(report).toContain("no assistant response was recorded");
   });
 
   it("sanitizes ANSI control sequences, control bytes, and common secret shapes", () => {
@@ -103,5 +116,195 @@ describe("durable terminal output reports", () => {
 
   it("uses a safe markdown filename for report exports", () => {
     expect(defaultReportFilename("task/with:bad\\chars", new Date("2026-07-08T10:00:00Z"))).toBe("morrow-task-task-with-bad-chars-2026-07-08T10-00-00.md");
+  });
+});
+
+/** Builds an `assistant.turn_completed` event as the orchestrator emits it. */
+function turnEvent(
+  id: string,
+  sequence: number,
+  turnId: string,
+  text: string,
+  opts: { final?: boolean; hasToolCalls?: boolean; aborted?: boolean } = {}
+) {
+  return {
+    id,
+    taskId: "task-1",
+    sequence,
+    type: "assistant.turn_completed" as const,
+    createdAt: "2026-07-09T15:00:00.000Z",
+    payload: { turnId, text, final: opts.final ?? false, hasToolCalls: opts.hasToolCalls ?? false, ...(opts.aborted ? { aborted: true } : {}) },
+  };
+}
+
+describe("selectCanonicalFinalAnswer: structured turn events over concatenation", () => {
+  it("prefers the turn explicitly marked final over the legacy fallback", () => {
+    const agg = aggregate({ events: [turnEvent("e1", 1, "t1", "intermediate narration", {}), turnEvent("e2", 2, "t2", "the real answer", { final: true })] });
+    const result = selectCanonicalFinalAnswer(agg, "legacy blob that should be ignored");
+    expect(result).toEqual({ kind: "final", text: "the real answer", source: "turn_event", turnId: "t2" });
+  });
+
+  it("never concatenates turns — the final answer is exactly one turn's text, verbatim", () => {
+    const agg = aggregate({
+      events: [
+        turnEvent("e1", 1, "t1", "Now I have full context. Let me apply all the changes."),
+        turnEvent("e2", 2, "t2", "Now I have full context. Let me apply all the changes."),
+        turnEvent("e3", 3, "t3", "VERIFICATION PASSED — All checks successful.", { final: true }),
+      ],
+    });
+    const result = selectCanonicalFinalAnswer(agg);
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.text).toBe("VERIFICATION PASSED — All checks successful.");
+      expect((result.text.match(/Now I have full context/g) ?? []).length).toBe(0);
+    }
+  });
+
+  it("reports 'none' rather than picking arbitrary intermediate narration when no turn was ever final", () => {
+    const agg = aggregate({
+      events: [turnEvent("e1", 1, "t1", "started reading files"), turnEvent("e2", 2, "t2", "applying a patch", { hasToolCalls: true, aborted: true })],
+    });
+    const result = selectCanonicalFinalAnswer(agg, "some legacy text");
+    expect(result).toEqual({ kind: "none", reason: expect.stringContaining("without producing a final") });
+  });
+
+  it("falls back to legacy reconstruction only when the event log has zero turn events", () => {
+    const agg = aggregate({ events: [] });
+    expect(selectCanonicalFinalAnswer(agg, "the old single-blob content")).toEqual({
+      kind: "final",
+      text: "the old single-blob content",
+      source: "legacy_message",
+    });
+    expect(selectCanonicalFinalAnswer(agg, null)).toEqual({ kind: "none", reason: expect.stringContaining("no assistant response") });
+  });
+});
+
+describe("buildTaskReport: Intermediate Activity and cross-kind consistency", () => {
+  it("lists non-final turns as bounded Intermediate Activity, never as raw repeated narration", () => {
+    const agg = aggregate({
+      events: [
+        turnEvent("e1", 1, "t1", "First, the CSS — I'll refactor to use CSS custom properties for theming."),
+        turnEvent("e2", 2, "t2", "The patch keeps missing — I'll rewrite the full file cleanly.", { hasToolCalls: true }),
+        turnEvent("e3", 3, "t3", "All 15 verification checks passed.", { final: true }),
+      ],
+    });
+    const report = buildTaskReport(agg, { kind: "full" });
+    expect(report).toContain("## Intermediate Activity");
+    expect(report).toContain("t1");
+    expect(report).toContain("t2");
+    // The final turn's own text is not re-listed as intermediate.
+    const intermediateSection = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
+    expect(intermediateSection).not.toContain("All 15 verification checks passed");
+  });
+
+  it("omits the Intermediate Activity heading when there is nothing but the final turn", () => {
+    const agg = aggregate({ events: [turnEvent("e1", 1, "t1", "the only turn", { final: true })] });
+    const report = buildTaskReport(agg, { kind: "full" });
+    expect(report).not.toContain("## Intermediate Activity");
+  });
+
+  it("/output, /output full, and /export (summary/full/failures kinds) all select the same canonical final answer", () => {
+    const agg = aggregate({
+      events: [
+        turnEvent("e1", 1, "t1", "narration"),
+        turnEvent("e2", 2, "t2", "the one true final answer", { final: true }),
+      ],
+    });
+    const summary = buildTaskReport(agg, { kind: "summary" });
+    const full = buildTaskReport(agg, { kind: "full" });
+    const failures = buildTaskReport(agg, { kind: "failures" });
+    for (const report of [summary, full, failures]) {
+      const finalAnswerSection = report.split("## Final Answer")[1]!.split(/## (?:Tool Summary|Plan|Recovery Summary)/)[0]!;
+      expect(finalAnswerSection).toContain("the one true final answer");
+      // The intermediate turn's narration is excluded from the Final Answer
+      // section specifically — it may still appear diagnostically elsewhere
+      // (e.g. "full"'s Intermediate Activity section).
+      expect(finalAnswerSection).not.toContain("narration");
+    }
+  });
+});
+
+/**
+ * Regression fixture for real task 3b3eed93-e43f-461b-89bb-c19f0da4b393 (the
+ * beta.28 terminal demo's second pass: adding a dark-mode toggle). The real
+ * exported report showed "Now I have full context. Let me apply all the
+ * changes." 12 times inside "## Final Answer" because every ReAct turn's
+ * narration was concatenated into one message with no turn boundaries. This
+ * fixture reconstructs the same shape — multiple narration turns, three real
+ * propose_patch failures with tool.strategy_switch recovery, then a clean
+ * final summary — with sanitized text (no workspace paths) to prove the fix
+ * holds against the actual bug, not just a synthetic case.
+ */
+describe("regression: real task 3b3eed93 (dark-mode toggle, 3 propose_patch failures)", () => {
+  const REPEATED_PREAMBLE = "Now I have full context. Let me apply all the changes.";
+  const FINAL_SUMMARY =
+    "VERIFICATION PASSED — All checks successful.\n\nOpen `index.html` in a browser to test: click the toggle button to switch between the dark and light theme. The choice persists across reloads via `localStorage`.";
+
+  function realTaskAggregate(): TaskAggregate {
+    const narrationTurns = Array.from({ length: 11 }, (_, i) =>
+      turnEvent(`turn-${i + 1}`, i + 1, `t${i + 1}`, `${REPEATED_PREAMBLE} Step ${i + 1} of the rewrite.`, { hasToolCalls: true })
+    );
+    const finalTurn = turnEvent("turn-12", 12, "t12", FINAL_SUMMARY, { final: true });
+    return aggregate({
+      events: [
+        ...narrationTurns,
+        finalTurn,
+        { id: "f1", taskId: "task-1", sequence: 13, type: "tool.failed", createdAt: "2026-07-09T15:00:00.000Z", payload: { toolName: "propose_patch", message: "Hunk line count mismatch for styles.css" } } as any,
+        { id: "f2", taskId: "task-1", sequence: 14, type: "tool.strategy_switch", createdAt: "2026-07-09T15:00:00.000Z", payload: { tool: "create_file", from: "create", to: "edit", path: "styles.css", reason: "target_exists" } } as any,
+        { id: "f3", taskId: "task-1", sequence: 15, type: "tool.failed", createdAt: "2026-07-09T15:00:00.000Z", payload: { toolName: "propose_patch", message: "Hunk line count mismatch for app.js" } } as any,
+        { id: "f4", taskId: "task-1", sequence: 16, type: "tool.strategy_switch", createdAt: "2026-07-09T15:00:00.000Z", payload: { tool: "create_file", from: "create", to: "edit", path: "app.js", reason: "target_exists" } } as any,
+        { id: "f5", taskId: "task-1", sequence: 17, type: "tool.failed", createdAt: "2026-07-09T15:00:00.000Z", payload: { toolName: "propose_patch", message: "Hunk line count mismatch for verify.js" } } as any,
+        { id: "f6", taskId: "task-1", sequence: 18, type: "tool.strategy_switch", createdAt: "2026-07-09T15:00:00.000Z", payload: { tool: "create_file", from: "create", to: "edit", path: "verify.js", reason: "target_exists" } } as any,
+      ],
+      toolCalls: Array.from({ length: 14 }, (_, i) => ({
+        id: `tool-${i + 1}`,
+        toolName: i < 3 ? "propose_patch" : "read_file",
+        argsJson: "{}",
+        resultJson: i < 3 ? "{\"error\":\"Hunk line count mismatch\"}" : "{\"content\":\"ok\"}",
+        status: i < 3 ? ("failed" as const) : ("completed" as const),
+        ...(i < 3 ? { errorType: "malformed_patch", errorMessage: "Hunk line count mismatch" } : {}),
+      })),
+    });
+  }
+
+  it("produces a Final Answer that appears exactly once, with zero repeated preambles", () => {
+    const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
+    const finalAnswerSection = report.split("## Final Answer")[1]!.split("## Plan")[0]!;
+    expect((report.match(/## Final Answer/g) ?? []).length).toBe(1);
+    expect((finalAnswerSection.match(/Now I have full context/g) ?? []).length).toBe(0);
+    expect(finalAnswerSection).toContain("VERIFICATION PASSED — All checks successful.");
+  });
+
+  it("keeps tool totals at 14 calls / 3 failed, matching the real task", () => {
+    const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
+    expect(report).toContain("Tools: 14 calls / 3 failed");
+  });
+
+  it("shows the recovery exactly once in Recovery Summary", () => {
+    const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
+    const recoverySection = report.split("## Recovery Summary")[1]!;
+    expect(recoverySection).toContain("styles.css");
+    expect(recoverySection).toContain("app.js");
+    expect(recoverySection).toContain("verify.js");
+    // One failure line plus one strategy-switch line per file — a clean pair,
+    // not the original bug's raw JSON dump repeated on every retry.
+    expect((recoverySection.match(/styles\.css/g) ?? []).length).toBe(2);
+  });
+
+  it("keeps the 11 intermediate narration turns bounded and out of the Final Answer, not deleted entirely", () => {
+    const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
+    expect(report).toContain("## Intermediate Activity");
+    expect((report.match(/Now I have full context/g) ?? []).length).toBe(11); // once per intermediate turn, bounded — not 12x in the answer
+  });
+
+  it("is stable across a simulated restart/replay: rebuilding from the same aggregate reproduces an identical report", () => {
+    const agg = realTaskAggregate();
+    expect(buildTaskReport(agg, { kind: "full" })).toBe(buildTaskReport(agg, { kind: "full" }));
+  });
+
+  it("exposes only observable turn text — no chain-of-thought or secret-shaped fields leak through", () => {
+    const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
+    expect(report).not.toMatch(/\bsk-[A-Za-z0-9_-]{8,}\b/);
+    expect(report).not.toContain("API_KEY=");
   });
 });

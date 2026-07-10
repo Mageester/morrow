@@ -340,7 +340,7 @@ function writeTaskReport(
     ? (safeRequested.toLowerCase().endsWith(".md") ? safeRequested : `${safeRequested}.md`)
     : defaultReportFilename(taskId);
   const path = join(reportsDir, filename);
-  writeFileSync(path, buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) }), "utf8");
+  writeFileSync(path, buildTaskReport(aggregate, { kind, ...(finalAnswer ? { legacyFinalAnswerFallback: finalAnswer } : {}) }), "utf8");
   return path;
 }
 
@@ -870,7 +870,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       const kind: ReportKind = arg === "full" ? "full" : arg === "failures" ? "failures" : "summary";
       const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
       const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
-      out.print(buildTaskReport(aggregate, { kind, ...(finalAnswer ? { finalAnswer } : {}) }));
+      out.print(buildTaskReport(aggregate, { kind, ...(finalAnswer ? { legacyFinalAnswerFallback: finalAnswer } : {}) }));
       return {};
     }
     case "export": {
