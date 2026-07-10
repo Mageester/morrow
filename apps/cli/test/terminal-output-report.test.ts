@@ -69,7 +69,15 @@ describe("durable terminal output reports", () => {
   });
 
   it("builds a full report with sanitized tool output and truncation markers", () => {
-    const report = buildTaskReport(aggregate(), { kind: "full", legacyFinalAnswerFallback: "Done.", maxToolOutputLines: 1 });
+    const report = buildTaskReport(aggregate({
+      toolCalls: [{
+        id: "tool-1",
+        toolName: "run_command",
+        argsJson: "{\"command\":\"pnpm test\"}",
+        resultJson: "{\"exitCode\":0,\"stdout\":\"ok\\n\\u001b[31mred\\u001b[0m\",\"stderr\":\"API_KEY=sk-secret-value\"}",
+        status: "completed",
+      }],
+    }), { kind: "full", legacyFinalAnswerFallback: "Done.", maxToolOutputLines: 1 });
     expect(report).toContain("## Tool Activity");
     expect(report).toContain("run_command");
     expect(report).not.toContain("\u001b[31m");
@@ -224,6 +232,130 @@ describe("buildTaskReport: Intermediate Activity and cross-kind consistency", ()
   });
 });
 
+describe("buildTaskReport: replay-safe report facts", () => {
+  const intermediate = turnEvent("turn-1", 1, "t1", "I should inspect every file and think through the implementation.", { hasToolCalls: true });
+  const final = turnEvent("turn-2", 2, "t2", "Implemented and verified the requested change.", { final: true });
+  const failure = {
+    id: "failure-1",
+    taskId: "task-1",
+    sequence: 3,
+    type: "tool.failed" as const,
+    createdAt: "2026-07-09T15:00:00.000Z",
+    payload: { toolName: "propose_patch", message: "Hunk mismatch in styles.css" },
+  };
+  const strategySwitch = {
+    id: "switch-1",
+    taskId: "task-1",
+    sequence: 4,
+    type: "tool.strategy_switch" as const,
+    createdAt: "2026-07-09T15:00:00.000Z",
+    payload: { tool: "create_file", from: "create", to: "edit", path: "styles.css", reason: "target_exists" },
+  };
+
+  it("deduplicates replayed assistant events by source event id and authoritative turn id", () => {
+    const report = buildTaskReport(aggregate({ events: [intermediate, intermediate, final, final] }), { kind: "full" });
+    const activity = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
+    expect((activity.match(/t1/g) ?? []).length).toBe(1);
+    expect(activity).not.toContain("t2");
+  });
+
+  it("collapses cumulative snapshots for one assistant turn instead of concatenating them", () => {
+    const firstSnapshot = turnEvent("turn-1-snapshot", 1, "t1", "Inspecting files.", { hasToolCalls: true });
+    const cumulativeSnapshot = turnEvent("turn-1-complete", 2, "t1", "Inspecting files. Applying the patch.", { hasToolCalls: true });
+    const report = buildTaskReport(aggregate({ events: [firstSnapshot, cumulativeSnapshot, final] }), { kind: "full" });
+    const activity = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
+    expect((activity.match(/t1/g) ?? []).length).toBe(1);
+  });
+
+  it("does not expose assistant planning narration or hidden/internal event payloads", () => {
+    const hidden = {
+      id: "hidden-1",
+      taskId: "task-1",
+      sequence: 2,
+      type: "assistant.reasoning",
+      createdAt: "2026-07-09T15:00:00.000Z",
+      payload: { text: "CHAIN_OF_THOUGHT_DO_NOT_EXPORT" },
+    } as any;
+    const report = buildTaskReport(aggregate({ events: [intermediate, hidden, final] }), { kind: "full" });
+    expect(report).not.toContain("I should inspect every file");
+    expect(report).not.toContain("CHAIN_OF_THOUGHT_DO_NOT_EXPORT");
+    expect(report).toContain("Continued with tool execution.");
+  });
+
+  it("includes each tool failure and strategy switch once without dumping repeated payload JSON", () => {
+    const repeatedSwitch = { ...strategySwitch, id: "switch-2", sequence: 5 };
+    const report = buildTaskReport(
+      aggregate({
+        events: [intermediate, final, failure, failure, strategySwitch, strategySwitch, repeatedSwitch],
+        toolCalls: [{
+          id: "tool-failure",
+          toolName: "propose_patch",
+          argsJson: "{}",
+          resultJson: JSON.stringify({ error: "Hunk mismatch in styles.css" }),
+          status: "failed",
+          errorType: "malformed_patch",
+          errorMessage: "Hunk mismatch in styles.css",
+        }],
+      }),
+      { kind: "full" }
+    );
+    expect((report.match(/Hunk mismatch in styles\.css/g) ?? []).length).toBe(1);
+    expect((report.match(/create_file switched from create to edit/g) ?? []).length).toBe(1);
+    expect(report).toContain("(2 occurrences)");
+    expect(report).toContain("Final outcome: Task completed; 1 of 1 tool calls failed.");
+    expect(report).not.toContain('{"toolName"');
+    expect(report).not.toContain('{"tool"');
+  });
+
+  it("produces identical facts after restart replay and across report entry points", () => {
+    const original = aggregate({ events: [intermediate, final, failure, strategySwitch] });
+    const replayed = aggregate({ events: [intermediate, final, failure, strategySwitch, intermediate, final, failure, strategySwitch] });
+    expect(buildTaskReport(replayed, { kind: "full" })).toBe(buildTaskReport(original, { kind: "full" }));
+
+    const reports = (["summary", "full", "failures"] as const).map((kind) => buildTaskReport(replayed, { kind }));
+    for (const report of reports) {
+      expect(report).toContain("Implemented and verified the requested change.");
+      expect(report).toContain("Tools: 2 calls / 1 failed");
+      expect(report).toContain("Task: task-1");
+      expect(report).toContain("What failed: propose_patch — Hunk mismatch in styles.css");
+      expect(report).toContain("Recovery strategy: create_file switched from create to edit for styles.css");
+      expect(report).toContain("Final outcome: Task completed; 1 of 2 tool calls failed.");
+    }
+  });
+
+  it("uses failed status consistently for header and final-outcome totals", () => {
+    const report = buildTaskReport(aggregate({
+      events: [final],
+      toolCalls: [{
+        id: "tool-completed-with-note",
+        toolName: "run_command",
+        argsJson: "{}",
+        resultJson: "{}",
+        status: "completed",
+        errorMessage: "a retained diagnostic note",
+      }],
+    }), { kind: "full" });
+    expect(report).toContain("Tools: 1 calls / 0 failed");
+    expect(report).toContain("No tool failures or recovery attempts were recorded.");
+    expect(report).not.toContain("0 of 1 tool calls failed");
+  });
+
+  it("never emits whitespace-only lines, including blank lines inside tool output", () => {
+    const withBlankOutput = aggregate({
+      events: [final],
+      toolCalls: [{
+        id: "tool-blank",
+        toolName: "run_command",
+        argsJson: "{}",
+        resultJson: JSON.stringify({ stdout: "first line\n\nthird line", exitCode: 0 }),
+        status: "completed",
+      }],
+    });
+    const report = buildTaskReport(withBlankOutput, { kind: "full" });
+    expect(report.split("\n").filter((line) => /^\s+$/.test(line))).toEqual([]);
+  });
+});
+
 /**
  * Regression fixture for real task 3b3eed93-e43f-461b-89bb-c19f0da4b393 (the
  * beta.28 terminal demo's second pass: adding a dark-mode toggle). The real
@@ -291,10 +423,12 @@ describe("regression: real task 3b3eed93 (dark-mode toggle, 3 propose_patch fail
     expect((recoverySection.match(/styles\.css/g) ?? []).length).toBe(2);
   });
 
-  it("keeps the 11 intermediate narration turns bounded and out of the Final Answer, not deleted entirely", () => {
+  it("keeps Intermediate Activity bounded and excludes repeated raw planning narration", () => {
     const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
     expect(report).toContain("## Intermediate Activity");
-    expect((report.match(/Now I have full context/g) ?? []).length).toBe(11); // once per intermediate turn, bounded — not 12x in the answer
+    expect((report.match(/Now I have full context/g) ?? []).length).toBe(0);
+    const activity = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
+    expect((activity.match(/Continued with tool execution\./g) ?? []).length).toBe(11);
   });
 
   it("is stable across a simulated restart/replay: rebuilding from the same aggregate reproduces an identical report", () => {
