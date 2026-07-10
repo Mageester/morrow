@@ -104,6 +104,28 @@
     "redactionsInCopy": "None required — checked for the real username string and found zero occurrences in the exported report body."
   },
 
+  "screenshotAccounting": {
+    "note": "Added post-hoc to make the screenshot count auditable without recomputing hashes. Verified against the committed files, their SHA-256 digests, and on-screen content (project name shown in each screenshot) as of this correction.",
+    "originalNumberedRange": "01-17 (17 total)",
+    "includedInPackage": 12,
+    "includedList": ["01","02","03","04","05","06","07","08","11","12","13","17"],
+    "distinctImagesAmongIncluded": 10,
+    "byteIdenticalDuplicatePairs": [
+      { "pair": ["06-second-pass-completed-after-recovery.png", "07-completion-summary-stats.png"], "sha256": "0f6671c1578fb49ca5d7973a5fa487ed6e51d0f5036393dd98fff176572eff58", "note": "07 is a deliberate re-save of 06's image, kept as a separate numbered file to fill the deck's slide sequence; not a distinct capture event." },
+      { "pair": ["08-ctrl-o-output-report.png", "11-output-full.png"], "sha256": "d5f87fa9c7282101ffba9c5e06f16fc89630d3aaf0183066969b43907e9e0d89", "note": "11 is byte-identical to 08 (same overlay tail-view at this window size), not merely a visually similar 'identical region' as the original per-file description implied. Confirmed via SHA-256, not just visual inspection." }
+    ],
+    "carriedOverFromDiscardedV2Run": {
+      "files": ["01-boot-wide.png", "02-yolo-mode-enabled.png"],
+      "verification": "Confirmed by reading both screenshots directly: each shows project name 'Beta28-Terminal-v2' on screen (visible in the header line and the Project field), matching this manifest's own workspace.setup note that a v2 workspace was used for the first, discarded, stale-orchestrator attempt. This independently corroborates the 'carried over' label rather than contradicting it. Note the two files' own mtimes (both within the 01:56-01:57 window, i.e. after the PR #36 merge at 01:54:10) reflect when they were copied into the final package directory, not when the underlying v2-workspace screenshots were originally captured — the on-screen project name, not the file mtime, is what establishes their true provenance."
+    },
+    "notRecapturedFromOriginalSeventeen": ["09-restart-boot", "10-output-after-restart", "14-medium-layout", "15-narrow-layout", "16-scrollback-text-selection"],
+    "freshDistinctCapturesFromVerifiedPostFixRun": {
+      "count": 8,
+      "files": ["03-live-tool-execution.png", "04-first-pass-completed-verified.png", "05-tool-failure-and-recovery.png", "06-second-pass-completed-after-recovery.png", "08-ctrl-o-output-report.png", "12-output-failures.png", "13-export-confirmation.png", "17-generated-app-working-in-browser.png"]
+    },
+    "reconciliation": "Prior verbal summaries of this package (outside this file) cited '11 fresh screenshots' and 'nine of seventeen original screenshots carried over or intentionally not recaptured.' The second figure is correct and is reproduced exactly by 5 not-recaptured + 2 carried-over-from-v2 + 2 byte-identical duplicate re-saves = 9. The first figure does not reconcile with the committed files under any consistent definition: the correct count of fresh, visually-distinct captures from the verified post-fix run is 8, not 11. That '11 fresh' figure does not appear anywhere in this repository's committed history and could not be traced to a source file; it should be treated as superseded by this accounting."
+  },
+
   "screenshots": [
     { "file": "01-boot-wide.png", "sha256": "fa936d5a370986cea522a61680cebfeee87f993b0a588734a13e27a8d27e6109", "shows": "Real Morrow boot screen, wide layout (1300x850), project Beta28-Terminal-v3", "redacted": false, "session": "carried over from the pre-fix CLI-side run — boot rendering is client-side UI text, unaffected by the orchestrator-side fix" },
     { "file": "02-yolo-mode-enabled.png", "sha256": "6ea9032fe60bab5764f2751221af08cc725fe968c169c449844ec14e53e0012c", "shows": "Real /yolo on result and warning banner", "redacted": false, "session": "same as above" },
@@ -136,6 +158,10 @@
     "generationMethod": "Real HTML deck built from the screenshots/data in this manifest, rendered to PDF via headless Chrome print-to-pdf.",
     "sha256": "8d74e6b0891dafceb8be62ac0fa1fa97b6f036ff5aa3ba094082ab4cb35ac7c0"
   },
+
+  "knownLintFindings": [
+    "`git diff --check` reports trailing-whitespace warnings on ~60 blank lines inside transcript/task-2-dark-mode-toggle-EXPORTED.md. These are 4-space-indented blank lines preserved verbatim inside fenced code blocks in the real /export output. The transcript file is left byte-for-byte as exported (sha256 8b6116cf1eeb921ad0a4bade6b028f84dd4ba472c356a5f7a8adbb864cc220be, matching exportedReport.sha256 above) rather than reformatted, because this package's evidentiary value depends on the file being provably unmodified from the genuine /export. This is a known, intentional characteristic, not an oversight."
+  ],
 
   "unavailableMetrics": [
     "Exact per-request token counts broken down by individual API call within a task (provider reports task-level totals only).",

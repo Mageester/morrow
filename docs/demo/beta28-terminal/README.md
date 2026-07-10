@@ -56,6 +56,33 @@ This sequence — including the false start — is preserved in
 `evidence-manifest.json`'s `integrityHistory` section rather than cleaned up,
 because it's real evidence of the fix actually working, not just claimed to.
 
+## Screenshot accounting
+
+17 screenshots were originally numbered (01-17) during the terminal-experience
+demo work. This package includes **12 files**, of which **10 are visually
+distinct** — `06`/`07` and `08`/`11` are byte-identical duplicate re-saves
+(verified by SHA-256, not just by description) kept only to fill the deck's
+slide sequence. Of those 10 distinct images:
+
+- **8 are fresh captures from the final, verified post-fix run**: `03`, `04`,
+  `05`, `06`, `08`, `12`, `13`, `17`
+- **2 are carried over from the discarded, stale-orchestrator v2 workspace**
+  (`01`, `02`) — confirmed by reading the screenshots directly, which show
+  "Beta28-Terminal-v2" on screen, matching this package's own account of the
+  first, discarded attempt
+
+The remaining **5 of the original 17** were intentionally not recaptured
+(`09`, `10`, `14`, `15`, `16` — see below for why).
+
+Put together: **9 of the original 17 were carried over or intentionally not
+recaptured** (5 not-recaptured + 2 carried-over + 2 duplicate re-saves), and
+**8 are fresh, distinct evidence of the post-fix run**. See
+`evidence-manifest.json` → `screenshotAccounting` for the full, file-by-file
+breakdown with hashes. (An earlier verbal summary of this package cited "11
+fresh screenshots" — that figure does not reconcile with the committed files
+under any consistent definition and should be treated as superseded by this
+accounting.)
+
 ## What's in here
 
 | Path | What it is |
