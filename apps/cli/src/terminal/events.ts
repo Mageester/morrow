@@ -149,7 +149,18 @@ export type TerminalEvent =
       privacy: string;
     }
   | { type: "user.message"; text: string }
-  | { type: "assistant.delta"; text: string }
+  /** A new model turn has begun. Every delta/end after this belongs to `turnId`
+   *  until the matching `assistant.turn_end` — turns are never inferred from
+   *  "the last message happens to be streaming". */
+  | { type: "assistant.turn_start"; turnId: string }
+  | { type: "assistant.delta"; turnId: string; text: string }
+  /** `final` is true only for the turn that produced no further tool calls —
+   *  the user-facing canonical answer. Every other turn is intermediate
+   *  narration, kept for diagnostics but never presented as the answer. */
+  | { type: "assistant.turn_end"; turnId: string; final: boolean; aborted?: boolean }
+  /** Safety net: closes whichever turn is currently open, if any, without
+   *  needing to know its id. Used when a stream ends without a matching
+   *  `assistant.turn_end` (dropped connection, pre-fix backend). */
   | { type: "assistant.end" }
   | { type: "activity"; kind: ActivityKind; detail?: string; count?: number }
   | { type: "tool.start"; id: string; name: string; purpose?: string; scope?: string }

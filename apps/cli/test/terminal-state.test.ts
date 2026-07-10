@@ -10,23 +10,27 @@ function fold(events: TerminalEvent[], now = at()): TerminalState {
 describe("terminal state reducer", () => {
   it("accumulates assistant deltas into a single streaming entry, then ends it", () => {
     let s = fold([
-      { type: "assistant.delta", text: "Hel" },
-      { type: "assistant.delta", text: "lo" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Hel" },
+      { type: "assistant.delta", turnId: "t1", text: "lo" },
     ]);
     expect(s.conversation).toHaveLength(1);
-    expect(s.conversation[0]).toMatchObject({ role: "assistant", text: "Hello", streaming: true });
+    expect(s.conversation[0]).toMatchObject({ role: "assistant", text: "Hello", streaming: true, turnId: "t1" });
     expect(s.status).toBe("streaming");
 
-    s = reduce(s, { type: "assistant.end" }, at());
+    s = reduce(s, { type: "assistant.turn_end", turnId: "t1", final: true }, at());
     expect(s.conversation[0]!.streaming).toBe(false);
   });
 
-  it("starts a new assistant entry after a user message interleaves", () => {
+  it("starts a new assistant entry per turn, surviving a user message interleaved between them", () => {
     const s = fold([
-      { type: "assistant.delta", text: "a" },
-      { type: "assistant.end" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "a" },
+      { type: "assistant.turn_end", turnId: "t1", final: false },
       { type: "user.message", text: "next" },
-      { type: "assistant.delta", text: "b" },
+      { type: "assistant.turn_start", turnId: "t2" },
+      { type: "assistant.delta", turnId: "t2", text: "b" },
+      { type: "assistant.turn_end", turnId: "t2", final: true },
     ]);
     expect(s.conversation.map((c) => `${c.role}:${c.text}`)).toEqual(["assistant:a", "user:next", "assistant:b"]);
   });

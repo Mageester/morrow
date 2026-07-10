@@ -36,9 +36,29 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
     return events.map((mapped) => ({ ...mapped, sourceEventId: event.id! }));
   };
   switch (event.type) {
+    case "assistant.turn_started": {
+      const turnId = str(p.turnId);
+      if (turnId === undefined) return [];
+      return withSource([{ type: "assistant.turn_start", turnId }]);
+    }
+
+    case "assistant.turn_completed": {
+      const turnId = str(p.turnId);
+      if (turnId === undefined) return [];
+      const final = p.final === true;
+      const aborted = p.aborted === true;
+      return withSource([{ type: "assistant.turn_end", turnId, final, ...(aborted ? { aborted } : {}) }]);
+    }
+
     case "evidence.persisted": {
       const delta = str(p.deltaText);
-      if (delta !== undefined) return withSource([{ type: "assistant.delta", text: delta }]);
+      if (delta !== undefined) {
+        const turnId = str(p.turnId);
+        // Pre-turn-boundary backends never send a turnId. Falling back to a
+        // fixed id keeps old streams rendering (as one running message, the
+        // prior behavior) instead of silently dropping every delta.
+        return withSource([{ type: "assistant.delta", turnId: turnId ?? "legacy", text: delta }]);
+      }
       const path = str(p.path);
       if (path !== undefined) {
         const size = num(p.size);

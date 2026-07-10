@@ -30,9 +30,10 @@ describe("LineRenderer (non-interactive)", () => {
   it("streams the assistant answer to stdout and returns it from end()", () => {
     const { stdout, answer } = capture(
       stream([
-        { type: "assistant.delta", text: "Hello " },
-        { type: "assistant.delta", text: "world" },
-        { type: "assistant.end" },
+        { type: "assistant.turn_start", turnId: "t1" },
+        { type: "assistant.delta", turnId: "t1", text: "Hello " },
+        { type: "assistant.delta", turnId: "t1", text: "world" },
+        { type: "assistant.turn_end", turnId: "t1", final: true },
       ]),
       { showActivity: true, showSummary: false }
     );
@@ -58,7 +59,8 @@ describe("LineRenderer (non-interactive)", () => {
     const { stdout, stderr } = capture(
       stream([
         { type: "activity", kind: "reading", detail: "a.ts" },
-        { type: "assistant.delta", text: "answer" },
+        { type: "assistant.turn_start", turnId: "t1" },
+        { type: "assistant.delta", turnId: "t1", text: "answer" },
       ]),
       { showActivity: false, showSummary: false }
     );

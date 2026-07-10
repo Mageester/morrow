@@ -5,11 +5,82 @@ export type ReportKind = "summary" | "full" | "failures";
 
 export interface TaskReportOptions {
   kind: ReportKind;
-  finalAnswer?: string;
+  /**
+   * Used ONLY when the task's persisted event log has no `assistant.turn_completed`
+   * events at all — a task that predates turn-boundary tracking, or one whose
+   * events haven't landed yet. Ignored whenever turn events are present, so
+   * every report source (/output, /output full, /export, the live overlay)
+   * agrees on the same canonical answer. See `selectCanonicalFinalAnswer`.
+   */
+  legacyFinalAnswerFallback?: string;
   maxToolOutputLines?: number;
 }
 
 const DEFAULT_OUTPUT_LINES = 120;
+const MAX_INTERMEDIATE_TURNS_SHOWN = 20;
+
+interface TurnCompletedPayload {
+  turnId: string;
+  text: string;
+  final: boolean;
+  hasToolCalls: boolean;
+  aborted?: boolean;
+}
+
+function readTurnPayload(payload: Record<string, unknown>): TurnCompletedPayload | null {
+  if (typeof payload.turnId !== "string" || typeof payload.text !== "string") return null;
+  return {
+    turnId: payload.turnId,
+    text: payload.text,
+    final: payload.final === true,
+    hasToolCalls: payload.hasToolCalls === true,
+    ...(payload.aborted === true ? { aborted: true } : {}),
+  };
+}
+
+export type FinalAnswerResult =
+  | { kind: "final"; text: string; source: "turn_event" | "legacy_message"; turnId?: string }
+  | { kind: "none"; reason: string };
+
+/**
+ * The single source of truth for "what is the final answer" — every report
+ * path calls this instead of independently concatenating or guessing, so
+ * /output, /output full, /export, and the live overlay can never disagree.
+ *
+ * Structured `assistant.turn_completed` events (one per model turn, emitted
+ * by the orchestrator) are always preferred over the legacy fallback. A task
+ * with turn events but no turn ever marked `final` (cancelled or aborted
+ * mid-turn) intentionally reports "no final answer" rather than picking
+ * arbitrary intermediate narration.
+ */
+export function selectCanonicalFinalAnswer(
+  aggregate: TaskAggregate,
+  legacyFallback?: string | null
+): FinalAnswerResult {
+  const turns = aggregate.events
+    .filter((e) => e.type === "assistant.turn_completed")
+    .map((e) => readTurnPayload(e.payload as Record<string, unknown>))
+    .filter((t): t is TurnCompletedPayload => t !== null);
+
+  if (turns.length > 0) {
+    const finalTurn = [...turns].reverse().find((t) => t.final);
+    if (finalTurn && finalTurn.text.trim()) {
+      return { kind: "final", text: finalTurn.text, source: "turn_event", turnId: finalTurn.turnId };
+    }
+    return { kind: "none", reason: "the task ended without producing a final, tool-free response (cancelled, aborted, or still in progress)" };
+  }
+
+  const legacy = legacyFallback?.trim();
+  if (legacy) return { kind: "final", text: legacy, source: "legacy_message" };
+  return { kind: "none", reason: "no assistant response was recorded for this task" };
+}
+
+function intermediateTurns(aggregate: TaskAggregate, finalTurnId: string | null): TurnCompletedPayload[] {
+  return aggregate.events
+    .filter((e) => e.type === "assistant.turn_completed")
+    .map((e) => readTurnPayload(e.payload as Record<string, unknown>))
+    .filter((t): t is TurnCompletedPayload => t !== null && t.turnId !== finalTurnId);
+}
 
 export function sanitizeReportText(input: string): string {
   return input
@@ -75,8 +146,17 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   }
   lines.push(`Tools: ${tools.length} calls / ${failed.length} failed`, "");
 
-  if (opts.finalAnswer?.trim()) {
-    lines.push("## Final Answer", "", sanitizeReportText(opts.finalAnswer.trim()), "");
+  const finalAnswer = selectCanonicalFinalAnswer(aggregate, opts.legacyFinalAnswerFallback);
+  const finalTurnId = finalAnswer.kind === "final" ? finalAnswer.turnId ?? null : null;
+
+  lines.push("## Final Answer", "");
+  if (finalAnswer.kind === "final") {
+    if (finalAnswer.source === "legacy_message") {
+      lines.push("_Reconstructed from a task record with no turn boundaries (predates turn tracking); may read as a single unseparated block._", "");
+    }
+    lines.push(sanitizeReportText(finalAnswer.text.trim()), "");
+  } else {
+    lines.push(`_No final answer: ${finalAnswer.reason}._`, "");
   }
 
   if (opts.kind === "summary") {
@@ -109,12 +189,26 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
     lines.push("");
   }
 
+  addIntermediateActivity(lines, aggregate, finalTurnId);
   addFailures(lines, aggregate);
   return finish(lines);
 }
 
+function addIntermediateActivity(lines: string[], aggregate: TaskAggregate, finalTurnId: string | null): void {
+  const turns = intermediateTurns(aggregate, finalTurnId);
+  if (turns.length === 0) return;
+  lines.push("## Intermediate Activity");
+  const shown = turns.slice(0, MAX_INTERMEDIATE_TURNS_SHOWN);
+  for (const t of shown) {
+    const label = t.aborted ? "aborted" : t.hasToolCalls ? "tool turn" : "narration";
+    lines.push(`- ${sanitizeReportText(t.turnId)} (${label}): ${boundedInline(t.text, 160)}`);
+  }
+  if (turns.length > shown.length) lines.push(`- [${turns.length - shown.length} more intermediate turns omitted]`);
+  lines.push("");
+}
+
 function addFailures(lines: string[], aggregate: TaskAggregate): void {
-  lines.push("## Failures And Recovery");
+  lines.push("## Recovery Summary");
   const failures = aggregate.toolCalls.filter((tool) => tool.status === "failed" || tool.errorMessage);
   const recoveryEvents = aggregate.events.filter((event) => /recovery|strategy|failed/i.test(event.type));
   if (failures.length === 0 && recoveryEvents.length === 0) {

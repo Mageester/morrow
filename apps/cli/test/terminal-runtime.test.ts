@@ -50,7 +50,9 @@ const meta: SessionMeta = {
 const seed: TerminalEvent[] = [
   { type: "session.started", meta },
   { type: "user.message", text: "fix it" },
-  { type: "assistant.delta", text: "On it" },
+  { type: "assistant.turn_start", turnId: "t1" },
+  { type: "assistant.delta", turnId: "t1", text: "On it" },
+  { type: "assistant.turn_end", turnId: "t1", final: true },
 ];
 
 describe("InteractiveRenderer lifecycle", () => {

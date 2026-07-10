@@ -291,7 +291,8 @@ describe("InteractiveRenderer: paints faithfully across widths and glyph sets", 
         const seed: TerminalEvent[] = [
           { type: "session.started", meta: longMeta() },
           { type: "user.message", text: "fix the failing tests" },
-          { type: "assistant.delta", text: "Looking into it now." },
+          { type: "assistant.turn_start", turnId: "t1" },
+          { type: "assistant.delta", turnId: "t1", text: "Looking into it now." },
         ];
         for (const ev of seed) r.apply(ev);
         assertPaintsFaithfully(io, r.frame());

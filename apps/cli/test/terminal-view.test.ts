@@ -90,7 +90,8 @@ describe("terminal views (ASCII, no color)", () => {
     const s = build([
       { type: "session.started", meta },
       { type: "user.message", text: "fix the bug" },
-      { type: "assistant.delta", text: "Working on it" },
+      { type: "assistant.turn_start", turnId: "t1" },
+      { type: "assistant.delta", turnId: "t1", text: "Working on it" },
       { type: "activity", kind: "reading", detail: "evidence.txt" },
     ]);
     const frame = composeFrame(s, plain, false, { columns: 60, rows: 20, tick: 0 });
@@ -116,7 +117,8 @@ describe("responsive status bar", () => {
       { id: "a1", name: "Impl", role: "subagent", status: "running" },
       { id: "a2", name: "Test", role: "subagent", status: "running" },
     ] },
-    { type: "assistant.delta", text: "…" }, // → streaming
+    { type: "assistant.turn_start", turnId: "t1" },
+    { type: "assistant.delta", turnId: "t1", text: "…" }, // → streaming
   ]);
 
   it("shows every real field at full width (no invented cost/mission)", () => {

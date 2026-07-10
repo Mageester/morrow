@@ -1232,6 +1232,29 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const loopDetector = createLoopDetector();
   let responseContent = assistantMessageRow.content || "";
 
+  // Turn-boundary tracking. `responseContent` stays a whole-task accumulator
+  // (every other call site below still reads it that way for cancellation/
+  // failure/interruption messages), but each ReAct turn's OWN contribution is
+  // just the slice added since `currentTurnStartLen` â€” that's what gets
+  // published as a discrete `assistant.turn_completed` event, so a report can
+  // pick exactly one canonical turn instead of concatenating all of them.
+  let currentTurnId: string | null = null;
+  let currentTurnStartLen = 0;
+  let currentTurnOpen = false;
+  const closeCurrentTurn = (opts: { final: boolean; hasToolCalls?: boolean; aborted?: boolean }): void => {
+    if (!currentTurnOpen || !currentTurnId) return;
+    currentTurnOpen = false;
+    const text = responseContent.slice(currentTurnStartLen);
+    if (!text.trim() && !opts.aborted) return;
+    event("assistant.turn_completed", {
+      turnId: currentTurnId,
+      text,
+      final: opts.final,
+      hasToolCalls: opts.hasToolCalls ?? false,
+      ...(opts.aborted ? { aborted: true } : {}),
+    });
+  };
+
   const continuation = continuationsRepo.get(taskId);
   if (continuation) {
     const messageToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
@@ -1364,6 +1387,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const handleCancellation = () => {
+    closeCurrentTurn({ final: false, aborted: true });
     const currentTask = tasks.getTaskById(taskId);
     if (currentTask && currentTask.status !== "cancelled") {
       records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: {} });
@@ -1387,6 +1411,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
     turn++;
     const responseLengthAtTurnStart = responseContent.length;
+    currentTurnId = `${taskId}:turn-${turn}`;
+    currentTurnStartLen = responseLengthAtTurnStart;
+    currentTurnOpen = true;
+    event("assistant.turn_started", { turnId: currentTurnId });
     const completedToolSignatures: string[] = [];
     const repeatedToolSignatures: string[] = [];
     let loopDetected: { signature: string; count: number } | null = null;
@@ -1518,9 +1546,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
           responseContent += chunk.text;
           convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "streaming", now());
-          
-          // Emit a live streaming text update event
-          event("evidence.persisted", { deltaText: chunk.text });
+
+          // Emit a live streaming text update event, scoped to this turn so
+          // the CLI never has to guess where one turn ends and the next begins.
+          event("evidence.persisted", { deltaText: chunk.text, turnId: currentTurnId });
         }
 
         if (chunk.type === "tool_call" && chunk.toolCalls) {
@@ -1548,6 +1577,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         handleCancellation();
         return;
       }
+      closeCurrentTurn({ final: false, aborted: true });
       console.error("Provider stream error", e);
       const errMessage = e.message || "Failed to query AI provider";
       transitionAgentState("failed", { message: errMessage });
@@ -1559,6 +1589,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       event("task.failed", { message: errMessage });
       return;
     }
+
+    // The stream for this turn ended normally: it produced either tool calls
+    // (an intermediate turn) or none (this is the final, user-facing turn).
+    // Close it now, before tool execution or a cancellation check can run â€”
+    // the turn itself already finished regardless of what happens next.
+    closeCurrentTurn({ final: !(hasToolCalls && currentToolCalls.length > 0), hasToolCalls: hasToolCalls && currentToolCalls.length > 0 });
 
     if (checkCancelled()) {
       handleCancellation();
