@@ -6,6 +6,48 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.28] - 2026-07-10
+
+### Changed - terminal-first agent experience
+
+- **CLI-only terminal overhaul.** Morrow now stays in the normal terminal
+  scrollback buffer with native selection, deterministic Ctrl+C behavior, and
+  visible feedback when input arrives while the agent is busy. The Morrow
+  avatar and terminal identity adapt cleanly across narrow and wide layouts;
+  no browser UI opens as part of the terminal workflow.
+- **Truthful runtime statistics.** Provider, model, context, token, and cost
+  fields reflect persisted facts. Unavailable values remain explicitly
+  unknown instead of being fabricated.
+- **Safer project continuity.** Current-working-directory resolution is
+  bounded and predictable, cross-project resume is refused, and prior results
+  remain retrievable after an orchestrator restart.
+
+### Added - durable task reports
+
+- **Durable output commands.** `/output`, `/output full`, `/output failures`,
+  and `/export` use the same bounded persisted task facts, including canonical
+  final-answer selection, tool totals, recovery facts, and restart-safe
+  retrieval.
+- **Bounded report requests.** Task-report reads have explicit time bounds so a
+  missing or unhealthy service fails visibly instead of hanging the terminal.
+- **ConPTY/PTTY acceptance coverage.** The terminal interaction path is covered
+  across rendering, normal scrollback, input reliability, task execution,
+  output retrieval, export, and restart recovery.
+
+### Fixed - assistant and recovery report integrity
+
+- **Authoritative assistant turn boundaries.** Persisted turn IDs identify the
+  canonical tool-free Final Answer and keep completed non-final turns out of
+  it. Replayed events and cumulative snapshots cannot accumulate or duplicate
+  assistant content.
+- **Bounded Intermediate Activity.** Reports include each non-final assistant
+  turn at most once as concise user-facing activity, exclude the canonical
+  final turn, and do not expose raw planning narration or hidden reasoning.
+- **Clean Recovery Summary.** Failed tool calls and strategy switches are
+  deduplicated and grouped from authoritative persisted facts. Reports state
+  what failed, the recovery strategy, and the final outcome without repeated
+  payload dumps; generated Markdown contains no whitespace-only lines.
+
 ## [0.1.0-beta.27] - 2026-07-08
 
 ### Fixed - reliable consumer edit recovery
