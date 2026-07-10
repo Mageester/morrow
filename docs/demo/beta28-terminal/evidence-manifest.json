@@ -1,0 +1,145 @@
+{
+  "demoTitle": "Morrow beta.28 terminal experience — real-session demonstration (post-fix, verified)",
+  "generatedAt": "2026-07-10T06:20:00Z",
+  "disclosure": "This package documents two real, live Morrow sessions run against the SAME code path: an initial run that (by accident of a stale background service) surfaced a real report-integrity bug, and — after the bug was fixed in PR #36 and merged — a fresh verification run against a freshly-restarted orchestrator built from the fixed source. No screenshots, token counts, tool results, timings, or completion results in this package are fabricated, staged, or mocked. Where a metric could not be captured, it is explicitly marked rather than invented.",
+
+  "integrityHistory": {
+    "priorAudit": "A first attempt at this demo package (docs/demo/beta28-terminal, main @ 19efe1f) failed a pre-commit report-integrity audit: the real exported transcript showed 'Now I have full context. Let me apply all the changes.' repeated 12 times inside '## Final Answer'. That package was never committed — see PR #36 for the root-cause fix (assistant turn-boundary tracking in the orchestrator and CLI event/state model).",
+    "rejectedEvidenceLocation": "Preserved privately outside the repository (not committed) as regression history — not presented as product evidence.",
+    "fixCommit": "450f3f5dffc0bbe99ff981dbc45ab3260878ac74 (PR #36, merged to main)",
+    "reRunDiscovery": "The first re-run attempt against this fixed source ALSO showed the legacy-fallback message ('Reconstructed from a task record with no turn boundaries') — traced to a stale, already-running orchestrator background service (installed at C:\\Users\\[REDACTED-USER]\\AppData\\Local\\Morrow\\app\\runtime, started ~36 hours before the fix existed) still serving requests on port 4317. That service was stopped and a fresh orchestrator instance was started directly from this repository's fixed source before re-running the demo task.",
+    "finalVerification": "A clean re-run against the correctly-restarted, fixed orchestrator produced a report with '## Final Answer' appearing exactly once, zero repeated preamble text, a bounded '## Intermediate Activity' section for the 7 non-final turns, and a clean '## Recovery Summary' — confirmed by reading the actual exported .md file directly, not just a screenshot."
+  },
+
+  "repository": {
+    "name": "Morrow",
+    "mainBranchCommit": "450f3f5dffc0bbe99ff981dbc45ab3260878ac74",
+    "mainBranchCommitSubject": "Merge pull request #36 from Mageester/fix/beta28-assistant-turn-boundaries",
+    "priorMergeCommit": "19efe1f45cece4b182fe2a4a812741fc53c21f1c (PR #35, feat/beta28-terminal-experience)",
+    "packageVersionAtDemoTime": "0.1.0-beta.27",
+    "versionCaveat": "The beta.28 terminal-experience work (PR #35) plus the follow-up turn-boundary fix (PR #36) are both merged to main as of the commit above, but no v0.1.0-beta.28 tag or release has been cut. This package documents merged, pre-release code on main — it does NOT claim a 'beta.28 release' exists."
+  },
+
+  "environment": {
+    "os": "Microsoft Windows 11 Home, 10.0.26200 (Build 26200)",
+    "terminal": "Windows Terminal (real ConPTY-backed session)",
+    "nodeVersion": "v24.13.1",
+    "orchestrator": "services/orchestrator run directly via `pnpm start` (tsx src/index.ts) from this repository's fixed source, listening on 127.0.0.1:4317 — NOT the pre-existing installed background service, which was stopped first",
+    "shell": "PowerShell launching the Morrow CLI via tsx (no build step)"
+  },
+
+  "provider": {
+    "name": "DeepSeek",
+    "model": "deepseek/deepseek-v4-flash",
+    "note": "Real, live API calls — not a mock or replay. Real token metering was visible in this run (e.g. '170.7k in / 13.9k out / 144.3k cached' on the second task), unlike the first (pre-fix) session where the provider had reported 'unknown (not metered)'."
+  },
+
+  "workspace": {
+    "path": "C:\\Morrow-Demo\\Beta28-Terminal-v3",
+    "projectName": "Beta28-Terminal-v3",
+    "setup": "Fresh git-initialized directory, registered via `morrow init` against the correctly-restarted fixed orchestrator (a v2 workspace was used for the first, orchestrator-stale attempt and discarded once the staleness was diagnosed)."
+  },
+
+  "demoTask": {
+    "description": "Build a three-file browser counter app (index.html, styles.css, app.js) with a verification script, then request one intentional second-pass improvement (dark/light theme toggle with localStorage persistence).",
+    "pass1": {
+      "prompt": "Build a small polished counter app: index.html, styles.css, app.js, plus a verify.js that checks the files exist and the buttons are wired up. Increment / Decrement / Reset.",
+      "sentAtUtc": "2026-07-10T06:06:48Z",
+      "outcome": "Completed cleanly, 6 tool calls / 0 failed. Real token usage: 19.4k in / 3.6k out / 15.5k cached.",
+      "verification": "verify.js ran in-session (16/16 checks) and was independently re-run via Bash (exit 0)."
+    },
+    "pass2": {
+      "prompt": "Add a dark/light mode toggle button that persists the user's choice across reloads via localStorage, and extend verify.js to check for it.",
+      "sentAtUtc": "2026-07-10T06:08:15Z",
+      "taskId": "614d302e-f947-490b-8069-44480b94d6db",
+      "outcome": "Completed after 4 genuine, unstaged propose_patch failures (styles.css x2, app.js, verify.js), each recovered via the real tool.strategy_switch escalation to create_file.",
+      "toolCalls": 13,
+      "toolFailures": 4,
+      "note_on_totals": "The persisted report's header ('Tools: 13 calls / 4 failed') counts rows in the toolCalls table; the live terminal status bar showed a higher running count (19) during the same task. This is a pre-existing counting-scope difference between the live UI's cumulative activity counter and the persisted toolCalls list — unrelated to the turn-boundary fix, not investigated further here.",
+      "contextUsageAtCompletion": "26k / 1M tokens",
+      "tokenUsage": "151,347 in / 10,329 out / 128,768 cached (real, metered by the provider this run)",
+      "source": "docs/demo/beta28-terminal/transcript/task-2-dark-mode-toggle-EXPORTED.md — a real /export of this task, checked for the real username string (zero occurrences, no redaction needed)."
+    }
+  },
+
+  "turnBoundaryFixVerification": {
+    "method": "Read the actual exported .md file directly via file-read tooling (not just a screenshot) immediately after /export, and grepped it programmatically.",
+    "repeatedPreamblePhraseCount": 0,
+    "finalAnswerSectionCount": 1,
+    "intermediateActivitySectionPresent": true,
+    "intermediateTurnsListed": 7,
+    "recoverySummarySectionPresent": true,
+    "recoverySummaryEntriesCleanNoDuplication": true,
+    "verdict": "PASS — matches the exact defect class found in the pre-fix package, now absent."
+  },
+
+  "independentVerification": {
+    "command": "node verify.js",
+    "runFrom": "C:\\Morrow-Demo\\Beta28-Terminal-v3",
+    "runBy": "Claude, directly via the Bash tool — independent of and separate from Morrow's own in-session verification run",
+    "exitCode": 0,
+    "checksPassed": "20 / 20"
+  },
+
+  "browserVerification": {
+    "method": "Real generated files served over local HTTP (python -m http.server on 127.0.0.1:8940) and opened in a genuine, freshly-profiled Google Chrome window launched directly (not through the browser extension, which cannot reach file:// and was used only for a separate quick interactive pass).",
+    "interactionsPerformed": [
+      "Clicked +Increment four times via real OS-level mouse clicks (SetCursorPos + mouse_event) — counter went 0 -> 4, visible in the captured screenshot.",
+      "Clicked the theme toggle via the claude-in-chrome extension's real DOM click events in a separate pass — card visibly changed background/border.",
+      "Reloaded the page — theme preference persisted via localStorage; counter value correctly reset to 0 (the app only ever writes the theme key, not the count, to localStorage — expected, not a bug)."
+    ]
+  },
+
+  "generatedFiles": [
+    { "path": "C:\\Morrow-Demo\\Beta28-Terminal-v3\\index.html", "bytes": 724 },
+    { "path": "C:\\Morrow-Demo\\Beta28-Terminal-v3\\styles.css", "bytes": 3492 },
+    { "path": "C:\\Morrow-Demo\\Beta28-Terminal-v3\\app.js", "bytes": 1817 },
+    { "path": "C:\\Morrow-Demo\\Beta28-Terminal-v3\\verify.js", "bytes": 4306 }
+  ],
+
+  "exportedReport": {
+    "path": "C:\\Users\\[REDACTED-USER]\\.morrow\\reports\\morrow-task-614d302e-f947-490b-8069-44480b94d6db-2026-07-10T06-10-26.md",
+    "sha256": "8b6116cf1eeb921ad0a4bade6b028f84dd4ba472c356a5f7a8adbb864cc220be",
+    "copyInPackage": "docs/demo/beta28-terminal/transcript/task-2-dark-mode-toggle-EXPORTED.md",
+    "redactionsInCopy": "None required — checked for the real username string and found zero occurrences in the exported report body."
+  },
+
+  "screenshots": [
+    { "file": "01-boot-wide.png", "sha256": "fa936d5a370986cea522a61680cebfeee87f993b0a588734a13e27a8d27e6109", "shows": "Real Morrow boot screen, wide layout (1300x850), project Beta28-Terminal-v3", "redacted": false, "session": "carried over from the pre-fix CLI-side run — boot rendering is client-side UI text, unaffected by the orchestrator-side fix" },
+    { "file": "02-yolo-mode-enabled.png", "sha256": "6ea9032fe60bab5764f2751221af08cc725fe968c169c449844ec14e53e0012c", "shows": "Real /yolo on result and warning banner", "redacted": false, "session": "same as above" },
+    { "file": "03-live-tool-execution.png", "sha256": "39d45bf9869c2a9955c695b8bdfc4d7e2a2de61f40b4007fe408f58dcc8a702a", "shows": "Live tool cards mid-task, real token stats (2.8k in / 76 out)", "redacted": false, "session": "post-fix verified run" },
+    { "file": "04-first-pass-completed-verified.png", "sha256": "bddc76331adf15d638c271cbb4e1b738984384b26d4a775a21251f7c125297c5", "shows": "Pass 1 complete: 16/16 checks, 6 tool calls / 0 failed, real cached-token metering", "redacted": false, "session": "post-fix verified run" },
+    { "file": "05-tool-failure-and-recovery.png", "sha256": "51ab04e02cf41f6bf8416183c2f806558001038d3f12d1f78d76410f886b07b5", "shows": "Genuine propose_patch failure on styles.css mid-task", "redacted": false, "session": "post-fix verified run" },
+    { "file": "06-second-pass-completed-after-recovery.png", "sha256": "0f6671c1578fb49ca5d7973a5fa487ed6e51d0f5036393dd98fff176572eff58", "shows": "Pass 2 complete: 19/4 tool calls shown in live status bar, 20/20 verify checks", "redacted": false, "session": "post-fix verified run" },
+    { "file": "07-completion-summary-stats.png", "sha256": "0f6671c1578fb49ca5d7973a5fa487ed6e51d0f5036393dd98fff176572eff58", "shows": "Same completion state as 06, captured for the stats view", "redacted": false, "session": "post-fix verified run" },
+    { "file": "08-ctrl-o-output-report.png", "sha256": "d5f87fa9c7282101ffba9c5e06f16fc89630d3aaf0183066969b43907e9e0d89", "shows": "Ctrl+O overlay tail-view: clean Final Answer text, Tool Summary, no repeated narration", "redacted": false, "session": "post-fix verified run" },
+    { "file": "11-output-full.png", "sha256": "d5f87fa9c7282101ffba9c5e06f16fc89630d3aaf0183066969b43907e9e0d89", "shows": "/output full overlay (tail-view rendering identical region to 08 at this window size — the overlay always shows the last N lines, verified distinct from 12 by content)", "redacted": false, "session": "post-fix verified run" },
+    { "file": "12-output-failures.png", "sha256": "ec49f2ad8bceba7359e06dcc7d97517769b75c6a3201488e36de8ca392709919", "shows": "/output failures overlay showing the real ## Recovery Summary section, clean and non-duplicated", "redacted": false, "session": "post-fix verified run" },
+    { "file": "13-export-confirmation.png", "sha256": "282a65a7397404ac4e4b580f57df9b18811dba802ff372d58b3a0ed887f5c32d", "shows": "/export confirmation showing the real exported file path and task id 614d302e...", "redacted": true, "redactionDetail": "Windows username in the .morrow report path covered with a black box outlined in red; verified via a fresh 5x-zoom crop after redaction." },
+    { "file": "17-generated-app-working-in-browser.png", "sha256": "694becc1e24b06a3b1c9caba83addfec7388ec59a1512ed586002fa04489dc1a", "shows": "Real Chrome window, real local HTTP server, counter incremented to 4 via real OS-level clicks, theme toggle visible", "redacted": false, "session": "post-fix verified run" }
+  ],
+
+  "screenshotsNotRecaptured": {
+    "list": ["09-restart-boot", "10-output-after-restart", "14-medium-layout", "15-narrow-layout", "16-scrollback-text-selection"],
+    "reason": "These exercise restart/session-resume and responsive-layout/scrollback rendering — both areas the turn-boundary fix (PR #36) does not touch (it only changes how narration text is attributed to turns and selected as the canonical final answer, not restart persistence or terminal layout/scrollback code). They were already proven working with real screenshots in the original PR #35 demonstration pass and are not re-claimed here as 'affected' evidence.",
+    "instruction_interpretation": "Phase 10 asked to regenerate 'affected screenshots' — these five are outside that scope by the definition above."
+  },
+
+  "videoDeliverable": {
+    "produced": false,
+    "reason": "Carried over from the original demo attempt: OBS Studio access was requested and denied by the user; per instructions, no workaround was attempted; the user chose to skip video."
+  },
+
+  "pdfSlideshow": {
+    "path": "docs/demo/beta28-terminal/slideshow/beta28-terminal-demo.pdf",
+    "sections": 12,
+    "generationMethod": "Real HTML deck built from the screenshots/data in this manifest, rendered to PDF via headless Chrome print-to-pdf.",
+    "sha256": "8d74e6b0891dafceb8be62ac0fa1fa97b6f036ff5aa3ba094082ab4cb35ac7c0"
+  },
+
+  "unavailableMetrics": [
+    "Exact per-request token counts broken down by individual API call within a task (provider reports task-level totals only).",
+    "Video walkthrough (see videoDeliverable above).",
+    "The tool-count discrepancy noted in demoTask.pass2.note_on_totals was not root-caused in this session — flagged honestly rather than papered over."
+  ]
+}
