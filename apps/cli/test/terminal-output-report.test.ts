@@ -69,7 +69,15 @@ describe("durable terminal output reports", () => {
   });
 
   it("builds a full report with sanitized tool output and truncation markers", () => {
-    const report = buildTaskReport(aggregate(), { kind: "full", legacyFinalAnswerFallback: "Done.", maxToolOutputLines: 1 });
+    const report = buildTaskReport(aggregate({
+      toolCalls: [{
+        id: "tool-1",
+        toolName: "run_command",
+        argsJson: "{\"command\":\"pnpm test\"}",
+        resultJson: "{\"exitCode\":0,\"stdout\":\"ok\\n\\u001b[31mred\\u001b[0m\",\"stderr\":\"API_KEY=sk-secret-value\"}",
+        status: "completed",
+      }],
+    }), { kind: "full", legacyFinalAnswerFallback: "Done.", maxToolOutputLines: 1 });
     expect(report).toContain("## Tool Activity");
     expect(report).toContain("run_command");
     expect(report).not.toContain("\u001b[31m");
@@ -275,16 +283,28 @@ describe("buildTaskReport: replay-safe report facts", () => {
   });
 
   it("includes each tool failure and strategy switch once without dumping repeated payload JSON", () => {
+    const repeatedSwitch = { ...strategySwitch, id: "switch-2", sequence: 5 };
     const report = buildTaskReport(
-      aggregate({ events: [intermediate, final, failure, failure, strategySwitch, strategySwitch] }),
+      aggregate({
+        events: [intermediate, final, failure, failure, strategySwitch, strategySwitch, repeatedSwitch],
+        toolCalls: [{
+          id: "tool-failure",
+          toolName: "propose_patch",
+          argsJson: "{}",
+          resultJson: JSON.stringify({ error: "Hunk mismatch in styles.css" }),
+          status: "failed",
+          errorType: "malformed_patch",
+          errorMessage: "Hunk mismatch in styles.css",
+        }],
+      }),
       { kind: "full" }
     );
-    const recovery = report.split("## Recovery Summary")[1]!;
-    expect((recovery.match(/Hunk mismatch in styles\.css/g) ?? []).length).toBe(1);
-    expect((recovery.match(/create_file switched from create to edit/g) ?? []).length).toBe(1);
-    expect(recovery).toContain("Final outcome: Task completed; 1 of 2 tool calls failed.");
-    expect(recovery).not.toContain('{"toolName"');
-    expect(recovery).not.toContain('{"tool"');
+    expect((report.match(/Hunk mismatch in styles\.css/g) ?? []).length).toBe(1);
+    expect((report.match(/create_file switched from create to edit/g) ?? []).length).toBe(1);
+    expect(report).toContain("(2 occurrences)");
+    expect(report).toContain("Final outcome: Task completed; 1 of 1 tool calls failed.");
+    expect(report).not.toContain('{"toolName"');
+    expect(report).not.toContain('{"tool"');
   });
 
   it("produces identical facts after restart replay and across report entry points", () => {
@@ -297,7 +317,27 @@ describe("buildTaskReport: replay-safe report facts", () => {
       expect(report).toContain("Implemented and verified the requested change.");
       expect(report).toContain("Tools: 2 calls / 1 failed");
       expect(report).toContain("Task: task-1");
+      expect(report).toContain("What failed: propose_patch — Hunk mismatch in styles.css");
+      expect(report).toContain("Recovery strategy: create_file switched from create to edit for styles.css");
+      expect(report).toContain("Final outcome: Task completed; 1 of 2 tool calls failed.");
     }
+  });
+
+  it("uses failed status consistently for header and final-outcome totals", () => {
+    const report = buildTaskReport(aggregate({
+      events: [final],
+      toolCalls: [{
+        id: "tool-completed-with-note",
+        toolName: "run_command",
+        argsJson: "{}",
+        resultJson: "{}",
+        status: "completed",
+        errorMessage: "a retained diagnostic note",
+      }],
+    }), { kind: "full" });
+    expect(report).toContain("Tools: 1 calls / 0 failed");
+    expect(report).toContain("No tool failures or recovery attempts were recorded.");
+    expect(report).not.toContain("0 of 1 tool calls failed");
   });
 
   it("never emits whitespace-only lines, including blank lines inside tool output", () => {

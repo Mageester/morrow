@@ -144,7 +144,7 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   const lines: string[] = [];
   const usage = usageFromEvents(aggregate);
   const tools = aggregate.toolCalls ?? [];
-  const failed = tools.filter((tool) => tool.status === "failed");
+  const failed = tools.filter(isFailedTool);
 
   lines.push("# Morrow Task Report", "");
   lines.push(`Task: ${aggregate.task.id}`);
@@ -180,6 +180,8 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   if (opts.kind === "summary") {
     lines.push("## Tool Summary");
     for (const tool of tools) lines.push(toolSummaryLine(tool));
+    lines.push("");
+    addFailures(lines, aggregate);
     return finish(lines);
   }
 
@@ -199,11 +201,11 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
     lines.push(`Id: ${sanitizeReportText(tool.id)}`);
     lines.push(`Args: ${boundedInline(tool.argsJson, 500)}`);
     const output = toolOutputText(tool);
-    if (output) {
+    if (output && !isFailedTool(tool)) {
       lines.push("", "Output:");
       lines.push(...boundedBlock(output, opts.maxToolOutputLines ?? DEFAULT_OUTPUT_LINES));
     }
-    if (tool.errorMessage) lines.push(`Error: ${sanitizeReportText(tool.errorMessage)}`);
+    if (tool.errorMessage && !isFailedTool(tool)) lines.push(`Diagnostic: ${sanitizeReportText(tool.errorMessage)}`);
     lines.push("");
   }
 
@@ -235,7 +237,7 @@ function addFailures(lines: string[], aggregate: TaskAggregate): void {
   const failureEvents = events.filter((event) => event.type === "tool.failed");
   const strategyEvents = events.filter((event) => event.type === "tool.strategy_switch" || event.type === "patch.recovery_feedback");
   const fallbackFailures = failureEvents.length === 0
-    ? aggregate.toolCalls.filter((tool) => tool.status === "failed" || tool.errorMessage)
+    ? aggregate.toolCalls.filter(isFailedTool)
     : [];
   if (failureEvents.length === 0 && fallbackFailures.length === 0 && strategyEvents.length === 0) {
     lines.push("No tool failures or recovery attempts were recorded.", "");
@@ -265,6 +267,7 @@ function addFailures(lines: string[], aggregate: TaskAggregate): void {
     lines.push(`- What failed: ${sanitizeReportText(failure.tool)} — ${boundedInline(failure.message, 200)}${count}`);
   }
 
+  const groupedStrategies = new Map<string, { line: string; count: number }>();
   for (const event of strategyEvents) {
     const payload = event.payload as Record<string, unknown>;
     if (event.type === "tool.strategy_switch") {
@@ -273,16 +276,26 @@ function addFailures(lines: string[], aggregate: TaskAggregate): void {
       const to = stringFact(payload.to) ?? "new approach";
       const path = stringFact(payload.path);
       const reason = stringFact(payload.reason);
-      lines.push(`- Recovery strategy: ${sanitizeReportText(tool)} switched from ${sanitizeReportText(from)} to ${sanitizeReportText(to)}${path ? ` for ${sanitizeReportText(path)}` : ""}${reason ? ` (${boundedInline(reason, 120)})` : ""}.`);
+      const line = `${sanitizeReportText(tool)} switched from ${sanitizeReportText(from)} to ${sanitizeReportText(to)}${path ? ` for ${sanitizeReportText(path)}` : ""}${reason ? ` (${boundedInline(reason, 120)})` : ""}`;
+      const group = groupedStrategies.get(line);
+      if (group) group.count += 1;
+      else groupedStrategies.set(line, { line, count: 1 });
       continue;
     }
     const strategy = stringFact(payload.strategy);
     if (!strategy) continue;
     const target = stringFact(payload.targetFile) ?? stringFact(payload.path);
     const detail = stringFact(payload.detail);
-    lines.push(`- Recovery strategy: ${sanitizeReportText(strategy)}${target ? ` for ${sanitizeReportText(target)}` : ""}${detail ? ` — ${boundedInline(detail, 160)}` : ""}.`);
+    const line = `${sanitizeReportText(strategy)}${target ? ` for ${sanitizeReportText(target)}` : ""}${detail ? ` — ${boundedInline(detail, 160)}` : ""}`;
+    const group = groupedStrategies.get(line);
+    if (group) group.count += 1;
+    else groupedStrategies.set(line, { line, count: 1 });
   }
-  const failedCount = aggregate.toolCalls.filter((tool) => tool.status === "failed" || tool.errorMessage).length;
+  for (const strategy of groupedStrategies.values()) {
+    const count = strategy.count > 1 ? ` (${strategy.count} occurrences)` : "";
+    lines.push(`- Recovery strategy: ${strategy.line}${count}.`);
+  }
+  const failedCount = aggregate.toolCalls.filter(isFailedTool).length;
   const total = aggregate.toolCalls.length;
   const status = aggregate.task.status.charAt(0).toUpperCase() + aggregate.task.status.slice(1);
   lines.push(`- Final outcome: Task ${status.toLowerCase()}; ${failedCount} of ${total} tool calls failed.`);
@@ -295,8 +308,12 @@ function stringFact(value: unknown): string | null {
 
 function toolSummaryLine(tool: TaskAggregate["toolCalls"][number]): string {
   const status = tool.status === "completed" ? "completed" : tool.status === "failed" ? "failed" : tool.status;
-  const detail = tool.errorMessage ? ` - ${sanitizeReportText(tool.errorMessage)}` : "";
+  const detail = tool.errorMessage && !isFailedTool(tool) ? ` - ${sanitizeReportText(tool.errorMessage)}` : "";
   return `- ${sanitizeReportText(tool.toolName)}: ${status}${detail}`;
+}
+
+function isFailedTool(tool: TaskAggregate["toolCalls"][number]): boolean {
+  return tool.status === "failed";
 }
 
 function usageFromEvents(aggregate: TaskAggregate): { input: number; output: number; cached: number } | null {
