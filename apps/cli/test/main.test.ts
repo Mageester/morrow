@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +33,27 @@ describe("morrow root command", () => {
 
   it("prints package version without contacting service", async () => {
     await expect(run(["--version"])).resolves.toBe(0);
-    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0");
+    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0-beta.29");
+  });
+
+  it("reports a corrupt config as JSON instead of failing before doctor starts", async () => {
+    const oldHome = process.env.MORROW_HOME;
+    const home = mkdtempSync(join(tmpdir(), "morrow-doctor-config-test-"));
+    process.env.MORROW_HOME = home;
+    writeFileSync(join(home, "config.json"), '{"providerKey":"must-not-leak",');
+    try {
+      await expect(run(["doctor", "--json"])).resolves.toBe(2);
+      const raw = stdout.mock.calls.map(([value]) => String(value)).join("");
+      const payload = JSON.parse(raw);
+      expect(payload.ok).toBe(false);
+      expect(payload.checks).toContainEqual(expect.objectContaining({ name: "config", ok: false, critical: true }));
+      expect(raw).not.toContain("must-not-leak");
+      expect(stderr.mock.calls).toHaveLength(0);
+    } finally {
+      if (oldHome === undefined) delete process.env.MORROW_HOME;
+      else process.env.MORROW_HOME = oldHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("treats plain text input as an implicit one-shot prompt", () => {

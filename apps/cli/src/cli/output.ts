@@ -117,6 +117,21 @@ export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/**
+ * Remove terminal control sequences from untrusted provider/tool text while
+ * preserving ordinary Unicode, tabs, and line breaks. Morrow adds its own ANSI
+ * styling only after this boundary; model output must never move the cursor,
+ * clear the screen, set the window title, or create a deceptive hyperlink.
+ */
+export function sanitizeTerminalText(input: string): string {
+  return input
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "")
+    .replace(/\x9d[^\x07\x9c]*(?:\x07|\x9c)/g, "")
+    .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g, "");
+}
+
 function pad(cell: string, width: number): string {
   const visible = stripAnsi(cell).length;
   return cell + " ".repeat(Math.max(0, width - visible));

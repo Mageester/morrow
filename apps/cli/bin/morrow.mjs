@@ -6,11 +6,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 import { register } from "tsx/esm/api";
 
-if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  process.stdout.write("0.1.0\n");
-  process.exit(0);
-}
-
 register();
 
 const here = dirname(fileURLToPath(import.meta.url));

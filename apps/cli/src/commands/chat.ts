@@ -24,6 +24,7 @@ import type { PaletteItem } from "../terminal/palette.js";
 import { gitSummary, gitSummaryText, gitStatus } from "../cli/gitinfo.js";
 import { formatContextStatus, formatMissionResult, formatTaskTree } from "../terminal/mission-control.js";
 import { buildTaskReport, defaultReportFilename, findLatestTaskId, type ReportKind } from "../terminal/output-report.js";
+import { parseTaskReportArgs, resolveTaskReference } from "../terminal/task-reference.js";
 
 /** Capability mode: flag > config default > agent (the primary product). */
 export function resolveMode(ctx: Context): AgentMode {
@@ -182,7 +183,7 @@ async function runInteractiveSession(
       });
       return { taskId: sent.task.id };
     },
-    subscribe: (taskId, signal) => streamTaskEvents(api.baseUrl, taskId, { signal }),
+    subscribe: (taskId, signal, after) => streamTaskEvents(api.baseUrl, taskId, { signal, ...(after !== undefined ? { after } : {}) }),
     cancel: (taskId) => api.cancelTask(taskId),
     resume: (taskId) => api.resumeTask(taskId).then(() => undefined),
     async getApproval(id) {
@@ -232,6 +233,7 @@ async function runInteractiveSession(
     listModels: () => api.listModels(),
     getGitStatus: async () => gitStatus(project.workspacePath),
     getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
+    listTasks: () => api.listTasks(project.id),
   };
 
   // Verified local skills become namespaced /skill:<id> commands (autocomplete + help).
@@ -862,15 +864,25 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       return {};
     }
     case "output": {
-      const taskId = await latestTaskId(api, conversation.id);
+      const request = parseTaskReportArgs(arg);
+      let taskId: string | null;
+      if (request.ref) {
+        const resolution = resolveTaskReference(await api.listTasks(projectId), request.ref);
+        if (resolution.status === "invalid") out.warn(`Invalid task reference "${request.ref}" — use the id shown by /tasks.`);
+        else if (resolution.status === "ambiguous") out.warn(`"${resolution.ref}" matches ${resolution.count} tasks — use more characters.`);
+        else if (resolution.status === "not-found") out.warn(`No task matches "${resolution.ref}" in this project. Run /tasks to see available ids.`);
+        if (resolution.status !== "resolved") return {};
+        taskId = resolution.id;
+      } else {
+        taskId = await latestTaskId(api, conversation.id);
+      }
       if (!taskId) {
         out.info("No task output is available yet.");
         return {};
       }
-      const kind: ReportKind = arg === "full" ? "full" : arg === "failures" ? "failures" : "summary";
       const [aggregate, messages] = await Promise.all([api.getTask(taskId), api.listMessages(conversation.id)]);
       const finalAnswer = [...messages].reverse().find((message) => message.taskId === taskId && message.role === "assistant")?.content ?? null;
-      out.print(buildTaskReport(aggregate, { kind, ...(finalAnswer ? { legacyFinalAnswerFallback: finalAnswer } : {}) }));
+      out.print(buildTaskReport(aggregate, { kind: request.kind, ...(finalAnswer ? { legacyFinalAnswerFallback: finalAnswer } : {}) }));
       return {};
     }
     case "export": {
@@ -902,6 +914,26 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         const statusIcon = t.status === "completed" ? out.green("✓") : t.status === "failed" ? out.red("✗") : t.status === "running" ? out.yellow("⟳") : t.status === "cancelled" ? out.gray("⊘") : "○";
         out.print(`  ${statusIcon} ${out.cyan(shortId(t.id))}  ${t.status.padEnd(12)}  ${out.gray(t.kind ?? "agent")}`);
       }
+      return {};
+    }
+    case "stats": {
+      const [tasks, messages, provider] = await Promise.all([
+        api.listTasks(projectId),
+        api.listMessages(conversation.id),
+        api.providerStatus().catch(() => null),
+      ]);
+      const count = (status: string) => tasks.filter((task) => task.status === status).length;
+      out.heading("Session stats");
+      out.keyValue([
+        ["Provider", session.provider ?? provider?.provider ?? "auto"],
+        ["Model", session.model ?? provider?.model ?? "auto"],
+        ["Mode", modeLabel(session.mode, session.autoApprove)],
+        ["User turns", String(messages.filter((message) => message.role === "user").length)],
+        ["Tasks", String(tasks.length)],
+        ["Completed", String(count("completed") + count("verified"))],
+        ["Failed", String(count("failed"))],
+        ["Cancelled", String(count("cancelled"))],
+      ]);
       return {};
     }
     case "memory-search": {
@@ -1110,7 +1142,9 @@ function printReplHelp(ctx: Context) {
     ["/tree", "show the current mission task tree"],
     ["/result", "show final evidence and next action"],
     ["/context", "show context usage, compaction, and token-count confidence"],
-    ["/output [full|failures]", "show the durable final report for the latest task"],
+    ["/stats", "show truthful session, provider, and task metrics"],
+    ["/tasks [limit]", "list recent tasks in this project"],
+    ["/output [full|failures] [task-id]", "show a durable report by latest task, full id, or unique prefix"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
     ["/compact", "summarize history into a memory note"],

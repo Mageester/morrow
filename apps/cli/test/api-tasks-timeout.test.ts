@@ -89,6 +89,22 @@ describe("MorrowApi: bounded timeouts for the /output hot path (P0-2)", () => {
     await expect(api.getTask("does-not-exist")).rejects.toThrow(CliError);
   });
 
+  it("encodes task ids as one path segment", async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ error: { message: "Task not found" } }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const api = new MorrowApi("http://127.0.0.1:9999");
+
+    await expect(api.getTask("../providers?token=secret")).rejects.toThrow(CliError);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:9999/api/tasks/..%2Fproviders%3Ftoken%3Dsecret",
+      expect.any(Object),
+    );
+  });
+
   it("an unavailable service (connection refused) surfaces a clear, actionable error immediately", async () => {
     vi.stubGlobal(
       "fetch",

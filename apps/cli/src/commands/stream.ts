@@ -36,7 +36,9 @@ export async function streamChatTask(
 ): Promise<StreamResult> {
   const out = ctx.out;
   const unicode = resolveUnicodeFlag(ctx.config.get("ui.unicode") as boolean | undefined, process.env);
-  const renderer = new LineRenderer(out, { unicode, showActivity: opts.showActivity, showSummary: false });
+  // The completion card is part of the product surface now: any run that shows
+  // activity also gets the concise "did it succeed / what changed" card.
+  const renderer = new LineRenderer(out, { unicode, showActivity: opts.showActivity, showSummary: opts.showActivity });
 
   if (opts.showActivity) {
     renderer.apply({

@@ -88,6 +88,83 @@ function enter(stdin: any): void { stdin.emit("keypress", undefined, { name: "re
 function ctrlC(stdin: any): void { stdin.emit("keypress", undefined, { name: "c", ctrl: true }); }
 
 describe("interactive session: streaming, cancellation, resize", () => {
+  it("rejects path-like and foreign /output references before fetching a task", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const getTask = vi.fn(async () => { throw new Error("must not fetch an unscoped task"); });
+    const backend: SessionBackend = {
+      ...makeBackend(gate, () => {}),
+      getTask,
+      listTasks: async () => [{ id: "safe-task-123", status: "completed", createdAt: "2026-07-11T00:00:00.000Z" } as any],
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "/output ../providers");
+    enter(stdin);
+    await tick();
+    typeText(stdin, "/output foreign-task");
+    enter(stdin);
+    await tick();
+
+    expect(getTask).not.toHaveBeenCalled();
+    expect(app.snapshot().notices.map((notice) => notice.text).join("\n")).toMatch(/Invalid task reference|No task matches/);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("continues an interrupted task after its historical terminal-event cursor", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const subscribeAfter: Array<number | undefined> = [];
+    let subscriptions = 0;
+    const backend: SessionBackend = {
+      ...makeBackend(new EventGate(), () => {}),
+      subscribe: (async function* (_taskId: string, _signal: AbortSignal, after?: number) {
+        subscribeAfter.push(after);
+        subscriptions += 1;
+        if (subscriptions === 1 || after === undefined) {
+          yield { id: "event-5", sequence: 5, type: "task.interrupted", payload: { reason: "stalled" } } as any;
+          return;
+        }
+        yield { id: "event-6", sequence: 6, type: "assistant.turn_started", payload: { turnId: "resumed" } } as any;
+        yield { id: "event-7", sequence: 7, type: "evidence.persisted", payload: { turnId: "resumed", deltaText: "Resumed answer" } } as any;
+        yield { id: "event-8", sequence: 8, type: "assistant.turn_completed", payload: { turnId: "resumed", final: true } } as any;
+        yield { id: "event-9", sequence: 9, type: "task.completed", payload: {} } as any;
+      }) as any,
+      resume: vi.fn(async () => {}),
+      getTask: async () => ({ events: [{ sequence: 5, type: "task.interrupted" }] } as any),
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "start work");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().status).toBe("stalled");
+
+    typeText(stdin, "/continue");
+    enter(stdin);
+    await tick();
+
+    expect(subscribeAfter).toEqual([undefined, 5]);
+    expect(app.snapshot().status).toBe("completed");
+    expect(app.snapshot().conversation.at(-1)?.text).toBe("Resumed answer");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("streams assistant deltas into the transcript and completes", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();

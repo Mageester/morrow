@@ -5,7 +5,7 @@
  * CLI. The division of labour is:
  *
  *   - The launcher owns the packaged service process lifecycle (start/stop/
- *     restart/status/doctor/uninstall) because those manage the bundled Node
+ *     restart/status/uninstall) because those manage the bundled Node
  *     process, pidfile, and log directly.
  *   - `open` launches the browser UI.
  *   - Everything else - the interactive shell (no args) plus ask/fix/plan/yolo/
@@ -22,7 +22,6 @@ export const LAUNCHER_LIFECYCLE = new Set([
   "stop",
   "restart",
   "status",
-  "doctor",
   "uninstall",
 ]);
 
@@ -33,7 +32,7 @@ export const LAUNCHER_META = new Set(["help", "--help", "-h", "version", "--vers
  * Classify a launcher argv (already stripped of the node/script prefix).
  *
  * @param {string[]} argv
- * @returns {{ action: "interactive"|"open"|"lifecycle"|"meta"|"cli", command: string|undefined, args: string[] }}
+ * @returns {{ action: "interactive"|"open"|"lifecycle"|"meta"|"cli"|"cli-offline", command: string|undefined, args: string[] }}
  */
 export function classify(argv) {
   const command = argv[0];
@@ -41,6 +40,7 @@ export function classify(argv) {
   if (!command) return { action: "interactive", command: undefined, args: [] };
   if (LAUNCHER_META.has(command)) return { action: "meta", command, args };
   if (command === "open") return { action: "open", command, args };
+  if (command === "doctor") return { action: "cli-offline", command, args };
   if (LAUNCHER_LIFECYCLE.has(command)) return { action: "lifecycle", command, args };
   // Any other verb (or an implicit one-shot prompt) is the CLI's product surface.
   return { action: "cli", command, args };
@@ -49,4 +49,15 @@ export function classify(argv) {
 /** Whether a classified action needs the orchestrator service to be running. */
 export function needsService(action) {
   return action === "cli" || action === "interactive" || action === "open";
+}
+
+/** Accept only the local API contract, never an arbitrary HTTP 200 responder. */
+export function isMorrowHealth(value) {
+  return Boolean(value && value.ok === true && value.service === "morrow-orchestrator" && value.apiVersion === 1);
+}
+
+/** Return an adoptable owner pid only when both the API and OS process agree. */
+export function canAdoptServicePid(health, processIdentityMatches) {
+  if (!isMorrowHealth(health) || !processIdentityMatches) return 0;
+  return Number.isSafeInteger(health.ownerPid) && health.ownerPid > 0 ? health.ownerPid : 0;
 }

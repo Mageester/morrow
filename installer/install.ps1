@@ -319,7 +319,14 @@ try {
   try { & $installedCmd start } catch {}
   $healthy = $false
   for ($attempt = 0; $attempt -lt 45; $attempt++) {
-    try { if ((Invoke-WebRequest -Uri 'http://127.0.0.1:4317/api/health' -UseBasicParsing).StatusCode -eq 200) { $healthy = $true; break } } catch {}
+    try {
+      $healthResponse = Invoke-WebRequest -Uri 'http://127.0.0.1:4317/api/health' -UseBasicParsing
+      $healthProbe = $healthResponse.Content | ConvertFrom-Json
+      if ($healthResponse.StatusCode -eq 200 -and $healthProbe.ok -eq $true -and $healthProbe.service -eq 'morrow-orchestrator' -and $healthProbe.apiVersion -eq 1) {
+        $healthy = $true
+        break
+      }
+    } catch {}
     Start-Sleep -Seconds 1
   }
   if (-not $healthy) {

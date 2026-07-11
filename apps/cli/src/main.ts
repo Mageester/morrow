@@ -1,9 +1,12 @@
-import { dirname } from "node:path";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { arch, platform } from "node:os";
+import { dirname, join } from "node:path";
 import { parseArgs, flagBool, flagString } from "./cli/args.js";
 import { Context } from "./cli/context.js";
 import { CliError, EXIT, usageError } from "./cli/errors.js";
 import { Output, resolveColor } from "./cli/output.js";
 import { ConfigStore } from "./config/config.js";
+import { resolvePaths } from "./config/paths.js";
 import { chatCommand } from "./commands/chat.js";
 import { conversationsCommand } from "./commands/conversations.js";
 import { memoryCommand, auditCommand, permissionsCommand, toolsCommand } from "./commands/observability.js";
@@ -26,7 +29,7 @@ import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
-import { aggregateDoctor } from "./service/doctor-checks.js";
+import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "./service/doctor-checks.js";
 import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/update.js";
 
 // Single source of truth lives in service/update.ts (MORROW_VERSION); re-exported
@@ -67,9 +70,17 @@ export async function run(argv: string[]): Promise<number> {
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
-    const config = ConfigStore.load();
-    const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
     const invocation = resolveInvocation(parsed.positionals);
+    let config: ConfigStore;
+    try {
+      config = ConfigStore.load();
+    } catch (error) {
+      if (invocation.kind === "command" && invocation.root === "doctor") {
+        return invalidConfigDoctor(out, parsed.flags, error);
+      }
+      throw error;
+    }
+    const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
 
     // Auto-detect first launch
     const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "doctor", "uninstall", "logs", "capabilities"].includes(invocation.root);
@@ -253,24 +264,39 @@ async function status(ctx: Context): Promise<number> {
 
 async function doctor(ctx: Context): Promise<number> {
   const pnpm = probePnpm(process.env);
-  const checks: Array<{ name: string; ok: boolean; detail: string; critical: boolean }> = [
+  const checks: DoctorCheck[] = [
+    { name: "version", ok: true, detail: VERSION, critical: true },
+    { name: "platform", ok: true, detail: `${platform()} ${arch()}`, critical: false },
     { name: "node", ok: Number(process.versions.node.split(".")[0]) >= 22, detail: process.versions.node, critical: true },
-    { name: "pnpm", ok: pnpm.ok, detail: pnpm.executable ? `${pnpm.detail} (${pnpm.executable})` : pnpm.detail, critical: true },
-    { name: "data directory", ok: true, detail: dirname(ctx.service.dbPath), critical: false },
+    { name: "pnpm", ok: pnpm.ok, detail: pnpm.executable ? `${pnpm.detail} (${pnpm.executable})` : pnpm.detail, critical: pnpmIsCritical(process.env), fix: "Install pnpm only when running Morrow from source." },
+    { name: "config", ok: true, detail: "parsed", critical: true },
+    writableDirectoryCheck(ctx.paths.home),
+    databaseCheck(ctx.service.dbPath),
+    skillsCheck(ctx.paths.home),
+    { name: "terminal", ok: true, detail: `tty ${Boolean(process.stdout.isTTY)}; columns ${process.stdout.columns ?? "unknown"}; color ${ctx.out.color}`, critical: false },
+    { name: "unicode", ok: true, detail: process.platform === "win32" ? "UTF-8 output requested; use a modern Windows Terminal profile if glyphs render incorrectly" : "UTF-8 runtime", critical: false },
+    { name: "PATH", ok: Boolean(process.env.PATH), detail: process.env.PATH ? "available" : "not set", critical: false },
   ];
   try {
     const health = await ctx.api().health();
-    checks.push({ name: "orchestrator", ok: health.ok, detail: `${health.service}; migrations ${health.migrations.applied}/${health.migrations.latest ?? "?"}`, critical: true });
+    const identityOk = health.ok === true && health.service === "morrow-orchestrator";
+    checks.push({ name: "orchestrator", ok: identityOk, detail: identityOk ? `${health.service}; api ${health.apiVersion}; port ${ctx.service.port}; migrations ${health.migrations.applied}/${health.migrations.latest ?? "?"}` : "unexpected service identity", critical: true, fix: "Stop the process on the configured port, then run `morrow start`." });
     const providers = await ctx.api().listProviders();
-    checks.push({ name: "providers", ok: true, detail: `${providers.filter((provider) => provider.configured).length} configured`, critical: false });
-  } catch (error) {
-    checks.push({ name: "orchestrator", ok: false, detail: error instanceof Error ? error.message : String(error), critical: true });
+    const configured = providers.filter((provider) => provider.configured).length;
+    checks.push({ name: "providers", ok: configured > 0, detail: `${configured} configured`, critical: false, fix: "Run `morrow auth login`." });
+    const projects = await ctx.api().listProjects();
+    const registered = Boolean(ctx.paths.repoRoot && projects.some((project) => project.workspacePath.toLowerCase() === ctx.paths.repoRoot!.toLowerCase()));
+    checks.push({ name: "repository", ok: registered, detail: ctx.paths.repoRoot ? (registered ? "current repository registered" : "current repository not registered") : "not running inside a Morrow workspace", critical: false, fix: "Run `morrow init` from the repository." });
+  } catch {
+    checks.push({ name: "orchestrator", ok: false, detail: `not reachable on ${ctx.service.host}:${ctx.service.port}`, critical: true, fix: "Run `morrow start`, then retry `morrow doctor`." });
   }
   const ok = aggregateDoctor(checks).ok;
-  if (ctx.out.json) ctx.out.data({ ok, checks, pnpm, logPath: ctx.paths.logFile });
+  const exportPath = flagBool(ctx.flags, "export") ? writeDiagnosticExport(doctorPayload(ok, checks, ctx.paths.logFile, diagnosticDirectory(ctx.paths.home)), ctx.paths.home) : undefined;
+  const payload = doctorPayload(ok, checks, ctx.paths.logFile, exportPath ?? diagnosticDirectory(ctx.paths.home));
+  if (ctx.out.json) ctx.out.data(payload);
   else {
     ctx.out.heading("Morrow doctor");
-    ctx.out.table(["check", "status", "detail"], checks.map((check) => [check.name, check.ok ? ctx.out.green("ok") : ctx.out.red("fail"), check.detail]));
+    ctx.out.table(["check", "status", "detail"], checks.map((check) => [check.name, doctorStatus(ctx.out, check), check.detail]));
     // When pnpm resolution fails, surface every ranked candidate we tried so the
     // user can see why each was rejected (rather than a single opaque error).
     if (!pnpm.ok && pnpm.tried && pnpm.tried.length > 0) {
@@ -281,8 +307,88 @@ async function doctor(ctx: Context): Promise<number> {
       }
     }
     ctx.out.info(`Logs: ${ctx.paths.logFile}`);
+    ctx.out.info(`Diagnostics export: ${exportPath ?? `${diagnosticDirectory(ctx.paths.home)} (run with --export)`}`);
+    if (exportPath) ctx.out.success("Diagnostic export written without secrets.");
   }
   return ok ? EXIT.OK : EXIT.SERVICE_UNAVAILABLE;
+}
+
+function invalidConfigDoctor(out: Output, flags: Record<string, string | boolean>, _error: unknown): number {
+  const paths = resolvePaths();
+  const checks: DoctorCheck[] = [{
+    name: "config",
+    ok: false,
+    detail: `invalid JSON in ${paths.userConfigFile}`,
+    critical: true,
+    fix: "Repair or move the config file, then rerun `morrow doctor`.",
+  }];
+  const exportPath = flagBool(flags, "export") ? writeDiagnosticExport(doctorPayload(false, checks, paths.logFile, diagnosticDirectory(paths.home)), paths.home) : undefined;
+  if (out.json) out.data(doctorPayload(false, checks, paths.logFile, exportPath ?? diagnosticDirectory(paths.home)));
+  else {
+    out.heading("Morrow doctor");
+    out.table(["check", "status", "detail"], [["config", out.red("fail"), checks[0]!.detail]]);
+    out.info(checks[0]!.fix!);
+    out.info(`Diagnostics export: ${exportPath ?? `${diagnosticDirectory(paths.home)} (run with --export)`}`);
+  }
+  return EXIT.USAGE;
+}
+
+function doctorPayload(ok: boolean, checks: DoctorCheck[], logPath: string, diagnosticsExportPath: string) {
+  return {
+    schemaVersion: 1,
+    ok,
+    version: VERSION,
+    system: { platform: platform(), arch: arch(), node: process.versions.node },
+    checks,
+    logPath,
+    diagnosticsExportPath,
+  };
+}
+
+function diagnosticDirectory(home: string): string {
+  return join(home, "diagnostics");
+}
+
+function writeDiagnosticExport(payload: ReturnType<typeof doctorPayload>, home: string): string {
+  const directory = diagnosticDirectory(home);
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, `morrow-doctor-${Date.now()}.json`);
+  writeFileSync(path, `${JSON.stringify(redactDiagnostics(payload, home), null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return path;
+}
+
+function doctorStatus(out: Output, check: DoctorCheck): string {
+  if (check.ok) return out.green("pass");
+  return check.critical ? out.red("failure") : out.yellow("warning");
+}
+
+function writableDirectoryCheck(home: string): DoctorCheck {
+  try {
+    accessSync(home, constants.R_OK | constants.W_OK);
+    return { name: "data directory", ok: true, detail: `${home} (read/write)`, critical: true };
+  } catch {
+    return { name: "data directory", ok: false, detail: `${home} is missing or not writable`, critical: true, fix: "Repair directory permissions or reinstall Morrow." };
+  }
+}
+
+function skillsCheck(home: string): DoctorCheck {
+  const directory = process.env.MORROW_SKILLS_DIR ?? join(home, "skills");
+  try {
+    const count = readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(directory, entry.name, "SKILL.md"))).length;
+    return { name: "skills", ok: count > 0, detail: `${count} installed`, critical: false, fix: "Reinstall Morrow to restore bundled skills." };
+  } catch {
+    return { name: "skills", ok: false, detail: `${directory} is not readable`, critical: false, fix: "Reinstall Morrow to restore bundled skills." };
+  }
+}
+
+function databaseCheck(path: string): DoctorCheck {
+  if (!existsSync(path)) return { name: "state database", ok: false, detail: `${path} not created yet`, critical: false, fix: "Start Morrow once to create local state." };
+  try {
+    accessSync(path, constants.R_OK | constants.W_OK);
+    return { name: "state database", ok: true, detail: `${path} (read/write)`, critical: true };
+  } catch {
+    return { name: "state database", ok: false, detail: `${path} is not readable and writable`, critical: true, fix: "Repair file permissions or restore from backup." };
+  }
 }
 
 

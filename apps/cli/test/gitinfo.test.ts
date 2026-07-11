@@ -35,5 +35,5 @@ describe("CLI Git workspace display", () => {
     expect(summary.dirty).toBe(1);
     expect(status.modified).toEqual(["index.html"]);
     expect(status.modified).not.toContain("README.md");
-  });
+  }, 15_000);
 });

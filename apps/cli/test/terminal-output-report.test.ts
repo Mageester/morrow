@@ -58,14 +58,51 @@ function aggregate(overrides: Partial<TaskAggregate> = {}): TaskAggregate {
 }
 
 describe("durable terminal output reports", () => {
-  it("builds a copyable summary report from the task aggregate", () => {
+  it("builds a copyable summary report: identity, status, timestamp, totals — no metering wall", () => {
     const report = buildTaskReport(aggregate(), { kind: "summary", legacyFinalAnswerFallback: "Created the three files." });
     expect(report).toContain("# Morrow Task Report");
+    expect(report).toContain("Report: summary");
+    expect(report).toContain("Task: task-1 (task-1)"); // short id (full id)
+    expect(report).toContain("Started: 2026-07-08T10:00:00.000Z (took 1m00s)");
     expect(report).toContain("Created the three files.");
     expect(report).toContain("deepseek/deepseek-v4-flash");
+    expect(report).toContain("Tools: 2 calls / 1 failed");
+    // Token/context/cost metering is Level-3 (/output full) detail.
+    expect(report).not.toContain("Tokens:");
+    expect(report).not.toContain("Context:");
+    expect(report).not.toContain("Cost:");
+  });
+
+  it("keeps token/context/cost metering in the full report", () => {
+    const report = buildTaskReport(aggregate(), { kind: "full", legacyFinalAnswerFallback: "Done." });
+    expect(report).toContain("Report: full");
     expect(report).toContain("100 in / 25 out");
     expect(report).toContain("Context: 21k / 128k");
-    expect(report).toContain("Tools: 2 calls / 1 failed");
+    expect(report).toContain("Cost:");
+  });
+
+  it("reports changed files from persisted evidence", () => {
+    const report = buildTaskReport(aggregate({
+      evidence: [
+        { id: "ev1", path: "hello.js", metadata: { action: "patched", diffHash: "x" }, createdAt: "2026-07-08T10:00:30.000Z" },
+        { id: "ev2", path: "hello.js", metadata: { size: 59 }, createdAt: "2026-07-08T10:00:31.000Z" },
+        { id: "ev3", path: "README.md", metadata: { action: "patched", diffHash: "y" }, createdAt: "2026-07-08T10:00:32.000Z" },
+      ],
+    }), { kind: "summary", legacyFinalAnswerFallback: "Done." });
+    expect(report).toContain("Files changed: README.md, hello.js");
+  });
+
+  it("rounds duration without ever producing a 60-second remainder", () => {
+    const report = buildTaskReport(aggregate({
+      task: {
+        ...aggregate().task,
+        createdAt: "2026-07-08T10:00:00.000Z",
+        updatedAt: "2026-07-08T10:01:59.600Z",
+      },
+    }), { kind: "summary", legacyFinalAnswerFallback: "Done." });
+
+    expect(report).toContain("took 2m00s");
+    expect(report).not.toContain("1m60s");
   });
 
   it("builds a full report with sanitized tool output and truncation markers", () => {
@@ -188,7 +225,7 @@ describe("selectCanonicalFinalAnswer: structured turn events over concatenation"
 });
 
 describe("buildTaskReport: Intermediate Activity and cross-kind consistency", () => {
-  it("lists non-final turns as bounded Intermediate Activity, never as raw repeated narration", () => {
+  it("lists sanitized observable non-final turn text in the full report", () => {
     const agg = aggregate({
       events: [
         turnEvent("e1", 1, "t1", "First, the CSS — I'll refactor to use CSS custom properties for theming."),
@@ -200,6 +237,8 @@ describe("buildTaskReport: Intermediate Activity and cross-kind consistency", ()
     expect(report).toContain("## Intermediate Activity");
     expect(report).toContain("t1");
     expect(report).toContain("t2");
+    expect(report).toContain("First, the CSS");
+    expect(report).toContain("The patch keeps missing");
     // The final turn's own text is not re-listed as intermediate.
     const intermediateSection = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
     expect(intermediateSection).not.toContain("All 15 verification checks passed");
@@ -267,7 +306,7 @@ describe("buildTaskReport: replay-safe report facts", () => {
     expect((activity.match(/t1/g) ?? []).length).toBe(1);
   });
 
-  it("does not expose assistant planning narration or hidden/internal event payloads", () => {
+  it("includes observable assistant narration but never hidden/internal event payloads", () => {
     const hidden = {
       id: "hidden-1",
       taskId: "task-1",
@@ -277,9 +316,8 @@ describe("buildTaskReport: replay-safe report facts", () => {
       payload: { text: "CHAIN_OF_THOUGHT_DO_NOT_EXPORT" },
     } as any;
     const report = buildTaskReport(aggregate({ events: [intermediate, hidden, final] }), { kind: "full" });
-    expect(report).not.toContain("I should inspect every file");
+    expect(report).toContain("I should inspect every file");
     expect(report).not.toContain("CHAIN_OF_THOUGHT_DO_NOT_EXPORT");
-    expect(report).toContain("Continued with tool execution.");
   });
 
   it("includes each tool failure and strategy switch once without dumping repeated payload JSON", () => {
@@ -423,12 +461,12 @@ describe("regression: real task 3b3eed93 (dark-mode toggle, 3 propose_patch fail
     expect((recoverySection.match(/styles\.css/g) ?? []).length).toBe(2);
   });
 
-  it("keeps Intermediate Activity bounded and excludes repeated raw planning narration", () => {
+  it("keeps Intermediate Activity bounded while retaining observable turn text", () => {
     const report = buildTaskReport(realTaskAggregate(), { kind: "full" });
     expect(report).toContain("## Intermediate Activity");
-    expect((report.match(/Now I have full context/g) ?? []).length).toBe(0);
+    expect((report.match(/Now I have full context/g) ?? []).length).toBe(11);
     const activity = report.split("## Intermediate Activity")[1]!.split("## Recovery Summary")[0]!;
-    expect((activity.match(/Continued with tool execution\./g) ?? []).length).toBe(11);
+    expect((activity.match(/Now I have full context/g) ?? []).length).toBe(11);
   });
 
   it("is stable across a simulated restart/replay: rebuilding from the same aggregate reproduces an identical report", () => {

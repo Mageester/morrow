@@ -41,6 +41,35 @@ import { prepareContextForProvider, resolveContextBudget } from "./context-budge
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
+ * Best-effort human-readable target for a tool call, included in the
+ * `tool.started` event so the terminal can render "Editing verify.js" instead
+ * of a bare tool name. Never throws: mid-stream arguments may be malformed,
+ * in which case no target is reported.
+ */
+function displayTarget(toolName: string, argsJson: string): { target?: string; verification?: boolean } {
+  try {
+    const args = JSON.parse(argsJson) as Record<string, unknown>;
+    const pick = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    let target: string | undefined;
+    if (toolName === "run_command") {
+      const executable = pick(args.executable);
+      const rest = Array.isArray(args.args) ? args.args.filter((a): a is string => typeof a === "string").join(" ") : "";
+      target = executable ? `${executable}${rest ? " " + rest : ""}` : undefined;
+    } else {
+      target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
+    }
+    const purpose = pick(args.purpose);
+    const verification = toolName === "run_command" && purpose !== undefined && /\b(?:verify|verification|test|check|lint|typecheck|build)\b/i.test(purpose);
+    return {
+      ...(target ? { target: target.length > 80 ? target.slice(0, 79) + "â€¦" : target } : {}),
+      ...(verification ? { verification: true } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Find installed skills relevant to a prompt by scoring each skill's
  * id/name/description against the prompt's keywords. Scans the same directories
  * the find_skill tool uses (workspace, MORROW_HOME, bundled MORROW_SKILLS_DIR)
@@ -556,7 +585,6 @@ export async function executeAgentChatTask({
       transitionAgentState("failed", { message: e.message || "Provider not configured" });
       records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: e.message || "Provider not configured" } });
       convs.updateMessageContentAndState(assistantMessageRow.id, `Provider not available: ${e.message || "not configured"}`, "failed", now());
-      event("task.failed", { message: e.message || "Provider not configured" });
       return;
     }
   }
@@ -1007,6 +1035,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             conflictCategory: (feedback.result as any).conflictCategory,
             attemptsForPatch: attempts,
             retryExhausted: (feedback.result as any).retryExhausted,
+            instruction: (feedback.result as any).instruction,
           });
           throw new AgentToolFailure(feedback.message, feedback.result);
         }
@@ -1039,7 +1068,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           metadata: { action: "patched", diffHash },
           createdAt: now()
         });
-        event("evidence.persisted", { path: pf.newPath, size: Buffer.byteLength(newContent, "utf8") });
+        event("evidence.persisted", { path: pf.newPath, size: Buffer.byteLength(newContent, "utf8"), action: "patched" });
       }
 
       changeSets.updateApplied(changeSet.id, postApplyHashes, backupReferences);
@@ -1065,7 +1094,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         metadata: { action: "created_directory", alreadyExisted: !created },
         createdAt: now(),
       });
-      event("evidence.persisted", { path: relPath, size: 0 });
+      event("evidence.persisted", { path: relPath, size: 0, action: "created_directory" });
       return JSON.stringify({ status: "success", path: relPath, created });
     } else if (toolName === "find_skill") {
       const query = (args.query || "").toLowerCase().trim();
@@ -1446,7 +1475,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
         convs.updateMessageContentAndState(assistantMessageRow.id, preparedContext.actionableMessage, "failed", now());
         if (activeStepId) records.updatePlanStepStatus(activeStepId, "failed", now());
-        event("task.failed", { message: preparedContext.actionableMessage });
         return;
       }
       if (preparedContext.summary) {
@@ -1586,7 +1614,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (activeStepId) {
         records.updatePlanStepStatus(activeStepId, "failed", now());
       }
-      event("task.failed", { message: errMessage });
       return;
     }
 
@@ -1645,7 +1672,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
         if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
         const toolStartedAt = Date.now();
-        event("tool.started", { id: tc.id, toolName: tc.name });
+        event("tool.started", { id: tc.id, toolName: tc.name, ...displayTarget(tc.name, tc.arguments) });
 
         let resultStr = "";
         let isSuccess = true;
@@ -1760,7 +1787,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               createdAt: now()
             });
 
-            event("evidence.persisted", { path: fileData.path, size: fileData.size });
+            event("evidence.persisted", { path: fileData.path, size: fileData.size, action: "read" });
           } else if (tc.name === "search_text") {
             if (typeof args.query !== "string") throw new Error("Missing required argument: query");
             const result = searchText(project.workspacePath, args.query, {
@@ -2038,6 +2065,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 conflictCategory: (feedback.result as any).conflictCategory,
                 attemptsForPatch: attempts,
                 retryExhausted: (feedback.result as any).retryExhausted,
+                instruction: (feedback.result as any).instruction,
               });
               throw new AgentToolFailure(feedback.message, feedback.result);
             }
@@ -2104,6 +2132,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                   conflictCategory: (feedback.result as any).conflictCategory,
                   attemptsForPatch: attempts,
                   retryExhausted: (feedback.result as any).retryExhausted,
+                  instruction: (feedback.result as any).instruction,
                 });
                 throw new AgentToolFailure(feedback.message, feedback.result);
               }
@@ -2431,5 +2460,4 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   transitionAgentState("completed");
   records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
   convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "completed", now());
-  event("task.completed", {});
 }

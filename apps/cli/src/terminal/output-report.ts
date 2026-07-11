@@ -18,6 +18,7 @@ export interface TaskReportOptions {
 
 const DEFAULT_OUTPUT_LINES = 120;
 const MAX_INTERMEDIATE_TURNS_SHOWN = 20;
+const MAX_INTERMEDIATE_TURN_LINES = 20;
 
 interface TurnCompletedPayload {
   turnId: string;
@@ -140,29 +141,61 @@ export function defaultReportFilename(taskId: string, date = new Date()): string
   return `morrow-task-${safeTask}-${stamp}.md`;
 }
 
+/** Files this task changed, from persisted evidence (action: patched). */
+export function changedFiles(aggregate: TaskAggregate): string[] {
+  const files = new Set<string>();
+  for (const item of aggregate.evidence ?? []) {
+    if (item.metadata && (item.metadata as Record<string, unknown>).action === "patched") files.add(item.path);
+  }
+  return [...files].sort();
+}
+
+/** Human duration between the task's created and last-updated timestamps. */
+function taskDuration(aggregate: TaskAggregate): string | null {
+  const start = Date.parse(aggregate.task.createdAt);
+  const end = Date.parse(aggregate.task.updatedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const ms = end - start;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  return `${Math.floor(totalSeconds / 60)}m${String(totalSeconds % 60).padStart(2, "0")}s`;
+}
+
 export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOptions): string {
   const lines: string[] = [];
   const usage = usageFromEvents(aggregate);
   const tools = aggregate.toolCalls ?? [];
   const failed = tools.filter(isFailedTool);
+  const shortId = aggregate.task.id.slice(0, 8);
+  const duration = taskDuration(aggregate);
 
   lines.push("# Morrow Task Report", "");
-  lines.push(`Task: ${aggregate.task.id}`);
+  lines.push(`Task: ${shortId} (${aggregate.task.id})`);
+  lines.push(`Report: ${opts.kind}`);
   lines.push(`Status: ${aggregate.task.status}`);
+  lines.push(`Started: ${aggregate.task.createdAt}${duration ? ` (took ${duration})` : ""}`);
   if (aggregate.routing) lines.push(`Model: ${aggregate.routing.providerId}/${aggregate.routing.model}`);
   else if (aggregate.disclosure?.provider) lines.push(`Model: ${aggregate.disclosure.provider}/unknown`);
   lines.push(`Workspace: ${aggregate.disclosure?.workspaceScope ?? "unknown"}`);
-  lines.push(`Cost: ${aggregate.disclosure?.estimatedCostUsd ?? "unknown"}`);
-  if (usage) lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${usage.cached > 0 ? ` / ${formatNumber(usage.cached)} cached` : ""}`);
-  else lines.push("Tokens: unknown");
-  if (aggregate.context) {
-    const known = aggregate.context.contextWindowSource !== "fallback" && aggregate.context.contextWindowTokens > 0;
-    const used = aggregate.context.inputTokensAfter ?? aggregate.context.inputTokensBefore;
-    lines.push(`Context: ${used !== null && used !== undefined ? formatCompact(used) : "unknown"} / ${known ? formatCompact(aggregate.context.contextWindowTokens) : "unknown"}`);
-  } else {
-    lines.push("Context: unknown");
+  lines.push(`Tools: ${tools.length} calls / ${failed.length} failed`);
+  const files = changedFiles(aggregate);
+  if (files.length > 0) lines.push(`Files changed: ${files.join(", ")}`);
+  if (aggregate.verification) lines.push(`Verification: ${aggregate.verification.status} — ${aggregate.verification.summary}`);
+  // Full reports carry the metering metadata; the summary stays scannable.
+  if (opts.kind === "full") {
+    lines.push(`Cost: ${aggregate.disclosure?.estimatedCostUsd ?? "unknown"}`);
+    if (usage) lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${usage.cached > 0 ? ` / ${formatNumber(usage.cached)} cached` : ""}`);
+    else lines.push("Tokens: unknown");
+    if (aggregate.context) {
+      const known = aggregate.context.contextWindowSource !== "fallback" && aggregate.context.contextWindowTokens > 0;
+      const used = aggregate.context.inputTokensAfter ?? aggregate.context.inputTokensBefore;
+      lines.push(`Context: ${used !== null && used !== undefined ? formatCompact(used) : "unknown"} / ${known ? formatCompact(aggregate.context.contextWindowTokens) : "unknown"}`);
+    } else {
+      lines.push("Context: unknown");
+    }
   }
-  lines.push(`Tools: ${tools.length} calls / ${failed.length} failed`, "");
+  lines.push("");
 
   const finalAnswer = selectCanonicalFinalAnswer(aggregate, opts.legacyFinalAnswerFallback);
   const finalTurnId = finalAnswer.kind === "final" ? finalAnswer.turnId ?? null : null;
@@ -219,13 +252,10 @@ function addIntermediateActivity(lines: string[], aggregate: TaskAggregate, fina
   if (turns.length === 0) return;
   lines.push("## Intermediate Activity");
   const shown = turns.slice(0, MAX_INTERMEDIATE_TURNS_SHOWN);
-  for (const t of shown) {
-    const summary = t.aborted
-      ? "The assistant turn ended before completion."
-      : t.hasToolCalls
-        ? "Continued with tool execution."
-        : "Shared an intermediate progress update.";
-    lines.push(`- ${sanitizeReportText(t.turnId)}: ${summary}`);
+  for (const turn of shown) {
+    const state = turn.aborted ? " · aborted" : turn.hasToolCalls ? " · before tool execution" : "";
+    lines.push(`### ${sanitizeReportText(turn.turnId)}${state}`);
+    lines.push(...boundedBlock(turn.text, MAX_INTERMEDIATE_TURN_LINES), "");
   }
   if (turns.length > shown.length) lines.push(`- [${turns.length - shown.length} more intermediate turns omitted]`);
   lines.push("");

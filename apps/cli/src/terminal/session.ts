@@ -19,7 +19,7 @@ import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
 import { composeApp } from "./app-view.js";
-import { glyphs } from "./view.js";
+import { glyphs, statsLines } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -32,6 +32,7 @@ import type { SessionMeta, TerminalEvent } from "./events.js";
 import type { TermIO } from "./runtime.js";
 import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./mission-control.js";
 import { buildTaskReport, type ReportKind } from "./output-report.js";
+import { resolveTaskReference } from "./task-reference.js";
 import { composePaintBody, positionAndClearBelow } from "./paint.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
@@ -58,7 +59,7 @@ export interface ApprovalView {
 
 export interface SessionBackend {
   send(text: string, opts: SendOptions): Promise<{ taskId: string }>;
-  subscribe(taskId: string, signal: AbortSignal): AsyncIterable<RawTaskEvent>;
+  subscribe(taskId: string, signal: AbortSignal, after?: number): AsyncIterable<RawTaskEvent>;
   cancel(taskId: string): Promise<void>;
   resume(taskId: string): Promise<void>;
   getApproval(id: string): Promise<ApprovalView>;
@@ -90,6 +91,8 @@ export interface SessionBackend {
   listModels?(): Promise<import("@morrow/contracts").ModelStatus[]>;
   /** Read-only categorized Git status for /branch, /changes, and resume digest. */
   getGitStatus?(): Promise<import("../cli/gitinfo.js").GitStatus | null>;
+  /** Recent tasks for the active project — powers /tasks and /output <task-id>. */
+  listTasks?(): Promise<import("@morrow/contracts").Task[]>;
   /** Cortex staleness for the resume freshness check. */
   getCortexStaleness?(): Promise<import("./resume.js").ResumeStaleness | null>;
 }
@@ -145,6 +148,8 @@ export class InteractiveSession {
   private streamAbort: AbortController | null = null;
   private currentTaskId: string | null = null;
   private lastTaskId: string | null = null;
+  /** Duration of the most recently finished task, for the completion card. */
+  private lastTaskElapsedMs: number | null = null;
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
   /** True once we've told the user this busy stretch that their keystroke isn't
@@ -489,15 +494,25 @@ export class InteractiveSession {
       case "search":
         await this.showSearch(arg);
         return void this.requestPaint(false);
-      case "output":
-        await this.showTaskReport(arg === "full" ? "full" : arg === "failures" ? "failures" : "summary");
+      case "stats":
+        this.showStats();
         return void this.requestPaint(false);
+      case "output": {
+        // /output [full|failures] [task-id] — either order, both optional.
+        const parts = arg.split(/\s+/).filter(Boolean);
+        const kindArg = parts.find((part) => part === "full" || part === "failures");
+        const taskRef = parts.find((part) => part !== "full" && part !== "failures");
+        await this.showTaskReport(kindArg === "full" ? "full" : kindArg === "failures" ? "failures" : "summary", taskRef);
+        return void this.requestPaint(false);
+      }
       case "export":
         await this.exportTaskReport(arg || undefined);
         return void this.requestPaint(false);
       case "tree":
-      case "tasks":
         await this.showTaskTree();
+        return void this.requestPaint(false);
+      case "tasks":
+        await this.showTaskList(arg);
         return void this.requestPaint(false);
       case "result":
         await this.showMissionResult();
@@ -792,6 +807,69 @@ export class InteractiveSession {
     this.input = { ...this.input, overlay: "output" };
   }
 
+  /** /stats — the detailed session metrics the minimal header no longer shows. */
+  private showStats(): void {
+    const elapsed = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
+    const lines = statsLines(this.term, this.deps.out, {
+      unicode: this.deps.unicode,
+      ...(elapsed !== null ? { elapsedMs: elapsed } : {}),
+    });
+    this.outputViewer = { title: "stats", lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** /tasks — recent tasks with short ids, status, and timestamps. */
+  private async showTaskList(arg: string): Promise<void> {
+    if (!this.deps.backend.listTasks) {
+      this.pushNotice("info", "Task listing isn't available in this session.");
+      return;
+    }
+    const tasks = await this.deps.backend.listTasks().catch(() => null);
+    if (!tasks) {
+      this.pushNotice("warn", "Could not load tasks — is the orchestrator reachable?");
+      return;
+    }
+    if (tasks.length === 0) {
+      this.pushNotice("info", "No tasks have run in this project yet.");
+      return;
+    }
+    const limit = arg ? parseInt(arg, 10) || 10 : 10;
+    const o = this.deps.out;
+    const g = glyphs(this.deps.unicode);
+    const recent = [...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+    const lines = recent.map((t) => {
+      const mark = t.status === "completed" || t.status === "verified" ? o.green(g.ok) : t.status === "failed" ? o.red(g.fail) : t.status === "running" ? o.cyan(g.run) : o.gray(g.dot);
+      const current = t.id === this.lastTaskId ? o.cyan("  ← current") : "";
+      return `  ${mark} ${o.cyan(t.id.slice(0, 8))}  ${String(t.status).padEnd(11)}  ${o.gray(t.createdAt.replace("T", " ").slice(0, 19))}${current}`;
+    });
+    lines.push("", o.gray(`  Open one with /output <id> ${g.dot} /output full <id>`));
+    this.outputViewer = { title: `tasks (${recent.length} of ${tasks.length})`, lines };
+    this.input = { ...this.input, overlay: "output" };
+  }
+
+  /** Resolve a task reference (full id or unique prefix) to a full task id. */
+  private async resolveTaskRef(ref: string): Promise<string | null> {
+    if (this.deps.backend.listTasks) {
+      const tasks = await this.deps.backend.listTasks().catch(() => null);
+      if (tasks === null) {
+        this.pushNotice("warn", "Could not verify that task id in this project — is the orchestrator reachable?");
+        return null;
+      }
+      const resolution = resolveTaskReference(tasks, ref);
+      if (resolution.status === "resolved") return resolution.id;
+      if (resolution.status === "invalid") this.pushNotice("warn", `Invalid task reference "${ref}" — use the id shown by /tasks.`);
+      else if (resolution.status === "ambiguous") this.pushNotice("warn", `"${resolution.ref}" matches ${resolution.count} tasks — use more characters.`);
+      else this.pushNotice("warn", `No task matches "${resolution.ref}" in this project. Run /tasks to see available ids.`);
+      return null;
+    }
+    // Legacy backends without project-scoped listing may address only the
+    // current task already established by this session.
+    const normalized = ref.trim();
+    if (/^[A-Za-z0-9_-]+$/.test(normalized) && this.lastTaskId?.startsWith(normalized)) return this.lastTaskId;
+    this.pushNotice("warn", "Task-id lookup is unavailable in this session; use /output for the current task.");
+    return null;
+  }
+
   private async showModelPicker(): Promise<void> {
     if (!this.deps.backend.listModels) {
       this.pushNotice("info", `Model: ${this.settings.model ?? "auto (preset routing)"} — run \`morrow model\` for the full picker.`);
@@ -836,19 +914,21 @@ export class InteractiveSession {
     this.input = { ...this.input, overlay: "output" };
   }
 
-  private async showTaskReport(kind: ReportKind): Promise<void> {
-    if (!this.lastTaskId) {
+  private async showTaskReport(kind: ReportKind, taskRef?: string): Promise<void> {
+    const taskId = taskRef ? await this.resolveTaskRef(taskRef) : this.lastTaskId;
+    if (taskRef && taskId === null) return; // ambiguous ref already reported
+    if (!taskId) {
       this.pushNotice("info", "No task output is available yet.");
       return;
     }
-    const aggregate = await this.deps.backend.getTask(this.lastTaskId).catch((error) => {
+    const aggregate = await this.deps.backend.getTask(taskId).catch((error) => {
       this.pushNotice("error", `Could not load output: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     });
     if (!aggregate) return;
-    const legacyFinalAnswerFallback = await this.reportFinalAnswer(this.lastTaskId);
+    const legacyFinalAnswerFallback = taskId === this.lastTaskId ? await this.reportFinalAnswer(taskId) : null;
     const report = buildTaskReport(aggregate, { kind, ...(legacyFinalAnswerFallback ? { legacyFinalAnswerFallback } : {}) });
-    this.outputViewer = { title: kind === "summary" ? "task report" : `task report ${kind}`, lines: report.split(/\r?\n/) };
+    this.outputViewer = { title: `${kind === "summary" ? "task report" : `task report ${kind}`} · ${taskId.slice(0, 8)}`, lines: report.split(/\r?\n/) };
     this.input = { ...this.input, overlay: "output" };
     this.emitScrollbackReport(report);
   }
@@ -1297,6 +1377,7 @@ export class InteractiveSession {
       }
     } finally {
       this.busy = false;
+      this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
       this.requestPaint(true);
@@ -1317,8 +1398,13 @@ export class InteractiveSession {
     this.currentTaskId = this.lastTaskId;
     this.requestPaint(true);
     try {
+      // Capture the persisted cursor before resuming. Starting from zero would
+      // replay the historical task.interrupted event, which legitimately ends
+      // an SSE stream before any post-resume answer can arrive.
+      const aggregate = await this.deps.backend.getTask(this.lastTaskId);
+      const after = aggregate.events.reduce((highest, event) => Math.max(highest, event.sequence), 0);
       await this.deps.backend.resume(this.lastTaskId);
-      for await (const raw of this.deps.backend.subscribe(this.lastTaskId, abort.signal)) {
+      for await (const raw of this.deps.backend.subscribe(this.lastTaskId, abort.signal, after)) {
         if (raw.type === "approval.requested") { await this.openApproval(raw); continue; }
         if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") void this.refreshPlan(this.lastTaskId);
         for (const te of mapTaskEvent(raw)) {
@@ -1332,6 +1418,7 @@ export class InteractiveSession {
       this.pushNotice("error", `Could not continue task: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.busy = false;
+      this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
       this.requestPaint(true);
@@ -1441,11 +1528,14 @@ export class InteractiveSession {
     this.lastPaintAt = this.now();
     const { io, out, unicode } = this.deps;
     const promptLabel = out.green(unicode ? "› " : "> ");
+    // While busy the elapsed timer feeds the footer; after a task it feeds
+    // the completion card's "N tools · 18s" line.
+    const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const frame = composeApp(this.term, this.input, out, unicode, this.keyCtx, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
-      ...(this.busy ? { elapsedMs: this.now() - this.streamStart } : {}),
+      ...(elapsedMs !== null ? { elapsedMs } : {}),
       promptLabel,
       promptWidth: 2,
     });

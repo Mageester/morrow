@@ -82,9 +82,49 @@ describe("task event adapter", () => {
     expect(mapTaskEvent({ type: "approval.resolved", payload: { decision: "allow_once" } })).toEqual([]);
   });
 
-  it("maps a tool failure to a warning notice", () => {
+  it("maps a tool failure to a recovery problem, not a product error", () => {
     expect(mapTaskEvent({ type: "tool.failed", payload: { toolName: "run_command", message: "denied" } })).toEqual([
-      { type: "notice", level: "warn", text: "run_command failed: denied" },
+      { type: "recovery.problem", tool: "run_command", message: "denied" },
+    ]);
+  });
+
+  it("maps a strategy switch to a recovery strategy", () => {
+    expect(mapTaskEvent({ type: "tool.strategy_switch", payload: { tool: "create_file", from: "create_file", to: "whole_file_edit", reason: "file exists" } })).toEqual([
+      { type: "recovery.strategy", tool: "create_file", strategy: "create_file → whole_file_edit", detail: "file exists" },
+    ]);
+  });
+
+  it("maps the real patch recovery payload to a problem and truthful strategy", () => {
+    expect(mapTaskEvent({
+      type: "patch.recovery_feedback",
+      payload: {
+        targetFile: "verify.js",
+        conflictCategory: "context_mismatch",
+        attemptsForPatch: 1,
+        retryExhausted: false,
+        instruction: "Regenerate the patch against currentFile.content.",
+      },
+    })).toEqual([
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in verify.js" },
+      { type: "recovery.strategy", tool: "propose_patch", strategy: "Regenerate the patch against currentFile.content." },
+    ]);
+  });
+
+  it("maps a persisted write to patch.applied (a change, not a read)", () => {
+    expect(mapTaskEvent({ type: "evidence.persisted", payload: { path: "hello.js", size: 59, action: "patched" } })).toEqual([
+      { type: "patch.applied", files: ["hello.js"] },
+    ]);
+  });
+
+  it("keeps mapping a persisted read to reading activity", () => {
+    expect(mapTaskEvent({ type: "evidence.persisted", payload: { path: "hello.js", size: 59, action: "read" } })).toEqual([
+      { type: "activity", kind: "reading", detail: "hello.js (59 bytes)" },
+    ]);
+  });
+
+  it("prefers the orchestrator display target for tool cards", () => {
+    expect(mapTaskEvent({ type: "tool.started", payload: { id: "c1", toolName: "create_file", target: "hello.js" } })).toEqual([
+      { type: "tool.start", id: "c1", name: "create_file", purpose: "hello.js" },
     ]);
   });
 

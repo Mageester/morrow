@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { initialState, reduce, type TerminalState } from "../src/terminal/state.js";
 import type { TerminalEvent } from "../src/terminal/events.js";
 import { mapTaskEvent } from "../src/terminal/task-event-adapter.js";
-import { headerLines } from "../src/terminal/view.js";
+import { headerLines, statsLines } from "../src/terminal/view.js";
 import { LineRenderer } from "../src/terminal/line-renderer.js";
 import type { Output } from "../src/cli/output.js";
 
@@ -82,52 +82,75 @@ describe("unified terminal presentation: extended events", () => {
   });
 });
 
-describe("unified terminal presentation: header", () => {
+describe("unified terminal presentation: minimal header + /stats ownership", () => {
   const meta = {
     greeting: "hi", projectName: "Test", workspacePath: "/tmp",
     branch: "main", provider: "mock", model: "mock-model",
     privacy: "local", mode: "Agent", memory: true, autoApprove: false,
   };
 
-  it("header includes context usage when present", () => {
+  it("header stays minimal: identity, project, branch state, model, mode — no metrics", () => {
+    const state = apply([
+      { type: "session.started", meta },
+      { type: "git.state", git: { branch: "feature/x", dirty: true, ahead: 3, behind: 1 } },
+      { type: "context.usage", usage: { usedTokens: 100, maxTokens: 1000, method: "estimate", compactedGroups: 0, removedGroups: 0 } },
+      { type: "agent.update", agents: [{ id: "a1", name: "coder", role: "subagent", status: "running" }] },
+      { type: "process.update", processes: [{ id: "p1", name: "dev-server", status: "running" }] },
+    ]);
+    const lines = headerLines(state, fakeOutput(), { columns: 120 });
+    const text = lines.join("\n");
+    expect(text).toContain("MORROW");
+    expect(text).toContain("Test");
+    expect(text).toContain("feature/x");
+    expect(text).toContain("dirty");
+    expect(text).toContain("mock-model");
+    expect(text).toContain("Build");
+    // Metrics belong to /stats, never the header.
+    expect(text).not.toContain("Context");
+    expect(text).not.toContain("Tokens");
+    expect(text).not.toContain("Cost");
+    expect(text).not.toContain("Agents");
+    expect(text).not.toContain("Processes");
+    expect(text).not.toContain("+3"); // ahead/behind is /branch and /stats detail
+  });
+
+  it("/stats owns context usage", () => {
     const state = apply([
       { type: "session.started", meta },
       { type: "context.usage", usage: { usedTokens: 100, maxTokens: 1000, method: "estimate", compactedGroups: 0, removedGroups: 0 } },
     ]);
-    const lines = headerLines(state, fakeOutput(), { columns: 120 });
-    expect(lines.some((l) => l.includes("Context"))).toBe(true);
+    const lines = statsLines(state, fakeOutput());
+    expect(lines.some((l) => l.includes("context"))).toBe(true);
     expect(lines.some((l) => l.includes("100 / 1k"))).toBe(true);
   });
 
-  it("header includes git dirty state when present", () => {
+  it("/stats owns git ahead/behind detail", () => {
     const state = apply([
       { type: "session.started", meta },
       { type: "git.state", git: { branch: "feature/x", dirty: true, ahead: 3, behind: 1 } },
     ]);
-    const lines = headerLines(state, fakeOutput());
+    const lines = statsLines(state, fakeOutput());
     expect(lines.some((l) => l.includes("feature/x"))).toBe(true);
-    expect(lines.some((l) => l.includes("dirty"))).toBe(true);
-    expect(lines.some((l) => l.includes("+3"))).toBe(true);
+    expect(lines.some((l) => l.includes("+3 ahead"))).toBe(true);
+    expect(lines.some((l) => l.includes("-1 behind"))).toBe(true);
   });
 
-  it("header includes active agents when present", () => {
+  it("/stats owns agents and processes", () => {
     const state = apply([
       { type: "session.started", meta },
       { type: "agent.update", agents: [{ id: "a1", name: "coder", role: "subagent", status: "running" }] },
-    ]);
-    const lines = headerLines(state, fakeOutput());
-    expect(lines.some((l) => l.includes("Agents"))).toBe(true);
-    expect(lines.some((l) => l.includes("coder"))).toBe(true);
-  });
-
-  it("header includes running processes when present", () => {
-    const state = apply([
-      { type: "session.started", meta },
       { type: "process.update", processes: [{ id: "p1", name: "dev-server", status: "running" }] },
     ]);
-    const lines = headerLines(state, fakeOutput());
-    expect(lines.some((l) => l.includes("Processes"))).toBe(true);
-    expect(lines.some((l) => l.includes("1 running"))).toBe(true);
+    const lines = statsLines(state, fakeOutput());
+    expect(lines.some((l) => l.includes("agents") && l.includes("1 running"))).toBe(true);
+    expect(lines.some((l) => l.includes("processes") && l.includes("1 running"))).toBe(true);
+  });
+
+  it("/stats is honest about unknown tokens and cost", () => {
+    const state = apply([{ type: "session.started", meta }]);
+    const lines = statsLines(state, fakeOutput());
+    expect(lines.some((l) => l.includes("tokens") && l.includes("unknown"))).toBe(true);
+    expect(lines.some((l) => l.includes("cost") && l.includes("unknown (not metered)"))).toBe(true);
   });
 });
 

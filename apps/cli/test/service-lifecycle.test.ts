@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,8 +11,12 @@ import { readPid, recoverReachableServicePid, stop } from "../src/service/lifecy
 
 describe("service lifecycle", () => {
   const tempDirs: string[] = [];
+  const children: ChildProcess[] = [];
 
   afterEach(() => {
+    for (const child of children.splice(0)) {
+      child.kill("SIGKILL");
+    }
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -62,11 +67,46 @@ describe("service lifecycle", () => {
     }
   });
 
-  it("recovers a missing pid from a local Morrow health response", () => {
-    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true)).toBe(12345);
+  it("recovers a missing pid only after local process ownership is verified", () => {
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true, true)).toBe(12345);
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true, false)).toBeNull();
   });
 
   it("never adopts a pid supplied by a non-local service", () => {
-    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, false)).toBeNull();
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, false, true)).toBeNull();
+  });
+
+  it("refuses a live pid file that belongs to an unrelated process", async () => {
+    let unrelatedExited = false;
+    const server = createServer((req, res) => {
+      if (req.url === "/api/health") {
+        if (unrelatedExited) {
+          res.statusCode = 503;
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, service: "morrow-orchestrator", apiVersion: 1, migrations: { applied: 5, latest: 5 } }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    children.push(unrelated);
+    if (!unrelated.pid) throw new Error("Expected unrelated process pid");
+    unrelated.once("exit", () => { unrelatedExited = true; });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Unexpected server address");
+      const ctx = makeContext(`http://127.0.0.1:${address.port}`);
+      writeFileSync(ctx.paths.pidFile, `${unrelated.pid}\n`);
+
+      await expect(stop(ctx)).rejects.toMatchObject({ code: "SERVICE_UNMANAGED" });
+      expect(unrelated.exitCode).toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

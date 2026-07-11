@@ -61,6 +61,12 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       }
       const path = str(p.path);
       if (path !== undefined) {
+        const action = str(p.action);
+        // A persisted WRITE is a change, not a read — it feeds the changed-files
+        // list. Beta.28 rendered file writes as "reading <file>", which was wrong.
+        if (action === "patched") return withSource([{ type: "patch.applied", files: [path] }]);
+        // Directory creation is already covered by the tool's own action line.
+        if (action === "created_directory") return [];
         const size = num(p.size);
         return withSource([{ type: "activity", kind: "reading", detail: size !== undefined ? `${path} (${size} bytes)` : path }]);
       }
@@ -95,9 +101,12 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       const id = str(p.id);
       const name = str(p.toolName);
       if (!id || !name) return [];
-      const purpose = str(p.purpose);
+      // `target` is the orchestrator's display target (path/command); older
+      // backends may still send `purpose`. Either becomes the card's purpose.
+      const purpose = str(p.target) ?? str(p.purpose);
       const scope = str(p.scope);
-      return withSource([{ type: "tool.start", id, name, ...(purpose ? { purpose } : {}), ...(scope ? { scope } : {}) }]);
+      const verification = p.verification === true;
+      return withSource([{ type: "tool.start", id, name, ...(purpose ? { purpose } : {}), ...(scope ? { scope } : {}), ...(verification ? { verification: true } : {}) }]);
     }
 
     case "tool.completed": {
@@ -112,9 +121,36 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
     }
 
     case "tool.failed": {
+      // A tool failure inside the agent loop is a recovery event, not a product
+      // error — the agent is expected to retry or switch strategy. Rendered
+      // with warning styling; red is reserved for the task itself failing.
       const name = str(p.toolName) ?? "tool";
       const message = str(p.message) ?? "unknown error";
-      return withSource([{ type: "notice", level: "warn", text: `${name} failed: ${message}` }]);
+      return withSource([{ type: "recovery.problem", tool: name, message }]);
+    }
+
+    case "tool.strategy_switch": {
+      const tool = str(p.tool) ?? str(p.toolName);
+      const from = str(p.from);
+      const to = str(p.to);
+      const reason = str(p.reason);
+      const strategy = to ? (from ? `${from} → ${to}` : to) : "new approach";
+      return withSource([{ type: "recovery.strategy", ...(tool ? { tool } : {}), strategy, ...(reason ? { detail: reason } : {}) }]);
+    }
+
+    case "patch.recovery_feedback": {
+      const target = str(p.targetFile) ?? str(p.path);
+      const category = (str(p.conflictCategory) ?? "conflict").replace(/[_-]+/g, " ");
+      const message = `Patch ${category}${target ? ` in ${target}` : ""}`;
+      const strategy =
+        str(p.strategy) ??
+        str(p.instruction) ??
+        (p.retryExhausted === true ? "Stop cleanly and report the patch conflict." : "Regenerate the patch against current file content.");
+      const detail = str(p.detail);
+      return withSource([
+        { type: "recovery.problem", tool: "propose_patch", message },
+        { type: "recovery.strategy", tool: "propose_patch", strategy, ...(detail ? { detail } : {}) },
+      ]);
     }
 
     case "provider.usage": {

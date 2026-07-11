@@ -8,7 +8,7 @@
 import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
 import type { ActivityKind, ProgressStage } from "./events.js";
-import type { ActivityEntry, PatchEntry, TerminalState, ToolCard } from "./state.js";
+import type { ActivityEntry, PatchEntry, RecoveryEntry, TerminalState, ToolCard } from "./state.js";
 
 export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed";
 
@@ -20,13 +20,15 @@ export interface Glyphs {
   bullet: string;
   dot: string;
   warn: string;
+  /** The stable Morrow identity mark (state-independent). */
+  mark: string;
   spinner: string[];
 }
 
 export function glyphs(unicode: boolean): Glyphs {
   return unicode
-    ? { ok: "✓", fail: "✖", run: "•", arrow: "↳", bullet: "◦", dot: "·", warn: "⚠", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
-    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", spinner: ["-", "\\", "|", "/"] };
+    ? { ok: "✓", fail: "✖", run: "•", arrow: "↳", bullet: "◦", dot: "·", warn: "!", mark: "◇", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
+    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", mark: "*", spinner: ["-", "\\", "|", "/"] };
 }
 
 export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean; color: Output }): string {
@@ -337,42 +339,106 @@ export interface HeaderOptions {
   elapsedMs?: number;
 }
 
-/** The session header: identity + the live facts a user steers by. */
+/** `branch · clean` / `branch · dirty` — the two git facts a user steers by.
+ *  Ahead/behind and file lists live in /branch and /stats. */
+function gitShortLabel(state: TerminalState): string | null {
+  const g = state.git;
+  if (g) return `${g.branch} ${DOT} ${g.dirty ? "dirty" : "clean"}`;
+  return state.meta?.branch ?? null;
+}
+
+const DOT = "·";
+
+/**
+ * The session header — identity only, one fact per line, nothing the footer
+ * or /stats already owns:
+ *
+ *   ◇ MORROW
+ *   ProjectName · branch · clean
+ *   model · Build · YOLO
+ *
+ * Narrow terminals keep the project and the mode (the footer keeps task
+ * state); everything else collapses. Detailed metrics live in /stats.
+ */
 export function headerLines(state: TerminalState, out: Output, opts: HeaderOptions = {}): string[] {
   const m = state.meta;
   if (!m) return [];
   const unicode = opts.unicode ?? true;
   const columns = opts.columns ?? 80;
-  const avatar = morrowAvatar(avatarState(state), { unicode, color: out });
+  const g = glyphs(unicode);
+  const dot = out.gray(` ${g.dot} `);
   const mode = plainMode(m.mode);
-  const providerModel = `${m.provider}/${m.model}`;
-  const memory = m.memory ? "Memory on" : "Memory off";
-  const elapsed = opts.elapsedMs !== undefined ? `Time ${formatElapsed(opts.elapsedMs)}` : "";
-  const cost = costLabel(state);
+  const modeChip = m.autoApprove ? `${out.cyan(mode)}${dot}${out.yellow("YOLO")}` : out.cyan(mode);
+  const git = gitShortLabel(state);
 
   if (columns < 56) {
     return [
-      clipToWidth(`  MORROW ${avatar} ${mode} ${m.model}`, columns),
-      clipToWidth(`  ${shortAutonomyLabel(state)} ${contextLabel(state)}`, columns),
+      clipToWidth(`  ${g.mark} ${out.bold("MORROW")}${dot}${out.cyan(m.projectName)}`, columns),
+      clipToWidth(`  ${modeChip}`, columns),
     ];
   }
 
-  if (columns < 100) {
-    const medium = [
-      clipToWidth(`  MORROW ${avatar}  ${m.projectName}  ${out.gray(gitLabel(state))}`, columns),
-      clipToWidth(`  ${joinHeaderFields(out, [`${mode} - ${shortAutonomyLabel(state)}`, m.model, `Task ${taskLabel(state)}`, contextLabel(state), toolsLabel(state), elapsed], unicode)}`, columns),
-    ];
-    const extras = [agentsLabel(state), processesLabel(state)].filter((field): field is string => Boolean(field));
-    if (extras.length > 0) medium.push(clipToWidth(`  ${joinHeaderFields(out, extras, unicode)}`, columns));
-    return medium;
-  }
-
-  const liveFields = [memory, `Task ${taskLabel(state)}`, agentsLabel(state), processesLabel(state)].filter((field): field is string => Boolean(field));
+  const gitPart = git ? `${dot}${out.gray(git.replace(/ · /g, ` ${g.dot} `))}` : "";
   return [
-    clipToWidth(`  ${out.bold("MORROW")} ${avatar}  ${out.cyan(m.projectName)}  ${out.gray(m.workspacePath)}`, columns),
-    clipToWidth(`  ${joinHeaderFields(out, [`${mode} - ${autonomyLabel(state)}`, providerModel, `Git ${gitLabel(state)}`, ...liveFields], unicode)}`, columns),
-    clipToWidth(`  ${joinHeaderFields(out, [usageLabel(state), contextLabel(state), toolsLabel(state), elapsed, cost], unicode)}`, columns),
+    `  ${g.mark} ${out.bold("MORROW")}`,
+    clipToWidth(`  ${out.cyan(m.projectName)}${gitPart}`, columns),
+    clipToWidth(`  ${out.gray(m.model)}${dot}${modeChip}`, columns),
   ];
+}
+
+// ── /stats — the detailed statistics view ─────────────────────────────────────
+
+export interface StatsOptions {
+  unicode?: boolean;
+  elapsedMs?: number;
+}
+
+/**
+ * Every detailed metric that used to crowd the header, in one place, honest
+ * about unknowns. This is the single owner of tokens, context, cost, memory,
+ * the full provider/model identifier, tool totals, agents, and processes.
+ */
+export function statsLines(state: TerminalState, out: Output, opts: StatsOptions = {}): string[] {
+  const m = state.meta;
+  const g = glyphs(opts.unicode ?? true);
+  const dot = ` ${g.dot} `;
+  const rows: Array<[string, string]> = [];
+
+  if (m) {
+    rows.push(["model", `${m.provider}/${m.model}${dot}${m.privacy}`]);
+    rows.push(["mode", `${plainMode(m.mode)}${dot}${autonomyLabel(state)}`]);
+    rows.push(["memory", m.memory ? "on" : "off"]);
+  }
+  const u = state.usage;
+  rows.push(["tokens", u ? [`${formatTokens(u.inputTokens)} in`, `${formatTokens(u.outputTokens)} out`, ...(u.cachedInputTokens > 0 ? [`${formatTokens(u.cachedInputTokens)} cached`] : [])].join(dot) : "unknown"]);
+  const cu = state.contextUsage;
+  if (cu) {
+    const limit = contextLimit(state);
+    const pct = limit && limit > 0 ? `${cu.percent ?? Math.round((cu.usedTokens / limit) * 100)}%` : null;
+    rows.push(["context", `${formatTokens(cu.usedTokens)} / ${limit ? formatTokens(limit) : "unknown"}${pct ? dot + pct : ""}${dot}${cu.method}`]);
+  } else {
+    rows.push(["context", "unknown"]);
+  }
+  const cost = state.usage?.estimatedCostUsd;
+  rows.push(["cost", cost === undefined || cost === null ? "unknown (not metered)" : `$${cost.toFixed(cost < 0.01 ? 4 : 2)}`]);
+  const failed = state.tools.filter((t) => t.status === "failed").length;
+  rows.push(["tools", `${state.tools.length} calls${dot}${failed} failed`]);
+  if (opts.elapsedMs !== undefined) rows.push(["time", formatElapsed(opts.elapsedMs)]);
+  if (state.git) {
+    const gi = state.git;
+    const bits = [gi.branch, gi.dirty ? "dirty" : "clean"];
+    if (gi.ahead > 0) bits.push(`+${gi.ahead} ahead`);
+    if (gi.behind > 0) bits.push(`-${gi.behind} behind`);
+    rows.push(["git", bits.join(dot)]);
+  }
+  const runningAgents = state.agents.filter((a) => a.status === "running").length;
+  if (runningAgents > 0) rows.push(["agents", `${runningAgents} running`]);
+  const runningProcs = state.processes.filter((p) => p.status === "running").length;
+  if (runningProcs > 0) rows.push(["processes", `${runningProcs} running`]);
+  if (m) rows.push(["workspace", m.workspacePath]);
+
+  const width = rows.reduce((w, [k]) => Math.max(w, k.length), 0);
+  return [out.bold("Session statistics"), "", ...rows.map(([k, v]) => `  ${out.gray(k.padEnd(width + 2))}${v}`)];
 }
 
 // ── Tool card ─────────────────────────────────────────────────────────────────
@@ -438,35 +504,162 @@ export function patchLines(patch: PatchEntry, out: Output, unicode: boolean, wor
   return lines;
 }
 
-// ── Completion summary ────────────────────────────────────────────────────────
+// ── Structured actions ────────────────────────────────────────────────────────
 
-/** End-of-task summary built only from observed, structured facts. */
-export function completionLines(state: TerminalState, out: Output, unicode: boolean): string[] {
+/** Present/past verbs per tool, so live output reads as actions, not narration. */
+const TOOL_VERBS: Record<string, [present: string, past: string]> = {
+  read_file: ["Reading", "Read"],
+  create_file: ["Creating", "Created"],
+  create_directory: ["Creating", "Created"],
+  delete_file: ["Deleting", "Deleted"],
+  edit_file: ["Editing", "Edited"],
+  propose_patch: ["Editing", "Edited"],
+  apply_patch: ["Applying patch to", "Patched"],
+  run_command: ["Running", "Ran"],
+  search_text: ["Searching", "Searched"],
+  search_files: ["Searching", "Searched"],
+  list_files: ["Listing", "Listed"],
+  inspect_workspace: ["Inspecting", "Inspected"],
+};
+
+function toolVerb(name: string, tense: 0 | 1): string {
+  const verbs = TOOL_VERBS[name];
+  if (verbs) return verbs[tense];
+  return tense === 0 ? name : name;
+}
+
+function toolTarget(card: ToolCard, workspace?: string): string {
+  if (card.name === "inspect_workspace") return "workspace";
+  const raw = card.purpose ?? card.scope ?? "";
+  return raw ? truncate(relativePath(raw, workspace), 60) : "";
+}
+
+/**
+ * One structured line per completed observable action:
+ *   ✓ Read verify.js
+ *   ✓ Ran pnpm test
+ * Failed tools are owned by the recovery lines and skipped here.
+ */
+export function actionLine(card: ToolCard, out: Output, unicode: boolean, workspace?: string): string | null {
   const g = glyphs(unicode);
-  const commandsRun = state.tools.filter((t) => t.name === "run_command").length;
-  const filesChanged = new Set(state.patches.flatMap((p) => p.files)).size;
-  const failures = state.tools.filter((t) => t.status === "failed").length;
+  if (card.status === "failed") return null;
+  const target = toolTarget(card, workspace);
+  if (card.status === "running") {
+    return `  ${out.cyan(g.spinner[0]!)} ${toolVerb(card.name, 0)}${target ? " " + target : ""}`;
+  }
+  return `  ${out.green(g.ok)} ${toolVerb(card.name, 1)}${target ? " " + out.gray(target) : ""}`;
+}
 
-  const statusText =
-    state.status === "completed"
-      ? out.green(`${g.ok} completed`)
-      : state.status === "failed"
-        ? out.red(`${g.fail} failed`)
-        : state.status === "cancelled"
-          ? out.yellow("cancelled")
-          : state.status === "interrupted"
-            ? out.yellow("interrupted")
-            : String(state.status);
+/** The running-tool line with a live spinner tick. */
+export function runningActionLine(card: ToolCard, out: Output, unicode: boolean, tick: number, workspace?: string): string {
+  const g = glyphs(unicode);
+  const target = toolTarget(card, workspace);
+  return `  ${out.cyan(g.spinner[tick % g.spinner.length]!)} ${toolVerb(card.name, 0)}${target ? " " + target : ""}`;
+}
 
-  const rows: Array<[string, string]> = [["Result", statusText]];
-  if (filesChanged > 0) rows.push(["Files changed", String(filesChanged)]);
-  if (commandsRun > 0) rows.push(["Commands run", String(commandsRun)]);
-  if (state.tools.length > 0) rows.push(["Tool calls", String(state.tools.length)]);
-  if (failures > 0) rows.push(["Tool failures", out.red(String(failures))]);
-  if (state.lastError) rows.push(["Error", out.red(truncate(state.lastError, 120))]);
+// ── Recovery lines ────────────────────────────────────────────────────────────
 
-  const width = rows.reduce((w, [k]) => Math.max(w, k.length), 0);
-  return rows.map(([k, v]) => `  ${out.gray((k + ":").padEnd(width + 1))} ${v}`);
+/**
+ * Render one recovery entry as its 1–3 line story:
+ *   ! Patch mismatch ×2
+ *   ↳ Switched to full-file rewrite
+ *   ✓ Recovered
+ * Warning styling while recoverable; red only when the task itself failed.
+ */
+export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: boolean, taskFailed: boolean): string[] {
+  const g = glyphs(unicode);
+  const count = entry.count > 1 ? ` ${unicode ? "×" : "x"}${entry.count}` : "";
+  const problem = truncate(entry.message, 80) + count;
+  const lines: string[] = [];
+  if (entry.status === "failed" && taskFailed) {
+    lines.push(`  ${out.red(g.fail)} ${out.red(problem)}`);
+    return lines;
+  }
+  lines.push(`  ${out.yellow(g.warn)} ${out.yellow(problem)}`);
+  if (entry.strategy && entry.strategy !== entry.message) lines.push(`  ${out.gray(g.arrow)} ${out.gray(truncate(entry.strategy, 80))}`);
+  if (entry.status === "recovered") lines.push(`  ${out.green(g.ok)} ${out.green("Recovered")}`);
+  return lines;
+}
+
+// ── Completion card ───────────────────────────────────────────────────────────
+
+export interface CompletionCardOptions {
+  unicode?: boolean;
+  elapsedMs?: number;
+}
+
+/**
+ * The compact end-of-task card. Answers, in order: did it succeed, what
+ * changed, did verification pass, what was recovered — then where the full
+ * report lives. Never dumps the full report into the transcript.
+ */
+export function completionCard(state: TerminalState, out: Output, opts: CompletionCardOptions = {}): string[] {
+  const unicode = opts.unicode ?? true;
+  const g = glyphs(unicode);
+  const dot = ` ${g.dot} `;
+  const lines: string[] = [];
+  const totals = `${state.tools.length} tool${state.tools.length === 1 ? "" : "s"}${opts.elapsedMs !== undefined ? dot + formatElapsed(opts.elapsedMs) : ""}`;
+
+  if (state.status === "completed") {
+    lines.push(`  ${out.green(g.ok)} ${out.green("Task completed")}`);
+    const files = [...new Set(state.patches.filter((p) => p.applied).flatMap((p) => p.files))];
+    if (files.length > 0) {
+      lines.push(`  ${out.bold("Changed")}`);
+      for (const f of files.slice(0, 8)) lines.push(`    ${f}`);
+      if (files.length > 8) lines.push(`    ${out.gray(`+${files.length - 8} more`)}`);
+    }
+    const verify = [...state.tools].reverse().find((tool) =>
+      tool.name === "run_command" &&
+      tool.status === "completed" &&
+      tool.verification === true &&
+      /^exit 0(?:\b|$)/i.test(tool.summary ?? ""),
+    );
+    if (verify) {
+      lines.push(`  ${out.bold("Verified")}`);
+      const detail = verify.summary ? dot + truncate(verify.summary, 48) : "";
+      lines.push(`    ${truncate(toolTarget(verify) || "command", 48)}${out.gray(detail)}`);
+    }
+    const recovered = state.recoveries.filter((r) => r.status === "recovered");
+    if (recovered.length > 0) {
+      lines.push(`  ${out.bold("Recovered")}`);
+      for (const r of recovered.slice(0, 4)) {
+        const count = r.count > 1 ? ` ${unicode ? "×" : "x"}${r.count}` : "";
+        lines.push(`    ${truncate(r.message, 60)}${count}`);
+      }
+    }
+    lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output")}`);
+    return lines;
+  }
+
+  if (state.status === "failed") {
+    lines.push(`  ${out.red(g.fail)} ${out.red("Task failed")}`);
+    if (state.lastError) {
+      lines.push(`  ${out.bold("Blocked by")}`, `    ${truncate(state.lastError, 100)}`);
+    }
+    const lastOk = [...state.tools].reverse().find((t) => t.status === "completed");
+    if (lastOk) {
+      lines.push(`  ${out.bold("Last successful step")}`, `    ${toolVerb(lastOk.name, 1)} ${toolTarget(lastOk)}`);
+    }
+    const next = state.recoverySuggestions[state.recoverySuggestions.length - 1];
+    lines.push(`  ${out.bold("Next action")}`, `    ${next ?? "Retry with /continue, or review the full trail"}`);
+    lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output full")}`);
+    return lines;
+  }
+
+  if (state.status === "stalled" || state.status === "budget-reached") {
+    const label = state.status === "stalled" ? "Task paused" : "Task budget reached";
+    lines.push(`  ${out.yellow(g.warn)} ${out.yellow(label)}`);
+    if (state.lastError) lines.push(`  ${out.bold("Paused because")}`, `    ${truncate(state.lastError, 100)}`);
+    const next = state.recoverySuggestions[state.recoverySuggestions.length - 1];
+    lines.push(`  ${out.bold("Next action")}`, `    ${next ?? "Continue with /continue when ready"}`);
+    lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output full")}`);
+    return lines;
+  }
+
+  // Cancelled / interrupted: one calm line plus the report pointer.
+  const label = state.status === "cancelled" ? "Task cancelled" : "Task interrupted";
+  lines.push(`  ${out.yellow(g.warn)} ${out.yellow(label)}`, `  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output")}`);
+  return lines;
 }
 
 function truncate(s: string, max: number): string {
@@ -505,7 +698,7 @@ export function composeFrame(state: TerminalState, out: Output, unicode: boolean
   const workspace = state.meta?.workspacePath;
   const lines: string[] = [];
 
-  for (const l of headerLines(state, out)) lines.push(l);
+  for (const l of headerLines(state, out, { unicode, columns: opts.columns })) lines.push(l);
   lines.push("");
 
   // Progress stage banner.
@@ -525,13 +718,12 @@ export function composeFrame(state: TerminalState, out: Output, unicode: boolean
     }
   }
 
-  // Grouped activity + running tool cards form the live region.
+  // Structured actions + recovery stories + running tools form the live region.
   const live: string[] = [];
-  const groups = groupActivities(state.activity);
-  // Show last 2 groups.
-  for (const g of groups.slice(-2)) live.push(activityGroupLine(g, out, unicode));
+  const taskFailed = state.status === "failed";
+  for (const entry of state.recoveries.slice(-3)) for (const rl of recoveryEntryLines(entry, out, unicode, taskFailed)) live.push(rl);
   for (const card of state.tools.filter((t) => t.status === "running")) {
-    for (const cl of toolCardLines(card, out, unicode, opts.tick, workspace)) live.push(cl);
+    live.push(runningActionLine(card, out, unicode, opts.tick, workspace));
   }
 
   const footer = statusFooter(state, out, unicode, opts.columns, opts.hint);
@@ -551,159 +743,96 @@ export function composeFrame(state: TerminalState, out: Output, unicode: boolean
 }
 
 function statusFooter(state: TerminalState, out: Output, unicode: boolean, columns: number, hint?: string): string[] {
-  return [
-    statusBar(state, out, unicode, columns),
-    hint ? out.gray(`  ${hint}`) : out.gray("  Ctrl+C cancel · Ctrl+L repaint · /help"),
-  ];
+  const bar = statusBar(state, out, unicode, columns);
+  return hint ? [bar, out.gray(`  ${hint}`)] : [bar];
 }
 
-/** One status-bar field: its plain text (for width math) and a colouriser. */
-interface StatusField {
-  /** Visible text used for width budgeting (no ANSI). */
-  plain: string;
-  /** Rendered (possibly coloured) text. */
-  render: string;
-}
+// ── Current action ────────────────────────────────────────────────────────────
 
 /**
- * Build the ordered status-bar fields from real state only — no invented cost
- * or mission numbers. Order is by importance; the fitter drops from the end
- * (least important) first, so the state glyph, brand, and mode survive longest.
+ * The one-phrase answer to "what is Morrow doing right now": the running
+ * tool as a verb + target ("editing verify.js"), else the latest activity,
+ * else "thinking" while streaming.
  */
-export function statusBarFields(state: TerminalState, out: Output, unicode: boolean): StatusField[] {
-  const g = glyphs(unicode);
-  const fields: StatusField[] = [];
-  const push = (plain: string, render: string) => fields.push({ plain, render });
-
-  // 0. Live state glyph + word (connection/activity). Always first.
-  const stateWord =
-    state.status === "streaming"
-      ? "working"
-      : state.status === "completed"
-        ? "ready"
-        : state.status === "failed"
-          ? "failed"
-          : state.status === "cancelled" || state.status === "interrupted" || state.status === "budget-reached" || state.status === "stalled"
-            ? state.status
-            : "idle";
-  const stateGlyph =
-    state.status === "streaming"
-      ? out.cyan(g.run)
-      : state.status === "completed"
-        ? out.green(g.ok)
-        : state.status === "failed" || state.status === "stalled"
-          ? out.red(g.fail)
-          : state.status === "cancelled" || state.status === "interrupted" || state.status === "budget-reached"
-            ? out.yellow(g.warn)
-            : out.gray(g.dot);
-  const stateColor = (s: string): string =>
-    stateWord === "working" ? out.cyan(s) : stateWord === "ready" ? out.green(s) : stateWord === "idle" ? out.gray(s) : out.yellow(s);
-  push(`${g.run} ${stateWord}`, `${stateGlyph} ${stateColor(stateWord)}`);
-
-  // 1. Brand.
-  push("Morrow", out.bold("Morrow"));
-
-  const m = state.meta;
-  // 2. Mode (short word) + YOLO chip when auto-approving.
-  if (m?.mode) {
-    const word = m.mode.split("·")[0]?.trim() || m.mode;
-    if (m.autoApprove) {
-      push(`${word} YOLO`, `${out.yellow(word)} ${out.yellow("YOLO")}`);
-    } else {
-      push(word, out.cyan(word));
-    }
+export function currentActionLabel(state: TerminalState, workspace?: string): string | null {
+  const running = [...state.tools].reverse().find((t) => t.status === "running");
+  if (running) {
+    const target = toolTarget(running, workspace);
+    return `${toolVerb(running.name, 0).toLowerCase()}${target ? " " + target : ""}`;
   }
-
-  // 3. Model.
-  if (m?.model && m.model !== "auto") push(m.model, out.gray(m.model));
-
-  // 4. Git branch + dirty/ahead/behind.
-  if (state.git) {
-    const gi = state.git;
-    let plain = gi.branch + (gi.dirty ? "*" : "");
-    if (gi.ahead > 0) plain += ` +${gi.ahead}`;
-    if (gi.behind > 0) plain += ` -${gi.behind}`;
-    const render = out.gray(gi.branch) + (gi.dirty ? out.yellow("*") : "") + (gi.ahead > 0 ? out.gray(` +${gi.ahead}`) : "") + (gi.behind > 0 ? out.gray(` -${gi.behind}`) : "");
-    push(plain, render);
-  } else if (m?.branch) {
-    push(m.branch, out.gray(m.branch));
+  if (state.status !== "streaming") return null;
+  const latest = state.activity[state.activity.length - 1];
+  if (latest) {
+    const label = ACTIVITY_LABEL[latest.kind] ?? latest.kind;
+    return latest.detail ? `${label} ${truncate(relativePath(latest.detail, workspace), 40)}` : label;
   }
-
-  // 5. Context usage.
-  if (state.contextUsage && state.contextUsage.maxTokens > 0) {
-    const u = state.contextUsage;
-    const pct = Math.round((u.usedTokens / u.maxTokens) * 100);
-    const color = (s: string): string => (pct >= 90 ? out.red(s) : pct >= 70 ? out.yellow(s) : out.gray(s));
-    push(`ctx ${pct}%`, color(`ctx ${pct}%`));
-  }
-
-  // 6. Active agents.
-  const runningAgents = state.agents.filter((a) => a.status === "running").length;
-  if (runningAgents > 0) {
-    const label = `${runningAgents} agent${runningAgents === 1 ? "" : "s"}`;
-    push(label, out.gray(label));
-  }
-
-  return fields;
+  return "thinking";
 }
 
-/**
- * Render the responsive single-line status bar. Fields are dropped from the end
- * (least important first) until the visible width fits `columns`; the line never
- * wraps. Pure and snapshot-testable.
- */
+// ── Status bar (footer) ───────────────────────────────────────────────────────
+
 export interface StatusBarOptions {
   elapsedMs?: number;
 }
 
+/**
+ * The compact footer — one line, one job: what is Morrow doing right now?
+ *
+ *   ◇ Morrow · ready
+ *   ◇ Morrow · editing verify.js
+ *   ◇ Morrow · ready · last task passed
+ *
+ * The only extra chip is a context warning at ≥70% (the point where the user
+ * should care). Everything else lives in the header or /stats.
+ */
 export function statusBar(state: TerminalState, out: Output, unicode: boolean, columns: number, opts: StatusBarOptions = {}): string {
   const g = glyphs(unicode);
-  const sep = ` ${g.dot} `;
-  const beta28Fields: StatusField[] = [];
-  const pushBeta = (plain: string, render: string) => beta28Fields.push({ plain, render });
+  const sep = out.gray(` ${g.dot} `);
   const avatar = morrowAvatar(avatarState(state), { unicode, color: out });
-  pushBeta(stripAnsi(avatar), avatar);
-  pushBeta("Morrow", out.bold("Morrow"));
-  const live = liveStateLabel(state);
-  pushBeta(live, live === "working" ? out.cyan(live) : live === "ready" ? out.green(live) : live === "failed" ? out.red(live) : out.gray(live));
-  if (state.meta) {
-    const mode = plainMode(state.meta.mode);
-    pushBeta(`${mode} - ${shortAutonomyLabel(state)}`, `${out.cyan(mode)} ${out.gray("-")} ${state.meta.autoApprove ? out.yellow("YOLO") : out.gray("approvals")}`);
-    if (state.meta.model && state.meta.model !== "auto") pushBeta(state.meta.model, out.gray(state.meta.model));
+  const workspace = state.meta?.workspacePath;
+  const parts: Array<{ plain: string; render: string; priority: number }> = [];
+  const push = (plain: string, render: string, priority: number) => parts.push({ plain, render, priority });
+
+  push(stripAnsi(avatar), avatar, 100);
+  push("Morrow", out.bold("Morrow"), 10);
+
+  if (state.status === "streaming") {
+    const action = currentActionLabel(state, workspace) ?? "working";
+    const withTimer = opts.elapsedMs !== undefined ? `${action} ${g.dot} ${formatElapsed(opts.elapsedMs)}` : action;
+    push(withTimer, out.cyan(withTimer), 90);
+  } else {
+    const readyLabel = state.status === "stalled" || state.status === "budget-reached" ? "paused" : "ready";
+    push(readyLabel, state.status === "idle" ? out.gray(readyLabel) : state.status === "stalled" || state.status === "budget-reached" ? out.yellow(readyLabel) : out.green(readyLabel), 30);
+    if (state.status === "completed") push("last task passed", out.gray("last task passed"), 80);
+    else if (state.status === "failed") push("last task failed", out.red("last task failed"), 80);
+    else if (state.status === "stalled") push("last task paused", out.yellow("last task paused"), 80);
+    else if (state.status === "budget-reached") push("budget reached", out.yellow("budget reached"), 80);
+    else if (state.status === "cancelled") push("last task cancelled", out.yellow("last task cancelled"), 80);
+    else if (state.status === "interrupted") push("last task interrupted", out.yellow("last task interrupted"), 80);
   }
-  if (state.contextUsage) {
-    const limit = contextLimit(state);
-    const label = limit ? `${formatTokens(state.contextUsage.usedTokens)}/${formatTokens(limit)}` : `${formatTokens(state.contextUsage.usedTokens)}/unknown`;
-    pushBeta(label, out.gray(label));
+
+  // The single warning chip: context pressure the user must know about.
+  const cu = state.contextUsage;
+  const limit = cu ? (cu.contextLimitTokens ?? (cu.contextWindowSource === "fallback" ? null : cu.maxTokens)) : null;
+  if (cu && limit && limit > 0) {
+    const pct = cu.percent ?? Math.round((cu.usedTokens / limit) * 100);
+    if (pct >= 70) {
+      const label = `ctx ${pct}%`;
+      push(label, pct >= 90 ? out.red(label) : out.yellow(label), 40);
+    }
   }
-  const failed = state.tools.filter((t) => t.status === "failed").length;
-  if (state.tools.length > 0) {
-    const label = `Tools ${state.tools.length}/${failed}`;
-    pushBeta(label, failed > 0 ? out.yellow(label) : out.gray(label));
+
+  const budget = Number.isFinite(columns) ? Math.max(0, columns - 2) : Number.POSITIVE_INFINITY;
+  const width = (fs: typeof parts) => fs.reduce((w, f) => w + f.plain.length, 0) + Math.max(0, fs.length - 1) * ` ${g.dot} `.length;
+  let kept = [...parts];
+  while (kept.length > 2 && width(kept) > budget) {
+    const removable = kept.reduce((lowest, part, index) => part.priority < kept[lowest]!.priority ? index : lowest, 1);
+    kept.splice(removable, 1);
   }
-  if (opts.elapsedMs !== undefined) {
-    const label = formatElapsed(opts.elapsedMs);
-    pushBeta(label, out.gray(label));
+  if (kept.length === 2 && width(kept) > budget) {
+    const available = Math.max(1, budget - kept[0]!.plain.length - ` ${g.dot} `.length);
+    const clipped = clipToWidth(kept[1]!.render, available);
+    kept[1] = { ...kept[1]!, plain: stripAnsi(clipped), render: clipped };
   }
-  if (state.usage) {
-    const label = `${formatTokens(state.usage.totalTokens)} tok`;
-    pushBeta(label, out.gray(label));
-  }
-  if (state.git) {
-    const branch = state.git.branch + (state.git.dirty ? "*" : "");
-    pushBeta(branch, state.git.dirty ? out.yellow(branch) : out.gray(branch));
-  } else if (state.meta?.branch) {
-    pushBeta(state.meta.branch, out.gray(state.meta.branch));
-  }
-  const runningAgents = state.agents.filter((agent) => agent.status === "running").length;
-  if (runningAgents > 0) {
-    const label = `${runningAgents} agent${runningAgents === 1 ? "" : "s"}`;
-    pushBeta(label, out.gray(label));
-  }
-  const betaBudget = Number.isFinite(columns) ? Math.max(0, columns - 2) : Number.POSITIVE_INFINITY;
-  const betaWidth = (fs: StatusField[]) => fs.reduce((w, f) => w + f.plain.length, 0) + Math.max(0, fs.length - 1) * sep.length;
-  let betaKept = beta28Fields;
-  while (betaKept.length > 2 && betaWidth(betaKept) > betaBudget) betaKept = betaKept.slice(0, -1);
-  if (betaKept.length === 2 && betaWidth(betaKept) > betaBudget) betaKept = betaKept.slice(0, 1);
-  return "  " + betaKept.map((f) => f.render).join(out.gray(sep));
+  return "  " + kept.map((f) => f.render).join(sep);
 }

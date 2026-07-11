@@ -2,7 +2,8 @@
 
 ## Versioning
 
-Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE]`
+Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE]`.
+The current release is `v0.1.0-beta.29`.
 
 - **Pre-release**: `v0.1.0-beta.1`, `v0.1.0-beta.2`, etc.
 - **Release candidate**: `v0.1.0-rc.1`
@@ -29,8 +30,8 @@ Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEAS
 ## Artifact Naming
 
 ```
-Morrow-v0.1.0-beta.1-windows-x64.zip
-morrow-v0.1.0-beta.1-checksums.txt
+Morrow-v0.1.0-beta.29-windows-x64.zip
+morrow-v0.1.0-beta.29-checksums.txt
 release-manifest.json
 ```
 
@@ -47,12 +48,12 @@ release-manifest.json
 | Purpose | Default path |
 |---------|-------------|
 | Application | `%LOCALAPPDATA%\Morrow\app` |
-| User data | `%USERPROFILE%\.morrow` |
-| Database | `%USERPROFILE%\.morrow\morrow.db` |
-| Logs | `%USERPROFILE%\.morrow\logs` |
-| Skills | `%USERPROFILE%\.morrow\skills` |
-| Plugins | `%USERPROFILE%\.morrow\plugins` |
-| Config | `%USERPROFILE%\.morrow\config` |
+| User data (`MORROW_HOME`) | `%LOCALAPPDATA%\Morrow\data` |
+| Database | `%LOCALAPPDATA%\Morrow\data\morrow.db` |
+| Service logs | `%LOCALAPPDATA%\Morrow\logs` |
+| Bundled skills | `%LOCALAPPDATA%\Morrow\app\skills` |
+| Configuration and credentials | `%LOCALAPPDATA%\Morrow\data` |
+| Backups/cache | `%LOCALAPPDATA%\Morrow\backup`, `%LOCALAPPDATA%\Morrow\cache` |
 
 Override with `MORROW_HOME` environment variable.
 
@@ -61,32 +62,45 @@ Override with `MORROW_HOME` environment variable.
 | Setting | Default |
 |---------|---------|
 | API port | 4317 |
-| Web URL | `http://localhost:4317` |
 | Bind address | `127.0.0.1` (localhost only) |
-| Browser | Chromium (Playwright-bundled) |
+| Product interface | Terminal (`morrow`) |
 
 ## Service Lifecycle
 
 ```
-morrow install   — Set up data directories, register shortcuts
-morrow start     — Launch orchestrator + open browser
+morrow start     — Launch the local orchestrator
 morrow stop      — Gracefully stop orchestrator
 morrow restart   — Stop + start
 morrow status    — Show running state and health
 morrow doctor    — Full system diagnostics
-morrow update    — Check for and apply updates
-morrow repair    — Verify installation integrity
+morrow update    — Check whether a newer version exists
 morrow uninstall — Remove application, prompt about user data
 ```
 
 ## Security
 
 - Default bind: `127.0.0.1` only. No LAN or internet exposure.
-- Provider API keys: stored in environment or `%USERPROFILE%\.morrow\secrets.env`
+- Provider API keys: stored in environment or the packaged install's owner-readable local secrets file
 - Secrets never in browser localStorage, logs, or diagnostic exports
 - Workspace containment: agent operations scoped to approved paths
-- Plugin execution: disabled by default, opt-in per plugin
-- Browser automation: isolated Chromium sessions, audit trail
+- Tool execution remains workspace-scoped and approval-gated unless the user explicitly enables scoped YOLO mode
+- Diagnostic exports redact secret fields, credential-shaped strings, and the user-home prefix
+
+## Publication sequence
+
+1. Merge the release PR after required CI and independent security review.
+2. Dispatch `.github/workflows/release.yml` with `0.1.0-beta.29`.
+3. Confirm the GitHub prerelease contains the ZIP, checksum, `latest.json`, and
+   `release-manifest.json`, and that their version/checksum values agree.
+4. Publish `installer/install.ps1` and `dist/latest.json` to the website/CDN
+   origin used by `https://morrowproject.getaxiom.ca`.
+5. Install from the public one-line command on a clean Windows account and
+   verify `morrow --version`, `morrow doctor --json`, onboarding, one task,
+   restart/resume, upgrade preservation, and uninstall preservation.
+
+GitHub Release publication does not itself update the external website/CDN
+manifest. Public installation is not complete until step 4 is performed by an
+operator with that deployment authority and step 5 passes.
 
 ## Integrity
 
@@ -99,20 +113,20 @@ morrow uninstall — Remove application, prompt about user data
 
 ```json
 {
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.29",
   "channel": "beta",
   "releasedAt": "2026-06-23T00:00:00Z",
   "artifacts": [
     {
       "platform": "windows-x64",
       "type": "portable",
-      "filename": "Morrow-v0.1.0-beta.1-windows-x64.zip",
+      "filename": "Morrow-v0.1.0-beta.29-windows-x64.zip",
       "size": 0,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.1/Morrow-v0.1.0-beta.1-windows-x64.zip"
+      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.29/Morrow-v0.1.0-beta.29-windows-x64.zip"
     }
   ],
-  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.1",
+  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.29",
   "minimumNodeVersion": "22.0.0"
 }
 ```
