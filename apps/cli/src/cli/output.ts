@@ -52,6 +52,30 @@ export class Output {
   gray(s: string) { return this.wrap(ANSI.gray, s); }
   underline(s: string) { return this.wrap(ANSI.underline, s); }
 
+  /**
+   * Apply a named color/style by string (e.g. a risk-level color chosen at
+   * runtime) without extracting the method off the instance first — indexing
+   * an instance method (`out[name]`) and calling the resulting reference
+   * loses its `this` binding and throws `Cannot read properties of
+   * undefined (reading 'wrap')` the moment it runs. Callers that need to
+   * pick a color by name should call this instead of `out[name](s)`.
+   */
+  colorize(name: "bold" | "italic" | "dim" | "red" | "green" | "yellow" | "blue" | "cyan" | "magenta" | "gray" | "underline", s: string): string {
+    switch (name) {
+      case "bold": return this.bold(s);
+      case "italic": return this.italic(s);
+      case "dim": return this.dim(s);
+      case "red": return this.red(s);
+      case "green": return this.green(s);
+      case "yellow": return this.yellow(s);
+      case "blue": return this.blue(s);
+      case "cyan": return this.cyan(s);
+      case "magenta": return this.magenta(s);
+      case "gray": return this.gray(s);
+      case "underline": return this.underline(s);
+    }
+  }
+
   /** Primary stdout line (suppressed in JSON mode). */
   print(line = "") {
     if (this.json) return;

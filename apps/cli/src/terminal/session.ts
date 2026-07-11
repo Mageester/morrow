@@ -1593,9 +1593,8 @@ export class InteractiveSession {
       const d = commandApprovalView(ap.details);
       const risk = riskLabel(d.risk);
       const glyph = riskGlyph(risk);
-      const colorFn = out[riskColor(risk)];
 
-      lines.push(out.bold(`  Command approval  ${colorFn(glyph + " " + risk + " risk")}`));
+      lines.push(out.bold(`  Command approval  ${out.colorize(riskColor(risk), glyph + " " + risk + " risk")}`));
       lines.push(`    ${out.gray("run:")} ${d.commandLine}`);
       lines.push(`    ${out.gray("dir:")} ${d.cwd}`);
       lines.push(`    ${out.gray("why:")} ${d.purpose}`);

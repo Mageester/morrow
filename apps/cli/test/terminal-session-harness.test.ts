@@ -529,3 +529,235 @@ describe("interactive session: streaming, cancellation, resize", () => {
     await done;
   });
 });
+
+describe("approval rendering (consumer defect #1: unbound Output color-method crash)", () => {
+  function approvalBackend(overrides: Partial<SessionBackend> & { gate?: EventGate } = {}): SessionBackend {
+    const { gate, ...rest } = overrides;
+    return {
+      ...makeBackend(gate ?? new EventGate(), () => {}),
+      getApproval: async (id: string) => ({
+        id, kind: "command",
+        details: { executable: "rm", args: ["-rf", "build"], risk: "medium", purpose: "clean the build directory" },
+        projectId: "p",
+      }),
+      resolveApproval: async () => {},
+      ...rest,
+    };
+  }
+
+  it("renders a command approval at every risk level without the unbound Output color-method crash (reproduces the original stack trace pre-fix)", async () => {
+    for (const risk of ["low", "medium", "high"] as const) {
+      const io = new FakeTermIO();
+      const stdin = fakeStdin();
+      const gate = new EventGate();
+      const resolved: Array<{ id: string; decision: string; trust?: string | undefined }> = [];
+      const app = new InteractiveSession({
+        io, stdin, out: plain, unicode: false, meta, settings,
+        backend: approvalBackend({
+          gate,
+          getApproval: async (id: string) => ({
+            id, kind: "command",
+            details: { executable: "rm", args: ["-rf", "build"], risk, purpose: "clean the build directory" },
+            projectId: "p",
+          }),
+          resolveApproval: async (id: string, decision: string, trust?: string) => { resolved.push({ id, decision, trust }); },
+        }),
+        now: () => Date.now(), maxFps: 120,
+      });
+      const done = app.run();
+
+      typeText(stdin, "clean up");
+      enter(stdin);
+      await tick();
+
+      gate.push({ type: "approval.requested", payload: { approvalId: `a-${risk}`, kind: "command" } } as any);
+      await tick();
+
+      // Before the fix, `out[riskColor(risk)]` extracted a color method off
+      // the Output instance and called it with no receiver, throwing
+      // "Cannot read properties of undefined (reading 'wrap')" from inside
+      // paint(). runTask's catch converted that into a silent task.failed
+      // instead of ever showing the approval prompt, for every risk level
+      // (the extraction lost `this` regardless of which color was picked).
+      expect(app.snapshot().status).not.toBe("failed");
+      expect(app.snapshot().lastError).toBeUndefined();
+      const rendered = io.writes.join("");
+      expect(rendered).toContain("Command approval");
+      expect(rendered.toLowerCase()).toContain(`${risk} risk`);
+
+      // Still fully interactive: approving reaches the backend.
+      stdin.emit("keypress", "y", { name: "y", str: "y" });
+      await tick();
+      expect(resolved).toContainEqual({ id: `a-${risk}`, decision: "allow_once", trust: undefined });
+
+      gate.push({ type: "task.completed", payload: {} } as any);
+      gate.end();
+      await tick();
+      expect(app.snapshot().status).toBe("completed");
+
+      ctrlC(stdin);
+      ctrlC(stdin);
+      await done;
+    }
+  });
+
+  it("renders command-approval risk colors in --color mode without crashing", async () => {
+    const colorOut = new Output({ json: false, quiet: false, color: true });
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: colorOut, unicode: false, meta, settings,
+      backend: approvalBackend({ gate }), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "clean up");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+    await tick();
+
+    expect(app.snapshot().status).not.toBe("failed");
+    const rendered = io.writes.join("");
+    expect(rendered).toContain("Command approval");
+    expect(rendered).toContain("\x1b[33m"); // ANSI yellow, applied via out.colorize, not a bare method reference
+
+    stdin.emit("keypress", "n", { name: "n", str: "n" });
+    await tick();
+    gate.push({ type: "task.cancelled", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("renders a patch approval without crashing", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: approvalBackend({
+        gate,
+        getApproval: async (id: string) => ({
+          id, kind: "change_set",
+          details: { files: ["a.js", "b.js"], explanation: "fix the bug", additions: 5, deletions: 2, diff: "--- a/a.js\n+++ b/a.js\n" },
+          projectId: "p",
+        }),
+      }),
+      now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "fix it");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "p1", kind: "change_set" } } as any);
+    await tick();
+
+    expect(app.snapshot().status).not.toBe("failed");
+    const rendered = io.writes.join("");
+    expect(rendered).toContain("Patch approval");
+    expect(rendered).toContain("a.js, b.js");
+
+    stdin.emit("keypress", "y", { name: "y", str: "y" });
+    await tick();
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+    expect(app.snapshot().status).toBe("completed");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("deny, session-trust, and pattern-trust approval keys all resolve correctly without crashing", async () => {
+    const decisions: Array<["n" | "s" | "p", string]> = [
+      ["n", "deny"],
+      ["s", "trust_session"],
+      ["p", "trust_project"],
+    ];
+    for (const [key, expectedDecision] of decisions) {
+      const io = new FakeTermIO();
+      const stdin = fakeStdin();
+      const gate = new EventGate();
+      const resolved: Array<{ id: string; decision: string; trust?: string | undefined }> = [];
+      const app = new InteractiveSession({
+        io, stdin, out: plain, unicode: false, meta, settings,
+        backend: approvalBackend({
+          gate,
+          getApproval: async (id: string) => ({
+            id, kind: "command",
+            details: { executable: "git", args: ["push", "--force"], risk: "high", pattern: "git push --force", purpose: "sync" },
+            projectId: "p",
+          }),
+          resolveApproval: async (id: string, decision: string, trust?: string) => { resolved.push({ id, decision, trust }); },
+        }),
+        now: () => Date.now(), maxFps: 120,
+      });
+      const done = app.run();
+
+      typeText(stdin, "sync branch");
+      enter(stdin);
+      await tick();
+      gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+      await tick();
+      expect(app.snapshot().status).not.toBe("failed");
+
+      stdin.emit("keypress", key, { name: key, str: key });
+      await tick();
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]!.decision).toBe(expectedDecision);
+      if (expectedDecision !== "deny") expect(resolved[0]!.trust).toBe("git push --force");
+
+      gate.push({ type: "task.cancelled", payload: {} } as any);
+      gate.end();
+      await tick();
+
+      ctrlC(stdin);
+      ctrlC(stdin);
+      await done;
+    }
+  });
+
+  it("survives a resize and timer-driven repaint while an approval is visible", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: approvalBackend({ gate }), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "clean up");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+    await tick();
+    expect(app.snapshot().status).not.toBe("failed");
+
+    const before = io.writes.length;
+    io.columns = 40;
+    io.rows = 12;
+    io.emitResize();
+    await tick(); // a deferred timer repaint also fires within this window
+    expect(io.writes.length).toBeGreaterThan(before);
+    expect(app.snapshot().status).not.toBe("failed");
+    expect(io.writes.join("")).toContain("Command approval");
+
+    stdin.emit("keypress", "y", { name: "y", str: "y" });
+    await tick();
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+});
