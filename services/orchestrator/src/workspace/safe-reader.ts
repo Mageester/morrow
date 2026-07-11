@@ -1,6 +1,7 @@
 import { realpathSync, statSync, readFileSync } from "node:fs";
 import { posix, win32, relative, resolve, sep, extname } from "node:path";
 import { isWithinWorkspace } from "./path-boundary.js";
+import { matchesDeniedNamePattern } from "../security/denied-name-patterns.js";
 
 export class SafeReadError extends Error {
   readonly code = "safe_read_rejected";
@@ -23,9 +24,16 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".lock", ".map", ".svg", ".csv", ".env.example", ""
 ]);
 
+/**
+ * True for a `.morrow` internal-tooling directory, or a name matching a
+ * known credential/system-file convention — never a bare substring like
+ * "secret" or "key", which would also match ordinary files that merely
+ * discuss or check for credentials (`secrets.js`, `credential-detector.
+ * test.js`, `keymap.ts`). See `security/denied-name-patterns.ts`.
+ */
 function isDeniedName(name: string): boolean {
   const value = name.toLowerCase();
-  return value === ".morrow" || value.startsWith(".env") || value.includes("secret") || value.includes("credential") || value.includes("password") || value.startsWith("id_");
+  return value === ".morrow" || matchesDeniedNamePattern(value);
 }
 
 export function isDeniedWorkspacePath(requested: string): boolean {

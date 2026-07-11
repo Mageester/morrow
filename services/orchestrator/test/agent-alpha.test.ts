@@ -179,7 +179,8 @@ describe("Agent Alpha", () => {
     it("rejects sensitive files, credentials, and keys", () => {
       writeFileSync(join(tempDir, "id_rsa"), "private key");
       writeFileSync(join(tempDir, ".env"), "API_KEY=123");
-      writeFileSync(join(tempDir, "secret-token.txt"), "super-secret");
+      writeFileSync(join(tempDir, "credentials.json"), '{"apiKey":"abc"}');
+      writeFileSync(join(tempDir, ".npmrc"), "//registry.npmjs.org/:_authToken=abc");
 
       expect(() => {
         validateSafeReadPath(tempDir, "id_rsa");
@@ -190,8 +191,22 @@ describe("Agent Alpha", () => {
       }).toThrow(SafeReadError);
 
       expect(() => {
-        validateSafeReadPath(tempDir, "secret-token.txt");
+        validateSafeReadPath(tempDir, "credentials.json");
       }).toThrow(SafeReadError);
+
+      expect(() => {
+        validateSafeReadPath(tempDir, ".npmrc");
+      }).toThrow(SafeReadError);
+    });
+
+    it("allows ordinary files that merely mention a security-related word in their name (fix: was a broad 'secret'/'credential'/'password' substring match — blocked secret-token.txt, secrets.js, credential-detector.test.js, keymap.ts, etc.)", () => {
+      writeFileSync(join(tempDir, "secret-token.txt"), "not actually a credential store");
+      writeFileSync(join(tempDir, "secrets.js"), "export const checks = [];\n");
+      writeFileSync(join(tempDir, "credential-detector.test.js"), "test('detects', () => {});\n");
+
+      expect(() => validateSafeReadPath(tempDir, "secret-token.txt")).not.toThrow();
+      expect(() => validateSafeReadPath(tempDir, "secrets.js")).not.toThrow();
+      expect(() => validateSafeReadPath(tempDir, "credential-detector.test.js")).not.toThrow();
     });
 
     it("rejects binary formats", () => {
