@@ -530,6 +530,103 @@ describe("interactive session: streaming, cancellation, resize", () => {
   });
 });
 
+describe("paused-state and YOLO notice consistency (consumer defects #5, #6)", () => {
+  it("clears the 'still working' notice once the task stops being busy, instead of leaving it beside the paused/completion card", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "go");
+    enter(stdin);
+    await tick();
+
+    // A keystroke while busy pushes the notice once, honestly reporting the
+    // keystroke was not applied.
+    typeText(stdin, "x");
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.includes("still working"))).toBe(true);
+
+    // The task pauses (budget reached) — the stream just stops.
+    gate.push({ type: "task.interrupted", payload: { reason: "turn_budget_reached" } } as any);
+    gate.end();
+    await tick();
+
+    expect(app.snapshot().status).toBe("budget-reached");
+    // The stale "still working" claim must not survive into the paused frame.
+    expect(app.snapshot().notices.some((n) => n.text.includes("still working"))).toBe(false);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("never shows a stale YOLO on/off notice beside the current one after toggling twice", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "/yolo on");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.startsWith("YOLO on"))).toBe(true);
+
+    typeText(stdin, "/yolo off");
+    enter(stdin);
+    await tick();
+
+    const texts = app.snapshot().notices.map((n) => n.text);
+    // Only the latest toggle's notice remains — the earlier "on" claim,
+    // which now contradicts the current "off" state, is gone.
+    expect(texts.filter((t) => t.startsWith("YOLO on"))).toHaveLength(0);
+    expect(texts.filter((t) => t.startsWith("YOLO off"))).toHaveLength(1);
+    // The authoritative state (settings/meta) agrees.
+    expect(app.snapshot().meta?.autoApprove).toBe(false);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("/panic's forced YOLO-off notice supersedes an earlier 'on' notice too", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "/yolo on");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.startsWith("YOLO on"))).toBe(true);
+
+    typeText(stdin, "/panic");
+    enter(stdin);
+    await tick();
+
+    const texts = app.snapshot().notices.map((n) => n.text);
+    expect(texts.filter((t) => t.startsWith("YOLO on"))).toHaveLength(0);
+    expect(texts.some((t) => t.startsWith("Panic stop:"))).toBe(true);
+    expect(app.snapshot().meta?.autoApprove).toBe(false);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+});
+
 describe("approval rendering (consumer defect #1: unbound Output color-method crash)", () => {
   function approvalBackend(overrides: Partial<SessionBackend> & { gate?: EventGate } = {}): SessionBackend {
     const { gate, ...rest } = overrides;

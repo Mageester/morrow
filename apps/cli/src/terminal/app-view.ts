@@ -229,9 +229,16 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
   items.sort((a, b) => a.at - b.at);
   for (const item of items) for (const l of item.render()) lines.push(l);
 
-  // Live region: running tools with a spinner.
-  for (const card of term.tools) {
-    if (card.status === "running") lines.push(runningActionLine(card, out, unicode, opts.tick, workspace));
+  // Live region: running tools with a spinner — only while genuinely
+  // streaming. A tool call can be left "running" forever if the stream
+  // ends mid-call (pause, cancel, failure/interrupt all just stop sending
+  // events); once the task is no longer actively streaming there is
+  // nothing truly live, so the spinner must stop rather than animate a
+  // paused/finished task forever.
+  if (term.status === "streaming") {
+    for (const card of term.tools) {
+      if (card.status === "running") lines.push(runningActionLine(card, out, unicode, opts.tick, workspace));
+    }
   }
 
   if (currentAssistantIndex >= 0) renderConversationEntry(term.conversation[currentAssistantIndex]!);

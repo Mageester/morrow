@@ -222,7 +222,9 @@ describe("LineRenderer (non-interactive)", () => {
 
     expect(cancelled).toContain("Task cancelled");
     expect(interrupted).toContain("Task interrupted");
-    expect(stalled).toContain("Task paused");
-    expect(budget).toContain("Task budget reached");
+    expect(stalled).toContain("Paused");
+    expect(stalled).toContain("Reason: No progress");
+    expect(budget).toContain("Paused");
+    expect(budget).toContain("Reason: Turn budget reached");
   });
 });

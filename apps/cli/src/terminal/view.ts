@@ -10,7 +10,7 @@ import { stripAnsi } from "../cli/output.js";
 import type { ActivityKind, ProgressStage } from "./events.js";
 import type { ActivityEntry, PatchEntry, RecoveryEntry, TerminalState, ToolCard } from "./state.js";
 
-export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed";
+export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed" | "paused";
 
 export interface Glyphs {
   ok: string;
@@ -36,6 +36,7 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
   if (!opts.unicode) {
     if (state === "completed") return out.green("[M+]");
     if (state === "failed") return out.red("[M!]");
+    if (state === "paused") return out.yellow("[M~]");
     if (state === "thinking" || state === "running-tool") return out.cyan("[M*]");
     return out.gray("[M]");
   }
@@ -44,6 +45,8 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
       return out.green("\u25C8M");
     case "failed":
       return out.red("\u25C7M!");
+    case "paused":
+      return out.yellow("\u25C7M~");
     case "thinking":
       return out.cyan("\u25C7M");
     case "running-tool":
@@ -222,9 +225,13 @@ function processesLabel(state: TerminalState): string | null {
 }
 
 function avatarState(state: TerminalState): MorrowAvatarState {
-  if (state.status === "failed" || state.status === "stalled") return "failed";
+  if (state.status === "failed") return "failed";
+  if (state.status === "stalled" || state.status === "budget-reached") return "paused";
   if (state.status === "completed") return "completed";
-  if (state.tools.some((t) => t.status === "running")) return "running-tool";
+  // A tool card can be left "running" after the stream itself has ended
+  // (pause, cancel, interrupt) — only show the live/running-tool avatar
+  // while genuinely streaming, never for an abandoned call's stale status.
+  if (state.status === "streaming" && state.tools.some((t) => t.status === "running")) return "running-tool";
   if (state.status === "streaming") return "thinking";
   return "idle";
 }
@@ -715,11 +722,12 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
   }
 
   if (state.status === "stalled" || state.status === "budget-reached") {
-    const label = state.status === "stalled" ? "Task paused" : "Task budget reached";
-    lines.push(`  ${out.yellow(g.warn)} ${out.yellow(label)}`);
-    if (state.lastError) lines.push(`  ${out.bold("Paused because")}`, `    ${truncate(state.lastError, 100)}`);
-    const next = state.recoverySuggestions[state.recoverySuggestions.length - 1];
-    lines.push(`  ${out.bold("Next action")}`, `    ${next ?? "Continue with /continue when ready"}`);
+    // One shared "Paused" shape for every pause reason — never a spinner,
+    // an elapsed timer, or "still working" text, and never a second,
+    // differently-worded chip implying something other than paused.
+    lines.push(`  ${out.yellow(g.warn)} ${out.yellow("Paused")}`);
+    lines.push(`  ${out.bold("Reason:")} ${state.lastError ? truncate(state.lastError, 100) : "the task stopped making progress"}`);
+    lines.push(`  ${out.bold("Next:")} ${out.cyan("/continue")}`);
     lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output full")}`);
     return lines;
   }
@@ -869,12 +877,15 @@ export function statusBar(state: TerminalState, out: Output, unicode: boolean, c
     const withTimer = opts.elapsedMs !== undefined ? `${action} ${g.dot} ${formatElapsed(opts.elapsedMs)}` : action;
     push(withTimer, out.cyan(withTimer), 90);
   } else {
-    const readyLabel = state.status === "stalled" || state.status === "budget-reached" ? "paused" : "ready";
-    push(readyLabel, state.status === "idle" ? out.gray(readyLabel) : state.status === "stalled" || state.status === "budget-reached" ? out.yellow(readyLabel) : out.green(readyLabel), 30);
+    const isPaused = state.status === "stalled" || state.status === "budget-reached";
+    const readyLabel = isPaused ? "paused" : "ready";
+    push(readyLabel, isPaused ? out.yellow(readyLabel) : state.status === "idle" ? out.gray(readyLabel) : out.green(readyLabel), 30);
+    // A paused state is fully said by the "paused" chip above — a second
+    // chip repeating "budget reached"/"last task paused" right beside it
+    // read as two contradictory facts, not one. The specific reason lives
+    // in the completion card and /status, not the compact footer.
     if (state.status === "completed") push("last task passed", out.gray("last task passed"), 80);
     else if (state.status === "failed") push("last task failed", out.red("last task failed"), 80);
-    else if (state.status === "stalled") push("last task paused", out.yellow("last task paused"), 80);
-    else if (state.status === "budget-reached") push("budget reached", out.yellow("budget reached"), 80);
     else if (state.status === "cancelled") push("last task cancelled", out.yellow("last task cancelled"), 80);
     else if (state.status === "interrupted") push("last task interrupted", out.yellow("last task interrupted"), 80);
   }

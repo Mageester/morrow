@@ -41,6 +41,12 @@ const CURSOR_SHOW = "\x1b[?25h";
 const HOME = "\x1b[H";
 const PASTE_ON = "\x1b[?2004h";
 const PASTE_OFF = "\x1b[?2004l";
+/** Shown once per busy stretch when a keystroke arrives while a task is
+ *  still running (see the `busy` keypress branch). Must be dropped the
+ *  moment the task stops being busy (paused, completed, failed, ...) —
+ *  otherwise it lingers in the notices list beside a completion/paused
+ *  card that says the opposite, the exact contradiction this fixes. */
+const STILL_WORKING_NOTICE = "Morrow is still working. Press Ctrl+C to stop it or wait before submitting.";
 
 export interface SendOptions {
   mode: AgentMode;
@@ -267,7 +273,7 @@ export class InteractiveSession {
       // once per keystroke) that typing isn't being applied yet.
       if (!this.busyInputNotified) {
         this.busyInputNotified = true;
-        this.pushNotice("info", "Morrow is still working. Press Ctrl+C to stop it or wait before submitting.");
+        this.pushNotice("info", STILL_WORKING_NOTICE);
         this.requestPaint(false);
       }
       return;
@@ -395,7 +401,7 @@ export class InteractiveSession {
           this.pushNotice("warn", "YOLO only applies in Build mode. Use /mode build first.");
         } else {
           if (arg === "status") {
-            this.pushNotice("info", yoloStatusText(this.settings.autoApprove));
+            this.pushYoloNotice("info", yoloStatusText(this.settings.autoApprove));
             return void this.requestPaint(false);
           }
           if (arg === "policy") {
@@ -404,7 +410,7 @@ export class InteractiveSession {
           }
           this.settings.autoApprove = arg === "on" ? true : arg === "off" ? false : !this.settings.autoApprove;
           this.refreshModeLabel();
-          this.pushNotice(this.settings.autoApprove ? "warn" : "info", yoloStatusText(this.settings.autoApprove));
+          this.pushYoloNotice(this.settings.autoApprove ? "warn" : "info", yoloStatusText(this.settings.autoApprove));
         }
         return void this.requestPaint(false);
       }
@@ -412,7 +418,7 @@ export class InteractiveSession {
         this.settings.autoApprove = false;
         this.refreshModeLabel();
         if (this.currentTaskId) void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
-        this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
+        this.pushYoloNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
       case "continue":
         await this.continueTask();
@@ -1403,6 +1409,7 @@ export class InteractiveSession {
       this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
+      this.clearStillWorkingNotice();
       this.requestPaint(true);
     }
   }
@@ -1440,6 +1447,7 @@ export class InteractiveSession {
       this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
+      this.clearStillWorkingNotice();
       this.requestPaint(true);
     }
   }
@@ -1502,6 +1510,30 @@ export class InteractiveSession {
 
   private pushNotice(level: "info" | "warn" | "error", text: string): void {
     this.term = reduce(this.term, { type: "notice", level, text }, this.now);
+  }
+
+  /**
+   * Push a notice that asserts the *current* YOLO permission state (an on/
+   * off/status toggle result, or /panic's forced-off), first dropping any
+   * earlier such notice still sitting in the bounded notices list. Without
+   * this, an "on" notice followed soon after by an "off" notice (or vice
+   * versa) can both still be visible in the same frame — two contradictory
+   * "current state" claims at once. The header/`/permissions`/`/yolo
+   * status` all read `settings.autoApprove` directly and are unaffected;
+   * this only prevents a *stale* state-change announcement from lingering
+   * beside the current one.
+   */
+  private pushYoloNotice(level: "info" | "warn", text: string): void {
+    this.term = { ...this.term, notices: this.term.notices.filter((n) => !n.text.startsWith("YOLO ") && !n.text.startsWith("Panic stop:")) };
+    this.pushNotice(level, text);
+  }
+
+  /** Drop the transient "still working" notice once a task stops being
+   *  busy — called from every `runTask`/`continueTask` `finally`. */
+  private clearStillWorkingNotice(): void {
+    if (this.term.notices.some((n) => n.text === STILL_WORKING_NOTICE)) {
+      this.term = { ...this.term, notices: this.term.notices.filter((n) => n.text !== STILL_WORKING_NOTICE) };
+    }
   }
 
   /**
