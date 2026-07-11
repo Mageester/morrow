@@ -4,6 +4,114 @@ Ordering optimizes for: high user value, architectural cleanliness, full
 testability, and unblocking later work. Each item is a coherent, committable
 slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
+## Beta.30 (proposed — from beta.29 acceptance findings)
+
+Not yet scoped or started (`[ ]` throughout). Sourced from the structured
+acceptance-test report in [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — see
+that document for reproduction steps, evidence, and per-issue acceptance
+criteria (including which parts are verified vs. hypothesis). Issue numbers
+below refer to that document. Priority reflects the beta.30 roadmap section
+of the same document.
+
+### P0/P1
+
+- [ ] **Correct provider capability registry.** Canonical `deepseek-v4-flash`/
+      `deepseek-v4-pro` keep verified 1M-context/384K-output metadata; legacy
+      aliases (`deepseek-chat`, `deepseek-reasoner`) get resolved metadata
+      instead of an unset `contextWindow`. Addresses issues 15, 16.
+- [ ] **Canonical model resolution.** `deepseek-chat`/`deepseek-reasoner`
+      resolve to `deepseek-v4-flash` (with the correct thinking-mode flag)
+      before any capability or context-preflight calculation; UI shows both
+      the alias used and the canonical model it resolved to. Addresses
+      issues 15, 16, 17.
+- [ ] **Provider-specific continuation state.** Persist provider-required
+      continuation fields (`content`, `reasoning_content`, `tool_calls`,
+      tool-call IDs, tool results, ordering) for stateless providers
+      (starting with DeepSeek thinking mode); detect unresumable provider
+      state before issuing a doomed request rather than surfacing a raw
+      provider error. Addresses issue 8.
+- [ ] **Automatic context preflight.** Calculate context before every
+      provider call using canonical metadata, a realistic output reserve,
+      and provider-specific fields; surface the calculation in diagnostics.
+      Addresses issue 15.
+- [ ] **Durable mission checkpoints.** Structured checkpoint preserving
+      original mission, hard requirements, prohibited actions, decisions/
+      trade-offs, completed work, current git state, files changed,
+      outstanding work, test results/failures, recovery history, approval
+      state, and provider-specific continuation fields. Addresses issues 5,
+      7, 8.
+- [ ] **Automatic compaction.** Compact old narration and redundant tool
+      output without discarding hard requirements or unresolved failures;
+      deduplicate repeated activity; retain references to full durable
+      records. Addresses issues 11, 15.
+- [ ] **Automatic continuation until verified completion.** Morrow owns
+      continuity: turn-budget boundaries become internal checkpoints,
+      context pressure triggers provider-aware compaction before failure,
+      and the mission continues automatically when safe. User interaction is
+      required only for explicit approval boundaries, user-set budget/cost
+      limits, missing credentials, an unrecoverable external failure, or
+      material ambiguity requiring a product decision. Never claim
+      completion merely because a checkpoint was created; never recommend
+      `/continue` when it will deterministically repeat the same failure.
+      Addresses issues 5, 7, 8 (core product promise — "mission ownership").
+- [ ] **Mission Guardian / Requirement Compliance Monitor.** Structured
+      hard-requirements checklist derived from the mission prompt (e.g. "no
+      frontend", "zero unjustified dependencies", "built-in `node:http`"),
+      checked before each write/dependency-adding tool call so violations are
+      caught during execution, not discovered after the fact. Addresses
+      issue 5.
+  - [ ] Structured hard-requirement checklist (extraction + storage).
+  - [ ] Requirement coverage view (which requirement each major
+        implementation satisfies).
+  - [ ] Scope-drift detection (flag actions that fall outside the original
+        requirement set, e.g. adding a database or frontend that was never
+        requested).
+- [ ] **Permission-state precedence rules.** Every permission-bearing root
+      command (`ask`, `fix`, `plan`, `yolo`) sets a complete, explicit
+      permission state instead of only the flags that differ from default;
+      mode-derived autonomy display (header/footer) reflects the *effective*
+      state for the current mode, not a raw persisted flag. Addresses
+      issues 2, 3.
+- [ ] **Accurate task grading.** Plan-stage status in task reports derives
+      strictly from actual tool-call/response evidence rather than an
+      independent assumption; duration derives from persisted timestamps.
+      Addresses issue 13.
+- [ ] **Deduplicated event persistence.** One record per event, persisted
+      once, in `/output full` and the live activity feed; create-then-recover
+      cycles on the same file collapse into one user-facing action with
+      retries visible only in the deep trace; later provider requests
+      reference (not re-concatenate) prior narration. Addresses issues 4, 11,
+      12.
+
+### P2
+
+- [ ] **Decision ledger, `/decisions`, `/explain last`, `/requirements`.**
+      Structured, auditable decision summaries and requirement traceability
+      without exposing raw chain-of-thought. Addresses issues 5, 6.
+- [ ] **Detailed recovery explanations.** Recovery lines render structured
+      fields (what failed / affected file or tool / strategy used / outcome)
+      instead of a bare "Recovered" string. Addresses issue 4.
+- [ ] **Better checkpoint UX.** A distinct checkpoint status (separate from
+      `interrupted`) for adaptive-budget stops, carrying completed phases,
+      remaining work, requirement coverage, budget consumed, and a
+      recommended next action. Addresses issue 7.
+- [ ] **Context breakdown UI.** Visible context accounting separating user
+      instructions, system instructions, tool schemas, tool results,
+      assistant content, provider reasoning fields, and output reserve.
+      Addresses issue 11.
+- [ ] **Stale model display correction.** Selected/canonical/effective-
+      runtime model, provider, fallback status, thinking mode, and
+      context-capacity source each shown as distinct, consistent fields in
+      `/status`/`/model`/`/context`. Addresses issue 17.
+- [ ] **Terminal redraw hardening.** Adopt a true alternate-screen-buffer
+      switch on interactive session start/exit so redraws are consistent
+      regardless of prior terminal content, instead of the current
+      viewport-only clear sequences. Addresses issue 10.
+- [ ] **Help discoverability.** Generate `morrow help`'s session-command
+      list from the same registry the interactive palette uses, so
+      `/tasks`/`/stats` (and future commands) are never silently omitted.
+      Addresses issue 14.
+
 ## Now
 
 - [x] **B1. Session & memory search (FTS).** SQLite FTS5 over conversations,
