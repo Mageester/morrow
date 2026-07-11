@@ -4,6 +4,7 @@ import { Output, stripAnsi } from "../src/cli/output.js";
 import { composeApp } from "../src/terminal/app-view.js";
 import { initialState, reduce, type TerminalState } from "../src/terminal/state.js";
 import type { SessionMeta } from "../src/terminal/events.js";
+import { SLASH_COMMANDS } from "../src/terminal/commands.js";
 
 const ctx: KeyContext = { commands: [], paletteItems: [] };
 const plain = new Output({ json: false, quiet: false, color: false });
@@ -132,6 +133,16 @@ describe("input composer reliability (pure reducer proofs)", () => {
     const res = reduceKey(s, { name: "escape" }, ctx);
     expect(res.state.completionDismissed).toBe(true);
     expect(res.state.buffer).toBe("/mod");
+  });
+
+  it("completes a slash subcommand after the command name", () => {
+    const slashCtx: KeyContext = { commands: SLASH_COMMANDS, paletteItems: [] };
+    let s = initialInputState();
+    for (const char of "/mode b") s = reduceKey(s, { str: char }, slashCtx).state;
+
+    const result = reduceKey(s, { name: "tab" }, slashCtx);
+
+    expect(result.state.buffer).toBe("/mode build ");
   });
 
   it("treats a single large printable run (chunked paste) as text, never control bytes", () => {

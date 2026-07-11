@@ -8,7 +8,7 @@
  * effects; this module owns behavior.
  */
 import type { SlashCommand } from "./commands.js";
-import { clampSelection, filterCommands } from "./completion.js";
+import { clampSelection, completionCandidates } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
 
 export type Overlay = "none" | "palette" | "output" | "history" | "tasktree" | "mission";
@@ -70,11 +70,11 @@ export function initialInputState(history: string[] = []): InputState {
 
 /** Whether the slash-completion menu is currently active. */
 export function completionActive(s: InputState): boolean {
-  return s.overlay === "none" && s.buffer.startsWith("/") && !s.buffer.includes(" ") && !s.completionDismissed;
+  return s.overlay === "none" && s.buffer.startsWith("/") && /^\/\S*(?:\s+\S*)?$/.test(s.buffer) && !s.completionDismissed;
 }
 
 export function completionMatches(s: InputState, ctx: KeyContext): SlashCommand[] {
-  return completionActive(s) ? filterCommands(s.buffer, ctx.commands) : [];
+  return completionActive(s) ? completionCandidates(s.buffer, ctx.commands) : [];
 }
 
 export function paletteMatches(s: InputState, ctx: KeyContext): PaletteItem[] {
@@ -158,7 +158,7 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
       if (ms.length > 0) {
         const sel = clampSelection(s.completionSelected, ms.length);
         const completed = "/" + ms[sel]!.name;
-        if (s.buffer !== completed) {
+        if (s.buffer !== completed || ms[sel]!.subcommands?.length) {
           s.buffer = completed + " ";
           s.cursor = s.buffer.length;
           s.completionDismissed = true;

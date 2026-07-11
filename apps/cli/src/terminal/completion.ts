@@ -43,6 +43,27 @@ export function filterCommands(input: string, commands: SlashCommand[]): SlashCo
   return scored.map((s) => s.command);
 }
 
+/**
+ * Return completion candidates for a slash command or its first subcommand.
+ * Candidate names remain slash-ready (for example, `mode build`) so the input
+ * controller can use one insertion path for both levels.
+ */
+export function completionCandidates(input: string, commands: SlashCommand[]): SlashCommand[] {
+  const parsed = input.match(/^\/([^\s]*)(?:\s+(.*))?$/s);
+  if (!parsed) return [];
+  const [, rootQuery, argQuery] = parsed;
+  if (argQuery === undefined) return filterCommands(input, commands);
+
+  const root = commands.find((command) => command.name.toLowerCase() === rootQuery!.toLowerCase());
+  if (!root?.subcommands?.length || /\s/.test(argQuery.trim())) return [];
+  const query = argQuery.trim().toLowerCase();
+  return root.subcommands
+    .map((subcommand) => ({ subcommand, score: matchScore(query, subcommand.toLowerCase()) }))
+    .filter((item): item is { subcommand: string; score: number } => item.score !== null)
+    .sort((a, b) => b.score - a.score || a.subcommand.localeCompare(b.subcommand))
+    .map(({ subcommand }) => ({ name: `${root.name} ${subcommand}`, description: root.description }));
+}
+
 export interface MenuOptions {
   selected: number;
   /** Max rows to show. */
@@ -58,13 +79,20 @@ export interface MenuOptions {
 export function renderMenu(matches: SlashCommand[], out: Output, opts: MenuOptions): string[] {
   if (matches.length === 0) return [];
   const pointer = opts.unicode ? "›" : ">";
-  const shown = matches.slice(0, opts.max);
+  const selected = clampSelection(opts.selected, matches.length);
+  // Selection can move through every match, not merely the first visible page.
+  // Keep it near the middle of the menu so ↑/↓ always has an on-screen target.
+  const start = Math.min(
+    Math.max(0, selected - Math.floor(opts.max / 2)),
+    Math.max(0, matches.length - opts.max),
+  );
+  const shown = matches.slice(start, start + opts.max);
   const nameWidth = shown.reduce((w, c) => Math.max(w, c.name.length + (c.arg ? c.arg.length + 1 : 0)), 0);
   const lines = shown.map((c, i) => {
-    const selected = i === opts.selected;
+    const isSelected = start + i === selected;
     const label = `/${c.name}${c.arg ? " " + c.arg : ""}`.padEnd(nameWidth + 1);
-    const mark = selected ? out.cyan(pointer) : " ";
-    const name = selected ? out.bold(label) : label;
+    const mark = isSelected ? out.cyan(pointer) : " ";
+    const name = isSelected ? out.bold(label) : label;
     return `  ${mark} ${name}  ${out.gray(c.description)}`;
   });
   if (matches.length > shown.length) {

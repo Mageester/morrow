@@ -10,7 +10,7 @@
 import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
 import type { SlashCommand } from "./commands.js";
-import { filterCommands, renderMenu } from "./completion.js";
+import { completionCandidates, renderMenu } from "./completion.js";
 import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
 import { completionActive, type InputState } from "./input-state.js";
 import type { SessionMeta } from "./events.js";
@@ -280,7 +280,7 @@ function buildInputBlock(
 
   const lines = [...inputLines];
   if (completionActive(input)) {
-    const matches = filterCommands(input.buffer, ctx.commands);
+    const matches = completionCandidates(input.buffer, ctx.commands);
     for (const ml of renderMenu(matches, out, { selected: input.completionSelected, max: 8, unicode })) lines.push(ml);
   }
   return { lines, cursor: { row: cursorRow, col: cursorCol } };

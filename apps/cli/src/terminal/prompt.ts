@@ -15,7 +15,7 @@ import readline from "node:readline";
 import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
 import { SLASH_COMMANDS } from "./commands.js";
-import { clampSelection, filterCommands, renderMenu } from "./completion.js";
+import { clampSelection, completionCandidates, renderMenu } from "./completion.js";
 
 /** Returned when the user asks to leave (Ctrl+C on an empty line). */
 export const PROMPT_EXIT = Symbol("prompt-exit");
@@ -56,8 +56,8 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
     input.setRawMode(true);
     input.resume();
 
-    const menuVisible = (): boolean => buffer.startsWith("/") && !buffer.includes(" ") && !menuDismissed;
-    const matches = (): ReturnType<typeof filterCommands> => (menuVisible() ? filterCommands(buffer, SLASH_COMMANDS) : []);
+    const menuVisible = (): boolean => buffer.startsWith("/") && /^\/\S*(?:\s+\S*)?$/.test(buffer) && !menuDismissed;
+    const matches = (): ReturnType<typeof completionCandidates> => (menuVisible() ? completionCandidates(buffer, SLASH_COMMANDS) : []);
 
     const render = (): void => {
       const ms = matches();
@@ -130,7 +130,7 @@ export async function readLineWithCompletion(opts: PromptOptions): Promise<strin
           const ms = matches();
           if (ms.length > 0) {
             const dir = key?.shift ? -1 : 0;
-            if (dir === 0 && buffer !== "/" + ms[selected]!.name) {
+            if (dir === 0 && (buffer !== "/" + ms[selected]!.name || ms[selected]!.subcommands?.length)) {
               // First Tab completes to the selected command + a space for args.
               buffer = "/" + ms[selected]!.name + " ";
               cursor = buffer.length;
