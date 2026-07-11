@@ -1,122 +1,93 @@
-# Morrow Installation
+# Morrow installation
 
-Morrow v0.1.0-beta.28 is an unsigned Windows 10/11 x64 Early Access release.
-Morrow is a CLI-only terminal product. Install with PowerShell:
+Morrow v0.1.0-beta.29 is an unsigned Windows 10/11 x64 Early Access release.
+The installed product is terminal-only and includes its own Node.js runtime;
+Git, Node.js, and pnpm are not required for the Windows install.
+
+## Windows quick install
+
+Open PowerShell and run:
 
 ```powershell
-irm https://morrowproject.getaxiom.ca/install.ps1 | iex
+iex (irm https://morrowproject.getaxiom.ca/install.ps1)
 ```
 
-The installer verifies the release checksum, extracts the release, creates the
-`morrow` command on your PATH, and starts the local service. It does not open a
-browser. When it finishes, open a new PowerShell window and run:
+The installer downloads the current release manifest, verifies the artifact's
+SHA-256 checksum, stages and validates the package, preserves existing user
+data during upgrades, adds `morrow` to your user PATH, and starts the loopback
+service. It does not open a browser.
+
+Open a new PowerShell window after installation:
 
 ```powershell
 morrow
 ```
 
-Choose a model and configure your provider from inside the terminal onboarding.
-Linux remains source-build only and macOS is not available.
+Use `morrow onboard` for guided provider setup. Provider credentials are saved
+in Morrow's local owner-readable secrets file and are not written to task
+events, reports, diagnostic exports, or browser storage.
 
-## Prerequisites
+## Verify or troubleshoot
 
-Ensure you have the following installed:
-- **Node.js**: version 22.0.0 or higher
-- **pnpm**: package manager version 10.x or higher
+```powershell
+morrow --version
+morrow status
+morrow doctor
+morrow doctor --json
+morrow doctor --export
+```
 
----
+`morrow doctor` does not start the service implicitly. A stopped or unhealthy
+service is reported with remediation and a non-zero exit code. JSON mode writes
+one stable JSON document to stdout. Diagnostic exports redact secret fields,
+credential-shaped values, and the user-home prefix.
 
-## 1. Setup & Installation
+If PowerShell displays broken Unicode glyphs, use Windows Terminal with a UTF-8
+profile and rerun `morrow doctor`. Plain-text and redirected output remain
+available when terminal capabilities are limited.
 
-Follow these steps to clone, build, and start Morrow on your local machine:
+## Upgrade and rollback behavior
 
-### Clone the Repository
+Rerun the quick-install command to upgrade. The installer replaces only the
+application tree under `%LOCALAPPDATA%\Morrow\app`; conversations, memory,
+configuration, provider credentials, logs, cache, and backups are preserved.
+The previous application tree remains available until the new Morrow service
+passes an identity-checked health probe. A failed activation is rolled back.
+
+## Uninstall
+
+```powershell
+morrow uninstall
+```
+
+Interactive uninstall stops Morrow and removes its application, PATH shim, and
+shortcuts. Local user data is preserved by default. To choose explicitly:
+
+```powershell
+morrow uninstall --yes --keep-data
+morrow uninstall --yes --purge-data
+```
+
+`--purge-data` permanently deletes local conversations, memory, project state,
+configuration, provider credentials, backups, logs, and cache. It cannot be
+undone.
+
+## Linux source build
+
+Linux remains source-build only. macOS is not supported in beta.29.
+
+Requirements: Node.js 22 or newer and pnpm 10.x.
+
 ```bash
 git clone https://github.com/Mageester/morrow.git
 cd morrow
-```
-
-### Install Dependencies
-```bash
 pnpm install
-```
-
-### Build Packages
-```bash
+pnpm check
+pnpm test
 pnpm build
+pnpm --filter @morrow/cli morrow
 ```
 
-### Start the Services
-To start both the background orchestrator service and the Web interface dev server:
-```bash
-pnpm dev
-```
-
-The Web application will be accessible at: [http://localhost:5173](http://localhost:5173)
-The background orchestrator service will listen at: [http://localhost:4317](http://localhost:4317)
-
----
-
-## 2. CLI Usage & Commands
-
-Once dependencies are built, you can run the Morrow CLI:
-
-### Welcome & Guided Onboarding
-To run the interactive CLI welcome flow:
-```bash
-pnpm --filter @morrow/cli onboard
-```
-
-### Check Environment Health
-```bash
-pnpm --filter @morrow/cli doctor
-```
-
-### Stop/Restart the Background Daemon
-- **Stop Service**: `pnpm --filter @morrow/cli stop`
-- **Restart Service**: `pnpm --filter @morrow/cli restart`
-- **Tail Logs**: `pnpm --filter @morrow/cli logs`
-
----
-
-## 3. Update Commands
-
-To update your developer preview setup to the latest version of the repository:
-
-### Pull Latest Code & Re-build
-```bash
-# Pull changes
-git checkout feat/morrow-agent-terminal
-git pull origin feat/morrow-agent-terminal
-
-# Re-install and build
-pnpm install
-pnpm build
-
-# Restart the service
-pnpm --filter @morrow/cli restart
-```
-
----
-
-## 4. Uninstall Commands
-
-Morrow stores configuration, databases, and logs in your local user directory. To completely remove Morrow:
-
-### Clean Global Workspace Data
-Morrow keeps global SQLite databases, logs, and secrets in a hidden folder under your home directory (`~/.morrow` or `C:\Users\<user>\.morrow`).
-
-- **macOS / Linux**:
-  ```bash
-  rm -rf ~/.morrow
-  ```
-- **Windows (PowerShell)**:
-  ```powershell
-  Remove-Item -Recurse -Force "$HOME\.morrow"
-  ```
-
-### Delete Source Repository
-Simply remove the folder where you cloned the repository:
-```bash
-rm -rf morrow
-```
+Source checkouts use `~/.morrow` by default. The Windows package uses
+`%LOCALAPPDATA%\Morrow\data`. See [privacy-model.md](privacy-model.md) for the
+local data-flow and provider boundaries.

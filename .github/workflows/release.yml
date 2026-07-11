@@ -26,6 +26,10 @@ jobs:
         with:
           node-version: 22
           cache: 'pnpm'
+      - name: Validate requested version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: node -e "const source=require('./package.json').version;if(process.env.REQUESTED_VERSION!==source){console.error('Requested version '+process.env.REQUESTED_VERSION+' does not match source version '+source);process.exit(1)}"
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
@@ -78,8 +82,12 @@ jobs:
             irm https://morrowproject.getaxiom.ca/install.ps1 | iex
             ```
 
+            Beta.29 makes terminal tasks quieter and more truthful, hardens
+            project-scoped reports and resume behavior, and consolidates a
+            redacted consumer-grade `morrow doctor`.
+
             The installer downloads this artifact, verifies its SHA-256, and
-            launches the local service. Expect breaking changes.
+            launches the loopback-only local service. Expect breaking changes.
           files: |
             dist/Morrow-*.zip
             dist/latest.json

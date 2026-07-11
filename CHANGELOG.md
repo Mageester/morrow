@@ -6,6 +6,47 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.29] - 2026-07-11
+
+### Changed - task-first terminal clarity
+
+- **The final answer stays primary.** Each user task has isolated activity,
+  tools, patches, and recovery state; the current answer remains visible above
+  a compact completion card even in short terminals.
+- **Evidence is quieter and more truthful.** Intermediate narration is
+  suppressed in line mode, duplicate tool/activity lines are coalesced, and
+  only explicitly identified test/check/build commands earn a `Verified`
+  label. Stalled and budget-limited work is shown as paused, not failed.
+- **Reports and resume are dependable.** `/output [full|failures] [task-id]`
+  accepts only project-scoped full IDs or unique prefixes, full reports retain
+  bounded observable activity, and resumed streams start after persisted
+  history so an earlier interruption cannot hide the resumed answer.
+
+### Added - consumer diagnostics
+
+- **One canonical `morrow doctor`.** Source and packaged launchers now use the
+  same offline-safe diagnostic engine. It checks version/runtime, platform,
+  config parsing, writable state, provider setup, service identity, repository
+  registration, skills, PATH, terminal, and Unicode behavior.
+- **Stable and redacted diagnostics.** `morrow doctor --json` emits a versioned
+  JSON-only schema with meaningful exit codes. `--export` writes an
+  owner-readable diagnostic file with secret fields, credential-shaped values,
+  and the user-home prefix redacted.
+
+### Fixed - security and lifecycle integrity
+
+- Task IDs are encoded on every API/SSE path, and task report lookup can no
+  longer fall back to arbitrary raw IDs or read another registered project.
+- Provider and tool text is stripped of terminal control sequences before
+  interactive or redirected rendering.
+- Terminal events persist exactly once, patch recovery uses real correlated
+  payloads, and duplicate completion events produce one completion card.
+- Installer health gates require the Morrow service identity and supported API
+  version. Missing PID recovery additionally verifies the owning OS command
+  line before any process can be terminated.
+- Removed a raw workspace-path stdout leak and retired the broken duplicate
+  CommonJS-in-ESM doctor implementation.
+
 ## [0.1.0-beta.28] - 2026-07-10
 
 ### Changed - terminal-first agent experience
