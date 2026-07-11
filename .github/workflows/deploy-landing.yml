@@ -31,11 +31,22 @@ jobs:
           node-version: 22
           cache: 'pnpm'
 
-      # Fetch latest release manifest for download links
-      - name: Fetch release manifest
+      # Stage the public installer and the exact release metadata that the
+      # installer consumes. The release workflow dispatches this job only after
+      # the GitHub prerelease has published these assets.
+      - name: Stage public install contract
+        env:
+          RELEASE_VERSION: ${{ github.event.client_payload.version }}
         run: |
-          mkdir -p apps/landing/public
-          curl -sL https://github.com/Mageester/morrow/releases/latest/download/release-manifest.json -o apps/landing/public/release-manifest.json || echo '{"version":"0.1.0-beta.1","artifacts":[]}' > apps/landing/public/release-manifest.json
+          if [ -z "$RELEASE_VERSION" ]; then
+            RELEASE_VERSION="$(curl --fail --location --silent --show-error https://api.github.com/repos/Mageester/morrow/releases?per_page=100 | jq -r '[.[] | select(.prerelease and (.draft | not))][0].tag_name')"
+            RELEASE_VERSION="${RELEASE_VERSION#v}"
+          fi
+          test -n "$RELEASE_VERSION"
+          mkdir -p apps/landing/public/releases
+          cp installer/install.ps1 apps/landing/public/install.ps1
+          curl --fail --location --silent --show-error "https://github.com/Mageester/morrow/releases/download/v${RELEASE_VERSION}/latest.json" -o apps/landing/public/releases/latest.json
+          curl --fail --location --silent --show-error "https://github.com/Mageester/morrow/releases/download/v${RELEASE_VERSION}/release-manifest.json" -o apps/landing/public/release-manifest.json
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @morrow/landing build

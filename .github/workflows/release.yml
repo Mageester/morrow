@@ -95,3 +95,19 @@ jobs:
             dist/morrow-*-checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-site:
+    name: Publish Public Install Metadata
+    runs-on: ubuntu-latest
+    needs: build-windows
+    steps:
+      - name: Trigger public site deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'release-published',
+              client_payload: { version: '${{ inputs.version }}' },
+            });

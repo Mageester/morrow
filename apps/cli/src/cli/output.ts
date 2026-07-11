@@ -127,7 +127,9 @@ export function sanitizeTerminalText(input: string): string {
   return input
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+    .replace(/\x9d[^\x07\x9c]*(?:\x07|\x9c)/g, "")
+    .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g, "");
 }
 
 function pad(cell: string, width: number): string {

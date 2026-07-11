@@ -220,6 +220,14 @@ export async function stop(ctx: Context): Promise<boolean> {
       hint: "Stop that process with its own manager, or fix stale .morrow state before retrying.",
     });
   }
+  if (!isLocalService(ctx.service.baseUrl) || !processOwnsCliService(pid)) {
+    rmSync(ctx.paths.pidFile, { force: true });
+    throw new CliError(`Service is reachable at ${displayUrl(ctx.service.baseUrl)}, but the recorded pid is not a Morrow service process.`, {
+      code: "SERVICE_UNMANAGED",
+      exitCode: EXIT.SERVICE_UNAVAILABLE,
+      hint: "Stop that process with its own manager, or run `morrow start` to create a fresh local service.",
+    });
+  }
   try {
     process.kill(pid, "SIGTERM");
     ctx.out.diag(`[${lifecycleTimestamp()}] sent SIGTERM to service pid ${pid}`);

@@ -32,6 +32,7 @@ export function pnpmIsCritical(env: NodeJS.ProcessEnv = process.env): boolean {
 
 const SENSITIVE_FIELD = /(?:api.?key|authorization|password|secret|token|credential)/i;
 const CREDENTIAL_VALUE = /(?:\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,})/i;
+const ABSOLUTE_PATH = /(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])[^\s]*|(?:^|(?<=\s))\/[^\s]*/g;
 
 /** Redact diagnostic exports recursively without mutating the collected data. */
 export function redactDiagnostics(value: unknown, home: string): unknown {
@@ -44,9 +45,10 @@ export function redactDiagnostics(value: unknown, home: string): unknown {
   }
   if (typeof value !== "string") return value;
   if (CREDENTIAL_VALUE.test(value)) return "[redacted]";
-  return home && value.toLowerCase().includes(home.toLowerCase())
+  const homeRedacted = home && value.toLowerCase().includes(home.toLowerCase())
     ? replaceCaseInsensitive(value, home, "~")
     : value;
+  return homeRedacted.replace(ABSOLUTE_PATH, "[redacted path]");
 }
 
 function replaceCaseInsensitive(value: string, search: string, replacement: string): string {

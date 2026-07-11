@@ -39,6 +39,19 @@ describe("doctor runtime requirements", () => {
       harmless: "morrow-orchestrator",
     });
   });
+
+  it("redacts absolute paths outside the configured Morrow home from exports", () => {
+    const value = redactDiagnostics({
+      database: "D:\\Private\\customer-data\\morrow.db",
+      skills: "/srv/private-skills",
+      relative: "diagnostics/morrow.json",
+    }, "C:\\Users\\alice\\.morrow");
+    expect(value).toEqual({
+      database: "[redacted path]",
+      skills: "[redacted path]",
+      relative: "diagnostics/morrow.json",
+    });
+  });
 });
 
 describe("semver helpers", () => {

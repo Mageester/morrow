@@ -57,6 +57,21 @@ describe("LineRenderer (non-interactive)", () => {
     expect(stdout).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/);
   });
 
+  it("strips C1 terminal control bytes from untrusted text", () => {
+    const { stdout, answer } = capture(
+      stream([
+        { type: "assistant.turn_start", turnId: "c1" },
+        { type: "assistant.delta", turnId: "c1", text: "safe\u009b2J\u009d0;owned\u009ckept" },
+        { type: "assistant.turn_end", turnId: "c1", final: true },
+      ]),
+      { showActivity: false, showSummary: false },
+    );
+
+    expect(stdout).toBe("safekept\n");
+    expect(answer).toBe("safekept");
+    expect(stdout).not.toMatch(/[\u0080-\u009f]/);
+  });
+
   it("keeps intermediate narration OUT of stdout — a pipe gets exactly the answer", () => {
     const { stdout, stderr, answer } = capture(
       stream([
