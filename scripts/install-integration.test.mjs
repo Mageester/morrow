@@ -146,8 +146,8 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     // a non-zero exit (which ps() turns into a throw) is a real defect.
     const doctorOut = ps(`& '${installedCmd}' doctor`);
     assert.doesNotMatch(doctorOut, /^FAIL\b/m, `morrow doctor reported a failure:\n${doctorOut}`);
-    assert.match(doctorOut, /bundled Node/, "doctor reports on the bundled Node runtime");
-    assert.match(doctorOut, /terminal CLI/, "doctor reports on the bundled terminal CLI");
+    assert.match(doctorOut, /node\s+pass\s+24\./, "doctor reports the bundled Node 24 runtime");
+    assert.match(doctorOut, /terminal\s+pass/, "doctor reports the terminal interface");
     assert.doesNotMatch(doctorOut, /web UI/, "doctor makes no web UI claims");
 
     // 6. stop
