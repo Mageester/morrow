@@ -62,6 +62,10 @@ export interface RecoveryEntry {
   /** Active tool call that produced the latest signal, used to coalesce the
    * recovery-specific event and the generic tool.failed event for one call. */
   toolCallId?: string;
+  /** File this recovery is about, when known (patch/file-tool failures).
+   *  Scopes resolution so a success on an unrelated file never marks this
+   *  entry recovered — absent for tool-generic failures (e.g. a command). */
+  file?: string;
   at: number;
 }
 
@@ -340,6 +344,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "recovery.problem": {
       const tool = sanitizeTerminalText(event.tool);
       const message = sanitizeTerminalText(event.message);
+      const file = event.file !== undefined ? sanitizeTerminalText(event.file) : undefined;
       const activeToolCallId = [...state.tools].reverse().find((entry) => entry.name === tool && entry.status === "running")?.id;
       // Recovery feedback and the generic tool.failed signal describe the same
       // failed call. Keep the richer first story instead of rendering both.
@@ -348,7 +353,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         if (sameCall >= 0) return state;
       }
       // Group identical failures across distinct attempts into one counted entry.
-      const idx = state.recoveries.findIndex((recovery) => recovery.tool === tool && recovery.message === message && recovery.status !== "recovered");
+      const idx = state.recoveries.findIndex((recovery) => recovery.tool === tool && recovery.message === message && recovery.file === file && recovery.status !== "recovered");
       if (idx >= 0) {
         const recoveries = [...state.recoveries];
         recoveries[idx] = {
@@ -370,6 +375,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
             status: "failed" as const,
             at: now(),
             ...(activeToolCallId ? { toolCallId: activeToolCallId } : {}),
+            ...(file !== undefined ? { file } : {}),
           },
         ], MAX_ACTIVITY),
       };
@@ -378,19 +384,25 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "recovery.strategy": {
       const tool = event.tool === undefined ? undefined : sanitizeTerminalText(event.tool);
       const strategy = sanitizeTerminalText(event.strategy);
-      // Mark the most recent open problem (for this tool, if named) as retrying.
+      const file = event.file !== undefined ? sanitizeTerminalText(event.file) : undefined;
+      // Mark the most recent open problem (for this tool/file) as retrying.
+      // File matching is strict (both sides equal, including both undefined)
+      // — the same rule `recovery.problem` groups by — so a file-scoped
+      // strategy event can never attach itself to, and thereby hijack, an
+      // unrelated file-less or different-file entry for the same tool.
       const recoveries = [...state.recoveries];
       for (let i = recoveries.length - 1; i >= 0; i--) {
         const entry = recoveries[i]!;
         if (entry.status === "recovered") continue;
         if (tool && entry.tool !== tool) continue;
+        if (entry.file !== file) continue;
         recoveries[i] = { ...entry, status: "retrying", strategy };
         return { ...state, recoveries };
       }
       // No matching problem — record the switch itself so it is never invisible.
       return {
         ...state,
-        recoveries: bounded([...recoveries, { tool: tool ?? "agent", message: strategy, count: 1, status: "retrying" as const, strategy, at: now() }], MAX_ACTIVITY),
+        recoveries: bounded([...recoveries, { tool: tool ?? "agent", message: strategy, count: 1, status: "retrying" as const, strategy, at: now(), ...(file !== undefined ? { file } : {}) }], MAX_ACTIVITY),
       };
     }
 
@@ -408,12 +420,29 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
 
     case "patch.applied": {
       const files = event.files.map(sanitizeTerminalText);
-      // An applied patch resolves any open patch-related recovery entries.
-      const recoveries = state.recoveries.some((r) => r.status !== "recovered" && isPatchTool(r.tool))
-        ? state.recoveries.map((r) => (r.status !== "recovered" && isPatchTool(r.tool) ? { ...r, status: "recovered" as const } : r))
+      const matchesFile = (r: RecoveryEntry) => r.file !== undefined && files.includes(r.file);
+      const hasFileScopedRecovery = state.recoveries.some((r) => r.status !== "recovered" && matchesFile(r));
+      // Any recovery with no known file (a generic tool.failed signal, never
+      // narrowed to a path) is inherently ambiguous — it is only safe to
+      // resolve it when NO file-scoped recovery is open anywhere in the task,
+      // not merely none for this write's files, since an unrelated file's
+      // still-open, *identified* failure must never be masked by this one
+      // succeeding. A file-scoped recovery is resolved only when it names one
+      // of these files.
+      const anyFileScopedOpen = state.recoveries.some((r) => r.status !== "recovered" && r.file !== undefined);
+      const willResolve = (r: RecoveryEntry) =>
+        r.status !== "recovered" && isPatchTool(r.tool) && (r.file !== undefined ? matchesFile(r) : !anyFileScopedOpen);
+      const recoveries = state.recoveries.some(willResolve)
+        ? state.recoveries.map((r) => (willResolve(r) ? { ...r, status: "recovered" as const } : r))
         : state.recoveries;
-      // Mark the most recent matching proposed patch as applied, else append.
-      const idx = [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, files));
+      // A write that resolves an open recovery for one of these files is a
+      // retry of the same user-visible action — coalesce it into the existing
+      // entry instead of appending a new "Changing" wall. A write with no
+      // competing recovery is a genuinely new, distinct edit and must stay
+      // its own entry, even if it targets a file changed earlier in the task.
+      const idx = hasFileScopedRecovery
+        ? [...state.patches].reverse().findIndex((p) => sameFiles(p.files, files))
+        : [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, files));
       if (idx >= 0) {
         const realIdx = state.patches.length - 1 - idx;
         const patches = [...state.patches];

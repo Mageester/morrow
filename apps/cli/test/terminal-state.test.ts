@@ -62,6 +62,62 @@ describe("terminal state reducer", () => {
     expect(s.patches[0]!.applied).toBe(true);
   });
 
+  it("coalesces create → failed patch → retry → success on one file into one changed entry and one recovered recovery", () => {
+    const s = fold([
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in a.js", file: "a.js" },
+      { type: "recovery.strategy", tool: "propose_patch", strategy: "Regenerate the patch against current file content.", file: "a.js" },
+      { type: "patch.applied", files: ["a.js"] },
+    ]);
+    expect(s.patches).toHaveLength(1);
+    expect(s.patches[0]).toMatchObject({ files: ["a.js"], applied: true });
+    expect(s.recoveries).toHaveLength(1);
+    expect(s.recoveries[0]).toMatchObject({ file: "a.js", status: "recovered" });
+  });
+
+  it("does not let an unrelated file's successful patch resolve a different file's open recovery", () => {
+    const s = fold([
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in a.js", file: "a.js" },
+      { type: "patch.applied", files: ["b.js"] },
+    ]);
+    expect(s.recoveries).toHaveLength(1);
+    expect(s.recoveries[0]).toMatchObject({ file: "a.js", status: "failed" });
+    expect(s.patches).toHaveLength(1);
+    expect(s.patches[0]).toMatchObject({ files: ["b.js"], applied: true });
+  });
+
+  it("never lets a file-scoped recovery.strategy event hijack an unrelated file-less recovery entry", () => {
+    const s = fold([
+      { type: "recovery.problem", tool: "apply_patch", message: "generic failure", file: "a.js" },
+      { type: "recovery.problem", tool: "apply_patch", message: "another generic failure" }, // no file — e.g. from tool.failed
+      { type: "recovery.strategy", tool: "apply_patch", strategy: "reread and retry", file: "a.js" },
+    ]);
+    // The strategy must attach to the a.js entry it actually describes, not
+    // relabel the unrelated file-less entry that happens to be more recent.
+    const aJs = s.recoveries.find((r) => r.file === "a.js");
+    const fileless = s.recoveries.find((r) => r.file === undefined);
+    expect(aJs).toMatchObject({ status: "retrying", strategy: "reread and retry" });
+    expect(fileless).toMatchObject({ status: "failed" });
+  });
+
+  it("does not resolve an unrelated file-less recovery when a different, identified failure is still open", () => {
+    const s = fold([
+      { type: "recovery.problem", tool: "apply_patch", message: "identified failure", file: "a.js" },
+      { type: "recovery.problem", tool: "apply_patch", message: "generic failure" }, // no file
+      { type: "patch.applied", files: ["b.js"] },
+    ]);
+    expect(s.recoveries.find((r) => r.file === "a.js")).toMatchObject({ status: "failed" });
+    expect(s.recoveries.find((r) => r.file === undefined)).toMatchObject({ status: "failed" });
+  });
+
+  it("keeps two genuinely distinct successful edits to the same file as separate entries (no incorrect removal)", () => {
+    const s = fold([
+      { type: "patch.applied", files: ["a.js"] },
+      { type: "patch.applied", files: ["a.js"] },
+    ]);
+    expect(s.patches).toHaveLength(2);
+    expect(s.patches.every((p) => p.applied)).toBe(true);
+  });
+
   it("transitions terminal status and records failure message", () => {
     expect(fold([{ type: "task.completed" }]).status).toBe("completed");
     expect(fold([{ type: "task.cancelled" }]).status).toBe("cancelled");

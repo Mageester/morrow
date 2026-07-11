@@ -24,6 +24,7 @@ import { completionActive, initialInputState, insertPaste, reduceKey, type Input
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
 import { mapTaskEvent, type RawTaskEvent } from "./task-event-adapter.js";
+import { EventLedger } from "./event-ledger.js";
 import { yoloPolicyText, yoloStatusText, riskLabel, riskGlyph, riskColor } from "./yolo.js";
 import { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine } from "./approvals.js";
 import { changeSetApprovalView, commandApprovalView } from "./approval-view-model.js";
@@ -165,8 +166,11 @@ export class InteractiveSession {
   private resolveDone: (() => void) | null = null;
   private readonly now: () => number;
   private readonly pasteDecoder = new PasteDecoder();
-  /** Source event ids survive SSE reconnects; never fold the same event twice. */
-  private readonly seenSourceEvents = new Set<string>();
+  /** Source event ids survive SSE reconnects; never fold the same event twice.
+   *  Single ownership boundary for raw-event identity (see event-ledger.ts) —
+   *  ingestion happens once per raw event, before mapping, so every terminal
+   *  event derived from one accepted raw event is applied together. */
+  private readonly eventLedger = new EventLedger();
   private readonly minIntervalMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -1342,6 +1346,25 @@ export class InteractiveSession {
 
   // ── Task streaming ─────────────────────────────────────────────────────────
 
+  /**
+   * Idempotently ingest one raw orchestrator event: accept it into the shared
+   * event ledger at most once (covers persisted-history overlap, reconnect,
+   * and SSE replay — the single ownership boundary is `EventLedger`), then
+   * apply every terminal event `mapTaskEvent` derives from it. Deduping the
+   * raw event *before* mapping (not per mapped terminal event) matters: one
+   * raw event like `patch.recovery_feedback` can map to more than one
+   * terminal event (a problem line and a strategy line), and both must be
+   * applied together or not at all.
+   */
+  private ingestRawTaskEvent(raw: RawTaskEvent): void {
+    // Always route through the ledger — `EventLedger.ingest`/`eventIdentity`
+    // already fall back to `type:sequence` for an id-less event, the same
+    // fallback `output-report.ts` uses, so this is never a second, weaker
+    // identity rule for the id-less case.
+    if (!this.eventLedger.ingest(raw)) return;
+    for (const te of mapTaskEvent(raw)) this.applyEvent(te);
+  }
+
   private async runTask(text: string): Promise<void> {
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
@@ -1363,13 +1386,7 @@ export class InteractiveSession {
           await this.openApproval(raw);
           continue;
         }
-        for (const te of mapTaskEvent(raw)) {
-          if (te.sourceEventId) {
-            if (this.seenSourceEvents.has(te.sourceEventId)) continue;
-            this.seenSourceEvents.add(te.sourceEventId);
-          }
-          this.applyEvent(te);
-        }
+        this.ingestRawTaskEvent(raw);
       }
       this.applyEvent({ type: "assistant.end" });
     } catch (err) {
@@ -1415,11 +1432,7 @@ export class InteractiveSession {
       for await (const raw of this.deps.backend.subscribe(this.lastTaskId, abort.signal, after)) {
         if (raw.type === "approval.requested") { await this.openApproval(raw); continue; }
         if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") void this.refreshPlan(this.lastTaskId);
-        for (const te of mapTaskEvent(raw)) {
-          if (te.sourceEventId && this.seenSourceEvents.has(te.sourceEventId)) continue;
-          if (te.sourceEventId) this.seenSourceEvents.add(te.sourceEventId);
-          this.applyEvent(te);
-        }
+        this.ingestRawTaskEvent(raw);
       }
       this.applyEvent({ type: "assistant.end" });
     } catch (error) {

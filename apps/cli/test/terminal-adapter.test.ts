@@ -105,8 +105,24 @@ describe("task event adapter", () => {
         instruction: "Regenerate the patch against currentFile.content.",
       },
     })).toEqual([
-      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in verify.js" },
-      { type: "recovery.strategy", tool: "propose_patch", strategy: "Regenerate the patch against currentFile.content." },
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in verify.js", file: "verify.js" },
+      { type: "recovery.strategy", tool: "propose_patch", strategy: "Regenerate the patch against currentFile.content.", file: "verify.js" },
+    ]);
+  });
+
+  it("threads the target file through recovery events so resolution stays scoped per file", () => {
+    expect(mapTaskEvent({
+      type: "patch.recovery_feedback",
+      payload: { targetFile: "a.js", conflictCategory: "no_match", retryExhausted: true },
+    })).toEqual([
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch no match in a.js", file: "a.js" },
+      { type: "recovery.strategy", tool: "propose_patch", strategy: "Stop cleanly and report the patch conflict.", file: "a.js" },
+    ]);
+  });
+
+  it("threads the path through a strategy switch when the orchestrator names one", () => {
+    expect(mapTaskEvent({ type: "tool.strategy_switch", payload: { tool: "apply_patch", from: "diff", to: "rewrite", path: "b.js" } })).toEqual([
+      { type: "recovery.strategy", tool: "apply_patch", strategy: "diff → rewrite", file: "b.js" },
     ]);
   });
 
