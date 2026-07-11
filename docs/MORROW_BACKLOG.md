@@ -13,6 +13,24 @@ criteria (including which parts are verified vs. hypothesis). Issue numbers
 below refer to that document. Priority reflects the beta.30 roadmap section
 of the same document.
 
+**Product contract:** the authoritative goal map and CLI acceptance
+standard for this milestone now live in
+[`docs/BETA30_PRODUCT_GOAL.md`](BETA30_PRODUCT_GOAL.md) (product pillars,
+the four-mode Ask/Plan/Build/Build·Auto model, mission contract, Mission
+Guardian, durable mission ownership, Cortex memory layers, priority system)
+and [`docs/BETA30_CLI_ACCEPTANCE.md`](BETA30_CLI_ACCEPTANCE.md) (design
+principles, required terminal states, activity grammar, permission
+presentation rules, benchmark journeys, current gap matrix). The checklist
+below is not duplicated there; read those documents for the "why" and
+acceptance detail behind each item.
+
+**First three implementation slices** (justified in
+`BETA30_CLI_ACCEPTANCE.md` §12): (1) authoritative permission contract —
+issues 2, 3; (2) terminal information hierarchy / activity cleanup — issues
+1, 4, 9, 11, 12, 13; (3) Mission Guardian foundation — issue 5. These three
+items are called out below with **[Slice 1/2/3]** markers; they should be
+scoped and started before the remaining P0/P1 items.
+
 ### P0/P1
 
 - [ ] **Correct provider capability registry.** Canonical `deepseek-v4-flash`/
@@ -54,7 +72,7 @@ of the same document.
       completion merely because a checkpoint was created; never recommend
       `/continue` when it will deterministically repeat the same failure.
       Addresses issues 5, 7, 8 (core product promise — "mission ownership").
-- [ ] **Mission Guardian / Requirement Compliance Monitor.** Structured
+- [ ] **[Slice 3] Mission Guardian / Requirement Compliance Monitor.** Structured
       hard-requirements checklist derived from the mission prompt (e.g. "no
       frontend", "zero unjustified dependencies", "built-in `node:http`"),
       checked before each write/dependency-adding tool call so violations are
@@ -66,17 +84,17 @@ of the same document.
   - [ ] Scope-drift detection (flag actions that fall outside the original
         requirement set, e.g. adding a database or frontend that was never
         requested).
-- [ ] **Permission-state precedence rules.** Every permission-bearing root
+- [ ] **[Slice 1] Permission-state precedence rules.** Every permission-bearing root
       command (`ask`, `fix`, `plan`, `yolo`) sets a complete, explicit
       permission state instead of only the flags that differ from default;
       mode-derived autonomy display (header/footer) reflects the *effective*
       state for the current mode, not a raw persisted flag. Addresses
       issues 2, 3.
-- [ ] **Accurate task grading.** Plan-stage status in task reports derives
+- [ ] **[Slice 2] Accurate task grading.** Plan-stage status in task reports derives
       strictly from actual tool-call/response evidence rather than an
       independent assumption; duration derives from persisted timestamps.
       Addresses issue 13.
-- [ ] **Deduplicated event persistence.** One record per event, persisted
+- [ ] **[Slice 2] Deduplicated event persistence.** One record per event, persisted
       once, in `/output full` and the live activity feed; create-then-recover
       cycles on the same file collapse into one user-facing action with
       retries visible only in the deep trace; later provider requests
