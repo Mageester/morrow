@@ -110,6 +110,9 @@ export interface TerminalState {
   status: SessionStatus;
   lastError?: string;
   usage?: UsageInfo;
+  /** Usage emitted by the task currently represented in the live frame. The
+   * session aggregate above remains cumulative for /stats and cost reporting. */
+  activeUsage?: UsageInfo;
   git?: import("./events.js").GitStateInfo;
   contextUsage?: import("./events.js").ContextUsageInfo;
   progressStage?: import("./events.js").ProgressStage;
@@ -194,6 +197,8 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         lastError: _lastError,
         progressStage: _progressStage,
         progressDetail: _progressDetail,
+        routing: _routing,
+        activeUsage: _activeUsage,
         ...sessionState
       } = state;
       return {
@@ -516,6 +521,17 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           estimatedCostUsd,
           calls: (previous?.calls ?? 0) + 1,
           providerChanges,
+        },
+        activeUsage: {
+          provider,
+          model,
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+          totalTokens: event.inputTokens + event.outputTokens,
+          cachedInputTokens: event.cachedInputTokens ?? 0,
+          estimatedCostUsd: event.estimatedCostUsd ?? null,
+          calls: 1,
+          providerChanges: [providerKey],
         },
       };
     }

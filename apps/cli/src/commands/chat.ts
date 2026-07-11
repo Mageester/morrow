@@ -181,7 +181,17 @@ async function runInteractiveSession(
         ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
         ...(session.missionId ? { missionId: session.missionId } : {}),
       });
-      return { taskId: sent.task.id };
+      return {
+        taskId: sent.task.id,
+        routing: {
+          provider: sent.routing.providerId,
+          model: sent.routing.model,
+          preset: sent.routing.presetId,
+          fallback: sent.routing.fallbackUsed,
+          overridden: sent.routing.overridden,
+          privacy: sent.routing.privacy,
+        },
+      };
     },
     subscribe: (taskId, signal, after) => streamTaskEvents(api.baseUrl, taskId, { signal, ...(after !== undefined ? { after } : {}) }),
     cancel: (taskId) => api.cancelTask(taskId),

@@ -64,8 +64,17 @@ export interface ApprovalView {
   projectId: string;
 }
 
+export interface SessionRouting {
+  provider: string;
+  model: string;
+  preset: string;
+  fallback: boolean;
+  overridden: boolean;
+  privacy: string;
+}
+
 export interface SessionBackend {
-  send(text: string, opts: SendOptions): Promise<{ taskId: string }>;
+  send(text: string, opts: SendOptions): Promise<{ taskId: string; routing?: SessionRouting }>;
   subscribe(taskId: string, signal: AbortSignal, after?: number): AsyncIterable<RawTaskEvent>;
   cancel(taskId: string): Promise<void>;
   resume(taskId: string): Promise<void>;
@@ -1379,9 +1388,10 @@ export class InteractiveSession {
     this.streamAbort = abort;
     this.requestPaint(true);
     try {
-      const { taskId } = await this.deps.backend.send(text, { ...this.settings });
+      const { taskId, routing } = await this.deps.backend.send(text, { ...this.settings });
       this.currentTaskId = taskId;
       this.lastTaskId = taskId;
+      if (routing) this.applyEvent({ type: "routing", ...routing });
       for await (const raw of this.deps.backend.subscribe(taskId, abort.signal)) {
         if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") {
           void this.refreshPlan(taskId);
@@ -1547,8 +1557,16 @@ export class InteractiveSession {
    * has actually resolved something concrete.
    */
   private resolvedModelText(): string {
-    const u = this.term.usage;
-    return u && u.provider && u.model ? `${u.provider}/${u.model}` : `${this.meta.provider}/${this.meta.model}`;
+    // A provider usage event is the authoritative post-fallback answer for
+    // the current task. Before the first response (or for a task that fails
+    // before usage), the send response already contains the resolved route;
+    // never regress to the configured `auto/auto` label in that interval.
+    const u = this.term.activeUsage;
+    if (u?.provider && u.model) return `${u.provider}/${u.model}`;
+    const routing = this.term.routing;
+    if (routing?.provider && routing.model) return `${routing.provider}/${routing.model}`;
+    const historical = this.term.usage;
+    return historical?.provider && historical.model ? `${historical.provider}/${historical.model}` : `${this.meta.provider}/${this.meta.model}`;
   }
 
   /**

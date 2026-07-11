@@ -242,6 +242,44 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     await done;
   });
 
+  it("uses the resolved routing model when a task reports context before any provider usage", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: {
+        ...makeBackend(gate),
+        send: async () => ({
+          taskId: "task-1",
+          routing: { provider: "deepseek", model: "deepseek-v4-pro", preset: "balanced", fallback: false, overridden: false, privacy: "cloud" },
+        }),
+      },
+      now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "go");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "context.budget_calculated", payload: { maxInputTokens: 800000, contextWindowTokens: 1000000, contextWindowSource: "known-model" } } as any);
+    gate.push({ type: "context.exact_count_used", payload: { tokens: 120000, exact: true } } as any);
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    typeText(stdin, "/context");
+    enter(stdin);
+    await tick();
+
+    expect(app.snapshot().notices.at(-1)!.text).toContain("deepseek/deepseek-v4-pro");
+    expect(app.snapshot().notices.at(-1)!.text).toContain("120000/1000000 tokens (12%)");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("/status shows the identical model and context numbers as /context — the two can never disagree", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();
