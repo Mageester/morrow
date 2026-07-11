@@ -169,7 +169,14 @@ function costLabel(state: TerminalState): string {
   return `Cost $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
 }
 
-function contextLimit(state: TerminalState): number | null {
+/**
+ * The real per-model context window for `state.contextUsage`, or `null`
+ * when it's genuinely unknown (never a guessed/generic/preset-only number).
+ * The single source of truth for this — `/context`, `/status`, and `/stats`
+ * (`contextLabel`, below) must all read this instead of recomputing their
+ * own version, so they can never contradict each other.
+ */
+export function contextLimit(state: TerminalState): number | null {
   const u = state.contextUsage;
   if (!u) return null;
   if (u.contextLimitTokens !== undefined) return u.contextLimitTokens;

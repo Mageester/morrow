@@ -19,7 +19,7 @@ import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
 import { composeApp } from "./app-view.js";
-import { glyphs, statsLines } from "./view.js";
+import { glyphs, statsLines, contextLimit } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -464,13 +464,8 @@ export class InteractiveSession {
         await this.showChangesDetail();
         return void this.requestPaint(false);
       case "context": {
-        if (this.term.contextUsage) {
-          const u = this.term.contextUsage;
-          const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-          this.pushNotice("info", `Context: ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)  ·  ${u.method}${u.compactedGroups > 0 ? `  ·  ${u.compactedGroups} groups compacted` : ""}${u.removedGroups > 0 ? `  ·  ${u.removedGroups} groups trimmed` : ""}`);
-        } else {
-          this.pushNotice("info", "Context usage not available yet. Start a conversation first.");
-        }
+        const usage = this.contextUsageText();
+        this.pushNotice("info", usage ? `Context: ${this.resolvedModelText()}  ·  ${usage}` : "Context usage not available yet. Start a conversation first.");
         return void this.requestPaint(false);
       }
       case "diff":
@@ -752,7 +747,7 @@ export class InteractiveSession {
       `${o.gray("project")}   ${this.meta.projectName}`,
       `${o.gray("workspace")} ${this.meta.workspacePath}`,
       `${o.gray("mode")}       ${mode}`,
-      `${o.gray("model")}      ${this.meta.provider}/${this.meta.model}`,
+      `${o.gray("model")}      ${this.resolvedModelText()}`,
       `${o.gray("branch")}     ${this.meta.branch ?? "—"}`,
     ];
     // Git dirty state (cheap if getGitStatus is available).
@@ -763,14 +758,10 @@ export class InteractiveSession {
         lines.push(`${o.gray("git")}        ${dirty === 0 ? o.green("clean") : o.yellow(`${dirty} changed`)}${git.ahead > 0 || git.behind > 0 ? `  ·  ${git.ahead}↑ ${git.behind}↓` : ""}`);
       }
     }
-    // Context usage if available.
-    if (this.term.contextUsage) {
-      const u = this.term.contextUsage;
-      const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-      lines.push(`${o.gray("context")}    ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)`);
-    } else {
-      lines.push(`${o.gray("context")}    ${o.gray("not available yet")}`);
-    }
+    // Context usage if available — same source of truth as /context, so the
+    // two commands can never disagree.
+    const contextText = this.contextUsageText();
+    lines.push(`${o.gray("context")}    ${contextText ?? o.gray("not available yet")}`);
     // Permission state.
     const perm = this.settings.autoApprove ? o.yellow("YOLO (auto-approve)") : "approval-gated";
     lines.push(`${o.gray("permissions")} ${perm}`);
@@ -1511,6 +1502,43 @@ export class InteractiveSession {
 
   private pushNotice(level: "info" | "warn" | "error", text: string): void {
     this.term = reduce(this.term, { type: "notice", level, text }, this.now);
+  }
+
+  /**
+   * The actually-served provider/model for this task, from `provider.usage`
+   * (which reflects live routing/fallback resolution — see
+   * task-event-adapter.ts's `provider.usage` case), falling back to the
+   * configured value only when no task has reported usage yet. Every
+   * consumer that shows "which model" (`/status`, `/context`) must read
+   * this instead of `this.meta.provider/model` directly, so a session that
+   * never pinned a model doesn't show a stale "auto" forever once routing
+   * has actually resolved something concrete.
+   */
+  private resolvedModelText(): string {
+    const u = this.term.usage;
+    return u && u.provider && u.model ? `${u.provider}/${u.model}` : `${this.meta.provider}/${this.meta.model}`;
+  }
+
+  /**
+   * Single source of truth for the context-usage summary text. `/context`
+   * and `/status` must both call this instead of independently recomputing
+   * a percentage from raw fields — that drift (each reading `contextUsage.
+   * maxTokens`, which gets reset to 0 by nearly every mid-turn usage event)
+   * is exactly what let used/max/percent contradict each other before.
+   * Returns null when no context usage has been reported yet, and reports
+   * an unknown limit honestly instead of a guessed/generic number.
+   */
+  private contextUsageText(): string | null {
+    const cu = this.term.contextUsage;
+    if (!cu) return null;
+    const limit = contextLimit(this.term);
+    const pct = limit && limit > 0 ? (cu.percent ?? Math.round((cu.usedTokens / limit) * 100)) : null;
+    const tokens = limit && limit > 0 ? `${cu.usedTokens}/${limit} tokens (${pct}%)` : `${cu.usedTokens} tokens (limit unknown)`;
+    const extras = [
+      cu.compactedGroups > 0 ? `${cu.compactedGroups} groups compacted` : null,
+      cu.removedGroups > 0 ? `${cu.removedGroups} groups trimmed` : null,
+    ].filter((x): x is string => x !== null);
+    return [tokens, cu.method, ...extras].join("  ·  ");
   }
 
   /**
