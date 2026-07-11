@@ -7,6 +7,7 @@
  * and activity are bounded so a long session cannot grow memory without limit.
  */
 import type { ActivityKind, ApprovalSource, SessionMeta, TerminalEvent, UsageInfo } from "./events.js";
+import { sanitizeTerminalText } from "../cli/output.js";
 
 export type SessionStatus = "idle" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted" | "budget-reached" | "stalled";
 
@@ -15,6 +16,7 @@ export interface ToolCard {
   name: string;
   purpose?: string;
   scope?: string;
+  verification?: boolean;
   status: "running" | "completed" | "failed";
   startedAt: number;
   elapsedMs?: number;
@@ -43,6 +45,23 @@ export interface ActivityEntry {
   kind: ActivityKind;
   detail?: string;
   count?: number;
+  at: number;
+}
+
+/**
+ * One recoverable problem and its outcome. Identical failures (same tool +
+ * message) group into a single entry with a count, so "patch mismatch ×3"
+ * renders as one line instead of three red walls.
+ */
+export interface RecoveryEntry {
+  tool: string;
+  message: string;
+  count: number;
+  status: "failed" | "retrying" | "recovered";
+  strategy?: string;
+  /** Active tool call that produced the latest signal, used to coalesce the
+   * recovery-specific event and the generic tool.failed event for one call. */
+  toolCallId?: string;
   at: number;
 }
 
@@ -96,6 +115,7 @@ export interface TerminalState {
   agents: import("./events.js").AgentInfo[];
   integrations: import("./events.js").IntegrationInfo[];
   recoverySuggestions: string[];
+  recoveries: RecoveryEntry[];
 }
 
 export const MAX_CONVERSATION = 200;
@@ -103,7 +123,7 @@ export const MAX_ACTIVITY = 80;
 export const MAX_NOTICES = 6;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [] };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [] };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -129,33 +149,64 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
   if (isTerminalStatus(state.status) && isTerminalTaskEvent(event.type)) return state;
   switch (event.type) {
     case "session.started":
-      return { ...state, meta: event.meta };
+      return {
+        ...state,
+        meta: {
+          ...event.meta,
+          greeting: sanitizeTerminalText(event.meta.greeting),
+          projectName: sanitizeTerminalText(event.meta.projectName),
+          workspacePath: sanitizeTerminalText(event.meta.workspacePath),
+          branch: sanitizeTerminalText(event.meta.branch),
+          provider: sanitizeTerminalText(event.meta.provider),
+          model: sanitizeTerminalText(event.meta.model),
+          privacy: sanitizeTerminalText(event.meta.privacy),
+          mode: sanitizeTerminalText(event.meta.mode),
+          ...(event.meta.name !== undefined ? { name: sanitizeTerminalText(event.meta.name) } : {}),
+        },
+      };
 
     case "plan.snapshot":
-      return { ...state, plan: event.steps };
+      return { ...state, plan: event.steps.map((step) => ({ ...step, title: sanitizeTerminalText(step.title) })) };
 
     case "routing":
       return {
         ...state,
         routing: {
-          provider: event.provider,
-          model: event.model,
-          preset: event.preset,
+          provider: sanitizeTerminalText(event.provider),
+          model: sanitizeTerminalText(event.model),
+          preset: sanitizeTerminalText(event.preset),
           fallback: event.fallback,
           overridden: event.overridden,
           privacy: event.privacy,
         },
       };
 
-    case "user.message":
+    case "user.message": {
+      // A submitted message starts a new backend task. Keep the session
+      // transcript and cumulative usage, but never let the previous task's
+      // tools, patches, recovery story, plan, or terminal error leak into the
+      // new task's live status and completion card.
+      const {
+        lastError: _lastError,
+        progressStage: _progressStage,
+        progressDetail: _progressDetail,
+        ...sessionState
+      } = state;
       return {
-        ...state,
+        ...sessionState,
         conversation: bounded(
-          [...state.conversation, { role: "user", text: event.text, streaming: false }],
+          [...state.conversation, { role: "user", text: sanitizeTerminalText(event.text), streaming: false }],
           MAX_CONVERSATION
         ),
+        activity: [],
+        tools: [],
+        patches: [],
+        plan: [],
+        recoveries: [],
+        recoverySuggestions: [],
         status: "streaming",
       };
+    }
 
     case "assistant.turn_start": {
       // Defensively close a still-open turn first — a well-formed stream always
@@ -182,7 +233,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       if (idx >= 0) {
         const updated = [...state.conversation];
         const entry = updated[idx]!;
-        updated[idx] = { ...entry, text: entry.text + event.text };
+        updated[idx] = { ...entry, text: entry.text + sanitizeTerminalText(event.text) };
         return { ...state, conversation: updated, status: "streaming" };
       }
       // `"legacy"` is the adapter's explicit sentinel for "this backend
@@ -193,7 +244,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         return {
           ...state,
           conversation: bounded(
-            [...state.conversation, { role: "assistant", text: event.text, streaming: true, turnId: "legacy" }],
+            [...state.conversation, { role: "assistant", text: sanitizeTerminalText(event.text), streaming: true, turnId: "legacy" }],
             MAX_CONVERSATION
           ),
           status: "streaming",
@@ -237,7 +288,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       const entry: ActivityEntry = {
         kind: event.kind,
         at: now(),
-        ...(event.detail !== undefined ? { detail: event.detail } : {}),
+        ...(event.detail !== undefined ? { detail: sanitizeTerminalText(event.detail) } : {}),
         ...(event.count !== undefined ? { count: event.count } : {}),
       };
       return { ...state, activity: bounded([...state.activity, entry], MAX_ACTIVITY) };
@@ -246,11 +297,12 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "tool.start": {
       const card: ToolCard = {
         id: event.id,
-        name: event.name,
+        name: sanitizeTerminalText(event.name),
         status: "running",
         startedAt: now(),
-        ...(event.purpose !== undefined ? { purpose: event.purpose } : {}),
-        ...(event.scope !== undefined ? { scope: event.scope } : {}),
+        ...(event.purpose !== undefined ? { purpose: sanitizeTerminalText(event.purpose) } : {}),
+        ...(event.scope !== undefined ? { scope: sanitizeTerminalText(event.scope) } : {}),
+        ...(event.verification !== undefined ? { verification: event.verification } : {}),
       };
       return { ...state, tools: [...state.tools, card] };
     }
@@ -264,31 +316,104 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         ...existing,
         status: event.status,
         elapsedMs: elapsed,
-        ...(event.summary !== undefined ? { summary: event.summary } : {}),
-        ...(event.error !== undefined ? { error: event.error } : {}),
+        ...(event.summary !== undefined ? { summary: sanitizeTerminalText(event.summary) } : {}),
+        ...(event.error !== undefined ? { error: sanitizeTerminalText(event.error) } : {}),
         ...(event.approval !== undefined ? { approval: event.approval } : {}),
         ...(event.outputRef !== undefined ? { outputRef: event.outputRef } : {}),
       };
       const tools = [...state.tools];
       tools[idx] = updatedCard;
-      return { ...state, tools };
+      // A successful retry resolves the latest open problem for that tool. It
+      // must not retroactively mark unrelated earlier failures as recovered.
+      const recoveries = [...state.recoveries];
+      if (event.status === "completed") {
+        for (let recoveryIndex = recoveries.length - 1; recoveryIndex >= 0; recoveryIndex -= 1) {
+          const recovery = recoveries[recoveryIndex]!;
+          if (recovery.tool !== existing.name || recovery.status === "recovered") continue;
+          recoveries[recoveryIndex] = { ...recovery, status: "recovered" };
+          break;
+        }
+      }
+      return { ...state, tools, recoveries };
+    }
+
+    case "recovery.problem": {
+      const tool = sanitizeTerminalText(event.tool);
+      const message = sanitizeTerminalText(event.message);
+      const activeToolCallId = [...state.tools].reverse().find((entry) => entry.name === tool && entry.status === "running")?.id;
+      // Recovery feedback and the generic tool.failed signal describe the same
+      // failed call. Keep the richer first story instead of rendering both.
+      if (activeToolCallId) {
+        const sameCall = state.recoveries.findIndex((recovery) => recovery.toolCallId === activeToolCallId && recovery.status !== "recovered");
+        if (sameCall >= 0) return state;
+      }
+      // Group identical failures across distinct attempts into one counted entry.
+      const idx = state.recoveries.findIndex((recovery) => recovery.tool === tool && recovery.message === message && recovery.status !== "recovered");
+      if (idx >= 0) {
+        const recoveries = [...state.recoveries];
+        recoveries[idx] = {
+          ...recoveries[idx]!,
+          count: recoveries[idx]!.count + 1,
+          at: now(),
+          ...(activeToolCallId ? { toolCallId: activeToolCallId } : {}),
+        };
+        return { ...state, recoveries };
+      }
+      return {
+        ...state,
+        recoveries: bounded([
+          ...state.recoveries,
+          {
+            tool,
+            message,
+            count: 1,
+            status: "failed" as const,
+            at: now(),
+            ...(activeToolCallId ? { toolCallId: activeToolCallId } : {}),
+          },
+        ], MAX_ACTIVITY),
+      };
+    }
+
+    case "recovery.strategy": {
+      const tool = event.tool === undefined ? undefined : sanitizeTerminalText(event.tool);
+      const strategy = sanitizeTerminalText(event.strategy);
+      // Mark the most recent open problem (for this tool, if named) as retrying.
+      const recoveries = [...state.recoveries];
+      for (let i = recoveries.length - 1; i >= 0; i--) {
+        const entry = recoveries[i]!;
+        if (entry.status === "recovered") continue;
+        if (tool && entry.tool !== tool) continue;
+        recoveries[i] = { ...entry, status: "retrying", strategy };
+        return { ...state, recoveries };
+      }
+      // No matching problem — record the switch itself so it is never invisible.
+      return {
+        ...state,
+        recoveries: bounded([...recoveries, { tool: tool ?? "agent", message: strategy, count: 1, status: "retrying" as const, strategy, at: now() }], MAX_ACTIVITY),
+      };
     }
 
     case "patch.proposed": {
       const patch: PatchEntry = {
-        files: event.files,
+        files: event.files.map(sanitizeTerminalText),
         applied: false,
         ...(event.additions !== undefined ? { additions: event.additions } : {}),
         ...(event.deletions !== undefined ? { deletions: event.deletions } : {}),
-        ...(event.explanation !== undefined ? { explanation: event.explanation } : {}),
+        ...(event.explanation !== undefined ? { explanation: sanitizeTerminalText(event.explanation) } : {}),
         ...(event.approval !== undefined ? { approval: event.approval } : {}),
       };
       return { ...state, patches: [...state.patches, patch] };
     }
 
     case "patch.applied": {
+      const files = event.files.map(sanitizeTerminalText);
+      // An applied patch resolves any open patch-related recovery entries.
+      const recoveries = state.recoveries.some((r) => r.status !== "recovered" && isPatchTool(r.tool))
+        ? state.recoveries.map((r) => (r.status !== "recovered" && isPatchTool(r.tool) ? { ...r, status: "recovered" as const } : r))
+        : state.recoveries;
       // Mark the most recent matching proposed patch as applied, else append.
-      const idx = [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, event.files));
+      const idx = [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, files));
       if (idx >= 0) {
         const realIdx = state.patches.length - 1 - idx;
         const patches = [...state.patches];
@@ -298,13 +423,14 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           applied: true,
           ...(event.approval !== undefined ? { approval: event.approval } : {}),
         };
-        return { ...state, patches };
+        return { ...state, patches, recoveries };
       }
       return {
         ...state,
+        recoveries,
         patches: [
           ...state.patches,
-          { files: event.files, applied: true, ...(event.approval !== undefined ? { approval: event.approval } : {}) },
+          { files, applied: true, ...(event.approval !== undefined ? { approval: event.approval } : {}) },
         ],
       };
     }
@@ -313,21 +439,25 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return {
         ...state,
         activity: bounded(
-          [...state.activity, { kind: "running", detail: `auto-approved: ${event.summary}`, at: now() }],
+          [...state.activity, { kind: "running", detail: `auto-approved: ${sanitizeTerminalText(event.summary)}`, at: now() }],
           MAX_ACTIVITY
         ),
       };
 
-    case "notice":
+    case "notice": {
+      const noticeText = sanitizeTerminalText(event.text);
       return {
         ...state,
-        notices: bounded([...state.notices, { level: event.level, text: event.text }], MAX_NOTICES),
-        ...(event.level === "error" ? { lastError: event.text } : {}),
+        notices: bounded([...state.notices, { level: event.level, text: noticeText }], MAX_NOTICES),
+        ...(event.level === "error" ? { lastError: noticeText } : {}),
       };
+    }
 
     case "usage.reported": {
       const previous = state.usage;
-      const providerKey = `${event.provider}/${event.model}`;
+      const provider = sanitizeTerminalText(event.provider);
+      const model = sanitizeTerminalText(event.model);
+      const providerKey = `${provider}/${model}`;
       const providerChanges = previous
         ? previous.providerChanges.includes(providerKey)
           ? previous.providerChanges
@@ -343,8 +473,8 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return {
         ...state,
         usage: {
-          provider: event.provider,
-          model: event.model,
+          provider,
+          model,
           inputTokens,
           outputTokens,
           totalTokens: inputTokens + outputTokens,
@@ -360,7 +490,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return { ...state, status: "completed" };
 
     case "task.failed":
-      return { ...state, status: "failed", lastError: event.message };
+      return { ...state, status: "failed", lastError: sanitizeTerminalText(event.message) };
 
     case "task.cancelled":
       return { ...state, status: "cancelled" };
@@ -368,13 +498,13 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "task.interrupted":
       return { ...state, status: "interrupted" };
     case "task.budget_reached":
-      return { ...state, status: "budget-reached", lastError: event.message };
+      return { ...state, status: "budget-reached", lastError: sanitizeTerminalText(event.message) };
     case "task.stalled":
-      return { ...state, status: "stalled", lastError: event.message };
+      return { ...state, status: "stalled", lastError: sanitizeTerminalText(event.message) };
 
     // ── Extended presentation events ──────────────────────────────────────
     case "git.state":
-      return { ...state, git: event.git };
+      return { ...state, git: { ...event.git, branch: sanitizeTerminalText(event.git.branch) } };
 
     case "context.usage": {
       const merged = { ...state.contextUsage, ...event.usage };
@@ -387,7 +517,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       return {
         ...state,
         progressStage: event.stage,
-        ...(event.detail !== undefined ? { progressDetail: event.detail } : {}),
+        ...(event.detail !== undefined ? { progressDetail: sanitizeTerminalText(event.detail) } : {}),
       };
 
     case "process.update":
@@ -405,7 +535,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "recovery.suggestion":
       return {
         ...state,
-        recoverySuggestions: bounded([...state.recoverySuggestions, event.text], MAX_NOTICES),
+        recoverySuggestions: bounded([...state.recoverySuggestions, sanitizeTerminalText(event.text)], MAX_NOTICES),
       };
 
     default: {
@@ -422,6 +552,11 @@ function isTerminalStatus(status: SessionStatus): boolean {
 
 function isTerminalTaskEvent(type: TerminalEvent["type"]): boolean {
   return ["task.completed", "task.failed", "task.cancelled", "task.interrupted", "task.budget_reached", "task.stalled"].includes(type);
+}
+
+/** Tools whose failures a successful patch application resolves. */
+function isPatchTool(tool: string): boolean {
+  return tool === "propose_patch" || tool === "apply_patch" || tool === "create_file" || tool === "edit_file";
 }
 
 function sameFiles(a: string[], b: string[]): boolean {

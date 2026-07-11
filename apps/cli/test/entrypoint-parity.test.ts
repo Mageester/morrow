@@ -7,7 +7,7 @@ import { COMMANDS } from "../src/main.js";
  * surface as the developer CLI. The launcher services a small set of lifecycle
  * verbs itself and delegates everything else to the bundled CLI, so every CLI
  * command must classify either as a launcher lifecycle verb or as a delegated
- * `cli` action. Nothing may fall through to "unknown/rejected".
+ * `cli`/`cli-offline` action. Nothing may fall through to "unknown/rejected".
  *
  * This is the regression guard for the release-blocking bug where the installed
  * launcher rejected `morrow yolo|mission|symbols|processes|worktrees|integrate`.
@@ -16,7 +16,7 @@ describe("installed launcher ↔ CLI command parity", () => {
   it("routes every CLI command to a launcher lifecycle verb or the bundled CLI", () => {
     for (const command of COMMANDS) {
       const { action } = classify([command]);
-      const handled = action === "cli" || (action === "lifecycle" && LAUNCHER_LIFECYCLE.has(command));
+      const handled = action === "cli" || action === "cli-offline" || (action === "lifecycle" && LAUNCHER_LIFECYCLE.has(command));
       expect(handled, `command "${command}" must be handled by the launcher`).toBe(true);
     }
   });
@@ -39,9 +39,15 @@ describe("installed launcher ↔ CLI command parity", () => {
   });
 
   it("keeps process lifecycle in the launcher", () => {
-    for (const command of ["start", "stop", "restart", "status", "doctor", "uninstall"]) {
+    for (const command of ["start", "stop", "restart", "status", "uninstall"]) {
       expect(classify([command]).action).toBe("lifecycle");
     }
+  });
+
+  it("delegates doctor without starting the service", () => {
+    const action = classify(["doctor"]).action;
+    expect(action).toBe("cli-offline");
+    expect(needsService(action)).toBe(false);
   });
 
   it("answers version/help locally as meta actions", () => {

@@ -163,7 +163,7 @@ export type TerminalEvent =
    *  `assistant.turn_end` (dropped connection, pre-fix backend). */
   | { type: "assistant.end" }
   | { type: "activity"; kind: ActivityKind; detail?: string; count?: number }
-  | { type: "tool.start"; id: string; name: string; purpose?: string; scope?: string }
+  | { type: "tool.start"; id: string; name: string; purpose?: string; scope?: string; verification?: boolean }
   | {
       type: "tool.end";
       id: string;
@@ -185,6 +185,14 @@ export type TerminalEvent =
     }
   | { type: "patch.applied"; files: string[]; approval?: ApprovalSource }
   | { type: "approval.auto"; id: string; summary: string }
+  /** A tool call failed inside the agent loop. This is a *recovery* event, not
+   *  a product error: the agent is expected to retry or switch strategy. It is
+   *  rendered with warning styling and only escalates to error styling if the
+   *  task itself ends failed. */
+  | { type: "recovery.problem"; tool: string; message: string }
+  /** The agent switched strategy after a failure (e.g. patch → full-file
+   *  rewrite). Marks the matching problem as "retrying". */
+  | { type: "recovery.strategy"; tool?: string; strategy: string; detail?: string }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
   | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null }
   | { type: "task.completed" }

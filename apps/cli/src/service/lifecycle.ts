@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -198,7 +198,8 @@ export async function stop(ctx: Context): Promise<boolean> {
   ctx.out.diag(`[${lifecycleTimestamp()}] pid file ${pid ?? "missing"}; health reachable: ${running ? "yes" : "no"}`);
   if ((!pid || !processAlive(pid)) && running) {
     const health = await new MorrowApi(ctx.service.baseUrl).health();
-    pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl));
+    const ownerPid = Number.isSafeInteger(health.ownerPid) ? health.ownerPid! : 0;
+    pid = recoverReachableServicePid(pid, health, isLocalService(ctx.service.baseUrl), ownerPid > 0 && processOwnsCliService(ownerPid));
     if (pid) {
       mkdirSync(dirname(ctx.paths.pidFile), { recursive: true });
       writeFileSync(ctx.paths.pidFile, String(pid));
@@ -243,11 +244,28 @@ export async function stop(ctx: Context): Promise<boolean> {
   return true;
 }
 
-/** Adopt a process only when the health response came from a loopback service. */
-export function recoverReachableServicePid(pid: number | null, health: { ownerPid?: number | undefined }, local: boolean): number | null {
+/** Adopt a process only when loopback health and the OS command line identify it. */
+export function recoverReachableServicePid(pid: number | null, health: { ownerPid?: number | undefined }, local: boolean, ownerMatches: boolean): number | null {
   if (pid && processAlive(pid)) return pid;
-  if (!local || !Number.isSafeInteger(health.ownerPid) || (health.ownerPid ?? 0) <= 0) return null;
+  if (!local || !ownerMatches || !Number.isSafeInteger(health.ownerPid) || (health.ownerPid ?? 0) <= 0) return null;
   return health.ownerPid!;
+}
+
+function processOwnsCliService(pid: number): boolean {
+  try {
+    let commandLine: string;
+    if (process.platform === "win32") {
+      const script = `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\").CommandLine`;
+      commandLine = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
+    } else if (process.platform === "linux") {
+      commandLine = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
+    } else {
+      commandLine = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    }
+    return commandLine.toLowerCase().includes(BIN_PATH.toLowerCase()) && /(?:^|\s)serve(?:\s|$)/i.test(commandLine);
+  } catch {
+    return false;
+  }
 }
 
 export function tailLog(ctx: Context, lines: number): string {

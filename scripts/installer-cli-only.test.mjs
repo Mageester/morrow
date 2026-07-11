@@ -119,6 +119,13 @@ test("installer verifies the artifact SHA-256 checksum", async () => {
   );
 });
 
+test("installer health gate validates Morrow identity, not only HTTP 200", async () => {
+  const script = await readFile(INSTALLER, "utf8");
+  assert.match(script, /ConvertFrom-Json/, "health response must be parsed");
+  assert.match(script, /\.service\s+-eq\s+'morrow-orchestrator'/, "health response must identify the Morrow orchestrator");
+  assert.match(script, /\.apiVersion\s+-eq\s+1/, "health response must use the supported API version");
+});
+
 test("installer preserves existing user data on upgrade (no whole-root delete)", async () => {
   const script = await readFile(INSTALLER, "utf8");
   assert.doesNotMatch(

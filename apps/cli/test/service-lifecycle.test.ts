@@ -62,11 +62,12 @@ describe("service lifecycle", () => {
     }
   });
 
-  it("recovers a missing pid from a local Morrow health response", () => {
-    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true)).toBe(12345);
+  it("recovers a missing pid only after local process ownership is verified", () => {
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true, true)).toBe(12345);
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, true, false)).toBeNull();
   });
 
   it("never adopts a pid supplied by a non-local service", () => {
-    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, false)).toBeNull();
+    expect(recoverReachableServicePid(null, { ownerPid: 12345 }, false, true)).toBeNull();
   });
 });

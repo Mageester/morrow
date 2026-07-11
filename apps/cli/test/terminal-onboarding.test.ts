@@ -27,15 +27,14 @@ function meta(overrides: Partial<SessionMeta> = {}): SessionMeta {
 }
 
 describe("onboarding welcome panel", () => {
-  it("surfaces the six essentials when fully configured", () => {
+  it("welcomes without repeating the header's facts (project/model/mode live above it)", () => {
     const text = welcomeLines(meta(), plain, false).join("\n");
     expect(text).toContain("Welcome to Morrow");
-    expect(text).toContain("Morrow"); // project
-    expect(text).toContain("main · clean"); // git branch posture
-    expect(text).toContain("deepseek"); // provider
-    expect(text).toContain("deepseek-chat"); // model
-    expect(text).toContain("Ask · read-only"); // mode
     expect(text).toContain("Type your first message below to begin.");
+    // The header directly above already shows these — the panel must not.
+    expect(text).not.toContain("deepseek-chat");
+    expect(text).not.toContain("Ask · read-only");
+    expect(text).not.toContain("main · clean");
   });
 
   it("guides toward auth when no provider is configured", () => {
@@ -48,7 +47,7 @@ describe("onboarding welcome panel", () => {
 
   it("explains the limits of a non-Git directory", () => {
     const text = welcomeLines(meta({ gitRepo: false }), plain, false).join("\n");
-    expect(text).toContain("not a Git repository");
+    expect(text).toContain("Not a Git repo");
     expect(text).toContain("git init");
     expect(text).toContain("/diff");
   });

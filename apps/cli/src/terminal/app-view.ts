@@ -16,17 +16,14 @@ import { completionActive, type InputState } from "./input-state.js";
 import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
 import {
-  activityGroupLine,
+  actionLine,
   clipToWidth,
-  completionLines,
+  completionCard,
   glyphs,
-  groupActivities,
   headerLines,
-  patchLines,
-  relativePath,
-  stageBanner,
+  recoveryEntryLines,
+  runningActionLine,
   statusBar,
-  toolCardLines,
 } from "./view.js";
 
 export interface AppFrameOptions {
@@ -118,29 +115,18 @@ function buildTopChrome(term: TerminalState, out: Output, unicode: boolean, opts
  * Pure: derives entirely from `SessionMeta` so it is deterministic at startup
  * before any git.state/routing event has folded in.
  */
+/**
+ * First-run guidance only. The header directly above already states the
+ * project, branch, model, and mode — repeating them here was one of the
+ * duplicate walls this redesign removes. This panel now owns exactly the
+ * facts the header cannot show: blocked paths and what to type next.
+ */
 export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): string[] {
   const g = glyphs(unicode);
   const lines: string[] = [];
   const dot = out.gray(g.dot);
 
   lines.push("  " + out.bold("Welcome to Morrow") + out.gray(" — private intelligence, built around you."));
-  lines.push("");
-
-  // Project + git posture.
-  const projectVal =
-    meta.gitRepo === false
-      ? `${out.cyan(meta.projectName)}  ${out.gray("· not a Git repository")}`
-      : `${out.cyan(meta.projectName)}  ${out.gray("· " + meta.branch)}`;
-  lines.push(`  ${out.gray("Project ")}  ${projectVal}`);
-
-  // Provider posture.
-  const providerVal =
-    meta.providerConfigured === false
-      ? out.yellow("not configured")
-      : `${out.cyan(meta.provider)}  ${out.gray("· " + meta.privacy)}`;
-  lines.push(`  ${out.gray("Provider")}  ${providerVal}`);
-  lines.push(`  ${out.gray("Model   ")}  ${meta.providerConfigured === false ? out.gray("—") : out.cyan(meta.model)}`);
-  lines.push(`  ${out.gray("Mode    ")}  ${meta.mode}`);
   lines.push("");
 
   // Adaptive guidance for blocked paths, most important first.
@@ -168,6 +154,16 @@ export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): 
   return lines;
 }
 
+/** True for assistant entries the default view renders in full. */
+function showsAssistantEntry(term: TerminalState, entry: TerminalState["conversation"][number]): boolean {
+  if (entry.aborted) return false;
+  if (entry.final) return true;
+  if (entry.streaming) return true;
+  // A completed, non-final turn is intermediate narration — the structured
+  // action log represents that work; the text stays in /output full.
+  return false;
+}
+
 function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
   const lines: string[] = [];
 
@@ -176,61 +172,74 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     return welcomeLines(term.meta, out, unicode);
   }
 
-  // Progress stage banner.
-  const stage = stageBanner(term.progressStage, term.progressDetail, out, unicode);
-  if (stage) {
-    lines.push(stage);
-    lines.push("");
-  }
+  const hasToolWork = term.tools.length > 0;
 
-  // Plan summary.
-  if (term.plan.length > 0) {
-    lines.push(out.bold("  Plan"));
-    for (const step of term.plan) {
-      const mark = step.status === "completed" ? out.green("✓") : step.status === "running" ? out.cyan("●") : step.status === "failed" ? out.red("×") : out.gray("○");
-      lines.push(`  ${mark} ${step.title}`);
+  const renderConversationEntry = (entry: TerminalState["conversation"][number]): void => {
+    if (entry.role === "assistant" && entry.streaming && hasToolWork) {
+      const tail = entry.text.split("\n").filter((line) => line.trim()).pop();
+      if (tail) lines.push(out.gray("  " + clipToWidth(tail.trim(), Math.max(20, opts.columns - 4))));
+      return;
     }
-    lines.push("");
-  }
-
-  // Conversation.
-  for (const entry of term.conversation) {
     const label = entry.role === "user" ? out.green("you › ") : out.magenta("morrow › ");
     const body = entry.text.length ? entry.text : entry.streaming ? out.gray("…") : "";
-    const segs = body.split("\n");
-    for (const [i, seg] of segs.entries()) lines.push((i === 0 ? label : "        ") + seg);
+    if (!body) return;
+    const segments = body.split("\n");
+    for (const [index, segment] of segments.entries()) lines.push((index === 0 ? label : "        ") + segment);
+  };
+
+  // The current turn's answer is rendered after its structured activity and
+  // immediately before completion. This keeps the answer in the high-priority
+  // tail of a narrow frame instead of allowing action history to push it out.
+  let lastUserIndex = -1;
+  for (let index = term.conversation.length - 1; index >= 0; index -= 1) {
+    if (term.conversation[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  let currentAssistantIndex = -1;
+  for (let index = lastUserIndex + 1; index < term.conversation.length; index += 1) {
+    const entry = term.conversation[index]!;
+    if (entry.role === "assistant" && showsAssistantEntry(term, entry)) currentAssistantIndex = index;
   }
 
-  // Completed/failed tool cards and patches.
+  // Prior transcript stays chronological. The current answer is deferred until
+  // after the activity block below.
+  // Intermediate narration is suppressed — the action log below is the
+  // truthful record of that work. While a turn streams during tool work,
+  // show a single dim tail line so the screen stays calm.
+  for (const [index, entry] of term.conversation.entries()) {
+    if (index === currentAssistantIndex) continue;
+    if (entry.role === "assistant" && !showsAssistantEntry(term, entry)) continue;
+    renderConversationEntry(entry);
+  }
+
+  // Structured action log: one line per meaningful completed action, with
+  // recovery stories interleaved chronologically.
+  type Item = { at: number; render: () => string[] };
+  const items: Item[] = [];
+  const taskFailed = term.status === "failed" || term.status === "stalled" || term.status === "budget-reached";
   for (const card of term.tools) {
-    if (card.status !== "running") for (const cl of toolCardLines(card, out, unicode, 0, workspace)) lines.push(cl);
+    if (card.status === "running") continue;
+    items.push({ at: card.startedAt, render: () => { const l = actionLine(card, out, unicode, workspace); return l ? [l] : []; } });
   }
-  for (const patch of term.patches) for (const pl of patchLines(patch, out, unicode, workspace)) lines.push(pl);
+  for (const entry of term.recoveries) {
+    items.push({ at: entry.at, render: () => recoveryEntryLines(entry, out, unicode, taskFailed) });
+  }
+  items.sort((a, b) => a.at - b.at);
+  for (const item of items) for (const l of item.render()) lines.push(l);
 
-  // Live region: grouped activity + running tool cards.
-  const groups = groupActivities(term.activity);
-  for (const g of groups.slice(-3)) lines.push(activityGroupLine(g, out, unicode));
+  // Live region: running tools with a spinner.
   for (const card of term.tools) {
-    if (card.status === "running") for (const cl of toolCardLines(card, out, unicode, opts.tick, workspace)) lines.push(cl);
+    if (card.status === "running") lines.push(runningActionLine(card, out, unicode, opts.tick, workspace));
   }
 
-  // Completion summary.
-  if (term.status === "completed" || term.status === "failed") {
-    lines.push("");
-    for (const cl of completionLines(term, out, unicode)) lines.push(cl);
-  }
+  if (currentAssistantIndex >= 0) renderConversationEntry(term.conversation[currentAssistantIndex]!);
 
-  // Recovery hints for non-successful task states.
-  if (term.status === "failed" || term.status === "interrupted" || term.status === "cancelled" || term.status === "stalled" || term.status === "budget-reached") {
+  // Completion card (compact; the full report stays behind /output).
+  if (term.status === "completed" || term.status === "failed" || term.status === "cancelled" || term.status === "interrupted" || term.status === "stalled" || term.status === "budget-reached") {
     lines.push("");
-    lines.push(out.yellow("  Recovery"));
-    const hints: string[] = [];
-    hints.push("/continue to resume");
-    hints.push("/diff to inspect changes");
-    hints.push("/undo to rollback");
-    hints.push("/result for details");
-    hints.push("/output to see outputs");
-    lines.push(`  ${out.gray(hints.join(" · "))}`);
+    for (const cl of completionCard(term, out, { unicode, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) })) lines.push(cl);
   }
   return lines;
 }
@@ -279,11 +288,16 @@ function recentNotices(term: TerminalState, out: Output, unicode: boolean): stri
   });
 }
 
+/**
+ * The footer: the compact status line, plus a hint ONLY when context calls
+ * for one — an open overlay, a slash command in progress, or the very first
+ * session. The permanent shortcut wall is gone; `?` and /help still exist.
+ */
 function footerLine(term: TerminalState, input: InputState, out: Output, unicode: boolean, opts: AppFrameOptions): string[] {
   const statusOpts = opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs };
-  const beta28Status = statusBar(term, out, unicode, opts.columns, statusOpts);
-  if (input.confirmExit) return [beta28Status, out.yellow("  Press Ctrl+C again to exit.")];
-  const hint =
+  const status = statusBar(term, out, unicode, opts.columns, statusOpts);
+  if (input.confirmExit) return [status, out.yellow("  Press Ctrl+C again to exit.")];
+  const overlayHint =
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"
       : input.overlay === "output"
@@ -293,7 +307,13 @@ function footerLine(term: TerminalState, input: InputState, out: Output, unicode
           : input.overlay === "mission"
             ? "← → or 1/2/3 tabs · Esc close"
             : input.overlay === "history"
-            ? "type to search · Enter recall · Esc close"
-            : "/ commands · Ctrl+K palette · Ctrl+T mission · Ctrl+R history · Ctrl+O output · ? help · Ctrl+C exit";
-  return [beta28Status, out.gray("  " + hint)];
+              ? "type to search · Enter recall · Esc close"
+              : null;
+  if (overlayHint) return [status, out.gray("  " + overlayHint)];
+  // Typing a slash command → point at completion; Tab is not obvious.
+  if (input.buffer.startsWith("/")) return [status, out.gray("  Tab completes · Enter runs · ? help")];
+  // First session (nothing has happened yet) → one short orientation line.
+  const firstSession = term.conversation.length === 0 && term.tools.length === 0 && term.status === "idle" && !term.meta?.resumed;
+  if (firstSession) return [status, out.gray("  / commands · Ctrl+K palette · ? help")];
+  return [status];
 }

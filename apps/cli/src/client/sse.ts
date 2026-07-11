@@ -35,7 +35,7 @@ export async function* streamTaskEvents(
     if (options.signal?.aborted) return;
     let res: Response;
     try {
-      res = await fetch(`${baseUrl}/api/tasks/${taskId}/events/stream?after=${highest}`, {
+      res = await fetch(`${baseUrl}/api/tasks/${encodeURIComponent(taskId)}/events/stream?after=${highest}`, {
         headers: { Accept: "text/event-stream" },
         ...(options.signal ? { signal: options.signal } : {}),
       });

@@ -15,21 +15,26 @@ export {
   type ConversationEntry,
   type ActivityEntry,
   type PatchEntry,
+  type RecoveryEntry,
   type RoutingInfo,
   type SessionStatus,
 } from "./state.js";
 export {
   headerLines,
+  statsLines,
   toolCardLines,
   activityLine,
   activityGroupLine,
   groupActivities,
   type ActivityGroup,
   patchLines,
-  completionLines,
+  actionLine,
+  runningActionLine,
+  recoveryEntryLines,
+  completionCard,
+  currentActionLabel,
   composeFrame,
   statusBar,
-  statusBarFields,
   clipToWidth,
   formatElapsed,
   glyphs,
@@ -37,6 +42,8 @@ export {
   stageBanner,
   type FrameOptions,
   type Glyphs,
+  type StatsOptions,
+  type CompletionCardOptions,
 } from "./view.js";
 export type { Renderer } from "./renderer.js";
 export { LineRenderer, type LineRendererOptions } from "./line-renderer.js";

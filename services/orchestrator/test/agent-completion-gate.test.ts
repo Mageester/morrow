@@ -87,6 +87,8 @@ describe("agent completion gate", () => {
     await runner.waitFor("t");
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const terminalEvents = taskRecordsRepository(db).listEvents("t").filter((event: any) => event.type === "task.completed");
+    expect(terminalEvents).toHaveLength(1);
   });
 
   it("does not report completed when a final node --check exits non-zero", async () => {

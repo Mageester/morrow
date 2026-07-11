@@ -24,3 +24,32 @@ export function aggregateDoctor(checks: DoctorCheck[]): DoctorVerdict {
   const warnings = checks.filter((check) => !check.ok && !check.critical);
   return { ok: failures.length === 0, failures, warnings };
 }
+
+/** Packaged installs carry their own runtime and never need the pnpm developer toolchain. */
+export function pnpmIsCritical(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.MORROW_PACKAGED !== "1";
+}
+
+const SENSITIVE_FIELD = /(?:api.?key|authorization|password|secret|token|credential)/i;
+const CREDENTIAL_VALUE = /(?:\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{8,})/i;
+
+/** Redact diagnostic exports recursively without mutating the collected data. */
+export function redactDiagnostics(value: unknown, home: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactDiagnostics(item, home));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      SENSITIVE_FIELD.test(key) ? "[redacted]" : redactDiagnostics(item, home),
+    ]));
+  }
+  if (typeof value !== "string") return value;
+  if (CREDENTIAL_VALUE.test(value)) return "[redacted]";
+  return home && value.toLowerCase().includes(home.toLowerCase())
+    ? replaceCaseInsensitive(value, home, "~")
+    : value;
+}
+
+function replaceCaseInsensitive(value: string, search: string, replacement: string): string {
+  const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return value.replace(new RegExp(escaped, "gi"), replacement);
+}

@@ -597,8 +597,10 @@ describe("InteractiveSession: output-report render-mode ownership (P0-1)", () =>
     // near-identical header blocks piling up.
     const headerOccurrences = full.split(meta.projectName).length - 1;
     expect(headerOccurrences).toBeLessThanOrEqual(1);
-    // The report content itself is still genuinely rendered, not lost.
-    expect(full).toContain("# Morrow Task Report");
+    // The overlay owns the visible title and may clip the report's redundant
+    // Markdown H1 at this height; task identity and body must still be present.
+    expect(full).toContain("Output · task report full · task-1");
+    expect(full).toContain("Task: task-1 (task-1)");
     expect(full).toContain("hello there");
     // And nothing fused across writes into the old corruption pattern.
     expect(full).not.toMatch(/Report\w/);

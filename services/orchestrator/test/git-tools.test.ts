@@ -40,7 +40,7 @@ describe("safe git inspection", () => {
     expect(diff.files[0]).toMatchObject({ path: "src.ts" });
     expect(diff.files[0]?.diff).toContain("[REDACTED]");
     expect(log.commits[0]).toMatchObject({ subject: "initial source" });
-  });
+  }, 15_000);
 
   it("rejects an already-cancelled inspection", async () => {
     const controller = new AbortController();

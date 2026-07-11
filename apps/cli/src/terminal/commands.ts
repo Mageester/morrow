@@ -26,6 +26,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "tools", description: "list available read-only tools" },
   { name: "permissions", description: "show the permission profile" },
   { name: "status", description: "show service and session status" },
+  { name: "stats", description: "show detailed session statistics (tokens, context, cost, tools)" },
   { name: "history", description: "show full conversation history" },
   { name: "inspect", description: "run a safe workspace inspection" },
   { name: "diff", description: "show the latest Morrow-owned applied change" },
@@ -78,5 +79,5 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "connect", arg: "<provider>", description: "quick-connect a model provider" },
   { name: "share", arg: "[format]", description: "export session as markdown or html" },
   { name: "shortcuts", description: "show keyboard shortcuts reference" },
-  { name: "output", arg: "[full|failures]", description: "show the durable task report" },
+  { name: "output", arg: "[full|failures] [task-id]", description: "show the durable task report (latest task, or by id)" },
 ];

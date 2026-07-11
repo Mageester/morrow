@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { aggregateDoctor, type DoctorCheck } from "../src/service/doctor-checks.js";
+import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "../src/service/doctor-checks.js";
 import { parseSemver, compareSemver, checkForUpdate, fetchLatestVersion } from "../src/service/update.js";
 
 describe("aggregateDoctor", () => {
@@ -16,6 +16,28 @@ describe("aggregateDoctor", () => {
     const verdict = aggregateDoctor([check("node", true, true), check("orchestrator", false, true)]);
     expect(verdict.ok).toBe(false);
     expect(verdict.failures.map((f) => f.name)).toEqual(["orchestrator"]);
+  });
+});
+
+describe("doctor runtime requirements", () => {
+  it("requires pnpm for source checkouts but not packaged installs", () => {
+    expect(pnpmIsCritical({})).toBe(true);
+    expect(pnpmIsCritical({ MORROW_PACKAGED: "1" })).toBe(false);
+  });
+
+  it("redacts secret fields, credential-shaped strings, and the user home", () => {
+    const value = redactDiagnostics({
+      apiKey: "fake-test-value",
+      nested: { authorization: "Bearer token-value", path: "C:\\Users\\alice\\.morrow\\log" },
+      note: "Bearer credential-shaped-test-value",
+      harmless: "morrow-orchestrator",
+    }, "C:\\Users\\alice");
+    expect(value).toEqual({
+      apiKey: "[redacted]",
+      nested: { authorization: "[redacted]", path: "~\\.morrow\\log" },
+      note: "[redacted]",
+      harmless: "morrow-orchestrator",
+    });
   });
 });
 

@@ -300,13 +300,13 @@ export class MorrowApi {
   // Bounded: /output must never hang the terminal indefinitely on a slow or
   // stalled service — the caller always gets a definite answer (data or a
   // clear, actionable error) within this window, never silence.
-  getTask(taskId: string, timeoutMs = 8000) { return this.req<TaskAggregate>("GET", `/api/tasks/${taskId}`, undefined, { timeoutMs }); }
-  getTaskTree(taskId: string) { return this.req<TaskTreeNode>("GET", `/api/tasks/${taskId}/tree`); }
-  cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${taskId}/cancel`); }
-  resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/resume`); }
-  retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${taskId}/retry`); }
-  getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${taskId}/diff`); }
-  undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${taskId}/undo`); }
+  getTask(taskId: string, timeoutMs = 8000) { return this.req<TaskAggregate>("GET", `/api/tasks/${encodeURIComponent(taskId)}`, undefined, { timeoutMs }); }
+  getTaskTree(taskId: string) { return this.req<TaskTreeNode>("GET", `/api/tasks/${encodeURIComponent(taskId)}/tree`); }
+  cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${encodeURIComponent(taskId)}/cancel`); }
+  resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${encodeURIComponent(taskId)}/resume`); }
+  retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${encodeURIComponent(taskId)}/retry`); }
+  getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${encodeURIComponent(taskId)}/diff`); }
+  undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${encodeURIComponent(taskId)}/undo`); }
 
   // ── Background processes ──────────────────────────────────────────────────
   startProcess(projectId: string, input: { command: string; args?: string[]; cwd?: string; taskId?: string; agentId?: string; mode?: "pipe" | "pty"; timeoutMs?: number }) {

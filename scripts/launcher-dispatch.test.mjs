@@ -5,17 +5,23 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classify, needsService, LAUNCHER_LIFECYCLE } from "../installer/templates/dispatch.mjs";
+import { canAdoptServicePid, classify, isMorrowHealth, needsService, LAUNCHER_LIFECYCLE } from "../installer/templates/dispatch.mjs";
 
 test("bare invocation opens the interactive terminal shell", () => {
   assert.deepEqual(classify([]), { action: "interactive", command: undefined, args: [] });
 });
 
 test("lifecycle verbs are serviced by the launcher itself", () => {
-  for (const command of ["start", "stop", "restart", "status", "doctor", "uninstall"]) {
+  for (const command of ["start", "stop", "restart", "status", "uninstall"]) {
     assert.equal(classify([command]).action, "lifecycle", command);
     assert.ok(LAUNCHER_LIFECYCLE.has(command));
   }
+});
+
+test("doctor delegates to the canonical CLI without starting the service", () => {
+  assert.equal(classify(["doctor"]).action, "cli-offline");
+  assert.ok(!LAUNCHER_LIFECYCLE.has("doctor"));
+  assert.ok(!needsService("cli-offline"));
 });
 
 test("open launches the browser UI", () => {
@@ -47,4 +53,18 @@ test("needsService covers the paths that talk to the orchestrator", () => {
   assert.ok(needsService("open"));
   assert.ok(!needsService("lifecycle"));
   assert.ok(!needsService("meta"));
+});
+
+test("health validation rejects an unrelated server returning HTTP 200", () => {
+  assert.equal(isMorrowHealth({ ok: true, service: "morrow-orchestrator", apiVersion: 1 }), true);
+  assert.equal(isMorrowHealth({ ok: true, service: "other-service", apiVersion: 1 }), false);
+  assert.equal(isMorrowHealth({ ok: true }), false);
+  assert.equal(isMorrowHealth(null), false);
+});
+
+test("pid recovery requires both Morrow health identity and process ownership", () => {
+  const health = { ok: true, service: "morrow-orchestrator", apiVersion: 1, ownerPid: 12345 };
+  assert.equal(canAdoptServicePid(health, true), 12345);
+  assert.equal(canAdoptServicePid(health, false), 0);
+  assert.equal(canAdoptServicePid({ ...health, service: "other" }, true), 0);
 });

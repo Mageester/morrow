@@ -1,9 +1,9 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, needsService } from "./dispatch.mjs";
+import { canAdoptServicePid, classify, isMorrowHealth, needsService } from "./dispatch.mjs";
 
 const app = dirname(fileURLToPath(import.meta.url));
 const install = dirname(app);
@@ -34,6 +34,7 @@ function cliEnv() {
     PORT: String(port),
     // The launcher owns the service; the CLI must never try to spawn its own.
     MORROW_NO_AUTOSTART: "1",
+    MORROW_PACKAGED: "1",
     NODE_ENV: "production",
   };
 }
@@ -56,7 +57,7 @@ function delegateToCli(args) {
 
 function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { return 0; } }
 async function health() { try { const response = await fetch(url + "/api/health"); return response.ok ? await response.json() : null; } catch { return null; } }
-async function healthy() { return Boolean(await health()); }
+async function healthy() { return isMorrowHealth(await health()); }
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
 function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
 function printHelp() {
@@ -98,8 +99,10 @@ async function stop() {
   let current = pid();
   if (!current || !processAlive(current)) {
     const state = await health();
-    if (Number.isSafeInteger(state?.ownerPid) && state.ownerPid > 0) {
-      current = state.ownerPid;
+    const ownerPid = Number.isSafeInteger(state?.ownerPid) ? state.ownerPid : 0;
+    const adopted = canAdoptServicePid(state, ownerPid > 0 && processOwnsPackagedService(ownerPid));
+    if (adopted) {
+      current = adopted;
       writeFileSync(pidFile, String(current));
       console.log("Recovered the local service pid (" + current + ").");
     }
@@ -110,27 +113,16 @@ async function stop() {
   console.log("Morrow stopped.");
 }
 function processAlive(value) { try { process.kill(value, 0); return true; } catch { return false; } }
-async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
-async function doctor() {
-  // Offline file checks first -- these decide the exit code so `doctor` is a
-  // reliable post-install gate even when the service is intentionally stopped.
-  let skillCount = 0;
-  try { skillCount = readdirSync(skillsDir).filter((d) => existsSync(join(skillsDir, d, "SKILL.md"))).length; } catch {}
-  const files = [
-    ["bundled Node", existsSync(runtime)],
-    ["orchestrator", existsSync(entry)],
-    ["terminal CLI", existsSync(cliEntry)],
-    ["data", existsSync(data)],
-    [`agent skills (${skillCount})`, skillCount > 0],
-  ];
-  const running = await healthy();
-  for (const [name, ok] of files) console.log((ok ? "OK   " : "FAIL ") + name);
-  console.log((running ? "OK   " : "SKIP ") + "service running" + (running ? "" : " (run 'morrow start')"));
-  const filesOk = files.every(([, ok]) => ok);
-  // Morrow is terminal-only: a healthy install is bundled files present plus a
-  // reachable local service. There is no web UI to probe.
-  process.exitCode = filesOk ? 0 : 1;
+function processOwnsPackagedService(value) {
+  try {
+    const script = `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${value}\").CommandLine`;
+    const commandLine = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true }).trim().toLowerCase();
+    return commandLine.includes(runtime.toLowerCase()) && commandLine.includes(entry.toLowerCase());
+  } catch {
+    return false;
+  }
 }
+async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");
@@ -195,6 +187,9 @@ try {
     case "cli":
       process.exitCode = delegateToCli([command, ...args]);
       break;
+    case "cli-offline":
+      process.exitCode = delegateToCli([command, ...args]);
+      break;
     case "open":
       open();
       break;
@@ -204,7 +199,6 @@ try {
         case "stop": await stop(); break;
         case "restart": await stop(); await start(); break;
         case "status": await status(); break;
-        case "doctor": await doctor(); break;
         case "uninstall": await uninstall(); break;
       }
       break;
