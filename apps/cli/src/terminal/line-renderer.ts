@@ -38,6 +38,9 @@ export class LineRenderer implements Renderer {
   private turnBuffers = new Map<string, string>();
   /** Recovery entries already printed (by tool+message), to print each stage once. */
   private printedRecoveryStages = new Map<string, string>();
+  /** Files already represented by a completed write tool. Persisted evidence
+   * arrives afterwards for the same write and must not create a second line. */
+  private printedWriteFiles = new Set<string>();
   private completionPrinted = false;
 
   constructor(
@@ -118,6 +121,9 @@ export class LineRenderer implements Renderer {
           if (card) {
             const line = actionLine(card, out, opts.unicode, this.state.meta?.workspacePath);
             if (line) out.diag(line);
+            if (card.status === "completed" && isWriteTool(card.name) && card.purpose) {
+              this.printedWriteFiles.add(normalizeWorkspacePath(card.purpose));
+            }
           }
           if (event.status === "completed") this.printRecoveryProgress();
         }
@@ -134,7 +140,10 @@ export class LineRenderer implements Renderer {
       case "patch.applied": {
         if (opts.showActivity) {
           this.flushPendingNewline();
-          out.diag(`  ${out.green(g.ok)} Changed ${out.gray(event.files.map(sanitizeTerminalText).join(", "))}`);
+          const unreportedFiles = event.files.filter((file) => !this.printedWriteFiles.has(normalizeWorkspacePath(file)));
+          if (unreportedFiles.length > 0) {
+            out.diag(`  ${out.green(g.ok)} Changed ${out.gray(unreportedFiles.map(sanitizeTerminalText).join(", "))}`);
+          }
           this.printRecoveryProgress();
         }
         break;
@@ -268,4 +277,12 @@ function activityOwnedByRunningTool(kind: ActivityKind, state: TerminalState): b
   if (kind === "searching") return ["search_text", "search_files", "search_symbols"].some((name) => runningNames.has(name));
   if (kind === "inspecting") return ["inspect_workspace", "list_files", "git_status", "git_diff", "git_log"].some((name) => runningNames.has(name));
   return false;
+}
+
+function isWriteTool(name: string): boolean {
+  return name === "create_file" || name === "edit_file" || name === "apply_patch" || name === "propose_patch";
+}
+
+function normalizeWorkspacePath(path: string): string {
+  return sanitizeTerminalText(path).replace(/\\/g, "/").replace(/^\.\//, "");
 }
