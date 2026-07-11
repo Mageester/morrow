@@ -606,10 +606,21 @@ export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: b
   const count = entry.count > 1 ? ` ${unicode ? "×" : "x"}${entry.count}` : "";
   const problem = truncate(entry.message, 80) + count;
 
-  // A failure the task never recovered from belongs to the task-failure
-  // story, not a recovery narrative.
-  if (entry.status === "failed" && taskFailed) {
-    return [`  ${out.red(g.fail)} ${out.red(problem)}`];
+  // A recovery the task never resolved before ending — whether it never
+  // progressed past "failed" or was still "retrying" (a strategy switch was
+  // in flight) when the task itself failed. Still show the attempted
+  // strategy when one is known, and always state the outcome explicitly as
+  // "failed" — never silently drop the story just because it didn't work
+  // out, and never fabricate a strategy that was never reported.
+  if (taskFailed && entry.status !== "recovered") {
+    const lines = [`  ${out.red(g.fail)} ${out.red(problem)}`];
+    const hasStrategy = Boolean(entry.strategy && entry.strategy !== entry.message);
+    lines.push(
+      hasStrategy
+        ? `    ${out.gray(truncate(entry.strategy!, 80))} ${out.gray("—")} ${out.red("failed")}`
+        : `    ${out.red("failed")}`,
+    );
+    return lines;
   }
 
   const glyph = entry.status === "recovered" ? out.green(g.ok) : out.yellow(g.warn);

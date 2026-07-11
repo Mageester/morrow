@@ -191,6 +191,62 @@ describe("beta.29 recovery story", () => {
     expect(redLine).toContain("\x1b[31m"); // red only on task failure
   });
 
+  describe("every recovery stage states failure/strategy/outcome explicitly", () => {
+    it("a newly reported problem (no strategy, no outcome yet) is a single line", () => {
+      const s = build([{ type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" }]);
+      const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
+      expect(lines).toEqual(["  ! Recovering  Patch mismatch"]);
+    });
+
+    it("a retry in progress with a known strategy states 'in progress'", () => {
+      const s = build([
+        { type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" },
+        { type: "recovery.strategy", tool: "propose_patch", strategy: "Switched to full-file rewrite" },
+      ]);
+      const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
+      expect(lines).toEqual([
+        "  ! Recovering  Patch mismatch",
+        "    Switched to full-file rewrite — in progress",
+      ]);
+    });
+
+    it("a successful recovery with a known strategy states 'succeeded'", () => {
+      const s = build([
+        { type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" },
+        { type: "recovery.strategy", tool: "propose_patch", strategy: "Switched to full-file rewrite" },
+        { type: "patch.applied", files: ["verify.js"] },
+      ]);
+      const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
+      expect(lines).toEqual([
+        "  + Recovering  Patch mismatch",
+        "    Switched to full-file rewrite — succeeded",
+      ]);
+    });
+
+    it("an ultimately failed recovery with a known strategy explicitly states 'failed'", () => {
+      const withStrategy = build([
+        { type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" },
+        { type: "recovery.strategy", tool: "propose_patch", strategy: "Switched to full-file rewrite" },
+      ]);
+      // The strategy switch leaves the entry "retrying" — the task can still
+      // end failed before that retry ever resolves. Both must render the
+      // full failure/strategy/outcome story, not just the bare problem.
+      expect(withStrategy.recoveries[0]!.status).toBe("retrying");
+      const lines = recoveryEntryLines(withStrategy.recoveries[0]!, plain, false, true).map(stripAnsi);
+      expect(lines).toEqual([
+        "  x Patch mismatch",
+        "    Switched to full-file rewrite — failed",
+      ]);
+    });
+
+    it("an ultimately failed recovery with no known strategy states 'failed' without fabricating one", () => {
+      const s = build([{ type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" }]);
+      expect(s.recoveries[0]!.strategy).toBeUndefined();
+      const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, true).map(stripAnsi);
+      expect(lines).toEqual(["  x Patch mismatch", "    failed"]);
+    });
+  });
+
   it("a later successful call by the same tool marks the problem recovered", () => {
     const s = build([
       { type: "tool.start", id: "a", name: "run_command", purpose: "pnpm test" },
