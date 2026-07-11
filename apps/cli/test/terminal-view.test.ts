@@ -39,7 +39,7 @@ describe("terminal views (ASCII, no color)", () => {
     expect(text).toContain("PlaceHolder");
     expect(text).toContain("feat/x");
     expect(text).toContain("Build");
-    expect(text).toContain("YOLO");
+    expect(text).toContain("Auto-approved");
     expect(text).toContain("deepseek-chat");
   });
 
@@ -64,7 +64,7 @@ describe("terminal views (ASCII, no color)", () => {
 
   it("renders an activity line with a result count", () => {
     const s = build([{ type: "activity", kind: "searching", detail: "src", count: 3 }]);
-    expect(activityLine(s.activity[0]!, plain, false)).toBe("  - searching src - 3 results");
+    expect(activityLine(s.activity[0]!, plain, false)).toBe("  - Inspecting src - 3 results");
   });
 
   it("renders a compact success card from observed facts", () => {
@@ -159,7 +159,7 @@ describe("compact status bar", () => {
     ]);
     const bar = statusBar(s, plain, false, 200);
     expect(bar).toContain("Morrow");
-    expect(bar).toContain("editing verify.js");
+    expect(bar).toContain("changing verify.js");
   });
 
   it("shows ready + last-task outcome after completion", () => {
@@ -264,7 +264,7 @@ describe("activity group rendering", () => {
   it("renders a grouped reading activity compactly", () => {
     const group = { kind: "reading" as const, stage: "understanding" as const, targets: ["package.json", "tsconfig.json"], counts: [], at: 0 };
     const line = activityGroupLine(group, plain, false);
-    expect(line).toContain("reading");
+    expect(line).toContain("Inspecting");
     expect(line).toContain("package.json");
     expect(line).toContain("tsconfig.json");
     // Verify it's a single line, not multi-line.
@@ -324,7 +324,7 @@ describe("stage banner", () => {
 
   it("does not show ellipsis for completed stages", () => {
     const line = stageBanner("completed", undefined, plain, false);
-    expect(line).toContain("Completed");
+    expect(line).toContain("Complete");
     expect(line).not.toContain("…");
   });
 });

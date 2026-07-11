@@ -193,7 +193,15 @@ export class InteractiveSession {
   async run(): Promise<void> {
     const { io, stdin } = this.deps;
     this.active = true;
-    if (io.isTTY) io.write(PASTE_ON);
+    // The first paint only clears the rows it writes (see `composePaintBody`);
+    // with no prior frame to measure against, anything the shell had already
+    // printed in this viewport (a prompt, a `cd`, prior command output) stays
+    // visible above/around Morrow's frame. A one-time full-screen clear before
+    // the first paint guarantees Morrow always starts on a clean screen,
+    // regardless of what was on it before launch (KNOWN_ISSUES #10) — this
+    // clears the visible viewport only, never the scrollback buffer, so
+    // normal terminal scrollback still works exactly as before.
+    if (io.isTTY) io.write("\x1b[2J" + HOME + PASTE_ON);
     io.on("resize", this.onResize);
     process.once("exit", this.onExit);
     readline.emitKeypressEvents(stdin);
@@ -661,10 +669,10 @@ export class InteractiveSession {
     if (!this.meta.resumed) return;
     if (!this.deps.backend.getGitStatus && !this.deps.backend.getCortexStaleness) return;
     try {
-      const { resumeHasWarnings, resumeNoticeText } = await import("./resume.js");
+      const { resumeHasWarnings, resumeNoticeLines } = await import("./resume.js");
       const digest = await this.buildResumeDigest();
       if (resumeHasWarnings(digest)) {
-        this.pushNotice("warn", resumeNoticeText(digest));
+        for (const line of resumeNoticeLines(digest)) this.pushNotice("warn", line);
         this.requestPaint(false);
       }
     } catch {

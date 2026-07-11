@@ -137,7 +137,7 @@ describe("LineRenderer (non-interactive)", () => {
     );
     expect(stderr).toContain("Patch mismatch");
     expect(stderr).toContain("Switched to full-file rewrite");
-    expect(stderr).toContain("Recovered");
+    expect(stderr).toContain("succeeded"); // explicit outcome, not a bare "Recovered"
     expect(stderr).toContain("Changed verify.js");
     // Identical failures group — the message appears in ×N form, not repeated walls.
     const mismatchLines = stderr.split("\n").filter((l) => l.includes("Patch mismatch"));

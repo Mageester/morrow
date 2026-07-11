@@ -37,14 +37,28 @@ export function resumeHasWarnings(d: ResumeDigest): boolean {
   return dirty || stale;
 }
 
-/** One-line notice for the resume banner (kept short for the notice area). */
+/**
+ * Distinct, individually labeled resume-notice lines — never one conflated
+ * sentence mixing workspace/session/Cortex facts, and never a self-
+ * referential "run /resume" instruction (KNOWN_ISSUES #9: the prior one-line
+ * banner both conflated categories and told the user to run the very command
+ * that produced it). Each fact gets its own notice line; `/resume` is
+ * pointed to only as where to see *more* detail, never as a prerequisite.
+ */
+export function resumeNoticeLines(d: ResumeDigest): string[] {
+  const lines: string[] = [];
+  if (d.git && d.git.dirty > 0) lines.push(`Workspace: ${d.git.dirty} uncommitted change${d.git.dirty === 1 ? "" : "s"}.`);
+  if (d.git && d.git.behind > 0) lines.push(`Workspace: ${d.git.behind} commit${d.git.behind === 1 ? "" : "s"} behind the upstream.`);
+  if (d.staleness && (d.staleness.changedScopes.length > 0 || d.staleness.architectureStale)) lines.push("Cortex: repository knowledge may be stale for this session.");
+  if (lines.length > 0) lines.push("See /resume for full detail.");
+  return lines;
+}
+
+/** @deprecated kept only for the digest's own `/resume` header; use
+ *  `resumeNoticeLines` for the auto-resume notice area. */
 export function resumeNoticeText(d: ResumeDigest): string {
-  const bits: string[] = [];
-  if (d.git && d.git.dirty > 0) bits.push(`${d.git.dirty} uncommitted change${d.git.dirty === 1 ? "" : "s"}`);
-  if (d.git && d.git.behind > 0) bits.push(`${d.git.behind} behind`);
-  if (d.staleness && (d.staleness.changedScopes.length > 0 || d.staleness.architectureStale)) bits.push("Cortex may be stale");
-  if (bits.length === 0) return "Resumed — repository and Cortex look current. Run /resume for details.";
-  return `Resumed with ${bits.join(" · ")}. Run /resume before relying on prior context.`;
+  const lines = resumeNoticeLines(d);
+  return lines.length > 0 ? lines.join(" ") : "Resumed — repository and Cortex look current.";
 }
 
 export function resumeDigestLines(d: ResumeDigest, out: Output, unicode: boolean): string[] {

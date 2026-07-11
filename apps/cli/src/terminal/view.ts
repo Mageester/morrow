@@ -53,18 +53,24 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
   }
 }
 
+/**
+ * Every activity kind renders through the closed, beta.30 activity grammar —
+ * Inspecting / Planning / Changing / Running / Verifying / Recovering /
+ * Waiting / Blocked / Complete — so the default feed reads as meaningful
+ * verbs, never raw tool-call telemetry (BETA30_CLI_ACCEPTANCE.md §6).
+ */
 const ACTIVITY_LABEL: Record<ActivityKind, string> = {
-  inspecting: "inspecting",
-  reading: "reading",
-  searching: "searching",
-  planning: "planning",
-  running: "running",
-  applying_patch: "applying patch",
-  verifying: "verifying",
-  waiting: "waiting",
-  retrying: "retrying",
-  delegating: "delegating",
-  completing: "completing",
+  inspecting: "Inspecting",
+  reading: "Inspecting",
+  searching: "Inspecting",
+  planning: "Planning",
+  running: "Running",
+  applying_patch: "Changing",
+  verifying: "Verifying",
+  waiting: "Waiting",
+  retrying: "Recovering",
+  delegating: "Running",
+  completing: "Complete",
 };
 
 /** Map activity kind → progress stage. */
@@ -86,12 +92,12 @@ const STAGE_LABEL: Record<ProgressStage, string> = {
   understanding: "Understanding project",
   inspecting: "Inspecting",
   planning: "Planning changes",
-  editing: "Editing",
+  editing: "Changing",
   running_checks: "Running checks",
   waiting_for_approval: "Waiting for approval",
   verifying: "Verifying",
-  completed: "Completed",
-  failed: "Failed",
+  completed: "Complete",
+  failed: "Blocked",
 };
 
 export function formatElapsed(ms: number): string {
@@ -119,12 +125,24 @@ function plainMode(mode: string): "Ask" | "Plan" | "Build" {
   return "Build";
 }
 
-function autonomyLabel(state: TerminalState): string {
-  return state.meta?.autoApprove ? "Workspace-autonomous YOLO" : "approvals required";
+/**
+ * The single source of truth for the displayed permission chip: computed
+ * fresh from the *effective* mode + autoApprove flag every time, never from
+ * an independently-derived string. Ask/Plan never show an autonomy word —
+ * "YOLO"/"Auto-approved" can only ever appear while the effective mode is
+ * Build. This is the fix for the confirmed defect where Plan mode rendered
+ * "Plan · YOLO" because the chip was derived from the raw `autoApprove` flag
+ * alone (KNOWN_ISSUES #2).
+ */
+function permissionChip(mode: "Ask" | "Plan" | "Build", autoApprove: boolean): { text: string; auto: boolean } {
+  if (mode === "Ask") return { text: "read-only", auto: false };
+  if (mode === "Plan") return { text: "no changes", auto: false };
+  return autoApprove ? { text: "Auto-approved", auto: true } : { text: "approval required", auto: false };
 }
 
-function shortAutonomyLabel(state: TerminalState): string {
-  return state.meta?.autoApprove ? "YOLO" : "approvals";
+function autonomyLabel(state: TerminalState): string {
+  if (!state.meta) return "approval required";
+  return permissionChip(plainMode(state.meta.mode), Boolean(state.meta.autoApprove)).text;
 }
 
 function gitLabel(state: TerminalState): string {
@@ -368,7 +386,8 @@ export function headerLines(state: TerminalState, out: Output, opts: HeaderOptio
   const g = glyphs(unicode);
   const dot = out.gray(` ${g.dot} `);
   const mode = plainMode(m.mode);
-  const modeChip = m.autoApprove ? `${out.cyan(mode)}${dot}${out.yellow("YOLO")}` : out.cyan(mode);
+  const perm = permissionChip(mode, Boolean(m.autoApprove));
+  const modeChip = `${out.cyan(mode)}${dot}${perm.auto ? out.yellow(perm.text) : out.gray(perm.text)}`;
   const git = gitShortLabel(state);
 
   if (columns < 56) {
@@ -506,19 +525,22 @@ export function patchLines(patch: PatchEntry, out: Output, unicode: boolean, wor
 
 // ── Structured actions ────────────────────────────────────────────────────────
 
-/** Present/past verbs per tool, so live output reads as actions, not narration. */
+/** Present/past verbs per tool, so live output reads as actions, not narration.
+ *  The present tense (index 0) is one of the closed activity-grammar verbs
+ *  (BETA30_CLI_ACCEPTANCE.md §6); the past tense stays tool-specific for the
+ *  completed-action log, which is a historical record, not a live verb. */
 const TOOL_VERBS: Record<string, [present: string, past: string]> = {
-  read_file: ["Reading", "Read"],
-  create_file: ["Creating", "Created"],
-  create_directory: ["Creating", "Created"],
-  delete_file: ["Deleting", "Deleted"],
-  edit_file: ["Editing", "Edited"],
-  propose_patch: ["Editing", "Edited"],
-  apply_patch: ["Applying patch to", "Patched"],
+  read_file: ["Inspecting", "Read"],
+  create_file: ["Changing", "Created"],
+  create_directory: ["Changing", "Created"],
+  delete_file: ["Changing", "Deleted"],
+  edit_file: ["Changing", "Edited"],
+  propose_patch: ["Changing", "Edited"],
+  apply_patch: ["Changing", "Patched"],
   run_command: ["Running", "Ran"],
-  search_text: ["Searching", "Searched"],
-  search_files: ["Searching", "Searched"],
-  list_files: ["Listing", "Listed"],
+  search_text: ["Inspecting", "Searched"],
+  search_files: ["Inspecting", "Searched"],
+  list_files: ["Inspecting", "Listed"],
   inspect_workspace: ["Inspecting", "Inspected"],
 };
 
@@ -526,6 +548,14 @@ function toolVerb(name: string, tense: 0 | 1): string {
   const verbs = TOOL_VERBS[name];
   if (verbs) return verbs[tense];
   return tense === 0 ? name : name;
+}
+
+/** The present-tense verb for a running tool card. A command flagged as a
+ *  verification step reads as "Verifying", not "Running" — the grammar
+ *  distinguishes executing a check from executing an ordinary command. */
+function presentVerb(card: ToolCard): string {
+  if (card.verification) return "Verifying";
+  return toolVerb(card.name, 0);
 }
 
 function toolTarget(card: ToolCard, workspace?: string): string {
@@ -545,7 +575,7 @@ export function actionLine(card: ToolCard, out: Output, unicode: boolean, worksp
   if (card.status === "failed") return null;
   const target = toolTarget(card, workspace);
   if (card.status === "running") {
-    return `  ${out.cyan(g.spinner[0]!)} ${toolVerb(card.name, 0)}${target ? " " + target : ""}`;
+    return `  ${out.cyan(g.spinner[0]!)} ${presentVerb(card)}${target ? " " + target : ""}`;
   }
   return `  ${out.green(g.ok)} ${toolVerb(card.name, 1)}${target ? " " + out.gray(target) : ""}`;
 }
@@ -554,30 +584,61 @@ export function actionLine(card: ToolCard, out: Output, unicode: boolean, worksp
 export function runningActionLine(card: ToolCard, out: Output, unicode: boolean, tick: number, workspace?: string): string {
   const g = glyphs(unicode);
   const target = toolTarget(card, workspace);
-  return `  ${out.cyan(g.spinner[tick % g.spinner.length]!)} ${toolVerb(card.name, 0)}${target ? " " + target : ""}`;
+  return `  ${out.cyan(g.spinner[tick % g.spinner.length]!)} ${presentVerb(card)}${target ? " " + target : ""}`;
 }
 
 // ── Recovery lines ────────────────────────────────────────────────────────────
 
 /**
- * Render one recovery entry as its 1–3 line story:
- *   ! Patch mismatch ×2
- *   ↳ Switched to full-file rewrite
- *   ✓ Recovered
- * Warning styling while recoverable; red only when the task itself failed.
+ * Render one recovery entry as its structured story — what failed, what
+ * strategy was used, and the explicit outcome — never a bare "Recovered"
+ * with no detail (KNOWN_ISSUES #4):
+ *
+ *   ! Recovering  Patch mismatch ×2
+ *     Switched to full-file rewrite — succeeded
+ *
+ * "Recovering" is the closed-grammar verb for this event kind
+ * (BETA30_CLI_ACCEPTANCE.md §6); warning styling while recoverable, red only
+ * when the task itself ultimately failed.
  */
 export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: boolean, taskFailed: boolean): string[] {
   const g = glyphs(unicode);
   const count = entry.count > 1 ? ` ${unicode ? "×" : "x"}${entry.count}` : "";
   const problem = truncate(entry.message, 80) + count;
-  const lines: string[] = [];
-  if (entry.status === "failed" && taskFailed) {
-    lines.push(`  ${out.red(g.fail)} ${out.red(problem)}`);
+
+  // A recovery the task never resolved before ending — whether it never
+  // progressed past "failed" or was still "retrying" (a strategy switch was
+  // in flight) when the task itself failed. Still show the attempted
+  // strategy when one is known, and always state the outcome explicitly as
+  // "failed" — never silently drop the story just because it didn't work
+  // out, and never fabricate a strategy that was never reported.
+  if (taskFailed && entry.status !== "recovered") {
+    const lines = [`  ${out.red(g.fail)} ${out.red(problem)}`];
+    const hasStrategy = Boolean(entry.strategy && entry.strategy !== entry.message);
+    lines.push(
+      hasStrategy
+        ? `    ${out.gray(truncate(entry.strategy!, 80))} ${out.gray("—")} ${out.red("failed")}`
+        : `    ${out.red("failed")}`,
+    );
     return lines;
   }
-  lines.push(`  ${out.yellow(g.warn)} ${out.yellow(problem)}`);
-  if (entry.strategy && entry.strategy !== entry.message) lines.push(`  ${out.gray(g.arrow)} ${out.gray(truncate(entry.strategy, 80))}`);
-  if (entry.status === "recovered") lines.push(`  ${out.green(g.ok)} ${out.green("Recovered")}`);
+
+  const glyph = entry.status === "recovered" ? out.green(g.ok) : out.yellow(g.warn);
+  const verb = entry.status === "recovered" ? out.green("Recovering") : out.yellow("Recovering");
+  const lines = [`  ${glyph} ${verb}  ${out.yellow(problem)}`];
+
+  // The strategy/outcome line only appears once a strategy exists or the
+  // problem resolved — a bare, freshly-reported failure has no strategy yet
+  // and is not yet an outcome, so it stays a single line until there is a
+  // real second fact to add. This keeps each stage transition (reported →
+  // retrying → recovered) an honest single line for non-interactive callers
+  // that print only the newly-reached stage.
+  const hasStrategy = Boolean(entry.strategy && entry.strategy !== entry.message);
+  if (hasStrategy || entry.status === "recovered") {
+    const outcome = entry.status === "recovered" ? "succeeded" : entry.status === "retrying" ? "in progress" : "failed";
+    const outcomeText = entry.status === "recovered" ? out.green(outcome) : out.gray(outcome);
+    lines.push(hasStrategy ? `    ${out.gray(truncate(entry.strategy!, 80))} ${out.gray("—")} ${outcomeText}` : `    ${outcomeText}`);
+  }
   return lines;
 }
 
@@ -758,7 +819,7 @@ export function currentActionLabel(state: TerminalState, workspace?: string): st
   const running = [...state.tools].reverse().find((t) => t.status === "running");
   if (running) {
     const target = toolTarget(running, workspace);
-    return `${toolVerb(running.name, 0).toLowerCase()}${target ? " " + target : ""}`;
+    return `${presentVerb(running).toLowerCase()}${target ? " " + target : ""}`;
   }
   if (state.status !== "streaming") return null;
   const latest = state.activity[state.activity.length - 1];
