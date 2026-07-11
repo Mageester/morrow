@@ -7,6 +7,11 @@
 > [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md), [`docs/CURRENT_STATE.md`](CURRENT_STATE.md),
 > and direct code inspection) from desired future behavior. No production code
 > was changed to produce this document.
+>
+> Corrected 2026-07-11 after PR #44 (terminal presentation cleanup) merged to
+> `main`. §12's Milestone 2 status and the recovery-messaging evidence it
+> depended on are updated accordingly; see `docs/BETA30_CLI_ACCEPTANCE.md`
+> §11–§12 for the full evidence trail.
 
 ## 1. Product North Star
 
@@ -368,15 +373,54 @@ Major capability → priority mapping:
    `docs/BETA30_CLI_ACCEPTANCE.md`. **Gate:** both documents merged, backlog
    aligned, no production code changed.
 2. **Terminal foundation** — information hierarchy, activity grammar,
-   deduplicated event persistence (KNOWN_ISSUES #4, #11, #12, #14).
-   **Gate:** zero duplicate activity lines for one source event; one
-   authoritative final answer; `/output full` scales with distinct events,
-   not turn-count squared.
+   deduplicated event persistence (KNOWN_ISSUES #4, #11, #12, #14). This
+   milestone is not complete; it proceeds in the following sub-slices:
+   - **2a. Terminal presentation cleanup — complete (PR #44, merged to
+     `main` 2026-07-11).** Delivered: truthful mode/approval presentation
+     (permission chip computed fresh from effective mode + auto-approve,
+     closing the display-layer half of KNOWN_ISSUES #2); canonical
+     activity grammar (Inspecting/Planning/Changing/Running/Verifying/
+     Recovering/Waiting/Complete); recovery lines that state problem,
+     strategy, and an explicit outcome (KNOWN_ISSUES #4, live activity
+     feed); resume-notice lines split into distinct, individually labeled
+     facts (KNOWN_ISSUES #9); a one-time full-screen clear before first
+     interactive paint so leftover shell content never shows above
+     Morrow's frame (KNOWN_ISSUES #10); and `morrow help`'s session-command
+     list generated from the same registry the interactive palette uses
+     (KNOWN_ISSUES #14). This closed the presentation-layer defects listed
+     above but did **not** touch event identity, deduplication across
+     reconnect/replay, or the dispatch-layer permission bug (KNOWN_ISSUES
+     #3 — `fix` still does not reset auto-approve state; see Milestone 3).
+   - **2b. Terminal Event Integrity — next production slice (not
+     started).** Stable event identity; deduplication across persisted
+     history and live replay/reconnect; duplicate completion-event
+     protection; one canonical final answer extended from the JSON
+     `content` field to the activity feed and `/output full`; chronological,
+     non-duplicated `/output full`; semantic coalescing where repeated tool
+     events represent one user-visible action (e.g. a create-then-recover
+     cycle on one file collapsing to a single **Changing** line);
+     clean handling of retries against the same file or operation; report
+     growth proportional to distinct events rather than repeated rendering
+     passes. Full scope and completion gate: `docs/BETA30_CLI_ACCEPTANCE.md`
+     §12. Explicitly deferred out of this slice: permission dispatch-layer
+     semantics, task-plan grading/duration accuracy, header/footer redesign,
+     further resume wording, help discoverability, Mission Guardian,
+     Cortex, provider migration, and package/version/release work.
+   - **2c. Bounded activity feed and progress architecture — following
+     slice.** The bounded-scroll activity feed and progress-summary layout
+     in `docs/BETA30_CLI_ACCEPTANCE.md` §5, built on the event-identity
+     guarantees 2b establishes.
+   **Gate (milestone-level):** zero duplicate activity lines for one source
+   event; one authoritative final answer; `/output full` scales with
+   distinct events, not turn-count squared.
 3. **Control contract** — the Ask/Plan/Build/Build·Auto model, permission
    precedence rules (KNOWN_ISSUES #2, #3), accurate task grading
-   (KNOWN_ISSUES #13). **Gate:** no forbidden mode/approval combination is
-   ever displayed; every permission-bearing command sets a complete
-   explicit state.
+   (KNOWN_ISSUES #13). The display half of KNOWN_ISSUES #2 is already
+   closed by PR #44 (2a above); this milestone's remaining scope is the
+   dispatch-layer fix for KNOWN_ISSUES #3 (`fix` must set an explicit,
+   complete permission state) and KNOWN_ISSUES #13. **Gate:** no forbidden
+   mode/approval combination is ever displayed; every permission-bearing
+   command sets a complete explicit state.
 4. **Mission Guardian** — hard-requirement extraction, scope-drift and
    unjustified-dependency detection, false-completion detection
    (KNOWN_ISSUES #5). **Gate:** the Pulseboard mission re-run either honors

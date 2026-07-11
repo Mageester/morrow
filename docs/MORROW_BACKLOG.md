@@ -24,12 +24,21 @@ presentation rules, benchmark journeys, current gap matrix). The checklist
 below is not duplicated there; read those documents for the "why" and
 acceptance detail behind each item.
 
-**First three implementation slices** (justified in
-`BETA30_CLI_ACCEPTANCE.md` §12): (1) authoritative permission contract —
-issues 2, 3; (2) terminal information hierarchy / activity cleanup — issues
-1, 4, 9, 11, 12, 13; (3) Mission Guardian foundation — issue 5. These three
-items are called out below with **[Slice 1/2/3]** markers; they should be
-scoped and started before the remaining P0/P1 items.
+**Status as of 2026-07-11 (PR #44 merged):** PR #44 delivered the terminal
+*presentation* half of the first two planned slices — truthful mode/approval
+display, canonical activity grammar, recovery problem/strategy/outcome
+lines, resume-notice cleanup, clean initial paint, and registry-driven help
+discoverability (issues 2 [display half], 4, 9, 10, 14). It did **not**
+complete the terminal foundation: the permission *dispatch*-layer bug
+(issue 3), event-identity/deduplication across reconnect and replay
+(issues 11, 12), and task grading (issue 13) remain open. **Terminal Event
+Integrity** (below) is now the active next slice; full scope and completion
+gate live in `BETA30_CLI_ACCEPTANCE.md` §12 and are not duplicated here.
+Mission Guardian foundation (issue 5) follows it, then Control Contract's
+remaining dispatch/grading fixes — see `BETA30_PRODUCT_GOAL.md` §12 for the
+authoritative milestone order. The old **[Slice 1/2/3]** markers below are
+removed since PR #44 partially fulfilled them; see the per-item notes for
+what's done vs. open.
 
 ### P0/P1
 
@@ -72,43 +81,61 @@ scoped and started before the remaining P0/P1 items.
       completion merely because a checkpoint was created; never recommend
       `/continue` when it will deterministically repeat the same failure.
       Addresses issues 5, 7, 8 (core product promise — "mission ownership").
-- [ ] **[Slice 3] Mission Guardian / Requirement Compliance Monitor.** Structured
+- [ ] **Terminal Event Integrity (active next slice).** Stable event
+      identity; deduplication across persisted history and live
+      replay/reconnect; duplicate completion-event protection; one
+      canonical final answer extended to the activity feed and `/output
+      full`; chronological, non-duplicated `/output full`; semantic
+      coalescing where repeated tool events represent one user-visible
+      action (a create-then-patch-recovery cycle on one file collapsing to
+      a single Changing line); clean handling of retries against the same
+      file or operation; report growth proportional to distinct events.
+      Full scope and the 8-point completion gate: `BETA30_CLI_ACCEPTANCE.md`
+      §12. Supersedes the old "Deduplicated event persistence" item this
+      entry replaces. Addresses issues 4 (report-side correlation only —
+      the live-feed half is DONE, see below), 11, 12.
+- [~] **Permission-state precedence rules (Control Contract).** Every
+      permission-bearing root command (`ask`, `fix`, `plan`, `yolo`) sets a
+      complete, explicit permission state instead of only the flags that
+      differ from default; mode-derived autonomy display (header/footer)
+      reflects the *effective* state for the current mode, not a raw
+      persisted flag. DONE (PR #44): the header/footer/`/status` chip is
+      computed fresh from effective mode + `autoApprove` every render —
+      Ask/Plan can never show an autonomy word (issue 2). REMAINING: `fix`
+      (`apps/cli/src/main.ts`) still never sets an explicit `yolo: false`,
+      so a persisted YOLO state can silently carry into an approval-gated
+      `fix` task (issue 3). Addresses issues 2, 3.
+- [ ] **Accurate task grading (Control Contract).** Plan-stage status in
+      task reports derives strictly from actual tool-call/response evidence
+      rather than an independent assumption; duration derives from
+      persisted timestamps. Addresses issue 13.
+- [ ] **Mission Guardian / Requirement Compliance Monitor.** Structured
       hard-requirements checklist derived from the mission prompt (e.g. "no
       frontend", "zero unjustified dependencies", "built-in `node:http`"),
       checked before each write/dependency-adding tool call so violations are
-      caught during execution, not discovered after the fact. Addresses
-      issue 5.
+      caught during execution, not discovered after the fact. Follows
+      Terminal Event Integrity and Control Contract per
+      `BETA30_PRODUCT_GOAL.md` §12. Addresses issue 5.
   - [ ] Structured hard-requirement checklist (extraction + storage).
   - [ ] Requirement coverage view (which requirement each major
         implementation satisfies).
   - [ ] Scope-drift detection (flag actions that fall outside the original
         requirement set, e.g. adding a database or frontend that was never
         requested).
-- [ ] **[Slice 1] Permission-state precedence rules.** Every permission-bearing root
-      command (`ask`, `fix`, `plan`, `yolo`) sets a complete, explicit
-      permission state instead of only the flags that differ from default;
-      mode-derived autonomy display (header/footer) reflects the *effective*
-      state for the current mode, not a raw persisted flag. Addresses
-      issues 2, 3.
-- [ ] **[Slice 2] Accurate task grading.** Plan-stage status in task reports derives
-      strictly from actual tool-call/response evidence rather than an
-      independent assumption; duration derives from persisted timestamps.
-      Addresses issue 13.
-- [ ] **[Slice 2] Deduplicated event persistence.** One record per event, persisted
-      once, in `/output full` and the live activity feed; create-then-recover
-      cycles on the same file collapse into one user-facing action with
-      retries visible only in the deep trace; later provider requests
-      reference (not re-concatenate) prior narration. Addresses issues 4, 11,
-      12.
 
 ### P2
 
 - [ ] **Decision ledger, `/decisions`, `/explain last`, `/requirements`.**
       Structured, auditable decision summaries and requirement traceability
       without exposing raw chain-of-thought. Addresses issues 5, 6.
-- [ ] **Detailed recovery explanations.** Recovery lines render structured
+- [~] **Detailed recovery explanations.** Recovery lines render structured
       fields (what failed / affected file or tool / strategy used / outcome)
-      instead of a bare "Recovered" string. Addresses issue 4.
+      instead of a bare "Recovered" string. DONE (PR #44): the live activity
+      feed states problem, strategy, and an explicit outcome, including the
+      ultimate-failure case. REMAINING: `/output full`'s "Recovery Summary"
+      still buckets failures and strategies as two separately-grouped lists
+      rather than one entry per incident — tracked under Terminal Event
+      Integrity. Addresses issue 4.
 - [ ] **Better checkpoint UX.** A distinct checkpoint status (separate from
       `interrupted`) for adaptive-budget stops, carrying completed phases,
       remaining work, requirement coverage, budget consumed, and a
@@ -121,13 +148,20 @@ scoped and started before the remaining P0/P1 items.
       runtime model, provider, fallback status, thinking mode, and
       context-capacity source each shown as distinct, consistent fields in
       `/status`/`/model`/`/context`. Addresses issue 17.
-- [ ] **Terminal redraw hardening.** Adopt a true alternate-screen-buffer
+- [~] **Terminal redraw hardening.** Adopt a true alternate-screen-buffer
       switch on interactive session start/exit so redraws are consistent
       regardless of prior terminal content, instead of the current
-      viewport-only clear sequences. Addresses issue 10.
-- [ ] **Help discoverability.** Generate `morrow help`'s session-command
+      viewport-only clear sequences. DONE (PR #44): a one-time full-screen
+      clear before first interactive paint closes the confirmed regression
+      (leftover shell content above Morrow's frame). REMAINING: the
+      broader alt-screen-buffer adoption described above was deliberately
+      not taken, to preserve native scrollback — still open as a lower-
+      priority hardening item, not required by the fixed regression alone.
+      Addresses issue 10.
+- [x] **Help discoverability.** Generate `morrow help`'s session-command
       list from the same registry the interactive palette uses, so
       `/tasks`/`/stats` (and future commands) are never silently omitted.
+      DONE (PR #44): `printHelp()` generates the list from `SLASH_COMMANDS`.
       Addresses issue 14.
 
 ## Now

@@ -10,6 +10,11 @@
 > invented; where evidence is a hypothesis rather than a confirmed trace,
 > the source document says so and this document does not upgrade it to fact.
 > No production code was changed to produce this document.
+>
+> Corrected 2026-07-11 after PR #44 (terminal presentation cleanup) merged
+> to `main`. §11's gap matrix and §12's implementation-slice sequencing are
+> re-verified against current code as of that merge, not the pre-PR-#44
+> state the document originally described.
 
 ## 1. Design Principles
 
@@ -362,9 +367,12 @@ Every **Recovering** line must answer, in one structured entry:
   provider, etc.
 - **Whether it succeeded** — explicitly stated, never implied.
 
-A create-then-patch-recovery cycle on the same file collapses into a single
-**Changing** line in the default feed, with the retry visible only in
-`/output full` (closes KNOWN_ISSUES #12).
+A create-then-patch-recovery cycle on the same file must collapse into a
+single **Changing** line in the default feed, with the retry visible only
+in `/output full`. **Not yet implemented** — confirmed absent from
+`apps/cli/src/terminal/state.ts`/`view.ts` as of this correction; this is
+what would close KNOWN_ISSUES #12, and it is in scope for the Terminal
+Event Integrity slice (§12).
 
 ## 7. Permission Presentation
 
@@ -610,19 +618,19 @@ sources establish.
 | Target behavior | Status | Evidence |
 |---|---|---|
 | Denied optional tool in read-only mode ends as `completed` with a note, not `interrupted` | **contradictory** | KNOWN_ISSUES #1 — verified reproduction; hard error thrown at `services/orchestrator/src/execution/agent.ts:1747` propagates into an `interrupted` transition |
-| Only effective permission state shown (no separate autonomy chip) | **contradictory** | KNOWN_ISSUES #2 — header and footer simultaneously showed `Plan` and `YOLO`; verified at `apps/cli/src/terminal/view.ts:371` and `:122-128` |
-| Every permission-bearing command sets a complete explicit state | **missing** | KNOWN_ISSUES #3 — `fix` (`apps/cli/src/main.ts:128`, confirmed in this session's read at line 128) never resets `yolo`, unlike `ask`/`plan` |
-| Recovery lines name failure/target/strategy/outcome | **missing** | KNOWN_ISSUES #4 — generic "Recovered" / "Patch malformed patch" observed; `patch.recovery_feedback` event unmapped per BETA29_UX_INVENTORY defect 1 |
+| Only effective permission state shown (no separate autonomy chip) | **meets** | KNOWN_ISSUES #2 was a confirmed contradiction pre-PR-#44 (header/footer simultaneously showed `Plan` and `YOLO`). Fixed in PR #44: `permissionChip()` (`apps/cli/src/terminal/view.ts:137-141`) is computed fresh from effective mode + `autoApprove` on every render — Ask/Plan can never carry an autonomy word. |
+| Every permission-bearing command sets a complete explicit state | **missing** | KNOWN_ISSUES #3 — still current. `apps/cli/src/main.ts`'s `fix` case calls `chatWith({ ...(p ? { message: p } : {}) })` with no `yolo` key, unlike `ask`/`plan`, which each set their own mode explicitly. PR #44 fixed the *display* half of the permission contradiction (#2, row above) but did not touch this dispatch-layer gap — a persisted YOLO state can still silently carry into a `fix` task. |
+| Recovery lines name failure/target/strategy/outcome | **partial** | KNOWN_ISSUES #4's live-activity-feed defect is fixed: `tool.failed`, `tool.strategy_switch`, and `patch.recovery_feedback` are all mapped in `apps/cli/src/terminal/task-event-adapter.ts:123-154` (confirmed present in this repository at time of writing — the "unmapped" claim in the original BETA29_UX_INVENTORY defect 1 no longer describes current code), and PR #44's second commit ensures an ultimately-failed recovery states problem, attempted strategy, and an explicit "failed" outcome, never a bare string. What remains open: `/output full`'s "Recovery Summary" (`output-report.ts:264-333`) buckets "what failed" and "recovery strategy" as two independently-grouped lists rather than one entry per incident, so a report with more than one distinct failure does not make the failure→strategy→outcome correlation as legible as the live view does, and per-failure outcome is not stated individually (only one aggregate "Final outcome" line for the whole task). Tracked under Terminal Event Integrity, §12. |
 | Mission Guardian (hard-requirement/scope/dependency checks) | **missing** | KNOWN_ISSUES #5 — confirmed absence in `services/orchestrator/src/execution/agent.ts`; Pulseboard mission violated every stated constraint undetected |
 | Decision ledger / `/decisions` / `/explain last` | **missing** | KNOWN_ISSUES #6 — no decision-typed event or `/decisions`-class command found in the orchestrator event model at time of writing |
 | Turn-budget boundary treated as internal checkpoint, not failure | **missing** | KNOWN_ISSUES #7 — `transitionAgentState("interrupted", { reason: "turn_budget_reached" })` at `agent.ts:2425` uses the same status as genuine stalls |
 | Provider-specific continuation state persisted (DeepSeek thinking mode) | **missing** | KNOWN_ISSUES #8 — no `reasoning_content` handling found anywhere in `services/orchestrator/src` |
-| Resume message separates workspace/session/provider-conversation facts | **missing** | KNOWN_ISSUES #9 — one conflated, self-referential sentence at `apps/cli/src/terminal/resume.ts:47` |
-| Clean redraw regardless of prior terminal content | **missing** | KNOWN_ISSUES #10 — viewport-only clear (`\x1b[2J`+`HOME`) at `runtime.ts:83-87` / `session.ts:1520`, never a true alt-screen-buffer switch |
-| `/output full` — one record per event, no duplication | **missing** | KNOWN_ISSUES #11 — verified repeated narration, truncated/corrupted tool args in `output-report.ts buildTaskReport` |
-| Create-then-recover on one file collapses to a single default-view action | **missing** | KNOWN_ISSUES #12 — verified duplicate Changed/Created entries for the same file |
-| Task-report plan-stage status derives from actual tool evidence | **missing** | KNOWN_ISSUES #13 — "Read Workspace" marked skipped despite tool calls having run; "Generate Answer" marked complete with no final answer |
-| `morrow help` lists every real interactive command | **missing (confirmed)** | KNOWN_ISSUES #14 — `/tasks`/`/stats` registered in `commands.ts` but absent from the fixed list in `main.ts:248` |
+| Resume message separates workspace/session/provider-conversation facts | **meets** | KNOWN_ISSUES #9 was a confirmed conflated, self-referential sentence pre-PR-#44. Fixed in PR #44: `resumeNoticeLines()` (`apps/cli/src/terminal/resume.ts:41-49`) emits one line per fact (workspace dirty/behind, Cortex staleness), points to `/resume` only for detail, never as an instruction to re-run the command that produced the notice. |
+| Clean redraw regardless of prior terminal content | **meets** | KNOWN_ISSUES #10's confirmed regression (leftover shell content above the Morrow frame) is closed in PR #44 by a one-time full-screen clear before first interactive paint. Note: this is deliberately *not* a true alternate-screen-buffer switch — PR #44 states it avoided that to preserve native scrollback — so the broader "Terminal redraw hardening" backlog item (adopting an alt-screen buffer on session start/exit) remains open as a distinct, lower-priority item; it is not required by this specific acceptance row. |
+| `/output full` — one record per event, no duplication | **partial** | KNOWN_ISSUES #11 — `uniqueEvents()` (`apps/cli/src/terminal/output-report.ts:44-52`, pre-existing, not introduced by PR #44) already dedupes by source event id (falling back to `type:sequence`) within one report build, so exact-duplicate narration within a single aggregate is handled. Not yet covered: deduplication across persisted history plus a live replayed/reconnected SSE stream, and duplicate-completion-event protection — both in scope for Terminal Event Integrity, §12. |
+| Create-then-recover on one file collapses to a single default-view action | **missing** | KNOWN_ISSUES #12 — no collapsing logic found in `apps/cli/src/terminal/state.ts` or `view.ts`; `recovery.problem` handling coalesces identical failure signals for the *same* tool call (`state.ts:340-361`, closing simple duplicate-signal noise) but does not merge a create event with a later patch-recovery cycle on the same file into one **Changing** line. In scope for Terminal Event Integrity, §12. |
+| Task-report plan-stage status derives from actual tool evidence | **missing** | KNOWN_ISSUES #13 — "Read Workspace" marked skipped despite tool calls having run; "Generate Answer" marked complete with no final answer. Not touched by PR #44 (terminal-presentation only); scoped to the Control Contract milestone. |
+| `morrow help` lists every real interactive command | **meets** | KNOWN_ISSUES #14 was a confirmed omission pre-PR-#44 (`/tasks`/`/stats` missing from the fixed list). Fixed in PR #44: `printHelp()` (`apps/cli/src/main.ts:248-256`) generates the "In a session" list from `SLASH_COMMANDS`, the same registry the interactive `/` palette uses, so it cannot drift. |
 | Canonical model resolution before capability/context calculation | **missing** | KNOWN_ISSUES #15 — `deepseek-chat`/`deepseek-reasoner` have unset `contextWindow` at `routing/models.ts:90-91`; rejection message names the unresolved alias |
 | Deprecated aliases migrate/warn before provider deadline | **missing** | KNOWN_ISSUES #16 — aliases not marked deprecated or annotated with canonical mapping |
 | Selected/canonical/effective-runtime model shown as distinct, consistent fields | **missing** | KNOWN_ISSUES #17 — three different model identifiers observed within one session |
@@ -633,40 +641,101 @@ sources establish.
 
 ## 12. First Implementation Slices
 
-Recommended first three production slices after this documentation
-milestone, in order:
+### Completed
 
-1. **Authoritative permission contract** (KNOWN_ISSUES #2, #3; §4/§7 of this
-   document) — every permission-bearing root command sets a complete
-   explicit state; the displayed chip is computed from effective
-   mode+approval, never a raw persisted flag. **Justification:** this is the
-   cheapest slice to ship (a dispatch-layer and a display-layer fix, both
-   already precisely located in `main.ts` and `view.ts`), and it removes a
-   trust-destroying contradiction that undermines every other slice — a user
-   who cannot trust the permission chip will not trust anything else Morrow
-   claims about itself.
-2. **Terminal information hierarchy / activity cleanup** (KNOWN_ISSUES #1,
-   #4, #9, #11, #12, #13; §3/§6 of this document) — deduplicated event
-   persistence, structured recovery lines, accurate task grading, and the
-   resume-message fix. **Justification:** these findings share one root
-   cause class (events not deduplicated/derived from evidence at the
-   source) and one component family (`task-event-adapter.ts`,
-   `output-report.ts`, `resume.ts`); fixing them together is more coherent
-   than one-off patches, and it is the second-most trust-relevant gap after
-   permissions.
-3. **Mission Guardian foundation** (KNOWN_ISSUES #5; `BETA30_PRODUCT_GOAL.md`
-   §5/§6) — structured hard-requirement extraction and a pre-write check,
-   using the Pulseboard mission as the acceptance test. **Justification:**
-   this is the only P1 gap that is a wholly new subsystem rather than a fix
-   to existing code, so it should follow (not lead) the two cheaper,
-   higher-leverage cleanups above, but it must come before durable-mission
-   work (checkpointing, auto-continuation) — an autonomous mission that
-   runs longer without a Guardian in place increases, not decreases, the
-   risk of an undetected requirement violation.
+**1. Authoritative permission *presentation*** (KNOWN_ISSUES #2; §4/§7) —
+delivered in PR #44 (`feat(terminal): beta.30 terminal foundation`, merged
+to `main` 2026-07-11): the displayed permission chip is computed from
+effective mode + `autoApprove` on every render, never a raw persisted flag,
+so Ask/Plan can never show an autonomy word. This closed the
+trust-destroying contradiction (`Plan · YOLO`) but is only the
+*display*-layer half of the original slice — the dispatch-layer half
+(KNOWN_ISSUES #3, `fix` never resetting `yolo`) was not touched and remains
+open under the Control Contract milestone.
 
-This order was chosen after inspecting the repository rather than assumed:
-the permission contradiction (#1) and activity/report cleanup (#2) are both
-confirmed, narrowly-scoped fixes to code that already exists and is already
-named in KNOWN_ISSUES with specific line numbers; Mission Guardian (#3) is
-the first slice that requires new subsystem design, which is why it is
-sequenced after the two lower-risk, immediately trust-restoring fixes.
+**2. Terminal presentation cleanup** (KNOWN_ISSUES #4, #9, #10, #14; §3/§6)
+— delivered in the same PR: canonical activity grammar, structured
+recovery lines (problem/strategy/explicit outcome, including the
+ultimate-failure case fixed in a follow-up commit the same PR), the
+resume-message fact-split, a clean first paint, and registry-driven help.
+This was the second-highest-trust-value cleanup as originally planned, but
+it was a *presentation* pass — event identity, deduplication across
+reconnect/replay, and report-level correlation (KNOWN_ISSUES #11, #12) were
+explicitly not in its scope and remain open. See §11's gap matrix for the
+row-by-row evidence behind each of these.
+
+### Next production slice: Terminal Event Integrity
+
+KNOWN_ISSUES #11 and #12 remain open, and PR #44 sharpened rather than
+closed the question of what "one event, one line" actually requires once
+persisted history, live SSE, and reconnect are all in play. Scope:
+
+- Stable event identity.
+- Deduplication across persisted history and live replay/reconnect.
+- Duplicate completion-event protection.
+- One canonical final answer (extending the existing
+  `selectCanonicalFinalAnswer` behavior — see §10 — from the JSON `content`
+  field to the activity feed and `/output full`).
+- Chronological, non-duplicated `/output full`.
+- Semantic coalescing where repeated tool events represent one user-visible
+  action (the create-then-patch-recovery-on-one-file case from §6,
+  KNOWN_ISSUES #12).
+- Clean handling of retries against the same file or operation.
+- Report growth proportional to distinct events rather than repeated
+  rendering passes.
+
+**Completion gate:**
+
+1. The same source event ID is projected once.
+2. Persisted history plus replayed live SSE does not duplicate output.
+3. Repeated create/edit/retry operations on one file do not appear as a
+   misleading wall.
+4. Each assistant turn appears once.
+5. Exactly one canonical final answer is selected.
+6. Duplicate `task.completed` events produce one completion presentation.
+7. `/output full` remains chronological and grows linearly with distinct
+   event count.
+8. Full repository validation passes (`pnpm check`, `pnpm test`,
+   `pnpm build`).
+
+**Explicitly deferred out of this slice:** permission dispatch-layer
+semantics (KNOWN_ISSUES #3), task-plan grading/duration accuracy
+(KNOWN_ISSUES #13), header/footer redesign, further resume wording, help
+discoverability, Mission Guardian, Cortex, provider migration, and
+package/version/release work.
+
+**Justification:** this is now the highest-leverage remaining terminal gap
+— the presentation cleanup above made recovery *readable*, but readability
+built on undeduplicated, non-identity-stable events is fragile the moment
+reconnect or replay is involved, and every later milestone (bounded
+activity feed, Control Contract, Mission Guardian, durable mission
+ownership) either renders through this event pipeline or depends on it not
+silently duplicating state.
+
+### Following slices, in order
+
+3. **Bounded activity feed and progress architecture** (§5 of this
+   document) — built on the event-identity guarantees Terminal Event
+   Integrity establishes.
+4. **Control Contract** — the dispatch-layer permission fix (KNOWN_ISSUES
+   #3) and accurate task grading (KNOWN_ISSUES #13).
+5. **Mission Guardian foundation** (KNOWN_ISSUES #5;
+   `BETA30_PRODUCT_GOAL.md` §5/§6) — structured hard-requirement extraction
+   and a pre-write check, using the Pulseboard mission as the acceptance
+   test. This is the first slice in the program that is a wholly new
+   subsystem rather than a fix to existing code, which is why it is
+   sequenced after the cheaper, higher-leverage terminal work above — but
+   it must still land before durable-mission work (checkpointing,
+   auto-continuation), since an autonomous mission that runs longer without
+   a Guardian in place increases, not decreases, the risk of an undetected
+   requirement violation.
+6. **Durable mission ownership and long-mission continuation**
+   (`BETA30_PRODUCT_GOAL.md` §7) — checkpointing, compaction,
+   provider-specific continuation state, automatic continuation until
+   verified completion.
+7. **Cortex and memory-layer work** (`BETA30_PRODUCT_GOAL.md` §8).
+
+This order reflects direct repository inspection rather than assumption at
+every step: each "completed" claim above cites the specific file and line
+range that changed, and each "open" claim cites the specific absence
+confirmed in this pass.
