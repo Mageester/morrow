@@ -109,6 +109,24 @@ describe("terminal state reducer", () => {
     expect(s.recoveries.find((r) => r.file === undefined)).toMatchObject({ status: "failed" });
   });
 
+  it("does not let a later independent edit's successful retry absorb an earlier already-applied entry for the same file (event integrity #4b)", () => {
+    const s = fold([
+      // First, independent successful edit to a.js — no recovery involved.
+      { type: "patch.applied", files: ["a.js"] },
+      // A later, unrelated edit to a.js: fails once, then a corrected retry succeeds.
+      { type: "recovery.problem", tool: "propose_patch", message: "Patch context mismatch in a.js", file: "a.js" },
+      { type: "recovery.strategy", tool: "propose_patch", strategy: "Regenerate the patch against current file content.", file: "a.js" },
+      { type: "patch.applied", files: ["a.js"] },
+    ]);
+    // Two distinct edits must stay two entries — the second write must not
+    // be folded into the first, already-applied one just because its retry
+    // happened to resolve a same-file recovery.
+    expect(s.patches).toHaveLength(2);
+    expect(s.patches.every((p) => p.applied)).toBe(true);
+    expect(s.recoveries).toHaveLength(1);
+    expect(s.recoveries[0]).toMatchObject({ file: "a.js", status: "recovered" });
+  });
+
   it("keeps two genuinely distinct successful edits to the same file as separate entries (no incorrect removal)", () => {
     const s = fold([
       { type: "patch.applied", files: ["a.js"] },

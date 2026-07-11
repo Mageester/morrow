@@ -169,7 +169,10 @@ export class InteractiveSession {
   /** Source event ids survive SSE reconnects; never fold the same event twice.
    *  Single ownership boundary for raw-event identity (see event-ledger.ts) —
    *  ingestion happens once per raw event, before mapping, so every terminal
-   *  event derived from one accepted raw event is applied together. */
+   *  event derived from one accepted raw event is applied together. Spans
+   *  every task run in this session, so id-less fallback identities are
+   *  scoped by `currentTaskId` (see `ingestRawTaskEvent`) to keep a new
+   *  task's `type:sequence` pairs from colliding with an earlier task's. */
   private readonly eventLedger = new EventLedger();
   private readonly minIntervalMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -1360,8 +1363,12 @@ export class InteractiveSession {
     // Always route through the ledger — `EventLedger.ingest`/`eventIdentity`
     // already fall back to `type:sequence` for an id-less event, the same
     // fallback `output-report.ts` uses, so this is never a second, weaker
-    // identity rule for the id-less case.
-    if (!this.eventLedger.ingest(raw)) return;
+    // identity rule for the id-less case. `currentTaskId` scopes that
+    // fallback to the task currently streaming (set before both call sites
+    // below start their subscribe loop, including `/continue`, which reuses
+    // the same task id), so a new task's id-less events are never mistaken
+    // for a replay of an earlier task's.
+    if (!this.eventLedger.ingest(raw, this.currentTaskId ?? undefined)) return;
     for (const te of mapTaskEvent(raw)) this.applyEvent(te);
   }
 

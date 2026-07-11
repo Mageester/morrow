@@ -421,7 +421,6 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     case "patch.applied": {
       const files = event.files.map(sanitizeTerminalText);
       const matchesFile = (r: RecoveryEntry) => r.file !== undefined && files.includes(r.file);
-      const hasFileScopedRecovery = state.recoveries.some((r) => r.status !== "recovered" && matchesFile(r));
       // Any recovery with no known file (a generic tool.failed signal, never
       // narrowed to a path) is inherently ambiguous — it is only safe to
       // resolve it when NO file-scoped recovery is open anywhere in the task,
@@ -435,14 +434,20 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
       const recoveries = state.recoveries.some(willResolve)
         ? state.recoveries.map((r) => (willResolve(r) ? { ...r, status: "recovered" as const } : r))
         : state.recoveries;
-      // A write that resolves an open recovery for one of these files is a
-      // retry of the same user-visible action — coalesce it into the existing
-      // entry instead of appending a new "Changing" wall. A write with no
-      // competing recovery is a genuinely new, distinct edit and must stay
-      // its own entry, even if it targets a file changed earlier in the task.
-      const idx = hasFileScopedRecovery
-        ? [...state.patches].reverse().findIndex((p) => sameFiles(p.files, files))
-        : [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, files));
+      // Coalesce only into a still-pending (unapplied) entry for these exact
+      // files — a real `patch.proposed` placeholder for this specific write.
+      // An *already-applied* entry is a distinct, completed edit and must
+      // never absorb a later success, even one that happens to resolve an
+      // open recovery for the same file: file-scoping on the recovery only
+      // establishes which file failed, not which write attempt is retrying
+      // it, so it cannot be used to pick a target among several prior
+      // entries for that file. Without a live `patch.proposed` upstream
+      // (currently unemitted — see task-event-adapter.ts), a fail → retry →
+      // success cycle naturally finds no unapplied entry yet and appends a
+      // single new one, which is exactly "one action"; a genuinely separate
+      // later edit likewise appends its own new entry instead of merging
+      // into the earlier, already-applied one.
+      const idx = [...state.patches].reverse().findIndex((p) => !p.applied && sameFiles(p.files, files));
       if (idx >= 0) {
         const realIdx = state.patches.length - 1 - idx;
         const patches = [...state.patches];

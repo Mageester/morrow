@@ -411,6 +411,51 @@ describe("interactive session: streaming, cancellation, resize", () => {
     await done;
   });
 
+  it("a second task's id-less legacy events are not dropped as replays of the first task's (event integrity #4)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    let sendCalls = 0;
+    const backend: SessionBackend = {
+      ...makeBackend(new EventGate(), () => {}),
+      send: async () => {
+        sendCalls += 1;
+        return { taskId: `task-${sendCalls}` };
+      },
+      // No `id` field anywhere — a legacy/pre-identity backend. Both tasks'
+      // event streams reuse the exact same type:sequence pairs, since
+      // per-task sequence numbering restarts at 1 for every new task.
+      subscribe: (async function* (taskId: string) {
+        const label = taskId === "task-1" ? "Hello" : "World";
+        yield { sequence: 1, type: "assistant.turn_started", payload: { turnId: taskId } } as any;
+        yield { sequence: 2, type: "evidence.persisted", payload: { deltaText: label, turnId: taskId } } as any;
+        yield { sequence: 3, type: "task.completed", payload: {} } as any;
+      }) as any,
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "first");
+    enter(stdin);
+    await tick();
+
+    typeText(stdin, "second");
+    enter(stdin);
+    await tick();
+
+    const assistantTexts = app.snapshot().conversation.filter((c) => c.role === "assistant").map((c) => c.text);
+    // Without task-scoping, task 2's `evidence.persisted:2` would be
+    // silently dropped as an apparent replay of task 1's, leaving "World"
+    // missing from the transcript entirely.
+    expect(assistantTexts).toEqual(["Hello", "World"]);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("reconnect after resuming an interrupted task never re-applies an event already seen this session (event integrity #3)", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();

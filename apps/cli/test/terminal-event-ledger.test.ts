@@ -43,4 +43,38 @@ describe("event-ledger: single ownership boundary for raw event identity", () =>
     const accepted = secondConnection.filter((e) => ledger.ingest(e));
     expect(accepted.map((e) => e.id)).toEqual(["e3"]);
   });
+
+  it("scopes the id-less fallback identity by task, leaving persisted-id identity untouched (event integrity #4)", () => {
+    expect(eventIdentity({ type: "task.completed", sequence: 4 }, "task-1")).toBe("task-1:task.completed:4");
+    expect(eventIdentity({ type: "task.completed", sequence: 4 }, "task-2")).toBe("task-2:task.completed:4");
+    // No scope provided (e.g. the /output full report path) — unscoped fallback, unchanged.
+    expect(eventIdentity({ type: "task.completed", sequence: 4 })).toBe("task.completed:4");
+    // A persisted id is identity on its own; task scope never enters into it.
+    expect(eventIdentity({ id: "evt-1", type: "task.completed", sequence: 4 }, "task-1")).toBe("evt-1");
+  });
+
+  it("a new task's id-less fallback events are never treated as replays of an earlier task's (event integrity #4)", () => {
+    const ledger = new EventLedger();
+    // Task 1's legacy (id-less) events.
+    expect(ledger.ingest({ type: "assistant.turn_started", sequence: 1 }, "task-1")).toBe(true);
+    expect(ledger.ingest({ type: "evidence.persisted", sequence: 2 }, "task-1")).toBe(true);
+    // Task 2 starts fresh: task-records.ts computes sequence per task, so its
+    // first turn is also `assistant.turn_started:1` — same type:sequence
+    // pair as task 1's, but a genuinely new, distinct event.
+    expect(ledger.ingest({ type: "assistant.turn_started", sequence: 1 }, "task-2")).toBe(true);
+    expect(ledger.ingest({ type: "evidence.persisted", sequence: 2 }, "task-2")).toBe(true);
+  });
+
+  it("still dedupes an id-less fallback event replayed within the same task, e.g. across /continue (event integrity #4)", () => {
+    const ledger = new EventLedger();
+    expect(ledger.ingest({ type: "task.interrupted", sequence: 5 }, "task-1")).toBe(true);
+    // /continue reconnects and legitimately resends the event at the resume cursor.
+    expect(ledger.ingest({ type: "task.interrupted", sequence: 5 }, "task-1")).toBe(false);
+  });
+
+  it("keeps persisted event ids deduped across the whole session regardless of task scope", () => {
+    const ledger = new EventLedger();
+    expect(ledger.ingest({ id: "evt-1", type: "a", sequence: 1 }, "task-1")).toBe(true);
+    expect(ledger.ingest({ id: "evt-1", type: "a", sequence: 1 }, "task-2")).toBe(false);
+  });
 });
