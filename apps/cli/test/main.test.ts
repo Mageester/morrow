@@ -31,6 +31,15 @@ describe("morrow root command", () => {
     expect(help).not.toContain("completion");
   });
 
+  it("lists every real interactive session command, generated from the palette registry (KNOWN_ISSUES #14)", async () => {
+    await expect(run(["--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    // Previously hard-coded and out of sync with commands.ts — /tasks and
+    // /stats existed in the interactive palette but were missing here.
+    expect(help).toContain("/tasks");
+    expect(help).toContain("/stats");
+  });
+
   it("prints package version without contacting service", async () => {
     await expect(run(["--version"])).resolves.toBe(0);
     expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0-beta.29");

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Output } from "../src/cli/output.js";
-import { resumeDigestLines, resumeNoticeText, resumeHasWarnings, type ResumeDigest } from "../src/terminal/resume.js";
+import { resumeDigestLines, resumeNoticeText, resumeNoticeLines, resumeHasWarnings, type ResumeDigest } from "../src/terminal/resume.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
 
@@ -48,7 +48,28 @@ describe("resume freshness digest", () => {
     expect(text).toContain("architecture flagged");
     expect(text).toContain("src/auth");
     expect(text).toContain("morrow cortex refresh");
-    expect(resumeNoticeText(d)).toContain("Cortex may be stale");
+    expect(resumeNoticeText(d)).toContain("Cortex");
+    expect(resumeNoticeText(d)).toContain("stale");
+  });
+
+  it("renders each resume fact as its own distinct notice line, never one conflated sentence, and never a self-referential '/resume' instruction (KNOWN_ISSUES #9)", () => {
+    const d = digest({
+      priorMessages: 4,
+      git: { branch: "main", dirty: 2, ahead: 0, behind: 1 },
+      staleness: { changedScopes: ["src/auth"], itemsMarked: 1, architectureStale: false },
+    });
+    const lines = resumeNoticeLines(d);
+    expect(lines.some((l) => l.includes("2 uncommitted changes"))).toBe(true);
+    expect(lines.some((l) => l.includes("behind"))).toBe(true);
+    expect(lines.some((l) => l.includes("Cortex"))).toBe(true);
+    // Each fact is its own line — none conflates workspace and Cortex facts.
+    for (const line of lines) {
+      const mentionsWorkspace = line.includes("uncommitted") || line.includes("behind");
+      const mentionsCortex = line.includes("Cortex");
+      expect(mentionsWorkspace && mentionsCortex).toBe(false);
+    }
+    // Never tells the user to run the very command that produced this notice.
+    for (const line of lines) expect(line).not.toMatch(/run \/resume/i);
   });
 
   it("handles a non-Git directory and an unmapped project honestly", () => {

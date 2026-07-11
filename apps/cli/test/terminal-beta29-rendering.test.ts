@@ -60,7 +60,8 @@ describe("beta.29 header — one owner per fact", () => {
     expect(text).toContain("dirty");
     expect(text).toContain("deepseek-v4-flash");
     expect(text).toContain("Build");
-    expect(text).toContain("YOLO");
+    expect(text).toContain("Auto-approved");
+    expect(text).not.toContain("YOLO"); // header/footer/stats never show the raw "YOLO" chip (KNOWN_ISSUES #2)
     // Everything the redesign moved out of the header:
     expect(text).not.toContain("Tokens");
     expect(text).not.toContain("Context");
@@ -88,7 +89,7 @@ describe("beta.29 header — one owner per fact", () => {
       const text = lines.join("\n");
       expect(text, `width ${columns}`).toContain("Morrow"); // project
       expect(text, `width ${columns}`).toContain("Build"); // mode
-      expect(text, `width ${columns}`).toContain("YOLO"); // autonomy
+      expect(text, `width ${columns}`).toContain("Auto-approved"); // autonomy
       for (const line of lines) expect(stripAnsi(line).length, `width ${columns}`).toBeLessThanOrEqual(columns);
     }
   });
@@ -96,6 +97,28 @@ describe("beta.29 header — one owner per fact", () => {
   it("degrades to ASCII cleanly", () => {
     const lines = headerLines(busyState, plain, { unicode: false, columns: 100 });
     for (const line of lines) expect(line).not.toMatch(/[^\x20-\x7E]/);
+  });
+
+  it("never shows an autonomy chip in Plan mode, even with a stale autoApprove flag (KNOWN_ISSUES #2)", () => {
+    const planState = build([
+      { type: "session.started", meta: { ...meta, mode: "Plan · no changes", autoApprove: true } },
+    ]);
+    const text = headerLines(planState, plain, { unicode: false, columns: 100 }).join("\n");
+    expect(text).toContain("Plan");
+    expect(text).toContain("no changes");
+    expect(text).not.toContain("YOLO");
+    expect(text).not.toContain("Auto-approved");
+  });
+
+  it("never shows an autonomy chip in Ask mode, even with a stale autoApprove flag", () => {
+    const askState = build([
+      { type: "session.started", meta: { ...meta, mode: "Ask · read-only", autoApprove: true } },
+    ]);
+    const text = headerLines(askState, plain, { unicode: false, columns: 100 }).join("\n");
+    expect(text).toContain("Ask");
+    expect(text).toContain("read-only");
+    expect(text).not.toContain("YOLO");
+    expect(text).not.toContain("Auto-approved");
   });
 });
 
@@ -131,7 +154,7 @@ describe("beta.29 structured actions", () => {
   it("renders a present-tense spinner line while running", () => {
     const s = build([{ type: "tool.start", id: "t3", name: "create_file", purpose: "hello.js" }]);
     const line = stripAnsi(runningActionLine(s.tools[0]!, plain, false, 0));
-    expect(line).toContain("Creating hello.js");
+    expect(line).toContain("Changing hello.js");
   });
 
   it("answers 'what is Morrow doing' in one phrase", () => {
@@ -140,12 +163,12 @@ describe("beta.29 structured actions", () => {
       { type: "user.message", text: "go" },
       { type: "tool.start", id: "t3", name: "edit_file", purpose: "verify.js" },
     ]);
-    expect(currentActionLabel(s)).toBe("editing verify.js");
+    expect(currentActionLabel(s)).toBe("changing verify.js");
   });
 });
 
 describe("beta.29 recovery story", () => {
-  it("tells the failure → strategy → recovered story in three lines", () => {
+  it("tells the failure → strategy → explicit outcome story, never a bare 'Recovered'", () => {
     const s = build([
       { type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" },
       { type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" },
@@ -154,9 +177,8 @@ describe("beta.29 recovery story", () => {
     ]);
     expect(s.recoveries).toHaveLength(1);
     const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
-    expect(lines[0]).toBe("  ! Patch mismatch x2");
-    expect(lines[1]).toBe("  > Switched to full-file rewrite");
-    expect(lines[2]).toBe("  + Recovered");
+    expect(lines[0]).toBe("  + Recovering  Patch mismatch x2");
+    expect(lines[1]).toBe("    Switched to full-file rewrite — succeeded");
   });
 
   it("uses warning styling for open problems and red only when the task failed", () => {
@@ -218,7 +240,7 @@ describe("beta.29 footer", () => {
       { type: "user.message", text: "go" },
       { type: "tool.start", id: "t", name: "edit_file", purpose: "verify.js" },
     ]);
-    expect(stripAnsi(statusBar(working, plain, true, 100))).toContain("Morrow · editing verify.js");
+    expect(stripAnsi(statusBar(working, plain, true, 100))).toContain("Morrow · changing verify.js");
   });
 
   it("fits every target width on one line", () => {
@@ -236,7 +258,7 @@ describe("beta.29 footer", () => {
       { type: "tool.start", id: "narrow", name: "edit_file", purpose: "verify.js" },
     ]);
 
-    expect(stripAnsi(statusBar(working, plain, false, 24))).toContain("editing");
+    expect(stripAnsi(statusBar(working, plain, false, 24))).toContain("changing");
   });
 });
 

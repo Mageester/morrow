@@ -27,6 +27,7 @@ import { missionCommand, printMissionHelp } from "./commands/mission.js";
 import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
+import { SLASH_COMMANDS } from "./terminal/commands.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
 import { aggregateDoctor, pnpmIsCritical, redactDiagnostics, type DoctorCheck } from "./service/doctor-checks.js";
@@ -245,7 +246,10 @@ function printHelp(out: Output): number {
     `  morrow uninstall             ${g("guided uninstall; preserves user data unless --purge-data")}`,
     "",
     b("In a session"),
-    `  ${g("/help /mode /yolo /model /branch /changes /status /cost /diff /undo /tree /result /context /output /resume /new /clear /activity /permissions /panic /exit")}`,
+    // Generated from the same registry the interactive `/` palette uses, so
+    // this list can never drift from what the palette actually offers
+    // (KNOWN_ISSUES #14 — `/tasks` and `/stats` were previously missing here).
+    `  ${g(SLASH_COMMANDS.map((c) => `/${c.name}`).join(" "))}`,
     "",
     g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
     g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
