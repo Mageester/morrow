@@ -31,6 +31,23 @@ describe("expanded activity view (/activity)", () => {
     expect(text).toMatch(/files|results|items/);
   });
 
+  it("does not repeat a phase after an intervening phase", () => {
+    const groups = groupActivities([
+      { kind: "reading", detail: "package.json", at: 1 },
+      { kind: "planning", detail: "test approach", at: 2 },
+      { kind: "searching", detail: "scripts", at: 3 },
+    ]);
+
+    expect(groups.filter((group) => group.stage === "understanding")).toHaveLength(1);
+    expect(groups.find((group) => group.stage === "understanding")!.targets).toEqual(["package.json", "scripts"]);
+  });
+
+  it("keeps auto-approval provenance out of the activity feed", () => {
+    const s = build([{ type: "approval.auto", id: "approval-1", summary: "run npm test" }]);
+
+    expect(activityDetailLines(s, plain, false).join("\n")).not.toContain("auto-approved");
+  });
+
   it("renders finished tool cards with outcomes", () => {
     const s = build([
       { type: "tool.start", id: "t1", name: "run_command", purpose: "run tests" },

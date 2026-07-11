@@ -308,20 +308,21 @@ export interface ActivityGroup {
 }
 
 /**
- * Collapse a flat activity list into consecutive-kind groups.
+ * Collapse a flat activity list into one group per meaningful stage.
  * "reading" + "searching" + "inspecting" all merge into the "understanding"
- * stage group; other kinds stay distinct.
+ * stage even when another phase briefly intervenes, so `/activity` is a
+ * concise phase summary rather than a repeated telemetry transcript.
  */
 export function groupActivities(activities: ActivityEntry[]): ActivityGroup[] {
   if (activities.length === 0) return [];
   const groups: ActivityGroup[] = [];
   for (const a of activities) {
     const stage = STAGE_FOR_KIND[a.kind];
-    const prev = groups[groups.length - 1];
-    // Merge when the stage is the same (reading+searching+inspecting → understanding).
-    if (prev && prev.stage === stage) {
-      if (a.detail) prev.targets.push(a.detail);
-      if (a.count !== undefined) prev.counts.push(a.count);
+    const existing = groups.find((group) => group.stage === stage);
+    // Merge all observations belonging to the same user-facing phase.
+    if (existing) {
+      if (a.detail) existing.targets.push(a.detail);
+      if (a.count !== undefined) existing.counts.push(a.count);
     } else {
       groups.push({
         kind: a.kind,

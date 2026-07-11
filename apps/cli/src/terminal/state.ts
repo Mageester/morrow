@@ -475,13 +475,10 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
     }
 
     case "approval.auto":
-      return {
-        ...state,
-        activity: bounded(
-          [...state.activity, { kind: "running", detail: `auto-approved: ${sanitizeTerminalText(event.summary)}`, at: now() }],
-          MAX_ACTIVITY
-        ),
-      };
+      // Approval provenance belongs to the durable task record and `/output`,
+      // not the activity feed: Build Auto can emit many of these without any
+      // corresponding user-visible work phase.
+      return state;
 
     case "notice": {
       const noticeText = sanitizeTerminalText(event.text);
