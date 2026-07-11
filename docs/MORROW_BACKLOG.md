@@ -4,6 +4,66 @@ Ordering optimizes for: high user value, architectural cleanliness, full
 testability, and unblocking later work. Each item is a coherent, committable
 slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
+## Beta.30 (proposed — from beta.29 acceptance findings)
+
+Not yet scoped or started (`[ ]` throughout). Sourced from the structured
+acceptance-test report in
+[`docs/known-issues-beta29.md`](known-issues-beta29.md) — see that document
+for reproduction steps, evidence, and per-issue acceptance criteria. Issue
+numbers below refer to that report.
+
+- [ ] **Mission Guardian / Requirement Compliance Monitor.** Structured
+      hard-requirements checklist derived from the mission prompt (e.g. "no
+      frontend", "zero unjustified dependencies", "built-in `node:http`"),
+      checked before each write/dependency-adding tool call so violations are
+      caught during execution, not discovered after the fact. Addresses
+      issue 5.
+  - [ ] Structured hard-requirement checklist (extraction + storage).
+  - [ ] Requirement coverage view (which requirement each major
+        implementation satisfies).
+  - [ ] Scope-drift detection (flag actions that fall outside the original
+        requirement set, e.g. adding a database or frontend that was never
+        requested).
+- [ ] **Decision ledger.** Structured, auditable record of engineering
+      decisions (architecture/tool/library choices, recovery strategies,
+      requirement interpretation, scope changes, completion rationale)
+      without exposing raw chain-of-thought. Addresses issue 6.
+  - [ ] `/decisions` — high-level engineering decisions and trade-offs.
+  - [ ] `/explain last` — explain why a specific action was taken.
+  - [ ] Decision summaries in task reports / architecture rationale attached
+        to completed missions.
+- [ ] **Detailed recovery explanations.** Recovery lines render structured
+      fields (what failed / affected file or tool / strategy used / outcome)
+      instead of a bare "Recovered" string. Addresses issue 4.
+- [ ] **Resumable mission checkpoints.** A distinct checkpoint status
+      (separate from `interrupted`) for adaptive-budget stops, carrying
+      completed phases, remaining work, requirement coverage, budget
+      consumed, and a recommended next action. Addresses issue 7.
+- [ ] **Provider-specific continuation state.** Persist provider-required
+      continuation fields (e.g. DeepSeek thinking-mode `reasoning_content`)
+      alongside conversation history; detect unresumable provider state
+      before issuing the resume call rather than surfacing a raw provider
+      error. Addresses issue 8.
+- [ ] **Permission-state precedence rules.** Every permission-bearing root
+      command (`ask`, `fix`, `plan`, `yolo`) sets a complete, explicit
+      permission state instead of only the flags that differ from default;
+      mode-derived autonomy display (header/footer) reflects the *effective*
+      state for the current mode, not a raw persisted flag. Addresses
+      issues 2 and 3.
+- [ ] **Deduplicated execution trace.** One record per event, in
+      chronological order, in `/output full` and the live activity feed;
+      create-then-recover cycles on the same file collapse into one
+      user-facing action with retries visible only in the deep trace.
+      Addresses issues 4, 11, 12, and 15.
+- [ ] **Accurate task grading.** Plan-stage status in task reports derives
+      strictly from actual tool-call/response evidence rather than an
+      independent assumption. Addresses issue 13.
+- [ ] **Terminal redraw hardening.** Adopt a true alternate-screen-buffer
+      switch on interactive session start/exit so redraws are consistent
+      regardless of prior terminal content, instead of the current
+      viewport-only clear sequences. Addresses issue 10 (and the related
+      PowerShell-startup-clear issue in `docs/KNOWN_ISSUES.md`).
+
 ## Now
 
 - [x] **B1. Session & memory search (FTS).** SQLite FTS5 over conversations,
