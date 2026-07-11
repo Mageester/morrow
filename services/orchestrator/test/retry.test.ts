@@ -82,6 +82,26 @@ describe("POST /api/tasks/:taskId/retry", () => {
 });
 
 describe("POST /api/tasks/:taskId/resume", () => {
+  it("refuses to resume a persisted task from a different active project", async () => {
+    const db = openDatabase(":memory:");
+    const runner = new TaskRunner(db, async () => {});
+    const app = buildServer({ db, runner });
+    try {
+      seedTask(db, "interrupted");
+      const ts = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p2", name: "Different project", workspacePath: tmpdir(), createdAt: ts });
+
+      const res = await app.inject({ method: "POST", url: "/api/tasks/t1/resume", payload: { projectId: "p2" } });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("TASK_PROJECT_MISMATCH");
+      expect(taskRepository(db).getTaskById("t1")?.status).toBe("interrupted");
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("restarts an interrupted workspace inspection instead of resuming it as already running", async () => {
     const work = mkdtempSync(join(tmpdir(), "morrow-resume-"));
     const db = openDatabase(":memory:");
@@ -93,7 +113,7 @@ describe("POST /api/tasks/:taskId/resume", () => {
       projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: work, createdAt: ts });
       taskRepository(db).createTask({ id: "inspect", projectId: "p1", kind: "inspect_workspace", status: "interrupted", createdAt: ts });
 
-      const res = await app.inject({ method: "POST", url: "/api/tasks/inspect/resume" });
+      const res = await app.inject({ method: "POST", url: "/api/tasks/inspect/resume", payload: { projectId: "p1" } });
       expect(res.statusCode).toBe(202);
       await runner.waitFor("inspect");
 

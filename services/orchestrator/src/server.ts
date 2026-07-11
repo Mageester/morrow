@@ -877,8 +877,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   app.post("/api/tasks/:taskId/resume", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
+    const body = z.object({ projectId: z.string().min(1) }).parse(request.body ?? {});
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (task.projectId !== body.projectId) {
+      throw new ApiError(403, "Task belongs to a different project and cannot be resumed here.", "TASK_PROJECT_MISMATCH");
+    }
     if (task.status !== "interrupted") throw new ApiError(409, "Only interrupted tasks can be resumed", "TASK_NOT_RESUMABLE");
     if (task.kind === "agent_chat") {
       records.resumeInterruptedTask(taskId, { id: crypto.randomUUID(), createdAt: new Date().toISOString(), payload: { reason: "user_continue" } });
