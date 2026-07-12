@@ -14,6 +14,7 @@ import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
 import type { SessionMeta } from "./events.js";
 import { glyphs, permissionChip, plainMode, wrapText } from "./view.js";
+import { mascotNarrow, mascotWide, mascotWideWidth } from "./mascot.js";
 
 /** One line of real, project-scoped recent activity (never another project's). */
 export interface RecentActivityItem {
@@ -110,6 +111,19 @@ function panelBody(meta: SessionMeta, recent: RecentActivityItem[], out: Output,
   return { left, right };
 }
 
+/**
+ * The startup mascot, centered within `width` and degraded to the narrow
+ * form (or dropped entirely, for a genuinely unusable width) rather than
+ * ever overflowing or getting clipped mid-glyph.
+ */
+function centeredMascotLines(unicode: boolean, width: number, out: Output): string[] {
+  const wide = mascotWide(unicode);
+  const chosen = mascotWideWidth(unicode) <= width ? wide : mascotNarrow(unicode);
+  if (Math.max(...chosen.map((l) => l.length)) > width) return [];
+  const maxW = Math.max(...chosen.map((l) => l.length));
+  return chosen.map((l) => " ".repeat(Math.max(0, Math.floor((width - maxW) / 2))) + out.gray(l));
+}
+
 function frame(inner: string[], columns: number, unicode: boolean, out: Output): string[] {
   const b = border(unicode);
   const width = Math.max(20, columns - 2);
@@ -145,8 +159,9 @@ export function startupPanelLines(
   if (guidance.length > 0 && guidance[guidance.length - 1] === "") guidance.pop();
 
   if (columns < WIDE_MIN_COLUMNS) {
+    const mascot = centeredMascotLines(unicode, fullWidth, out);
     const { left, right } = panelBody(meta, recent, out, unicode, nowMs, fullWidth, fullWidth);
-    const body = [...left, "", ...right];
+    const body = [...(mascot.length ? [...mascot, ""] : []), ...left, "", ...right];
     if (guidance.length > 0) body.push("", ...guidance);
     return frame(body, columns, unicode, out);
   }
@@ -158,7 +173,8 @@ export function startupPanelLines(
   const { left, right } = panelBody(meta, recent, out, unicode, nowMs, leftWidth, rightWidth);
   const height = Math.max(left.length, right.length);
   const v = border(unicode).v;
-  const rows: string[] = [];
+  const mascot = centeredMascotLines(unicode, innerWidth, out);
+  const rows: string[] = mascot.length ? [...mascot, ""] : [];
   for (let i = 0; i < height; i += 1) {
     const l = left[i] ?? "";
     const r = right[i] ?? "";

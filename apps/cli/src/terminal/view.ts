@@ -683,6 +683,30 @@ export interface CompletionCardOptions {
  * changed, did verification pass, what was recovered — then where the full
  * report lives. Never dumps the full report into the transcript.
  */
+/**
+ * A real, evidence-backed commit — never fabricated or guessed. Only
+ * matches a completed `git commit` command, and only reports a sha actually
+ * present in that command's own reported output (git's own
+ * `[branch sha] message` line, or a bare hex token), never a sha invented
+ * because a commit command merely looked like it ran. The message, when
+ * shown, comes from the command's own `-m` argument — the real text Morrow
+ * passed to git, not a paraphrase. Absent either signal, this returns
+ * `null` and the completion card simply omits the section, the same as
+ * "Changed"/"Verified"/"Recovered" do when they have nothing to report.
+ */
+function commitInfo(state: TerminalState): { sha: string; message?: string } | null {
+  const card = [...state.tools].reverse().find(
+    (t) => t.name === "run_command" && t.status === "completed" && /(^|[;&|]\s*)git\s+commit\b/.test(t.purpose ?? ""),
+  );
+  if (!card) return null;
+  const purpose = card.purpose ?? "";
+  const msgMatch = purpose.match(/-m\s+"([^"]+)"/) ?? purpose.match(/-m\s+'([^']+)'/);
+  const summary = card.summary ?? "";
+  const shaMatch = summary.match(/\[[^\]]*?\s([0-9a-f]{7,40})\]/) ?? summary.match(/\b([0-9a-f]{7,40})\b/);
+  if (!shaMatch) return null;
+  return { sha: shaMatch[1]!, ...(msgMatch ? { message: msgMatch[1]! } : {}) };
+}
+
 export function completionCard(state: TerminalState, out: Output, opts: CompletionCardOptions = {}): string[] {
   const unicode = opts.unicode ?? true;
   const g = glyphs(unicode);
@@ -708,6 +732,11 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
       lines.push(`  ${out.bold("Verified")}`);
       const detail = verify.summary ? dot + truncate(verify.summary, 48) : "";
       lines.push(`    ${truncate(toolTarget(verify) || "command", 48)}${out.gray(detail)}`);
+    }
+    const commit = commitInfo(state);
+    if (commit) {
+      lines.push(`  ${out.bold("Commit")}`);
+      lines.push(`    ${commit.sha}${commit.message ? dot + truncate(commit.message, 60) : ""}`);
     }
     const recovered = state.recoveries.filter((r) => r.status === "recovered");
     if (recovered.length > 0) {
@@ -799,6 +828,23 @@ function labelWithWrappedText(label: string, text: string, out: Output, width: n
   const inline = `  ${out.bold(label)} ${flat}`;
   if (stripAnsi(inline).length <= width) return [inline];
   return [`  ${out.bold(label)}`, ...wrapText(flat, Math.max(20, width - 6)).map((l) => `    ${l}`)];
+}
+
+/**
+ * Break a plain (uncolored) line into chunks of at most `width` characters,
+ * never dropping a character — unlike `clipToWidth`, which truncates. For
+ * content that must survive intact outside the repaint loop (e.g. a report
+ * written once into real terminal scrollback), this is the safe way to keep
+ * every row within the terminal's width without relying on the terminal's
+ * own auto-wrap, which can interact badly with a following cursor move.
+ */
+export function hardWrapLine(line: string, width: number): string[] {
+  const safeWidth = Math.max(1, width);
+  if (line.length === 0) return [""];
+  if (line.length <= safeWidth) return [line];
+  const chunks: string[] = [];
+  for (let i = 0; i < line.length; i += safeWidth) chunks.push(line.slice(i, i + safeWidth));
+  return chunks;
 }
 
 /**

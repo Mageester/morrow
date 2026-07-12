@@ -425,12 +425,13 @@ describe("InteractiveSession: live paint fidelity", () => {
     const rows = Array.from({ length: 60 }, (_, i) => term.lineText(i));
 
     expect(rows.some((l) => l.includes("Welcome to Morrow"))).toBe(true);
-    // Every real terminal row is exactly the terminal's width or less; the
-    // panel border must never be clipped with an ellipsis to make it fit.
-    for (const row of rows) {
-      expect(row.length).toBeLessThanOrEqual(io.columns);
-      expect(row).not.toContain("…");
-    }
+    // Every real terminal row is exactly the terminal's width or less.
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(io.columns);
+    // The startup panel's facts must never be clipped with an ellipsis to
+    // make them fit. The persistent input box's own placeholder text
+    // legitimately ends with an ellipsis (it is part of the copy, not a
+    // truncation), so it is excluded from this check.
+    for (const row of rows.filter((l) => !l.includes("Ask, redirect"))) expect(row).not.toContain("…");
     // The workspace path is the longest, space-free fact — it MUST wrap
     // across multiple rows rather than getting cut. Concatenating the panel
     // rows' content (borders and padding stripped) recovers it byte-for-byte.
@@ -469,7 +470,10 @@ describe("InteractiveSession: live paint fidelity", () => {
     const term = new MiniTerm(io.columns, 40);
     term.write(io.all());
     const rows = Array.from({ length: 40 }, (_, i) => term.lineText(i));
-    const inputRow = rows.find((l) => /›\s*hi$/.test(l) || l.trim().endsWith("hi"));
+    // The input row is bordered — strip the trailing border char and its
+    // padding before checking what the typed content actually ends with.
+    const stripBorder = (l: string) => l.replace(/[│|]\s*$/, "").trimEnd();
+    const inputRow = rows.find((l) => /›\s*hi$/.test(stripBorder(l)));
     expect(inputRow).toBeDefined();
     expect(inputRow).not.toContain("fairly long");
     expect(inputRow).not.toContain("shortened");
@@ -719,6 +723,140 @@ describe("InteractiveSession: showTaskReport surfaces failure instead of hanging
     const snap = app.snapshot();
     expect(snap.notices.some((n) => n.text.includes("No task output is available yet"))).toBe(true);
 
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+});
+
+// ── Overlay shell: width-safety and frame persistence ──────────────────────
+//
+// The overlay rendering defect: /status, /output, /diff, /context, Mission
+// Control, and approvals used to paint through their own bespoke,
+// hand-rolled frame builders that never ran their lines through
+// `clipToWidth` — an overlay with a long line could exceed the terminal's
+// width and leave the render at the mercy of the terminal's own auto-wrap.
+// These tests paint through the real byte stream (MiniTerm), not just the
+// pure composed strings, so a regression back to an unclipped path would
+// actually be caught here.
+
+describe("InteractiveSession: overlay shell (width-safety + persistence)", () => {
+  it("an /output overlay with a very long line never exceeds the terminal width", async () => {
+    const io = new FakeTermIO();
+    io.columns = 60;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackendWithReport(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await tick();
+
+    typeText(stdin, "hi");
+    await tick();
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+    // A single, deliberately unbroken long line — exactly what the old
+    // hand-rolled overlay paths would have let overflow the terminal.
+    const longLine = "x".repeat(400);
+    gate.push({ type: "evidence.persisted", payload: { deltaText: longLine } } as any);
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    stdin.emit("keypress", undefined, { name: "o", ctrl: true }); // open /output overlay
+    await tick();
+
+    const term = new MiniTerm(io.columns, 80);
+    term.write(io.all());
+    for (let r = 0; r < 80; r++) expect(term.lineText(r).length).toBeLessThanOrEqual(io.columns);
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("the bordered input stays visible under the /status overlay, and closing it restores the running frame", async () => {
+    const io = new FakeTermIO();
+    io.columns = 80;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend: makeBackend(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await tick();
+
+    typeText(stdin, "do work");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+    gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
+    await tick();
+
+    typeText(stdin, "/status");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+
+    const duringOverlay = io.all();
+    expect(duringOverlay).toContain("╭");
+    expect(duringOverlay).toContain("╰");
+    expect(app.snapshot().status).toBe("streaming"); // /status never touched the running task
+
+    stdin.emit("keypress", undefined, { name: "escape" }); // close the overlay
+    await tick();
+
+    const afterClose = io.all();
+    // The bordered input is still there — closing the overlay restored the
+    // running shell rather than leaving a blank or broken frame.
+    expect(afterClose).toContain("╭");
+    expect(afterClose).toContain("╰");
+    expect(app.snapshot().status).toBe("streaming"); // the task kept running underneath
+
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    gate.end();
+    await tick();
+    stdin.emit("keypress", undefined, { name: "c", ctrl: true });
+    await done;
+  });
+
+  it("a pending command approval never exceeds the terminal width", async () => {
+    const io = new FakeTermIO();
+    io.columns = 50;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const backend: SessionBackend = {
+      ...makeBackend(gate),
+      getApproval: async () => ({
+        id: "a1",
+        kind: "command",
+        details: { command: "x".repeat(200), cwd: "/workspace", purpose: "run tests", risk: "low" },
+        projectId: "p",
+      }),
+      resolveApproval: async () => {},
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: true, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    await tick();
+
+    typeText(stdin, "do something");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+    await tick();
+
+    const term = new MiniTerm(io.columns, 60);
+    term.write(io.all());
+    for (let r = 0; r < 60; r++) expect(term.lineText(r).length).toBeLessThanOrEqual(io.columns);
+    expect(io.all()).toContain("Command approval");
+
+    stdin.emit("keypress", "n", { name: "n" }); // deny, unblocks the session
+    gate.end();
+    await tick();
     stdin.emit("keypress", undefined, { name: "c", ctrl: true });
     stdin.emit("keypress", undefined, { name: "c", ctrl: true });
     await done;

@@ -88,6 +88,38 @@ describe("terminal views (ASCII, no color)", () => {
     expect(text).not.toContain("# Morrow Task Report");
   });
 
+  it("adds a Commit section only when a completed git-commit call reports a real sha", () => {
+    const s = build([
+      { type: "tool.start", id: "t1", name: "run_command", purpose: 'git commit -m "test: verify interactive console"' },
+      { type: "tool.end", id: "t1", status: "completed", summary: "[main 7f1aa79] test: verify interactive console" },
+      { type: "task.completed" },
+    ]);
+    const text = completionCard(s, plain, { unicode: false }).join("\n");
+    expect(text).toContain("Commit");
+    expect(text).toContain("7f1aa79");
+    expect(text).toContain("test: verify interactive console");
+  });
+
+  it("never fabricates a Commit section when no sha is present in the command's own output", () => {
+    const s = build([
+      { type: "tool.start", id: "t1", name: "run_command", purpose: 'git commit -m "wip"' },
+      { type: "tool.end", id: "t1", status: "completed", summary: "nothing to commit, working tree clean" },
+      { type: "task.completed" },
+    ]);
+    const text = completionCard(s, plain, { unicode: false }).join("\n");
+    expect(text).not.toContain("Commit");
+  });
+
+  it("omits the Commit section entirely when no git commit ever ran", () => {
+    const s = build([
+      { type: "tool.start", id: "t1", name: "run_command", purpose: "pnpm test", verification: true },
+      { type: "tool.end", id: "t1", status: "completed", summary: "exit 0" },
+      { type: "task.completed" },
+    ]);
+    const text = completionCard(s, plain, { unicode: false }).join("\n");
+    expect(text).not.toContain("Commit");
+  });
+
   it("renders a failure card with blocked-by, last step, and next action", () => {
     const s = build([
       { type: "tool.start", id: "t1", name: "read_file", purpose: "src/app.ts" },

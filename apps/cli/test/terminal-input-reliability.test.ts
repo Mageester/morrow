@@ -159,9 +159,10 @@ describe("frame cursor math and narrow-terminal rendering", () => {
     const frame = frameFor(input, 80, 24);
     const line = stripAnsi(frame.lines[frame.cursor.row] ?? "");
     // The caret must sit on the line that actually contains the buffer text,
-    // not on the separator above it (the off-by-one this slice fixed).
+    // not on the border above it.
     expect(line).toContain("hello");
-    expect(frame.cursor.col).toBe(2 + "hello".length);
+    // margin(2) + left border char(1) + pad(1) + prompt width(2) + text.
+    expect(frame.cursor.col).toBe(2 + 1 + 1 + 2 + "hello".length);
   });
 
   it("places the caret on the correct visual row for a multiline buffer", () => {

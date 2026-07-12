@@ -18,8 +18,8 @@ import type { AgentMode } from "@morrow/contracts";
 import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
-import { composeApp } from "./app-view.js";
-import { glyphs, statsLines, contextLimit } from "./view.js";
+import { composeApp, type OverlayPanel } from "./app-view.js";
+import { glyphs, statsLines, contextLimit, hardWrapLine } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -1029,7 +1029,12 @@ export class InteractiveSession {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + report.replace(/\n/g, "\r\n") + "\r\n";
+    // Pre-wrap every line to the terminal's own width instead of relying on
+    // its native auto-wrap: a resize between now and whenever this
+    // scrollback is read back can otherwise reflow it unpredictably, and
+    // auto-wrap can interact badly with the following cursor position write.
+    const wrapped = report.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
+    const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + wrapped + "\r\n";
     io.write(body);
     this.reportWriteInProgress = false;
     this.requestPaint(true);
@@ -1658,7 +1663,8 @@ export class InteractiveSession {
     // While busy the elapsed timer feeds the footer; after a task it feeds
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity }, {
+    const overlayPanel = this.currentOverlayPanel();
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
@@ -1668,7 +1674,13 @@ export class InteractiveSession {
       nowMs: this.now(),
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "mission" ? this.missionFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
+    // Every state — startup, live mission, and every overlay (approval,
+    // /status, /output, Mission Control) — now paints through the same
+    // `composeApp` shell: identity header, bounded mission body, bordered
+    // input, status footer. No overlay gets its own unclipped, hand-rolled
+    // full-screen replacement, so every line is guaranteed width-safe and
+    // closing an overlay always restores exactly the frame underneath it.
+    const lines = frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;
@@ -1682,82 +1694,94 @@ export class InteractiveSession {
     io.write(out2);
   }
 
-  private approvalFrameLines(): string[] {
+  /** The active overlay's content, if any — a pending approval, Mission
+   *  Control, or an /output-family viewer (/status, /output, /diff,
+   *  /context, and the rest all set `outputViewer` the same way). Returns
+   *  `null` for the ordinary live-chat frame. */
+  private currentOverlayPanel(): OverlayPanel | null {
+    if (this.pendingApproval) return this.approvalOverlayPanel();
+    if (this.input.overlay === "mission") return this.missionOverlayPanel();
+    if (this.input.overlay === "output" || this.input.overlay === "tasktree") return this.outputOverlayPanel();
+    return null;
+  }
+
+  private approvalOverlayPanel(): OverlayPanel {
     const ap = this.pendingApproval!;
     const out = this.deps.out;
     const lines: string[] = [];
-    for (const l of this.composeBaseLines()) lines.push(l);
-    lines.push("");
+    let title: string;
 
     if (ap.kind === "command") {
       const d = commandApprovalView(ap.details);
       const risk = riskLabel(d.risk);
       const glyph = riskGlyph(risk);
 
-      lines.push(out.bold(`  Command approval  ${out.colorize(riskColor(risk), glyph + " " + risk + " risk")}`));
-      lines.push(`    ${out.gray("run:")} ${d.commandLine}`);
-      lines.push(`    ${out.gray("dir:")} ${d.cwd}`);
-      lines.push(`    ${out.gray("why:")} ${d.purpose}`);
+      title = `Command approval  ${out.colorize(riskColor(risk), glyph + " " + risk + " risk")}`;
+      lines.push(`${out.gray("run:")} ${d.commandLine}`);
+      lines.push(`${out.gray("dir:")} ${d.cwd}`);
+      lines.push(`${out.gray("why:")} ${d.purpose}`);
       if (d.preview) {
-        lines.push(out.gray("    ── preview ──"));
+        lines.push(out.gray("── preview ──"));
         for (const previewLine of String(d.preview).split(/\r?\n/).slice(0, 5)) {
-          lines.push(`    ${out.gray("│")} ${previewLine}`);
+          lines.push(`${out.gray("│")} ${previewLine}`);
         }
-        lines.push(out.gray("    ──"));
+        lines.push(out.gray("──"));
       }
       lines.push("");
       // Auto-approved actions shown when YOLO is on.
       if (this.settings.autoApprove) {
-        lines.push(out.yellow("  ⚡ YOLO active — projects edits & commands are auto-approved."));
-        lines.push(out.gray("  Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
+        lines.push(out.yellow("⚡ YOLO active — projects edits & commands are auto-approved."));
+        lines.push(out.gray("Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
         lines.push("");
       }
-      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.gray(`permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
       lines.push(out.yellow(approvalActionsLine("approve")));
-      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     } else {
       const d = changeSetApprovalView(ap.details);
-      lines.push(out.bold("  Patch approval"));
-      lines.push(`    ${out.gray("files:")} ${d.filesLabel}`);
+      title = "Patch approval";
+      lines.push(`${out.gray("files:")} ${d.filesLabel}`);
       if (d.additions !== undefined || d.deletions !== undefined) {
         const churn = [d.additions > 0 ? out.green(`+${d.additions}`) : "", d.deletions > 0 ? out.red(`-${d.deletions}`) : ""].filter(Boolean).join(" ");
-        if (churn) lines.push(`    ${out.gray("changes:")} ${churn}`);
+        if (churn) lines.push(`${out.gray("changes:")} ${churn}`);
       }
-      lines.push(`    ${out.gray("why:")} ${d.explanation}`);
+      lines.push(`${out.gray("why:")} ${d.explanation}`);
       if (d.diffPreview) {
-        lines.push(out.gray("    ── diff preview ──"));
+        lines.push(out.gray("── diff preview ──"));
         for (const diffLine of String(d.diffPreview).split(/\r?\n/).slice(0, 8)) {
           const trimmed = diffLine.length > 80 ? diffLine.slice(0, 77) + "…" : diffLine;
-          lines.push(`    ${out.gray("│")} ${trimmed}`);
+          lines.push(`${out.gray("│")} ${trimmed}`);
         }
-        lines.push(out.gray("    ──"));
+        lines.push(out.gray("──"));
       }
       lines.push("");
       if (this.settings.autoApprove) {
-        lines.push(out.yellow("  ⚡ YOLO active — patches are auto-approved."));
-        lines.push(out.gray("  Hard blocks: external writes, credential files, system paths."));
+        lines.push(out.yellow("⚡ YOLO active — patches are auto-approved."));
+        lines.push(out.gray("Hard blocks: external writes, credential files, system paths."));
         lines.push("");
       }
-      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.gray(`permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
       lines.push(out.yellow(approvalActionsLine("apply")));
-      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     }
-    return lines;
+    return {
+      title,
+      lines,
+      footerHint: "y approve · n deny · s trust session · p trust pattern — Enter does nothing here",
+      inputPlaceholder: "Waiting for approval — y/n/s/p",
+    };
   }
 
-  private outputFrameLines(): string[] {
-    const out = this.deps.out;
+  private outputOverlayPanel(): OverlayPanel {
     const viewer = this.outputViewer;
-    if (!viewer) return this.composeBaseLines();
-    const limit = Math.max(4, this.deps.io.rows - 6);
-    return [out.bold(`  Output · ${viewer.title}`), out.gray("  Esc closes · output retained in task record"), "", ...viewer.lines.slice(-limit)];
+    if (!viewer) return { title: "Output", lines: [] };
+    // Clipping (if the viewer has more lines than fit) is `composeApp`'s job —
+    // it knows the real available height for this frame; a second, smaller
+    // budget computed here would double-clip and could drop the title/lead
+    // lines a naive tail-slice keeps last.
+    return { title: `Output · ${viewer.title}`, lines: viewer.lines };
   }
 
-  private missionFrameLines(): string[] {
+  private missionOverlayPanel(): OverlayPanel {
     const out = this.deps.out;
-    const base = this.composeBaseLines();
-    const available = Math.max(6, this.deps.io.rows - base.length - 4);
-
     const tabs = ["Task Tree", "Live State", "Mission Result"];
     const tabsLine = tabs
       .map((label, i) => {
@@ -1765,46 +1789,15 @@ export class InteractiveSession {
         return i === this.missionTab ? out.bold(`${prefix}${label}`) : out.gray(`${prefix}${label}`);
       })
       .join(out.gray("  |  "));
+    const rule = out.gray("─".repeat(Math.min(60, Math.max(4, this.deps.io.columns - 6))));
 
-    const lines: string[] = [
-      ...base,
-      "",
-      out.bold("  Mission Control"),
-      `  ${tabsLine}`,
-      out.gray("  " + "─".repeat(Math.min(60, this.deps.io.columns - 2))),
-    ];
+    let content: string[];
+    if (this.missionTab === 0 && this.missionCache.tree) content = this.missionCache.tree;
+    else if (this.missionTab === 1 && this.missionCache.cockpit) content = this.missionCache.cockpit;
+    else if (this.missionTab === 2 && this.missionCache.result) content = this.missionCache.result;
+    else content = ["Loading…"];
 
-    let content: string[] = [];
-    if (this.missionTab === 0 && this.missionCache.tree) {
-      content = this.missionCache.tree;
-    } else if (this.missionTab === 1 && this.missionCache.cockpit) {
-      content = this.missionCache.cockpit;
-    } else if (this.missionTab === 2 && this.missionCache.result) {
-      content = this.missionCache.result;
-    } else {
-      content = ["Loading…"];
-    }
-
-    lines.push("");
-    for (const line of content.slice(0, available)) {
-      lines.push(`  ${line}`);
-    }
-
-    lines.push("");
-    lines.push(out.gray("  ← → or 1/2/3 to switch tabs · Esc to close"));
-    return lines;
-  }
-
-  private composeBaseLines(): string[] {
-    const { io, out, unicode } = this.deps;
-    return composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity }, {
-      columns: io.columns,
-      rows: io.rows,
-      tick: this.tick,
-      promptLabel: out.green(unicode ? "› " : "> "),
-      promptWidth: 2,
-      nowMs: this.now(),
-    }).lines.slice(0, -4); // drop separator + input + completion + footer
+    return { title: "Mission Control", subheading: [tabsLine, rule], lines: content };
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────

@@ -7,6 +7,8 @@ import type { SessionMeta, TerminalEvent } from "../src/terminal/events.js";
 import type { RawTaskEvent } from "../src/terminal/task-event-adapter.js";
 import { initialState, reduce } from "../src/terminal/state.js";
 import { actionLine, recoveryEntryLines } from "../src/terminal/view.js";
+import { composeApp } from "../src/terminal/app-view.js";
+import { initialInputState } from "../src/terminal/input-state.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -388,5 +390,46 @@ describe("Interactive Mission Console: final result rendering", () => {
     ctrlC(stdin);
     ctrlC(stdin);
     await done;
+  });
+});
+
+describe("Interactive Mission Console: Mission/Activity body structure", () => {
+  const opts = { columns: 80, rows: 30, tick: 0, promptLabel: "› ", promptWidth: 2 };
+  const ctx = { commands: [], paletteItems: [] };
+
+  it("states which mission is running once, under a Mission heading — not duplicated in the transcript", () => {
+    let s = reduce(initialState(), { type: "session.started", meta });
+    s = reduce(s, { type: "user.message", text: "fix the flaky retry logic" });
+    const frame = composeApp(s, initialInputState(), plain, false, ctx, opts).lines.join("\n");
+    expect(frame).toContain("Mission");
+    expect(frame).toContain("fix the flaky retry logic");
+    // Only one occurrence of the objective text — the Mission heading owns
+    // it, the ordinary "you ›" transcript line does not also repeat it.
+    const occurrences = (frame.match(/fix the flaky retry logic/g) ?? []).length;
+    expect(occurrences).toBe(1);
+    expect(frame).not.toContain("you ›");
+  });
+
+  it("wraps a very long mission objective instead of truncating it with an ellipsis", () => {
+    let s = reduce(initialState(), { type: "session.started", meta });
+    const longObjective = "Refactor the entire provider retry pipeline so it backs off exponentially, logs every attempt with full context, and never silently swallows a terminal error again";
+    s = reduce(s, { type: "user.message", text: longObjective });
+    const frame = composeApp(s, initialInputState(), plain, false, ctx, { ...opts, columns: 50 }).lines.join("\n");
+    expect(frame).not.toContain("…");
+    for (const word of ["Refactor", "exponentially,", "again"]) expect(frame).toContain(word);
+  });
+
+  it("labels the structured action log with an Activity heading only once there is activity to show", () => {
+    let s = reduce(initialState(), { type: "session.started", meta });
+    // Before any user message, there is no mission and nothing to label.
+    const idleFrame = composeApp(s, initialInputState(), plain, false, ctx, opts).lines.join("\n");
+    expect(idleFrame).not.toContain("Activity");
+
+    s = reduce(s, { type: "user.message", text: "run the tests" });
+    s = reduce(s, { type: "tool.start", id: "t1", name: "run_command", purpose: "pnpm test" });
+    s = reduce(s, { type: "tool.end", id: "t1", status: "completed", summary: "33 passed" });
+    const activeFrame = composeApp(s, initialInputState(), plain, false, ctx, opts).lines.join("\n");
+    expect(activeFrame).toContain("Activity");
+    expect(activeFrame).toContain("pnpm test");
   });
 });
