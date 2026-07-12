@@ -108,6 +108,23 @@ describe("agent completion gate", () => {
     expect(taskRecordsRepository(db).listEvents("t").some((e: any) => e.type === "task.completed")).toBe(false);
   });
 
+  it("retries one empty post-tool provider turn before interrupting", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [done],
+        [text("verified after transient empty provider response"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after transient empty provider response");
+  });
+
   it("does not report completed when a final node --check exits non-zero", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
