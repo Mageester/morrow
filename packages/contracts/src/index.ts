@@ -794,6 +794,17 @@ export const ReopenConditionSchema=z.enum([
 ]);
 export type ReopenCondition=z.infer<typeof ReopenConditionSchema>;
 
+/** A single, auditable entry in the invalidation history of a requirement node.
+ *  Each reopen of a verified (frozen) node appends one entry; history is never
+ *  replaced or truncated. */
+export const InvalidationEntrySchema=z.object({
+  condition:ReopenConditionSchema,
+  reason:z.string().min(1).max(2000),
+  invalidatedAt:z.string().datetime(),
+  evidenceRef:z.string().max(200).nullable().default(null),
+}).strict();
+export type InvalidationEntry=z.infer<typeof InvalidationEntrySchema>;
+
 export const MissionRequirementNodeSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
@@ -831,10 +842,10 @@ export const MissionRequirementNodeSchema=z.object({
   lastFailure:z.string().max(2000).nullable().default(null),
   // When the requirement reached a terminal (verified/waived) state.
   completedAt:z.string().datetime().nullable().default(null),
-  // Persisted invalidation conditions that allowed a verified node to reopen.
-  invalidationConditions:z.array(ReopenConditionSchema).default([]),
-  // Persisted human/auditable reason for an invalidation.
-  invalidationReason:z.string().max(2000).nullable().default(null),
+  // Durable, append-only audit trail of every verified-node reopen. Each entry
+  // records the condition, a non-blank reason, a timestamp, and an optional
+  // evidence reference. History is never replaced or truncated.
+  invalidationHistory:z.array(InvalidationEntrySchema).default([]),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
 }).strict();

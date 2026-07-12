@@ -27,8 +27,7 @@ function validNode(over: Record<string, unknown> = {}) {
     attempts: 0,
     lastFailure: null,
     completedAt: null,
-    invalidationConditions: [],
-    invalidationReason: null,
+    invalidationHistory: [],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...over,
@@ -95,8 +94,12 @@ describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {
       attempts: 2,
       lastFailure: "boom",
       completedAt: "2026-01-02T00:00:00.000Z",
-      invalidationConditions: ["file_hash_changed"],
-      invalidationReason: "hash drifted",
+      invalidationHistory: [{
+        condition: "file_hash_changed",
+        reason: "hash drifted",
+        invalidatedAt: "2026-01-03T00:00:00.000Z",
+        evidenceRef: null,
+      }],
     })).success).toBe(true);
   });
 

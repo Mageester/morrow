@@ -5,6 +5,7 @@ import type {
   MissionEvent, MissionEventType, MissionVerificationStrategy,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
   RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
+  InvalidationEntry,
 } from "@morrow/contracts";
 
 /** A requirement node as supplied at contract-build time (before persistence). */
@@ -26,8 +27,7 @@ export interface ContractRequirementNodeInput {
   attempts?: number;
   lastFailure?: string | null;
   completedAt?: string | null;
-  invalidationConditions?: ReopenCondition[];
-  invalidationReason?: string | null;
+  invalidationHistory?: InvalidationEntry[];
 }
 
 const SCHEMA_VERSION = 1;
@@ -147,8 +147,7 @@ function mapRequirementNode(row: any): MissionRequirementNode {
     attempts: row.attempts ?? 0,
     lastFailure: row.last_failure_json ?? null,
     completedAt: row.completed_at ?? null,
-    invalidationConditions: JSON.parse(row.invalidation_conditions_json ?? "[]") as ReopenCondition[],
-    invalidationReason: row.invalidation_reason ?? null,
+    invalidationHistory: JSON.parse(row.invalidation_history_json ?? "[]"),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -457,14 +456,22 @@ export function missionsRepository(db: Database.Database) {
     // ── requirement nodes ──────────────────────────────────────────────────
     addRequirementNodes(missionId: string, nodes: ContractRequirementNodeInput[], now = new Date().toISOString()): void {
       const stmt = db.prepare(
-        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, category, source_prompt_excerpt, source, confidence, approved, authoritative, status, dependencies_json, evidence_refs_json, affected_files_json, verified_file_hashes_json, attempts, last_failure_json, completed_at, invalidation_conditions_json, invalidation_reason, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', 0, NULL, NULL, '[]', NULL, ?, ?)`,
+        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, category, source_prompt_excerpt, source, confidence, approved, authoritative, status, dependencies_json, evidence_refs_json, affected_files_json, verified_file_hashes_json, attempts, last_failure_json, completed_at, invalidation_history_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       db.transaction(() => {
         nodes.forEach((n) => stmt.run(
           n.id, missionId, n.order, n.statement, n.category, n.sourcePromptExcerpt ?? "",
           n.source, n.confidence, n.approved ? 1 : 0, n.authoritative ? 1 : 0, n.status ?? "pending",
-          JSON.stringify(n.dependencies ?? []), now, now,
+          JSON.stringify(n.dependencies ?? []),
+          JSON.stringify(n.evidenceRefs ?? []),
+          JSON.stringify(n.affectedFiles ?? []),
+          JSON.stringify(n.verifiedFileHashes ?? []),
+          n.attempts ?? 0,
+          n.lastFailure ?? null,
+          n.completedAt ?? null,
+          JSON.stringify(n.invalidationHistory ?? []),
+          now, now,
         ));
       })();
     },
@@ -474,7 +481,7 @@ export function missionsRepository(db: Database.Database) {
       confidence: number; approved: boolean; authoritative: boolean; status: RequirementNodeStatus;
       dependencies: string[]; evidenceRefs: string[]; affectedFiles: string[]; verifiedFileHashes: string[];
       attempts: number; lastFailure: string | null; completedAt: string | null;
-      invalidationConditions: ReopenCondition[]; invalidationReason: string | null;
+      invalidationHistory: InvalidationEntry[];
     }>, now = new Date().toISOString()): MissionRequirementNode | undefined {
       const sets: string[] = ["updated_at = ?"];
       const params: any[] = [now];
@@ -493,8 +500,7 @@ export function missionsRepository(db: Database.Database) {
       if (patch.attempts !== undefined) { sets.push("attempts = ?"); params.push(patch.attempts); }
       if (patch.lastFailure !== undefined) { sets.push("last_failure_json = ?"); params.push(patch.lastFailure); }
       if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
-      if (patch.invalidationConditions !== undefined) { sets.push("invalidation_conditions_json = ?"); params.push(JSON.stringify(patch.invalidationConditions)); }
-      if (patch.invalidationReason !== undefined) { sets.push("invalidation_reason = ?"); params.push(patch.invalidationReason); }
+      if (patch.invalidationHistory !== undefined) { sets.push("invalidation_history_json = ?"); params.push(JSON.stringify(patch.invalidationHistory)); }
       params.push(id);
       db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
       const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;

@@ -69,19 +69,19 @@ export function buildContractFromInput(input: { objective: string; contract?: Mi
   for (const art of expectedArtifacts) {
     addNode({
       statement: art, category: "expected_artifact",
-      sourcePromptExcerpt: objectiveText, source: "user", confidence: 1, approved: true, authoritative: true,
+      sourcePromptExcerpt: art, source: "user", confidence: 1, approved: true, authoritative: true,
     });
   }
   for (const crit of acceptanceCriteria) {
     addNode({
       statement: crit, category: "acceptance_criterion",
-      sourcePromptExcerpt: objectiveText, source: "user", confidence: 1, approved: true, authoritative: true,
+      sourcePromptExcerpt: crit, source: "user", confidence: 1, approved: true, authoritative: true,
     });
   }
   for (const proh of prohibitions) {
     addNode({
       statement: proh, category: "prohibited_action",
-      sourcePromptExcerpt: objectiveText, source: "user", confidence: 1, approved: true, authoritative: true,
+      sourcePromptExcerpt: proh, source: "user", confidence: 1, approved: true, authoritative: true,
     });
   }
 

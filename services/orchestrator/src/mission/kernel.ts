@@ -1,4 +1,5 @@
 import type { MissionRequirementNode, MissionStatus, ReopenCondition } from "@morrow/contracts";
+import { MISSION_TERMINAL_STATUSES } from "@morrow/contracts";
 
 /** The five explicit conditions under which a verified (frozen) node may reopen. */
 export const REOPEN_CONDITIONS: readonly ReopenCondition[] = [
@@ -35,21 +36,46 @@ export function isDependencyBlocked(node: MissionRequirementNode, allNodes: Miss
   });
 }
 
+/** True when every authoritative requirement node is in a satisfied terminal
+ *  state (verified or waived). Non-authoritative (unapproved model/derived)
+ *  nodes are intentionally excluded from this check. */
+export function allAuthoritativeSatisfied(nodes: MissionRequirementNode[]): boolean {
+  const authoritative = nodes.filter((n) => n.authoritative);
+  if (authoritative.length === 0) return true;
+  return authoritative.every((n) => n.status === "verified" || n.status === "waived");
+}
+
 /**
- * Derive the BOUNDED set of actions allowed next from the current node + mission
- * state. Slice 1 keeps this deterministic and declarative; it never returns an
- * unbounded "do anything" action.
+ * Derive the BOUNDED set of actions allowed next from the full requirement
+ * ledger + mission state. Slice 1 keeps this deterministic and declarative;
+ * it never returns an unbounded "do anything" action.
+ *
+ * Terminal missions expose no executable actions.
  */
-export function deriveAllowedActions(missionStatus: MissionStatus, activeNode: MissionRequirementNode | null): string[] {
+export function deriveAllowedActions(
+  missionStatus: MissionStatus,
+  activeNode: MissionRequirementNode | null,
+  allNodes: MissionRequirementNode[],
+): string[] {
+  if (MISSION_TERMINAL_STATUSES.includes(missionStatus)) {
+    return [];
+  }
   if (missionStatus === "draft" || missionStatus === "awaiting_criteria_approval") {
     return ["approve_requirements"];
   }
   if (activeNode === null) {
-    return ["mark_complete", "request_clarification"];
+    const hasFailed = allNodes.some((n) => n.authoritative && n.status === "failed");
+    const hasBlocked = allNodes.some((n) => n.authoritative && n.status === "blocked");
+    if (hasFailed) return ["request_clarification"];
+    if (hasBlocked) return ["request_clarification"];
+    if (allAuthoritativeSatisfied(allNodes)) {
+      return ["mark_complete", "request_clarification"];
+    }
+    return ["request_clarification"];
   }
   switch (activeNode.status) {
     case "pending":
-      return ["start_requirement", "verify_requirement", "reject_requirement"];
+      return ["start_requirement", "request_clarification"];
     case "active":
       return ["verify_requirement", "request_clarification", "reject_requirement", "complete_requirement"];
     case "blocked":

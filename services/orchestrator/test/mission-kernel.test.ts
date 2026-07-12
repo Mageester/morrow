@@ -29,8 +29,7 @@ function node(over: Partial<MissionRequirementNode> = {}): MissionRequirementNod
     attempts: over.attempts ?? 0,
     lastFailure: over.lastFailure ?? null,
     completedAt: over.completedAt ?? null,
-    invalidationConditions: over.invalidationConditions ?? [],
-    invalidationReason: over.invalidationReason ?? null,
+    invalidationHistory: over.invalidationHistory ?? [],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
@@ -57,23 +56,47 @@ describe("mission kernel — selectActiveNode (R4)", () => {
 
 describe("mission kernel — deriveAllowedActions (R3 cursor)", () => {
   it("bounds actions to a finite set, never a bare continue", () => {
-    const pending = node({ status: "pending" });
-    const actions = deriveAllowedActions("running", pending);
-    expect(actions).toEqual(expect.arrayContaining(["start_requirement", "verify_requirement", "reject_requirement"]));
+    const pending = node({ status: "pending", id: "req-1" });
+    const actions = deriveAllowedActions("running", pending, [pending]);
+    expect(actions).toEqual(expect.arrayContaining(["start_requirement", "request_clarification"]));
     expect(actions).not.toContain("continue");
   });
 
-  it("offers completion/closure when no active node", () => {
-    expect(deriveAllowedActions("running", null)).toEqual(["mark_complete", "request_clarification"]);
+  it("offers completion when no active node and all authoritative satisfied", () => {
+    const v = node({ id: "v", status: "verified", authoritative: true });
+    expect(deriveAllowedActions("running", null, [v])).toEqual(["mark_complete", "request_clarification"]);
+  });
+
+  it("denies mark_complete when authoritative nodes remain pending", () => {
+    const p = node({ id: "p", status: "pending", authoritative: true });
+    expect(deriveAllowedActions("running", null, [p])).toEqual(["request_clarification"]);
+  });
+
+  it("denies mark_complete when authoritative nodes are failed", () => {
+    const f = node({ id: "f", status: "failed", authoritative: true });
+    expect(deriveAllowedActions("running", null, [f])).toEqual(["request_clarification"]);
   });
 
   it("limits action during draft to approving requirements", () => {
-    expect(deriveAllowedActions("draft", null)).toEqual(["approve_requirements"]);
+    expect(deriveAllowedActions("draft", null, [])).toEqual(["approve_requirements"]);
+  });
+
+  it("returns no actions for terminal mission statuses", () => {
+    expect(deriveAllowedActions("completed", null, [])).toEqual([]);
+    expect(deriveAllowedActions("failed", null, [])).toEqual([]);
+    expect(deriveAllowedActions("cancelled", null, [])).toEqual([]);
   });
 
   it("blocks a node stuck on dependencies to clarification only", () => {
     const blocked = node({ status: "blocked" });
-    expect(deriveAllowedActions("running", blocked)).toEqual(["request_clarification"]);
+    expect(deriveAllowedActions("running", blocked, [blocked])).toEqual(["request_clarification"]);
+  });
+
+  it("offers start_requirement for pending (not verify_requirement)", () => {
+    const pending = node({ status: "pending" });
+    const actions = deriveAllowedActions("running", pending, [pending]);
+    expect(actions).toContain("start_requirement");
+    expect(actions).not.toContain("verify_requirement");
   });
 });
 

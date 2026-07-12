@@ -634,12 +634,12 @@ export const migrations:Migration[]=[
       attempts INTEGER NOT NULL DEFAULT 0,
       last_failure_json TEXT,
       completed_at TEXT,
-      invalidation_conditions_json TEXT NOT NULL DEFAULT '[]',
-      invalidation_reason TEXT,
+      invalidation_history_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX mission_requirement_nodes_mission_idx ON mission_requirement_nodes(mission_id, ordering);
+    CREATE UNIQUE INDEX mission_requirement_nodes_one_active ON mission_requirement_nodes(mission_id) WHERE status = 'active';
     CREATE TABLE mission_cursors (
       mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
       schema_version INTEGER NOT NULL,
@@ -654,8 +654,8 @@ export const migrations:Migration[]=[
     );
     CREATE TABLE project_active_mission (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE SET NULL,
       schema_version INTEGER NOT NULL,
-      mission_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
   `}
