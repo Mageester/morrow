@@ -227,7 +227,10 @@ export class LineRenderer implements Renderer {
   private printRecoveryProgress(): void {
     const taskFailed = this.state.status === "failed";
     for (const entry of this.state.recoveries) {
-      const key = `${entry.tool}\u0000${entry.message}`;
+      // Must match state.ts's own grouping key (tool + message + file) —
+      // otherwise two distinct per-file recoveries with identical tool and
+      // message text collide here and the second is silently never printed.
+      const key = `${entry.tool}\u0000${entry.message}\u0000${entry.file ?? ""}`;
       const stage = `${entry.status}:${entry.count}`;
       if (this.printedRecoveryStages.get(key) === stage) continue;
       this.printedRecoveryStages.set(key, stage);

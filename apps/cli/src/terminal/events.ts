@@ -189,10 +189,12 @@ export type TerminalEvent =
    *  a product error: the agent is expected to retry or switch strategy. It is
    *  rendered with warning styling and only escalates to error styling if the
    *  task itself ends failed. */
-  | { type: "recovery.problem"; tool: string; message: string }
+  | { type: "recovery.problem"; tool: string; message: string; file?: string }
   /** The agent switched strategy after a failure (e.g. patch → full-file
-   *  rewrite). Marks the matching problem as "retrying". */
-  | { type: "recovery.strategy"; tool?: string; strategy: string; detail?: string }
+   *  rewrite). Marks the matching problem as "retrying". `file`, when known,
+   *  scopes resolution to that file so an unrelated file's success can never
+   *  incorrectly mark this problem recovered. */
+  | { type: "recovery.strategy"; tool?: string; strategy: string; detail?: string; file?: string }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
   | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null }
   | { type: "task.completed" }

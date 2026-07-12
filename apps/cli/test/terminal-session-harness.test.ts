@@ -303,6 +303,207 @@ describe("interactive session: streaming, cancellation, resize", () => {
     await done;
   });
 
+  it("ingests the same source event id exactly once, even if the backend replays it (event integrity #1)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "hi");
+    enter(stdin);
+    await tick();
+
+    gate.push({ id: "evt-start-1", sequence: 1, type: "assistant.turn_started", payload: { turnId: "t1" } } as any);
+    gate.push({ id: "evt-delta-1", sequence: 2, type: "evidence.persisted", payload: { deltaText: "Hello", turnId: "t1" } } as any);
+    await tick();
+    // A reconnect/replay resending the exact same source event must not
+    // duplicate its effect on the transcript.
+    gate.push({ id: "evt-delta-1", sequence: 2, type: "evidence.persisted", payload: { deltaText: "Hello", turnId: "t1" } } as any);
+    await tick();
+    gate.push({ id: "evt-end-1", sequence: 3, type: "assistant.turn_completed", payload: { turnId: "t1", final: true } } as any);
+    gate.push({ id: "evt-done-1", sequence: 4, type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    const snap = app.snapshot();
+    const assistant = snap.conversation.find((c) => c.role === "assistant");
+    expect(assistant?.text).toBe("Hello");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("dedupes id-less raw events by type:sequence fallback identity, same as output-report.ts", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "hi");
+    enter(stdin);
+    await tick();
+
+    // A legacy/pre-identity backend event with no `id` field at all — must
+    // still be deduped (by type:sequence), not silently un-deduped because
+    // it lacks an id.
+    gate.push({ sequence: 1, type: "assistant.turn_started", payload: { turnId: "legacy-turn" } } as any);
+    gate.push({ sequence: 2, type: "evidence.persisted", payload: { deltaText: "Hi", turnId: "legacy-turn" } } as any);
+    await tick();
+    gate.push({ sequence: 2, type: "evidence.persisted", payload: { deltaText: "Hi", turnId: "legacy-turn" } } as any); // replay
+    await tick();
+    gate.push({ sequence: 3, type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    const snap = app.snapshot();
+    const assistant = snap.conversation.find((c) => c.role === "assistant");
+    expect(assistant?.text).toBe("Hi");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("keeps every derived terminal event from one raw event together (recovery problem + strategy share one source id)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "fix it");
+    enter(stdin);
+    await tick();
+
+    // `patch.recovery_feedback` maps to TWO terminal events (recovery.problem
+    // and recovery.strategy) sharing the same source event id. Both must be
+    // applied — deduping the raw event once must not drop the second one.
+    gate.push({
+      id: "evt-recovery-1",
+      sequence: 1,
+      type: "patch.recovery_feedback",
+      payload: { targetFile: "a.js", conflictCategory: "context_mismatch", instruction: "Regenerate the patch." },
+    } as any);
+    await tick();
+    gate.push({ id: "evt-applied-1", sequence: 2, type: "evidence.persisted", payload: { path: "a.js", size: 10, action: "patched" } } as any);
+    gate.push({ id: "evt-done-1", sequence: 3, type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    const snap = app.snapshot();
+    expect(snap.recoveries).toHaveLength(1);
+    expect(snap.recoveries[0]).toMatchObject({ file: "a.js", strategy: "Regenerate the patch.", status: "recovered" });
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("a second task's id-less legacy events are not dropped as replays of the first task's (event integrity #4)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    let sendCalls = 0;
+    const backend: SessionBackend = {
+      ...makeBackend(new EventGate(), () => {}),
+      send: async () => {
+        sendCalls += 1;
+        return { taskId: `task-${sendCalls}` };
+      },
+      // No `id` field anywhere — a legacy/pre-identity backend. Both tasks'
+      // event streams reuse the exact same type:sequence pairs, since
+      // per-task sequence numbering restarts at 1 for every new task.
+      subscribe: (async function* (taskId: string) {
+        const label = taskId === "task-1" ? "Hello" : "World";
+        yield { sequence: 1, type: "assistant.turn_started", payload: { turnId: taskId } } as any;
+        yield { sequence: 2, type: "evidence.persisted", payload: { deltaText: label, turnId: taskId } } as any;
+        yield { sequence: 3, type: "task.completed", payload: {} } as any;
+      }) as any,
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "first");
+    enter(stdin);
+    await tick();
+
+    typeText(stdin, "second");
+    enter(stdin);
+    await tick();
+
+    const assistantTexts = app.snapshot().conversation.filter((c) => c.role === "assistant").map((c) => c.text);
+    // Without task-scoping, task 2's `evidence.persisted:2` would be
+    // silently dropped as an apparent replay of task 1's, leaving "World"
+    // missing from the transcript entirely.
+    expect(assistantTexts).toEqual(["Hello", "World"]);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("reconnect after resuming an interrupted task never re-applies an event already seen this session (event integrity #3)", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    let subscriptions = 0;
+    const backend: SessionBackend = {
+      ...makeBackend(new EventGate(), () => {}),
+      subscribe: (async function* (_taskId: string, _signal: AbortSignal, after?: number) {
+        subscriptions += 1;
+        if (subscriptions === 1 || after === undefined) {
+          yield { id: "evt-a", sequence: 5, type: "evidence.persisted", payload: { deltaText: "partial", turnId: "t1" } } as any;
+          yield { id: "evt-b", sequence: 6, type: "task.interrupted", payload: { reason: "stalled" } } as any;
+          return;
+        }
+        // Reconnect: the backend legitimately resends the last event at/near
+        // the resume cursor before continuing with genuinely new ones.
+        yield { id: "evt-b", sequence: 6, type: "task.interrupted", payload: { reason: "stalled" } } as any;
+        yield { id: "evt-b2", sequence: 7, type: "assistant.turn_started", payload: { turnId: "t1" } } as any;
+        yield { id: "evt-c", sequence: 8, type: "assistant.turn_completed", payload: { turnId: "t1", final: true, text: "final" } } as any;
+        yield { id: "evt-d", sequence: 9, type: "task.completed", payload: {} } as any;
+      }) as any,
+      resume: vi.fn(async () => {}),
+      getTask: async () => ({ events: [{ id: "evt-a", sequence: 5 }, { id: "evt-b", sequence: 6 }] } as any),
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "start work");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().status).toBe("stalled");
+
+    typeText(stdin, "/continue");
+    enter(stdin);
+    await tick();
+
+    expect(app.snapshot().status).toBe("completed");
+    // Exactly one assistant entry (turnId t1) — the resent "stalled" event
+    // must not have reopened or duplicated anything.
+    expect(app.snapshot().conversation.filter((c) => c.role === "assistant")).toHaveLength(1);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("recomposes on resize without corrupting the frame", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();

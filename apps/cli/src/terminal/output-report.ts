@@ -1,5 +1,6 @@
 import type { ConversationMessage } from "@morrow/contracts";
 import type { TaskAggregate } from "../client/api.js";
+import { dedupeRawEvents } from "./event-ledger.js";
 
 export type ReportKind = "summary" | "full" | "failures";
 
@@ -41,14 +42,14 @@ function readTurnPayload(payload: Record<string, unknown>, sequence: number): Tu
   };
 }
 
+/**
+ * Every report path folds `aggregate.events` through this instead of its own
+ * identity logic — `dedupeRawEvents` (`event-ledger.ts`) is the single
+ * ownership boundary for "same source event," shared with the live session's
+ * ingestion path so history and replay can never disagree about identity.
+ */
 function uniqueEvents(aggregate: TaskAggregate): TaskAggregate["events"] {
-  const seen = new Set<string>();
-  return aggregate.events.filter((event) => {
-    const sourceId = typeof event.id === "string" && event.id ? event.id : `${event.type}:${event.sequence}`;
-    if (seen.has(sourceId)) return false;
-    seen.add(sourceId);
-    return true;
-  });
+  return dedupeRawEvents(aggregate.events);
 }
 
 function completedTurns(aggregate: TaskAggregate): TurnCompletedPayload[] {

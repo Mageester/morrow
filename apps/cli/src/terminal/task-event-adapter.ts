@@ -134,8 +134,9 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       const from = str(p.from);
       const to = str(p.to);
       const reason = str(p.reason);
+      const file = str(p.path);
       const strategy = to ? (from ? `${from} → ${to}` : to) : "new approach";
-      return withSource([{ type: "recovery.strategy", ...(tool ? { tool } : {}), strategy, ...(reason ? { detail: reason } : {}) }]);
+      return withSource([{ type: "recovery.strategy", ...(tool ? { tool } : {}), strategy, ...(reason ? { detail: reason } : {}), ...(file ? { file } : {}) }]);
     }
 
     case "patch.recovery_feedback": {
@@ -148,8 +149,8 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
         (p.retryExhausted === true ? "Stop cleanly and report the patch conflict." : "Regenerate the patch against current file content.");
       const detail = str(p.detail);
       return withSource([
-        { type: "recovery.problem", tool: "propose_patch", message },
-        { type: "recovery.strategy", tool: "propose_patch", strategy, ...(detail ? { detail } : {}) },
+        { type: "recovery.problem", tool: "propose_patch", message, ...(target ? { file: target } : {}) },
+        { type: "recovery.strategy", tool: "propose_patch", strategy, ...(detail ? { detail } : {}), ...(target ? { file: target } : {}) },
       ]);
     }
 

@@ -144,6 +144,21 @@ describe("LineRenderer (non-interactive)", () => {
     expect(mismatchLines.length).toBeLessThanOrEqual(2);
   });
 
+  it("prints two distinct per-file recoveries even when tool and message text are identical", () => {
+    const { stderr } = capture(
+      stream([
+        { type: "recovery.problem", tool: "propose_patch", message: "Patch conflict in a.js", file: "a.js" },
+        { type: "recovery.problem", tool: "propose_patch", message: "Patch conflict in a.js", file: "b.js" },
+      ]),
+      { showActivity: true, showSummary: false }
+    );
+    // Both stages must print — a shared tool+message dedup key that ignores
+    // `file` would wrongly treat the second (different-file) problem as
+    // already printed and drop it.
+    const problemLines = stderr.split("\n").filter((l) => l.includes("Patch conflict in a.js"));
+    expect(problemLines.length).toBe(2);
+  });
+
   it("does not log every YOLO auto-approval", () => {
     const { stderr } = capture(
       stream([{ type: "approval.auto", id: "a1", summary: "allow_once" }]),
