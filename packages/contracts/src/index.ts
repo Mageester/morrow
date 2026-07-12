@@ -720,8 +720,9 @@ export const MissionEventTypeSchema=z.enum([
   "mission.created","mission.criteria_generated","mission.criteria_approved","mission.started",
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
   "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
-  "mission.review_started","mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
+  "mission.review_started",  "mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
   "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned",
+  "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({
@@ -756,6 +757,84 @@ export const MissionSpecialistRoleSchema=z.object({
   storesChainOfThought:z.literal(false),
 }).strict();
 export type MissionSpecialistRole=z.infer<typeof MissionSpecialistRoleSchema>;
+
+// ── Advanced Execution Kernel: Contract, Requirement Ledger, Cursor ──────────
+// Slice 1 of the Advanced Execution Kernel adds durable, provenance-preserving
+// structures that sit beside the existing mission state machine:
+//   • MissionContract        — verbatim source prompt + unresolved ambiguities
+//   • MissionRequirementNode — one structured, provenance-tagged requirement
+//   • MissionCursor          — exactly one active requirement node per mission
+//   • ProjectActiveMission   — the per-project active mission pointer
+// These are strictly additive; the existing Mission schema is untouched.
+
+// Where a requirement originated. User-stated requirements are authoritative;
+// model/derived ones are NOT authoritative until the user approves them.
+export const RequirementSourceSchema=z.enum(["user","model","derived"]);
+export type RequirementSource=z.infer<typeof RequirementSourceSchema>;
+
+export const RequirementNodeStatusSchema=z.enum(["pending","in_progress","verified","waived","rejected"]);
+export type RequirementNodeStatus=z.infer<typeof RequirementNodeStatusSchema>;
+
+export const MissionRequirementNodeSchema=z.object({
+  version:SchemaVersionSchema,
+  id:z.string(),
+  missionId:z.string(),
+  order:z.number().int().nonnegative(),
+  // Verbatim statement of this requirement as captured (never paraphrased away).
+  statement:z.string().min(1).max(2000),
+  // Provenance: who asserted this requirement.
+  source:RequirementSourceSchema,
+  // Confidence the kernel has in this requirement (1 = stated by the user).
+  confidence:z.number().min(0).max(1),
+  // Authoritative only once the user approves. model/derived start false.
+  approved:z.boolean().default(false),
+  status:RequirementNodeStatusSchema.default("pending"),
+  // File-content hash captured at verification time. Used to detect whether a
+  // reopen of a verified (frozen) node is actually warranted.
+  verifiedFileHash:z.string().max(200).nullable().default(null),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export type MissionRequirementNode=z.infer<typeof MissionRequirementNodeSchema>;
+
+export const MissionContractSchema=z.object({
+  version:SchemaVersionSchema,
+  missionId:z.string(),
+  // Verbatim source prompt — never summarized away, never guessed.
+  sourcePrompt:z.string().min(1).max(8000),
+  // Requirements extracted from the prompt (assembled from requirement nodes).
+  requirements:z.array(MissionRequirementNodeSchema).default([]),
+  // Ambiguities the kernel could not resolve from the prompt alone. Surfaced,
+  // never silently resolved.
+  unresolvedAmbiguities:z.array(z.string().max(1000)).default([]),
+  // Contract-level freeze flag, recomputed from node states for fast checks.
+  frozen:z.boolean().default(false),
+  createdAt:z.string().datetime(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export type MissionContract=z.infer<typeof MissionContractSchema>;
+
+export const MissionCursorSchema=z.object({
+  version:SchemaVersionSchema,
+  missionId:z.string(),
+  // Exactly one active requirement node at a time. null = no active objective
+  // (e.g. awaiting user input, or all requirements addressed).
+  activeNodeId:z.string().nullable().default(null),
+  // Bounded set of actions allowed from the current node — never a bare
+  // "continue".
+  allowedActions:z.array(z.string().max(60)).default([]),
+  reason:z.string().max(2000).nullable().default(null),
+  updatedAt:z.string().datetime(),
+}).strict();
+export type MissionCursor=z.infer<typeof MissionCursorSchema>;
+
+export const ProjectActiveMissionSchema=z.object({
+  version:SchemaVersionSchema,
+  projectId:z.string(),
+  missionId:z.string(),
+  updatedAt:z.string().datetime(),
+}).strict();
+export type ProjectActiveMission=z.infer<typeof ProjectActiveMissionSchema>;
 
 // ── Mission API inputs ─────────────────────────────────────────────────────
 export const CreateMissionSchema=z.object({

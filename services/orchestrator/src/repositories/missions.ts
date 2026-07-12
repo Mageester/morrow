@@ -3,6 +3,8 @@ import type {
   Mission, MissionStatus, MissionCriterion, MissionCriterionState, MissionEvidence,
   MissionFailure, MissionCheckpoint, MissionReview, MissionBudget, MissionResult,
   MissionEvent, MissionEventType, MissionVerificationStrategy,
+  MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
+  RequirementSource, RequirementNodeStatus,
 } from "@morrow/contracts";
 
 const SCHEMA_VERSION = 1;
@@ -98,6 +100,56 @@ function mapEvent(row: any): MissionEvent {
     summary: row.summary,
     data: JSON.parse(row.data_json ?? "{}"),
     createdAt: row.created_at,
+  };
+}
+
+function mapRequirementNode(row: any): MissionRequirementNode {
+  return {
+    version: 1,
+    id: row.id,
+    missionId: row.mission_id,
+    order: row.ordering,
+    statement: row.statement,
+    source: row.source as RequirementSource,
+    confidence: row.confidence,
+    approved: row.approved === 1,
+    status: row.status as RequirementNodeStatus,
+    verifiedFileHash: row.verified_file_hash ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapContract(row: any): MissionContract {
+  return {
+    version: 1,
+    missionId: row.mission_id,
+    sourcePrompt: row.source_prompt,
+    requirements: [],
+    unresolvedAmbiguities: JSON.parse(row.unresolved_ambiguities_json ?? "[]"),
+    frozen: row.frozen === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapCursor(row: any): MissionCursor {
+  return {
+    version: 1,
+    missionId: row.mission_id,
+    activeNodeId: row.active_node_id ?? null,
+    allowedActions: JSON.parse(row.allowed_actions_json ?? "[]"),
+    reason: row.reason ?? null,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapProjectActiveMission(row: any): ProjectActiveMission {
+  return {
+    version: 1,
+    projectId: row.project_id,
+    missionId: row.mission_id,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -312,6 +364,105 @@ export function missionsRepository(db: Database.Database) {
 
     listEvents(missionId: string): MissionEvent[] {
       return db.prepare("SELECT * FROM mission_events WHERE mission_id = ? ORDER BY sequence ASC").all(missionId).map(mapEvent);
+    },
+
+    // ── Advanced Execution Kernel: contract + requirement ledger ──────────
+    createContract(input: {
+      missionId: string;
+      sourcePrompt: string;
+      unresolvedAmbiguities?: string[];
+      nodes: Array<{ id: string; order: number; statement: string; source: RequirementSource; confidence: number; approved: boolean }>;
+      now?: string;
+    }): MissionContract {
+      const now = input.now ?? new Date().toISOString();
+      db.prepare(
+        `INSERT INTO mission_contracts (mission_id, schema_version, source_prompt, unresolved_ambiguities_json, frozen, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      ).run(input.missionId, SCHEMA_VERSION, input.sourcePrompt, JSON.stringify(input.unresolvedAmbiguities ?? []), now, now);
+      this.addRequirementNodes(input.missionId, input.nodes, now);
+      return this.getContract(input.missionId)!;
+    },
+
+    getContract(missionId: string): MissionContract | undefined {
+      const row = db.prepare("SELECT * FROM mission_contracts WHERE mission_id = ?").get(missionId) as any;
+      if (!row) return undefined;
+      const contract = mapContract(row);
+      contract.requirements = this.listRequirementNodes(missionId);
+      return contract;
+    },
+
+    updateContractAmbiguities(missionId: string, ambiguities: string[], now = new Date().toISOString()): void {
+      db.prepare("UPDATE mission_contracts SET unresolved_ambiguities_json = ?, updated_at = ? WHERE mission_id = ?")
+        .run(JSON.stringify(ambiguities), now, missionId);
+    },
+
+    setContractFrozen(missionId: string, frozen: boolean, now = new Date().toISOString()): void {
+      db.prepare("UPDATE mission_contracts SET frozen = ?, updated_at = ? WHERE mission_id = ?")
+        .run(frozen ? 1 : 0, now, missionId);
+    },
+
+    // ── requirement nodes ──────────────────────────────────────────────────
+    addRequirementNodes(missionId: string, nodes: Array<{ id: string; order: number; statement: string; source: RequirementSource; confidence: number; approved: boolean }>, now = new Date().toISOString()): void {
+      const stmt = db.prepare(
+        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, source, confidence, approved, status, verified_file_hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+      );
+      db.transaction(() => {
+        nodes.forEach((n) => stmt.run(n.id, missionId, n.order, n.statement, n.source, n.confidence, n.approved ? 1 : 0, now, now));
+      })();
+    },
+
+    updateRequirementNode(id: string, patch: Partial<{ statement: string; approved: boolean; status: RequirementNodeStatus; verifiedFileHash: string | null }>, now = new Date().toISOString()): MissionRequirementNode | undefined {
+      const sets: string[] = ["updated_at = ?"];
+      const params: any[] = [now];
+      if (patch.statement !== undefined) { sets.push("statement = ?"); params.push(patch.statement); }
+      if (patch.approved !== undefined) { sets.push("approved = ?"); params.push(patch.approved ? 1 : 0); }
+      if (patch.status !== undefined) { sets.push("status = ?"); params.push(patch.status); }
+      if (patch.verifiedFileHash !== undefined) { sets.push("verified_file_hash = ?"); params.push(patch.verifiedFileHash); }
+      params.push(id);
+      db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+      const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
+      return row ? mapRequirementNode(row) : undefined;
+    },
+
+    getRequirementNode(id: string): MissionRequirementNode | undefined {
+      const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
+      return row ? mapRequirementNode(row) : undefined;
+    },
+
+    listRequirementNodes(missionId: string): MissionRequirementNode[] {
+      return db.prepare("SELECT * FROM mission_requirement_nodes WHERE mission_id = ? ORDER BY ordering ASC").all(missionId).map(mapRequirementNode);
+    },
+
+    // ── cursor (per mission) ─────────────────────────────────────────────
+    upsertCursor(cursor: { missionId: string; activeNodeId: string | null; allowedActions: string[]; reason: string | null; now?: string }): MissionCursor {
+      const now = cursor.now ?? new Date().toISOString();
+      db.prepare(
+        `INSERT INTO mission_cursors (mission_id, schema_version, active_node_id, allowed_actions_json, reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(mission_id) DO UPDATE SET active_node_id = excluded.active_node_id, allowed_actions_json = excluded.allowed_actions_json, reason = excluded.reason, updated_at = excluded.updated_at`,
+      ).run(cursor.missionId, SCHEMA_VERSION, cursor.activeNodeId, JSON.stringify(cursor.allowedActions), cursor.reason, now);
+      const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(cursor.missionId) as any;
+      return mapCursor(row);
+    },
+
+    getCursor(missionId: string): MissionCursor | undefined {
+      const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(missionId) as any;
+      return row ? mapCursor(row) : undefined;
+    },
+
+    // ── project active mission pointer (separate per project) ──────────────
+    setProjectActiveMission(projectId: string, missionId: string, now = new Date().toISOString()): void {
+      db.prepare(
+        `INSERT INTO project_active_mission (project_id, schema_version, mission_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET mission_id = excluded.mission_id, updated_at = excluded.updated_at`,
+      ).run(projectId, SCHEMA_VERSION, missionId, now);
+    },
+
+    getProjectActiveMission(projectId: string): ProjectActiveMission | undefined {
+      const row = db.prepare("SELECT * FROM project_active_mission WHERE project_id = ?").get(projectId) as any;
+      return row ? mapProjectActiveMission(row) : undefined;
     },
   };
   return repo;

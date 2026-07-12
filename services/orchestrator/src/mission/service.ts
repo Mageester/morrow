@@ -6,6 +6,8 @@ import type {
   Mission, MissionStatus, MissionCriterion, MissionCriterionState, MissionEvidence,
   MissionFailure, MissionCheckpoint, MissionReview, MissionBudget, MissionResult,
   MissionVerificationStrategy, CreateMissionInput,
+  MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
+  RequirementNodeStatus,
 } from "@morrow/contracts";
 import { assertMissionTransition, canTransitionMission, gradeMission, isTerminalMissionStatus } from "@morrow/contracts";
 import type { MissionsRepository } from "../repositories/missions.js";
@@ -17,6 +19,8 @@ import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candid
 import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
 import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
+import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen } from "./kernel.js";
+import { buildContractFromInput } from "./contract-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
@@ -81,6 +85,23 @@ export class MissionService {
       objective: input.objective, autoApprove: input.autoApprove ?? false, budget,
     }, this.now());
     this.repo.appendEvent(id, "mission.created", `Mission created: ${input.objective.slice(0, 80)}`, {}, this.now());
+
+    // Advanced Execution Kernel: build the authoritative contract from the
+    // verbatim objective and persist it with provenance, set the per-project
+    // active-mission pointer, and seed the per-mission cursor (exactly one
+    // active requirement node, with a bounded set of allowed actions).
+    const contract = buildContractFromInput({ objective: input.objective });
+    this.repo.createContract({
+      missionId: id,
+      sourcePrompt: contract.sourcePrompt,
+      unresolvedAmbiguities: contract.unresolvedAmbiguities,
+      nodes: contract.nodes,
+      now: this.now(),
+    });
+    this.repo.appendEvent(id, "mission.contract_built", `Contract built from verbatim objective (${contract.nodes.length} requirement node)`, { nodes: contract.nodes.length }, this.now());
+    this.repo.setProjectActiveMission(projectId, id, this.now());
+    this.advanceCursor(id);
+
     const roles = buildMissionSpecialists(mission);
     this.repo.appendEvent(id, "mission.specialists_planned", `Planned ${roles.length} Cortex specialist roles`, { roles }, this.now());
     return mission;
@@ -517,6 +538,104 @@ export class MissionService {
    *  memory. Returns the mission as-is; callers decide the next action. */
   resume(missionId: string): Mission {
     return this.get(missionId);
+  }
+
+  // ── Advanced Execution Kernel: contract, ledger, cursor ───────────────────
+  /** Read the persisted contract (with assembled requirement nodes). */
+  getContract(missionId: string): MissionContract {
+    const c = this.repo.getContract(missionId);
+    if (!c) throw new MissionError(`Contract for mission ${missionId} not found`, "not_found");
+    return c;
+  }
+
+  listRequirementNodes(missionId: string): MissionRequirementNode[] {
+    return this.repo.listRequirementNodes(missionId);
+  }
+
+  getCursor(missionId: string): MissionCursor {
+    const cursor = this.repo.getCursor(missionId);
+    if (!cursor) throw new MissionError(`Cursor for mission ${missionId} not found`, "not_found");
+    return cursor;
+  }
+
+  getProjectActiveMission(projectId: string): ProjectActiveMission | undefined {
+    return this.repo.getProjectActiveMission(projectId);
+  }
+
+  /**
+   * Recompute the per-mission cursor: exactly one active requirement node and a
+   * bounded set of allowed actions derived from mission + node state. Never
+   * silently clears the cursor — even a completed mission keeps its last cursor
+   * so a terminal recovery can see where it left off.
+   */
+  advanceCursor(missionId: string): MissionCursor {
+    const mission = this.get(missionId);
+    const nodes = this.repo.listRequirementNodes(missionId);
+    const active = selectActiveNode(nodes);
+    const allowedActions = deriveAllowedActions(mission.status, active);
+    return this.repo.upsertCursor({
+      missionId,
+      activeNodeId: active ? active.id : null,
+      allowedActions,
+      reason: active
+        ? `Active requirement: ${active.statement.slice(0, 200)}`
+        : (nodes.length === 0 ? "No requirement nodes" : "All requirements addressed"),
+    });
+  }
+
+  /**
+   * Update a single requirement node's status, enforcing the verified-node
+   * freeze (I5). A verified node can only leave `verified` for one of the five
+   * explicit reasons; otherwise the update is rejected. On transition to
+   * `verified` the verification file hash is recorded; the contract freeze flag
+   * and cursor are then recomputed.
+   */
+  updateRequirementStatus(
+    missionId: string,
+    nodeId: string,
+    status: RequirementNodeStatus,
+    opts: {
+      fileHash?: string | null;
+      dependencyChanged?: boolean;
+      fileHashChanged?: boolean;
+      laterVerificationFailed?: boolean;
+      contractChanged?: boolean;
+      invalidationRecorded?: boolean;
+    } = {},
+  ): MissionRequirementNode {
+    const node = this.repo.getRequirementNode(nodeId);
+    if (!node || node.missionId !== missionId) throw new MissionError("Requirement node not found in mission", "not_found");
+    if (node.status === status) return node;
+
+    // Freeze enforcement: reopening a verified (frozen) node requires a reason.
+    if (node.status === "verified" && status !== "verified") {
+      const verdict = canReopenNode(node, {
+        dependencyChanged: opts.dependencyChanged ?? false,
+        fileHashChanged: opts.fileHashChanged ?? false,
+        laterVerificationFailed: opts.laterVerificationFailed ?? false,
+        contractChanged: opts.contractChanged ?? false,
+        invalidationRecorded: opts.invalidationRecorded ?? false,
+      });
+      if (!verdict.allowed) {
+        throw new MissionError(
+          `Verified requirement node ${nodeId} is frozen and cannot be reopened without explicit evidence`,
+          "node_frozen",
+        );
+      }
+      this.repo.appendEvent(missionId, "mission.requirement_reopened", `Reopened verified requirement: ${node.statement.slice(0, 120)}`, { nodeId, reason: verdict.reason }, this.now());
+    }
+
+    const patch: Parameters<MissionsRepository["updateRequirementNode"]>[1] = { status };
+    if (status === "verified") patch.verifiedFileHash = opts.fileHash ?? null;
+    else patch.verifiedFileHash = null;
+    const updated = this.repo.updateRequirementNode(nodeId, patch, this.now())!;
+    this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → ${status}`, { nodeId, from: node.status, to: status }, this.now());
+
+    // Recompute the contract freeze flag and the cursor from node states.
+    const nodes = this.repo.listRequirementNodes(missionId);
+    this.repo.setContractFrozen(missionId, computeFrozen(nodes), this.now());
+    this.advanceCursor(missionId);
+    return updated;
   }
 
   // ── budget ───────────────────────────────────────────────────────────────

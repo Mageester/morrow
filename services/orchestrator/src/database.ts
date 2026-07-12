@@ -600,5 +600,44 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX mission_impact_analyses_mission_idx ON mission_impact_analyses(mission_id, created_at);
   `}
+  ,{id:28,name:"mission_kernel_contract_ledger_cursor",sql:`
+    CREATE TABLE mission_contracts (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      source_prompt TEXT NOT NULL,
+      unresolved_ambiguities_json TEXT NOT NULL DEFAULT '[]',
+      frozen INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE mission_requirement_nodes (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      ordering INTEGER NOT NULL,
+      statement TEXT NOT NULL,
+      source TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      approved INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      verified_file_hash TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_requirement_nodes_mission_idx ON mission_requirement_nodes(mission_id, ordering);
+    CREATE TABLE mission_cursors (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      active_node_id TEXT,
+      allowed_actions_json TEXT NOT NULL DEFAULT '[]',
+      reason TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE project_active_mission (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      mission_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
