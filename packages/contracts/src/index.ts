@@ -772,8 +772,27 @@ export type MissionSpecialistRole=z.infer<typeof MissionSpecialistRoleSchema>;
 export const RequirementSourceSchema=z.enum(["user","model","derived"]);
 export type RequirementSource=z.infer<typeof RequirementSourceSchema>;
 
-export const RequirementNodeStatusSchema=z.enum(["pending","in_progress","verified","waived","rejected"]);
+// The kind of requirement a node represents. Drives how the cursor and the
+// active-node invariant treat the node.
+export const RequirementCategorySchema=z.enum([
+  "objective","hard_requirement","prohibited_action","expected_artifact","acceptance_criterion",
+]);
+export type RequirementCategory=z.infer<typeof RequirementCategorySchema>;
+
+// Lifecycle of a single requirement node. There is exactly one "active" node at
+// a time during executable work; zero when blocked, complete, or awaiting input.
+export const RequirementNodeStatusSchema=z.enum([
+  "pending","active","blocked","failed","verified","waived","invalidated",
+]);
 export type RequirementNodeStatus=z.infer<typeof RequirementNodeStatusSchema>;
+
+// The five explicit, persisted conditions under which a verified (frozen) node
+// may reopen. Caller-supplied booleans are never sufficient proof — the reason
+// and condition must be recorded durably on the node.
+export const ReopenConditionSchema=z.enum([
+  "dependency_changed","file_hash_changed","later_verification_failed","contract_changed","explicit_invalidation",
+]);
+export type ReopenCondition=z.infer<typeof ReopenConditionSchema>;
 
 export const MissionRequirementNodeSchema=z.object({
   version:SchemaVersionSchema,
@@ -782,16 +801,40 @@ export const MissionRequirementNodeSchema=z.object({
   order:z.number().int().nonnegative(),
   // Verbatim statement of this requirement as captured (never paraphrased away).
   statement:z.string().min(1).max(2000),
+  // What kind of requirement this node is.
+  category:RequirementCategorySchema,
+  // Snippet of the source prompt that gave rise to this requirement, for audit.
+  sourcePromptExcerpt:z.string().max(2000).default(""),
   // Provenance: who asserted this requirement.
   source:RequirementSourceSchema,
   // Confidence the kernel has in this requirement (1 = stated by the user).
   confidence:z.number().min(0).max(1),
-  // Authoritative only once the user approves. model/derived start false.
+  // Authoritative only once the user approves (or it is user-stated).
   approved:z.boolean().default(false),
+  // True when the user stated it directly OR approved it. model/derived start
+  // false and stay false until an explicit approval.
+  authoritative:z.boolean().default(false),
   status:RequirementNodeStatusSchema.default("pending"),
-  // File-content hash captured at verification time. Used to detect whether a
+  // Node ids this requirement depends on; it cannot become active until they
+  // are satisfied.
+  dependencies:z.array(z.string()).default([]),
+  // Evidence record ids that back this requirement (recorded at verification).
+  evidenceRefs:z.array(z.string()).default([]),
+  // Files touched while working this requirement.
+  affectedFiles:z.array(z.string()).default([]),
+  // Content hashes captured at verification time. Used to detect whether a
   // reopen of a verified (frozen) node is actually warranted.
-  verifiedFileHash:z.string().max(200).nullable().default(null),
+  verifiedFileHashes:z.array(z.string().max(200)).default([]),
+  // How many times execution was attempted against this requirement.
+  attempts:z.number().int().nonnegative().default(0),
+  // Last failure reason, if any.
+  lastFailure:z.string().max(2000).nullable().default(null),
+  // When the requirement reached a terminal (verified/waived) state.
+  completedAt:z.string().datetime().nullable().default(null),
+  // Persisted invalidation conditions that allowed a verified node to reopen.
+  invalidationConditions:z.array(ReopenConditionSchema).default([]),
+  // Persisted human/auditable reason for an invalidation.
+  invalidationReason:z.string().max(2000).nullable().default(null),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
 }).strict();
@@ -802,6 +845,16 @@ export const MissionContractSchema=z.object({
   missionId:z.string(),
   // Verbatim source prompt — never summarized away, never guessed.
   sourcePrompt:z.string().min(1).max(8000),
+  // The explicit, authoritative objective captured verbatim from the user.
+  objective:z.string().min(1).max(8000),
+  // Concrete artifacts the mission is expected to produce.
+  expectedArtifacts:z.array(z.string().max(1000)).default([]),
+  // Measurable acceptance criteria the mission must satisfy.
+  acceptanceCriteria:z.array(z.string().max(1000)).default([]),
+  // Commands that establish whether the work holds (kept at contract level).
+  verificationCommands:z.array(z.string().max(2000)).default([]),
+  // Required resulting git state (e.g. "clean-working-tree", "at-least-one-commit").
+  requiredGitResult:z.string().max(500).nullable().default(null),
   // Requirements extracted from the prompt (assembled from requirement nodes).
   requirements:z.array(MissionRequirementNodeSchema).default([]),
   // Ambiguities the kernel could not resolve from the prompt alone. Surfaced,
@@ -820,10 +873,19 @@ export const MissionCursorSchema=z.object({
   // Exactly one active requirement node at a time. null = no active objective
   // (e.g. awaiting user input, or all requirements addressed).
   activeNodeId:z.string().nullable().default(null),
-  // Bounded set of actions allowed from the current node — never a bare
+  // The verbatim statement of the active node, or null when none is active.
+  activeObjective:z.string().nullable().default(null),
+  // Bounded set of actions allowed next from the current node — never a bare
   // "continue".
-  allowedActions:z.array(z.string().max(60)).default([]),
-  reason:z.string().max(2000).nullable().default(null),
+  allowedNextActions:z.array(z.string().max(60)).default([]),
+  // Why the cursor is blocked / cannot advance, when applicable.
+  blockedReason:z.string().max(2000).nullable().default(null),
+  // The last concrete action performed against the contract (for audit).
+  lastCompletedAction:z.string().max(200).nullable().default(null),
+  // Ids of verified (frozen) nodes — durable evidence of locked work.
+  frozenNodeIds:z.array(z.string()).default([]),
+  // Ids of invalidated nodes.
+  invalidatedNodeIds:z.array(z.string()).default([]),
   updatedAt:z.string().datetime(),
 }).strict();
 export type MissionCursor=z.infer<typeof MissionCursorSchema>;
@@ -837,12 +899,30 @@ export const ProjectActiveMissionSchema=z.object({
 export type ProjectActiveMission=z.infer<typeof ProjectActiveMissionSchema>;
 
 // ── Mission API inputs ─────────────────────────────────────────────────────
+// Optional structured contract supplied by the caller. When ABSENT, the kernel
+// preserves only the objective as an authoritative objective node and explicitly
+// records that detailed requirements remain unresolved — it never guesses
+// artifacts, prohibitions, or acceptance criteria.
+export const MissionContractInputSchema=z.object({
+  objective:z.string().trim().min(1).max(8000).optional(),
+  expectedArtifacts:z.array(z.string().trim().min(1).max(1000)).default([]),
+  acceptanceCriteria:z.array(z.string().trim().min(1).max(1000)).default([]),
+  verificationCommands:z.array(z.string().trim().min(1).max(2000)).default([]),
+  // Required resulting git state (free text, e.g. "clean-working-tree").
+  requiredGitResult:z.string().trim().max(500).nullable().default(null),
+  prohibitions:z.array(z.string().trim().min(1).max(1000)).default([]),
+}).strict();
+export type MissionContractInput=z.infer<typeof MissionContractInputSchema>;
+
 export const CreateMissionSchema=z.object({
   objective:z.string().trim().min(1).max(8000),
   conversationId:z.string().optional(),
   autoApprove:z.boolean().optional(),
   maxUsd:z.number().nonnegative().optional(),
   maxAttempts:z.number().int().positive().optional(),
+  // Optional structured contract. When provided, its explicit values populate
+  // the contract verbatim; when omitted, only the objective is authoritative.
+  contract:MissionContractInputSchema.optional(),
 }).strict();
 export type CreateMissionInput=z.infer<typeof CreateMissionSchema>;
 

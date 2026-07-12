@@ -7,7 +7,7 @@ import type {
   MissionFailure, MissionCheckpoint, MissionReview, MissionBudget, MissionResult,
   MissionVerificationStrategy, CreateMissionInput,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
-  RequirementNodeStatus,
+  RequirementNodeStatus, ReopenCondition,
 } from "@morrow/contracts";
 import { assertMissionTransition, canTransitionMission, gradeMission, isTerminalMissionStatus } from "@morrow/contracts";
 import type { MissionsRepository } from "../repositories/missions.js";
@@ -19,7 +19,7 @@ import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candid
 import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
 import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
-import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen } from "./kernel.js";
+import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen, isDependencyBlocked } from "./kernel.js";
 import { buildContractFromInput } from "./contract-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
@@ -90,10 +90,15 @@ export class MissionService {
     // verbatim objective and persist it with provenance, set the per-project
     // active-mission pointer, and seed the per-mission cursor (exactly one
     // active requirement node, with a bounded set of allowed actions).
-    const contract = buildContractFromInput({ objective: input.objective });
+    const contract = buildContractFromInput({ objective: input.objective, contract: input.contract });
     this.repo.createContract({
       missionId: id,
       sourcePrompt: contract.sourcePrompt,
+      objective: contract.objective,
+      expectedArtifacts: contract.expectedArtifacts,
+      acceptanceCriteria: contract.acceptanceCriteria,
+      verificationCommands: contract.verificationCommands,
+      requiredGitResult: contract.requiredGitResult,
       unresolvedAmbiguities: contract.unresolvedAmbiguities,
       nodes: contract.nodes,
       now: this.now(),
@@ -562,33 +567,79 @@ export class MissionService {
     return this.repo.getProjectActiveMission(projectId);
   }
 
+  /** Repoint the per-project active-mission pointer. Safe to call repeatedly;
+   *  it never mutates or destroys any mission's cursor. */
+  setProjectActiveMission(projectId: string, missionId: string): void {
+    this.repo.setProjectActiveMission(projectId, missionId, this.now());
+  }
+
+  /** Mark a requirement node as approved, making it authoritative. model/derived
+   *  nodes must be approved before they may become the active node. */
+  approveRequirement(missionId: string, nodeId: string): MissionRequirementNode {
+    const node = this.repo.getRequirementNode(nodeId);
+    if (!node || node.missionId !== missionId) throw new MissionError("Requirement node not found in mission", "not_found");
+    const updated = this.repo.updateRequirementNode(nodeId, { approved: true, authoritative: true }, this.now())!;
+    this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement approved: ${nodeId}`, { nodeId, approved: true }, this.now());
+    return updated;
+  }
+
   /**
-   * Recompute the per-mission cursor: exactly one active requirement node and a
-   * bounded set of allowed actions derived from mission + node state. Never
+   * Recompute the per-mission cursor: at most one active requirement node and a
+   * bounded set of allowed next-actions derived from mission + node state. Never
    * silently clears the cursor — even a completed mission keeps its last cursor
    * so a terminal recovery can see where it left off.
    */
-  advanceCursor(missionId: string): MissionCursor {
+  advanceCursor(missionId: string, opts: { lastCompletedAction?: string | null } = {}): MissionCursor {
     const mission = this.get(missionId);
     const nodes = this.repo.listRequirementNodes(missionId);
     const active = selectActiveNode(nodes);
-    const allowedActions = deriveAllowedActions(mission.status, active);
+    const allowedNextActions = deriveAllowedActions(mission.status, active);
+
+    // Preserve the prior lastCompletedAction unless a new one was supplied.
+    const prior = this.repo.getCursor(missionId);
+    const lastCompletedAction =
+      opts.lastCompletedAction !== undefined ? opts.lastCompletedAction : (prior?.lastCompletedAction ?? null);
+
+    const frozenNodeIds = nodes.filter((n) => n.status === "verified").map((n) => n.id);
+    const invalidatedNodeIds = nodes.filter((n) => n.status === "invalidated").map((n) => n.id);
+
+    // Surface a blocked reason when no node is active but a node is stuck behind
+    // an unmet dependency (so the cursor honestly explains why it cannot advance).
+    let blockedReason: string | null = null;
+    if (!active) {
+      const blocked = nodes.find(
+        (n) => isDependencyBlocked(n, nodes) && (n.status === "pending" || n.status === "blocked"),
+      );
+      if (blocked) blockedReason = `Requirement ${blocked.id} is blocked by unmet dependencies`;
+    }
+
     return this.repo.upsertCursor({
       missionId,
       activeNodeId: active ? active.id : null,
-      allowedActions,
-      reason: active
-        ? `Active requirement: ${active.statement.slice(0, 200)}`
-        : (nodes.length === 0 ? "No requirement nodes" : "All requirements addressed"),
+      activeObjective: active ? active.statement : null,
+      allowedNextActions,
+      blockedReason,
+      lastCompletedAction,
+      frozenNodeIds,
+      invalidatedNodeIds,
     });
   }
 
   /**
-   * Update a single requirement node's status, enforcing the verified-node
-   * freeze (I5). A verified node can only leave `verified` for one of the five
-   * explicit reasons; otherwise the update is rejected. On transition to
-   * `verified` the verification file hash is recorded; the contract freeze flag
-   * and cursor are then recomputed.
+   * Update a single requirement node's status.
+   *
+   * Invariants enforced here:
+   *  • Exactly-one-active: promoting a node to `active` transactionally
+   *    deactivates any other active node, so persistence can never expose two
+   *    active nodes. A node whose dependencies are unmet cannot become active.
+   *  • Verified-node freeze (I5): a verified (frozen) node can only leave
+   *    `verified` when a persisted invalidation condition AND reason are
+   *    supplied. Caller-supplied booleans are not accepted as proof — the
+   *    condition is recorded durably on the node and an auditable event is
+   *    appended. Missing evidence throws a typed MissionError.
+   *
+   * On transition to `verified` the verification file hashes and completion time
+   * are recorded; the contract freeze flag and cursor are then recomputed.
    */
   updateRequirementStatus(
     missionId: string,
@@ -596,45 +647,96 @@ export class MissionService {
     status: RequirementNodeStatus,
     opts: {
       fileHash?: string | null;
-      dependencyChanged?: boolean;
-      fileHashChanged?: boolean;
-      laterVerificationFailed?: boolean;
-      contractChanged?: boolean;
-      invalidationRecorded?: boolean;
+      fileHashes?: string[];
+      failureReason?: string | null;
+      invalidationCondition?: ReopenCondition;
+      invalidationReason?: string | null;
     } = {},
   ): MissionRequirementNode {
     const node = this.repo.getRequirementNode(nodeId);
     if (!node || node.missionId !== missionId) throw new MissionError("Requirement node not found in mission", "not_found");
     if (node.status === status) return node;
+    const now = this.now();
 
-    // Freeze enforcement: reopening a verified (frozen) node requires a reason.
-    if (node.status === "verified" && status !== "verified") {
-      const verdict = canReopenNode(node, {
-        dependencyChanged: opts.dependencyChanged ?? false,
-        fileHashChanged: opts.fileHashChanged ?? false,
-        laterVerificationFailed: opts.laterVerificationFailed ?? false,
-        contractChanged: opts.contractChanged ?? false,
-        invalidationRecorded: opts.invalidationRecorded ?? false,
-      });
-      if (!verdict.allowed) {
+    // ── Promotion to active: enforce exactly-one-active + dependency check ──
+    if (status === "active") {
+      if (!node.approved) {
         throw new MissionError(
-          `Verified requirement node ${nodeId} is frozen and cannot be reopened without explicit evidence`,
-          "node_frozen",
+          `Requirement ${nodeId} cannot become active: it is not yet approved/authoritative`,
+          "requirement_not_approved",
         );
       }
-      this.repo.appendEvent(missionId, "mission.requirement_reopened", `Reopened verified requirement: ${node.statement.slice(0, 120)}`, { nodeId, reason: verdict.reason }, this.now());
+      const all = this.repo.listRequirementNodes(missionId);
+      if (isDependencyBlocked(node, all)) {
+        throw new MissionError(
+          `Requirement ${nodeId} cannot become active: dependencies are not yet satisfied`,
+          "dependency_unmet",
+        );
+      }
+      // Deactivate any other active node within a single transaction so the DB
+      // never exposes two active nodes.
+      this.repo.transaction(() => {
+        for (const other of all) {
+          if (other.id !== nodeId && other.status === "active") {
+            this.repo.updateRequirementNode(other.id, { status: "pending" }, now);
+          }
+        }
+        this.repo.updateRequirementNode(nodeId, { status: "active" }, now);
+      });
+      this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → active`, { nodeId, from: node.status, to: "active" }, now);
+      const nodes = this.repo.listRequirementNodes(missionId);
+      this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+      this.advanceCursor(missionId, { lastCompletedAction: "start_requirement" });
+      return this.repo.getRequirementNode(nodeId)!;
     }
 
-    const patch: Parameters<MissionsRepository["updateRequirementNode"]>[1] = { status };
-    if (status === "verified") patch.verifiedFileHash = opts.fileHash ?? null;
-    else patch.verifiedFileHash = null;
-    const updated = this.repo.updateRequirementNode(nodeId, patch, this.now())!;
-    this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → ${status}`, { nodeId, from: node.status, to: status }, this.now());
+    // ── Reopening a verified (frozen) node requires persisted evidence ──────
+    if (node.status === "verified" && status !== "verified") {
+      const verdict = canReopenNode(node, opts.invalidationCondition);
+      if (!verdict.allowed || !opts.invalidationCondition) {
+        throw new MissionError(
+          `Verified requirement node ${nodeId} is frozen and cannot be reopened without persisted invalidation evidence (a condition and reason must be recorded)`,
+          "verified_node_reopen_requires_invalidation",
+        );
+      }
+      const reason = opts.invalidationReason ?? `Reopened verified requirement: ${verdict.reason}`;
+      const updated = this.repo.updateRequirementNode(nodeId, {
+        status,
+        verifiedFileHashes: [],
+        completedAt: null,
+        invalidationConditions: [verdict.reason!],
+        invalidationReason: reason,
+      }, now)!;
+      this.repo.appendEvent(
+        missionId, "mission.requirement_reopened",
+        `Reopened verified requirement: ${node.statement.slice(0, 120)}`,
+        { nodeId, condition: verdict.reason, reason }, now,
+      );
+      const nodes = this.repo.listRequirementNodes(missionId);
+      this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+      this.advanceCursor(missionId, { lastCompletedAction: `reopen_requirement:${verdict.reason}` });
+      return updated;
+    }
 
-    // Recompute the contract freeze flag and the cursor from node states.
+    // ── Normal status transition ───────────────────────────────────────────
+    const patch: Parameters<MissionsRepository["updateRequirementNode"]>[1] = { status };
+    if (status === "verified") {
+      patch.verifiedFileHashes = opts.fileHashes ?? (opts.fileHash ? [opts.fileHash] : []);
+      patch.completedAt = now;
+    }
+    if (status === "failed") {
+      patch.lastFailure = opts.failureReason ?? "Requirement marked failed";
+      patch.attempts = node.attempts + 1;
+    }
+    if (status === "verified" || status === "waived" || status === "invalidated") {
+      patch.completedAt = patch.completedAt ?? now;
+    }
+    const updated = this.repo.updateRequirementNode(nodeId, patch, now)!;
+    this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → ${status}`, { nodeId, from: node.status, to: status }, now);
+
     const nodes = this.repo.listRequirementNodes(missionId);
-    this.repo.setContractFrozen(missionId, computeFrozen(nodes), this.now());
-    this.advanceCursor(missionId);
+    this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+    this.advanceCursor(missionId, { lastCompletedAction: `status:${status}` });
     return updated;
   }
 

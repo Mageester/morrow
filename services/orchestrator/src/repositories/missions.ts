@@ -4,8 +4,31 @@ import type {
   MissionFailure, MissionCheckpoint, MissionReview, MissionBudget, MissionResult,
   MissionEvent, MissionEventType, MissionVerificationStrategy,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
-  RequirementSource, RequirementNodeStatus,
+  RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
 } from "@morrow/contracts";
+
+/** A requirement node as supplied at contract-build time (before persistence). */
+export interface ContractRequirementNodeInput {
+  id: string;
+  order: number;
+  statement: string;
+  category: RequirementCategory;
+  sourcePromptExcerpt: string;
+  source: RequirementSource;
+  confidence: number;
+  approved: boolean;
+  authoritative: boolean;
+  status?: RequirementNodeStatus;
+  dependencies?: string[];
+  evidenceRefs?: string[];
+  affectedFiles?: string[];
+  verifiedFileHashes?: string[];
+  attempts?: number;
+  lastFailure?: string | null;
+  completedAt?: string | null;
+  invalidationConditions?: ReopenCondition[];
+  invalidationReason?: string | null;
+}
 
 const SCHEMA_VERSION = 1;
 
@@ -110,11 +133,22 @@ function mapRequirementNode(row: any): MissionRequirementNode {
     missionId: row.mission_id,
     order: row.ordering,
     statement: row.statement,
+    category: row.category as RequirementCategory,
+    sourcePromptExcerpt: row.source_prompt_excerpt ?? "",
     source: row.source as RequirementSource,
     confidence: row.confidence,
     approved: row.approved === 1,
+    authoritative: row.authoritative === 1,
     status: row.status as RequirementNodeStatus,
-    verifiedFileHash: row.verified_file_hash ?? null,
+    dependencies: JSON.parse(row.dependencies_json ?? "[]"),
+    evidenceRefs: JSON.parse(row.evidence_refs_json ?? "[]"),
+    affectedFiles: JSON.parse(row.affected_files_json ?? "[]"),
+    verifiedFileHashes: JSON.parse(row.verified_file_hashes_json ?? "[]"),
+    attempts: row.attempts ?? 0,
+    lastFailure: row.last_failure_json ?? null,
+    completedAt: row.completed_at ?? null,
+    invalidationConditions: JSON.parse(row.invalidation_conditions_json ?? "[]") as ReopenCondition[],
+    invalidationReason: row.invalidation_reason ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -125,6 +159,11 @@ function mapContract(row: any): MissionContract {
     version: 1,
     missionId: row.mission_id,
     sourcePrompt: row.source_prompt,
+    objective: row.objective,
+    expectedArtifacts: JSON.parse(row.expected_artifacts_json ?? "[]"),
+    acceptanceCriteria: JSON.parse(row.acceptance_criteria_json ?? "[]"),
+    verificationCommands: JSON.parse(row.verification_commands_json ?? "[]"),
+    requiredGitResult: row.required_git_result ?? null,
     requirements: [],
     unresolvedAmbiguities: JSON.parse(row.unresolved_ambiguities_json ?? "[]"),
     frozen: row.frozen === 1,
@@ -138,8 +177,12 @@ function mapCursor(row: any): MissionCursor {
     version: 1,
     missionId: row.mission_id,
     activeNodeId: row.active_node_id ?? null,
-    allowedActions: JSON.parse(row.allowed_actions_json ?? "[]"),
-    reason: row.reason ?? null,
+    activeObjective: row.active_objective ?? null,
+    allowedNextActions: JSON.parse(row.allowed_next_actions_json ?? "[]"),
+    blockedReason: row.blocked_reason ?? null,
+    lastCompletedAction: row.last_completed_action ?? null,
+    frozenNodeIds: JSON.parse(row.frozen_node_ids_json ?? "[]"),
+    invalidatedNodeIds: JSON.parse(row.invalidated_node_ids_json ?? "[]"),
     updatedAt: row.updated_at,
   };
 }
@@ -370,15 +413,25 @@ export function missionsRepository(db: Database.Database) {
     createContract(input: {
       missionId: string;
       sourcePrompt: string;
+      objective: string;
+      expectedArtifacts?: string[];
+      acceptanceCriteria?: string[];
+      verificationCommands?: string[];
+      requiredGitResult?: string | null;
       unresolvedAmbiguities?: string[];
-      nodes: Array<{ id: string; order: number; statement: string; source: RequirementSource; confidence: number; approved: boolean }>;
+      nodes: ContractRequirementNodeInput[];
       now?: string;
     }): MissionContract {
       const now = input.now ?? new Date().toISOString();
       db.prepare(
-        `INSERT INTO mission_contracts (mission_id, schema_version, source_prompt, unresolved_ambiguities_json, frozen, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
-      ).run(input.missionId, SCHEMA_VERSION, input.sourcePrompt, JSON.stringify(input.unresolvedAmbiguities ?? []), now, now);
+        `INSERT INTO mission_contracts (mission_id, schema_version, source_prompt, objective, expected_artifacts_json, acceptance_criteria_json, verification_commands_json, required_git_result, unresolved_ambiguities_json, frozen, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      ).run(
+        input.missionId, SCHEMA_VERSION, input.sourcePrompt, input.objective,
+        JSON.stringify(input.expectedArtifacts ?? []), JSON.stringify(input.acceptanceCriteria ?? []),
+        JSON.stringify(input.verificationCommands ?? []), input.requiredGitResult ?? null,
+        JSON.stringify(input.unresolvedAmbiguities ?? []), now, now,
+      );
       this.addRequirementNodes(input.missionId, input.nodes, now);
       return this.getContract(input.missionId)!;
     },
@@ -402,23 +455,46 @@ export function missionsRepository(db: Database.Database) {
     },
 
     // ── requirement nodes ──────────────────────────────────────────────────
-    addRequirementNodes(missionId: string, nodes: Array<{ id: string; order: number; statement: string; source: RequirementSource; confidence: number; approved: boolean }>, now = new Date().toISOString()): void {
+    addRequirementNodes(missionId: string, nodes: ContractRequirementNodeInput[], now = new Date().toISOString()): void {
       const stmt = db.prepare(
-        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, source, confidence, approved, status, verified_file_hash, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, category, source_prompt_excerpt, source, confidence, approved, authoritative, status, dependencies_json, evidence_refs_json, affected_files_json, verified_file_hashes_json, attempts, last_failure_json, completed_at, invalidation_conditions_json, invalidation_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', 0, NULL, NULL, '[]', NULL, ?, ?)`,
       );
       db.transaction(() => {
-        nodes.forEach((n) => stmt.run(n.id, missionId, n.order, n.statement, n.source, n.confidence, n.approved ? 1 : 0, now, now));
+        nodes.forEach((n) => stmt.run(
+          n.id, missionId, n.order, n.statement, n.category, n.sourcePromptExcerpt ?? "",
+          n.source, n.confidence, n.approved ? 1 : 0, n.authoritative ? 1 : 0, n.status ?? "pending",
+          JSON.stringify(n.dependencies ?? []), now, now,
+        ));
       })();
     },
 
-    updateRequirementNode(id: string, patch: Partial<{ statement: string; approved: boolean; status: RequirementNodeStatus; verifiedFileHash: string | null }>, now = new Date().toISOString()): MissionRequirementNode | undefined {
+    updateRequirementNode(id: string, patch: Partial<{
+      statement: string; category: RequirementCategory; sourcePromptExcerpt: string; source: RequirementSource;
+      confidence: number; approved: boolean; authoritative: boolean; status: RequirementNodeStatus;
+      dependencies: string[]; evidenceRefs: string[]; affectedFiles: string[]; verifiedFileHashes: string[];
+      attempts: number; lastFailure: string | null; completedAt: string | null;
+      invalidationConditions: ReopenCondition[]; invalidationReason: string | null;
+    }>, now = new Date().toISOString()): MissionRequirementNode | undefined {
       const sets: string[] = ["updated_at = ?"];
       const params: any[] = [now];
       if (patch.statement !== undefined) { sets.push("statement = ?"); params.push(patch.statement); }
+      if (patch.category !== undefined) { sets.push("category = ?"); params.push(patch.category); }
+      if (patch.sourcePromptExcerpt !== undefined) { sets.push("source_prompt_excerpt = ?"); params.push(patch.sourcePromptExcerpt); }
+      if (patch.source !== undefined) { sets.push("source = ?"); params.push(patch.source); }
+      if (patch.confidence !== undefined) { sets.push("confidence = ?"); params.push(patch.confidence); }
       if (patch.approved !== undefined) { sets.push("approved = ?"); params.push(patch.approved ? 1 : 0); }
+      if (patch.authoritative !== undefined) { sets.push("authoritative = ?"); params.push(patch.authoritative ? 1 : 0); }
       if (patch.status !== undefined) { sets.push("status = ?"); params.push(patch.status); }
-      if (patch.verifiedFileHash !== undefined) { sets.push("verified_file_hash = ?"); params.push(patch.verifiedFileHash); }
+      if (patch.dependencies !== undefined) { sets.push("dependencies_json = ?"); params.push(JSON.stringify(patch.dependencies)); }
+      if (patch.evidenceRefs !== undefined) { sets.push("evidence_refs_json = ?"); params.push(JSON.stringify(patch.evidenceRefs)); }
+      if (patch.affectedFiles !== undefined) { sets.push("affected_files_json = ?"); params.push(JSON.stringify(patch.affectedFiles)); }
+      if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(patch.verifiedFileHashes)); }
+      if (patch.attempts !== undefined) { sets.push("attempts = ?"); params.push(patch.attempts); }
+      if (patch.lastFailure !== undefined) { sets.push("last_failure_json = ?"); params.push(patch.lastFailure); }
+      if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
+      if (patch.invalidationConditions !== undefined) { sets.push("invalidation_conditions_json = ?"); params.push(JSON.stringify(patch.invalidationConditions)); }
+      if (patch.invalidationReason !== undefined) { sets.push("invalidation_reason = ?"); params.push(patch.invalidationReason); }
       params.push(id);
       db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
       const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
@@ -435,15 +511,28 @@ export function missionsRepository(db: Database.Database) {
     },
 
     // ── cursor (per mission) ─────────────────────────────────────────────
-    upsertCursor(cursor: { missionId: string; activeNodeId: string | null; allowedActions: string[]; reason: string | null; now?: string }): MissionCursor {
+    upsertCursor(cursor: {
+      missionId: string; activeNodeId: string | null; activeObjective?: string | null;
+      allowedNextActions: string[]; blockedReason?: string | null; lastCompletedAction?: string | null;
+      frozenNodeIds?: string[]; invalidatedNodeIds?: string[]; now?: string;
+    }): MissionCursor {
       const now = cursor.now ?? new Date().toISOString();
       db.prepare(
-        `INSERT INTO mission_cursors (mission_id, schema_version, active_node_id, allowed_actions_json, reason, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(mission_id) DO UPDATE SET active_node_id = excluded.active_node_id, allowed_actions_json = excluded.allowed_actions_json, reason = excluded.reason, updated_at = excluded.updated_at`,
-      ).run(cursor.missionId, SCHEMA_VERSION, cursor.activeNodeId, JSON.stringify(cursor.allowedActions), cursor.reason, now);
+        `INSERT INTO mission_cursors (mission_id, schema_version, active_node_id, active_objective, allowed_next_actions_json, blocked_reason, last_completed_action, frozen_node_ids_json, invalidated_node_ids_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(mission_id) DO UPDATE SET active_node_id = excluded.active_node_id, active_objective = excluded.active_objective, allowed_next_actions_json = excluded.allowed_next_actions_json, blocked_reason = excluded.blocked_reason, last_completed_action = excluded.last_completed_action, frozen_node_ids_json = excluded.frozen_node_ids_json, invalidated_node_ids_json = excluded.invalidated_node_ids_json, updated_at = excluded.updated_at`,
+      ).run(
+        cursor.missionId, SCHEMA_VERSION, cursor.activeNodeId, cursor.activeObjective ?? null,
+        JSON.stringify(cursor.allowedNextActions), cursor.blockedReason ?? null, cursor.lastCompletedAction ?? null,
+        JSON.stringify(cursor.frozenNodeIds ?? []), JSON.stringify(cursor.invalidatedNodeIds ?? []), now,
+      );
       const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(cursor.missionId) as any;
       return mapCursor(row);
+    },
+
+    /** Run a function inside a single SQLite transaction. */
+    transaction(fn: () => void): void {
+      db.transaction(fn)();
     },
 
     getCursor(missionId: string): MissionCursor | undefined {
