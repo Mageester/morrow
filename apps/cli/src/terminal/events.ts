@@ -211,6 +211,13 @@ export type TerminalEvent =
   | { type: "worktree.update"; worktrees: WorktreeInfo[] }
   | { type: "agent.update"; agents: AgentInfo[] }
   | { type: "integration.update"; integrations: IntegrationInfo[] }
-  | { type: "recovery.suggestion"; text: string };
+  | { type: "recovery.suggestion"; text: string }
+  /** Ordinary text submitted while a task is still streaming. Never silently
+   *  discarded and never merged into the running task — it is held, shown
+   *  distinctly from both the activity feed and slash-command notices, and
+   *  sent as the next `user.message` once the running task ends. */
+  | { type: "redirect.queued"; text: string }
+  /** The oldest queued redirect is about to be sent as a new task. */
+  | { type: "redirect.sent" };
 
 export type TerminalEventType = TerminalEvent["type"];

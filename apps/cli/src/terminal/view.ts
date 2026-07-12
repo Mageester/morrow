@@ -15,11 +15,18 @@ export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "complete
 export interface Glyphs {
   ok: string;
   fail: string;
+  /** Current running action — a steady mark, not the animated spinner. */
   run: string;
   arrow: string;
   bullet: string;
   dot: string;
   warn: string;
+  /** Active (in-progress) recovery — distinct from a bare failure (`fail`)
+   *  or a still-open problem awaiting a strategy (`warn`). */
+  recovering: string;
+  /** A queued redirect/follow-up, visually distinct from both the activity
+   *  feed and slash-command notices. */
+  queued: string;
   /** The stable Morrow identity mark (state-independent). */
   mark: string;
   spinner: string[];
@@ -27,8 +34,8 @@ export interface Glyphs {
 
 export function glyphs(unicode: boolean): Glyphs {
   return unicode
-    ? { ok: "✓", fail: "✖", run: "•", arrow: "↳", bullet: "◦", dot: "·", warn: "!", mark: "◇", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
-    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", mark: "*", spinner: ["-", "\\", "|", "/"] };
+    ? { ok: "✓", fail: "✗", run: "●", arrow: "↳", bullet: "◦", dot: "·", warn: "!", recovering: "↻", queued: "↷", mark: "◇", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
+    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", recovering: "~", queued: ">>", mark: "*", spinner: ["-", "\\", "|", "/"] };
 }
 
 export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean; color: Output }): string {
@@ -121,7 +128,7 @@ function formatTokens(tokens: number): string {
   return String(tokens);
 }
 
-function plainMode(mode: string): "Ask" | "Plan" | "Build" {
+export function plainMode(mode: string): "Ask" | "Plan" | "Build" {
   const lower = mode.toLowerCase();
   if (lower.includes("plan")) return "Plan";
   if (lower.includes("ask") || lower.includes("read-only") || lower.includes("inspect")) return "Ask";
@@ -137,7 +144,7 @@ function plainMode(mode: string): "Ask" | "Plan" | "Build" {
  * "Plan · YOLO" because the chip was derived from the raw `autoApprove` flag
  * alone (KNOWN_ISSUES #2).
  */
-function permissionChip(mode: "Ask" | "Plan" | "Build", autoApprove: boolean): { text: string; auto: boolean } {
+export function permissionChip(mode: "Ask" | "Plan" | "Build", autoApprove: boolean): { text: string; auto: boolean } {
   if (mode === "Ask") return { text: "read-only", auto: false };
   if (mode === "Plan") return { text: "no changes", auto: false };
   return autoApprove ? { text: "Auto-approved", auto: true } : { text: "approval required", auto: false };
@@ -638,9 +645,14 @@ export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: b
     return lines;
   }
 
-  const glyph = entry.status === "recovered" ? out.green(g.ok) : out.yellow(g.warn);
-  const verb = entry.status === "recovered" ? out.green("Recovering") : out.yellow("Recovering");
-  const lines = [`  ${glyph} ${verb}  ${out.yellow(problem)}`];
+  // A bare, freshly-reported problem (no strategy chosen yet) reads as a
+  // failure (✗) — the same mark a failed action gets elsewhere. Only once a
+  // strategy is in flight does this become an *active* recovery (↻); once it
+  // resolves, a success (✓).
+  const glyph = entry.status === "recovered" ? out.green(g.ok) : entry.status === "retrying" ? out.yellow(g.recovering) : out.red(g.fail);
+  const colorize = (s: string) => (entry.status === "recovered" ? out.green(s) : entry.status === "retrying" ? out.yellow(s) : out.red(s));
+  const verb = entry.status === "recovered" || entry.status === "retrying" ? "Recovering" : "Failed";
+  const lines = [`  ${glyph} ${colorize(verb)}  ${colorize(problem)}`];
 
   // The strategy/outcome line only appears once a strategy exists or the
   // problem resolved — a bare, freshly-reported failure has no strategy yet
@@ -662,6 +674,8 @@ export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: b
 export interface CompletionCardOptions {
   unicode?: boolean;
   elapsedMs?: number;
+  /** Terminal width, for wrapping (never truncating) long messages. */
+  columns?: number;
 }
 
 /**
@@ -710,7 +724,8 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
   if (state.status === "failed") {
     lines.push(`  ${out.red(g.fail)} ${out.red("Task failed")}`);
     if (state.lastError) {
-      lines.push(`  ${out.bold("Blocked by")}`, `    ${truncate(state.lastError, 100)}`);
+      lines.push(`  ${out.bold("Blocked by")}`);
+      for (const l of wrapText(state.lastError, Math.max(20, (opts.columns ?? 80) - 6))) lines.push(`    ${l}`);
     }
     const lastOk = [...state.tools].reverse().find((t) => t.status === "completed");
     if (lastOk) {
@@ -727,7 +742,7 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
     // an elapsed timer, or "still working" text, and never a second,
     // differently-worded chip implying something other than paused.
     lines.push(`  ${out.yellow(g.warn)} ${out.yellow("Paused")}`);
-    lines.push(`  ${out.bold("Reason:")} ${state.lastError ? truncate(state.lastError, 100) : "the task stopped making progress"}`);
+    lines.push(...labelWithWrappedText("Reason:", state.lastError ?? "the task stopped making progress", out, opts.columns ?? 80));
     lines.push(`  ${out.bold("Next:")} ${out.cyan("/continue")}`);
     lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output full")}`);
     return lines;
@@ -742,6 +757,48 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
 function truncate(s: string, max: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
+/**
+ * Word-wrap text to a column budget without ellipsizing — the final-result
+ * view must never destructively truncate an important message. A single word
+ * longer than the budget is hard-broken so it still can't force an overflow.
+ */
+export function wrapText(s: string, width: number): string[] {
+  const safeWidth = Math.max(10, width);
+  const flat = s.replace(/\s+/g, " ").trim();
+  if (!flat) return [];
+  const words = flat.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (!current) current = word;
+    else if (current.length + 1 + word.length <= safeWidth) current += " " + word;
+    else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.flatMap((line) => {
+    if (line.length <= safeWidth) return [line];
+    const chunks: string[] = [];
+    for (let i = 0; i < line.length; i += safeWidth) chunks.push(line.slice(i, i + safeWidth));
+    return chunks;
+  });
+}
+
+/**
+ * A bold `label` followed by wrapped body text: inline on one line when it
+ * fits the column budget (preserving the compact single-line look for the
+ * common short case), or the label alone with wrapped, indented continuation
+ * lines when it doesn't — never a hard, ellipsized cut.
+ */
+function labelWithWrappedText(label: string, text: string, out: Output, width: number): string[] {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const inline = `  ${out.bold(label)} ${flat}`;
+  if (stripAnsi(inline).length <= width) return [inline];
+  return [`  ${out.bold(label)}`, ...wrapText(flat, Math.max(20, width - 6)).map((l) => `    ${l}`)];
 }
 
 /**

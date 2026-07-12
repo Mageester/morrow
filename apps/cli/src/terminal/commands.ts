@@ -59,6 +59,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "revisions", description: "show the active mission's plan revision history" },
   { name: "context", description: "show model context usage and compaction status" },
   { name: "panic", description: "cancel active work and disable YOLO" },
+  { name: "pause", description: "pause the running task after its current step; resume with /continue" },
+  { name: "stop", description: "cancel the running task and report what was preserved" },
   { name: "continue", description: "resume the latest paused task" },
   { name: "memory", description: "toggle memory for this session" },
   { name: "compact", description: "summarize history into a memory note" },

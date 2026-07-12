@@ -267,7 +267,7 @@ describe("interactive session: streaming, cancellation, resize", () => {
     expect(resolved).toBe(true);
   });
 
-  it("busy keystrokes never silently disappear: one clear notice, no buffering (P1-1)", async () => {
+  it("the input stays live while a task runs: typing is not blocked or dropped (Interactive Mission Console)", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();
     const gate = new EventGate();
@@ -283,23 +283,108 @@ describe("interactive session: streaming, cancellation, resize", () => {
     gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
     await tick();
 
-    // Type a whole sentence while busy — none of it should land in the input
-    // line (it never reaches the pure InputState/buffer, and never appears
-    // anywhere in the rendered frame)...
-    typeText(stdin, "this message should not silently disappear");
+    // Typing while the task is still streaming reaches the real input buffer
+    // (not blocked) and is visible in the painted frame.
+    typeText(stdin, "keep going");
     await tick();
     const snap = app.snapshot();
     expect(snap.status).toBe("streaming");
-    expect(io.writes.join("")).not.toContain("this message should not silently disappear");
+    expect(io.writes.join("")).toContain("keep going");
+    // Never a stale "still working" interruption notice — the input itself
+    // proves it's live.
+    expect(snap.notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
 
-    // ...and the user gets told exactly once, not once per keystroke.
-    const busyNotices = snap.notices.filter((n) => n.text.includes("still working"));
-    expect(busyNotices.length).toBe(1);
+    // Ctrl+C still cancels the running task (unchanged behavior), then a
+    // second Ctrl+C exits — persistent input doesn't change this contract.
+    ctrlC(stdin);
+    await tick();
+    ctrlC(stdin);
+    gate.end();
+    await done;
+  });
 
-    ctrlC(stdin); // cancel
+  it("ordinary text submitted while a task runs is queued as a redirect, shown distinctly, and sent once the task ends", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const sent: string[] = [];
+    const backend: SessionBackend = {
+      ...makeBackend(gate, () => {}),
+      send: async (text) => {
+        sent.push(text);
+        return { taskId: `task-${sent.length}` };
+      },
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    expect(sent).toEqual(["do work"]);
+
+    typeText(stdin, "also fix the docs");
+    enter(stdin);
+    await tick();
+
+    // Queued, not sent yet, and not silently discarded — visible in state and
+    // in the painted frame, distinct from both a notice and the activity feed.
+    expect(app.snapshot().queuedMessages).toEqual(["also fix the docs"]);
+    expect(sent).toEqual(["do work"]);
+    expect(io.writes.join("")).toContain("also fix the docs");
+
+    gate.push({ type: "task.completed", payload: {} } as any);
     gate.end();
     await tick();
-    ctrlC(stdin); // exit (armed by the same flag the cancel used)
+
+    // Once the running task ends, the queued redirect is sent as the next task.
+    expect(sent).toEqual(["do work", "also fix the docs"]);
+    expect(app.snapshot().queuedMessages).toEqual([]);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("slash commands run immediately while a task is streaming, never becoming a task message or a queued redirect", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const sent: string[] = [];
+    const backend: SessionBackend = {
+      ...makeBackend(gate, () => {}),
+      send: async (text) => {
+        sent.push(text);
+        return { taskId: `task-${sent.length}` };
+      },
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
+    await tick();
+
+    typeText(stdin, "/status");
+    enter(stdin);
+    await tick();
+
+    expect(app.snapshot().status).toBe("streaming"); // /status did not disturb the running task
+    expect(app.snapshot().queuedMessages).toEqual([]); // never queued
+    expect(sent).toEqual(["do work"]); // never sent as a task message
+
+    ctrlC(stdin);
+    gate.end();
+    await tick();
+    ctrlC(stdin);
     await done;
   });
 
@@ -531,7 +616,7 @@ describe("interactive session: streaming, cancellation, resize", () => {
 });
 
 describe("paused-state and YOLO notice consistency (consumer defects #5, #6)", () => {
-  it("clears the 'still working' notice once the task stops being busy, instead of leaving it beside the paused/completion card", async () => {
+  it("never shows a 'still working' interruption notice — the input stays live, so there is nothing to apologize for", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();
     const gate = new EventGate();
@@ -545,11 +630,11 @@ describe("paused-state and YOLO notice consistency (consumer defects #5, #6)", (
     enter(stdin);
     await tick();
 
-    // A keystroke while busy pushes the notice once, honestly reporting the
-    // keystroke was not applied.
+    // A keystroke while busy reaches the real input buffer — it is not
+    // blocked, so there is no "not applied yet" notice to show.
     typeText(stdin, "x");
     await tick();
-    expect(app.snapshot().notices.some((n) => n.text.includes("still working"))).toBe(true);
+    expect(app.snapshot().notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
 
     // The task pauses (budget reached) — the stream just stops.
     gate.push({ type: "task.interrupted", payload: { reason: "turn_budget_reached" } } as any);
@@ -557,11 +642,14 @@ describe("paused-state and YOLO notice consistency (consumer defects #5, #6)", (
     await tick();
 
     expect(app.snapshot().status).toBe("budget-reached");
-    // The stale "still working" claim must not survive into the paused frame.
-    expect(app.snapshot().notices.some((n) => n.text.includes("still working"))).toBe(false);
+    expect(app.snapshot().notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
 
-    ctrlC(stdin);
-    ctrlC(stdin);
+    // The "x" typed while busy is still sitting in the (now idle) input
+    // line — persistent input means it was never blocked, but it also was
+    // never submitted, so it's still there to clear before exit-confirm arms.
+    ctrlC(stdin); // clears "x"
+    ctrlC(stdin); // arms exit-confirm
+    ctrlC(stdin); // exits
     await done;
   });
 

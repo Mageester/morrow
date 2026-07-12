@@ -123,14 +123,19 @@ export interface TerminalState {
   integrations: import("./events.js").IntegrationInfo[];
   recoverySuggestions: string[];
   recoveries: RecoveryEntry[];
+  /** Ordinary text typed while the current task streams, oldest first. Never
+   *  a second task-message channel — each entry is sent as a normal
+   *  `user.message` (via `redirect.sent`) once the running task ends. */
+  queuedMessages: string[];
 }
 
 export const MAX_CONVERSATION = 200;
 export const MAX_ACTIVITY = 80;
 export const MAX_NOTICES = 6;
+export const MAX_QUEUED = 5;
 
 export function initialState(): TerminalState {
-  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [] };
+  return { conversation: [], activity: [], tools: [], patches: [], plan: [], notices: [], status: "idle", processes: [], worktrees: [], agents: [], integrations: [], recoverySuggestions: [], recoveries: [], queuedMessages: [] };
 }
 
 function bounded<T>(items: T[], max: number): T[] {
@@ -584,6 +589,15 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         ...state,
         recoverySuggestions: bounded([...state.recoverySuggestions, sanitizeTerminalText(event.text)], MAX_NOTICES),
       };
+
+    case "redirect.queued":
+      return {
+        ...state,
+        queuedMessages: bounded([...state.queuedMessages, sanitizeTerminalText(event.text)], MAX_QUEUED),
+      };
+
+    case "redirect.sent":
+      return state.queuedMessages.length === 0 ? state : { ...state, queuedMessages: state.queuedMessages.slice(1) };
 
     default: {
       // Exhaustiveness guard: a new event type must be handled here.

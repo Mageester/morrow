@@ -24,7 +24,9 @@ import {
   recoveryEntryLines,
   runningActionLine,
   statusBar,
+  wrapText,
 } from "./view.js";
+import { startupPanelLines, type RecentActivityItem } from "./startup-view.js";
 
 export interface AppFrameOptions {
   columns: number;
@@ -34,11 +36,15 @@ export interface AppFrameOptions {
   jobCount?: number;
   promptLabel: string;
   promptWidth: number;
+  /** Absolute clock time, for the startup panel's relative-time labels. */
+  nowMs?: number;
 }
 
 export interface AppFrameContext {
   commands: SlashCommand[];
   paletteItems: PaletteItem[];
+  /** Real, project-scoped recent activity shown on the startup panel. */
+  recentActivity?: RecentActivityItem[];
 }
 
 export interface AppFrame {
@@ -55,13 +61,18 @@ export function composeApp(
   opts: AppFrameOptions
 ): AppFrame {
   const workspace = term.meta?.workspacePath;
+  // The bordered startup panel replaces the header + welcome text for the one
+  // moment before any conversation exists — never shown once a task begins.
+  const isStartup = isStartupState(term);
 
   // ── Fixed top: Morrow chrome ───────────────────────────────────────────────
-  const top = buildTopChrome(term, out, unicode, opts);
+  const top = isStartup
+    ? startupPanelLines(term.meta!, ctx.recentActivity ?? [], out, unicode, opts.columns, opts.nowMs ?? Date.now(), blockedPathGuidanceBlocks(term.meta!, out, unicode))
+    : buildTopChrome(term, out, unicode, opts);
 
   // ── Fixed bottom: notices + input/overlay + footer ─────────────────────────
   const footer = footerLine(term, input, out, unicode, opts);
-  const noticeLines = recentNotices(term, out, unicode);
+  const noticeLines = [...recentNotices(term, out, unicode), ...queuedRedirectLines(term, out, unicode)];
 
   let bottom: string[];
   let cursorWithinBottom: { row: number; col: number };
@@ -83,7 +94,7 @@ export function composeApp(
   }
 
   // ── Middle: transcript + live region, tail-clipped to remaining rows ────────
-  const middle = buildMiddle(term, out, unicode, opts, workspace);
+  const middle = isStartup ? [] : buildMiddle(term, out, unicode, opts, workspace);
   const reserved = top.length + 1 /*blank*/ + bottom.length + footer.length + 1 /*blank*/;
   const available = Math.max(1, opts.rows - reserved);
   const clippedMiddle = middle.length > available ? middle.slice(middle.length - available) : middle;
@@ -129,18 +140,8 @@ export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): 
   lines.push("  " + out.bold("Welcome to Morrow") + out.gray(" — private intelligence, built around you."));
   lines.push("");
 
-  // Adaptive guidance for blocked paths, most important first.
-  if (meta.providerConfigured === false) {
-    lines.push("  " + out.yellow(`${g.warn} No model provider is configured.`));
-    lines.push("  " + out.gray(`   Connect one with `) + out.cyan("morrow auth login") + out.gray(" (or ") + out.cyan("/model") + out.gray(" once connected)."));
-    lines.push("");
-  }
-  if (meta.gitRepo === false) {
-    lines.push("  " + out.gray(`${g.dot} Not a Git repo — change tracking, /diff, and /undo are unavailable. Run `) + out.cyan("git init") + out.gray(" to enable them."));
-    lines.push("");
-  }
-  if (meta.resumed) {
-    lines.push("  " + out.gray(`${g.dot} Resumed your last session. Type to continue, or `) + out.cyan("/new") + out.gray(" for a fresh one."));
+  for (const block of blockedPathGuidanceBlocks(meta, out, unicode)) {
+    for (const l of block) lines.push("  " + l);
     lines.push("");
   }
 
@@ -152,6 +153,36 @@ export function welcomeLines(meta: SessionMeta, out: Output, unicode: boolean): 
   lines.push("  " + out.gray("Try:  ") + suggestions.join(`  ${dot}  `));
   lines.push("  " + out.gray("Type your first message below to begin."));
   return lines;
+}
+
+/**
+ * Adaptive guidance for the common blocked paths (no provider, non-Git dir,
+ * resumed session), grouped into logical blocks so a caller can space each
+ * one consistently. Shared by `welcomeLines` (kept for direct callers) and
+ * the bordered startup panel, so the two never drift on wording.
+ */
+function blockedPathGuidanceBlocks(meta: SessionMeta, out: Output, unicode: boolean): string[][] {
+  const g = glyphs(unicode);
+  const blocks: string[][] = [];
+  if (meta.providerConfigured === false) {
+    blocks.push([
+      out.yellow(`${g.warn} No model provider is configured.`),
+      out.gray(`   Connect one with `) + out.cyan("morrow auth login") + out.gray(" (or ") + out.cyan("/model") + out.gray(" once connected)."),
+    ]);
+  }
+  if (meta.gitRepo === false) {
+    blocks.push([out.gray(`${g.dot} Not a Git repo — change tracking, /diff, and /undo are unavailable. Run `) + out.cyan("git init") + out.gray(" to enable them.")]);
+  }
+  if (meta.resumed) {
+    blocks.push([out.gray(`${g.dot} Resumed your last session. Type to continue, or `) + out.cyan("/new") + out.gray(" for a fresh one.")]);
+  }
+  return blocks;
+}
+
+/** True only before any conversation exists and nothing is running — the one
+ *  moment the bordered startup panel replaces the header + welcome text. */
+function isStartupState(term: TerminalState): boolean {
+  return Boolean(term.meta) && term.conversation.length === 0 && term.plan.length === 0 && term.status === "idle" && term.tools.length === 0;
 }
 
 /** True for assistant entries the default view renders in full. */
@@ -167,10 +198,8 @@ function showsAssistantEntry(term: TerminalState, entry: TerminalState["conversa
 function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
   const lines: string[] = [];
 
-  // First-run/empty state: no conversation yet and nothing streaming → welcome.
-  if (term.meta && term.conversation.length === 0 && term.plan.length === 0 && term.status === "idle" && term.tools.length === 0) {
-    return welcomeLines(term.meta, out, unicode);
-  }
+  // The true first-run/empty state is handled by the startup panel in
+  // `composeApp` (`isStartupState`), which never calls this function at all.
 
   const hasToolWork = term.tools.length > 0;
 
@@ -241,12 +270,33 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     }
   }
 
-  if (currentAssistantIndex >= 0) renderConversationEntry(term.conversation[currentAssistantIndex]!);
+  // A finished task leads with the structured result — the single source of
+  // truth for "what happened" — and only then, beneath it, a short prose
+  // answer if the model gave one. A long answer is wrapped, never
+  // ellipsis-clipped: the structured block already carries the outcome, so
+  // the prose underneath is supporting detail, not the thing being judged
+  // for truncation risk.
+  const isTerminalState =
+    term.status === "completed" || term.status === "failed" || term.status === "cancelled" ||
+    term.status === "interrupted" || term.status === "stalled" || term.status === "budget-reached";
+
+  if (currentAssistantIndex >= 0 && !isTerminalState) renderConversationEntry(term.conversation[currentAssistantIndex]!);
 
   // Completion card (compact; the full report stays behind /output).
-  if (term.status === "completed" || term.status === "failed" || term.status === "cancelled" || term.status === "interrupted" || term.status === "stalled" || term.status === "budget-reached") {
+  if (isTerminalState) {
     lines.push("");
-    for (const cl of completionCard(term, out, { unicode, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) })) lines.push(cl);
+    for (const cl of completionCard(term, out, { unicode, columns: opts.columns, ...(opts.elapsedMs !== undefined ? { elapsedMs: opts.elapsedMs } : {}) })) lines.push(cl);
+
+    const finalEntry = currentAssistantIndex >= 0 ? term.conversation[currentAssistantIndex]! : undefined;
+    const finalBody = finalEntry?.text.trim();
+    if (finalBody) {
+      lines.push("");
+      const width = Math.max(20, opts.columns - 4);
+      for (const raw of finalBody.split("\n")) {
+        if (!raw.trim()) { lines.push(""); continue; }
+        for (const l of wrapText(raw, width)) lines.push("  " + l);
+      }
+    }
   }
   return lines;
 }
@@ -293,6 +343,17 @@ function recentNotices(term: TerminalState, out: Output, unicode: boolean): stri
     const body = n.level === "error" ? out.red(n.text) : n.level === "warn" ? out.yellow(n.text) : out.gray(n.text);
     return `  ${mark} ${body}`;
   });
+}
+
+/**
+ * Ordinary text typed while a task runs, held for the next message. Rendered
+ * with its own glyph (↷) so it can never be mistaken for a tool-activity line
+ * (✓/✗/↻/●) or a slash-command notice (info/warn/error) — a third, distinct
+ * visual category for "what happens next," never silently discarded.
+ */
+function queuedRedirectLines(term: TerminalState, out: Output, unicode: boolean): string[] {
+  const g = glyphs(unicode);
+  return term.queuedMessages.map((text) => `  ${out.cyan(g.queued)} ${out.gray("Queued:")} ${text}`);
 }
 
 /**

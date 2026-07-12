@@ -181,21 +181,29 @@ describe("beta.29 recovery story", () => {
     expect(lines[1]).toBe("    Switched to full-file rewrite — succeeded");
   });
 
-  it("uses warning styling for open problems and red only when the task failed", () => {
+  it("a bare open problem (no strategy yet) reads as a failure; an active retry is red only when the task ultimately failed", () => {
     const open = build([{ type: "recovery.problem", tool: "run_command", message: "exit 1" }]);
     const colored = new Output({ json: false, quiet: false, color: true });
-    const warnLine = recoveryEntryLines(open.recoveries[0]!, colored, true, false)[0]!;
-    expect(warnLine).toContain("\x1b[33m"); // yellow
-    expect(warnLine).not.toContain("\x1b[31m");
-    const redLine = recoveryEntryLines(open.recoveries[0]!, colored, true, true)[0]!;
-    expect(redLine).toContain("\x1b[31m"); // red only on task failure
+    // No strategy has been chosen yet — this is a plain failure (✗/red), not
+    // yet an "active recovery" (that mark is reserved for `retrying`).
+    const failLine = recoveryEntryLines(open.recoveries[0]!, colored, true, false)[0]!;
+    expect(failLine).toContain("\x1b[31m"); // red
+    const retrying = build([
+      { type: "recovery.problem", tool: "run_command", message: "exit 1" },
+      { type: "recovery.strategy", tool: "run_command", strategy: "Retrying with a narrower pattern" },
+    ]);
+    const retryLine = recoveryEntryLines(retrying.recoveries[0]!, colored, true, false)[0]!;
+    expect(retryLine).toContain("\x1b[33m"); // yellow while actively retrying
+    expect(retryLine).not.toContain("\x1b[31m");
+    const redLine = recoveryEntryLines(retrying.recoveries[0]!, colored, true, true)[0]!;
+    expect(redLine).toContain("\x1b[31m"); // red once the task itself failed
   });
 
   describe("every recovery stage states failure/strategy/outcome explicitly", () => {
-    it("a newly reported problem (no strategy, no outcome yet) is a single line", () => {
+    it("a newly reported problem (no strategy, no outcome yet) reads as a failure", () => {
       const s = build([{ type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" }]);
       const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
-      expect(lines).toEqual(["  ! Recovering  Patch mismatch"]);
+      expect(lines).toEqual(["  x Failed  Patch mismatch"]);
     });
 
     it("a retry in progress with a known strategy states 'in progress'", () => {
@@ -205,7 +213,7 @@ describe("beta.29 recovery story", () => {
       ]);
       const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
       expect(lines).toEqual([
-        "  ! Recovering  Patch mismatch",
+        "  ~ Recovering  Patch mismatch",
         "    Switched to full-file rewrite — in progress",
       ]);
     });

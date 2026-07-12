@@ -132,8 +132,11 @@ async function runInteractiveSession(
   // rather than waiting for git to finish before either request is even sent.
   const providerStatusPromise = api.providerStatus().catch(() => null);
   const priorHistoryPromise = api.listMessages(conversation.id).catch(() => []);
+  // Real, project-scoped recent activity for the startup panel — never
+  // another project's, since it's already scoped by `project.id`.
+  const recentConversationsPromise = api.listConversations(project.id).catch(() => []);
   const git = gitSummary(project.workspacePath);
-  const [providerStatus, priorHistory] = await Promise.all([providerStatusPromise, priorHistoryPromise]);
+  const [providerStatus, priorHistory, recentConversations] = await Promise.all([providerStatusPromise, priorHistoryPromise, recentConversationsPromise]);
   const providerName = session.provider ?? providerStatus?.provider ?? "auto";
   const modelName = session.model ?? providerStatus?.model ?? "auto";
   const projectName = project.workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? project.workspacePath;
@@ -254,6 +257,11 @@ async function runInteractiveSession(
 
   const historyFile = join(ctx.paths.home, "history");
 
+  const recentActivity = [...recentConversations]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 4)
+    .map((c) => ({ label: c.title, at: new Date(c.updatedAt).getTime() }));
+
   // Real model data feeds the Ctrl+K palette (project/session search deferred).
   const models = await api.listModels().catch(() => []);
   const extraPaletteItems: PaletteItem[] = models
@@ -274,6 +282,7 @@ async function runInteractiveSession(
     history: loadHistory(historyFile),
     onHistory: (line) => appendHistory(historyFile, line),
     initialTaskId,
+    recentActivity,
   });
   try {
     await app.run();

@@ -406,10 +406,10 @@ const meta: SessionMeta = longMeta();
 const settings: SessionSettings = { mode: "agent", autoApprove: false, preset: "balanced", useMemory: true };
 
 describe("InteractiveSession: live paint fidelity", () => {
-  it("narrow terminal: the welcome banner and footer hint render without mid-word truncation", async () => {
+  it("narrow terminal: the startup panel wraps a long workspace path instead of truncating it", async () => {
     const io = new FakeTermIO();
     io.columns = 45;
-    io.rows = 30;
+    io.rows = 40;
     const stdin = fakeStdin();
     const gate = new EventGate();
     const app = new InteractiveSession({
@@ -420,29 +420,24 @@ describe("InteractiveSession: live paint fidelity", () => {
     await tick();
 
     const painted = io.all();
-    // The specific lines that were observed hard-truncated with no ellipsis
-    // and no wrap in the real-terminal audit of this branch.
-    for (const fragment of ["Welcome to Morrow", "private intelligence"]) {
-      if (painted.includes(fragment)) {
-        // Whatever the app decided to show, it must end cleanly: either the
-        // full remaining text is present, or it was truncated with "…".
-        const term = new MiniTerm(io.columns, 40);
-        term.write(painted);
-        const rows = Array.from({ length: 40 }, (_, i) => term.lineText(i));
-        const welcomeRow = rows.find((l) => l.includes("Welcome to Morrow"));
-        expect(welcomeRow).toBeDefined();
-        // Must not end mid-word: last visible char is either a letter+period,
-        // a real word-ending, or the ellipsis glyph — never a bare fragment
-        // cut with nothing to indicate truncation. We assert the strong,
-        // directly-testable form: if it was clipped, it ends in "…".
-        const full = "  Welcome to Morrow — private intelligence, built around you.";
-        if (welcomeRow !== full.trimEnd() && !full.startsWith(welcomeRow!)) {
-          // shouldn't happen: welcomeRow must be a clean prefix of full, or full itself
-        }
-        expect(full.startsWith(welcomeRow!.replace(/…$/, ""))).toBe(true);
-        if (welcomeRow!.length < full.trim().length) expect(welcomeRow!.endsWith("…")).toBe(true);
-      }
+    const term = new MiniTerm(io.columns, 60);
+    term.write(painted);
+    const rows = Array.from({ length: 60 }, (_, i) => term.lineText(i));
+
+    expect(rows.some((l) => l.includes("Welcome to Morrow"))).toBe(true);
+    // Every real terminal row is exactly the terminal's width or less; the
+    // panel border must never be clipped with an ellipsis to make it fit.
+    for (const row of rows) {
+      expect(row.length).toBeLessThanOrEqual(io.columns);
+      expect(row).not.toContain("…");
     }
+    // The workspace path is the longest, space-free fact — it MUST wrap
+    // across multiple rows rather than getting cut. Concatenating the panel
+    // rows' content (borders and padding stripped) recovers it byte-for-byte.
+    const dewhitespaced = rows
+      .map((l) => l.replace(/^[│|]\s?/, "").replace(/\s?[│|]$/, "").replace(/\s+/g, ""))
+      .join("");
+    expect(dewhitespaced).toContain(meta.workspacePath.replace(/\s+/g, ""));
 
     ctrlC(stdin);
     ctrlC(stdin);

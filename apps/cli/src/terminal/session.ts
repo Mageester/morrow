@@ -35,18 +35,13 @@ import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./missio
 import { buildTaskReport, type ReportKind } from "./output-report.js";
 import { resolveTaskReference } from "./task-reference.js";
 import { composePaintBody, positionAndClearBelow } from "./paint.js";
+import type { RecentActivityItem } from "./startup-view.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
 const HOME = "\x1b[H";
 const PASTE_ON = "\x1b[?2004h";
 const PASTE_OFF = "\x1b[?2004l";
-/** Shown once per busy stretch when a keystroke arrives while a task is
- *  still running (see the `busy` keypress branch). Must be dropped the
- *  moment the task stops being busy (paused, completed, failed, ...) —
- *  otherwise it lingers in the notices list beside a completion/paused
- *  card that says the opposite, the exact contradiction this fixes. */
-const STILL_WORKING_NOTICE = "Morrow is still working. Press Ctrl+C to stop it or wait before submitting.";
 
 export interface SendOptions {
   mode: AgentMode;
@@ -148,6 +143,8 @@ export interface SessionDeps {
   onHistory?: (line: string) => void;
   now?: () => number;
   maxFps?: number;
+  /** Real, project-scoped recent activity for the startup panel. */
+  recentActivity?: RecentActivityItem[];
 }
 
 export class InteractiveSession {
@@ -168,9 +165,6 @@ export class InteractiveSession {
   private lastTaskElapsedMs: number | null = null;
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
-  /** True once we've told the user this busy stretch that their keystroke isn't
-   *  being applied yet — so we notify once per stretch, not once per keystroke. */
-  private busyInputNotified = false;
   /** True only for the brief, atomic window where a one-time out-of-band
    *  scrollback write is in flight (see `emitScrollbackReport`). The normal
    *  per-frame paint loop must not run during that window — two subsystems
@@ -197,6 +191,7 @@ export class InteractiveSession {
   private readonly onResize = () => this.requestPaint(true);
   private readonly onExit = () => this.teardown();
   private readonly onKey = (str: string | undefined, key: readline.Key) => this.handleKey(str, key);
+  private readonly recentActivity: RecentActivityItem[];
 
   constructor(private readonly deps: SessionDeps) {
     this.meta = deps.meta;
@@ -205,6 +200,7 @@ export class InteractiveSession {
     this.input = initialInputState(deps.history ?? []);
     this.now = deps.now ?? Date.now;
     this.minIntervalMs = Math.max(1, Math.floor(1000 / (deps.maxFps ?? 30)));
+    this.recentActivity = deps.recentActivity ?? [];
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
     this.keyCtx = { commands: this.commands, paletteItems };
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
@@ -273,19 +269,14 @@ export class InteractiveSession {
     }
 
     if (this.busy) {
-      // Only cancellation and repaint are meaningful while a task runs.
+      // Cancellation and Mission Control always short-circuit. Everything
+      // else falls through to the ordinary editor below: the input stays
+      // fully live while a task runs — slash commands still execute
+      // immediately (`onSubmit` never routes them through `runTask`), and
+      // ordinary text is queued as a redirect rather than blocked or dropped.
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
       if (k.ctrl && k.name === "t") return void this.showMissionControl();
-      this.input = { ...this.input, confirmExit: false };
-      // Never silently drop input: tell the user once per busy stretch (not
-      // once per keystroke) that typing isn't being applied yet.
-      if (!this.busyInputNotified) {
-        this.busyInputNotified = true;
-        this.pushNotice("info", STILL_WORKING_NOTICE);
-        this.requestPaint(false);
-      }
-      return;
     }
 
     // Ctrl+T opens mission control.
@@ -331,10 +322,10 @@ export class InteractiveSession {
   }
 
   /** Insert a completed bracketed paste as one atomic, multi-line edit. Pastes
-   *  are ignored while a task streams, an approval is pending, or an overlay is
-   *  open — the same contexts where typed editing is suppressed. */
+   *  are ignored while an approval is pending or an overlay is open — the
+   *  input stays live while a task streams, same as typed editing. */
   private applyPaste(text: string): void {
-    if (this.busy || this.pendingApproval || this.input.overlay !== "none") return;
+    if (this.pendingApproval || this.input.overlay !== "none") return;
     const clean = normalizePaste(text);
     if (!clean) return;
     this.input = insertPaste(this.input, clean);
@@ -363,8 +354,18 @@ export class InteractiveSession {
     const line = value.trim();
     if (!line) return void this.requestPaint(false);
     this.deps.onHistory?.(line);
+    // Slash commands always execute immediately, whether or not a task is
+    // running — they are never turned into a task message.
     if (line.startsWith("/")) return void this.onSlash(line);
+    if (this.busy) return void this.queueRedirect(line);
     await this.runTask(line);
+  }
+
+  /** Ordinary text submitted while a task streams: held (never silently
+   *  dropped), shown distinctly from both the activity feed and slash-command
+   *  notices, and sent as the next message once the running task ends. */
+  private queueRedirect(line: string): void {
+    this.applyEvent({ type: "redirect.queued", text: line });
   }
 
   // ── Slash commands handled natively in the frame ───────────────────────────
@@ -429,6 +430,26 @@ export class InteractiveSession {
         if (this.currentTaskId) void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
         this.pushYoloNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
+      case "pause":
+        if (!this.busy || !this.currentTaskId) {
+          this.pushNotice("info", "No running task to pause.");
+        } else {
+          void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
+          this.pushNotice("info", "Pausing after the current step — resume with /continue.");
+        }
+        return void this.requestPaint(true);
+      case "stop": {
+        if (!this.busy || !this.currentTaskId) {
+          this.pushNotice("info", "No running task to stop.");
+          return void this.requestPaint(false);
+        }
+        const toolCount = this.term.tools.length;
+        const files = [...new Set(this.term.patches.filter((p) => p.applied).flatMap((p) => p.files))];
+        const preserved = [`${toolCount} tool call${toolCount === 1 ? "" : "s"}`, ...(files.length > 0 ? [`${files.length} changed file${files.length === 1 ? "" : "s"}`] : [])].join(" and ");
+        void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
+        this.pushNotice("warn", `Stopping — preserved ${preserved}.`);
+        return void this.requestPaint(true);
+      }
       case "continue":
         await this.continueTask();
         return;
@@ -1382,7 +1403,6 @@ export class InteractiveSession {
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
     this.streamStart = this.now();
-    this.busyInputNotified = false;
     this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
@@ -1419,9 +1439,19 @@ export class InteractiveSession {
       this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
-      this.clearStillWorkingNotice();
       this.requestPaint(true);
     }
+    await this.sendNextQueuedRedirect();
+  }
+
+  /** Send the oldest queued redirect (if any) as the next task, once the
+   *  session is still active — chains through the whole queue in order. */
+  private async sendNextQueuedRedirect(): Promise<void> {
+    if (!this.active) return;
+    const next = this.term.queuedMessages[0];
+    if (next === undefined) return;
+    this.applyEvent({ type: "redirect.sent" });
+    await this.runTask(next);
   }
 
   private async continueTask(): Promise<void> {
@@ -1431,7 +1461,6 @@ export class InteractiveSession {
     }
     this.busy = true;
     this.streamStart = this.now();
-    this.busyInputNotified = false;
     this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
@@ -1457,9 +1486,9 @@ export class InteractiveSession {
       this.lastTaskElapsedMs = this.now() - this.streamStart;
       this.currentTaskId = null;
       this.streamAbort = null;
-      this.clearStillWorkingNotice();
       this.requestPaint(true);
     }
+    await this.sendNextQueuedRedirect();
   }
 
   private async refreshPlan(taskId: string): Promise<void> {
@@ -1536,14 +1565,6 @@ export class InteractiveSession {
   private pushYoloNotice(level: "info" | "warn", text: string): void {
     this.term = { ...this.term, notices: this.term.notices.filter((n) => !n.text.startsWith("YOLO ") && !n.text.startsWith("Panic stop:")) };
     this.pushNotice(level, text);
-  }
-
-  /** Drop the transient "still working" notice once a task stops being
-   *  busy — called from every `runTask`/`continueTask` `finally`. */
-  private clearStillWorkingNotice(): void {
-    if (this.term.notices.some((n) => n.text === STILL_WORKING_NOTICE)) {
-      this.term = { ...this.term, notices: this.term.notices.filter((n) => n.text !== STILL_WORKING_NOTICE) };
-    }
   }
 
   /**
@@ -1637,13 +1658,14 @@ export class InteractiveSession {
     // While busy the elapsed timer feeds the footer; after a task it feeds
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
-    const frame = composeApp(this.term, this.input, out, unicode, this.keyCtx, {
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
       ...(elapsedMs !== null ? { elapsedMs } : {}),
       promptLabel,
       promptWidth: 2,
+      nowMs: this.now(),
     });
 
     const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "mission" ? this.missionFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
@@ -1775,12 +1797,13 @@ export class InteractiveSession {
 
   private composeBaseLines(): string[] {
     const { io, out, unicode } = this.deps;
-    return composeApp(this.term, this.input, out, unicode, this.keyCtx, {
+    return composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
       promptLabel: out.green(unicode ? "› " : "> "),
       promptWidth: 2,
+      nowMs: this.now(),
     }).lines.slice(0, -4); // drop separator + input + completion + footer
   }
 
