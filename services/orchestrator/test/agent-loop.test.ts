@@ -91,7 +91,7 @@ describe("agent loop detection", () => {
     expect(finalTask?.status).toBe("completed");
   });
 
-  it("automatically continues a productive task past its initial 18-turn budget", async () => {
+  it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
     seed();
     const turns: ProviderChunk[][] = [];
     for (let index = 0; index < 19; index++) {
@@ -107,7 +107,9 @@ describe("agent loop detection", () => {
     }
     turns.push([{ type: "text", text: "All 19 evidence files were inspected." }, { type: "done" }]);
 
-    await executeAgentChatTask({ db, taskId: "task-1", provider: new MockProvider({ chunks: turns }), maxTurns: 18 });
+    // Coding starts with six tool iterations. Its former 3× adaptive ceiling
+    // stopped a still-progressing real consumer task exactly at turn 18.
+    await executeAgentChatTask({ db, taskId: "task-1", provider: new MockProvider({ chunks: turns }), maxTurns: 6 });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;

@@ -7,7 +7,12 @@ import { stableStringify } from "./loop-detector.js";
  * calls alone never count as progress, which prevents a silent infinite loop.
  */
 export function adaptiveTurnCeiling(initialTurns: number): number {
-  return Math.min(36, Math.max(12, initialTurns * 3));
+  // Productive consumer tasks must have room to cross the historical
+  // 18-turn boundary even when their selected preset starts small (for
+  // example, the six-turn Coding default). The absolute ceiling remains
+  // conservative, while repeated/no-progress calls are still stopped by the
+  // loop and stall guards in the agent executor.
+  return Math.min(36, Math.max(24, initialTurns * 3));
 }
 
 export interface TurnProgress {

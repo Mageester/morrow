@@ -2378,7 +2378,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       }
       transitionAgentState("observing", { toolCount: currentToolCalls.length });
     } else {
-      // No more tool calls, we're done
+      // A normal final turn must supply a user-facing answer. Treating an
+      // empty provider turn as completion loses the mission outcome while
+      // falsely presenting successful tools as a verified task.
+      if (responseContent.length === responseLengthAtTurnStart) {
+        const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
+        transitionAgentState("interrupted", { reason: "missing_final_answer", message, turns: turn });
+        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_final_answer", message, turns: turn } });
+        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+        if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+        return;
+      }
+      // No more tool calls and a final answer was streamed, so we're done.
       completedWithoutMoreTools = true;
       break;
     }
