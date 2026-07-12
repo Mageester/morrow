@@ -137,6 +137,22 @@ export class OpenAiCompatibleProvider implements AiProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
+    const parseRecord = (line: string, eof = false): ProviderChunk[] => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === "data: [DONE]") return [];
+      if (!trimmed.startsWith("data: ")) return [];
+      let parsed: any;
+      try { parsed = JSON.parse(trimmed.slice(6)); }
+      catch {
+        return eof ? [{ type: "error", error: { type: "malformed_sse", kind: "provider", message: "Malformed trailing SSE record", retryable: false } }] : [];
+      }
+      const out: ProviderChunk[] = [];
+      if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
+      const delta = parsed.choices?.[0]?.delta;
+      if (delta?.content) out.push({ type: "text", text: delta.content });
+      if (delta?.tool_calls) out.push({ type: "tool_call", toolCalls: delta.tool_calls.map((tc: any) => ({ id: tc.id, index: tc.index, type: "function", function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } })) });
+      return out;
+    };
 
     try {
       while (true) {
@@ -147,49 +163,11 @@ export class OpenAiCompatibleProvider implements AiProvider {
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "data: [DONE]") continue;
-          if (!trimmed.startsWith("data: ")) continue;
-
-          let parsed: any;
-          try {
-            parsed = JSON.parse(trimmed.slice(6));
-          } catch {
-            continue;
-          }
-
-          if (parsed.usage) {
-            yield {
-              type: "done",
-              usage: {
-                promptTokens: parsed.usage.prompt_tokens ?? 0,
-                completionTokens: parsed.usage.completion_tokens ?? 0,
-                ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}),
-              },
-            };
-          }
-
-          const delta = parsed.choices?.[0]?.delta;
-          if (!delta) continue;
-          if (delta.content) {
-            yield { type: "text", text: delta.content };
-          }
-          if (delta.tool_calls) {
-            yield {
-              type: "tool_call",
-              toolCalls: delta.tool_calls.map((tc: any) => ({
-                id: tc.id,
-                index: tc.index,
-                type: "function",
-                function: {
-                  name: tc.function?.name || "",
-                  arguments: tc.function?.arguments || "",
-                },
-              })),
-            };
-          }
+          yield* parseRecord(line);
         }
       }
+      buffer += decoder.decode();
+      yield* parseRecord(buffer, true);
     } catch (e: any) {
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider stream timed out", retryable: true } };
