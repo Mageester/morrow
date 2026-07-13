@@ -815,7 +815,16 @@ export const MissionRequirementNodeSchema=z.object({
   // What kind of requirement this node is.
   category:RequirementCategorySchema,
   // Snippet of the source prompt that gave rise to this requirement, for audit.
+  // MUST be a verbatim substring of the contract's sourcePrompt, or empty when
+  // the requirement came from a structured input that never appeared in the raw
+  // prompt. It never fabricates an "excerpt" that did not occur in sourcePrompt.
   sourcePromptExcerpt:z.string().max(2000).default(""),
+  // Explicit structured-input locator/path when a requirement was derived from a
+  // structured contract field rather than the raw prompt (e.g.
+  // "contract.acceptanceCriteria[0]"). Preserves exactly which structured input
+  // produced this node so provenance is auditable even when the value is not a
+  // substring of the prompt. null when the node came straight from the prompt.
+  sourceLocator:z.string().max(500).nullable().default(null),
   // Provenance: who asserted this requirement.
   source:RequirementSourceSchema,
   // Confidence the kernel has in this requirement (1 = stated by the user).

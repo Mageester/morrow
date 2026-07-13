@@ -1,4 +1,4 @@
-import type { MissionRequirementNode, MissionStatus, ReopenCondition } from "@morrow/contracts";
+import type { MissionRequirementNode, MissionStatus, ReopenCondition, RequirementNodeStatus } from "@morrow/contracts";
 import { MISSION_TERMINAL_STATUSES } from "@morrow/contracts";
 
 /** The five explicit conditions under which a verified (frozen) node may reopen. */
@@ -9,6 +9,56 @@ export const REOPEN_CONDITIONS: readonly ReopenCondition[] = [
   "contract_changed",
   "explicit_invalidation",
 ];
+
+/**
+ * The single, authoritative RequirementNodeStatus transition table. Every
+ * requirement-status mutation is validated against this table BEFORE any
+ * special-case branch runs, so no handler can invent an illegal transition.
+ *
+ * Key invariants encoded here:
+ *  • pending → verified is forbidden (a node must be `active` before it can be
+ *    verified).
+ *  • A `verified` node may ONLY move to `pending` or `invalidated`, and never
+ *    directly to `active`. This forces a reopened node into a deliberate
+ *    non-active state first, and the service additionally requires a valid
+ *    invalidation condition, non-blank reason, timestamp, and durable evidence
+ *    before either of those verified→X transitions is allowed.
+ *  • Reopened work (`invalidated`) must pass back through the normal lifecycle
+ *    (it may go to `pending`/`active`), so it is never silently re-verified.
+ */
+export const REQUIREMENT_STATUS_TRANSITIONS: Record<RequirementNodeStatus, readonly RequirementNodeStatus[]> = {
+  pending: ["active", "blocked", "failed", "waived", "invalidated"],
+  active: ["verified", "failed", "blocked", "pending", "waived", "invalidated"],
+  blocked: ["pending", "active", "failed", "waived", "invalidated"],
+  failed: ["active", "pending", "blocked", "waived", "invalidated"],
+  // A frozen (verified) node can only leave verified through invalidation, and
+  // only into a non-active state. Never verified → active.
+  verified: ["pending", "invalidated"],
+  waived: ["pending", "invalidated"],
+  invalidated: ["pending", "active", "blocked", "failed", "waived"],
+};
+
+/** Raised when a requirement-status transition is not permitted by the table. */
+export class RequirementTransitionError extends Error {
+  constructor(
+    public readonly from: RequirementNodeStatus,
+    public readonly to: RequirementNodeStatus,
+  ) {
+    super(`Invalid requirement transition: ${from} -> ${to}`);
+    this.name = "RequirementTransitionError";
+  }
+}
+
+/** True when `from → to` is an explicitly permitted requirement transition. */
+export function canTransitionRequirement(from: RequirementNodeStatus, to: RequirementNodeStatus): boolean {
+  if (from === to) return true;
+  return REQUIREMENT_STATUS_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+/** Assert a requirement transition is permitted; throws RequirementTransitionError. */
+export function assertRequirementTransition(from: RequirementNodeStatus, to: RequirementNodeStatus): void {
+  if (!canTransitionRequirement(from, to)) throw new RequirementTransitionError(from, to);
+}
 
 /**
  * Select exactly ONE active requirement node. By the active-node invariant
@@ -114,4 +164,35 @@ export function canReopenNode(
 /** The contract is frozen once any requirement node has been verified. */
 export function computeFrozen(nodes: MissionRequirementNode[]): boolean {
   return nodes.some((n) => n.status === "verified");
+}
+
+/** Expected hex-digest lengths for each accepted content-hash algorithm. */
+const FILE_HASH_DIGEST_LENGTHS: Record<string, number> = {
+  md5: 32,
+  sha1: 40,
+  sha256: 64,
+  sha512: 128,
+  blake3: 64,
+  blake2b: 128,
+};
+
+/**
+ * A file hash used as verification evidence must be a validated, non-blank,
+ * structured representation: `<algorithm>:<hexdigest>` where the algorithm is
+ * known and the digest is the correct hex length for that algorithm. This
+ * rejects blank strings, whitespace, unprefixed junk, and truncated/garbage
+ * digests such as "sha256:abc" or "sha256:xyz", so an arbitrary string can
+ * never masquerade as a real content hash proving completion.
+ */
+export function isValidFileHash(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  const match = /^([a-z0-9]+):([0-9a-fA-F]+)$/.exec(trimmed);
+  if (!match) return false;
+  const algorithm = match[1]!.toLowerCase();
+  const digest = match[2]!;
+  const expected = FILE_HASH_DIGEST_LENGTHS[algorithm];
+  if (expected === undefined) return false;
+  return digest.length === expected;
 }

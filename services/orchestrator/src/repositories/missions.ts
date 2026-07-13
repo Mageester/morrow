@@ -15,6 +15,7 @@ export interface ContractRequirementNodeInput {
   statement: string;
   category: RequirementCategory;
   sourcePromptExcerpt: string;
+  sourceLocator?: string | null;
   source: RequirementSource;
   confidence: number;
   approved: boolean;
@@ -135,6 +136,7 @@ function mapRequirementNode(row: any): MissionRequirementNode {
     statement: row.statement,
     category: row.category as RequirementCategory,
     sourcePromptExcerpt: row.source_prompt_excerpt ?? "",
+    sourceLocator: row.source_locator ?? null,
     source: row.source as RequirementSource,
     confidence: row.confidence,
     approved: row.approved === 1,
@@ -456,12 +458,13 @@ export function missionsRepository(db: Database.Database) {
     // ── requirement nodes ──────────────────────────────────────────────────
     addRequirementNodes(missionId: string, nodes: ContractRequirementNodeInput[], now = new Date().toISOString()): void {
       const stmt = db.prepare(
-        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, category, source_prompt_excerpt, source, confidence, approved, authoritative, status, dependencies_json, evidence_refs_json, affected_files_json, verified_file_hashes_json, attempts, last_failure_json, completed_at, invalidation_history_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO mission_requirement_nodes (id, mission_id, ordering, statement, category, source_prompt_excerpt, source_locator, source, confidence, approved, authoritative, status, dependencies_json, evidence_refs_json, affected_files_json, verified_file_hashes_json, attempts, last_failure_json, completed_at, invalidation_history_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       db.transaction(() => {
         nodes.forEach((n) => stmt.run(
           n.id, missionId, n.order, n.statement, n.category, n.sourcePromptExcerpt ?? "",
+          n.sourceLocator ?? null,
           n.source, n.confidence, n.approved ? 1 : 0, n.authoritative ? 1 : 0, n.status ?? "pending",
           JSON.stringify(n.dependencies ?? []),
           JSON.stringify(n.evidenceRefs ?? []),
@@ -477,17 +480,21 @@ export function missionsRepository(db: Database.Database) {
     },
 
     updateRequirementNode(id: string, patch: Partial<{
-      statement: string; category: RequirementCategory; sourcePromptExcerpt: string; source: RequirementSource;
+      statement: string; category: RequirementCategory; sourcePromptExcerpt: string; sourceLocator: string | null; source: RequirementSource;
       confidence: number; approved: boolean; authoritative: boolean; status: RequirementNodeStatus;
       dependencies: string[]; evidenceRefs: string[]; affectedFiles: string[]; verifiedFileHashes: string[];
       attempts: number; lastFailure: string | null; completedAt: string | null;
-      invalidationHistory: InvalidationEntry[];
     }>, now = new Date().toISOString()): MissionRequirementNode | undefined {
+      // Note: invalidation_history_json is intentionally NOT settable here. It is
+      // append-only and may only be mutated through appendInvalidationEntry, which
+      // reads the latest persisted row inside a transaction. This prevents a
+      // read-copy-overwrite bypass that could silently drop history.
       const sets: string[] = ["updated_at = ?"];
       const params: any[] = [now];
       if (patch.statement !== undefined) { sets.push("statement = ?"); params.push(patch.statement); }
       if (patch.category !== undefined) { sets.push("category = ?"); params.push(patch.category); }
       if (patch.sourcePromptExcerpt !== undefined) { sets.push("source_prompt_excerpt = ?"); params.push(patch.sourcePromptExcerpt); }
+      if (patch.sourceLocator !== undefined) { sets.push("source_locator = ?"); params.push(patch.sourceLocator); }
       if (patch.source !== undefined) { sets.push("source = ?"); params.push(patch.source); }
       if (patch.confidence !== undefined) { sets.push("confidence = ?"); params.push(patch.confidence); }
       if (patch.approved !== undefined) { sets.push("approved = ?"); params.push(patch.approved ? 1 : 0); }
@@ -500,11 +507,40 @@ export function missionsRepository(db: Database.Database) {
       if (patch.attempts !== undefined) { sets.push("attempts = ?"); params.push(patch.attempts); }
       if (patch.lastFailure !== undefined) { sets.push("last_failure_json = ?"); params.push(patch.lastFailure); }
       if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
-      if (patch.invalidationHistory !== undefined) { sets.push("invalidation_history_json = ?"); params.push(JSON.stringify(patch.invalidationHistory)); }
       params.push(id);
       db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
       const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
       return row ? mapRequirementNode(row) : undefined;
+    },
+
+    /**
+     * Append one invalidation-history entry AND apply the reopen patch atomically.
+     * The current history is read from the latest persisted row inside a single
+     * transaction and the new entry is appended to it — never copied from a
+     * possibly-stale in-memory node and overwritten. History is strictly
+     * append-only: prior entries are always preserved.
+     */
+    appendInvalidationEntry(
+      id: string,
+      entry: InvalidationEntry,
+      patch: Partial<{ status: RequirementNodeStatus; verifiedFileHashes: string[]; completedAt: string | null }>,
+      now = new Date().toISOString(),
+    ): MissionRequirementNode | undefined {
+      return db.transaction(() => {
+        const existing = db.prepare("SELECT invalidation_history_json FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
+        if (!existing) return undefined;
+        const history: InvalidationEntry[] = JSON.parse(existing.invalidation_history_json ?? "[]");
+        history.push(entry);
+        const sets: string[] = ["updated_at = ?", "invalidation_history_json = ?"];
+        const params: any[] = [now, JSON.stringify(history)];
+        if (patch.status !== undefined) { sets.push("status = ?"); params.push(patch.status); }
+        if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(patch.verifiedFileHashes)); }
+        if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
+        params.push(id);
+        db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+        const row = db.prepare("SELECT * FROM mission_requirement_nodes WHERE id = ?").get(id) as any;
+        return row ? mapRequirementNode(row) : undefined;
+      })();
     },
 
     getRequirementNode(id: string): MissionRequirementNode | undefined {

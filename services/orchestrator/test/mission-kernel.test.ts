@@ -19,6 +19,7 @@ function node(over: Partial<MissionRequirementNode> = {}): MissionRequirementNod
     sourcePromptExcerpt: over.sourcePromptExcerpt ?? "do the thing",
     source: over.source ?? "user",
     confidence: over.confidence ?? 1,
+    sourceLocator: over.sourceLocator ?? null,
     approved: over.approved ?? true,
     authoritative: over.authoritative ?? true,
     status: over.status ?? "pending",

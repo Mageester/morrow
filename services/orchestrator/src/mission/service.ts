@@ -19,7 +19,7 @@ import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candid
 import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
 import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
-import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen, isDependencyBlocked, allAuthoritativeSatisfied } from "./kernel.js";
+import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen, isDependencyBlocked, allAuthoritativeSatisfied, assertRequirementTransition, isValidFileHash } from "./kernel.js";
 import { buildContractFromInput } from "./contract-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
@@ -81,9 +81,14 @@ export class MissionService {
       reviewCyclesUsed: 0,
     };
 
-    // Atomic kernel creation: mission row, contract, nodes, project pointer,
-    // cursor, and events are all persisted in a single transaction so a failure
-    // never leaves partial state.
+    // Atomic kernel creation: the mission row, contract, requirement nodes,
+    // initial events, project pointer, the initial cursor, AND the specialist
+    // plan are all persisted in a SINGLE transaction. If any step throws —
+    // including cursor persistence or the late specialists step — the whole
+    // transaction rolls back and no mission, contract, node, event, pointer, or
+    // cursor survives. The cursor is genuinely created inside the transaction
+    // (not via a post-commit advanceCursor call).
+    let mission!: Mission;
     this.repo.transaction(() => {
       this.repo.create({
         id, projectId, conversationId: input.conversationId ?? null,
@@ -106,12 +111,13 @@ export class MissionService {
       });
       this.repo.appendEvent(id, "mission.contract_built", `Contract built from verbatim objective (${contract.nodes.length} requirement node)`, { nodes: contract.nodes.length }, this.now());
       this.repo.setProjectActiveMission(projectId, id, this.now());
-    });
-    this.advanceCursor(id);
+      // Initial cursor is persisted inside the transaction.
+      this.advanceCursor(id);
 
-    const mission = this.get(id);
-    const roles = buildMissionSpecialists(mission);
-    this.repo.appendEvent(id, "mission.specialists_planned", `Planned ${roles.length} Cortex specialist roles`, { roles }, this.now());
+      mission = this.get(id);
+      const roles = buildMissionSpecialists(mission);
+      this.repo.appendEvent(id, "mission.specialists_planned", `Planned ${roles.length} Cortex specialist roles`, { roles }, this.now());
+    });
     return mission;
   }
 
@@ -134,8 +140,13 @@ export class MissionService {
     const current = this.get(missionId);
     if (current.status === to) return current;
     assertMissionTransition(current.status, to);
-    this.repo.setStatus(missionId, to, this.now());
-    this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${current.status} → ${to}`, { from: current.status, to }, this.now());
+    // The mission status update and its mission.status_changed event are a single
+    // atomic transaction: a failure to persist the event rolls back the status.
+    const now = this.now();
+    this.repo.transaction(() => {
+      this.repo.setStatus(missionId, to, now);
+      this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${current.status} → ${to}`, { from: current.status, to }, now);
+    });
     return this.get(missionId);
   }
 
@@ -466,28 +477,8 @@ export class MissionService {
       id: `review-${randomUUID()}`, missionId, ...parsed,
       reviewerProvider: provider, reviewerModel: model, createdAt: this.now(),
     };
-    this.repo.setReview(review);
-    const budget = { ...mission.budget, reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1 };
-    this.repo.updateBudget(missionId, budget, this.now());
+    this.applyReview(missionId, review);
 
-    // A `review`-kind criterion is proven by the reviewer itself: when the
-    // verdict is an approval, record the review as its evidence and verify it;
-    // a rejection fails it. Non-approvals leave it unverified (honest).
-    const approving = review.verdict === "approved" || review.verdict === "approved_with_risks";
-    for (const c of mission.criteria) {
-      if (c.verification.kind !== "review") continue;
-      const evidence = this.repo.addEvidence({
-        id: `ev-${randomUUID()}`, missionId, criterionIds: [c.id], type: "review",
-        summary: `Independent review: ${review.verdict.replace(/_/g, " ")}`,
-        command: null, exitCode: null, outputRef: null, artifactPath: null,
-        status: approving ? "passed" : review.verdict === "revisions_required" ? "failed" : "inconclusive",
-      });
-      this.repo.appendEvent(missionId, "mission.evidence_recorded", evidence.summary, { criterionId: c.id, status: evidence.status }, this.now());
-      if (approving) this.repo.updateCriterion(c.id, { state: "verified" }, this.now());
-      else if (review.verdict === "revisions_required") this.repo.updateCriterion(c.id, { state: "failed", failureReason: "Independent reviewer requested revisions" }, this.now());
-    }
-
-    this.repo.appendEvent(missionId, "mission.review_completed", `Review verdict: ${review.verdict}`, { verdict: review.verdict }, this.now());
     if (review.verdict === "revisions_required") {
       this.revisePlan(missionId, {
         trigger: "review_revisions",
@@ -500,11 +491,141 @@ export class MissionService {
     return review;
   }
 
+  /**
+   * ONE explicit MissionService-owned transaction that atomically applies an
+   * independent review to the ledger. It performs, as a single unit of work:
+   *  • review persistence (missions_reviews);
+   *  • review-cycle budget increment;
+   *  • durable, mission-scoped review evidence creation;
+   *  • review-kind criterion transitions (verified on approval, failed on
+   *    revisions_required) — and ONLY requirement-node transitions genuinely
+   *    supported by that evidence (the authoritative objective node on
+   *    approval; unrelated artifacts/acceptance-criteria/prohibitions are
+   *    deliberately NOT auto-verified merely because the overall review passed);
+   *  • the associated events (evidence recorded, criterion/requirement
+   *    transitions, review completed);
+   *  • contract freeze recomputation;
+   *  • cursor recomputation.
+   *
+   * Because everything is inside a single repository transaction, any failure
+   * (evidence, criterion, requirement node, event, freeze, or cursor) rolls the
+   * whole review application back — no half-applied review survives.
+   */
+  private applyReview(missionId: string, review: MissionReview): void {
+    const now = this.now();
+    this.repo.transaction(() => {
+      this.repo.setReview(review);
+      const mission = this.repo.get(missionId)!;
+      const budget = { ...mission.budget, reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1 };
+      this.repo.updateBudget(missionId, budget, now);
+
+      const approving = review.verdict === "approved" || review.verdict === "approved_with_risks";
+      const reviewCriterionIds = mission.criteria
+        .filter((c) => c.verification.kind === "review")
+        .map((c) => c.id);
+
+      if (!approving) {
+        // A non-approval leaves the ledger honest: review-kind criteria that the
+        // reviewer rejected are marked failed, but nothing is auto-verified and
+        // the authoritative objective node is left untouched. A durable review
+        // evidence record is still created — failed for revisions_required (the
+        // reviewer positively rejected the diff), inconclusive for
+        // insufficient_evidence (the reviewer could not reach a verdict) — so the
+        // non-approval itself is backed by real, mission-scoped provenance rather
+        // than only a prose event.
+        const evidenceStatus = review.verdict === "revisions_required" ? "failed" : "inconclusive";
+        const evidence = this.repo.addEvidence({
+          id: `ev-${randomUUID()}`, missionId, criterionIds: reviewCriterionIds, type: "review",
+          summary: `Independent review: ${review.verdict.replace(/_/g, " ")}`,
+          command: null, exitCode: null, outputRef: null, artifactPath: null,
+          status: evidenceStatus,
+        });
+        this.repo.appendEvent(missionId, "mission.evidence_recorded", evidence.summary, { status: evidenceStatus }, now);
+        if (review.verdict === "revisions_required") {
+          for (const c of mission.criteria) {
+            if (c.verification.kind !== "review") continue;
+            this.repo.updateCriterion(c.id, { state: "failed", failureReason: "Independent reviewer requested revisions" }, now);
+            this.repo.appendEvent(missionId, "mission.criterion_failed", `${c.description}: failed`, { criterionId: c.id }, now);
+          }
+        }
+        this.repo.appendEvent(missionId, "mission.review_completed", `Review verdict: ${review.verdict}`, { verdict: review.verdict }, now);
+        return;
+      }
+
+      // A single durable, passed review evidence record backs both the
+      // review-kind criteria and the objective node so provenance is real.
+      const evidence = this.repo.addEvidence({
+        id: `ev-${randomUUID()}`, missionId, criterionIds: reviewCriterionIds, type: "review",
+        summary: `Independent review: ${review.verdict.replace(/_/g, " ")}`,
+        command: null, exitCode: null, outputRef: null, artifactPath: null,
+        status: "passed",
+      });
+      this.repo.appendEvent(missionId, "mission.evidence_recorded", evidence.summary, { status: "passed" }, now);
+
+      for (const c of mission.criteria) {
+        if (c.verification.kind !== "review") continue;
+        this.repo.updateCriterion(c.id, { state: "verified" }, now);
+        this.repo.appendEvent(missionId, "mission.criterion_verified", `${c.description}: verified`, { criterionId: c.id }, now);
+      }
+
+      // The authoritative objective node is satisfied by the same durable passed
+      // review evidence. Advance it through the state machine (pending → active →
+      // verified) with a real evidence reference so the ledger stays truthful.
+      const objective = this.repo.listRequirementNodes(missionId)
+        .find((n) => n.category === "objective" && n.authoritative && n.status !== "verified" && n.status !== "waived");
+      if (objective) {
+        if (objective.status !== "active") {
+          this.updateRequirementStatus(missionId, objective.id, "active");
+        }
+        this.updateRequirementStatus(missionId, objective.id, "verified", { evidenceRefs: [evidence.id] });
+      }
+
+      this.repo.appendEvent(missionId, "mission.review_completed", `Review verdict: ${review.verdict}`, { verdict: review.verdict }, now);
+    });
+  }
+
+  /**
+   * Persist a review AND advance the ledger to match it, as a single atomic
+   * review-application transaction (see applyReview). This is the only public
+   * direct-review entry point and it delegates to that same transaction owner.
+   */
+  setReview(review: MissionReview): MissionReview {
+    this.applyReview(review.missionId, review);
+    return review;
+  }
+
   // ── grading / finalize ───────────────────────────────────────────────────
   /** Grade the mission from criteria + review and set the terminal status. */
   finalize(missionId: string, opts?: { humanInterventions?: number; tasksCompleted?: number; elapsedMs?: number | null }): Mission {
     const mission = this.get(missionId);
+    // A terminal mission is already finalized; re-finalizing would recompute a
+    // fresh grade/result that could disagree with the persisted terminal status
+    // (invariant: result/status/events/cursor must always agree). Idempotent no-op.
+    if (isTerminalMissionStatus(mission.status)) return mission;
+    const ledger = this.repo.listRequirementNodes(missionId);
     const status = gradeMission(mission.criteria, mission.finalReview?.verdict ?? null);
+
+    // ── Ledger gate (Gap 1) ─────────────────────────────────────────────────
+    // Finalizing is gated on the requirement ledger, not on the prose review
+    // alone. A "completed*" grade is only allowed when every authoritative
+    // requirement node is satisfied (verified or waived). If the grade claims
+    // success but the ledger shows an open authoritative requirement, the
+    // status is downgraded to partially_completed so the mission can never be
+    // recorded as done while real work remains. This is computed from the
+    // full, freshly-loaded ledger inside a single transaction below.
+    let gated = status;
+    let ledgerGate = false;
+    const authoritativeSatisfied = allAuthoritativeSatisfied(ledger);
+    const noAuthoritativeNodes = ledger.length === 0;
+    // Any "completed*" grade is only honoured when every authoritative
+    // requirement is satisfied. Otherwise the ledger gate downgrades it to
+    // partially_completed so the mission can never be recorded as done while
+    // real work remains.
+    if (status.startsWith("completed") && !authoritativeSatisfied && !noAuthoritativeNodes) {
+      gated = "partially_completed";
+      ledgerGate = true;
+    }
+
     const result = buildMissionResult(mission, {
       review: mission.finalReview,
       changedFiles: this.changedFilesFor(mission),
@@ -512,15 +633,30 @@ export class MissionService {
       tasksCompleted: opts?.tasksCompleted ?? 0,
       elapsedMs: opts?.elapsedMs ?? (mission.startedAt ? Date.parse(this.now()) - Date.parse(mission.startedAt) : null),
       spentUsd: mission.budget.spentUsd || null,
+      finalStatus: gated,
     });
-    this.repo.setResult(missionId, result, this.now());
-    if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, status)) {
-      this.transition(missionId, status);
-    }
-    this.repo.appendEvent(missionId, "mission.completed", result.summary, { status }, this.now());
-    // Recompute cursor after terminal transition so it truthfully exposes no
-    // executable actions for terminal missions while preserving history.
-    this.advanceCursor(missionId, { lastCompletedAction: "finalize" });
+
+    // The result, the terminal status change, both terminal events, AND the
+    // final cursor state commit or roll back together as one transaction. A
+    // ledger-gated downgrade can never be persisted without its matching
+    // completed event, cursor, and result, and vice-versa.
+    const now = this.now();
+    const finalStatus = gated;
+    this.repo.transaction(() => {
+      this.repo.setResult(missionId, result, now);
+      if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, finalStatus)) {
+        this.repo.setStatus(missionId, finalStatus, now);
+        this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${mission.status} → ${finalStatus}`, { from: mission.status, to: finalStatus }, now);
+      }
+      this.repo.appendEvent(
+        missionId, "mission.completed", result.summary,
+        { status: finalStatus, ledgerGated: ledgerGate, authoritativeSatisfied, authoritativeNodes: ledger.filter((n) => n.authoritative).length },
+        now,
+      );
+      // Cursor persisted inside the same transaction: it truthfully exposes no
+      // executable actions for terminal missions while preserving history.
+      this.advanceCursor(missionId, { lastCompletedAction: "finalize" });
+    });
 
     // Learning extraction runs last — after evidence and review — so only
     // ledger-backed conclusions become durable project memory. Extraction
@@ -596,8 +732,19 @@ export class MissionService {
   approveRequirement(missionId: string, nodeId: string): MissionRequirementNode {
     const node = this.repo.getRequirementNode(nodeId);
     if (!node || node.missionId !== missionId) throw new MissionError("Requirement node not found in mission", "not_found");
-    const updated = this.repo.updateRequirementNode(nodeId, { approved: true, authoritative: true }, this.now())!;
-    this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement approved: ${nodeId}`, { nodeId, approved: true }, this.now());
+    // Approving a node changes authoritative ledger meaning: a formerly
+    // non-authoritative (pending) node becomes an authoritative pending
+    // requirement, which can flip the mission out of a "ready to complete"
+    // state. The node update, its event, AND a cursor recompute are therefore a
+    // single atomic transaction — the cursor can never lag behind and keep
+    // exposing a stale mark_complete.
+    let updated!: MissionRequirementNode;
+    const now = this.now();
+    this.repo.transaction(() => {
+      updated = this.repo.updateRequirementNode(nodeId, { approved: true, authoritative: true }, now)!;
+      this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement approved: ${nodeId}`, { nodeId, approved: true }, now);
+      this.advanceCursor(missionId);
+    });
     return updated;
   }
 
@@ -680,6 +827,13 @@ export class MissionService {
     if (node.status === status) return node;
     const now = this.now();
 
+    // ── Centralized state machine: applied BEFORE every special-case branch ──
+    // A single authoritative transition table decides legality first, so no
+    // branch below can smuggle in an illegal transition (e.g. pending→verified
+    // or verified→active). Reopening a verified node is only ever to pending or
+    // invalidated, and always with an invalidation condition/reason/evidence.
+    assertRequirementTransition(node.status, status);
+
     // ── Promotion to active: enforce exactly-one-active + dependency check ──
     if (status === "active") {
       if (!node.approved) {
@@ -695,29 +849,35 @@ export class MissionService {
           "dependency_unmet",
         );
       }
-      // Deactivate any other active node within a single transaction so the DB
-      // never exposes two active nodes.
+      // The deactivation of any other active node, the activation itself, the
+      // event, the freeze recompute, and the cursor recompute are ONE atomic
+      // transaction so persistence can never expose two active nodes nor a
+      // cursor that disagrees with the ledger.
+      let updated!: MissionRequirementNode;
       this.repo.transaction(() => {
         for (const other of all) {
           if (other.id !== nodeId && other.status === "active") {
             this.repo.updateRequirementNode(other.id, { status: "pending" }, now);
           }
         }
-        this.repo.updateRequirementNode(nodeId, { status: "active" }, now);
+        updated = this.repo.updateRequirementNode(nodeId, { status: "active" }, now)!;
+        this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → active`, { nodeId, from: node.status, to: "active" }, now);
+        const nodes = this.repo.listRequirementNodes(missionId);
+        this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+        this.advanceCursor(missionId, { lastCompletedAction: "start_requirement" });
       });
-      this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → active`, { nodeId, from: node.status, to: "active" }, now);
-      const nodes = this.repo.listRequirementNodes(missionId);
-      this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
-      this.advanceCursor(missionId, { lastCompletedAction: "start_requirement" });
-      return this.repo.getRequirementNode(nodeId)!;
+      return updated;
     }
 
-    // ── Reopening a verified (frozen) node requires persisted evidence ──────
-    if (node.status === "verified" && status !== "verified") {
+    // ── Reopening a verified (frozen) node requires durable evidence ────────
+    // The transition table already guarantees `status` ∈ {pending, invalidated}
+    // here; we additionally require a valid invalidation condition, a non-blank
+    // reason, and a durable evidence reference belonging to this mission.
+    if (node.status === "verified") {
       const verdict = canReopenNode(node, opts.invalidationCondition);
       if (!verdict.allowed || !opts.invalidationCondition) {
         throw new MissionError(
-          `Verified requirement node ${nodeId} is frozen and cannot be reopened without persisted invalidation evidence (a condition and reason must be recorded)`,
+          `Verified requirement node ${nodeId} is frozen and cannot be reopened without persisted invalidation evidence (a condition, reason, and durable evidence must be recorded)`,
           "verified_node_reopen_requires_invalidation",
         );
       }
@@ -727,37 +887,44 @@ export class MissionService {
           "invalidation_reason_required",
         );
       }
+      if (!opts.invalidationEvidenceRef || opts.invalidationEvidenceRef.trim().length === 0) {
+        throw new MissionError(
+          `Reopening verified requirement ${nodeId} requires a durable invalidation evidence reference`,
+          "invalidation_evidence_required",
+        );
+      }
+      // The evidence must exist and belong to this mission. Its status is not
+      // constrained to "passed": a failed/inconclusive re-verification is itself
+      // valid, durable evidence that a reopen is warranted.
+      this.assertDurableEvidence(missionId, [opts.invalidationEvidenceRef], { requirePassed: false });
       const entry: InvalidationEntry = {
         condition: verdict.reason!,
         reason: opts.invalidationReason.trim(),
         invalidatedAt: now,
-        evidenceRef: opts.invalidationEvidenceRef ?? null,
+        evidenceRef: opts.invalidationEvidenceRef.trim(),
       };
-      const history = [...node.invalidationHistory, entry];
-      const updated = this.repo.updateRequirementNode(nodeId, {
-        status,
-        verifiedFileHashes: [],
-        completedAt: null,
-        invalidationHistory: history,
-      }, now)!;
-      this.repo.appendEvent(
-        missionId, "mission.requirement_reopened",
-        `Reopened verified requirement: ${node.statement.slice(0, 120)}`,
-        { nodeId, condition: verdict.reason, reason: entry.reason, evidenceRef: entry.evidenceRef }, now,
-      );
-      const nodes = this.repo.listRequirementNodes(missionId);
-      this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
-      this.advanceCursor(missionId, { lastCompletedAction: `reopen_requirement:${verdict.reason}` });
+      // Append history atomically from the LATEST persisted row (never a stale
+      // in-memory copy), together with the event, freeze recompute, and cursor.
+      let updated!: MissionRequirementNode;
+      this.repo.transaction(() => {
+        updated = this.repo.appendInvalidationEntry(
+          nodeId, entry,
+          { status, verifiedFileHashes: [], completedAt: null },
+          now,
+        )!;
+        this.repo.appendEvent(
+          missionId, "mission.requirement_reopened",
+          `Reopened verified requirement: ${node.statement.slice(0, 120)}`,
+          { nodeId, condition: verdict.reason, reason: entry.reason, evidenceRef: entry.evidenceRef }, now,
+        );
+        const nodes = this.repo.listRequirementNodes(missionId);
+        this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+        this.advanceCursor(missionId, { lastCompletedAction: `reopen_requirement:${verdict.reason}` });
+      });
       return updated;
     }
 
-    // ── Valid transition: require active → verified, and evidence ──────────
-    if (status === "verified" && node.status !== "active") {
-      throw new MissionError(
-        `Requirement ${nodeId} must be active before it can be verified (current status: ${node.status})`,
-        "requirement_not_active",
-      );
-    }
+    // ── Verification: require real, durable evidence ───────────────────────
     if (status === "verified") {
       const hashes = opts.fileHashes ?? (opts.fileHash ? [opts.fileHash] : []);
       const refs = opts.evidenceRefs ?? [];
@@ -767,9 +934,20 @@ export class MissionService {
           "verification_requires_evidence",
         );
       }
+      for (const hash of hashes) {
+        if (!isValidFileHash(hash)) {
+          throw new MissionError(
+            `Requirement ${nodeId} verification file hash is blank or malformed: ${JSON.stringify(hash)} (expected <algorithm>:<hexdigest>)`,
+            "verification_hash_malformed",
+          );
+        }
+      }
+      // Evidence references must exist, belong to this mission, and represent
+      // acceptable (passed) durable evidence — never an arbitrary string.
+      this.assertDurableEvidence(missionId, refs, { requirePassed: true });
     }
 
-    // ── Normal status transition (transactional) ──────────────────────────
+    // ── Normal status transition (fully atomic incl. event, freeze, cursor) ─
     let updated: MissionRequirementNode | undefined;
     this.repo.transaction(() => {
       const patch: Parameters<MissionsRepository["updateRequirementNode"]>[1] = { status };
@@ -789,9 +967,40 @@ export class MissionService {
       this.repo.appendEvent(missionId, "mission.requirement_status_changed", `Requirement ${nodeId}: ${node.status} → ${status}`, { nodeId, from: node.status, to: status }, now);
       const nodes = this.repo.listRequirementNodes(missionId);
       this.repo.setContractFrozen(missionId, computeFrozen(nodes), now);
+      this.advanceCursor(missionId, { lastCompletedAction: `status:${status}` });
     });
-    this.advanceCursor(missionId, { lastCompletedAction: `status:${status}` });
     return updated!;
+  }
+
+  /**
+   * Validate that every supplied evidence reference is a real, durable evidence
+   * record for THIS mission. Rejects blank ids, nonexistent evidence,
+   * cross-mission evidence, and (when requirePassed) evidence whose status is
+   * not `passed`. This is what stops an arbitrary string like "ev-1" from
+   * proving completion.
+   */
+  private assertDurableEvidence(missionId: string, refs: string[], opts: { requirePassed: boolean }): void {
+    for (const ref of refs) {
+      if (typeof ref !== "string" || ref.trim().length === 0) {
+        throw new MissionError("Evidence reference is blank", "evidence_ref_blank");
+      }
+      const evidence = this.repo.getEvidence(ref.trim());
+      if (!evidence) {
+        throw new MissionError(`Evidence reference ${JSON.stringify(ref)} does not exist`, "evidence_ref_not_found");
+      }
+      if (evidence.missionId !== missionId) {
+        throw new MissionError(
+          `Evidence reference ${JSON.stringify(ref)} belongs to a different mission (${evidence.missionId})`,
+          "evidence_ref_cross_mission",
+        );
+      }
+      if (opts.requirePassed && evidence.status !== "passed") {
+        throw new MissionError(
+          `Evidence reference ${JSON.stringify(ref)} is not acceptable durable evidence (status: ${evidence.status})`,
+          "evidence_ref_not_passed",
+        );
+      }
+    }
   }
 
   // ── budget ───────────────────────────────────────────────────────────────

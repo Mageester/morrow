@@ -7,7 +7,7 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { missionsRepository, type ContractRequirementNodeInput } from "../src/repositories/missions.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { MissionService } from "../src/mission/service.js";
-import type { ReopenCondition } from "@morrow/contracts";
+import type { ReopenCondition, MissionReview } from "@morrow/contracts";
 
 const roots: string[] = [];
 function tmp(prefix: string): string {
@@ -44,6 +44,22 @@ function reload(dbPath: string) {
 const FIVE_CONDITIONS: ReopenCondition[] = [
   "dependency_changed", "file_hash_changed", "later_verification_failed", "contract_changed", "explicit_invalidation",
 ];
+
+// A well-formed, 64-char hex SHA-256 digest (not a real hash — just valid shape).
+const GOOD_HASH = "sha256:" + "a".repeat(64);
+
+// Record a real, durable, mission-scoped evidence row and return its id. The
+// kernel requires verification/invalidation evidence to reference an existing
+// evidence record belonging to the same mission (status "passed" for
+// verification), so tests must create one rather than passing an arbitrary
+// string like "ev-1".
+function addEvidence(repo: ReturnType<typeof missionsRepository>, missionId: string, id: string, status: "passed" | "failed" | "inconclusive" = "passed"): string {
+  repo.addEvidence({
+    id, missionId, criterionIds: [], type: "command", summary: `evidence ${id}`,
+    command: "true", exitCode: 0, outputRef: null, artifactPath: null, status,
+  });
+  return id;
+}
 
 describe("R1/R2 — contract on create preserves verbatim prompt + provenance", () => {
   it("builds a contract from the verbatim objective with authoritative provenance", () => {
@@ -132,14 +148,15 @@ describe("R5 — contract, nodes, and cursor survive database reload", () => {
     const { dbPath, service, repo } = setup();
     const m = service.create("p1", { objective: "Persist me" });
     const req = service.listRequirementNodes(m.id)[0]!;
+    const ev = addEvidence(repo, m.id, "ev-persist");
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:deadbeef" });
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
     service.advanceCursor(m.id);
 
     const r2 = reload(dbPath);
     const contract = r2.service.getContract(m.id);
     expect(contract.sourcePrompt).toBe("Persist me");
-    expect(contract.requirements[0]!.verifiedFileHashes).toEqual(["sha256:deadbeef"]);
+    expect(contract.requirements[0]!.verifiedFileHashes).toEqual([GOOD_HASH]);
     const cursor = r2.repo.getCursor(m.id)!;
     expect(cursor.frozenNodeIds).toContain(req.id);
     expect(cursor.missionId).toBe(m.id);
@@ -204,7 +221,8 @@ describe("R10 — dependency-blocked nodes cannot become active", () => {
     }]);
     expect(() => service.updateRequirementStatus(m.id, "req-dep", "active")).toThrow(/dependenc/i);
     service.updateRequirementStatus(m.id, pre.id, "active");
-    service.updateRequirementStatus(m.id, pre.id, "verified", { fileHash: "sha256:abc" });
+    const evPre = addEvidence(repo, m.id, "ev-pre");
+    service.updateRequirementStatus(m.id, pre.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evPre] });
     const activated = service.updateRequirementStatus(m.id, "req-dep", "active");
     expect(activated.status).toBe("active");
   });
@@ -212,11 +230,12 @@ describe("R10 — dependency-blocked nodes cannot become active", () => {
 
 describe("R11/R12 — verified nodes need persisted invalidation evidence; all five conditions reopen", () => {
   it("rejects reopening a verified node without persisted evidence", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Freeze me" });
     const req = service.listRequirementNodes(m.id)[0]!;
+    const ev = addEvidence(repo, m.id, "ev-freeze");
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
     expect(() => service.updateRequirementStatus(m.id, req.id, "pending")).toThrow(/persisted invalidation evidence/i);
   });
 
@@ -226,15 +245,19 @@ describe("R11/R12 — verified nodes need persisted invalidation evidence; all f
     const req = service.listRequirementNodes(m.id)[0]!;
     for (const condition of FIVE_CONDITIONS) {
       service.updateRequirementStatus(m.id, req.id, "active");
-      service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+      const evV = addEvidence(repo, m.id, `ev-v-${condition}`);
+      service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
       const reason = `Reopened because ${condition}`;
+      const evR = addEvidence(repo, m.id, `ev-r-${condition}`, "failed");
       const reopened = service.updateRequirementStatus(m.id, req.id, "pending", {
         invalidationCondition: condition,
         invalidationReason: reason,
+        invalidationEvidenceRef: evR,
       });
       expect(reopened.status).toBe("pending");
       expect(reopened.invalidationHistory.some((e) => e.condition === condition)).toBe(true);
       expect(reopened.invalidationHistory.some((e) => e.reason === reason)).toBe(true);
+      expect(reopened.invalidationHistory.some((e) => e.evidenceRef === evR)).toBe(true);
       expect(reopened.verifiedFileHashes).toEqual([]);
       const ev = repo.listEvents(m.id).filter((e) => e.type === "mission.requirement_reopened").at(-1);
       expect(ev?.data.condition).toBe(condition);
@@ -254,7 +277,8 @@ describe("R13 — frozen and invalidated node ids survive restart", () => {
     }]);
     service.advanceCursor(m.id);
     service.updateRequirementStatus(m.id, n1.id, "active");
-    service.updateRequirementStatus(m.id, n1.id, "verified", { fileHash: "sha256:xyz" });
+    const evR13 = addEvidence(repo, m.id, "ev-r13");
+    service.updateRequirementStatus(m.id, n1.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evR13] });
 
     const r2 = reload(dbPath);
     const cursor = r2.repo.getCursor(m.id)!;
@@ -298,7 +322,8 @@ describe("R13/R16 — cursor persists after finalize (audit + event identity)", 
     service.approveCriteria(m.id);
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:deadbeef" });
+    const evR16 = addEvidence(repo, m.id, "ev-r16");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evR16] });
     service.finalize(m.id);
     const cursor = service.getCursor(m.id);
     expect(cursor.activeNodeId).toBeNull();
@@ -409,7 +434,7 @@ describe("F4 — cursor truthfulness", () => {
   });
 
   it("running mission with failed authoritative work does not expose mark_complete", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Fail mission" });
     service.approveCriteria(m.id);
     const req = service.listRequirementNodes(m.id)[0]!;
@@ -421,35 +446,38 @@ describe("F4 — cursor truthfulness", () => {
   });
 
   it("fully satisfied mission exposes mark_complete", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "All done" });
     service.approveCriteria(m.id);
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    const evF4a = addEvidence(repo, m.id, "ev-f4a");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evF4a] });
     const cursor = service.getCursor(m.id);
     expect(cursor.allowedNextActions).toContain("mark_complete");
   });
 
   it("terminal mission exposes no executable actions", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Terminal" });
     service.approveCriteria(m.id);
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    const evF4b = addEvidence(repo, m.id, "ev-f4b");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evF4b] });
     service.finalize(m.id);
     const cursor = service.getCursor(m.id);
     expect(cursor.allowedNextActions).toEqual([]);
   });
 
   it("finalize recomputes cursor with correct lastCompletedAction", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Finalize check" });
     service.approveCriteria(m.id);
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    const evF4c = addEvidence(repo, m.id, "ev-f4c");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evF4c] });
     service.finalize(m.id);
     const cursor = service.getCursor(m.id);
     expect(cursor.lastCompletedAction).toBe("finalize");
@@ -466,7 +494,7 @@ describe("F5 — valid status transitions", () => {
     const req = service.listRequirementNodes(m.id)[0]!;
     expect(req.status).toBe("pending");
     expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" }))
-      .toThrow(/must be active/i);
+      .toThrow(/Invalid requirement transition/i);
   });
 
   it("verification requires at least one file hash or evidence ref", () => {
@@ -479,21 +507,23 @@ describe("F5 — valid status transitions", () => {
   });
 
   it("verification succeeds with evidence refs only (no file hash)", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Evidence refs only" });
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    const v = service.updateRequirementStatus(m.id, req.id, "verified", { evidenceRefs: ["ev-1"] });
+    const ev = addEvidence(repo, m.id, "ev-1");
+    const v = service.updateRequirementStatus(m.id, req.id, "verified", { evidenceRefs: [ev] });
     expect(v.status).toBe("verified");
-    expect(v.evidenceRefs).toEqual(["ev-1"]);
+    expect(v.evidenceRefs).toEqual([ev]);
   });
 
   it("verification succeeds with file hash only (no evidence refs)", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "File hash only" });
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    const v = service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    const ev = addEvidence(repo, m.id, "ev-fh");
+    const v = service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
     expect(v.status).toBe("verified");
   });
 });
@@ -503,11 +533,12 @@ describe("F5 — valid status transitions", () => {
 // ════════════════════════════════════════════════════════════════════════════
 describe("F7 — durable invalidation history", () => {
   it("rejects reopening with blank invalidation reason", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Blank reason" });
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:abc" });
+    const evBr = addEvidence(repo, m.id, "ev-br");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evBr] });
     expect(() => service.updateRequirementStatus(m.id, req.id, "pending", {
       invalidationCondition: "file_hash_changed",
       invalidationReason: "   ",
@@ -515,24 +546,30 @@ describe("F7 — durable invalidation history", () => {
   });
 
   it("history accumulates across multiple reopen cycles", () => {
-    const { service } = setup();
+    const { service, repo } = setup();
     const m = service.create("p1", { objective: "Accumulate" });
     const req = service.listRequirementNodes(m.id)[0]!;
     // First verify.
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:a" });
+    const ev1 = addEvidence(repo, m.id, "ev-1");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev1] });
     // First reopen.
+    const re1 = addEvidence(repo, m.id, "ev-r1", "failed");
     service.updateRequirementStatus(m.id, req.id, "pending", {
       invalidationCondition: "file_hash_changed",
       invalidationReason: "First reopen",
+      invalidationEvidenceRef: re1,
     });
     // Second verify.
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:b" });
+    const ev2 = addEvidence(repo, m.id, "ev-2");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev2] });
     // Second reopen.
+    const re2 = addEvidence(repo, m.id, "ev-r2", "failed");
     service.updateRequirementStatus(m.id, req.id, "pending", {
       invalidationCondition: "contract_changed",
       invalidationReason: "Second reopen",
+      invalidationEvidenceRef: re2,
     });
     const node = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
     expect(node.invalidationHistory).toHaveLength(2);
@@ -543,15 +580,17 @@ describe("F7 — durable invalidation history", () => {
   });
 
   it("invalidation history timestamps persist after reload", () => {
-    const { service, dbPath } = setup();
+    const { service, dbPath, repo } = setup();
     const m = service.create("p1", { objective: "Timestamp persist" });
     const req = service.listRequirementNodes(m.id)[0]!;
+    const evV = addEvidence(repo, m.id, "ev-v");
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:x" });
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
+    const evR = addEvidence(repo, m.id, "ev-ref-1", "failed");
     service.updateRequirementStatus(m.id, req.id, "pending", {
       invalidationCondition: "later_verification_failed",
       invalidationReason: "Test reason",
-      invalidationEvidenceRef: "ev-ref-1",
+      invalidationEvidenceRef: evR,
     });
     const r2 = reload(dbPath);
     const node = r2.repo.getRequirementNode(req.id)!;
@@ -566,12 +605,14 @@ describe("F7 — durable invalidation history", () => {
     const { service, repo } = setup();
     const m = service.create("p1", { objective: "Event audit" });
     const req = service.listRequirementNodes(m.id)[0]!;
+    const evV = addEvidence(repo, m.id, "ev-v");
     service.updateRequirementStatus(m.id, req.id, "active");
-    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:y" });
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
+    const evR = addEvidence(repo, m.id, "ev-99", "failed");
     service.updateRequirementStatus(m.id, req.id, "pending", {
       invalidationCondition: "explicit_invalidation",
       invalidationReason: "Human override",
-      invalidationEvidenceRef: "ev-99",
+      invalidationEvidenceRef: evR,
     });
     const ev = repo.listEvents(m.id).filter((e) => e.type === "mission.requirement_reopened").at(-1)!;
     expect(ev.data.condition).toBe("explicit_invalidation");
@@ -581,10 +622,181 @@ describe("F7 — durable invalidation history", () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// F6 — ledger-gated finalization (completion cannot be declared while an
+//      authoritative requirement remains open)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F6 — ledger-gated finalization", () => {
+  function approvedReview(missionId: string): MissionReview {
+    // approved_with_risks grades as completed_with_reservations even when no
+    // criterion has been explicitly verified, which isolates the ledger gate.
+    return {
+      id: `review-${missionId}`, missionId, verdict: "approved_with_risks",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [],
+      missingVerification: [], concerns: [], recommendedStatus: "completed",
+      summary: "approved with risks", reviewerProvider: "test", reviewerModel: "test",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  it("downgrades a 'completed' grade to partially_completed when an authoritative requirement is still pending", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Ledger gate" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "Independent reviewer verdict" });
+    // An explicit authoritative requirement that is left unsatisfied.
+    repo.addRequirementNodes(m.id, [{
+      id: "req-open", order: 1, statement: "Deliver the report", category: "hard_requirement",
+      sourcePromptExcerpt: "Ledger gate", source: "user", confidence: 1, approved: true, authoritative: true,
+    }]);
+    service.setReview(approvedReview(m.id)); // verifies the objective node, NOT req-open
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("partially_completed");
+    const completed = repo.listEvents(m.id).find((e) => e.type === "mission.completed")!;
+    expect(completed.data.ledgerGated).toBe(true);
+    expect(completed.data.authoritativeSatisfied).toBe(false);
+  });
+
+  it("allows completion when every authoritative requirement is satisfied", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Ledger ok" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "Independent reviewer verdict" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-gate");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    service.setReview(approvedReview(m.id)); // verifies the objective node too
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("completed_with_reservations");
+    const completed = repo.listEvents(m.id).find((e) => e.type === "mission.completed")!;
+    expect(completed.data.ledgerGated).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// F9 — atomic creation & atomic status transitions (no partial persistence)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F9 — atomic creation & transitions (fault injection)", () => {
+  it("cursor write throws during create → no mission/contract/nodes/events/pointer/cursor survives", () => {
+    const { dbPath, service, repo } = setup();
+    // Capture the would-be mission id, then fault-inject the cursor write to
+    // fail inside the creation transaction.
+    let createdId: string | undefined;
+    const origCreate = repo.create.bind(repo);
+    repo.create = ((input: Parameters<typeof repo.create>[0], now?: string) => { createdId = input.id; return origCreate(input, now); }) as typeof repo.create;
+    repo.upsertCursor = () => { throw new Error("injected cursor failure"); };
+    expect(() => service.create("p1", { objective: "Atomic create" })).toThrow(/injected cursor failure/);
+    // Reopen from the same file: the entire transaction must have rolled back.
+    const r2 = reload(dbPath);
+    expect(r2.repo.get(createdId!)).toBeUndefined();
+    expect(r2.repo.getCursor(createdId!)).toBeUndefined();
+  });
+
+  it("event append throws during mission transition → status and event both roll back", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Atomic transition" });
+    repo.appendEvent = () => { throw new Error("injected event failure"); };
+    expect(() => service.approveCriteria(m.id)).toThrow(/injected event failure/);
+    // Neither the status change nor the event may survive.
+    expect(repo.get(m.id)!.status).toBe("draft");
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.status_changed")).toBe(false);
+  });
+
+  it("event/freeze/cursor write throws during requirement verify → node stays pending, no event", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Atomic req" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-atomic");
+    repo.appendEvent = () => { throw new Error("injected event failure"); };
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] }))
+      .toThrow(/injected event failure/);
+    const after = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
+    expect(after.status).toBe("active"); // verification rolled back
+    expect(after.verifiedFileHashes).toEqual([]);
+    expect(after.completedAt).toBeNull();
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.requirement_status_changed" && e.data.to === "verified")).toBe(false);
+  });
+
+  it("reopen failure preserves the verified node and its complete prior history", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Atomic reopen" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const evV = addEvidence(repo, m.id, "ev-rv");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
+    // Fault-inject the history append so the reopen transaction aborts.
+    repo.appendInvalidationEntry = () => { throw new Error("injected reopen failure"); };
+    const evR = addEvidence(repo, m.id, "ev-rr", "failed");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "pending", {
+      invalidationCondition: "file_hash_changed", invalidationReason: "drift", invalidationEvidenceRef: evR,
+    })).toThrow(/injected reopen failure/);
+    const after = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
+    expect(after.status).toBe("verified"); // reopen rolled back
+    expect(after.invalidationHistory).toHaveLength(0);
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.requirement_reopened")).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// F10 — durable, mission-scoped verification evidence (no arbitrary strings)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F10 — durable verification evidence", () => {
+  it("rejects a blank/whitespace evidence reference", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Blank evidence" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { evidenceRefs: ["  "] }))
+      .toThrow(/blank/i);
+  });
+
+  it("rejects a reference to nonexistent evidence", () => {
+    const { service } = setup();
+    const m = service.create("p1", { objective: "Ghost evidence" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { evidenceRefs: ["ev-does-not-exist"] }))
+      .toThrow(/does not exist/i);
+  });
+
+  it("rejects a reference to evidence belonging to a different mission", () => {
+    const { service, repo } = setup();
+    const mA = service.create("p1", { objective: "Mission A evidence" });
+    const mB = service.create("p1", { objective: "Mission B evidence" });
+    const cross = addEvidence(repo, mA.id, "ev-cross");
+    const reqB = service.listRequirementNodes(mB.id)[0]!;
+    service.updateRequirementStatus(mB.id, reqB.id, "active");
+    expect(() => service.updateRequirementStatus(mB.id, reqB.id, "verified", { evidenceRefs: [cross] }))
+      .toThrow(/different mission/i);
+  });
+
+  it("rejects a malformed file hash", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Bad hash" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-badhash");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: "sha256:xyz", evidenceRefs: [ev] }))
+      .toThrow(/malformed/i);
+  });
+
+  it("rejects evidence that is not in a passed state", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Failed evidence" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const failed = addEvidence(repo, m.id, "ev-failed", "failed");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { evidenceRefs: [failed] }))
+      .toThrow(/not acceptable/i);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // F8 — accurate provenance for structured sub-nodes
 // ════════════════════════════════════════════════════════════════════════════
 describe("F8 — accurate provenance for structured sub-nodes", () => {
-  it("each structured node gets its own statement as sourcePromptExcerpt, not the full objective", () => {
+  it("structured values absent from the prompt expose empty excerpt + structured locator", () => {
     const { service } = setup();
     const m = service.create("p1", {
       objective: "Build a retry queue",
@@ -602,11 +814,690 @@ describe("F8 — accurate provenance for structured sub-nodes", () => {
     const prohibitionNode = nodes.find((n) => n.category === "prohibited_action")!;
     const objectiveNode = nodes.find((n) => n.category === "objective")!;
 
-    // Objective node: excerpt matches the objective.
+    // Raw-prompt objective value: excerpt is an exact substring of the prompt,
+    // and there is no structured locator.
     expect(objectiveNode.sourcePromptExcerpt).toBe("Build a retry queue");
-    // Structured sub-nodes: excerpt is the specific statement, not the objective.
+    expect(objectiveNode.sourceLocator).toBeNull();
+
+    // Structured-only values that do NOT occur in the raw prompt: the excerpt is
+    // empty (never fabricated to equal the statement), and provenance is carried
+    // by the structured locator instead.
+    expect(artifactNode.sourcePromptExcerpt).toBe("");
+    expect(artifactNode.sourceLocator).toBe("contract.expectedArtifacts[0]");
+    expect(criterionNode.sourcePromptExcerpt).toBe("");
+    expect(criterionNode.sourceLocator).toBe("contract.acceptanceCriteria[0]");
+    expect(prohibitionNode.sourcePromptExcerpt).toBe("");
+    expect(prohibitionNode.sourceLocator).toBe("contract.prohibitions[0]");
+  });
+
+  it("conflicting contract.objective records the structured locator, not the raw prompt", () => {
+    const { service } = setup();
+    const m = service.create("p1", {
+      objective: "Ship the thing",
+      contract: {
+        objective: "Implement the retry queue module",
+        expectedArtifacts: [],
+        acceptanceCriteria: [],
+        verificationCommands: [],
+        requiredGitResult: null,
+        prohibitions: [],
+      },
+    });
+    const contract = service.getContract(m.id);
+    const objectiveNode = service.listRequirementNodes(m.id).find((n) => n.category === "objective")!;
+    // The conflict rule: the structured objective value is the node statement,
+    // but because it does NOT occur verbatim in the raw source prompt the
+    // excerpt is EMPTY and the exact structured path is the locator. Raw-prompt
+    // text is never smuggled into the excerpt.
+    expect(contract.objective).toBe("Implement the retry queue module");
+    expect(objectiveNode.statement).toBe("Implement the retry queue module");
+    expect(objectiveNode.sourcePromptExcerpt).toBe("");
+    expect(objectiveNode.sourceLocator).toBe("contract.objective");
+  });
+
+  it("a structured value that genuinely occurs in the prompt is excerpted", () => {
+    const { service } = setup();
+    const m = service.create("p1", {
+      objective: "Add retry-queue.ts and meet the drains within 5s requirement",
+      contract: {
+        expectedArtifacts: ["retry-queue.ts"],
+        acceptanceCriteria: ["drains within 5s"],
+        verificationCommands: [],
+        requiredGitResult: null,
+        prohibitions: [],
+      },
+    });
+    const nodes = service.listRequirementNodes(m.id);
+    const artifactNode = nodes.find((n) => n.category === "expected_artifact")!;
+    const criterionNode = nodes.find((n) => n.category === "acceptance_criterion")!;
+    // These values DO appear verbatim in the source prompt, so they are excerpted
+    // AND the locator is null (the prompt is the authority, not the structured path).
     expect(artifactNode.sourcePromptExcerpt).toBe("retry-queue.ts");
+    expect(artifactNode.sourceLocator).toBeNull();
     expect(criterionNode.sourcePromptExcerpt).toBe("drains within 5s");
-    expect(prohibitionNode.sourcePromptExcerpt).toBe("no force-push");
+    expect(criterionNode.sourceLocator).toBeNull();
+  });
+
+  it("duplicate structured values receive distinct locators", () => {
+    const { service } = setup();
+    const m = service.create("p1", {
+      objective: "Make two reports",
+      contract: {
+        expectedArtifacts: ["report.ts", "report.ts"],
+        acceptanceCriteria: [],
+        verificationCommands: [],
+        requiredGitResult: null,
+        prohibitions: [],
+      },
+    });
+    const artifacts = service.listRequirementNodes(m.id).filter((n) => n.category === "expected_artifact");
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts[0]!.sourceLocator).toBe("contract.expectedArtifacts[0]");
+    expect(artifacts[1]!.sourceLocator).toBe("contract.expectedArtifacts[1]");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// F11 — review application is ONE atomic service transaction (invariant 2)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F11 — review application is one atomic transaction", () => {
+  function approvedReview(missionId: string): MissionReview {
+    return {
+      id: `review-${missionId}-${Math.random().toString(36).slice(2)}`, missionId, verdict: "approved",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [],
+      concerns: [], recommendedStatus: "completed", summary: "approved", reviewerProvider: "test", reviewerModel: "test",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function prepareReviewable(repo: ReturnType<typeof missionsRepository>, service: MissionService) {
+    const m = service.create("p1", { objective: "Reviewable mission" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "Independent reviewer verdict" });
+    return m;
+  }
+
+  // After any single failure inside the applyReview transaction, NOTHING about
+  // the review may survive: review row, budget increment, evidence, criterion
+  // verification, objective-node verification, the completed event, freeze, and
+  // cursor must all roll back together.
+  function expectReviewRolledBack(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, faultMethod: keyof ReturnType<typeof missionsRepository>): void {
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    const before = {
+      status: objective.status,
+      reviewCycles: repo.get(m.id)!.budget.reviewCyclesUsed,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    const orig = (repo as any)[faultMethod];
+    (repo as any)[faultMethod] = () => { throw new Error(`injected ${String(faultMethod)} failure`); };
+    expect(() => service.setReview(approvedReview(m.id))).toThrow(/injected.*failure/);
+    // Whole application rolled back:
+    expect(repo.get(m.id)!.finalReview).toBeNull();
+    expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
+    expect(repo.listEvidence(m.id)).toHaveLength(0);
+    const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
+    expect(obj.status).toBe(before.status); // objective node never verified
+    expect(obj.verifiedFileHashes).toEqual([]);
+    expect(obj.evidenceRefs).toEqual([]);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    (repo as any)[faultMethod] = orig;
+  }
+
+  it("review persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "setReview");
+  });
+
+  it("budget persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "updateBudget");
+  });
+
+  it("evidence persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "addEvidence");
+  });
+
+  it("criterion persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "updateCriterion");
+  });
+
+  it("requirement-node persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "updateRequirementNode");
+  });
+
+  it("event persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "appendEvent");
+  });
+
+  it("contract-freeze persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "setContractFrozen");
+  });
+
+  it("cursor persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewRolledBack(repo, service, m, "upsertCursor");
+  });
+
+  it("a non-approval does not auto-verify the objective node or unrelated requirements", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Revisions required" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    const review: MissionReview = { ...approvedReview(m.id), verdict: "revisions_required" };
+    service.setReview(review);
+    // Review-kind criterion is failed (honest), objective node is untouched.
+    const reviewKind = repo.get(m.id)!.criteria.find((c) => c.verification.kind === "review")!;
+    expect(reviewKind.state).toBe("failed");
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    expect(objective.status).toBe("pending");
+    // revisions_required is still backed by durable, mission-scoped evidence
+    // recording the reviewer's rejection — never only a prose event.
+    const evidence = repo.listEvidence(m.id).find((e) => e.type === "review")!;
+    expect(evidence).toBeDefined();
+    expect(evidence.status).toBe("failed");
+    expect(evidence.missionId).toBe(m.id);
+  });
+
+  it("insufficient_evidence creates inconclusive durable evidence and leaves the ledger untouched", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Insufficient evidence" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    const review: MissionReview = { ...approvedReview(m.id), verdict: "insufficient_evidence" };
+    service.setReview(review);
+    const evidence = repo.listEvidence(m.id).find((e) => e.type === "review")!;
+    expect(evidence).toBeDefined();
+    expect(evidence.status).toBe("inconclusive");
+    expect(evidence.missionId).toBe(m.id);
+    // insufficient_evidence does not positively fail the reviewer criterion —
+    // it simply proves nothing — and never touches the objective node.
+    const reviewKind = repo.get(m.id)!.criteria.find((c) => c.verification.kind === "review")!;
+    expect(reviewKind.state).not.toBe("verified");
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    expect(objective.status).toBe("pending");
+    expect(repo.get(m.id)!.finalReview?.verdict).toBe("insufficient_evidence");
+  });
+
+  it("insufficient_evidence: evidence persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    const before = {
+      status: objective.status,
+      reviewCycles: repo.get(m.id)!.budget.reviewCyclesUsed,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+    };
+    repo.addEvidence = () => { throw new Error("injected addEvidence failure"); };
+    const review: MissionReview = { ...approvedReview(m.id), verdict: "insufficient_evidence" };
+    expect(() => service.setReview(review)).toThrow(/injected addEvidence failure/);
+    expect(repo.get(m.id)!.finalReview).toBeNull();
+    expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
+    expect(repo.listEvidence(m.id)).toHaveLength(0);
+    const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
+    expect(obj.status).toBe(before.status);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+  });
+
+  it("approved_with_risks: evidence persistence failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    const review: MissionReview = { ...approvedReview(m.id), verdict: "approved_with_risks" };
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    const before = {
+      status: objective.status,
+      reviewCycles: repo.get(m.id)!.budget.reviewCyclesUsed,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    repo.addEvidence = () => { throw new Error("injected addEvidence failure"); };
+    expect(() => service.setReview(review)).toThrow(/injected addEvidence failure/);
+    expect(repo.get(m.id)!.finalReview).toBeNull();
+    expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
+    expect(repo.listEvidence(m.id)).toHaveLength(0);
+    const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
+    expect(obj.status).toBe(before.status);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+  });
+
+  it("approved_with_risks approves and verifies the objective node with passed evidence", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    const review: MissionReview = { ...approvedReview(m.id), verdict: "approved_with_risks" };
+    service.setReview(review);
+    const evidence = repo.listEvidence(m.id).find((e) => e.type === "review")!;
+    expect(evidence.status).toBe("passed");
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    expect(objective.status).toBe("verified");
+    expect(objective.evidenceRefs).toContain(evidence.id);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// F12 — finalization is fully atomic (result + status + events + cursor)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F12 — finalization is fully atomic and internally consistent", () => {
+  function approvedReview(missionId: string): MissionReview {
+    return {
+      id: `review-${missionId}-${Math.random().toString(36).slice(2)}`, missionId, verdict: "approved",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [],
+      concerns: [], recommendedStatus: "completed", summary: "approved", reviewerProvider: "test", reviewerModel: "test",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function verifyObjective(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }): void {
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, `ev-fin-${m.id}`);
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+  }
+
+  it("successful completed finalization commits result, status, events, and cursor together", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Complete me" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    // A concrete criterion the independent review approves so the grade is full.
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    service.setReview(approvedReview(m.id));
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("completed");
+    expect(repo.get(m.id)!.status).toBe("completed"); // persisted status agrees
+    const result = repo.get(m.id)!.result!;
+    expect(result.status).toBe("completed"); // result matches persisted status
+    const statusEvent = repo.listEvents(m.id).filter((e) => e.type === "mission.status_changed").at(-1)!;
+    expect(statusEvent.data.to).toBe("completed"); // status event target agrees
+    const completed = repo.listEvents(m.id).find((e) => e.type === "mission.completed")!;
+    expect(completed.data.status).toBe("completed"); // completed-event status agrees
+    const cursor = service.getCursor(m.id);
+    expect(cursor.allowedNextActions).toEqual([]); // terminal cursor, same final status
+    expect(cursor.lastCompletedAction).toBe("finalize");
+  });
+
+  it("ledger-gated finalization records partially_completed consistently", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Gated" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    repo.addRequirementNodes(m.id, [{
+      id: "req-open", order: 1, statement: "Deliver the report", category: "hard_requirement",
+      sourcePromptExcerpt: "Gated", source: "user", confidence: 1, approved: true, authoritative: true,
+    }]);
+    service.setReview({
+      id: `review-${m.id}`, missionId: m.id, verdict: "approved_with_risks",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [],
+      concerns: [], recommendedStatus: "completed", summary: "approved with risks",
+      reviewerProvider: "test", reviewerModel: "test", createdAt: new Date().toISOString(),
+    });
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("partially_completed");
+    expect(repo.get(m.id)!.result!.status).toBe("partially_completed");
+    expect(repo.listEvents(m.id).find((e) => e.type === "mission.completed")!.data.status).toBe("partially_completed");
+    expect(service.getCursor(m.id).allowedNextActions).toEqual([]);
+  });
+
+  function expectFinalizeRolledBack(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, faultMethod: keyof ReturnType<typeof missionsRepository>): void {
+    const before = {
+      status: repo.get(m.id)!.status,
+      result: repo.get(m.id)!.result,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    const orig = (repo as any)[faultMethod];
+    (repo as any)[faultMethod] = () => { throw new Error(`injected ${String(faultMethod)} failure`); };
+    expect(() => service.finalize(m.id)).toThrow(/injected.*failure/);
+    // Nothing partial persists:
+    const after = repo.get(m.id)!;
+    expect(after.status).toBe(before.status);
+    expect(after.result).toBe(before.result);
+    expect(after.completedAt).toBeNull();
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    (repo as any)[faultMethod] = orig;
+  }
+
+  // finalize() appends two distinct event types (mission.status_changed,
+  // mission.completed). Faulting them by matching the actual `type` argument
+  // proves rollback at each named stage separately, instead of one ambiguous
+  // "event failure" that only ever hits whichever event is appended first.
+  function expectFinalizeEventRolledBack(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, eventType: string): void {
+    const before = {
+      status: repo.get(m.id)!.status,
+      result: repo.get(m.id)!.result,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    const origAppendEvent = repo.appendEvent.bind(repo);
+    repo.appendEvent = ((missionId: string, type: Parameters<typeof repo.appendEvent>[1], summary: string, data?: Record<string, unknown>, now?: string) => {
+      if (type === eventType) throw new Error(`injected ${eventType} failure`);
+      return origAppendEvent(missionId, type, summary, data, now);
+    }) as typeof repo.appendEvent;
+    expect(() => service.finalize(m.id)).toThrow(new RegExp(`injected ${eventType.replace(/\./g, "\\.")} failure`));
+    const after = repo.get(m.id)!;
+    expect(after.status).toBe(before.status);
+    expect(after.result).toBe(before.result);
+    expect(after.completedAt).toBeNull();
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+  }
+
+  it("status event (mission.status_changed) failure rolls back the entire finalization", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fin status event" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    expectFinalizeEventRolledBack(repo, service, m, "mission.status_changed");
+  });
+
+  it("completed event (mission.completed) failure rolls back the entire finalization", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fin completed event" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    expectFinalizeEventRolledBack(repo, service, m, "mission.completed");
+  });
+
+  it("status persistence failure rolls back the entire finalization", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fin status" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    expectFinalizeRolledBack(repo, service, m, "setStatus");
+  });
+
+  it("result failure rolls back the entire finalization", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fin result" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    expectFinalizeRolledBack(repo, service, m, "setResult");
+  });
+
+  it("cursor failure rolls back the entire finalization", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fin cursor" });
+    service.approveCriteria(m.id);
+    verifyObjective(repo, service, m);
+    expectFinalizeRolledBack(repo, service, m, "upsertCursor");
+  });
+
+  it("finalize on an already-terminal mission is an idempotent no-op", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Already terminal" });
+    service.cancel(m.id);
+    const before = {
+      status: repo.get(m.id)!.status,
+      result: repo.get(m.id)!.result,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    expect(before.status).toBe("cancelled");
+    const finalized = service.finalize(m.id);
+    // No new result, no new completed/status_changed event, no cursor churn —
+    // finalize() must never overwrite an already-terminal mission's truth.
+    expect(finalized.status).toBe("cancelled");
+    expect(repo.get(m.id)!.status).toBe(before.status);
+    expect(repo.get(m.id)!.result).toBe(before.result);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// F13 — complete fault-injection matrix (invariant 4)
+// ════════════════════════════════════════════════════════════════════════════
+describe("F13 — fault-injection matrix", () => {
+  const FAULTS: Array<keyof ReturnType<typeof missionsRepository>> = ["appendEvent", "setContractFrozen", "upsertCursor"];
+
+  // Each requirement transition, when any of (event | freeze | cursor)
+  // persistence fails, must roll back entirely: the node returns to its prior
+  // status, no new event appears, the contract freeze is unchanged, and the
+  // cursor is byte-for-byte unchanged.
+  type TransitionCase = {
+    name: string;
+    prepare?: (repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, reqId: string) => void;
+    act?: (service: MissionService, m: { id: string }, reqId: string) => void;
+  };
+
+  const CASES: TransitionCase[] = [
+    {
+      name: "activation",
+      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "active"),
+    },
+    {
+      name: "verification",
+      prepare: (repo, service, m, reqId) => {
+        service.updateRequirementStatus(m.id, reqId, "active");
+        const ev = addEvidence(repo, m.id, `ev-v-${m.id}-${reqId}`);
+        (service as any)._lastEv = ev;
+      },
+      act: (service, m, reqId) => {
+        const ev = (service as any)._lastEv as string;
+        service.updateRequirementStatus(m.id, reqId, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+      },
+    },
+    {
+      name: "failure",
+      prepare: (repo, service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "active"),
+      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "failed", { failureReason: "broke" }),
+    },
+    {
+      name: "waiver",
+      prepare: (repo, service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "active"),
+      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "waived"),
+    },
+    {
+      name: "invalidation",
+      prepare: (repo, service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "active"),
+      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "invalidated"),
+    },
+    {
+      name: "verified-node reopening",
+      prepare: (repo, service, m, reqId) => {
+        // Verify, reopen once (history entry 1), verify again → verified w/ 1 entry.
+        service.updateRequirementStatus(m.id, reqId, "active");
+        const evV = addEvidence(repo, m.id, `ev-vr-${m.id}-${reqId}`);
+        service.updateRequirementStatus(m.id, reqId, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
+        const evR = addEvidence(repo, m.id, `ev-rr-${m.id}-${reqId}`, "failed");
+        service.updateRequirementStatus(m.id, reqId, "pending", {
+          invalidationCondition: "file_hash_changed", invalidationReason: "first reopen", invalidationEvidenceRef: evR,
+        });
+        service.updateRequirementStatus(m.id, reqId, "active");
+        const evV2 = addEvidence(repo, m.id, `ev-vr2-${m.id}-${reqId}`);
+        service.updateRequirementStatus(m.id, reqId, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV2] });
+      },
+    },
+  ];
+
+  // The verified-node reopening case needs its own act (fresh invalidation ref).
+  function reopenAct(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, reqId: string): void {
+    const evR = addEvidence(repo, m.id, `ev-r3-${m.id}-${reqId}`, "failed");
+    service.updateRequirementStatus(m.id, reqId, "pending", {
+      invalidationCondition: "contract_changed", invalidationReason: "later reopen", invalidationEvidenceRef: evR,
+    });
+  }
+
+  for (const fault of FAULTS) {
+    for (const c of CASES) {
+      it(`requirement ${c.name}: ${String(fault)} failure rolls back to prior state`, () => {
+        const { service, repo } = setup();
+        const m = service.create("p1", { objective: `Transition ${c.name}` });
+        const req = service.listRequirementNodes(m.id)[0]!;
+        c.prepare?.(repo, service, m, req.id);
+        const before = {
+          status: service.listRequirementNodes(m.id).find((n) => n.id === req.id)!.status,
+          historyLen: service.listRequirementNodes(m.id).find((n) => n.id === req.id)!.invalidationHistory.length,
+          frozen: service.getContract(m.id).frozen,
+          cursor: JSON.stringify(service.getCursor(m.id)),
+          events: repo.listEvents(m.id).map((e) => e.type + JSON.stringify(e.data)).join("||"),
+        };
+        const orig = (repo as any)[fault];
+        (repo as any)[fault] = () => { throw new Error(`injected ${String(fault)} failure`); };
+        const act = c.name === "verified-node reopening"
+          ? () => reopenAct(repo, service, m, req.id)
+          : () => c.act!(service, m, req.id);
+        expect(() => act()).toThrow(/injected.*failure/);
+        const afterNode = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
+        expect(afterNode.status).toBe(before.status);
+        expect(afterNode.invalidationHistory.length).toBe(before.historyLen);
+        expect(service.getContract(m.id).frozen).toBe(before.frozen);
+        expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+        expect(repo.listEvents(m.id).map((e) => e.type + JSON.stringify(e.data)).join("||")).toBe(before.events);
+        (repo as any)[fault] = orig;
+      });
+    }
+  }
+
+  it("reopen with prior history: failure preserves node, history, events, freeze, cursor", () => {
+    const { service, repo, dbPath } = setup();
+    const m = service.create("p1", { objective: "Reopen history rollback" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    // First verify.
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const evV = addEvidence(repo, m.id, "ev-hv");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV] });
+    // Reopen once → one persisted history entry.
+    const evR1 = addEvidence(repo, m.id, "ev-hr1", "failed");
+    service.updateRequirementStatus(m.id, req.id, "pending", {
+      invalidationCondition: "file_hash_changed", invalidationReason: "first reopen", invalidationEvidenceRef: evR1,
+    });
+    // Re-verify so the node is verified again with an intact single history entry.
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const evV2 = addEvidence(repo, m.id, "ev-hv2");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [evV2] });
+
+    const before = {
+      status: "verified",
+      history: JSON.stringify(service.listRequirementNodes(m.id).find((n) => n.id === req.id)!.invalidationHistory),
+      frozen: service.getContract(m.id).frozen,
+      cursor: JSON.stringify(service.getCursor(m.id)),
+      reopenEvents: repo.listEvents(m.id).filter((e) => e.type === "mission.requirement_reopened").length,
+    };
+
+    // Inject a failure during a LATER reopen.
+    repo.appendInvalidationEntry = (() => { throw new Error("injected reopen failure"); }) as typeof repo.appendInvalidationEntry;
+    const evR2 = addEvidence(repo, m.id, "ev-hr2", "failed");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "pending", {
+      invalidationCondition: "contract_changed", invalidationReason: "later reopen", invalidationEvidenceRef: evR2,
+    })).toThrow(/injected reopen failure/);
+
+    const after = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
+    expect(after.status).toBe("verified"); // node remains verified
+    expect(JSON.stringify(after.invalidationHistory)).toBe(before.history); // prior entry exactly intact
+    expect(after.invalidationHistory).toHaveLength(1); // no new entry
+    expect(service.getContract(m.id).frozen).toBe(before.frozen);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    expect(repo.listEvents(m.id).filter((e) => e.type === "mission.requirement_reopened").length).toBe(before.reopenEvents); // no new reopen event
+
+    // Persisted state is identical after a fresh reload.
+    const r2 = reload(dbPath);
+    const persisted = r2.repo.getRequirementNode(req.id)!;
+    expect(persisted.status).toBe("verified");
+    expect(JSON.stringify(persisted.invalidationHistory)).toBe(before.history);
+  });
+
+  // ── Creation failure matrix ───────────────────────────────────────────────
+  function expectCreationRolledBack(dbPath: string, service: MissionService, repo: ReturnType<typeof missionsRepository>, faultMethod: keyof ReturnType<typeof missionsRepository>): void {
+    let createdId: string | undefined;
+    const origCreate = repo.create.bind(repo);
+    repo.create = ((input: Parameters<typeof repo.create>[0], now?: string) => { createdId = input.id; return origCreate(input, now); }) as typeof repo.create;
+    if (faultMethod === "create") {
+      repo.create = ((input: Parameters<typeof repo.create>[0]) => { createdId = input.id; throw new Error("injected create failure"); }) as typeof repo.create;
+    } else {
+      (repo as any)[faultMethod] = () => { throw new Error(`injected ${String(faultMethod)} failure`); };
+    }
+    expect(() => service.create("p1", { objective: "Atomic create matrix" })).toThrow();
+    const r2 = reload(dbPath);
+    // No mission, contract, contract/creation/cursor/specialist events, active
+    // pointer, or cursor survives.
+    expect(r2.repo.listByProject("p1")).toHaveLength(0);
+    expect(r2.repo.getProjectActiveMission("p1")).toBeUndefined();
+    if (createdId) {
+      const id = createdId;
+      expect(r2.repo.get(id)).toBeUndefined();
+      expect(() => r2.service.getContract(id)).toThrow(/not found/i);
+      expect(r2.repo.listRequirementNodes(id)).toHaveLength(0);
+      expect(r2.repo.listEvents(id)).toHaveLength(0);
+      expect(r2.repo.getCursor(id)).toBeUndefined();
+    }
+  }
+
+  it("creation failure (mission row) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationRolledBack(dbPath, service, repo, "create");
+  });
+  it("creation failure (contract) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationRolledBack(dbPath, service, repo, "createContract");
+  });
+  it("creation failure (requirement nodes) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationRolledBack(dbPath, service, repo, "addRequirementNodes");
+  });
+  it("creation failure (active pointer) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationRolledBack(dbPath, service, repo, "setProjectActiveMission");
+  });
+  it("creation failure (cursor) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationRolledBack(dbPath, service, repo, "upsertCursor");
+  });
+
+  // Mission creation appends three distinct event types (mission.created,
+  // mission.contract_built, mission.specialists_planned). Rather than a
+  // fragile call-count hack, each is faulted by matching the actual `type`
+  // argument passed to appendEvent, so each test genuinely proves rollback at
+  // the named stage — not merely "whichever appendEvent call happens first."
+  function expectCreationEventRolledBack(dbPath: string, service: MissionService, repo: ReturnType<typeof missionsRepository>, eventType: string): void {
+    let createdId: string | undefined;
+    const origCreate = repo.create.bind(repo);
+    repo.create = ((input: Parameters<typeof repo.create>[0], now?: string) => { createdId = input.id; return origCreate(input, now); }) as typeof repo.create;
+    const origAppendEvent = repo.appendEvent.bind(repo);
+    repo.appendEvent = ((missionId: string, type: Parameters<typeof repo.appendEvent>[1], summary: string, data?: Record<string, unknown>, now?: string) => {
+      if (type === eventType) throw new Error(`injected ${eventType} failure`);
+      return origAppendEvent(missionId, type, summary, data, now);
+    }) as typeof repo.appendEvent;
+    expect(() => service.create("p1", { objective: `Atomic create ${eventType}` })).toThrow(new RegExp(`injected ${eventType.replace(/\./g, "\\.")} failure`));
+    const r2 = reload(dbPath);
+    expect(r2.repo.listByProject("p1")).toHaveLength(0);
+    expect(r2.repo.getProjectActiveMission("p1")).toBeUndefined();
+    if (createdId) {
+      const id = createdId;
+      expect(r2.repo.get(id)).toBeUndefined();
+      expect(() => r2.service.getContract(id)).toThrow(/not found/i);
+      expect(r2.repo.listRequirementNodes(id)).toHaveLength(0);
+      expect(r2.repo.listEvents(id)).toHaveLength(0);
+      expect(r2.repo.getCursor(id)).toBeUndefined();
+    }
+  }
+
+  it("creation failure (mission.created event) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationEventRolledBack(dbPath, service, repo, "mission.created");
+  });
+  it("creation failure (mission.contract_built event) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationEventRolledBack(dbPath, service, repo, "mission.contract_built");
+  });
+  it("creation failure (mission.specialists_planned event) rolls back everything", () => {
+    const { dbPath, service, repo } = setup();
+    expectCreationEventRolledBack(dbPath, service, repo, "mission.specialists_planned");
   });
 });

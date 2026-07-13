@@ -622,6 +622,7 @@ export const migrations:Migration[]=[
       statement TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'objective',
       source_prompt_excerpt TEXT,
+      source_locator TEXT,
       source TEXT NOT NULL,
       confidence REAL NOT NULL,
       approved INTEGER NOT NULL DEFAULT 0,
@@ -654,10 +655,32 @@ export const migrations:Migration[]=[
     );
     CREATE TABLE project_active_mission (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE SET NULL,
+      -- Nullable so a mission deletion can safely clear the pointer via
+      -- ON DELETE SET NULL. A NOT NULL column with ON DELETE SET NULL is
+      -- self-contradictory (the SET NULL would violate NOT NULL on delete), so
+      -- the pointer is nullable and ownership is enforced by the triggers below.
+      mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
       schema_version INTEGER NOT NULL,
       updated_at TEXT NOT NULL
     );
+    -- Database-enforced ownership: a project's active-mission pointer may only
+    -- reference a mission owned by that same project. A nonexistent mission
+    -- (subquery yields NULL) and a cross-project mission both abort. Using
+    -- 'IS NOT' makes the NULL (nonexistent-mission) case abort as well.
+    CREATE TRIGGER project_active_mission_owner_ai
+    BEFORE INSERT ON project_active_mission
+    WHEN NEW.mission_id IS NOT NULL
+      AND (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END;
+    CREATE TRIGGER project_active_mission_owner_au
+    BEFORE UPDATE ON project_active_mission
+    WHEN NEW.mission_id IS NOT NULL
+      AND (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END;
   `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
