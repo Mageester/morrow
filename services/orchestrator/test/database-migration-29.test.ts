@@ -240,6 +240,62 @@ function seedRepresentativeData(dbPath: string, opts: { nodeHasSourceLocator: bo
   db.close();
 }
 
+/** Build a database with migrations 1..30 applied but migration 31 absent, so
+ * migration-31 review hydration can be exercised against real migration-30
+ * schema and data. */
+function buildMigration30Db(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+  const insertMigrationRow = db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)");
+  for (const m of migrations) {
+    if (m.id > 30) continue;
+    db.transaction(() => {
+      if (m.sql) db.exec(m.sql);
+      if (m.up) m.up(db);
+      insertMigrationRow.run(m.id, m.name, "2026-01-01T00:00:00.000Z");
+    })();
+  }
+  return db;
+}
+
+function seedMigration30Mission(db: Database.Database, input: {
+  id: string;
+  status?: string;
+  reviews?: Array<{ id: string; verdict: string; createdAt: string }>;
+  resultReviewVerdict?: string | null;
+  reviewCyclesUsed?: number;
+}): void {
+  const now = "2026-01-01T00:00:00.000Z";
+  db.prepare("INSERT OR IGNORE INTO projects (id, schema_version, name, workspace_path, created_at, updated_at) VALUES ('legacy-project',1,'Legacy','/tmp/legacy',?,?)").run(now, now);
+  const result = input.resultReviewVerdict === undefined ? null : JSON.stringify({
+    status: input.status ?? "completed",
+    reviewVerdict: input.resultReviewVerdict,
+    summary: "legacy result",
+    changedFiles: [], humanInterventions: 0, tasksCompleted: 0,
+    elapsedMs: null, spentUsd: null,
+  });
+  db.prepare(
+    `INSERT INTO missions (id, schema_version, project_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, created_at, updated_at, started_at, completed_at, current_review_cycle_id)
+     VALUES (?,1,'legacy-project','Legacy mission',?,0,NULL,?,?,?, ?, ?, ?, NULL)`,
+  ).run(
+    input.id,
+    input.status ?? "running",
+    JSON.stringify({ maxUsd: null, maxAttempts: null, maxReviewCycles: 5, spentUsd: 0, attemptsUsed: 0, reviewCyclesUsed: input.reviewCyclesUsed ?? 0 }),
+    result,
+    now,
+    now,
+    now,
+    (input.status ?? "running").startsWith("completed") ? now : null,
+  );
+  for (const review of input.reviews ?? []) {
+    db.prepare(
+      `INSERT INTO mission_reviews (id, mission_id, verdict, reviewer_provider, reviewer_model, payload_json, created_at, review_cycle_id)
+       VALUES (?, ?, ?, 'legacy-provider', 'legacy-model', ?, ?, NULL)`,
+    ).run(review.id, input.id, review.verdict, JSON.stringify({ summary: review.id, concerns: [], criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [] }), review.createdAt);
+  }
+}
+
 describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", () => {
   it("migration 29 applies, preserves data, adds source_locator, and rebuilds project_active_mission", () => {
     const dbPath = join(tmp("ek-mig-a-"), "m.db");
@@ -250,7 +306,7 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(30);
+    expect(Math.max(...appliedIds)).toBe(31);
 
     // source_locator now exists and is queryable/writable.
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
@@ -296,7 +352,7 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(30);
+    expect(Math.max(...appliedIds)).toBe(31);
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -319,16 +375,15 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
   });
 });
 
-describe("BLOCKER 3 — fresh database (migrations 1..30 in order)", () => {
+describe("BLOCKER 3 — fresh database (migrations 1..31 in order)", () => {
   it("applies all migrations and produces the correct final schema and triggers", () => {
     const dbPath = join(tmp("ek-mig-c-"), "m.db");
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-    expect(appliedIds).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
-    // Migration 30 (durable review-cycle ownership) exists and is the latest.
-    expect(migrations.at(-1)!.id).toBe(30);
+    expect(appliedIds).toEqual(Array.from({ length: 31 }, (_, i) => i + 1));
+    expect(migrations.at(-1)!.id).toBe(31);
     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
-    expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at"]));
+    expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -354,6 +409,123 @@ describe("BLOCKER 3 — fresh database (migrations 1..30 in order)", () => {
     // leaving a `{ missionId: null }` row.
     db.prepare("DELETE FROM missions WHERE id = ?").run(m.id);
     expect(repo.getProjectActiveMission("p1")).toBeUndefined();
+  });
+});
+
+describe("MAJOR — migration 31 preserves legacy review authority", () => {
+  it("hydrates one legacy review through an applied cycle without changing its payload or budget", () => {
+    const dbPath = join(tmp("ek-mig31-one-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1", status: "reviewing", reviewCyclesUsed: 1, reviews: [
+      { id: "r1", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.close();
+
+    const db = openDatabase(dbPath);
+    const repo = missionsRepository(db);
+    expect(repo.get("m1")!.finalReview).toMatchObject({ id: "r1", verdict: "approved", summary: "r1" });
+    expect(repo.get("m1")!.budget.reviewCyclesUsed).toBe(1);
+    const cycle = db.prepare("SELECT * FROM mission_review_cycles WHERE mission_id = 'm1'").get() as any;
+    expect(cycle).toMatchObject({ sequence: 1, status: "applied" });
+    expect((db.prepare("SELECT review_cycle_id FROM mission_reviews WHERE id = 'r1'").get() as any).review_cycle_id).toBe(cycle.id);
+  });
+
+  it("assigns deterministic per-mission sequence and points at the ordered latest legacy review", () => {
+    const dbPath = join(tmp("ek-mig31-many-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1", status: "reviewing", reviewCyclesUsed: 2, reviews: [
+      { id: "later", verdict: "revisions_required", createdAt: "2026-01-03T00:00:00.000Z" },
+      { id: "earlier", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.close();
+
+    const db = openDatabase(dbPath);
+    const rows = db.prepare(`SELECT r.id, c.sequence FROM mission_reviews r JOIN mission_review_cycles c ON c.id = r.review_cycle_id WHERE r.mission_id = 'm1' ORDER BY c.sequence`).all() as any[];
+    expect(rows).toEqual([{ id: "earlier", sequence: 1 }, { id: "later", sequence: 2 }]);
+    expect(missionsRepository(db).get("m1")!.finalReview?.id).toBe("later");
+    expect(missionsRepository(db).get("m1")!.budget.reviewCyclesUsed).toBe(2);
+  });
+
+  it("preserves completed mission result/review agreement", () => {
+    const dbPath = join(tmp("ek-mig31-complete-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1", status: "completed", resultReviewVerdict: "approved", reviews: [
+      { id: "r1", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.close();
+    const db = openDatabase(dbPath);
+    const mission = missionsRepository(db).get("m1")!;
+    expect(mission.status).toBe("completed");
+    expect(mission.finalReview?.verdict).toBe("approved");
+    expect(mission.result?.reviewVerdict).toBe("approved");
+  });
+
+  it("aborts and rolls back on tied latest legacy timestamps", () => {
+    const dbPath = join(tmp("ek-mig31-tie-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1", reviews: [
+      { id: "r1", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "r2", verdict: "approved_with_risks", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.close();
+    expect(() => openDatabase(dbPath)).toThrow(/tied latest.*m1/i);
+    const raw = new Database(dbPath);
+    expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
+    expect((raw.prepare("SELECT COUNT(*) n FROM mission_review_cycles").get() as any).n).toBe(0);
+    expect((raw.prepare("SELECT COUNT(*) n FROM mission_reviews WHERE review_cycle_id IS NOT NULL").get() as any).n).toBe(0);
+    expect((raw.prepare("PRAGMA table_info(mission_review_cycles)").all() as any[]).map((c) => c.name)).not.toContain("owner_id");
+    raw.close();
+  });
+
+  it("aborts and rolls back when a completed result contradicts the latest legacy review", () => {
+    const dbPath = join(tmp("ek-mig31-conflict-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1", status: "completed", resultReviewVerdict: "approved", reviews: [
+      { id: "r1", verdict: "revisions_required", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.close();
+    expect(() => openDatabase(dbPath)).toThrow(/result.*contradict.*review/i);
+    const raw = new Database(dbPath);
+    expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
+    expect((raw.prepare("SELECT review_cycle_id FROM mission_reviews WHERE id = 'r1'").get() as any).review_cycle_id).toBeNull();
+    raw.close();
+  });
+
+  it("leaves already-valid migration-30 review-cycle data unchanged", () => {
+    const dbPath = join(tmp("ek-mig31-valid-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "m1" });
+    seed.prepare("INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at) VALUES ('cycle-1','m1',7,'applied','2026-01-02','2026-01-03')").run();
+    seed.prepare("INSERT INTO mission_reviews (id, mission_id, verdict, payload_json, created_at, review_cycle_id) VALUES ('r1','m1','approved','{}','2026-01-02','cycle-1')").run();
+    seed.prepare("UPDATE missions SET current_review_cycle_id = 'cycle-1' WHERE id = 'm1'").run();
+    seed.close();
+    const db = openDatabase(dbPath);
+    expect(db.prepare("SELECT id, mission_id, sequence, status, reserved_at, resolved_at FROM mission_review_cycles").all()).toEqual([
+      { id: "cycle-1", mission_id: "m1", sequence: 7, status: "applied", reserved_at: "2026-01-02", resolved_at: "2026-01-03" },
+    ]);
+    expect((db.prepare("SELECT current_review_cycle_id FROM missions WHERE id = 'm1'").get() as any).current_review_cycle_id).toBe("cycle-1");
+  });
+
+  it("rolls back schema, pointers, cycle inserts, and migration row when a late backfill write fails", () => {
+    const dbPath = join(tmp("ek-mig31-rollback-"), "m.db");
+    const seed = buildMigration30Db(dbPath);
+    seedMigration30Mission(seed, { id: "existing" });
+    seedMigration30Mission(seed, { id: "legacy", reviews: [
+      { id: "r1", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
+    ] });
+    seed.prepare("INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at) VALUES ('legacy-review-cycle-r1','existing',1,'applied','2026-01-01','2026-01-01')").run();
+    seed.close();
+
+    expect(() => openDatabase(dbPath)).toThrow(/unique|constraint/i);
+    const raw = new Database(dbPath);
+    expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
+    expect((raw.prepare("PRAGMA table_info(mission_review_cycles)").all() as any[]).map((c) => c.name)).not.toContain("owner_id");
+    expect(raw.prepare("SELECT id, mission_id, sequence, status FROM mission_review_cycles").all()).toEqual([
+      { id: "legacy-review-cycle-r1", mission_id: "existing", sequence: 1, status: "applied" },
+    ]);
+    expect((raw.prepare("SELECT review_cycle_id FROM mission_reviews WHERE id = 'r1'").get() as any).review_cycle_id).toBeNull();
+    expect((raw.prepare("SELECT current_review_cycle_id FROM missions WHERE id = 'legacy'").get() as any).current_review_cycle_id).toBeNull();
+    raw.close();
   });
 });
 
@@ -422,7 +594,7 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
     const db = openDatabase(dbPath);
     try {
       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-      expect(Math.max(...appliedAfterFix)).toBe(30);
+      expect(Math.max(...appliedAfterFix)).toBe(31);
       const repo = missionsRepository(db);
       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();

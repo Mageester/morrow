@@ -798,5 +798,96 @@ export const migrations:Migration[]=[
     -- recently completed application — sequence-ordered, never timestamp-ordered.
     ALTER TABLE missions ADD COLUMN current_review_cycle_id TEXT REFERENCES mission_review_cycles(id) ON DELETE SET NULL;
   `}
+  // ── Migration 31 ────────────────────────────────────────────────────────
+  // Adds recoverable leases to review-cycle reservations and repairs the
+  // migration-30 authority gap for reviews that existed before cycles did.
+  // The whole migration, including validation and schema_migrations insert,
+  // is run by openDatabase() in one transaction.
+  ,{id:31,name:"mission_review_cycle_leases_and_legacy_hydration",up(db){
+    const legacyMissions=db.prepare(`
+      SELECT DISTINCT mission_id AS missionId
+      FROM mission_reviews
+      WHERE review_cycle_id IS NULL
+      ORDER BY mission_id
+    `).all() as {missionId:string}[];
+
+    const legacyByMission=new Map<string,{id:string;verdict:string;createdAt:string}[]>();
+    for(const {missionId} of legacyMissions){
+      const reviews=db.prepare(`
+        SELECT id, verdict, created_at AS createdAt
+        FROM mission_reviews
+        WHERE mission_id = ? AND review_cycle_id IS NULL
+        ORDER BY created_at ASC, id ASC
+      `).all(missionId) as {id:string;verdict:string;createdAt:string}[];
+      const latestAt=reviews.at(-1)!.createdAt;
+      if(reviews.filter(r=>r.createdAt===latestAt).length>1){
+        throw new Error(`migration 31: tied latest legacy review timestamps for mission ${missionId}; refusing to guess review authority`);
+      }
+      const mission=db.prepare("SELECT status, result_json AS resultJson FROM missions WHERE id = ?").get(missionId) as {status:string;resultJson:string|null};
+      if(mission.resultJson){
+        let result:{reviewVerdict?:unknown};
+        try{result=JSON.parse(mission.resultJson) as {reviewVerdict?:unknown};}
+        catch{throw new Error(`migration 31: invalid result JSON for mission ${missionId}`);}
+        const latest=reviews.at(-1)!;
+        if(result.reviewVerdict!==latest.verdict){
+          throw new Error(`migration 31: mission ${missionId} result contradicts latest legacy review verdict (${String(result.reviewVerdict)} != ${latest.verdict})`);
+        }
+      }
+      legacyByMission.set(missionId,reviews);
+    }
+
+    // SQLite cannot ALTER a CHECK constraint. Rebuild only the cycle table,
+    // snapshotting and restoring both ON DELETE SET NULL references around
+    // the drop. All of this remains inside openDatabase's migration
+    // transaction, so any later validation/write failure restores the exact
+    // migration-30 schema and data.
+    const reviewPointers=db.prepare("SELECT id, review_cycle_id AS cycleId FROM mission_reviews WHERE review_cycle_id IS NOT NULL").all() as {id:string;cycleId:string}[];
+    const missionPointers=db.prepare("SELECT id, current_review_cycle_id AS cycleId FROM missions WHERE current_review_cycle_id IS NOT NULL").all() as {id:string;cycleId:string}[];
+    db.exec(`
+      CREATE TABLE mission_review_cycles_v31 (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','applied','abandoned')),
+        reserved_at TEXT NOT NULL,
+        resolved_at TEXT,
+        owner_id TEXT,
+        lease_expires_at TEXT,
+        UNIQUE(mission_id, sequence)
+      );
+      INSERT INTO mission_review_cycles_v31
+        (id, mission_id, sequence, status, reserved_at, resolved_at, owner_id, lease_expires_at)
+      SELECT id, mission_id, sequence, status, reserved_at, resolved_at,
+        CASE WHEN status = 'reserved' THEN 'migration-30-unknown' ELSE NULL END,
+        CASE WHEN status = 'reserved' THEN reserved_at ELSE NULL END
+      FROM mission_review_cycles;
+      DROP TABLE mission_review_cycles;
+      ALTER TABLE mission_review_cycles_v31 RENAME TO mission_review_cycles;
+      CREATE INDEX mission_review_cycles_mission_idx ON mission_review_cycles(mission_id, sequence);
+      CREATE UNIQUE INDEX mission_review_cycles_one_reserved ON mission_review_cycles(mission_id) WHERE status = 'reserved';
+    `);
+    const restoreReviewPointer=db.prepare("UPDATE mission_reviews SET review_cycle_id = ? WHERE id = ?");
+    for(const pointer of reviewPointers) restoreReviewPointer.run(pointer.cycleId,pointer.id);
+    const restoreMissionPointer=db.prepare("UPDATE missions SET current_review_cycle_id = ? WHERE id = ?");
+    for(const pointer of missionPointers) restoreMissionPointer.run(pointer.cycleId,pointer.id);
+
+    const insertCycle=db.prepare(`INSERT INTO mission_review_cycles
+      (id, mission_id, sequence, status, reserved_at, resolved_at, owner_id, lease_expires_at)
+      VALUES (?, ?, ?, 'applied', ?, ?, NULL, NULL)`);
+    const attachReview=db.prepare("UPDATE mission_reviews SET review_cycle_id = ? WHERE id = ? AND review_cycle_id IS NULL");
+    const pointMission=db.prepare("UPDATE missions SET current_review_cycle_id = ? WHERE id = ?");
+    for(const [missionId,reviews] of legacyByMission){
+      let sequence=(db.prepare("SELECT COALESCE(MAX(sequence),0) AS n FROM mission_review_cycles WHERE mission_id = ?").get(missionId) as {n:number}).n;
+      let latestCycleId="";
+      for(const review of reviews){
+        sequence+=1;
+        const cycleId=`legacy-review-cycle-${review.id}`;
+        insertCycle.run(cycleId,missionId,sequence,review.createdAt,review.createdAt);
+        attachReview.run(cycleId,review.id);
+        latestCycleId=cycleId;
+      }
+      pointMission.run(latestCycleId,missionId);
+    }
+  }}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

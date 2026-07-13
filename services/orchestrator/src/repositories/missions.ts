@@ -39,9 +39,11 @@ export interface MissionReviewCycle {
   id: string;
   missionId: string;
   sequence: number;
-  status: "reserved" | "applied";
+  status: "reserved" | "applied" | "abandoned";
   reservedAt: string;
   resolvedAt: string | null;
+  ownerId: string | null;
+  leaseExpiresAt: string | null;
 }
 
 function mapReviewCycle(row: any): MissionReviewCycle {
@@ -52,6 +54,8 @@ function mapReviewCycle(row: any): MissionReviewCycle {
     status: row.status,
     reservedAt: row.reserved_at,
     resolvedAt: row.resolved_at ?? null,
+    ownerId: row.owner_id ?? null,
+    leaseExpiresAt: row.lease_expires_at ?? null,
   };
 }
 
@@ -440,13 +444,13 @@ export function missionsRepository(db: Database.Database) {
      *  database-generated monotonic counter per mission, used as the
      *  authoritative application order instead of any caller-supplied
      *  timestamp. */
-    reserveReviewCycle(id: string, missionId: string, now = new Date().toISOString()): MissionReviewCycle {
+    reserveReviewCycle(id: string, missionId: string, ownerId: string, leaseExpiresAt: string, now = new Date().toISOString()): MissionReviewCycle {
       const seq = (db.prepare("SELECT COALESCE(MAX(sequence), 0) n FROM mission_review_cycles WHERE mission_id = ?").get(missionId) as any).n + 1;
       db.prepare(
-        `INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at)
-         VALUES (?, ?, ?, 'reserved', ?, NULL)`,
-      ).run(id, missionId, seq, now);
-      return { id, missionId, sequence: seq, status: "reserved", reservedAt: now, resolvedAt: null };
+        `INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at, owner_id, lease_expires_at)
+         VALUES (?, ?, ?, 'reserved', ?, NULL, ?, ?)`,
+      ).run(id, missionId, seq, now, ownerId, leaseExpiresAt);
+      return { id, missionId, sequence: seq, status: "reserved", reservedAt: now, resolvedAt: null, ownerId, leaseExpiresAt };
     },
 
     getReviewCycle(id: string): MissionReviewCycle | undefined {
@@ -468,6 +472,31 @@ export function missionsRepository(db: Database.Database) {
      *  before ever reaching here (see MissionService.applyReview). */
     resolveReviewCycle(id: string, now = new Date().toISOString()): void {
       db.prepare("UPDATE mission_review_cycles SET status = 'applied', resolved_at = ? WHERE id = ?").run(now, id);
+    },
+
+    /** Atomically abandon the mission's reservation only when its persisted
+     * lease has expired at the injected comparison time. A live lease cannot
+     * be stolen by another service instance. */
+    abandonExpiredReviewCycle(missionId: string, now: string): MissionReviewCycle | undefined {
+      const row = db.prepare(`
+        SELECT * FROM mission_review_cycles
+        WHERE mission_id = ? AND status = 'reserved' AND lease_expires_at <= ?
+      `).get(missionId, now) as any;
+      if (!row) return undefined;
+      const changed = db.prepare(`
+        UPDATE mission_review_cycles
+        SET status = 'abandoned', resolved_at = ?
+        WHERE id = ? AND status = 'reserved' AND lease_expires_at <= ?
+      `).run(now, row.id, now).changes;
+      return changed === 1 ? mapReviewCycle({ ...row, status: "abandoned", resolved_at: now }) : undefined;
+    },
+
+    /** Abandon a known live reservation as part of a terminal mission
+     * transition. Late provider results are then rejected by cycle status. */
+    abandonReviewCycle(id: string, now = new Date().toISOString()): boolean {
+      return db.prepare(`UPDATE mission_review_cycles
+        SET status = 'abandoned', resolved_at = ?
+        WHERE id = ? AND status = 'reserved'`).run(now, id).changes === 1;
     },
 
     /** Point the mission's single authoritative "current review" reference at

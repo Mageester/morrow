@@ -427,6 +427,139 @@ describe("BLOCKER 1 — durable review-cycle ownership", () => {
     gate.resolve({ text: approvedJson() });
     await reviewPromise;
   });
+
+  it("recovers an expired lease after restart, permits replacement, and rejects the abandoned result", async () => {
+    const home = tmp("ek-lease-home-");
+    const workspace = tmp("ek-lease-ws-");
+    const dbPath = join(tmp("ek-lease-db-"), "m.db");
+    const db = openDatabase(dbPath);
+    const projects = projectRepository(db);
+    projects.createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: "2026-04-01T00:00:00.000Z" });
+    const repo = missionsRepository(db);
+    let clock = "2026-04-01T00:00:00.000Z";
+    const gate = deferred<{ text: string }>();
+    let calls = 0;
+    const firstService = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(home, "first"),
+      now: () => clock,
+      serviceInstanceId: "instance-a",
+      reviewLeaseMs: 60_000,
+      completion: async () => {
+        calls += 1;
+        if (calls === 1) return { text: approvedJson(), provider: "test", model: "test" };
+        const result = await gate.promise;
+        return { text: result.text, provider: "test", model: "test" };
+      },
+    });
+    const m = firstService.create("p1", { objective: "Recover review lease" });
+    firstService.approveCriteria(m.id);
+    firstService.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    await firstService.runReview(m.id); // durable cycle A remains authoritative
+
+    const lostResult = firstService.runReview(m.id); // cycle B is reserved, then process is lost
+    await flush();
+    const lostCycle = repo.getReservedReviewCycle(m.id)!;
+    expect(lostCycle.ownerId).toBe("instance-a");
+    expect(lostCycle.leaseExpiresAt).toBe("2026-04-01T00:01:00.000Z");
+
+    const restartedDb = openDatabase(dbPath);
+    const restartedRepo = missionsRepository(restartedDb);
+    const restartedService = new MissionService({
+      repo: restartedRepo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(home, "second"),
+      now: () => clock,
+      serviceInstanceId: "instance-b",
+      reviewLeaseMs: 60_000,
+      completion: async () => ({ text: revisionsRequiredJson(), provider: "test", model: "test" }),
+    });
+
+    clock = "2026-04-01T00:00:59.999Z";
+    restartedService.resume(m.id);
+    expect(restartedRepo.getReservedReviewCycle(m.id)?.id).toBe(lostCycle.id);
+    expect(() => restartedService.finalize(m.id)).toThrow(/review cycle is in flight/i);
+    await expect(restartedService.runReview(m.id)).rejects.toThrow(/review cycle.*in flight/i);
+
+    clock = "2026-04-01T00:01:00.000Z";
+    restartedService.resume(m.id);
+    expect(restartedRepo.getReviewCycle(lostCycle.id)?.status).toBe("abandoned");
+    expect(restartedRepo.getReservedReviewCycle(m.id)).toBeUndefined();
+    expect(restartedRepo.listEvents(m.id).some((event) => String(event.type) === "mission.review_cycle_recovered" && (event.data as any).cycleId === lostCycle.id)).toBe(true);
+
+    const replacement = await restartedService.runReview(m.id);
+    expect(replacement.verdict).toBe("revisions_required");
+    const finalized = restartedService.finalize(m.id);
+    expect(finalized.result?.reviewVerdict).toBe("revisions_required");
+    expect(finalized.status).not.toBe("completed");
+
+    gate.resolve({ text: approvedJson() });
+    await expect(lostResult).rejects.toThrow(/stale|abandoned/i);
+    expect(restartedRepo.get(m.id)!.finalReview?.id).toBe(replacement.id);
+    restartedDb.close();
+    db.close();
+  });
+
+  it("cancellation transaction abandons a live reservation and rejects its late result", async () => {
+    const { service, repo, armGate } = setupWithBarrierProvider();
+    const m = service.create("p1", { objective: "Cancel reserved review" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    const gate = deferred<{ text: string }>();
+    armGate(gate.promise);
+    const reviewPromise = service.runReview(m.id);
+    await flush();
+    const reserved = repo.getReservedReviewCycle(m.id)!;
+
+    expect(service.cancel(m.id).status).toBe("cancelled");
+    expect(repo.getReviewCycle(reserved.id)?.status).toBe("abandoned");
+    expect(repo.getReservedReviewCycle(m.id)).toBeUndefined();
+    gate.resolve({ text: approvedJson() });
+    await expect(reviewPromise).rejects.toThrow(/terminal|stale|abandoned/i);
+  });
+});
+
+describe("MAJOR — finalization uses one fresh transactional snapshot", () => {
+  it("uses a newer review committed by a second connection before the finalization transaction", () => {
+    const { service, repo, dbPath } = setupWithBarrierProvider();
+    const m = service.create("p1", { objective: "Fresh finalization snapshot" });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    service.setReview({
+      id: "review-approved", missionId: m.id, verdict: "approved",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [],
+      recommendedStatus: "completed", summary: "approved", reviewerProvider: "test", reviewerModel: "test",
+      createdAt: "2026-05-01T00:00:00.000Z",
+    });
+
+    const secondDb = openDatabase(dbPath);
+    const secondRepo = missionsRepository(secondDb);
+    const secondService = new MissionService({ repo: secondRepo, getWorkspacePath: () => undefined, backupDir: tmp("ek-race-second-") });
+    const originalTransaction = repo.transaction.bind(repo);
+    let injected = false;
+    repo.transaction = ((fn: () => unknown) => {
+      if (!injected) {
+        injected = true;
+        secondService.setReview({
+          id: "review-revisions", missionId: m.id, verdict: "revisions_required",
+          criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: ["new finding"],
+          recommendedStatus: "partially_completed", summary: "newer review", reviewerProvider: "test", reviewerModel: "test",
+          createdAt: "2026-05-01T00:01:00.000Z",
+        });
+      }
+      return originalTransaction(fn);
+    }) as typeof repo.transaction;
+    try {
+      const finalized = service.finalize(m.id);
+      expect(finalized.finalReview?.verdict).toBe("revisions_required");
+      expect(finalized.result?.reviewVerdict).toBe("revisions_required");
+      expect(finalized.status).not.toBe("completed");
+    } finally {
+      repo.transaction = originalTransaction;
+      secondDb.close();
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════

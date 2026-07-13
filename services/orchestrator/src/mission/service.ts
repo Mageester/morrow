@@ -42,6 +42,11 @@ export interface MissionServiceDeps {
   backupDir: string;
   /** Injectable clock + verification exec hooks (tests). */
   now?: (() => string) | undefined;
+  /** Stable identity persisted on review leases. Generated once per service
+   * instance when omitted. */
+  serviceInstanceId?: string | undefined;
+  /** Duration of a review reservation lease. */
+  reviewLeaseMs?: number | undefined;
   runOptions?: Partial<RunOptions> | undefined;
   /** Cortex integration: plan revisions on evidence contradictions/loops and
    *  post-review learning extraction. Optional so missions degrade gracefully
@@ -63,10 +68,14 @@ export class MissionError extends Error {
 export class MissionService {
   private readonly repo: MissionsRepository;
   private readonly now: () => string;
+  private readonly serviceInstanceId: string;
+  private readonly reviewLeaseMs: number;
 
   constructor(private readonly deps: MissionServiceDeps) {
     this.repo = deps.repo;
     this.now = deps.now ?? (() => new Date().toISOString());
+    this.serviceInstanceId = deps.serviceInstanceId ?? `mission-service-${randomUUID()}`;
+    this.reviewLeaseMs = deps.reviewLeaseMs ?? 5 * 60_000;
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────
@@ -463,6 +472,29 @@ export class MissionService {
     }
   }
 
+  /** Abandon one expired reservation and append its audit event in the
+   * caller's transaction. The repository's conditional UPDATE is the
+   * authority: an unexpired lease is never changed. */
+  private recoverExpiredReviewCycleInTransaction(missionId: string, now: string): boolean {
+    const abandoned = this.repo.abandonExpiredReviewCycle(missionId, now);
+    if (!abandoned) return false;
+    this.repo.appendEvent(
+      missionId,
+      "mission.review_cycle_recovered" as any,
+      `Abandoned expired review cycle ${abandoned.id}`,
+      { cycleId: abandoned.id, priorOwnerId: abandoned.ownerId, leaseExpiresAt: abandoned.leaseExpiresAt },
+      now,
+    );
+    return true;
+  }
+
+  private recoverExpiredReviewCycle(missionId: string): boolean {
+    const now = this.now();
+    let recovered = false;
+    this.repo.transaction(() => { recovered = this.recoverExpiredReviewCycleInTransaction(missionId, now); });
+    return recovered;
+  }
+
   /**
    * Reserve a durable, unambiguous review-cycle identity BEFORE any provider
    * invocation (see migration 30 / mission_review_cycles). At most one cycle
@@ -478,6 +510,7 @@ export class MissionService {
     const now = this.now();
     let cycleId!: string;
     this.repo.transaction(() => {
+      this.recoverExpiredReviewCycleInTransaction(missionId, now);
       const fresh = this.repo.get(missionId);
       if (!fresh) throw new MissionError(`Mission ${missionId} not found`, "not_found");
       this.assertReviewApplicable(fresh);
@@ -498,7 +531,8 @@ export class MissionService {
       // mission": if a true concurrent writer slipped past the check above,
       // this INSERT itself throws and the whole transaction (including any
       // status transition just made) rolls back.
-      cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, now).id;
+      const leaseExpiresAt = new Date(Date.parse(now) + this.reviewLeaseMs).toISOString();
+      cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, this.serviceInstanceId, leaseExpiresAt, now).id;
     });
     return { cycleId, mission: this.get(missionId) };
   }
@@ -617,11 +651,11 @@ export class MissionService {
     const now = this.now();
     const usdCost = opts.usdCost ?? 0;
     this.repo.transaction(() => {
+      this.recoverExpiredReviewCycleInTransaction(missionId, now);
       const mission = this.repo.get(missionId);
       if (!mission) throw new MissionError(`Mission ${missionId} not found`, "not_found");
-      this.assertReviewApplicable(mission);
 
-      let cycleId: string;
+      let cycleId: string | undefined;
       if (opts.reviewCycleId) {
         const cycle = this.repo.getReviewCycle(opts.reviewCycleId);
         if (!cycle || cycle.missionId !== missionId || cycle.status !== "reserved") {
@@ -631,7 +665,11 @@ export class MissionService {
           );
         }
         cycleId = cycle.id;
-      } else {
+      }
+
+      this.assertReviewApplicable(mission);
+
+      if (!opts.reviewCycleId) {
         // Direct application (setReview / manual review, no provider round
         // trip to reserve ahead of time): reserve-and-apply the cycle
         // atomically in this same transaction.
@@ -641,8 +679,11 @@ export class MissionService {
             "review_cycle_conflict",
           );
         }
-        cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, now).id;
+        const leaseExpiresAt = new Date(Date.parse(now) + this.reviewLeaseMs).toISOString();
+        cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, this.serviceInstanceId, leaseExpiresAt, now).id;
       }
+
+      if (!cycleId) throw new MissionError(`Mission ${missionId} review cycle could not be resolved`, "review_cycle_conflict");
 
       this.repo.setReview(review, cycleId);
       this.repo.resolveReviewCycle(cycleId, now);
@@ -950,64 +991,41 @@ export class MissionService {
 
   /** Grade the mission from criteria + review and set the terminal status. */
   finalize(missionId: string, opts?: { humanInterventions?: number; tasksCompleted?: number; elapsedMs?: number | null }): Mission {
-    const mission = this.get(missionId);
+    // Lease recovery is its own durable step so an expired reservation stays
+    // abandoned even when a later lifecycle/grade gate rejects finalization.
+    this.recoverExpiredReviewCycle(missionId);
+    const initial = this.get(missionId);
     // A terminal mission is already finalized. Rather than blindly no-op
     // (which could paper over a historically partial completion tuple), the
     // durable tuple is explicitly reconciled or, if contradictory, rejected.
-    if (isTerminalMissionStatus(mission.status)) {
-      return this.reconcileTerminalFinalization(mission);
+    if (isTerminalMissionStatus(initial.status)) {
+      return this.reconcileTerminalFinalization(initial);
     }
-    // ── Lifecycle validated BEFORE any durable write ────────────────────────
-    this.assertFinalizable(mission);
-
-    const ledger = this.repo.listRequirementNodes(missionId);
-    const status = gradeMission(mission.criteria, mission.finalReview?.verdict ?? null);
-
-    // ── Ledger gate (Gap 1) ─────────────────────────────────────────────────
-    // Finalizing is gated on the requirement ledger, not on the prose review
-    // alone. A "completed*" grade is only allowed when every authoritative
-    // requirement node is satisfied (verified or waived). If the grade claims
-    // success but the ledger shows an open authoritative requirement, the
-    // status is downgraded to partially_completed so the mission can never be
-    // recorded as done while real work remains. This is computed from the
-    // full, freshly-loaded ledger inside a single transaction below.
-    let gated = status;
-    let ledgerGate = false;
-    const authoritativeSatisfied = allAuthoritativeSatisfied(ledger);
-    const noAuthoritativeNodes = ledger.length === 0;
-    // Any "completed*" grade is only honoured when every authoritative
-    // requirement is satisfied. Otherwise the ledger gate downgrades it to
-    // partially_completed so the mission can never be recorded as done while
-    // real work remains.
-    if (status.startsWith("completed") && !authoritativeSatisfied && !noAuthoritativeNodes) {
-      gated = "partially_completed";
-      ledgerGate = true;
-    }
-
-    const result = buildMissionResult(mission, {
-      review: mission.finalReview,
-      changedFiles: this.changedFilesFor(mission),
-      humanInterventions: opts?.humanInterventions ?? 0,
-      tasksCompleted: opts?.tasksCompleted ?? 0,
-      elapsedMs: opts?.elapsedMs ?? (mission.startedAt ? Date.parse(this.now()) - Date.parse(mission.startedAt) : null),
-      spentUsd: mission.budget.spentUsd || null,
-      finalStatus: gated,
-    });
-
-    // The result, the terminal status change, both terminal events, AND the
-    // final cursor state commit or roll back together as one transaction. The
-    // mission is RE-READ and RE-VALIDATED from persistence inside the
-    // transaction — a concurrent mutation between the outer checks above and
-    // this transaction can never slip a contradictory write through — and the
-    // status transition is a HARD assertion (assertMissionTransition): it is
-    // never conditionally skipped while completion state continues to write.
-    // A ledger-gated downgrade can never be persisted without its matching
-    // completed event, cursor, and result, and vice-versa.
     const now = this.now();
-    const finalStatus = gated;
+    let finalizedProjectId = initial.projectId;
     this.repo.transaction(() => {
+      this.recoverExpiredReviewCycleInTransaction(missionId, now);
       const fresh = this.repo.get(missionId)!;
+      if (isTerminalMissionStatus(fresh.status)) {
+        throw new MissionError(`Mission ${missionId} changed terminal state before finalization could acquire its transaction`, "finalization_conflict");
+      }
       this.assertFinalizable(fresh);
+      const ledger = this.repo.listRequirementNodes(missionId);
+      const graded = gradeMission(fresh.criteria, fresh.finalReview?.verdict ?? null);
+      const authoritativeSatisfied = allAuthoritativeSatisfied(ledger);
+      const noAuthoritativeNodes = ledger.length === 0;
+      const ledgerGate = graded.startsWith("completed") && !authoritativeSatisfied && !noAuthoritativeNodes;
+      const finalStatus = ledgerGate ? "partially_completed" : graded;
+      const result = buildMissionResult(fresh, {
+        review: fresh.finalReview,
+        changedFiles: this.changedFilesFor(fresh),
+        humanInterventions: opts?.humanInterventions ?? 0,
+        tasksCompleted: opts?.tasksCompleted ?? 0,
+        elapsedMs: opts?.elapsedMs ?? (fresh.startedAt ? Date.parse(now) - Date.parse(fresh.startedAt) : null),
+        spentUsd: fresh.budget.spentUsd || null,
+        finalStatus,
+      });
+
       assertMissionTransition(fresh.status, finalStatus);
       this.repo.setResult(missionId, result, now);
       this.repo.setStatus(missionId, finalStatus, now);
@@ -1020,6 +1038,7 @@ export class MissionService {
       // Cursor persisted inside the same transaction: it truthfully exposes no
       // executable actions for terminal missions while preserving history.
       this.advanceCursor(missionId, { lastCompletedAction: "finalize" });
+      finalizedProjectId = fresh.projectId;
     });
 
     // Learning extraction runs last — after evidence and review — so only
@@ -1030,7 +1049,7 @@ export class MissionService {
         const finished = this.get(missionId);
         const learnings = extractMissionLearnings(finished, this.now);
         if (learnings.length > 0) {
-          this.deps.cortex.addLearnings(mission.projectId, learnings);
+          this.deps.cortex.addLearnings(finalizedProjectId, learnings);
           this.repo.appendEvent(missionId, "mission.learnings_extracted", `Extracted ${learnings.length} evidence-backed learning(s)`, { count: learnings.length }, this.now());
         }
       } catch { /* extraction is best-effort by design */ }
@@ -1041,14 +1060,24 @@ export class MissionService {
   cancel(missionId: string): Mission {
     const mission = this.get(missionId);
     if (isTerminalMissionStatus(mission.status)) return mission;
-    this.transition(missionId, "cancelled");
-    this.repo.appendEvent(missionId, "mission.cancelled", "Mission cancelled", {}, this.now());
+    const now = this.now();
+    this.repo.transaction(() => {
+      const fresh = this.repo.get(missionId)!;
+      if (isTerminalMissionStatus(fresh.status)) return;
+      assertMissionTransition(fresh.status, "cancelled");
+      const reserved = this.repo.getReservedReviewCycle(missionId);
+      if (reserved) this.repo.abandonReviewCycle(reserved.id, now);
+      this.repo.setStatus(missionId, "cancelled", now);
+      this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${fresh.status} → cancelled`, { from: fresh.status, to: "cancelled" }, now);
+      this.repo.appendEvent(missionId, "mission.cancelled", "Mission cancelled", {}, now);
+    });
     return this.get(missionId);
   }
 
   /** Resume reconstructs entirely from persistence — nothing lives only in
    *  memory. Returns the mission as-is; callers decide the next action. */
   resume(missionId: string): Mission {
+    this.recoverExpiredReviewCycle(missionId);
     return this.get(missionId);
   }
 
