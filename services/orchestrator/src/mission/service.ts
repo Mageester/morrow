@@ -495,6 +495,31 @@ export class MissionService {
     return recovered;
   }
 
+  /** Keep this instance's provider reservation live while an external review
+   * call is pending. Ownership loss stops future renewal attempts; the later
+   * apply still performs the authoritative stale-cycle check. */
+  private startReviewLeaseHeartbeat(cycleId: string): () => void {
+    const intervalMs = Math.max(1, Math.floor(this.reviewLeaseMs / 3));
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval>;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+    };
+    timer = setInterval(() => {
+      try {
+        const now = this.now();
+        const leaseExpiresAt = new Date(Date.parse(now) + this.reviewLeaseMs).toISOString();
+        if (!this.repo.renewReviewCycle(cycleId, this.serviceInstanceId, leaseExpiresAt)) stop();
+      } catch {
+        stop();
+      }
+    }, intervalMs);
+    (timer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.();
+    return stop;
+  }
+
   /**
    * Reserve a durable, unambiguous review-cycle identity BEFORE any provider
    * invocation (see migration 30 / mission_review_cycles). At most one cycle
@@ -566,24 +591,29 @@ export class MissionService {
     // EXACT cycle that requested it. A stale/rejected result therefore never
     // mutates spentUsd (see applyReview below).
     let usdCost = 0;
-    if (this.deps.completion) {
-      try {
-        const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
-        parsed = parseReviewVerdict(res.text, mission.criteria);
-        provider = res.provider ?? null; model = res.model ?? null;
-        if (res.usdCost) usdCost += res.usdCost;
-        if (isReviewParseFailure(parsed)) {
-          const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
-          const repairedParsed = parseReviewVerdict(repaired.text, mission.criteria);
-          if (!isReviewParseFailure(repairedParsed)) parsed = repairedParsed;
-          provider = repaired.provider ?? provider; model = repaired.model ?? model;
-          if (repaired.usdCost) usdCost += repaired.usdCost;
+    const stopHeartbeat = this.startReviewLeaseHeartbeat(cycleId);
+    try {
+      if (this.deps.completion) {
+        try {
+          const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
+          parsed = parseReviewVerdict(res.text, mission.criteria);
+          provider = res.provider ?? null; model = res.model ?? null;
+          if (res.usdCost) usdCost += res.usdCost;
+          if (isReviewParseFailure(parsed)) {
+            const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
+            const repairedParsed = parseReviewVerdict(repaired.text, mission.criteria);
+            if (!isReviewParseFailure(repairedParsed)) parsed = repairedParsed;
+            provider = repaired.provider ?? provider; model = repaired.model ?? model;
+            if (repaired.usdCost) usdCost += repaired.usdCost;
+          }
+        } catch {
+          parsed = parseReviewVerdict("", mission.criteria); // insufficient_evidence
         }
-      } catch {
-        parsed = parseReviewVerdict("", mission.criteria); // insufficient_evidence
+      } else {
+        parsed = parseReviewVerdict("", mission.criteria); // no reviewer available → insufficient
       }
-    } else {
-      parsed = parseReviewVerdict("", mission.criteria); // no reviewer available → insufficient
+    } finally {
+      stopHeartbeat();
     }
 
     const review: MissionReview = {

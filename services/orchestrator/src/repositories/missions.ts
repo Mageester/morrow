@@ -466,6 +466,17 @@ export function missionsRepository(db: Database.Database) {
       return row ? mapReviewCycle(row) : undefined;
     },
 
+    /** Extend a cycle lease only for the service instance that still owns the
+     * reserved row. Applied/abandoned cycles and replacement cycles owned by
+     * another instance are immutable to the old owner. */
+    renewReviewCycle(id: string, ownerId: string, leaseExpiresAt: string): boolean {
+      return db.prepare(`
+        UPDATE mission_review_cycles
+        SET lease_expires_at = ?
+        WHERE id = ? AND status = 'reserved' AND owner_id = ?
+      `).run(leaseExpiresAt, id, ownerId).changes === 1;
+    },
+
     /** Mark a reserved cycle as applied. Idempotent-unsafe by design: calling
      *  this twice for the same cycle is a bug in the caller, not something
      *  this method silently tolerates — callers must check status === 'reserved'

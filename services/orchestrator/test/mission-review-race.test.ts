@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +27,10 @@ function tmp(prefix: string): string {
   roots.push(dir);
   return dir;
 }
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(() => {
+  vi.useRealTimers();
+  roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
+});
 
 /** A promise the test can resolve/reject on demand from outside. */
 function deferred<T>() {
@@ -517,6 +520,144 @@ describe("BLOCKER 1 — durable review-cycle ownership", () => {
     expect(repo.getReservedReviewCycle(m.id)).toBeUndefined();
     gate.resolve({ text: approvedJson() });
     await expect(reviewPromise).rejects.toThrow(/terminal|stale|abandoned/i);
+  });
+});
+
+describe("MAJOR — active review leases stay live", () => {
+  function setupHeartbeatReview(completion: MissionServiceDeps["completion"]) {
+    const workspace = tmp("ek-heartbeat-ws-");
+    const dbPath = join(tmp("ek-heartbeat-db-"), "m.db");
+    const db = openDatabase(dbPath);
+    projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: new Date().toISOString() });
+    const repo = missionsRepository(db);
+    const service = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: tmp("ek-heartbeat-backups-"),
+      now: () => new Date().toISOString(),
+      serviceInstanceId: "owner-a",
+      reviewLeaseMs: 60_000,
+      completion,
+    });
+    const mission = service.create("p1", { objective: "Keep review alive" });
+    service.approveCriteria(mission.id);
+    service.addCriterion(mission.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    return { db, dbPath, repo, service, mission };
+  }
+
+  it("renews a pending initial provider lease beyond its original expiry and prevents another service from reclaiming it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T00:00:00.000Z"));
+    const gate = deferred<{ text: string }>();
+    const { db, dbPath, repo, service, mission } = setupHeartbeatReview(async () => {
+      const value = await gate.promise;
+      return { text: value.text, provider: "test", model: "test" };
+    });
+
+    const resultPromise = service.runReview(mission.id);
+    const cycle = repo.getReservedReviewCycle(mission.id)!;
+    expect(cycle.leaseExpiresAt).toBe("2026-06-01T00:01:00.000Z");
+
+    await vi.advanceTimersByTimeAsync(70_000);
+    const renewed = repo.getReviewCycle(cycle.id)!;
+    expect(renewed.status).toBe("reserved");
+    expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(Date.parse("2026-06-01T00:01:10.000Z"));
+
+    const secondDb = openDatabase(dbPath);
+    const secondRepo = missionsRepository(secondDb);
+    const secondService = new MissionService({
+      repo: secondRepo, getWorkspacePath: () => undefined, backupDir: tmp("ek-heartbeat-second-"),
+      now: () => new Date().toISOString(), serviceInstanceId: "owner-b", reviewLeaseMs: 60_000,
+    });
+    secondService.resume(mission.id);
+    expect(secondRepo.getReservedReviewCycle(mission.id)?.id).toBe(cycle.id);
+    await expect(secondService.runReview(mission.id)).rejects.toThrow(/review cycle.*in flight/i);
+
+    gate.resolve({ text: approvedJson() });
+    const review = await resultPromise;
+    expect(review.verdict).toBe("approved");
+    expect(repo.get(mission.id)!.finalReview?.id).toBe(review.id);
+    expect(vi.getTimerCount()).toBe(0);
+    secondDb.close();
+    db.close();
+  });
+
+  it("keeps renewing while the repair provider call remains pending", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T00:00:00.000Z"));
+    const repairGate = deferred<{ text: string }>();
+    let calls = 0;
+    const { db, repo, service, mission } = setupHeartbeatReview(async () => {
+      calls += 1;
+      if (calls === 1) return { text: "not-json", provider: "test", model: "test" };
+      const value = await repairGate.promise;
+      return { text: value.text, provider: "test", model: "test" };
+    });
+    const resultPromise = service.runReview(mission.id);
+    await flush();
+    expect(calls).toBe(2);
+    const cycle = repo.getReservedReviewCycle(mission.id)!;
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(Date.parse(repo.getReviewCycle(cycle.id)!.leaseExpiresAt!)).toBeGreaterThan(Date.parse("2026-06-02T00:01:10.000Z"));
+    repairGate.resolve({ text: approvedJson() });
+    await expect(resultPromise).resolves.toMatchObject({ verdict: "approved" });
+    expect(vi.getTimerCount()).toBe(0);
+    db.close();
+  });
+
+  it("still recovers a dead service reservation when no heartbeat exists", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-03T00:00:00.000Z"));
+    const { db, repo, service, mission } = setupHeartbeatReview(undefined);
+    const cycle = repo.reserveReviewCycle("dead-cycle", mission.id, "dead-owner", "2026-06-03T00:01:00.000Z", "2026-06-03T00:00:00.000Z");
+    vi.setSystemTime(new Date("2026-06-03T00:01:00.000Z"));
+    service.resume(mission.id);
+    expect(repo.getReviewCycle(cycle.id)?.status).toBe("abandoned");
+    expect(repo.getReservedReviewCycle(mission.id)).toBeUndefined();
+    db.close();
+  });
+
+  it("never lets an old owner renew an abandoned or replacement cycle", () => {
+    const { db, repo, mission } = setupHeartbeatReview(undefined);
+    const old = repo.reserveReviewCycle("old-cycle", mission.id, "old-owner", "2026-06-04T00:01:00.000Z", "2026-06-04T00:00:00.000Z");
+    repo.abandonReviewCycle(old.id, "2026-06-04T00:00:30.000Z");
+    expect(repo.renewReviewCycle(old.id, "old-owner", "2026-06-04T00:02:00.000Z")).toBe(false);
+    expect(repo.getReviewCycle(old.id)).toMatchObject({ status: "abandoned", leaseExpiresAt: "2026-06-04T00:01:00.000Z" });
+
+    const replacement = repo.reserveReviewCycle("replacement-cycle", mission.id, "new-owner", "2026-06-04T00:02:00.000Z", "2026-06-04T00:01:00.000Z");
+    expect(repo.renewReviewCycle(replacement.id, "old-owner", "2026-06-04T00:03:00.000Z")).toBe(false);
+    expect(repo.getReviewCycle(replacement.id)?.leaseExpiresAt).toBe("2026-06-04T00:02:00.000Z");
+    db.close();
+  });
+
+  it("cleans up the heartbeat after provider failure and after stale rejection", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T00:00:00.000Z"));
+    const failed = setupHeartbeatReview(async () => { throw new Error("provider failed"); });
+    await failed.service.runReview(failed.mission.id);
+    expect(vi.getTimerCount()).toBe(0);
+    failed.db.close();
+
+    const gate = deferred<{ text: string }>();
+    const stale = setupHeartbeatReview(async () => {
+      const value = await gate.promise;
+      return { text: value.text, provider: "test", model: "test" };
+    });
+    const staleResult = stale.service.runReview(stale.mission.id);
+    const oldCycle = stale.repo.getReservedReviewCycle(stale.mission.id)!;
+    stale.repo.abandonReviewCycle(oldCycle.id, "2026-06-05T00:00:01.000Z");
+    const replacement = stale.repo.reserveReviewCycle(
+      "replacement-after-loss", stale.mission.id, "owner-b",
+      "2026-06-05T00:02:00.000Z", "2026-06-05T00:00:01.000Z",
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(stale.repo.getReviewCycle(replacement.id)?.leaseExpiresAt).toBe("2026-06-05T00:02:00.000Z");
+    gate.resolve({ text: approvedJson() });
+    await expect(staleResult).rejects.toThrow(/stale|abandoned/i);
+    expect(stale.repo.get(stale.mission.id)!.finalReview).toBeNull();
+    expect(stale.repo.get(stale.mission.id)!.budget.reviewCyclesUsed).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    stale.db.close();
   });
 });
 
