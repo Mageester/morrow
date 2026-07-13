@@ -33,6 +33,28 @@ export interface ContractRequirementNodeInput {
 
 const SCHEMA_VERSION = 1;
 
+/** A durable review-cycle reservation. `status` distinguishes an in-flight
+ *  (reserved) cycle from one whose review has actually been applied. */
+export interface MissionReviewCycle {
+  id: string;
+  missionId: string;
+  sequence: number;
+  status: "reserved" | "applied";
+  reservedAt: string;
+  resolvedAt: string | null;
+}
+
+function mapReviewCycle(row: any): MissionReviewCycle {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    sequence: row.sequence,
+    status: row.status,
+    reservedAt: row.reserved_at,
+    resolvedAt: row.resolved_at ?? null,
+  };
+}
+
 function mapCriterion(row: any): MissionCriterion {
   return {
     id: row.id,
@@ -222,7 +244,15 @@ export function missionsRepository(db: Database.Database) {
       const evidence = db.prepare("SELECT * FROM mission_evidence WHERE mission_id = ? ORDER BY recorded_at ASC").all(row.id).map(mapEvidence);
       const failures = db.prepare("SELECT * FROM mission_failures WHERE mission_id = ? ORDER BY created_at ASC").all(row.id).map(mapFailure);
       const checkpoints = db.prepare("SELECT * FROM mission_checkpoints WHERE mission_id = ? ORDER BY created_at ASC").all(row.id).map(mapCheckpoint);
-      const reviewRow = db.prepare("SELECT * FROM mission_reviews WHERE mission_id = ? ORDER BY created_at DESC LIMIT 1").get(row.id) as any;
+      // The authoritative "final" review is whichever one is referenced by the
+      // mission's durable current_review_cycle_id pointer — set exactly once,
+      // atomically, when a review cycle is APPLIED (see applyReview in the
+      // mission service) — never "whichever mission_reviews row has the
+      // greatest created_at". A caller-controlled/backdated timestamp on a
+      // review record can therefore never expose an older verdict as current.
+      const reviewRow = row.current_review_cycle_id
+        ? db.prepare("SELECT * FROM mission_reviews WHERE review_cycle_id = ?").get(row.current_review_cycle_id) as any
+        : undefined;
       return {
         version: 1,
         id: row.id,
@@ -379,7 +409,12 @@ export function missionsRepository(db: Database.Database) {
     },
 
     // ── review ────────────────────────────────────────────────────────────
-    setReview(r: MissionReview): MissionReview {
+    /** Persist a review, durably tagged with the exact review cycle it belongs
+     *  to. `reviewCycleId` is required — every review application (direct or
+     *  via runReview) now goes through a reserved mission_review_cycles row
+     *  (see reserveReviewCycle), so a review can never be persisted without a
+     *  durable cycle identity to anchor it to. */
+    setReview(r: MissionReview, reviewCycleId: string): MissionReview {
       const payload = {
         criterionJudgments: r.criterionJudgments,
         regressionRisks: r.regressionRisks,
@@ -390,10 +425,56 @@ export function missionsRepository(db: Database.Database) {
         summary: r.summary,
       };
       db.prepare(
-        `INSERT INTO mission_reviews (id, mission_id, verdict, reviewer_provider, reviewer_model, payload_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(r.id, r.missionId, r.verdict, r.reviewerProvider ?? null, r.reviewerModel ?? null, JSON.stringify(payload), r.createdAt);
+        `INSERT INTO mission_reviews (id, mission_id, verdict, reviewer_provider, reviewer_model, payload_json, created_at, review_cycle_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(r.id, r.missionId, r.verdict, r.reviewerProvider ?? null, r.reviewerModel ?? null, JSON.stringify(payload), r.createdAt, reviewCycleId);
       return r;
+    },
+
+    // ── review cycles (durable ownership; see migration 30) ─────────────────
+    /** Reserve a new, durably-identified review cycle for a mission. At most
+     *  one reserved cycle may exist per mission at a time — enforced by a
+     *  partial unique index (mission_review_cycles_one_reserved), NOT merely
+     *  by this pre-check — so a concurrent second reservation attempt throws
+     *  here and writes nothing (the loser of the race). `sequence` is a
+     *  database-generated monotonic counter per mission, used as the
+     *  authoritative application order instead of any caller-supplied
+     *  timestamp. */
+    reserveReviewCycle(id: string, missionId: string, now = new Date().toISOString()): MissionReviewCycle {
+      const seq = (db.prepare("SELECT COALESCE(MAX(sequence), 0) n FROM mission_review_cycles WHERE mission_id = ?").get(missionId) as any).n + 1;
+      db.prepare(
+        `INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at)
+         VALUES (?, ?, ?, 'reserved', ?, NULL)`,
+      ).run(id, missionId, seq, now);
+      return { id, missionId, sequence: seq, status: "reserved", reservedAt: now, resolvedAt: null };
+    },
+
+    getReviewCycle(id: string): MissionReviewCycle | undefined {
+      const row = db.prepare("SELECT * FROM mission_review_cycles WHERE id = ?").get(id) as any;
+      return row ? mapReviewCycle(row) : undefined;
+    },
+
+    /** The mission's currently in-flight (reserved, not yet applied) review
+     *  cycle, if any. Its mere existence is what blocks finalize() — it is
+     *  durable DB state, not an in-memory promise, so it survives a restart. */
+    getReservedReviewCycle(missionId: string): MissionReviewCycle | undefined {
+      const row = db.prepare("SELECT * FROM mission_review_cycles WHERE mission_id = ? AND status = 'reserved'").get(missionId) as any;
+      return row ? mapReviewCycle(row) : undefined;
+    },
+
+    /** Mark a reserved cycle as applied. Idempotent-unsafe by design: calling
+     *  this twice for the same cycle is a bug in the caller, not something
+     *  this method silently tolerates — callers must check status === 'reserved'
+     *  before ever reaching here (see MissionService.applyReview). */
+    resolveReviewCycle(id: string, now = new Date().toISOString()): void {
+      db.prepare("UPDATE mission_review_cycles SET status = 'applied', resolved_at = ? WHERE id = ?").run(now, id);
+    },
+
+    /** Point the mission's single authoritative "current review" reference at
+     *  the given (just-applied) cycle. This — never mission_reviews.created_at
+     *  — is what `hydrate()` reads to resolve `mission.finalReview`. */
+    setCurrentReviewCycle(missionId: string, reviewCycleId: string, now = new Date().toISOString()): void {
+      db.prepare("UPDATE missions SET current_review_cycle_id = ?, updated_at = ? WHERE id = ?").run(reviewCycleId, now, missionId);
     },
 
     // ── events ────────────────────────────────────────────────────────────

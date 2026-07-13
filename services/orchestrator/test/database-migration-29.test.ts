@@ -250,7 +250,7 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(29);
+    expect(Math.max(...appliedIds)).toBe(30);
 
     // source_locator now exists and is queryable/writable.
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
@@ -296,7 +296,7 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(29);
+    expect(Math.max(...appliedIds)).toBe(30);
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -319,14 +319,16 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
   });
 });
 
-describe("BLOCKER 3 — fresh database (migrations 1..29 in order)", () => {
+describe("BLOCKER 3 — fresh database (migrations 1..30 in order)", () => {
   it("applies all migrations and produces the correct final schema and triggers", () => {
     const dbPath = join(tmp("ek-mig-c-"), "m.db");
     const db = openDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-    expect(appliedIds).toEqual(Array.from({ length: 29 }, (_, i) => i + 1));
-    // No migration 30 exists.
-    expect(migrations.at(-1)!.id).toBe(29);
+    expect(appliedIds).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+    // Migration 30 (durable review-cycle ownership) exists and is the latest.
+    expect(migrations.at(-1)!.id).toBe(30);
+    const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
+    expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at"]));
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -352,5 +354,107 @@ describe("BLOCKER 3 — fresh database (migrations 1..29 in order)", () => {
     // leaving a `{ missionId: null }` row.
     db.prepare("DELETE FROM missions WHERE id = ?").run(m.id);
     expect(repo.getProjectActiveMission("p1")).toBeUndefined();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MAJOR 3 — migration 29 must refuse to upgrade a database whose EXISTING
+// project_active_mission pointer is ownership-corrupt (points at a mission
+// owned by a different project, or at no mission at all), rather than
+// silently carrying the corrupt pointer forward (the previous behavior) or
+// silently dropping/rewriting it.
+// ════════════════════════════════════════════════════════════════════════════
+describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers", () => {
+  it("a cross-project pointer aborts the upgrade: openDatabase throws, migration 29 is not recorded, source_locator is not added, original data is unchanged, and a corrected retry succeeds", () => {
+    const dbPath = join(tmp("ek-mig-corrupt-"), "m.db");
+    buildHistoricalDb(dbPath, ORIGINAL_MIGRATION_28_SQL);
+
+    // Seed a genuine cross-project ownership-corrupt pointer directly at the
+    // raw (pre-migration-29) schema, exactly as a real historical database
+    // could contain — no ownership trigger exists at this schema stage.
+    const seed = new Database(dbPath);
+    const now = new Date().toISOString();
+    seed.prepare("INSERT INTO projects (id, schema_version, name, workspace_path, created_at, updated_at) VALUES (?,1,?,?,?,?)")
+      .run("proj-1", "Project One", "/tmp/proj-1", now, now);
+    seed.prepare("INSERT INTO projects (id, schema_version, name, workspace_path, created_at, updated_at) VALUES (?,1,?,?,?,?)")
+      .run("proj-2", "Project Two", "/tmp/proj-2", now, now);
+    seed.prepare(
+      `INSERT INTO missions (id, schema_version, project_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, created_at, updated_at, started_at, completed_at)
+       VALUES (?,1,?,?, 'running', 0, NULL, ?, NULL, ?, ?, ?, NULL)`,
+    ).run("mission-1", "proj-1", "Owned by proj-1", JSON.stringify({ maxUsd: null, maxAttempts: null, maxReviewCycles: 2, spentUsd: 0, attemptsUsed: 0, reviewCyclesUsed: 0 }), now, now, now);
+    // proj-2's active-mission pointer names a mission actually owned by proj-1.
+    seed.prepare(
+      `INSERT INTO project_active_mission (project_id, mission_id, schema_version, updated_at) VALUES (?,?,1,?)`,
+    ).run("proj-2", "mission-1", now);
+    seed.close();
+
+    expect(() => openDatabase(dbPath)).toThrow(/ownership-corrupt/i);
+
+    // Inspect the ON-DISK state directly (not via openDatabase, which would
+    // attempt to re-run migrations) to prove nothing partially applied.
+    const raw = new Database(dbPath);
+    try {
+      const appliedIds = (raw.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+      expect(appliedIds).toEqual(Array.from({ length: 28 }, (_, i) => i + 1)); // migration 29 (and 30) never recorded
+      expect(Math.max(...appliedIds)).toBe(28);
+
+      const cols = (raw.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+      expect(cols).not.toContain("source_locator"); // not partially added
+
+      // Original table/data remains unchanged: still the old nullable-mission_id
+      // shape, still holding the (uncorrected, still corrupt) pointer row.
+      const pamCols = (raw.prepare("PRAGMA table_info(project_active_mission)").all() as { name: string }[]).map((c) => c.name);
+      expect(pamCols).toEqual(["project_id", "mission_id", "schema_version", "updated_at"]);
+      const pointer = raw.prepare("SELECT * FROM project_active_mission WHERE project_id = ?").get("proj-2") as any;
+      expect(pointer.mission_id).toBe("mission-1");
+    } finally {
+      raw.close();
+    }
+
+    // Retry after correcting the data succeeds.
+    const fix = new Database(dbPath);
+    try {
+      fix.prepare("UPDATE project_active_mission SET project_id = 'proj-1' WHERE mission_id = 'mission-1'").run();
+    } finally {
+      fix.close();
+    }
+
+    const db = openDatabase(dbPath);
+    try {
+      const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+      expect(Math.max(...appliedAfterFix)).toBe(30);
+      const repo = missionsRepository(db);
+      expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
+      expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a pointer referencing a nonexistent mission is also refused", () => {
+    const dbPath = join(tmp("ek-mig-corrupt-missing-"), "m.db");
+    buildHistoricalDb(dbPath, ORIGINAL_MIGRATION_28_SQL);
+
+    // A dangling pointer with no corresponding mission row at all — e.g. from
+    // a hard delete performed while foreign key enforcement was off, which
+    // this seed connection deliberately leaves off to allow the insert.
+    const seed = new Database(dbPath);
+    seed.pragma("foreign_keys = OFF");
+    const now = new Date().toISOString();
+    seed.prepare("INSERT INTO projects (id, schema_version, name, workspace_path, created_at, updated_at) VALUES (?,1,?,?,?,?)")
+      .run("proj-1", "Project One", "/tmp/proj-1", now, now);
+    seed.prepare(
+      `INSERT INTO project_active_mission (project_id, mission_id, schema_version, updated_at) VALUES (?,?,1,?)`,
+    ).run("proj-1", "mission-ghost", now);
+    seed.close();
+
+    expect(() => openDatabase(dbPath)).toThrow(/ownership-corrupt/i);
+    const raw = new Database(dbPath);
+    try {
+      const appliedIds = (raw.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+      expect(Math.max(...appliedIds)).toBe(28);
+    } finally {
+      raw.close();
+    }
   });
 });

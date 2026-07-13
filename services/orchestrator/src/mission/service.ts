@@ -463,31 +463,55 @@ export class MissionService {
     }
   }
 
-  /** Run the independent reviewer as a SEPARATE execution with isolated
-   *  instructions. Transitions running → reviewing, records the verdict, and
-   *  returns the review. Does not itself grade the mission. */
-  async runReview(missionId: string): Promise<MissionReview> {
-    let mission = this.get(missionId);
-    // Reject invalid/terminal states AND an exhausted review-cycle budget
-    // BEFORE any provider spend or ledger mutation.
-    this.assertReviewApplicable(mission);
-
-    if (mission.status === "running") {
-      const now = this.now();
-      this.repo.transaction(() => {
-        // Re-validate against the freshest row inside the transition
-        // transaction, then transition into `reviewing` and append
-        // `mission.review_started` atomically — both commit or roll back
-        // together.
-        const fresh = this.repo.get(missionId)!;
-        this.assertReviewApplicable(fresh);
+  /**
+   * Reserve a durable, unambiguous review-cycle identity BEFORE any provider
+   * invocation (see migration 30 / mission_review_cycles). At most one cycle
+   * may be reserved per mission at a time — enforced by a DB-level partial
+   * unique index, not an in-memory lock — so of two concurrent callers only
+   * one ever receives a reservation; the loser throws here and writes
+   * nothing, never reaching the provider. The running → reviewing transition
+   * and the `mission.review_started` event are part of the SAME transaction
+   * as the reservation, exactly as they were part of the original
+   * status-transition transaction before this change.
+   */
+  private reserveReviewCycle(missionId: string): { cycleId: string; mission: Mission } {
+    const now = this.now();
+    let cycleId!: string;
+    this.repo.transaction(() => {
+      const fresh = this.repo.get(missionId);
+      if (!fresh) throw new MissionError(`Mission ${missionId} not found`, "not_found");
+      this.assertReviewApplicable(fresh);
+      if (this.repo.getReservedReviewCycle(missionId)) {
+        throw new MissionError(
+          `Mission ${missionId} already has a review cycle in flight; only one review cycle may be reserved at a time`,
+          "review_cycle_conflict",
+        );
+      }
+      if (fresh.status === "running") {
         assertMissionTransition(fresh.status, "reviewing");
         this.repo.setStatus(missionId, "reviewing", now);
         this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${fresh.status} → reviewing`, { from: fresh.status, to: "reviewing" }, now);
         this.repo.appendEvent(missionId, "mission.review_started", "Independent review started", {}, now);
-      });
-      mission = this.get(missionId);
-    }
+      }
+      // The DB-level partial unique index (mission_review_cycles_one_reserved)
+      // is the actual durable enforcement of "at most one reserved cycle per
+      // mission": if a true concurrent writer slipped past the check above,
+      // this INSERT itself throws and the whole transaction (including any
+      // status transition just made) rolls back.
+      cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, now).id;
+    });
+    return { cycleId, mission: this.get(missionId) };
+  }
+
+  /** Run the independent reviewer as a SEPARATE execution with isolated
+   *  instructions. Transitions running → reviewing, records the verdict, and
+   *  returns the review. Does not itself grade the mission. */
+  async runReview(missionId: string): Promise<MissionReview> {
+    // Durable reservation happens BEFORE any provider call: this is what lets
+    // a later, unambiguous cycle-B reservation fail while cycle A is still in
+    // flight, and what lets applyReview() later prove a given provider result
+    // belongs to the EXACT cycle that requested it.
+    const { cycleId, mission } = this.reserveReviewCycle(missionId);
 
     const workspace = this.deps.getWorkspacePath(mission.projectId);
     const diff = workspace ? gitDiff(workspace) : "";
@@ -501,18 +525,25 @@ export class MissionService {
     let parsed;
     let provider: string | null = null;
     let model: string | null = null;
+    // Provider (and repair-provider) cost is accumulated here but deliberately
+    // NOT written to the budget yet — it is applied inside applyReview()'s
+    // transaction, atomically with the review it paid for, and ONLY once that
+    // transaction has re-validated the review is still applicable to the
+    // EXACT cycle that requested it. A stale/rejected result therefore never
+    // mutates spentUsd (see applyReview below).
+    let usdCost = 0;
     if (this.deps.completion) {
       try {
         const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
         parsed = parseReviewVerdict(res.text, mission.criteria);
         provider = res.provider ?? null; model = res.model ?? null;
-        if (res.usdCost) this.addSpend(missionId, res.usdCost);
+        if (res.usdCost) usdCost += res.usdCost;
         if (isReviewParseFailure(parsed)) {
           const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
           const repairedParsed = parseReviewVerdict(repaired.text, mission.criteria);
           if (!isReviewParseFailure(repairedParsed)) parsed = repairedParsed;
           provider = repaired.provider ?? provider; model = repaired.model ?? model;
-          if (repaired.usdCost) this.addSpend(missionId, repaired.usdCost);
+          if (repaired.usdCost) usdCost += repaired.usdCost;
         }
       } catch {
         parsed = parseReviewVerdict("", mission.criteria); // insufficient_evidence
@@ -525,7 +556,7 @@ export class MissionService {
       id: `review-${randomUUID()}`, missionId, ...parsed,
       reviewerProvider: provider, reviewerModel: model, createdAt: this.now(),
     };
-    this.applyReview(missionId, review);
+    this.applyReview(missionId, review, { reviewCycleId: cycleId, usdCost });
 
     if (review.verdict === "revisions_required") {
       this.revisePlan(missionId, {
@@ -569,15 +600,63 @@ export class MissionService {
    * This is also the ONLY place review application is persisted, so the
    * public `setReview()` direct-application entry point is automatically
    * covered by the same validation.
+   *
+   * Durable review-cycle ownership (see migration 30): when `opts.reviewCycleId`
+   * is supplied (the runReview()/provider path), it MUST name a cycle that is
+   * still `reserved` for this exact mission — a stale, duplicate, or
+   * out-of-order provider result (the cycle already resolved, or unknown)
+   * throws here BEFORE any write, so it can never double-apply and can never
+   * mutate `spentUsd`. When no cycle id is supplied (the direct/manual
+   * `setReview()` path), a cycle is reserved-and-applied atomically in this
+   * same transaction, so direct application gains the identical guarantees.
+   * On success, `missions.current_review_cycle_id` is repointed to this exact
+   * cycle — the single authoritative reference `hydrate()` and `finalize()`
+   * use to resolve "the" review, never mission_reviews.created_at ordering.
    */
-  private applyReview(missionId: string, review: MissionReview): void {
+  private applyReview(missionId: string, review: MissionReview, opts: { reviewCycleId?: string; usdCost?: number } = {}): void {
     const now = this.now();
+    const usdCost = opts.usdCost ?? 0;
     this.repo.transaction(() => {
       const mission = this.repo.get(missionId);
       if (!mission) throw new MissionError(`Mission ${missionId} not found`, "not_found");
       this.assertReviewApplicable(mission);
-      this.repo.setReview(review);
-      const budget = { ...mission.budget, reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1 };
+
+      let cycleId: string;
+      if (opts.reviewCycleId) {
+        const cycle = this.repo.getReviewCycle(opts.reviewCycleId);
+        if (!cycle || cycle.missionId !== missionId || cycle.status !== "reserved") {
+          throw new MissionError(
+            `Mission ${missionId} review result is stale (review cycle ${opts.reviewCycleId} is not the currently reserved cycle)`,
+            "review_cycle_stale",
+          );
+        }
+        cycleId = cycle.id;
+      } else {
+        // Direct application (setReview / manual review, no provider round
+        // trip to reserve ahead of time): reserve-and-apply the cycle
+        // atomically in this same transaction.
+        if (this.repo.getReservedReviewCycle(missionId)) {
+          throw new MissionError(
+            `Mission ${missionId} already has a review cycle in flight; only one review cycle may be reserved at a time`,
+            "review_cycle_conflict",
+          );
+        }
+        cycleId = this.repo.reserveReviewCycle(`revcycle-${randomUUID()}`, missionId, now).id;
+      }
+
+      this.repo.setReview(review, cycleId);
+      this.repo.resolveReviewCycle(cycleId, now);
+      this.repo.setCurrentReviewCycle(missionId, cycleId, now);
+
+      // Provider cost is applied HERE — atomically with the review it paid
+      // for, and only now that the cycle is proven to still be the reserved,
+      // applicable one. A stale/rejected result never reaches this line, so
+      // it never mutates spentUsd.
+      const budget = {
+        ...mission.budget,
+        reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1,
+        spentUsd: mission.budget.spentUsd + usdCost,
+      };
       this.repo.updateBudget(missionId, budget, now);
 
       const approving = review.verdict === "approved" || review.verdict === "approved_with_risks";
@@ -676,9 +755,21 @@ export class MissionService {
    *
    *  • `draft` and `awaiting_criteria_approval` may never finalize — no work
    *    has been graded yet.
+   *  • A mission with a durably RESERVED (in-flight) review cycle may never
+   *    finalize, full stop — regardless of what `mission.finalReview` already
+   *    holds. This is what stops a second review cycle's in-flight provider
+   *    call from being raced by a finalize() that would otherwise grade on an
+   *    EARLIER cycle's already-persisted verdict (see mission_review_cycles /
+   *    migration 30): as long as any cycle is reserved, finalize is blocked,
+   *    independent of whether some previous cycle already has a verdict.
    *  • `reviewing` may only finalize once a final review verdict has actually
    *    been persisted (mission.finalReview); a review-in-flight mission must
-   *    never be closed out from under its own review.
+   *    never be closed out from under its own review. In normal operation this
+   *    is now subsumed by the reserved-cycle check above (a review can only be
+   *    in flight via a reserved cycle), but it is kept as a second, independent
+   *    guard against any path that could otherwise leave `reviewing` without a
+   *    persisted verdict and without a reserved cycle (e.g. a hand-corrupted
+   *    mission row in a legacy database).
    *  • Terminal statuses are handled separately by
    *    `reconcileTerminalFinalization` and never reach this assertion.
    */
@@ -689,6 +780,12 @@ export class MissionService {
     if (mission.status === "awaiting_criteria_approval") {
       throw new MissionError(`Mission ${mission.id} cannot be finalized while awaiting criteria approval`, "finalize_invalid_state");
     }
+    if (this.repo.getReservedReviewCycle(mission.id)) {
+      throw new MissionError(
+        `Mission ${mission.id} cannot be finalized while a review cycle is in flight`,
+        "finalize_review_in_flight",
+      );
+    }
     if (mission.status === "reviewing" && !mission.finalReview) {
       throw new MissionError(`Mission ${mission.id} cannot be finalized while reviewing without a persisted final review`, "finalize_invalid_state");
     }
@@ -696,15 +793,24 @@ export class MissionService {
 
   /**
    * A terminal-status early return must never silently accept a historically
-   * partial (crash-boundary) completion tuple. This inspects the durable
-   * tuple — mission status, completedAt, result, matching mission.completed
-   * event, and a terminal cursor carrying the finalize marker — and either:
-   *   • no-ops when the tuple is already fully consistent (true idempotence);
-   *   • transactionally reconciles it when components are missing but the
-   *     intended outcome is unambiguous (the persisted status is the single
-   *     source of truth being backfilled into the other components);
+   * partial (crash-boundary) completion tuple. This validates agreement
+   * across EVERY durable component of "what actually happened" — not just
+   * result.status — and either:
+   *   • no-ops when the full tuple is already fully consistent (true
+   *     idempotence);
+   *   • transactionally reconciles it when a component is missing but its
+   *     exact intended value is durably and unambiguously inferable from the
+   *     rest of the tuple;
    *   • throws a `finalization_integrity_error` when components actively
-   *     contradict each other, rather than silently overwriting history.
+   *     contradict each other, or when a component is missing and its exact
+   *     original value is NOT durably recoverable, rather than silently
+   *     overwriting or fabricating history.
+   *
+   * The validated tuple is: mission.status, mission.completedAt,
+   * mission.finalReview.verdict, MissionResult.status,
+   * MissionResult.reviewVerdict, exactly one matching mission.status_changed
+   * event, exactly one matching mission.completed event, a terminal cursor,
+   * and the finalize marker.
    *
    * `cancelled` / `failed` / `blocked` missions are reached OUTSIDE the
    * completion tuple (cancel(), recordFailure()) and carry their own
@@ -722,17 +828,42 @@ export class MissionService {
       (e) => e.type === "mission.completed" && (e.data as any)?.status === status,
     );
     const anyCompletedEvents = events.filter((e) => e.type === "mission.completed");
+    const statusChangedEvents = events.filter((e) => e.type === "mission.status_changed");
+    const matchingStatusChangedEvents = statusChangedEvents.filter((e) => (e.data as any)?.to === status);
     const cursor = this.repo.getCursor(mission.id);
     const cursorTerminal = !!cursor && cursor.allowedNextActions.length === 0;
     const hasFinalizeMarker = cursor?.lastCompletedAction === "finalize";
     const hasResult = mission.result !== null;
     const resultMatches = hasResult && mission.result!.status === status;
     const hasCompletedAt = mission.completedAt !== null;
+    const expectedReviewVerdict = mission.finalReview?.verdict ?? null;
 
-    // ── Contradiction detection: never silently overwrite history ──────────
+    // ── Contradiction / unrecoverable-loss detection: never silently
+    //    overwrite OR fabricate history ────────────────────────────────────
     if (hasResult && !resultMatches) {
       throw new MissionError(
         `Finalization integrity error: mission ${mission.id} status is ${status} but persisted result.status is ${mission.result!.status}`,
+        "finalization_integrity_error",
+      );
+    }
+    if (hasResult && mission.result!.reviewVerdict !== expectedReviewVerdict) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} persisted result.reviewVerdict (${mission.result!.reviewVerdict}) disagrees with the current final review verdict (${expectedReviewVerdict})`,
+        "finalization_integrity_error",
+      );
+    }
+    if (!hasResult) {
+      // A missing MissionResult on a terminal mission can NEVER be safely
+      // rebuilt: changedFiles, elapsed time, task/intervention counts, spend,
+      // and review verdict are all historical facts of the ORIGINAL
+      // finalize() call, and none of them are durably recoverable from
+      // current repository state or the present clock. Fabricating them
+      // (as this used to do) would silently replace real history with
+      // invented data, so this is an unconditional integrity error — there is
+      // no durable journal in this schema an exact original result could be
+      // recovered from.
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} is terminal (${status}) but has no persisted result, and its original result cannot be durably recovered`,
         "finalization_integrity_error",
       );
     }
@@ -748,11 +879,37 @@ export class MissionService {
         "finalization_integrity_error",
       );
     }
+    if (matchingStatusChangedEvents.length > 1) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} has ${matchingStatusChangedEvents.length} mission.status_changed events transitioning to ${status}`,
+        "finalization_integrity_error",
+      );
+    }
+    if (matchingStatusChangedEvents.length === 0 && statusChangedEvents.length === 0) {
+      // No status_changed event names `status` as its target, AND there is no
+      // OTHER status_changed event this mission's prior state could be
+      // reconstructed from either. The transition is not durably,
+      // unambiguously reconstructable, so this refuses to guess a `from`
+      // value rather than inventing one.
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} status is ${status} but no mission.status_changed event records the transition, and no prior status history exists to reconstruct it from`,
+        "finalization_integrity_error",
+      );
+    }
 
-    const complete = resultMatches && hasCompletedAt && matchingCompletedEvents.length === 1 && cursorTerminal && hasFinalizeMarker;
+    const complete = resultMatches
+      && hasCompletedAt
+      && matchingCompletedEvents.length === 1
+      && matchingStatusChangedEvents.length === 1
+      && cursorTerminal
+      && hasFinalizeMarker;
     if (complete) return mission; // fully consistent tuple: true idempotent no-op
 
     // ── Missing-but-unambiguous: reconcile transactionally ──────────────────
+    // Every component reconciled below is one whose exact intended value is
+    // durably inferable from the rest of the already-validated tuple — never
+    // a synthesized historical metric (see the missing-result check above,
+    // which refuses to reconcile at all rather than fabricate).
     const now = this.now();
     this.repo.transaction(() => {
       const fresh = this.repo.get(mission.id)!;
@@ -762,23 +919,21 @@ export class MissionService {
           "finalization_integrity_error",
         );
       }
-      if (!hasResult) {
-        const rebuilt = buildMissionResult(fresh, {
-          review: fresh.finalReview,
-          changedFiles: this.changedFilesFor(fresh),
-          humanInterventions: 0,
-          tasksCompleted: 0,
-          elapsedMs: fresh.startedAt ? Date.parse(now) - Date.parse(fresh.startedAt) : null,
-          spentUsd: fresh.budget.spentUsd || null,
-          finalStatus: status,
-        });
-        this.repo.setResult(mission.id, rebuilt, now);
-      }
       if (!hasCompletedAt) {
         // Backfills completed_at for a genuinely terminal status; does not
         // change status itself (already terminal) and appends no duplicate
         // status_changed event.
         this.repo.setStatus(mission.id, status, now);
+      }
+      if (matchingStatusChangedEvents.length === 0) {
+        // Reconstructable exactly because statusChangedEvents.length > 0 was
+        // proven above: the immediately-preceding recorded state is the `to`
+        // of the last status_changed event this mission ever recorded.
+        const priorTo = (statusChangedEvents.at(-1)!.data as any)?.to ?? null;
+        this.repo.appendEvent(
+          mission.id, "mission.status_changed", `Reconciled status: ${priorTo} → ${status}`,
+          { from: priorTo, to: status, reconciled: true }, now,
+        );
       }
       if (matchingCompletedEvents.length === 0) {
         this.repo.appendEvent(
@@ -1224,11 +1379,19 @@ export class MissionService {
     this.repo.updateBudget(missionId, budget, this.now());
   }
 
-  /** True when the mission has a budget cap and has reached/exceeded it. */
+  /** True when the mission has a budget cap and has reached/exceeded it.
+   *  `maxReviewCycles` is unconditional (unlike maxUsd/maxAttempts it always
+   *  has a positive default, never null — see MissionBudgetSchema), so this
+   *  agrees with the actual review-admission gate: `assertReviewApplicable`
+   *  (and, transitively, `reserveReviewCycle`) reject a new review cycle under
+   *  the exact same `reviewCyclesUsed >= maxReviewCycles` condition, so a
+   *  caller can never observe `budgetExhausted() === false` while a further
+   *  review reservation would actually be rejected, or vice versa. */
   budgetExhausted(missionId: string): boolean {
     const b = this.get(missionId).budget;
     if (b.maxUsd !== null && b.spentUsd >= b.maxUsd) return true;
     if (b.maxAttempts !== null && b.attemptsUsed >= b.maxAttempts) return true;
+    if (b.reviewCyclesUsed >= b.maxReviewCycles) return true;
     return false;
   }
 

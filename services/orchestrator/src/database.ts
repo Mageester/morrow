@@ -681,6 +681,33 @@ export const migrations:Migration[]=[
   // JS `up(db)` function (see the Migration type and openDatabase below) that
   // inspects the live schema with `PRAGMA table_info` before acting.
   ,{id:29,name:"mission_kernel_contract_ledger_cursor_fixup",up(db){
+    // 0) Validate EVERY existing non-null project_active_mission pointer
+    //    against missions.project_id BEFORE any mutation below. A historical
+    //    29d0364/f812872-era database could legally contain a pointer whose
+    //    mission_id refers to a mission owned by a DIFFERENT project (or to no
+    //    mission at all — e.g. a hard delete performed with foreign_keys off),
+    //    since no ownership trigger existed before this migration. Such a row
+    //    is ownership-corrupt, not merely stale: silently carrying it forward
+    //    (the previous behavior) preserves a false pointer, and silently
+    //    dropping or rewriting it would destroy history without operator
+    //    awareness. Either way is unacceptable, so this refuses to upgrade at
+    //    all. Because this entire function runs inside ONE transaction (see
+    //    openDatabase), throwing here rolls back everything migration 29 would
+    //    otherwise do — including the source_locator column and the
+    //    schema_migrations row for id 29 itself — leaving the database exactly
+    //    as it was, ready for the operator to fix the data and retry.
+    const corrupt=db.prepare(`
+      SELECT pam.project_id AS projectId, pam.mission_id AS missionId
+      FROM project_active_mission pam
+      LEFT JOIN missions m ON m.id = pam.mission_id
+      WHERE pam.mission_id IS NOT NULL
+        AND (m.id IS NULL OR m.project_id IS NOT pam.project_id)
+    `).all() as {projectId:string;missionId:string}[];
+    if(corrupt.length>0){
+      const detail=corrupt.map(c=>`(project_id=${c.projectId}, mission_id=${c.missionId})`).join(", ");
+      throw new Error(`migration 29: refusing to upgrade — project_active_mission contains ownership-corrupt row(s) that do not point at a mission owned by that project: ${detail}. Correct or remove the offending row(s) and retry.`);
+    }
+
     // 1) mission_requirement_nodes.source_locator — add it only if it is not
     //    already present (the edited-at-f812872 database already has it; the
     //    genuine 29d0364 database does not).
@@ -735,5 +762,41 @@ export const migrations:Migration[]=[
       SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
     END`);
   }}
+  // ── Migration 30 ────────────────────────────────────────────────────────
+  // Durable review-cycle ownership. Before this migration, "which review is
+  // authoritative" was decided by reading mission_reviews ORDER BY created_at
+  // DESC — a caller-controlled timestamp — and a second review cycle could be
+  // started (and its provider call awaited) while an EARLIER cycle's already-
+  // persisted verdict was still readable as `mission.finalReview`, letting
+  // finalize() grade and close the mission on a stale verdict while the newer
+  // cycle was still in flight. mission_review_cycles gives every review cycle
+  // a durable identity: at most one row per mission may be 'reserved' at a
+  // time (enforced by the partial unique index below, not merely in-memory
+  // state), a review can only ever be applied against the exact cycle that
+  // reserved it, and missions.current_review_cycle_id is the single
+  // authoritative pointer to the review that actually governs grading/
+  // hydration — never "whichever row has the latest created_at".
+  ,{id:30,name:"mission_review_cycles",sql:`
+    CREATE TABLE mission_review_cycles (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','applied')),
+      reserved_at TEXT NOT NULL,
+      resolved_at TEXT,
+      UNIQUE(mission_id, sequence)
+    );
+    CREATE INDEX mission_review_cycles_mission_idx ON mission_review_cycles(mission_id, sequence);
+    -- At most one in-flight (reserved) review cycle per mission, enforced
+    -- durably at the database level — not by an in-memory lock or promise.
+    CREATE UNIQUE INDEX mission_review_cycles_one_reserved ON mission_review_cycles(mission_id) WHERE status = 'reserved';
+
+    ALTER TABLE mission_reviews ADD COLUMN review_cycle_id TEXT REFERENCES mission_review_cycles(id) ON DELETE SET NULL;
+    -- The single authoritative "current review" pointer. Set only when a
+    -- review cycle is actually APPLIED (never while merely reserved), so a
+    -- finalize/hydration read always resolves to the exact cycle that most
+    -- recently completed application — sequence-ordered, never timestamp-ordered.
+    ALTER TABLE missions ADD COLUMN current_review_cycle_id TEXT REFERENCES mission_review_cycles(id) ON DELETE SET NULL;
+  `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

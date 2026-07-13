@@ -1582,16 +1582,28 @@ describe("MAJOR — legacy/partial terminal finalization", () => {
     expect(events[0]!.data.reconciled).toBe(true);
   });
 
-  it("reconciles a crash-boundary tuple missing its result row", () => {
+  // MAJOR 5 — a missing MissionResult on a terminal mission can never be
+  // safely rebuilt (changedFiles, elapsed time, task/intervention counts,
+  // spend, and review verdict are all historical facts that are not durably
+  // recoverable), so this must now raise finalization_integrity_error and
+  // write nothing, rather than fabricating a replacement result.
+  it("a missing result row raises a finalization integrity error and writes nothing (never fabricates history)", () => {
     const { service, repo, db } = setup();
     const m = completeMission(service, repo, "Missing result");
     const finalized = service.finalize(m.id);
     expect(finalized.status).toBe("completed");
     db.prepare("UPDATE missions SET result_json = NULL WHERE id = ?").run(m.id);
     expect(repo.get(m.id)!.result).toBeNull();
-    const reconciled = service.finalize(m.id);
-    expect(reconciled.result).not.toBeNull();
-    expect(reconciled.result!.status).toBe(finalized.status);
+    const before = {
+      status: repo.get(m.id)!.status,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+    expect(repo.get(m.id)!.result).toBeNull(); // still no result — never fabricated
+    expect(repo.get(m.id)!.status).toBe(before.status);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
   });
 
   it("throws an integrity error rather than silently overwriting a contradictory result", () => {
@@ -1630,6 +1642,111 @@ describe("MAJOR — legacy/partial terminal finalization", () => {
     expect(finalized.status).toBe("blocked");
     expect(repo.get(m.id)!.result).toBeNull();
     expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MAJOR 4 — the terminal tuple must validate agreement across EVERY durable
+  // component, not just result.status. Each row below corrupts exactly ONE
+  // component of an otherwise fully-consistent completed tuple and proves
+  // finalize() throws finalization_integrity_error with zero further writes.
+  // ══════════════════════════════════════════════════════════════════════════
+  describe("MAJOR 4 — terminal tuple corruption matrix", () => {
+    function snapshot(repo: ReturnType<typeof missionsRepository>, service: MissionService, missionId: string) {
+      return {
+        status: repo.get(missionId)!.status,
+        result: repo.get(missionId)!.result,
+        events: repo.listEvents(missionId).map((e) => e.type + JSON.stringify(e.data)).join("||"),
+        cursor: JSON.stringify(service.getCursor(missionId)),
+      };
+    }
+
+    function freshCompletedMission() {
+      const { service, repo, db } = setup();
+      const m = completeMission(service, repo, "Corruption matrix");
+      service.finalize(m.id);
+      return { service, repo, db, m };
+    }
+
+    it("finalReview verdict disagreeing with result.reviewVerdict → integrity error", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      const corrupted = { ...repo.get(m.id)!.result!, reviewVerdict: "revisions_required" as const };
+      db.prepare("UPDATE missions SET result_json = ? WHERE id = ?").run(JSON.stringify(corrupted), m.id);
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("missing mission.status_changed event with NO prior status history → integrity error (not reconstructable)", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      db.prepare("DELETE FROM mission_events WHERE mission_id = ? AND type = 'mission.status_changed'").run(m.id);
+      expect(repo.listEvents(m.id).some((e) => e.type === "mission.status_changed")).toBe(false);
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("missing mission.status_changed event WITH prior status history → reconciled from the last recorded transition", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      const statusChanged = repo.listEvents(m.id).filter((e) => e.type === "mission.status_changed");
+      // Delete only the LATEST status_changed (the one that transitioned into
+      // the terminal status); an earlier one (draft→running or similar)
+      // remains, so the prior state IS durably reconstructable.
+      const latest = statusChanged.at(-1)!;
+      db.prepare("DELETE FROM mission_events WHERE id = ?").run(latest.id);
+      expect(repo.listEvents(m.id).some((e) => e.type === "mission.status_changed" && (e.data as any).to === "completed")).toBe(false);
+      const reconciled = service.finalize(m.id);
+      expect(reconciled.status).toBe("completed");
+      const rebuilt = repo.listEvents(m.id).filter((e) => e.type === "mission.status_changed" && (e.data as any).to === "completed");
+      expect(rebuilt).toHaveLength(1);
+      expect((rebuilt[0]!.data as any).reconciled).toBe(true);
+    });
+
+    it("duplicate mission.status_changed events targeting the terminal status → integrity error", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      const latest = repo.listEvents(m.id).filter((e) => e.type === "mission.status_changed").at(-1)!;
+      db.prepare(
+        "INSERT INTO mission_events (id, mission_id, sequence, type, summary, data_json, created_at) VALUES (?,?,?,?,?,?,?)",
+      ).run(`${m.id}-dup-sc`, m.id, 9999, "mission.status_changed", "Duplicate", JSON.stringify(latest.data), new Date().toISOString());
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("duplicate mission.completed events → integrity error", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      const completed = repo.listEvents(m.id).find((e) => e.type === "mission.completed")!;
+      db.prepare(
+        "INSERT INTO mission_events (id, mission_id, sequence, type, summary, data_json, created_at) VALUES (?,?,?,?,?,?,?)",
+      ).run(`${m.id}-dup-comp`, m.id, 9998, "mission.completed", "Duplicate", JSON.stringify(completed.data), new Date().toISOString());
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("mission.completed event status mismatch → integrity error", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      db.prepare("UPDATE mission_events SET data_json = ? WHERE mission_id = ? AND type = 'mission.completed'")
+        .run(JSON.stringify({ status: "partially_completed" }), m.id);
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("missing MissionResult → integrity error (covered again here as part of the full matrix)", () => {
+      const { service, repo, db, m } = freshCompletedMission();
+      db.prepare("UPDATE missions SET result_json = NULL WHERE id = ?").run(m.id);
+      const before = snapshot(repo, service, m.id);
+      expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
+
+    it("a fully consistent tuple with no corruption remains a true idempotent no-op (control case)", () => {
+      const { service, repo, m } = freshCompletedMission();
+      const before = snapshot(repo, service, m.id);
+      const again = service.finalize(m.id);
+      expect(again.status).toBe("completed");
+      expect(snapshot(repo, service, m.id)).toEqual(before);
+    });
   });
 });
 
