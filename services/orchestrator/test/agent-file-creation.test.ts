@@ -248,4 +248,75 @@ describe("agent file creation under YOLO", () => {
     const verify = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.id === "verify");
     expect(verify).toMatchObject({ toolName: "run_command", status: "completed" });
   });
+
+  it("creates an ordinary source file whose name merely contains a security-related word (denied-path false-positive fix)", async () => {
+    // Reproduction: creating src/checks/secrets.js was previously rejected
+    // outright because the denied-name matcher treated "*secret*" as "the
+    // basename contains this substring anywhere" instead of recognizing real
+    // credential-file conventions. This exercises the real, unmodified
+    // PERMISSION_PROFILE.deniedNamePatterns end to end through create_file.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: "src/checks/secrets.js", content: "export function checkForSecrets() { return []; }\n", purpose: "secret-scanning check" }), done],
+        [tool("f2", "create_file", { path: "test/credential-detector.test.js", content: "test('detects', () => {});\n" }), done],
+        [tool("f3", "create_file", { path: "docs/secrets-handling.md", content: "# Secrets handling\n" }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(existsSync(join(ws, "src/checks/secrets.js"))).toBe(true);
+    expect(existsSync(join(ws, "test/credential-detector.test.js"))).toBe(true);
+    expect(existsSync(join(ws, "docs/secrets-handling.md"))).toBe(true);
+
+    const toolCalls = conversationsRepository(db).listToolCallsForTask("t");
+    for (const tc of toolCalls) {
+      expect(tc.status, `${tc.toolName} ${JSON.parse(tc.argsJson ?? "{}").path ?? ""} should not fail: ${tc.errorMessage ?? ""}`).toBe("completed");
+    }
+  });
+
+  it("still rejects real credential-store files by the same real PERMISSION_PROFILE (containment is not weakened)", async () => {
+    seedYolo(db, ws);
+    // Each denied attempt is interleaved with a successful one so the run
+    // keeps making observable progress (three consecutive no-progress turns
+    // trips an unrelated "stalled" safeguard) — this test is only about
+    // denial being real, not about recovery-loop behavior.
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: ".env", content: "API_KEY=abc123\n" }), done],
+        [tool("ok1", "create_file", { path: "ok1.txt", content: "fine\n" }), done],
+        [tool("f2", "create_file", { path: "id_rsa", content: "-----BEGIN OPENSSH PRIVATE KEY-----\n" }), done],
+        [tool("ok2", "create_file", { path: "ok2.txt", content: "fine\n" }), done],
+        [tool("f3", "create_file", { path: "config/credentials.json", content: '{"apiKey":"abc"}' }), done],
+        [tool("f4", "create_file", { path: "notes.txt", content: "safe file after the denied ones\n" }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 12 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    // None of the denied files were written to disk.
+    expect(existsSync(join(ws, ".env"))).toBe(false);
+    expect(existsSync(join(ws, "id_rsa"))).toBe(false);
+    expect(existsSync(join(ws, "config/credentials.json"))).toBe(false);
+    // The task did not crash — it kept going and completed the safe files.
+    expect(existsSync(join(ws, "ok1.txt"))).toBe(true);
+    expect(existsSync(join(ws, "ok2.txt"))).toBe(true);
+    expect(existsSync(join(ws, "notes.txt"))).toBe(true);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+
+    const toolCalls = conversationsRepository(db).listToolCallsForTask("t");
+    for (const id of ["f1", "f2", "f3"]) {
+      const call = toolCalls.find((c: any) => c.id === id);
+      expect(call).toMatchObject({ status: "failed" });
+      expect(call!.errorMessage).toMatch(/denied path pattern/i);
+    }
+  });
 });

@@ -1,4 +1,5 @@
 import type { ToolSpec, PermissionProfile } from "@morrow/contracts";
+import { DENIED_NAME_PATTERNS } from "../security/denied-name-patterns.js";
 
 /**
  * Descriptive catalog of the safe, read-only tools the agent runtime exposes.
@@ -167,7 +168,7 @@ export const PERMISSION_PROFILE: PermissionProfile = {
   shellExecution: false,
   networkAccess: "provider-only",
   writeAccess: false,
-  deniedNamePatterns: [".env*", "*secret*", "*credential*", "*password*", "*key*", "*token*", "id_*"],
+  deniedNamePatterns: DENIED_NAME_PATTERNS,
   deniedPathRules: [
     "Absolute paths are rejected",
     "Parent traversal ('..') is rejected",

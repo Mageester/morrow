@@ -90,4 +90,30 @@ describe("agent loop detection", () => {
     const finalTask = taskRepository(db).getTaskById("task-1");
     expect(finalTask?.status).toBe("completed");
   });
+
+  it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
+    seed();
+    const turns: ProviderChunk[][] = [];
+    for (let index = 0; index < 19; index++) {
+      const path = `evidence-${index}.md`;
+      writeFileSync(join(tempDir, path), `evidence ${index}`);
+      turns.push([
+        {
+          type: "tool_call",
+          toolCalls: [{ id: `read-${index}`, index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path }) } }],
+        },
+        { type: "done" },
+      ]);
+    }
+    turns.push([{ type: "text", text: "All 19 evidence files were inspected." }, { type: "done" }]);
+
+    // Coding starts with six tool iterations. Its former 3× adaptive ceiling
+    // stopped a still-progressing real consumer task exactly at turn 18.
+    await executeAgentChatTask({ db, taskId: "task-1", provider: new MockProvider({ chunks: turns }), maxTurns: 6 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
+    expect(events.filter((event) => event.type === "assistant.turn_started")).toHaveLength(20);
+    expect(events.some((event) => event.payload?.reason === "turn_budget_reached")).toBe(false);
+  });
 });

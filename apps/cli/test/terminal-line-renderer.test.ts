@@ -125,6 +125,19 @@ describe("LineRenderer (non-interactive)", () => {
     expect(stderr.split("\n").filter((line) => line.includes("a.ts"))).toHaveLength(1);
   });
 
+  it("does not duplicate a created file when its persisted write evidence follows the tool completion", () => {
+    const { stderr } = capture(
+      stream([
+        { type: "tool.start", id: "create", name: "create_file", purpose: "src/checks/secrets.js" },
+        { type: "tool.end", id: "create", status: "completed", elapsedMs: 2 },
+        { type: "patch.applied", files: ["src/checks/secrets.js"] },
+      ]),
+      { showActivity: true, showSummary: false },
+    );
+
+    expect(stderr.split("\n").filter((line) => line.includes("src/checks/secrets.js"))).toHaveLength(1);
+  });
+
   it("tells the recovery story once per stage, grouped", () => {
     const { stderr } = capture(
       stream([
@@ -222,7 +235,9 @@ describe("LineRenderer (non-interactive)", () => {
 
     expect(cancelled).toContain("Task cancelled");
     expect(interrupted).toContain("Task interrupted");
-    expect(stalled).toContain("Task paused");
-    expect(budget).toContain("Task budget reached");
+    expect(stalled).toContain("Paused");
+    expect(stalled).toContain("Reason: No progress");
+    expect(budget).toContain("Paused");
+    expect(budget).toContain("Reason: Turn budget reached");
   });
 });

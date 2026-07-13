@@ -62,6 +62,15 @@ describe("slash-command completion", () => {
     expect(lines[5]).toContain("more");
   });
 
+  it("scrolls the visible window to keep a lower selected command on screen", () => {
+    const matches = filterCommands("/", SLASH_COMMANDS);
+    const selected = 12;
+    const lines = renderMenu(matches, plain, { selected, max: 5, unicode: false });
+
+    expect(lines.join("\n")).toContain(`/${matches[selected]!.name}`);
+    expect(lines.find((line) => line.includes(`/${matches[selected]!.name}`))).toContain("> ");
+  });
+
   it("wraps selection at both ends", () => {
     expect(clampSelection(-1, 3)).toBe(2);
     expect(clampSelection(3, 3)).toBe(0);

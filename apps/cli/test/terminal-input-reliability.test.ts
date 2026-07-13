@@ -4,6 +4,7 @@ import { Output, stripAnsi } from "../src/cli/output.js";
 import { composeApp } from "../src/terminal/app-view.js";
 import { initialState, reduce, type TerminalState } from "../src/terminal/state.js";
 import type { SessionMeta } from "../src/terminal/events.js";
+import { SLASH_COMMANDS } from "../src/terminal/commands.js";
 
 const ctx: KeyContext = { commands: [], paletteItems: [] };
 const plain = new Output({ json: false, quiet: false, color: false });
@@ -134,6 +135,16 @@ describe("input composer reliability (pure reducer proofs)", () => {
     expect(res.state.buffer).toBe("/mod");
   });
 
+  it("completes a slash subcommand after the command name", () => {
+    const slashCtx: KeyContext = { commands: SLASH_COMMANDS, paletteItems: [] };
+    let s = initialInputState();
+    for (const char of "/mode b") s = reduceKey(s, { str: char }, slashCtx).state;
+
+    const result = reduceKey(s, { name: "tab" }, slashCtx);
+
+    expect(result.state.buffer).toBe("/mode build ");
+  });
+
   it("treats a single large printable run (chunked paste) as text, never control bytes", () => {
     const big = "x".repeat(5000);
     const s = reduceKey(initialInputState(), { str: big }, ctx).state;
@@ -148,9 +159,10 @@ describe("frame cursor math and narrow-terminal rendering", () => {
     const frame = frameFor(input, 80, 24);
     const line = stripAnsi(frame.lines[frame.cursor.row] ?? "");
     // The caret must sit on the line that actually contains the buffer text,
-    // not on the separator above it (the off-by-one this slice fixed).
+    // not on the border above it.
     expect(line).toContain("hello");
-    expect(frame.cursor.col).toBe(2 + "hello".length);
+    // margin(2) + left border char(1) + pad(1) + prompt width(2) + text.
+    expect(frame.cursor.col).toBe(2 + 1 + 1 + 2 + "hello".length);
   });
 
   it("places the caret on the correct visual row for a multiline buffer", () => {

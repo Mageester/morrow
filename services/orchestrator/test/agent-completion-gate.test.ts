@@ -91,6 +91,40 @@ describe("agent completion gate", () => {
     expect(terminalEvents).toHaveLength(1);
   });
 
+  it("does not report completed when a provider ends after tools without a final answer", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 6 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("t").some((e: any) => e.type === "task.completed")).toBe(false);
+  });
+
+  it("retries one empty post-tool provider turn before interrupting", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [done],
+        [text("verified after transient empty provider response"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after transient empty provider response");
+  });
+
   it("does not report completed when a final node --check exits non-zero", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({

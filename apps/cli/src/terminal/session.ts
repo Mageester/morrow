@@ -18,8 +18,8 @@ import type { AgentMode } from "@morrow/contracts";
 import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
-import { composeApp } from "./app-view.js";
-import { glyphs, statsLines } from "./view.js";
+import { composeApp, type OverlayPanel } from "./app-view.js";
+import { glyphs, statsLines, contextLimit, hardWrapLine } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -35,6 +35,7 @@ import { formatMissionResult, formatTaskTree, formatLiveCockpit } from "./missio
 import { buildTaskReport, type ReportKind } from "./output-report.js";
 import { resolveTaskReference } from "./task-reference.js";
 import { composePaintBody, positionAndClearBelow } from "./paint.js";
+import type { RecentActivityItem } from "./startup-view.js";
 
 const CURSOR_HIDE = "\x1b[?25l";
 const CURSOR_SHOW = "\x1b[?25h";
@@ -58,8 +59,17 @@ export interface ApprovalView {
   projectId: string;
 }
 
+export interface SessionRouting {
+  provider: string;
+  model: string;
+  preset: string;
+  fallback: boolean;
+  overridden: boolean;
+  privacy: string;
+}
+
 export interface SessionBackend {
-  send(text: string, opts: SendOptions): Promise<{ taskId: string }>;
+  send(text: string, opts: SendOptions): Promise<{ taskId: string; routing?: SessionRouting }>;
   subscribe(taskId: string, signal: AbortSignal, after?: number): AsyncIterable<RawTaskEvent>;
   cancel(taskId: string): Promise<void>;
   resume(taskId: string): Promise<void>;
@@ -133,6 +143,8 @@ export interface SessionDeps {
   onHistory?: (line: string) => void;
   now?: () => number;
   maxFps?: number;
+  /** Real, project-scoped recent activity for the startup panel. */
+  recentActivity?: RecentActivityItem[];
 }
 
 export class InteractiveSession {
@@ -153,9 +165,6 @@ export class InteractiveSession {
   private lastTaskElapsedMs: number | null = null;
   private outputViewer: { title: string; lines: string[] } | null = null;
   private pendingApproval: ApprovalView | null = null;
-  /** True once we've told the user this busy stretch that their keystroke isn't
-   *  being applied yet — so we notify once per stretch, not once per keystroke. */
-  private busyInputNotified = false;
   /** True only for the brief, atomic window where a one-time out-of-band
    *  scrollback write is in flight (see `emitScrollbackReport`). The normal
    *  per-frame paint loop must not run during that window — two subsystems
@@ -182,6 +191,7 @@ export class InteractiveSession {
   private readonly onResize = () => this.requestPaint(true);
   private readonly onExit = () => this.teardown();
   private readonly onKey = (str: string | undefined, key: readline.Key) => this.handleKey(str, key);
+  private readonly recentActivity: RecentActivityItem[];
 
   constructor(private readonly deps: SessionDeps) {
     this.meta = deps.meta;
@@ -190,6 +200,7 @@ export class InteractiveSession {
     this.input = initialInputState(deps.history ?? []);
     this.now = deps.now ?? Date.now;
     this.minIntervalMs = Math.max(1, Math.floor(1000 / (deps.maxFps ?? 30)));
+    this.recentActivity = deps.recentActivity ?? [];
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
     this.keyCtx = { commands: this.commands, paletteItems };
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
@@ -258,19 +269,14 @@ export class InteractiveSession {
     }
 
     if (this.busy) {
-      // Only cancellation and repaint are meaningful while a task runs.
+      // Cancellation and Mission Control always short-circuit. Everything
+      // else falls through to the ordinary editor below: the input stays
+      // fully live while a task runs — slash commands still execute
+      // immediately (`onSubmit` never routes them through `runTask`), and
+      // ordinary text is queued as a redirect rather than blocked or dropped.
       if (k.ctrl && k.name === "c") return this.interruptBusy();
       if (k.ctrl && k.name === "l") return void this.fullRepaint();
       if (k.ctrl && k.name === "t") return void this.showMissionControl();
-      this.input = { ...this.input, confirmExit: false };
-      // Never silently drop input: tell the user once per busy stretch (not
-      // once per keystroke) that typing isn't being applied yet.
-      if (!this.busyInputNotified) {
-        this.busyInputNotified = true;
-        this.pushNotice("info", "Morrow is still working. Press Ctrl+C to stop it or wait before submitting.");
-        this.requestPaint(false);
-      }
-      return;
     }
 
     // Ctrl+T opens mission control.
@@ -316,10 +322,10 @@ export class InteractiveSession {
   }
 
   /** Insert a completed bracketed paste as one atomic, multi-line edit. Pastes
-   *  are ignored while a task streams, an approval is pending, or an overlay is
-   *  open — the same contexts where typed editing is suppressed. */
+   *  are ignored while an approval is pending or an overlay is open — the
+   *  input stays live while a task streams, same as typed editing. */
   private applyPaste(text: string): void {
-    if (this.busy || this.pendingApproval || this.input.overlay !== "none") return;
+    if (this.pendingApproval || this.input.overlay !== "none") return;
     const clean = normalizePaste(text);
     if (!clean) return;
     this.input = insertPaste(this.input, clean);
@@ -348,8 +354,18 @@ export class InteractiveSession {
     const line = value.trim();
     if (!line) return void this.requestPaint(false);
     this.deps.onHistory?.(line);
+    // Slash commands always execute immediately, whether or not a task is
+    // running — they are never turned into a task message.
     if (line.startsWith("/")) return void this.onSlash(line);
+    if (this.busy) return void this.queueRedirect(line);
     await this.runTask(line);
+  }
+
+  /** Ordinary text submitted while a task streams: held (never silently
+   *  dropped), shown distinctly from both the activity feed and slash-command
+   *  notices, and sent as the next message once the running task ends. */
+  private queueRedirect(line: string): void {
+    this.applyEvent({ type: "redirect.queued", text: line });
   }
 
   // ── Slash commands handled natively in the frame ───────────────────────────
@@ -395,7 +411,7 @@ export class InteractiveSession {
           this.pushNotice("warn", "YOLO only applies in Build mode. Use /mode build first.");
         } else {
           if (arg === "status") {
-            this.pushNotice("info", yoloStatusText(this.settings.autoApprove));
+            this.pushYoloNotice("info", yoloStatusText(this.settings.autoApprove));
             return void this.requestPaint(false);
           }
           if (arg === "policy") {
@@ -404,7 +420,7 @@ export class InteractiveSession {
           }
           this.settings.autoApprove = arg === "on" ? true : arg === "off" ? false : !this.settings.autoApprove;
           this.refreshModeLabel();
-          this.pushNotice(this.settings.autoApprove ? "warn" : "info", yoloStatusText(this.settings.autoApprove));
+          this.pushYoloNotice(this.settings.autoApprove ? "warn" : "info", yoloStatusText(this.settings.autoApprove));
         }
         return void this.requestPaint(false);
       }
@@ -412,8 +428,28 @@ export class InteractiveSession {
         this.settings.autoApprove = false;
         this.refreshModeLabel();
         if (this.currentTaskId) void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
-        this.pushNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
+        this.pushYoloNotice("warn", "Panic stop: YOLO disabled and active session task cancelled.");
         return void this.requestPaint(true);
+      case "pause":
+        if (!this.busy || !this.currentTaskId) {
+          this.pushNotice("info", "No running task to pause.");
+        } else {
+          void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
+          this.pushNotice("info", "Pausing after the current step — resume with /continue.");
+        }
+        return void this.requestPaint(true);
+      case "stop": {
+        if (!this.busy || !this.currentTaskId) {
+          this.pushNotice("info", "No running task to stop.");
+          return void this.requestPaint(false);
+        }
+        const toolCount = this.term.tools.length;
+        const files = [...new Set(this.term.patches.filter((p) => p.applied).flatMap((p) => p.files))];
+        const preserved = [`${toolCount} tool call${toolCount === 1 ? "" : "s"}`, ...(files.length > 0 ? [`${files.length} changed file${files.length === 1 ? "" : "s"}`] : [])].join(" and ");
+        void this.deps.backend.cancel(this.currentTaskId).catch(() => {});
+        this.pushNotice("warn", `Stopping — preserved ${preserved}.`);
+        return void this.requestPaint(true);
+      }
       case "continue":
         await this.continueTask();
         return;
@@ -464,13 +500,8 @@ export class InteractiveSession {
         await this.showChangesDetail();
         return void this.requestPaint(false);
       case "context": {
-        if (this.term.contextUsage) {
-          const u = this.term.contextUsage;
-          const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-          this.pushNotice("info", `Context: ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)  ·  ${u.method}${u.compactedGroups > 0 ? `  ·  ${u.compactedGroups} groups compacted` : ""}${u.removedGroups > 0 ? `  ·  ${u.removedGroups} groups trimmed` : ""}`);
-        } else {
-          this.pushNotice("info", "Context usage not available yet. Start a conversation first.");
-        }
+        const usage = this.contextUsageText();
+        this.pushNotice("info", usage ? `Context: ${this.resolvedModelText()}  ·  ${usage}` : "Context usage not available yet. Start a conversation first.");
         return void this.requestPaint(false);
       }
       case "diff":
@@ -752,7 +783,7 @@ export class InteractiveSession {
       `${o.gray("project")}   ${this.meta.projectName}`,
       `${o.gray("workspace")} ${this.meta.workspacePath}`,
       `${o.gray("mode")}       ${mode}`,
-      `${o.gray("model")}      ${this.meta.provider}/${this.meta.model}`,
+      `${o.gray("model")}      ${this.resolvedModelText()}`,
       `${o.gray("branch")}     ${this.meta.branch ?? "—"}`,
     ];
     // Git dirty state (cheap if getGitStatus is available).
@@ -763,14 +794,10 @@ export class InteractiveSession {
         lines.push(`${o.gray("git")}        ${dirty === 0 ? o.green("clean") : o.yellow(`${dirty} changed`)}${git.ahead > 0 || git.behind > 0 ? `  ·  ${git.ahead}↑ ${git.behind}↓` : ""}`);
       }
     }
-    // Context usage if available.
-    if (this.term.contextUsage) {
-      const u = this.term.contextUsage;
-      const pct = u.maxTokens > 0 ? Math.round((u.usedTokens / u.maxTokens) * 100) : 0;
-      lines.push(`${o.gray("context")}    ${u.usedTokens}/${u.maxTokens} tokens (${pct}%)`);
-    } else {
-      lines.push(`${o.gray("context")}    ${o.gray("not available yet")}`);
-    }
+    // Context usage if available — same source of truth as /context, so the
+    // two commands can never disagree.
+    const contextText = this.contextUsageText();
+    lines.push(`${o.gray("context")}    ${contextText ?? o.gray("not available yet")}`);
     // Permission state.
     const perm = this.settings.autoApprove ? o.yellow("YOLO (auto-approve)") : "approval-gated";
     lines.push(`${o.gray("permissions")} ${perm}`);
@@ -1002,7 +1029,12 @@ export class InteractiveSession {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + report.replace(/\n/g, "\r\n") + "\r\n";
+    // Pre-wrap every line to the terminal's own width instead of relying on
+    // its native auto-wrap: a resize between now and whenever this
+    // scrollback is read back can otherwise reflow it unpredictably, and
+    // auto-wrap can interact badly with the following cursor position write.
+    const wrapped = report.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
+    const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + wrapped + "\r\n";
     io.write(body);
     this.reportWriteInProgress = false;
     this.requestPaint(true);
@@ -1376,15 +1408,15 @@ export class InteractiveSession {
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
     this.streamStart = this.now();
-    this.busyInputNotified = false;
     this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
     this.requestPaint(true);
     try {
-      const { taskId } = await this.deps.backend.send(text, { ...this.settings });
+      const { taskId, routing } = await this.deps.backend.send(text, { ...this.settings });
       this.currentTaskId = taskId;
       this.lastTaskId = taskId;
+      if (routing) this.applyEvent({ type: "routing", ...routing });
       for await (const raw of this.deps.backend.subscribe(taskId, abort.signal)) {
         if (raw.type === "plan.created" || raw.type === "step.started" || raw.type === "step.completed") {
           void this.refreshPlan(taskId);
@@ -1414,6 +1446,17 @@ export class InteractiveSession {
       this.streamAbort = null;
       this.requestPaint(true);
     }
+    await this.sendNextQueuedRedirect();
+  }
+
+  /** Send the oldest queued redirect (if any) as the next task, once the
+   *  session is still active — chains through the whole queue in order. */
+  private async sendNextQueuedRedirect(): Promise<void> {
+    if (!this.active) return;
+    const next = this.term.queuedMessages[0];
+    if (next === undefined) return;
+    this.applyEvent({ type: "redirect.sent" });
+    await this.runTask(next);
   }
 
   private async continueTask(): Promise<void> {
@@ -1423,7 +1466,6 @@ export class InteractiveSession {
     }
     this.busy = true;
     this.streamStart = this.now();
-    this.busyInputNotified = false;
     this.input = { ...this.input, confirmExit: false };
     const abort = new AbortController();
     this.streamAbort = abort;
@@ -1451,6 +1493,7 @@ export class InteractiveSession {
       this.streamAbort = null;
       this.requestPaint(true);
     }
+    await this.sendNextQueuedRedirect();
   }
 
   private async refreshPlan(taskId: string): Promise<void> {
@@ -1514,6 +1557,67 @@ export class InteractiveSession {
   }
 
   /**
+   * Push a notice that asserts the *current* YOLO permission state (an on/
+   * off/status toggle result, or /panic's forced-off), first dropping any
+   * earlier such notice still sitting in the bounded notices list. Without
+   * this, an "on" notice followed soon after by an "off" notice (or vice
+   * versa) can both still be visible in the same frame — two contradictory
+   * "current state" claims at once. The header/`/permissions`/`/yolo
+   * status` all read `settings.autoApprove` directly and are unaffected;
+   * this only prevents a *stale* state-change announcement from lingering
+   * beside the current one.
+   */
+  private pushYoloNotice(level: "info" | "warn", text: string): void {
+    this.term = { ...this.term, notices: this.term.notices.filter((n) => !n.text.startsWith("YOLO ") && !n.text.startsWith("Panic stop:")) };
+    this.pushNotice(level, text);
+  }
+
+  /**
+   * The actually-served provider/model for this task, from `provider.usage`
+   * (which reflects live routing/fallback resolution — see
+   * task-event-adapter.ts's `provider.usage` case), falling back to the
+   * configured value only when no task has reported usage yet. Every
+   * consumer that shows "which model" (`/status`, `/context`) must read
+   * this instead of `this.meta.provider/model` directly, so a session that
+   * never pinned a model doesn't show a stale "auto" forever once routing
+   * has actually resolved something concrete.
+   */
+  private resolvedModelText(): string {
+    // A provider usage event is the authoritative post-fallback answer for
+    // the current task. Before the first response (or for a task that fails
+    // before usage), the send response already contains the resolved route;
+    // never regress to the configured `auto/auto` label in that interval.
+    const u = this.term.activeUsage;
+    if (u?.provider && u.model) return `${u.provider}/${u.model}`;
+    const routing = this.term.routing;
+    if (routing?.provider && routing.model) return `${routing.provider}/${routing.model}`;
+    const historical = this.term.usage;
+    return historical?.provider && historical.model ? `${historical.provider}/${historical.model}` : `${this.meta.provider}/${this.meta.model}`;
+  }
+
+  /**
+   * Single source of truth for the context-usage summary text. `/context`
+   * and `/status` must both call this instead of independently recomputing
+   * a percentage from raw fields — that drift (each reading `contextUsage.
+   * maxTokens`, which gets reset to 0 by nearly every mid-turn usage event)
+   * is exactly what let used/max/percent contradict each other before.
+   * Returns null when no context usage has been reported yet, and reports
+   * an unknown limit honestly instead of a guessed/generic number.
+   */
+  private contextUsageText(): string | null {
+    const cu = this.term.contextUsage;
+    if (!cu) return null;
+    const limit = contextLimit(this.term);
+    const pct = limit && limit > 0 ? (cu.percent ?? Math.round((cu.usedTokens / limit) * 100)) : null;
+    const tokens = limit && limit > 0 ? `${cu.usedTokens}/${limit} tokens (${pct}%)` : `${cu.usedTokens} tokens (limit unknown)`;
+    const extras = [
+      cu.compactedGroups > 0 ? `${cu.compactedGroups} groups compacted` : null,
+      cu.removedGroups > 0 ? `${cu.removedGroups} groups trimmed` : null,
+    ].filter((x): x is string => x !== null);
+    return [tokens, cu.method, ...extras].join("  ·  ");
+  }
+
+  /**
    * Which subsystem owns the terminal right now. Derived — never a second,
    * separately maintained flag — so it can't drift out of sync with the
    * state it describes. Exactly one thing may write to the terminal at a
@@ -1559,16 +1663,24 @@ export class InteractiveSession {
     // While busy the elapsed timer feeds the footer; after a task it feeds
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
-    const frame = composeApp(this.term, this.input, out, unicode, this.keyCtx, {
+    const overlayPanel = this.currentOverlayPanel();
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
       ...(elapsedMs !== null ? { elapsedMs } : {}),
       promptLabel,
       promptWidth: 2,
+      nowMs: this.now(),
     });
 
-    const lines = this.pendingApproval ? this.approvalFrameLines() : this.input.overlay === "mission" ? this.missionFrameLines() : this.input.overlay === "output" || this.input.overlay === "tasktree" ? this.outputFrameLines() : frame.lines;
+    // Every state — startup, live mission, and every overlay (approval,
+    // /status, /output, Mission Control) — now paints through the same
+    // `composeApp` shell: identity header, bounded mission body, bordered
+    // input, status footer. No overlay gets its own unclipped, hand-rolled
+    // full-screen replacement, so every line is guaranteed width-safe and
+    // closing an overlay always restores exactly the frame underneath it.
+    const lines = frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
       return;
@@ -1582,83 +1694,94 @@ export class InteractiveSession {
     io.write(out2);
   }
 
-  private approvalFrameLines(): string[] {
+  /** The active overlay's content, if any — a pending approval, Mission
+   *  Control, or an /output-family viewer (/status, /output, /diff,
+   *  /context, and the rest all set `outputViewer` the same way). Returns
+   *  `null` for the ordinary live-chat frame. */
+  private currentOverlayPanel(): OverlayPanel | null {
+    if (this.pendingApproval) return this.approvalOverlayPanel();
+    if (this.input.overlay === "mission") return this.missionOverlayPanel();
+    if (this.input.overlay === "output" || this.input.overlay === "tasktree") return this.outputOverlayPanel();
+    return null;
+  }
+
+  private approvalOverlayPanel(): OverlayPanel {
     const ap = this.pendingApproval!;
     const out = this.deps.out;
     const lines: string[] = [];
-    for (const l of this.composeBaseLines()) lines.push(l);
-    lines.push("");
+    let title: string;
 
     if (ap.kind === "command") {
       const d = commandApprovalView(ap.details);
       const risk = riskLabel(d.risk);
       const glyph = riskGlyph(risk);
-      const colorFn = out[riskColor(risk)];
 
-      lines.push(out.bold(`  Command approval  ${colorFn(glyph + " " + risk + " risk")}`));
-      lines.push(`    ${out.gray("run:")} ${d.commandLine}`);
-      lines.push(`    ${out.gray("dir:")} ${d.cwd}`);
-      lines.push(`    ${out.gray("why:")} ${d.purpose}`);
+      title = `Command approval  ${out.colorize(riskColor(risk), glyph + " " + risk + " risk")}`;
+      lines.push(`${out.gray("run:")} ${d.commandLine}`);
+      lines.push(`${out.gray("dir:")} ${d.cwd}`);
+      lines.push(`${out.gray("why:")} ${d.purpose}`);
       if (d.preview) {
-        lines.push(out.gray("    ── preview ──"));
+        lines.push(out.gray("── preview ──"));
         for (const previewLine of String(d.preview).split(/\r?\n/).slice(0, 5)) {
-          lines.push(`    ${out.gray("│")} ${previewLine}`);
+          lines.push(`${out.gray("│")} ${previewLine}`);
         }
-        lines.push(out.gray("    ──"));
+        lines.push(out.gray("──"));
       }
       lines.push("");
       // Auto-approved actions shown when YOLO is on.
       if (this.settings.autoApprove) {
-        lines.push(out.yellow("  ⚡ YOLO active — projects edits & commands are auto-approved."));
-        lines.push(out.gray("  Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
+        lines.push(out.yellow("⚡ YOLO active — projects edits & commands are auto-approved."));
+        lines.push(out.gray("Hard blocks: secrets, privilege escalation, destructive git, workspace escape, force push."));
         lines.push("");
       }
-      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.gray(`permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
       lines.push(out.yellow(approvalActionsLine("approve")));
-      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     } else {
       const d = changeSetApprovalView(ap.details);
-      lines.push(out.bold("  Patch approval"));
-      lines.push(`    ${out.gray("files:")} ${d.filesLabel}`);
+      title = "Patch approval";
+      lines.push(`${out.gray("files:")} ${d.filesLabel}`);
       if (d.additions !== undefined || d.deletions !== undefined) {
         const churn = [d.additions > 0 ? out.green(`+${d.additions}`) : "", d.deletions > 0 ? out.red(`-${d.deletions}`) : ""].filter(Boolean).join(" ");
-        if (churn) lines.push(`    ${out.gray("changes:")} ${churn}`);
+        if (churn) lines.push(`${out.gray("changes:")} ${churn}`);
       }
-      lines.push(`    ${out.gray("why:")} ${d.explanation}`);
+      lines.push(`${out.gray("why:")} ${d.explanation}`);
       if (d.diffPreview) {
-        lines.push(out.gray("    ── diff preview ──"));
+        lines.push(out.gray("── diff preview ──"));
         for (const diffLine of String(d.diffPreview).split(/\r?\n/).slice(0, 8)) {
           const trimmed = diffLine.length > 80 ? diffLine.slice(0, 77) + "…" : diffLine;
-          lines.push(`    ${out.gray("│")} ${trimmed}`);
+          lines.push(`${out.gray("│")} ${trimmed}`);
         }
-        lines.push(out.gray("    ──"));
+        lines.push(out.gray("──"));
       }
       lines.push("");
       if (this.settings.autoApprove) {
-        lines.push(out.yellow("  ⚡ YOLO active — patches are auto-approved."));
-        lines.push(out.gray("  Hard blocks: external writes, credential files, system paths."));
+        lines.push(out.yellow("⚡ YOLO active — patches are auto-approved."));
+        lines.push(out.gray("Hard blocks: external writes, credential files, system paths."));
         lines.push("");
       }
-      lines.push(out.gray(`  permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
+      lines.push(out.gray(`permission mode: ${modeLabel(this.settings.mode, this.settings.autoApprove)}`));
       lines.push(out.yellow(approvalActionsLine("apply")));
-      lines.push(out.gray("  Enter does nothing here — press y, s, p, or n."));
     }
-    return lines;
+    return {
+      title,
+      lines,
+      footerHint: "y approve · n deny · s trust session · p trust pattern — Enter does nothing here",
+      inputPlaceholder: "Waiting for approval — y/n/s/p",
+    };
   }
 
-  private outputFrameLines(): string[] {
-    const out = this.deps.out;
+  private outputOverlayPanel(): OverlayPanel {
     const viewer = this.outputViewer;
-    if (!viewer) return this.composeBaseLines();
-    const limit = Math.max(4, this.deps.io.rows - 6);
-    return [out.bold(`  Output · ${viewer.title}`), out.gray("  Esc closes · output retained in task record"), "", ...viewer.lines.slice(-limit)];
+    if (!viewer) return { title: "Output", lines: [] };
+    // Clipping (if the viewer has more lines than fit) is `composeApp`'s job —
+    // it knows the real available height for this frame; a second, smaller
+    // budget computed here would double-clip and could drop the title/lead
+    // lines a naive tail-slice keeps last.
+    return { title: `Output · ${viewer.title}`, lines: viewer.lines };
   }
 
-  private missionFrameLines(): string[] {
+  private missionOverlayPanel(): OverlayPanel {
     const out = this.deps.out;
-    const base = this.composeBaseLines();
-    const available = Math.max(6, this.deps.io.rows - base.length - 4);
-
     const tabs = ["Task Tree", "Live State", "Mission Result"];
     const tabsLine = tabs
       .map((label, i) => {
@@ -1666,45 +1789,15 @@ export class InteractiveSession {
         return i === this.missionTab ? out.bold(`${prefix}${label}`) : out.gray(`${prefix}${label}`);
       })
       .join(out.gray("  |  "));
+    const rule = out.gray("─".repeat(Math.min(60, Math.max(4, this.deps.io.columns - 6))));
 
-    const lines: string[] = [
-      ...base,
-      "",
-      out.bold("  Mission Control"),
-      `  ${tabsLine}`,
-      out.gray("  " + "─".repeat(Math.min(60, this.deps.io.columns - 2))),
-    ];
+    let content: string[];
+    if (this.missionTab === 0 && this.missionCache.tree) content = this.missionCache.tree;
+    else if (this.missionTab === 1 && this.missionCache.cockpit) content = this.missionCache.cockpit;
+    else if (this.missionTab === 2 && this.missionCache.result) content = this.missionCache.result;
+    else content = ["Loading…"];
 
-    let content: string[] = [];
-    if (this.missionTab === 0 && this.missionCache.tree) {
-      content = this.missionCache.tree;
-    } else if (this.missionTab === 1 && this.missionCache.cockpit) {
-      content = this.missionCache.cockpit;
-    } else if (this.missionTab === 2 && this.missionCache.result) {
-      content = this.missionCache.result;
-    } else {
-      content = ["Loading…"];
-    }
-
-    lines.push("");
-    for (const line of content.slice(0, available)) {
-      lines.push(`  ${line}`);
-    }
-
-    lines.push("");
-    lines.push(out.gray("  ← → or 1/2/3 to switch tabs · Esc to close"));
-    return lines;
-  }
-
-  private composeBaseLines(): string[] {
-    const { io, out, unicode } = this.deps;
-    return composeApp(this.term, this.input, out, unicode, this.keyCtx, {
-      columns: io.columns,
-      rows: io.rows,
-      tick: this.tick,
-      promptLabel: out.green(unicode ? "› " : "> "),
-      promptWidth: 2,
-    }).lines.slice(0, -4); // drop separator + input + completion + footer
+    return { title: "Mission Control", subheading: [tabsLine, rule], lines: content };
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────

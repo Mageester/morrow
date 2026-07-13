@@ -267,7 +267,7 @@ describe("interactive session: streaming, cancellation, resize", () => {
     expect(resolved).toBe(true);
   });
 
-  it("busy keystrokes never silently disappear: one clear notice, no buffering (P1-1)", async () => {
+  it("the input stays live while a task runs: typing is not blocked or dropped (Interactive Mission Console)", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();
     const gate = new EventGate();
@@ -283,23 +283,108 @@ describe("interactive session: streaming, cancellation, resize", () => {
     gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
     await tick();
 
-    // Type a whole sentence while busy — none of it should land in the input
-    // line (it never reaches the pure InputState/buffer, and never appears
-    // anywhere in the rendered frame)...
-    typeText(stdin, "this message should not silently disappear");
+    // Typing while the task is still streaming reaches the real input buffer
+    // (not blocked) and is visible in the painted frame.
+    typeText(stdin, "keep going");
     await tick();
     const snap = app.snapshot();
     expect(snap.status).toBe("streaming");
-    expect(io.writes.join("")).not.toContain("this message should not silently disappear");
+    expect(io.writes.join("")).toContain("keep going");
+    // Never a stale "still working" interruption notice — the input itself
+    // proves it's live.
+    expect(snap.notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
 
-    // ...and the user gets told exactly once, not once per keystroke.
-    const busyNotices = snap.notices.filter((n) => n.text.includes("still working"));
-    expect(busyNotices.length).toBe(1);
+    // Ctrl+C still cancels the running task (unchanged behavior), then a
+    // second Ctrl+C exits — persistent input doesn't change this contract.
+    ctrlC(stdin);
+    await tick();
+    ctrlC(stdin);
+    gate.end();
+    await done;
+  });
 
-    ctrlC(stdin); // cancel
+  it("ordinary text submitted while a task runs is queued as a redirect, shown distinctly, and sent once the task ends", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const sent: string[] = [];
+    const backend: SessionBackend = {
+      ...makeBackend(gate, () => {}),
+      send: async (text) => {
+        sent.push(text);
+        return { taskId: `task-${sent.length}` };
+      },
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    expect(sent).toEqual(["do work"]);
+
+    typeText(stdin, "also fix the docs");
+    enter(stdin);
+    await tick();
+
+    // Queued, not sent yet, and not silently discarded — visible in state and
+    // in the painted frame, distinct from both a notice and the activity feed.
+    expect(app.snapshot().queuedMessages).toEqual(["also fix the docs"]);
+    expect(sent).toEqual(["do work"]);
+    expect(io.writes.join("")).toContain("also fix the docs");
+
+    gate.push({ type: "task.completed", payload: {} } as any);
     gate.end();
     await tick();
-    ctrlC(stdin); // exit (armed by the same flag the cancel used)
+
+    // Once the running task ends, the queued redirect is sent as the next task.
+    expect(sent).toEqual(["do work", "also fix the docs"]);
+    expect(app.snapshot().queuedMessages).toEqual([]);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("slash commands run immediately while a task is streaming, never becoming a task message or a queued redirect", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const sent: string[] = [];
+    const backend: SessionBackend = {
+      ...makeBackend(gate, () => {}),
+      send: async (text) => {
+        sent.push(text);
+        return { taskId: `task-${sent.length}` };
+      },
+    };
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend, now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "do work");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "evidence.persisted", payload: { deltaText: "working" } } as any);
+    await tick();
+
+    typeText(stdin, "/status");
+    enter(stdin);
+    await tick();
+
+    expect(app.snapshot().status).toBe("streaming"); // /status did not disturb the running task
+    expect(app.snapshot().queuedMessages).toEqual([]); // never queued
+    expect(sent).toEqual(["do work"]); // never sent as a task message
+
+    ctrlC(stdin);
+    gate.end();
+    await tick();
+    ctrlC(stdin);
     await done;
   });
 
@@ -526,6 +611,338 @@ describe("interactive session: streaming, cancellation, resize", () => {
     ctrlC(stdin); // clear buffer
     ctrlC(stdin); // arm
     ctrlC(stdin); // exit
+    await done;
+  });
+});
+
+describe("paused-state and YOLO notice consistency (consumer defects #5, #6)", () => {
+  it("never shows a 'still working' interruption notice — the input stays live, so there is nothing to apologize for", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "go");
+    enter(stdin);
+    await tick();
+
+    // A keystroke while busy reaches the real input buffer — it is not
+    // blocked, so there is no "not applied yet" notice to show.
+    typeText(stdin, "x");
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
+
+    // The task pauses (budget reached) — the stream just stops.
+    gate.push({ type: "task.interrupted", payload: { reason: "turn_budget_reached" } } as any);
+    gate.end();
+    await tick();
+
+    expect(app.snapshot().status).toBe("budget-reached");
+    expect(app.snapshot().notices.some((n) => n.text.toLowerCase().includes("still working"))).toBe(false);
+
+    // The "x" typed while busy is still sitting in the (now idle) input
+    // line — persistent input means it was never blocked, but it also was
+    // never submitted, so it's still there to clear before exit-confirm arms.
+    ctrlC(stdin); // clears "x"
+    ctrlC(stdin); // arms exit-confirm
+    ctrlC(stdin); // exits
+    await done;
+  });
+
+  it("never shows a stale YOLO on/off notice beside the current one after toggling twice", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "/yolo on");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.startsWith("YOLO on"))).toBe(true);
+
+    typeText(stdin, "/yolo off");
+    enter(stdin);
+    await tick();
+
+    const texts = app.snapshot().notices.map((n) => n.text);
+    // Only the latest toggle's notice remains — the earlier "on" claim,
+    // which now contradicts the current "off" state, is gone.
+    expect(texts.filter((t) => t.startsWith("YOLO on"))).toHaveLength(0);
+    expect(texts.filter((t) => t.startsWith("YOLO off"))).toHaveLength(1);
+    // The authoritative state (settings/meta) agrees.
+    expect(app.snapshot().meta?.autoApprove).toBe(false);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("/panic's forced YOLO-off notice supersedes an earlier 'on' notice too", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "/yolo on");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().notices.some((n) => n.text.startsWith("YOLO on"))).toBe(true);
+
+    typeText(stdin, "/panic");
+    enter(stdin);
+    await tick();
+
+    const texts = app.snapshot().notices.map((n) => n.text);
+    expect(texts.filter((t) => t.startsWith("YOLO on"))).toHaveLength(0);
+    expect(texts.some((t) => t.startsWith("Panic stop:"))).toBe(true);
+    expect(app.snapshot().meta?.autoApprove).toBe(false);
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+});
+
+describe("approval rendering (consumer defect #1: unbound Output color-method crash)", () => {
+  function approvalBackend(overrides: Partial<SessionBackend> & { gate?: EventGate } = {}): SessionBackend {
+    const { gate, ...rest } = overrides;
+    return {
+      ...makeBackend(gate ?? new EventGate(), () => {}),
+      getApproval: async (id: string) => ({
+        id, kind: "command",
+        details: { executable: "rm", args: ["-rf", "build"], risk: "medium", purpose: "clean the build directory" },
+        projectId: "p",
+      }),
+      resolveApproval: async () => {},
+      ...rest,
+    };
+  }
+
+  it("renders a command approval at every risk level without the unbound Output color-method crash (reproduces the original stack trace pre-fix)", async () => {
+    for (const risk of ["low", "medium", "high"] as const) {
+      const io = new FakeTermIO();
+      const stdin = fakeStdin();
+      const gate = new EventGate();
+      const resolved: Array<{ id: string; decision: string; trust?: string | undefined }> = [];
+      const app = new InteractiveSession({
+        io, stdin, out: plain, unicode: false, meta, settings,
+        backend: approvalBackend({
+          gate,
+          getApproval: async (id: string) => ({
+            id, kind: "command",
+            details: { executable: "rm", args: ["-rf", "build"], risk, purpose: "clean the build directory" },
+            projectId: "p",
+          }),
+          resolveApproval: async (id: string, decision: string, trust?: string) => { resolved.push({ id, decision, trust }); },
+        }),
+        now: () => Date.now(), maxFps: 120,
+      });
+      const done = app.run();
+
+      typeText(stdin, "clean up");
+      enter(stdin);
+      await tick();
+
+      gate.push({ type: "approval.requested", payload: { approvalId: `a-${risk}`, kind: "command" } } as any);
+      await tick();
+
+      // Before the fix, `out[riskColor(risk)]` extracted a color method off
+      // the Output instance and called it with no receiver, throwing
+      // "Cannot read properties of undefined (reading 'wrap')" from inside
+      // paint(). runTask's catch converted that into a silent task.failed
+      // instead of ever showing the approval prompt, for every risk level
+      // (the extraction lost `this` regardless of which color was picked).
+      expect(app.snapshot().status).not.toBe("failed");
+      expect(app.snapshot().lastError).toBeUndefined();
+      const rendered = io.writes.join("");
+      expect(rendered).toContain("Command approval");
+      expect(rendered.toLowerCase()).toContain(`${risk} risk`);
+
+      // Still fully interactive: approving reaches the backend.
+      stdin.emit("keypress", "y", { name: "y", str: "y" });
+      await tick();
+      expect(resolved).toContainEqual({ id: `a-${risk}`, decision: "allow_once", trust: undefined });
+
+      gate.push({ type: "task.completed", payload: {} } as any);
+      gate.end();
+      await tick();
+      expect(app.snapshot().status).toBe("completed");
+
+      ctrlC(stdin);
+      ctrlC(stdin);
+      await done;
+    }
+  });
+
+  it("renders command-approval risk colors in --color mode without crashing", async () => {
+    const colorOut = new Output({ json: false, quiet: false, color: true });
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: colorOut, unicode: false, meta, settings,
+      backend: approvalBackend({ gate }), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "clean up");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+    await tick();
+
+    expect(app.snapshot().status).not.toBe("failed");
+    const rendered = io.writes.join("");
+    expect(rendered).toContain("Command approval");
+    expect(rendered).toContain("\x1b[33m"); // ANSI yellow, applied via out.colorize, not a bare method reference
+
+    stdin.emit("keypress", "n", { name: "n", str: "n" });
+    await tick();
+    gate.push({ type: "task.cancelled", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("renders a patch approval without crashing", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: approvalBackend({
+        gate,
+        getApproval: async (id: string) => ({
+          id, kind: "change_set",
+          details: { files: ["a.js", "b.js"], explanation: "fix the bug", additions: 5, deletions: 2, diff: "--- a/a.js\n+++ b/a.js\n" },
+          projectId: "p",
+        }),
+      }),
+      now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "fix it");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "p1", kind: "change_set" } } as any);
+    await tick();
+
+    expect(app.snapshot().status).not.toBe("failed");
+    const rendered = io.writes.join("");
+    expect(rendered).toContain("Patch approval");
+    expect(rendered).toContain("a.js, b.js");
+
+    stdin.emit("keypress", "y", { name: "y", str: "y" });
+    await tick();
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+    expect(app.snapshot().status).toBe("completed");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
+  it("deny, session-trust, and pattern-trust approval keys all resolve correctly without crashing", async () => {
+    const decisions: Array<["n" | "s" | "p", string]> = [
+      ["n", "deny"],
+      ["s", "trust_session"],
+      ["p", "trust_project"],
+    ];
+    for (const [key, expectedDecision] of decisions) {
+      const io = new FakeTermIO();
+      const stdin = fakeStdin();
+      const gate = new EventGate();
+      const resolved: Array<{ id: string; decision: string; trust?: string | undefined }> = [];
+      const app = new InteractiveSession({
+        io, stdin, out: plain, unicode: false, meta, settings,
+        backend: approvalBackend({
+          gate,
+          getApproval: async (id: string) => ({
+            id, kind: "command",
+            details: { executable: "git", args: ["push", "--force"], risk: "high", pattern: "git push --force", purpose: "sync" },
+            projectId: "p",
+          }),
+          resolveApproval: async (id: string, decision: string, trust?: string) => { resolved.push({ id, decision, trust }); },
+        }),
+        now: () => Date.now(), maxFps: 120,
+      });
+      const done = app.run();
+
+      typeText(stdin, "sync branch");
+      enter(stdin);
+      await tick();
+      gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+      await tick();
+      expect(app.snapshot().status).not.toBe("failed");
+
+      stdin.emit("keypress", key, { name: key, str: key });
+      await tick();
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]!.decision).toBe(expectedDecision);
+      if (expectedDecision !== "deny") expect(resolved[0]!.trust).toBe("git push --force");
+
+      gate.push({ type: "task.cancelled", payload: {} } as any);
+      gate.end();
+      await tick();
+
+      ctrlC(stdin);
+      ctrlC(stdin);
+      await done;
+    }
+  });
+
+  it("survives a resize and timer-driven repaint while an approval is visible", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: approvalBackend({ gate }), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+
+    typeText(stdin, "clean up");
+    enter(stdin);
+    await tick();
+    gate.push({ type: "approval.requested", payload: { approvalId: "a1", kind: "command" } } as any);
+    await tick();
+    expect(app.snapshot().status).not.toBe("failed");
+
+    const before = io.writes.length;
+    io.columns = 40;
+    io.rows = 12;
+    io.emitResize();
+    await tick(); // a deferred timer repaint also fires within this window
+    expect(io.writes.length).toBeGreaterThan(before);
+    expect(app.snapshot().status).not.toBe("failed");
+    expect(io.writes.join("")).toContain("Command approval");
+
+    stdin.emit("keypress", "y", { name: "y", str: "y" });
+    await tick();
+    gate.push({ type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    ctrlC(stdin);
+    ctrlC(stdin);
     await done;
   });
 });

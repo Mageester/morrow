@@ -17,6 +17,11 @@ export function buildMissionResult(
     elapsedMs: number | null;
     spentUsd: number | null;
     artifacts?: string[];
+    /** The final, ledger-gated mission status. When supplied it overrides the
+     *  raw grader output so the result can never disagree with the persisted
+     *  terminal mission status (e.g. a ledger-gated downgrade to
+     *  partially_completed). */
+    finalStatus?: MissionStatus;
   },
 ): MissionResult {
   const criteria = mission.criteria;
@@ -25,7 +30,7 @@ export function buildMissionResult(
   const waived = criteria.filter((c) => c.state === "waived").length;
   const unverified = criteria.length - verified - failed - waived;
 
-  const status: MissionStatus = gradeMission(criteria, opts.review?.verdict ?? null);
+  const status: MissionStatus = opts.finalStatus ?? gradeMission(criteria, opts.review?.verdict ?? null);
 
   // Unresolved risks: reviewer risks + concerns, plus any criterion that is not
   // verified/waived (so the user always sees what was NOT proven).

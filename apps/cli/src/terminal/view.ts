@@ -10,16 +10,23 @@ import { stripAnsi } from "../cli/output.js";
 import type { ActivityKind, ProgressStage } from "./events.js";
 import type { ActivityEntry, PatchEntry, RecoveryEntry, TerminalState, ToolCard } from "./state.js";
 
-export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed";
+export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed" | "paused";
 
 export interface Glyphs {
   ok: string;
   fail: string;
+  /** Current running action — a steady mark, not the animated spinner. */
   run: string;
   arrow: string;
   bullet: string;
   dot: string;
   warn: string;
+  /** Active (in-progress) recovery — distinct from a bare failure (`fail`)
+   *  or a still-open problem awaiting a strategy (`warn`). */
+  recovering: string;
+  /** A queued redirect/follow-up, visually distinct from both the activity
+   *  feed and slash-command notices. */
+  queued: string;
   /** The stable Morrow identity mark (state-independent). */
   mark: string;
   spinner: string[];
@@ -27,8 +34,8 @@ export interface Glyphs {
 
 export function glyphs(unicode: boolean): Glyphs {
   return unicode
-    ? { ok: "✓", fail: "✖", run: "•", arrow: "↳", bullet: "◦", dot: "·", warn: "!", mark: "◇", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
-    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", mark: "*", spinner: ["-", "\\", "|", "/"] };
+    ? { ok: "✓", fail: "✗", run: "●", arrow: "↳", bullet: "◦", dot: "·", warn: "!", recovering: "↻", queued: "↷", mark: "◇", spinner: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] }
+    : { ok: "+", fail: "x", run: "*", arrow: ">", bullet: "-", dot: "-", warn: "!", recovering: "~", queued: ">>", mark: "*", spinner: ["-", "\\", "|", "/"] };
 }
 
 export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean; color: Output }): string {
@@ -36,6 +43,7 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
   if (!opts.unicode) {
     if (state === "completed") return out.green("[M+]");
     if (state === "failed") return out.red("[M!]");
+    if (state === "paused") return out.yellow("[M~]");
     if (state === "thinking" || state === "running-tool") return out.cyan("[M*]");
     return out.gray("[M]");
   }
@@ -44,6 +52,8 @@ export function morrowAvatar(state: MorrowAvatarState, opts: { unicode: boolean;
       return out.green("\u25C8M");
     case "failed":
       return out.red("\u25C7M!");
+    case "paused":
+      return out.yellow("\u25C7M~");
     case "thinking":
       return out.cyan("\u25C7M");
     case "running-tool":
@@ -118,7 +128,7 @@ function formatTokens(tokens: number): string {
   return String(tokens);
 }
 
-function plainMode(mode: string): "Ask" | "Plan" | "Build" {
+export function plainMode(mode: string): "Ask" | "Plan" | "Build" {
   const lower = mode.toLowerCase();
   if (lower.includes("plan")) return "Plan";
   if (lower.includes("ask") || lower.includes("read-only") || lower.includes("inspect")) return "Ask";
@@ -134,7 +144,7 @@ function plainMode(mode: string): "Ask" | "Plan" | "Build" {
  * "Plan · YOLO" because the chip was derived from the raw `autoApprove` flag
  * alone (KNOWN_ISSUES #2).
  */
-function permissionChip(mode: "Ask" | "Plan" | "Build", autoApprove: boolean): { text: string; auto: boolean } {
+export function permissionChip(mode: "Ask" | "Plan" | "Build", autoApprove: boolean): { text: string; auto: boolean } {
   if (mode === "Ask") return { text: "read-only", auto: false };
   if (mode === "Plan") return { text: "no changes", auto: false };
   return autoApprove ? { text: "Auto-approved", auto: true } : { text: "approval required", auto: false };
@@ -169,7 +179,14 @@ function costLabel(state: TerminalState): string {
   return `Cost $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
 }
 
-function contextLimit(state: TerminalState): number | null {
+/**
+ * The real per-model context window for `state.contextUsage`, or `null`
+ * when it's genuinely unknown (never a guessed/generic/preset-only number).
+ * The single source of truth for this — `/context`, `/status`, and `/stats`
+ * (`contextLabel`, below) must all read this instead of recomputing their
+ * own version, so they can never contradict each other.
+ */
+export function contextLimit(state: TerminalState): number | null {
   const u = state.contextUsage;
   if (!u) return null;
   if (u.contextLimitTokens !== undefined) return u.contextLimitTokens;
@@ -215,9 +232,13 @@ function processesLabel(state: TerminalState): string | null {
 }
 
 function avatarState(state: TerminalState): MorrowAvatarState {
-  if (state.status === "failed" || state.status === "stalled") return "failed";
+  if (state.status === "failed") return "failed";
+  if (state.status === "stalled" || state.status === "budget-reached") return "paused";
   if (state.status === "completed") return "completed";
-  if (state.tools.some((t) => t.status === "running")) return "running-tool";
+  // A tool card can be left "running" after the stream itself has ended
+  // (pause, cancel, interrupt) — only show the live/running-tool avatar
+  // while genuinely streaming, never for an abandoned call's stale status.
+  if (state.status === "streaming" && state.tools.some((t) => t.status === "running")) return "running-tool";
   if (state.status === "streaming") return "thinking";
   return "idle";
 }
@@ -294,20 +315,21 @@ export interface ActivityGroup {
 }
 
 /**
- * Collapse a flat activity list into consecutive-kind groups.
+ * Collapse a flat activity list into one group per meaningful stage.
  * "reading" + "searching" + "inspecting" all merge into the "understanding"
- * stage group; other kinds stay distinct.
+ * stage even when another phase briefly intervenes, so `/activity` is a
+ * concise phase summary rather than a repeated telemetry transcript.
  */
 export function groupActivities(activities: ActivityEntry[]): ActivityGroup[] {
   if (activities.length === 0) return [];
   const groups: ActivityGroup[] = [];
   for (const a of activities) {
     const stage = STAGE_FOR_KIND[a.kind];
-    const prev = groups[groups.length - 1];
-    // Merge when the stage is the same (reading+searching+inspecting → understanding).
-    if (prev && prev.stage === stage) {
-      if (a.detail) prev.targets.push(a.detail);
-      if (a.count !== undefined) prev.counts.push(a.count);
+    const existing = groups.find((group) => group.stage === stage);
+    // Merge all observations belonging to the same user-facing phase.
+    if (existing) {
+      if (a.detail) existing.targets.push(a.detail);
+      if (a.count !== undefined) existing.counts.push(a.count);
     } else {
       groups.push({
         kind: a.kind,
@@ -623,9 +645,14 @@ export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: b
     return lines;
   }
 
-  const glyph = entry.status === "recovered" ? out.green(g.ok) : out.yellow(g.warn);
-  const verb = entry.status === "recovered" ? out.green("Recovering") : out.yellow("Recovering");
-  const lines = [`  ${glyph} ${verb}  ${out.yellow(problem)}`];
+  // A bare, freshly-reported problem (no strategy chosen yet) reads as a
+  // failure (✗) — the same mark a failed action gets elsewhere. Only once a
+  // strategy is in flight does this become an *active* recovery (↻); once it
+  // resolves, a success (✓).
+  const glyph = entry.status === "recovered" ? out.green(g.ok) : entry.status === "retrying" ? out.yellow(g.recovering) : out.red(g.fail);
+  const colorize = (s: string) => (entry.status === "recovered" ? out.green(s) : entry.status === "retrying" ? out.yellow(s) : out.red(s));
+  const verb = entry.status === "recovered" || entry.status === "retrying" ? "Recovering" : "Failed";
+  const lines = [`  ${glyph} ${colorize(verb)}  ${colorize(problem)}`];
 
   // The strategy/outcome line only appears once a strategy exists or the
   // problem resolved — a bare, freshly-reported failure has no strategy yet
@@ -647,6 +674,8 @@ export function recoveryEntryLines(entry: RecoveryEntry, out: Output, unicode: b
 export interface CompletionCardOptions {
   unicode?: boolean;
   elapsedMs?: number;
+  /** Terminal width, for wrapping (never truncating) long messages. */
+  columns?: number;
 }
 
 /**
@@ -654,6 +683,30 @@ export interface CompletionCardOptions {
  * changed, did verification pass, what was recovered — then where the full
  * report lives. Never dumps the full report into the transcript.
  */
+/**
+ * A real, evidence-backed commit — never fabricated or guessed. Only
+ * matches a completed `git commit` command, and only reports a sha actually
+ * present in that command's own reported output (git's own
+ * `[branch sha] message` line, or a bare hex token), never a sha invented
+ * because a commit command merely looked like it ran. The message, when
+ * shown, comes from the command's own `-m` argument — the real text Morrow
+ * passed to git, not a paraphrase. Absent either signal, this returns
+ * `null` and the completion card simply omits the section, the same as
+ * "Changed"/"Verified"/"Recovered" do when they have nothing to report.
+ */
+function commitInfo(state: TerminalState): { sha: string; message?: string } | null {
+  const card = [...state.tools].reverse().find(
+    (t) => t.name === "run_command" && t.status === "completed" && /(^|[;&|]\s*)git\s+commit\b/.test(t.purpose ?? ""),
+  );
+  if (!card) return null;
+  const purpose = card.purpose ?? "";
+  const msgMatch = purpose.match(/-m\s+"([^"]+)"/) ?? purpose.match(/-m\s+'([^']+)'/);
+  const summary = card.summary ?? "";
+  const shaMatch = summary.match(/\[[^\]]*?\s([0-9a-f]{7,40})\]/) ?? summary.match(/\b([0-9a-f]{7,40})\b/);
+  if (!shaMatch) return null;
+  return { sha: shaMatch[1]!, ...(msgMatch ? { message: msgMatch[1]! } : {}) };
+}
+
 export function completionCard(state: TerminalState, out: Output, opts: CompletionCardOptions = {}): string[] {
   const unicode = opts.unicode ?? true;
   const g = glyphs(unicode);
@@ -680,6 +733,11 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
       const detail = verify.summary ? dot + truncate(verify.summary, 48) : "";
       lines.push(`    ${truncate(toolTarget(verify) || "command", 48)}${out.gray(detail)}`);
     }
+    const commit = commitInfo(state);
+    if (commit) {
+      lines.push(`  ${out.bold("Commit")}`);
+      lines.push(`    ${commit.sha}${commit.message ? dot + truncate(commit.message, 60) : ""}`);
+    }
     const recovered = state.recoveries.filter((r) => r.status === "recovered");
     if (recovered.length > 0) {
       lines.push(`  ${out.bold("Recovered")}`);
@@ -695,7 +753,8 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
   if (state.status === "failed") {
     lines.push(`  ${out.red(g.fail)} ${out.red("Task failed")}`);
     if (state.lastError) {
-      lines.push(`  ${out.bold("Blocked by")}`, `    ${truncate(state.lastError, 100)}`);
+      lines.push(`  ${out.bold("Blocked by")}`);
+      for (const l of wrapText(state.lastError, Math.max(20, (opts.columns ?? 80) - 6))) lines.push(`    ${l}`);
     }
     const lastOk = [...state.tools].reverse().find((t) => t.status === "completed");
     if (lastOk) {
@@ -708,11 +767,12 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
   }
 
   if (state.status === "stalled" || state.status === "budget-reached") {
-    const label = state.status === "stalled" ? "Task paused" : "Task budget reached";
-    lines.push(`  ${out.yellow(g.warn)} ${out.yellow(label)}`);
-    if (state.lastError) lines.push(`  ${out.bold("Paused because")}`, `    ${truncate(state.lastError, 100)}`);
-    const next = state.recoverySuggestions[state.recoverySuggestions.length - 1];
-    lines.push(`  ${out.bold("Next action")}`, `    ${next ?? "Continue with /continue when ready"}`);
+    // One shared "Paused" shape for every pause reason — never a spinner,
+    // an elapsed timer, or "still working" text, and never a second,
+    // differently-worded chip implying something other than paused.
+    lines.push(`  ${out.yellow(g.warn)} ${out.yellow("Paused")}`);
+    lines.push(...labelWithWrappedText("Reason:", state.lastError ?? "the task stopped making progress", out, opts.columns ?? 80));
+    lines.push(`  ${out.bold("Next:")} ${out.cyan("/continue")}`);
     lines.push(`  ${out.gray(totals)}`, `  ${out.gray("Details:")} ${out.cyan("/output full")}`);
     return lines;
   }
@@ -726,6 +786,65 @@ export function completionCard(state: TerminalState, out: Output, opts: Completi
 function truncate(s: string, max: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
+}
+
+/**
+ * Word-wrap text to a column budget without ellipsizing — the final-result
+ * view must never destructively truncate an important message. A single word
+ * longer than the budget is hard-broken so it still can't force an overflow.
+ */
+export function wrapText(s: string, width: number): string[] {
+  const safeWidth = Math.max(10, width);
+  const flat = s.replace(/\s+/g, " ").trim();
+  if (!flat) return [];
+  const words = flat.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (!current) current = word;
+    else if (current.length + 1 + word.length <= safeWidth) current += " " + word;
+    else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.flatMap((line) => {
+    if (line.length <= safeWidth) return [line];
+    const chunks: string[] = [];
+    for (let i = 0; i < line.length; i += safeWidth) chunks.push(line.slice(i, i + safeWidth));
+    return chunks;
+  });
+}
+
+/**
+ * A bold `label` followed by wrapped body text: inline on one line when it
+ * fits the column budget (preserving the compact single-line look for the
+ * common short case), or the label alone with wrapped, indented continuation
+ * lines when it doesn't — never a hard, ellipsized cut.
+ */
+function labelWithWrappedText(label: string, text: string, out: Output, width: number): string[] {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const inline = `  ${out.bold(label)} ${flat}`;
+  if (stripAnsi(inline).length <= width) return [inline];
+  return [`  ${out.bold(label)}`, ...wrapText(flat, Math.max(20, width - 6)).map((l) => `    ${l}`)];
+}
+
+/**
+ * Break a plain (uncolored) line into chunks of at most `width` characters,
+ * never dropping a character — unlike `clipToWidth`, which truncates. For
+ * content that must survive intact outside the repaint loop (e.g. a report
+ * written once into real terminal scrollback), this is the safe way to keep
+ * every row within the terminal's width without relying on the terminal's
+ * own auto-wrap, which can interact badly with a following cursor move.
+ */
+export function hardWrapLine(line: string, width: number): string[] {
+  const safeWidth = Math.max(1, width);
+  if (line.length === 0) return [""];
+  if (line.length <= safeWidth) return [line];
+  const chunks: string[] = [];
+  for (let i = 0; i < line.length; i += safeWidth) chunks.push(line.slice(i, i + safeWidth));
+  return chunks;
 }
 
 /**
@@ -862,12 +981,15 @@ export function statusBar(state: TerminalState, out: Output, unicode: boolean, c
     const withTimer = opts.elapsedMs !== undefined ? `${action} ${g.dot} ${formatElapsed(opts.elapsedMs)}` : action;
     push(withTimer, out.cyan(withTimer), 90);
   } else {
-    const readyLabel = state.status === "stalled" || state.status === "budget-reached" ? "paused" : "ready";
-    push(readyLabel, state.status === "idle" ? out.gray(readyLabel) : state.status === "stalled" || state.status === "budget-reached" ? out.yellow(readyLabel) : out.green(readyLabel), 30);
+    const isPaused = state.status === "stalled" || state.status === "budget-reached";
+    const readyLabel = isPaused ? "paused" : "ready";
+    push(readyLabel, isPaused ? out.yellow(readyLabel) : state.status === "idle" ? out.gray(readyLabel) : out.green(readyLabel), 30);
+    // A paused state is fully said by the "paused" chip above — a second
+    // chip repeating "budget reached"/"last task paused" right beside it
+    // read as two contradictory facts, not one. The specific reason lives
+    // in the completion card and /status, not the compact footer.
     if (state.status === "completed") push("last task passed", out.gray("last task passed"), 80);
     else if (state.status === "failed") push("last task failed", out.red("last task failed"), 80);
-    else if (state.status === "stalled") push("last task paused", out.yellow("last task paused"), 80);
-    else if (state.status === "budget-reached") push("budget reached", out.yellow("budget reached"), 80);
     else if (state.status === "cancelled") push("last task cancelled", out.yellow("last task cancelled"), 80);
     else if (state.status === "interrupted") push("last task interrupted", out.yellow("last task interrupted"), 80);
   }

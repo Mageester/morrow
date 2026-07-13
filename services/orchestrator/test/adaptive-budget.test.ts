@@ -4,7 +4,10 @@ import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "
 describe("adaptive agent budget", () => {
   it("extends a productive mission while retaining a hard ceiling", () => {
     expect(adaptiveTurnCeiling(10)).toBe(30);
-    expect(adaptiveTurnCeiling(1)).toBe(12);
+    // Consumer presets may begin below the historical six-turn default;
+    // each still needs enough headroom to progress beyond turn 18.
+    expect(adaptiveTurnCeiling(1)).toBe(24);
+    expect(adaptiveTurnCeiling(6)).toBe(24);
     expect(adaptiveTurnCeiling(40)).toBe(36);
   });
 

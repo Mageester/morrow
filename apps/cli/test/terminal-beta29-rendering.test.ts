@@ -181,21 +181,29 @@ describe("beta.29 recovery story", () => {
     expect(lines[1]).toBe("    Switched to full-file rewrite — succeeded");
   });
 
-  it("uses warning styling for open problems and red only when the task failed", () => {
+  it("a bare open problem (no strategy yet) reads as a failure; an active retry is red only when the task ultimately failed", () => {
     const open = build([{ type: "recovery.problem", tool: "run_command", message: "exit 1" }]);
     const colored = new Output({ json: false, quiet: false, color: true });
-    const warnLine = recoveryEntryLines(open.recoveries[0]!, colored, true, false)[0]!;
-    expect(warnLine).toContain("\x1b[33m"); // yellow
-    expect(warnLine).not.toContain("\x1b[31m");
-    const redLine = recoveryEntryLines(open.recoveries[0]!, colored, true, true)[0]!;
-    expect(redLine).toContain("\x1b[31m"); // red only on task failure
+    // No strategy has been chosen yet — this is a plain failure (✗/red), not
+    // yet an "active recovery" (that mark is reserved for `retrying`).
+    const failLine = recoveryEntryLines(open.recoveries[0]!, colored, true, false)[0]!;
+    expect(failLine).toContain("\x1b[31m"); // red
+    const retrying = build([
+      { type: "recovery.problem", tool: "run_command", message: "exit 1" },
+      { type: "recovery.strategy", tool: "run_command", strategy: "Retrying with a narrower pattern" },
+    ]);
+    const retryLine = recoveryEntryLines(retrying.recoveries[0]!, colored, true, false)[0]!;
+    expect(retryLine).toContain("\x1b[33m"); // yellow while actively retrying
+    expect(retryLine).not.toContain("\x1b[31m");
+    const redLine = recoveryEntryLines(retrying.recoveries[0]!, colored, true, true)[0]!;
+    expect(redLine).toContain("\x1b[31m"); // red once the task itself failed
   });
 
   describe("every recovery stage states failure/strategy/outcome explicitly", () => {
-    it("a newly reported problem (no strategy, no outcome yet) is a single line", () => {
+    it("a newly reported problem (no strategy, no outcome yet) reads as a failure", () => {
       const s = build([{ type: "recovery.problem", tool: "propose_patch", message: "Patch mismatch" }]);
       const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
-      expect(lines).toEqual(["  ! Recovering  Patch mismatch"]);
+      expect(lines).toEqual(["  x Failed  Patch mismatch"]);
     });
 
     it("a retry in progress with a known strategy states 'in progress'", () => {
@@ -205,7 +213,7 @@ describe("beta.29 recovery story", () => {
       ]);
       const lines = recoveryEntryLines(s.recoveries[0]!, plain, false, false).map(stripAnsi);
       expect(lines).toEqual([
-        "  ! Recovering  Patch mismatch",
+        "  ~ Recovering  Patch mismatch",
         "    Switched to full-file rewrite — in progress",
       ]);
     });
@@ -366,15 +374,64 @@ describe("beta.29 completion card", () => {
     expect(completionCard(passedCheck, plain).join("\n")).toContain("Verified");
   });
 
-  it("renders stalled and budget-reached outcomes as paused, not failed", () => {
+  it("renders stalled and budget-reached outcomes as one consistent Paused shape, not failed or contradictory (consumer defect #5)", () => {
     const stalled = build([{ type: "task.stalled", message: "No observable progress" }]);
     const budget = build([{ type: "task.budget_reached", message: "Turn budget reached" }]);
 
-    expect(completionCard(stalled, plain, { unicode: false }).join("\n")).toContain("Task paused");
-    expect(completionCard(stalled, plain, { unicode: false }).join("\n")).not.toContain("Task failed");
-    expect(completionCard(budget, plain, { unicode: false }).join("\n")).toContain("Task budget reached");
-    expect(stripAnsi(statusBar(stalled, plain, false, 80))).toContain("last task paused");
-    expect(stripAnsi(statusBar(budget, plain, false, 80))).toContain("budget reached");
+    const stalledCard = completionCard(stalled, plain, { unicode: false }).join("\n");
+    const budgetCard = completionCard(budget, plain, { unicode: false }).join("\n");
+    expect(stalledCard).toContain("Paused");
+    expect(stalledCard).toContain("Reason: No observable progress");
+    expect(stalledCard).toContain("Next: /continue");
+    expect(stalledCard).not.toContain("Task failed");
+    expect(budgetCard).toContain("Paused");
+    expect(budgetCard).toContain("Reason: Turn budget reached");
+    expect(budgetCard).toContain("Next: /continue");
+
+    // The footer chip says "paused" exactly once — no second, differently-
+    // worded chip ("budget reached"/"last task paused") beside it.
+    const stalledBar = stripAnsi(statusBar(stalled, plain, false, 80));
+    const budgetBar = stripAnsi(statusBar(budget, plain, false, 80));
+    expect(stalledBar).toContain("paused");
+    expect(budgetBar).toContain("paused");
+    expect(stalledBar).not.toContain("last task paused");
+    expect(budgetBar).not.toContain("budget reached");
+  });
+
+  it("stops the spinner and shows a consistent Paused frame even when a tool call never got its tool.end (consumer defect #5)", () => {
+    // The stream can legitimately end mid-call — a budget pause, cancel, or
+    // interrupt all just stop sending events, leaving the last tool card
+    // permanently "running" in raw state. That must never keep animating a
+    // spinner or drive the avatar/footer to look "still working".
+    const state = build([
+      { type: "session.started", meta },
+      { type: "user.message", text: "build it" },
+      { type: "tool.start", id: "stuck", name: "run_command", purpose: "long test run" },
+      { type: "task.budget_reached", message: "Task turn budget reached (18)" },
+    ]);
+    expect(state.tools[0]).toMatchObject({ status: "running" }); // raw state is untouched — this is a rendering-only fix
+
+    const frame = composeApp(
+      state,
+      initialInputState(),
+      plain,
+      false,
+      { commands: [], paletteItems: [] },
+      { columns: 80, rows: 30, tick: 3, promptLabel: "> ", promptWidth: 2 },
+    ).lines.join("\n");
+
+    // The still-open tool's live spinner line must not render once the task
+    // is no longer actively streaming.
+    expect(frame).not.toContain(runningActionLine(state.tools[0]!, plain, false, 3));
+    // One honest Paused card — no "still working", no contradictory second
+    // status word.
+    expect(frame).toContain("Paused");
+    expect(frame).toContain("Reason: Task turn budget reached (18)");
+    expect(frame).toContain("Next: /continue");
+    expect(frame).not.toContain("still working");
+    expect(frame).not.toContain("Task failed");
+    // Footer avatar/chip says paused, not running or failed.
+    expect(stripAnsi(statusBar(state, plain, false, 80))).toContain("paused");
   });
 
   it("resets task-scoped presentation facts when the next user task begins", () => {

@@ -303,7 +303,7 @@ export class MorrowApi {
   getTask(taskId: string, timeoutMs = 8000) { return this.req<TaskAggregate>("GET", `/api/tasks/${encodeURIComponent(taskId)}`, undefined, { timeoutMs }); }
   getTaskTree(taskId: string) { return this.req<TaskTreeNode>("GET", `/api/tasks/${encodeURIComponent(taskId)}/tree`); }
   cancelTask(taskId: string) { return this.req<void>("POST", `/api/tasks/${encodeURIComponent(taskId)}/cancel`); }
-  resumeTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${encodeURIComponent(taskId)}/resume`); }
+  resumeTask(taskId: string, projectId: string) { return this.req<Task>("POST", `/api/tasks/${encodeURIComponent(taskId)}/resume`, { projectId }); }
   retryTask(taskId: string) { return this.req<Task>("POST", `/api/tasks/${encodeURIComponent(taskId)}/retry`); }
   getTaskDiff(taskId: string) { return this.req<{ id: string; state: string; diff: string | null; diffHash: string; files: string[]; undoResult: any }>("GET", `/api/tasks/${encodeURIComponent(taskId)}/diff`); }
   undoTask(taskId: string) { return this.req<{ status: string; restoredFiles: string[] }>("POST", `/api/tasks/${encodeURIComponent(taskId)}/undo`); }

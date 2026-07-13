@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-export type Migration={id:number;name:string;sql:string};
+export type Migration={id:number;name:string;sql?:string;up?:(db:Database.Database)=>void};
 export const migrations:Migration[]=[
   {id:1,name:"initial_schema",sql:`CREATE TABLE projects(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,name TEXT NOT NULL,workspace_path TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE tasks(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,type TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,started_at TEXT,completed_at TEXT);CREATE TABLE plan_steps(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,position INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(task_id,position));CREATE TABLE task_events(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(task_id,sequence));CREATE TABLE execution_disclosures(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,execution_mode TEXT NOT NULL,provider TEXT NOT NULL,network_access TEXT NOT NULL,workspace_scope TEXT NOT NULL,estimated_cost_usd TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE task_evidence(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,type TEXT NOT NULL,path TEXT NOT NULL,metadata_json TEXT NOT NULL,created_at TEXT NOT NULL);CREATE TABLE verification_results(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,details_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE INDEX tasks_project_id_idx ON tasks(project_id);CREATE INDEX task_events_task_id_sequence_idx ON task_events(task_id,sequence);`},
   {id:2,name:"execution_disclosure_boundaries",sql:"ALTER TABLE execution_disclosures ADD COLUMN filesystem_access TEXT NOT NULL DEFAULT 'read-only';ALTER TABLE execution_disclosures ADD COLUMN shell_execution INTEGER NOT NULL DEFAULT 0;ALTER TABLE execution_disclosures ADD COLUMN model_invocation INTEGER NOT NULL DEFAULT 0;"},
@@ -600,5 +600,294 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX mission_impact_analyses_mission_idx ON mission_impact_analyses(mission_id, created_at);
   `}
+  ,{id:28,name:"mission_kernel_contract_ledger_cursor",sql:`
+    CREATE TABLE mission_contracts (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      source_prompt TEXT NOT NULL,
+      objective TEXT NOT NULL DEFAULT '',
+      expected_artifacts_json TEXT NOT NULL DEFAULT '[]',
+      acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+      verification_commands_json TEXT NOT NULL DEFAULT '[]',
+      required_git_result TEXT,
+      unresolved_ambiguities_json TEXT NOT NULL DEFAULT '[]',
+      frozen INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE mission_requirement_nodes (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      ordering INTEGER NOT NULL,
+      statement TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'objective',
+      source_prompt_excerpt TEXT,
+      source TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      approved INTEGER NOT NULL DEFAULT 0,
+      authoritative INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      dependencies_json TEXT NOT NULL DEFAULT '[]',
+      evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+      affected_files_json TEXT NOT NULL DEFAULT '[]',
+      verified_file_hashes_json TEXT NOT NULL DEFAULT '[]',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_failure_json TEXT,
+      completed_at TEXT,
+      invalidation_history_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_requirement_nodes_mission_idx ON mission_requirement_nodes(mission_id, ordering);
+    CREATE UNIQUE INDEX mission_requirement_nodes_one_active ON mission_requirement_nodes(mission_id) WHERE status = 'active';
+    CREATE TABLE mission_cursors (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      active_node_id TEXT,
+      active_objective TEXT,
+      allowed_next_actions_json TEXT NOT NULL DEFAULT '[]',
+      blocked_reason TEXT,
+      last_completed_action TEXT,
+      frozen_node_ids_json TEXT NOT NULL DEFAULT '[]',
+      invalidated_node_ids_json TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE project_active_mission (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE SET NULL,
+      schema_version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `}
+  // ── Migration 29 ────────────────────────────────────────────────────────
+  // Migration 28 (above) was edited in place AFTER it had already been applied
+  // to real databases (both a database created at commit 29d0364, and a later
+  // development database at commit f812872 that carried a divergent, silently
+  // edited copy of the SAME migration id). Migration ids are immutable once
+  // they can have been applied, so migration 28 above is restored to its
+  // EXACT original 29d0364 schema, and every schema change that had been
+  // smuggled into the edited copy — the mission_requirement_nodes.source_locator
+  // column, and a coherent, ownership-enforced project_active_mission table —
+  // is instead delivered here, as migration 29.
+  //
+  // Because three different historical starting points must all converge on
+  // the same final schema (a fresh DB running 1–29 in order; a DB created at
+  // 29d0364 with the ORIGINAL migration 28; and a dev DB at f812872 that
+  // already has the EDITED migration 28, i.e. already has source_locator and
+  // the old ownership triggers), static SQL cannot safely express this
+  // migration: `ALTER TABLE ... ADD COLUMN` fails if the column already
+  // exists, and the project_active_mission rebuild must not assume which
+  // shape it is rebuilding FROM. Migration 29 is therefore a deterministic
+  // JS `up(db)` function (see the Migration type and openDatabase below) that
+  // inspects the live schema with `PRAGMA table_info` before acting.
+  ,{id:29,name:"mission_kernel_contract_ledger_cursor_fixup",up(db){
+    // 0) Validate EVERY existing non-null project_active_mission pointer
+    //    against missions.project_id BEFORE any mutation below. A historical
+    //    29d0364/f812872-era database could legally contain a pointer whose
+    //    mission_id refers to a mission owned by a DIFFERENT project (or to no
+    //    mission at all — e.g. a hard delete performed with foreign_keys off),
+    //    since no ownership trigger existed before this migration. Such a row
+    //    is ownership-corrupt, not merely stale: silently carrying it forward
+    //    (the previous behavior) preserves a false pointer, and silently
+    //    dropping or rewriting it would destroy history without operator
+    //    awareness. Either way is unacceptable, so this refuses to upgrade at
+    //    all. Because this entire function runs inside ONE transaction (see
+    //    openDatabase), throwing here rolls back everything migration 29 would
+    //    otherwise do — including the source_locator column and the
+    //    schema_migrations row for id 29 itself — leaving the database exactly
+    //    as it was, ready for the operator to fix the data and retry.
+    const corrupt=db.prepare(`
+      SELECT pam.project_id AS projectId, pam.mission_id AS missionId
+      FROM project_active_mission pam
+      LEFT JOIN missions m ON m.id = pam.mission_id
+      WHERE pam.mission_id IS NOT NULL
+        AND (m.id IS NULL OR m.project_id IS NOT pam.project_id)
+    `).all() as {projectId:string;missionId:string}[];
+    if(corrupt.length>0){
+      const detail=corrupt.map(c=>`(project_id=${c.projectId}, mission_id=${c.missionId})`).join(", ");
+      throw new Error(`migration 29: refusing to upgrade — project_active_mission contains ownership-corrupt row(s) that do not point at a mission owned by that project: ${detail}. Correct or remove the offending row(s) and retry.`);
+    }
+
+    // 1) mission_requirement_nodes.source_locator — add it only if it is not
+    //    already present (the edited-at-f812872 database already has it; the
+    //    genuine 29d0364 database does not).
+    const nodeCols=(db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as {name:string}[]).map(c=>c.name);
+    if(!nodeCols.includes("source_locator")){
+      db.exec("ALTER TABLE mission_requirement_nodes ADD COLUMN source_locator TEXT");
+    }
+
+    // 2) project_active_mission — rebuild into its coherent final shape
+    //    regardless of which historical shape it currently has:
+    //      • project_id references projects, ON DELETE CASCADE (unchanged);
+    //      • mission_id is NOT NULL and references missions ON DELETE CASCADE
+    //        (never SET NULL — a NOT NULL column paired with SET NULL is
+    //        self-contradictory and would abort the delete instead of
+    //        cleanly removing the pointer);
+    //      • deleting an active mission therefore removes its pointer row
+    //        entirely, via the FK cascade — a caller can never hydrate
+    //        `{ missionId: null }`, which the public contract forbids;
+    //      • insert/update ownership triggers reject a pointer to a
+    //        nonexistent or cross-project mission.
+    //    Any existing row whose mission_id is NULL (only possible under the
+    //    edited-f812872 nullable shape) is dropped rather than carried
+    //    forward, since a null-pointing row is exactly the invalid state
+    //    this migration exists to make unrepresentable.
+    db.exec("DROP TRIGGER IF EXISTS project_active_mission_owner_ai");
+    db.exec("DROP TRIGGER IF EXISTS project_active_mission_owner_au");
+    db.exec(`CREATE TABLE project_active_mission_new (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    db.exec(`INSERT INTO project_active_mission_new (project_id, mission_id, schema_version, updated_at)
+      SELECT project_id, mission_id, schema_version, updated_at
+      FROM project_active_mission
+      WHERE mission_id IS NOT NULL`);
+    db.exec("DROP TABLE project_active_mission");
+    db.exec("ALTER TABLE project_active_mission_new RENAME TO project_active_mission");
+    // mission_id is NOT NULL here, so an attempted NULL is rejected by the
+    // column constraint itself; 'IS NOT' also correctly aborts when the
+    // ownership subquery yields NULL (a nonexistent mission id).
+    db.exec(`CREATE TRIGGER project_active_mission_owner_ai
+    BEFORE INSERT ON project_active_mission
+    WHEN (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END`);
+    db.exec(`CREATE TRIGGER project_active_mission_owner_au
+    BEFORE UPDATE ON project_active_mission
+    WHEN (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END`);
+  }}
+  // ── Migration 30 ────────────────────────────────────────────────────────
+  // Durable review-cycle ownership. Before this migration, "which review is
+  // authoritative" was decided by reading mission_reviews ORDER BY created_at
+  // DESC — a caller-controlled timestamp — and a second review cycle could be
+  // started (and its provider call awaited) while an EARLIER cycle's already-
+  // persisted verdict was still readable as `mission.finalReview`, letting
+  // finalize() grade and close the mission on a stale verdict while the newer
+  // cycle was still in flight. mission_review_cycles gives every review cycle
+  // a durable identity: at most one row per mission may be 'reserved' at a
+  // time (enforced by the partial unique index below, not merely in-memory
+  // state), a review can only ever be applied against the exact cycle that
+  // reserved it, and missions.current_review_cycle_id is the single
+  // authoritative pointer to the review that actually governs grading/
+  // hydration — never "whichever row has the latest created_at".
+  ,{id:30,name:"mission_review_cycles",sql:`
+    CREATE TABLE mission_review_cycles (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','applied')),
+      reserved_at TEXT NOT NULL,
+      resolved_at TEXT,
+      UNIQUE(mission_id, sequence)
+    );
+    CREATE INDEX mission_review_cycles_mission_idx ON mission_review_cycles(mission_id, sequence);
+    -- At most one in-flight (reserved) review cycle per mission, enforced
+    -- durably at the database level — not by an in-memory lock or promise.
+    CREATE UNIQUE INDEX mission_review_cycles_one_reserved ON mission_review_cycles(mission_id) WHERE status = 'reserved';
+
+    ALTER TABLE mission_reviews ADD COLUMN review_cycle_id TEXT REFERENCES mission_review_cycles(id) ON DELETE SET NULL;
+    -- The single authoritative "current review" pointer. Set only when a
+    -- review cycle is actually APPLIED (never while merely reserved), so a
+    -- finalize/hydration read always resolves to the exact cycle that most
+    -- recently completed application — sequence-ordered, never timestamp-ordered.
+    ALTER TABLE missions ADD COLUMN current_review_cycle_id TEXT REFERENCES mission_review_cycles(id) ON DELETE SET NULL;
+  `}
+  // ── Migration 31 ────────────────────────────────────────────────────────
+  // Adds recoverable leases to review-cycle reservations and repairs the
+  // migration-30 authority gap for reviews that existed before cycles did.
+  // The whole migration, including validation and schema_migrations insert,
+  // is run by openDatabase() in one transaction.
+  ,{id:31,name:"mission_review_cycle_leases_and_legacy_hydration",up(db){
+    const legacyMissions=db.prepare(`
+      SELECT DISTINCT mission_id AS missionId
+      FROM mission_reviews
+      WHERE review_cycle_id IS NULL
+      ORDER BY mission_id
+    `).all() as {missionId:string}[];
+
+    const legacyByMission=new Map<string,{id:string;verdict:string;createdAt:string}[]>();
+    for(const {missionId} of legacyMissions){
+      const reviews=db.prepare(`
+        SELECT id, verdict, created_at AS createdAt
+        FROM mission_reviews
+        WHERE mission_id = ? AND review_cycle_id IS NULL
+        ORDER BY created_at ASC, id ASC
+      `).all(missionId) as {id:string;verdict:string;createdAt:string}[];
+      const latestAt=reviews.at(-1)!.createdAt;
+      if(reviews.filter(r=>r.createdAt===latestAt).length>1){
+        throw new Error(`migration 31: tied latest legacy review timestamps for mission ${missionId}; refusing to guess review authority`);
+      }
+      const mission=db.prepare("SELECT status, result_json AS resultJson FROM missions WHERE id = ?").get(missionId) as {status:string;resultJson:string|null};
+      if(mission.resultJson){
+        let result:{reviewVerdict?:unknown};
+        try{result=JSON.parse(mission.resultJson) as {reviewVerdict?:unknown};}
+        catch{throw new Error(`migration 31: invalid result JSON for mission ${missionId}`);}
+        const latest=reviews.at(-1)!;
+        if(result.reviewVerdict!==latest.verdict){
+          throw new Error(`migration 31: mission ${missionId} result contradicts latest legacy review verdict (${String(result.reviewVerdict)} != ${latest.verdict})`);
+        }
+      }
+      legacyByMission.set(missionId,reviews);
+    }
+
+    // SQLite cannot ALTER a CHECK constraint. Rebuild only the cycle table,
+    // snapshotting and restoring both ON DELETE SET NULL references around
+    // the drop. All of this remains inside openDatabase's migration
+    // transaction, so any later validation/write failure restores the exact
+    // migration-30 schema and data.
+    const reviewPointers=db.prepare("SELECT id, review_cycle_id AS cycleId FROM mission_reviews WHERE review_cycle_id IS NOT NULL").all() as {id:string;cycleId:string}[];
+    const missionPointers=db.prepare("SELECT id, current_review_cycle_id AS cycleId FROM missions WHERE current_review_cycle_id IS NOT NULL").all() as {id:string;cycleId:string}[];
+    db.exec(`
+      CREATE TABLE mission_review_cycles_v31 (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved','applied','abandoned')),
+        reserved_at TEXT NOT NULL,
+        resolved_at TEXT,
+        owner_id TEXT,
+        lease_expires_at TEXT,
+        UNIQUE(mission_id, sequence)
+      );
+      INSERT INTO mission_review_cycles_v31
+        (id, mission_id, sequence, status, reserved_at, resolved_at, owner_id, lease_expires_at)
+      SELECT id, mission_id, sequence, status, reserved_at, resolved_at,
+        CASE WHEN status = 'reserved' THEN 'migration-30-unknown' ELSE NULL END,
+        CASE WHEN status = 'reserved' THEN reserved_at ELSE NULL END
+      FROM mission_review_cycles;
+      DROP TABLE mission_review_cycles;
+      ALTER TABLE mission_review_cycles_v31 RENAME TO mission_review_cycles;
+      CREATE INDEX mission_review_cycles_mission_idx ON mission_review_cycles(mission_id, sequence);
+      CREATE UNIQUE INDEX mission_review_cycles_one_reserved ON mission_review_cycles(mission_id) WHERE status = 'reserved';
+    `);
+    const restoreReviewPointer=db.prepare("UPDATE mission_reviews SET review_cycle_id = ? WHERE id = ?");
+    for(const pointer of reviewPointers) restoreReviewPointer.run(pointer.cycleId,pointer.id);
+    const restoreMissionPointer=db.prepare("UPDATE missions SET current_review_cycle_id = ? WHERE id = ?");
+    for(const pointer of missionPointers) restoreMissionPointer.run(pointer.cycleId,pointer.id);
+
+    const insertCycle=db.prepare(`INSERT INTO mission_review_cycles
+      (id, mission_id, sequence, status, reserved_at, resolved_at, owner_id, lease_expires_at)
+      VALUES (?, ?, ?, 'applied', ?, ?, NULL, NULL)`);
+    const attachReview=db.prepare("UPDATE mission_reviews SET review_cycle_id = ? WHERE id = ? AND review_cycle_id IS NULL");
+    const pointMission=db.prepare("UPDATE missions SET current_review_cycle_id = ? WHERE id = ?");
+    for(const [missionId,reviews] of legacyByMission){
+      let sequence=(db.prepare("SELECT COALESCE(MAX(sequence),0) AS n FROM mission_review_cycles WHERE mission_id = ?").get(missionId) as {n:number}).n;
+      let latestCycleId="";
+      for(const review of reviews){
+        sequence+=1;
+        const cycleId=`legacy-review-cycle-${review.id}`;
+        insertCycle.run(cycleId,missionId,sequence,review.createdAt,review.createdAt);
+        attachReview.run(cycleId,review.id);
+        latestCycleId=cycleId;
+      }
+      pointMission.run(latestCycleId,missionId);
+    }
+  }}
 ];
-export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
+export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

@@ -168,7 +168,7 @@ describe("cancellation lifecycle — continuation resume (reproduction)", () => 
     const runner = new TaskRunner(db);
     const app = buildServer({ db, runner });
     try {
-      const res = await app.inject({ method: "POST", url: "/api/tasks/agent/resume" });
+      const res = await app.inject({ method: "POST", url: "/api/tasks/agent/resume", payload: { projectId: "p" } });
       expect(res.statusCode).toBe(202);
       await runner.waitFor("agent");
 

@@ -22,6 +22,16 @@ function sseResponse(lines: string[], status = 200): Response {
   return new Response(stream, { status, headers: { "content-type": "text/event-stream" } });
 }
 
+function chunkedSseResponse(chunks: string[]): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 interface Captured {
   url: string;
   init: any;
@@ -112,6 +122,32 @@ describe("OpenAI-compatible provider normalization", () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
     const chunks = await collect(provider, userMessages);
     expect(chunks.filter((c) => c.type === "text").map((c) => c.text).join("")).toBe("ok");
+  });
+
+  it("flushes one final assistant record without a trailing newline exactly once", async () => {
+    mockFetch(chunkedSseResponse([`data: {"choices":[{"delta":{"content":"final"}}]}`]));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+    expect(chunks.filter((c) => c.type === "text").map((c) => c.text)).toEqual(["final"]);
+  });
+
+  it("handles a final DONE record without a trailing newline", async () => {
+    mockFetch(chunkedSseResponse([`data: [DONE]`]));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+    expect(chunks).toEqual([]);
+  });
+
+  it("preserves split UTF-8 and trailing records after complete records", async () => {
+    const bytes = new TextEncoder().encode(`data: {"choices":[{"delta":{"content":"one"}}]}\n\ndata: {"choices":[{"delta":{"content":"hé"}}]}`);
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes.slice(0, bytes.length - 1)); c.enqueue(bytes.slice(bytes.length - 1)); c.close(); } });
+    mockFetch(new Response(stream, { status: 200 }));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+    expect(chunks.filter((c) => c.type === "text").map((c) => c.text)).toEqual(["one", "hé"]);
+  });
+
+  it("rejects malformed trailing data instead of silently completing", async () => {
+    mockFetch(chunkedSseResponse([`data: not-json`]));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+    expect(chunks.at(-1)?.error?.kind).toBe("provider");
   });
 
   it("requests JSON object output when responseFormat is set", async () => {
