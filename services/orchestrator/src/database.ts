@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-export type Migration={id:number;name:string;sql:string};
+export type Migration={id:number;name:string;sql?:string;up?:(db:Database.Database)=>void};
 export const migrations:Migration[]=[
   {id:1,name:"initial_schema",sql:`CREATE TABLE projects(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,name TEXT NOT NULL,workspace_path TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE tasks(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,type TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,started_at TEXT,completed_at TEXT);CREATE TABLE plan_steps(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,position INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(task_id,position));CREATE TABLE task_events(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(task_id,sequence));CREATE TABLE execution_disclosures(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,execution_mode TEXT NOT NULL,provider TEXT NOT NULL,network_access TEXT NOT NULL,workspace_scope TEXT NOT NULL,estimated_cost_usd TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE task_evidence(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,type TEXT NOT NULL,path TEXT NOT NULL,metadata_json TEXT NOT NULL,created_at TEXT NOT NULL);CREATE TABLE verification_results(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,details_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE INDEX tasks_project_id_idx ON tasks(project_id);CREATE INDEX task_events_task_id_sequence_idx ON task_events(task_id,sequence);`},
   {id:2,name:"execution_disclosure_boundaries",sql:"ALTER TABLE execution_disclosures ADD COLUMN filesystem_access TEXT NOT NULL DEFAULT 'read-only';ALTER TABLE execution_disclosures ADD COLUMN shell_execution INTEGER NOT NULL DEFAULT 0;ALTER TABLE execution_disclosures ADD COLUMN model_invocation INTEGER NOT NULL DEFAULT 0;"},
@@ -622,7 +622,6 @@ export const migrations:Migration[]=[
       statement TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'objective',
       source_prompt_excerpt TEXT,
-      source_locator TEXT,
       source TEXT NOT NULL,
       confidence REAL NOT NULL,
       approved INTEGER NOT NULL DEFAULT 0,
@@ -655,32 +654,86 @@ export const migrations:Migration[]=[
     );
     CREATE TABLE project_active_mission (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-      -- Nullable so a mission deletion can safely clear the pointer via
-      -- ON DELETE SET NULL. A NOT NULL column with ON DELETE SET NULL is
-      -- self-contradictory (the SET NULL would violate NOT NULL on delete), so
-      -- the pointer is nullable and ownership is enforced by the triggers below.
-      mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE SET NULL,
       schema_version INTEGER NOT NULL,
       updated_at TEXT NOT NULL
     );
-    -- Database-enforced ownership: a project's active-mission pointer may only
-    -- reference a mission owned by that same project. A nonexistent mission
-    -- (subquery yields NULL) and a cross-project mission both abort. Using
-    -- 'IS NOT' makes the NULL (nonexistent-mission) case abort as well.
-    CREATE TRIGGER project_active_mission_owner_ai
-    BEFORE INSERT ON project_active_mission
-    WHEN NEW.mission_id IS NOT NULL
-      AND (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
-    BEGIN
-      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
-    END;
-    CREATE TRIGGER project_active_mission_owner_au
-    BEFORE UPDATE ON project_active_mission
-    WHEN NEW.mission_id IS NOT NULL
-      AND (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
-    BEGIN
-      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
-    END;
   `}
+  // ── Migration 29 ────────────────────────────────────────────────────────
+  // Migration 28 (above) was edited in place AFTER it had already been applied
+  // to real databases (both a database created at commit 29d0364, and a later
+  // development database at commit f812872 that carried a divergent, silently
+  // edited copy of the SAME migration id). Migration ids are immutable once
+  // they can have been applied, so migration 28 above is restored to its
+  // EXACT original 29d0364 schema, and every schema change that had been
+  // smuggled into the edited copy — the mission_requirement_nodes.source_locator
+  // column, and a coherent, ownership-enforced project_active_mission table —
+  // is instead delivered here, as migration 29.
+  //
+  // Because three different historical starting points must all converge on
+  // the same final schema (a fresh DB running 1–29 in order; a DB created at
+  // 29d0364 with the ORIGINAL migration 28; and a dev DB at f812872 that
+  // already has the EDITED migration 28, i.e. already has source_locator and
+  // the old ownership triggers), static SQL cannot safely express this
+  // migration: `ALTER TABLE ... ADD COLUMN` fails if the column already
+  // exists, and the project_active_mission rebuild must not assume which
+  // shape it is rebuilding FROM. Migration 29 is therefore a deterministic
+  // JS `up(db)` function (see the Migration type and openDatabase below) that
+  // inspects the live schema with `PRAGMA table_info` before acting.
+  ,{id:29,name:"mission_kernel_contract_ledger_cursor_fixup",up(db){
+    // 1) mission_requirement_nodes.source_locator — add it only if it is not
+    //    already present (the edited-at-f812872 database already has it; the
+    //    genuine 29d0364 database does not).
+    const nodeCols=(db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as {name:string}[]).map(c=>c.name);
+    if(!nodeCols.includes("source_locator")){
+      db.exec("ALTER TABLE mission_requirement_nodes ADD COLUMN source_locator TEXT");
+    }
+
+    // 2) project_active_mission — rebuild into its coherent final shape
+    //    regardless of which historical shape it currently has:
+    //      • project_id references projects, ON DELETE CASCADE (unchanged);
+    //      • mission_id is NOT NULL and references missions ON DELETE CASCADE
+    //        (never SET NULL — a NOT NULL column paired with SET NULL is
+    //        self-contradictory and would abort the delete instead of
+    //        cleanly removing the pointer);
+    //      • deleting an active mission therefore removes its pointer row
+    //        entirely, via the FK cascade — a caller can never hydrate
+    //        `{ missionId: null }`, which the public contract forbids;
+    //      • insert/update ownership triggers reject a pointer to a
+    //        nonexistent or cross-project mission.
+    //    Any existing row whose mission_id is NULL (only possible under the
+    //    edited-f812872 nullable shape) is dropped rather than carried
+    //    forward, since a null-pointing row is exactly the invalid state
+    //    this migration exists to make unrepresentable.
+    db.exec("DROP TRIGGER IF EXISTS project_active_mission_owner_ai");
+    db.exec("DROP TRIGGER IF EXISTS project_active_mission_owner_au");
+    db.exec(`CREATE TABLE project_active_mission_new (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    db.exec(`INSERT INTO project_active_mission_new (project_id, mission_id, schema_version, updated_at)
+      SELECT project_id, mission_id, schema_version, updated_at
+      FROM project_active_mission
+      WHERE mission_id IS NOT NULL`);
+    db.exec("DROP TABLE project_active_mission");
+    db.exec("ALTER TABLE project_active_mission_new RENAME TO project_active_mission");
+    // mission_id is NOT NULL here, so an attempted NULL is rejected by the
+    // column constraint itself; 'IS NOT' also correctly aborts when the
+    // ownership subquery yields NULL (a nonexistent mission id).
+    db.exec(`CREATE TRIGGER project_active_mission_owner_ai
+    BEFORE INSERT ON project_active_mission
+    WHEN (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END`);
+    db.exec(`CREATE TRIGGER project_active_mission_owner_au
+    BEFORE UPDATE ON project_active_mission
+    WHEN (SELECT project_id FROM missions WHERE id = NEW.mission_id) IS NOT NEW.project_id
+    BEGIN
+      SELECT RAISE(ABORT, 'project_active_mission: mission is not owned by this project');
+    END`);
+  }}
 ];
-export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{db.exec(m.sql);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
+export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

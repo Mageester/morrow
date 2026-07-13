@@ -517,14 +517,49 @@ describe("F5 — valid status transitions", () => {
     expect(v.evidenceRefs).toEqual([ev]);
   });
 
-  it("verification succeeds with file hash only (no evidence refs)", () => {
+  // BLOCKER 1 regression: a hash-shaped string alone must NEVER be trusted
+  // proof of completion. This test used to be misleadingly named "file hash
+  // only" while actually also supplying evidenceRefs — it is corrected here
+  // to genuinely exercise hash-only verification and assert it is rejected.
+  it("verification is REJECTED with a valid file hash only (no durable evidence reference)", () => {
+    const { service } = setup();
+    const m = service.create("p1", { objective: "Hash only must be rejected" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH }))
+      .toThrow(/requires at least one/i);
+    // No fabrication: the node must remain unverified.
+    const after = service.listRequirementNodes(m.id).find((n) => n.id === req.id)!;
+    expect(after.status).toBe("active");
+    expect(after.verifiedFileHashes).toEqual([]);
+  });
+
+  it("verification succeeds with durable evidence PLUS a valid file hash", () => {
     const { service, repo } = setup();
-    const m = service.create("p1", { objective: "File hash only" });
+    const m = service.create("p1", { objective: "Evidence plus hash" });
     const req = service.listRequirementNodes(m.id)[0]!;
     service.updateRequirementStatus(m.id, req.id, "active");
     const ev = addEvidence(repo, m.id, "ev-fh");
     const v = service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
     expect(v.status).toBe("verified");
+    expect(v.verifiedFileHashes).toEqual([GOOD_HASH]);
+    expect(v.evidenceRefs).toEqual([ev]);
+  });
+
+  it("fabricated hashes alone cannot produce a successful mission completion", () => {
+    const { service } = setup();
+    const m = service.create("p1", { objective: "No fabricated completion" });
+    service.approveCriteria(m.id);
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    // A caller supplies a well-formed but entirely fabricated hash and no
+    // durable evidence — this must be rejected outright.
+    expect(() => service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH }))
+      .toThrow(/requires at least one/i);
+    // The node stays open, so finalize can never grade this mission complete.
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).not.toBe("completed");
+    expect(finalized.status).not.toBe("completed_with_reservations");
   });
 });
 
@@ -931,18 +966,59 @@ describe("F11 — review application is one atomic transaction", () => {
     };
     const orig = (repo as any)[faultMethod];
     (repo as any)[faultMethod] = () => { throw new Error(`injected ${String(faultMethod)} failure`); };
-    expect(() => service.setReview(approvedReview(m.id))).toThrow(/injected.*failure/);
-    // Whole application rolled back:
-    expect(repo.get(m.id)!.finalReview).toBeNull();
-    expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
-    expect(repo.listEvidence(m.id)).toHaveLength(0);
-    const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
-    expect(obj.status).toBe(before.status); // objective node never verified
-    expect(obj.verifiedFileHashes).toEqual([]);
-    expect(obj.evidenceRefs).toEqual([]);
-    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
-    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
-    (repo as any)[faultMethod] = orig;
+    try {
+      expect(() => service.setReview(approvedReview(m.id))).toThrow(/injected.*failure/);
+      // Whole application rolled back:
+      expect(repo.get(m.id)!.finalReview).toBeNull();
+      expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
+      expect(repo.listEvidence(m.id)).toHaveLength(0);
+      const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
+      expect(obj.status).toBe(before.status); // objective node never verified
+      expect(obj.verifiedFileHashes).toEqual([]);
+      expect(obj.evidenceRefs).toEqual([]);
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+      expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    } finally {
+      // MINOR — restore the monkeypatch via try/finally so a failed assertion
+      // above can never leak a broken repo method into a later test.
+      (repo as any)[faultMethod] = orig;
+    }
+  }
+
+  // MINOR — event fault injection targets the EXACT event type rather than
+  // faulting every appendEvent call indiscriminately, so a LATE-stage failure
+  // (the final "mission.review_completed" event, appended after evidence,
+  // criteria, and the objective node have already been written to the
+  // transaction) is proven to roll back too — not just whichever event
+  // happens to be appended first. The injected error/stage is asserted
+  // exactly, and the monkeypatch is restored via try/finally regardless of
+  // assertion outcome.
+  function expectReviewEventRolledBack(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, eventType: string): void {
+    const objective = service.listRequirementNodes(m.id)[0]!;
+    const before = {
+      status: objective.status,
+      reviewCycles: repo.get(m.id)!.budget.reviewCyclesUsed,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      evidence: repo.listEvidence(m.id).length,
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    const origAppendEvent = repo.appendEvent.bind(repo);
+    repo.appendEvent = ((missionId: string, type: Parameters<typeof repo.appendEvent>[1], summary: string, data?: Record<string, unknown>, now?: string) => {
+      if (type === eventType) throw new Error(`injected ${eventType} failure`);
+      return origAppendEvent(missionId, type, summary, data, now);
+    }) as typeof repo.appendEvent;
+    try {
+      expect(() => service.setReview(approvedReview(m.id))).toThrow(new RegExp(`injected ${eventType.replace(/\./g, "\\.")} failure`));
+      expect(repo.get(m.id)!.finalReview).toBeNull();
+      expect(repo.get(m.id)!.budget.reviewCyclesUsed).toBe(before.reviewCycles);
+      expect(repo.listEvidence(m.id)).toHaveLength(before.evidence);
+      const obj = service.listRequirementNodes(m.id).find((n) => n.id === objective.id)!;
+      expect(obj.status).toBe(before.status);
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+      expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    } finally {
+      repo.appendEvent = origAppendEvent;
+    }
   }
 
   it("review persistence failure rolls back the whole application", () => {
@@ -1086,6 +1162,80 @@ describe("F11 — review application is one atomic transaction", () => {
     expect(objective.status).toBe("verified");
     expect(objective.evidenceRefs).toContain(evidence.id);
   });
+
+  // MINOR — a LATE failure (the final event in the approving branch) must
+  // roll back the whole review application exactly as an early failure does.
+  it("a LATE mission.review_completed event failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewEventRolledBack(repo, service, m, "mission.review_completed");
+  });
+
+  it("an early mission.evidence_recorded event failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewEventRolledBack(repo, service, m, "mission.evidence_recorded");
+  });
+
+  it("a mission.criterion_verified event failure rolls back the whole application", () => {
+    const { service, repo } = setup();
+    const m = prepareReviewable(repo, service);
+    expectReviewEventRolledBack(repo, service, m, "mission.criterion_verified");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MINOR — review START is atomic (running → reviewing, status_changed, and
+// review_started all commit or roll back together, BEFORE any provider call)
+// ════════════════════════════════════════════════════════════════════════════
+describe("MINOR — review start is atomic", () => {
+  it("mission.review_started failure during review start rolls back the transition entirely", async () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Review start rollback" });
+    service.approveCriteria(m.id);
+    expect(repo.get(m.id)!.status).toBe("running");
+    const before = {
+      status: repo.get(m.id)!.status,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+    };
+    const origAppendEvent = repo.appendEvent.bind(repo);
+    repo.appendEvent = ((missionId: string, type: Parameters<typeof repo.appendEvent>[1], summary: string, data?: Record<string, unknown>, now?: string) => {
+      if (type === "mission.review_started") throw new Error("injected mission.review_started failure");
+      return origAppendEvent(missionId, type, summary, data, now);
+    }) as typeof repo.appendEvent;
+    try {
+      // runReview() is async but the transition happens synchronously before
+      // any `await`, so the injected failure surfaces as a rejected promise.
+      await expect(service.runReview(m.id)).rejects.toThrow(/injected mission\.review_started failure/);
+      expect(repo.get(m.id)!.status).toBe(before.status); // still "running", never "reviewing"
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events); // no status_changed either
+    } finally {
+      repo.appendEvent = origAppendEvent;
+    }
+  });
+
+  it("mission.status_changed failure during review start rolls back the transition (and review_started never persists)", async () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Review start status rollback" });
+    service.approveCriteria(m.id);
+    const before = {
+      status: repo.get(m.id)!.status,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+    };
+    const origAppendEvent = repo.appendEvent.bind(repo);
+    repo.appendEvent = ((missionId: string, type: Parameters<typeof repo.appendEvent>[1], summary: string, data?: Record<string, unknown>, now?: string) => {
+      if (type === "mission.status_changed") throw new Error("injected mission.status_changed failure");
+      return origAppendEvent(missionId, type, summary, data, now);
+    }) as typeof repo.appendEvent;
+    try {
+      await expect(service.runReview(m.id)).rejects.toThrow(/injected mission\.status_changed failure/);
+      expect(repo.get(m.id)!.status).toBe(before.status);
+      expect(repo.listEvents(m.id).some((e) => e.type === "mission.review_started")).toBe(false);
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    } finally {
+      repo.appendEvent = origAppendEvent;
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1161,21 +1311,25 @@ describe("F12 — finalization is fully atomic and internally consistent", () =>
     };
     const orig = (repo as any)[faultMethod];
     (repo as any)[faultMethod] = () => { throw new Error(`injected ${String(faultMethod)} failure`); };
-    expect(() => service.finalize(m.id)).toThrow(/injected.*failure/);
-    // Nothing partial persists:
-    const after = repo.get(m.id)!;
-    expect(after.status).toBe(before.status);
-    expect(after.result).toBe(before.result);
-    expect(after.completedAt).toBeNull();
-    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
-    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
-    (repo as any)[faultMethod] = orig;
+    try {
+      expect(() => service.finalize(m.id)).toThrow(/injected.*failure/);
+      // Nothing partial persists:
+      const after = repo.get(m.id)!;
+      expect(after.status).toBe(before.status);
+      expect(after.result).toBe(before.result);
+      expect(after.completedAt).toBeNull();
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+      expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    } finally {
+      (repo as any)[faultMethod] = orig;
+    }
   }
 
   // finalize() appends two distinct event types (mission.status_changed,
   // mission.completed). Faulting them by matching the actual `type` argument
   // proves rollback at each named stage separately, instead of one ambiguous
   // "event failure" that only ever hits whichever event is appended first.
+  // The monkeypatch is restored via try/finally regardless of assertion outcome.
   function expectFinalizeEventRolledBack(repo: ReturnType<typeof missionsRepository>, service: MissionService, m: { id: string }, eventType: string): void {
     const before = {
       status: repo.get(m.id)!.status,
@@ -1188,13 +1342,17 @@ describe("F12 — finalization is fully atomic and internally consistent", () =>
       if (type === eventType) throw new Error(`injected ${eventType} failure`);
       return origAppendEvent(missionId, type, summary, data, now);
     }) as typeof repo.appendEvent;
-    expect(() => service.finalize(m.id)).toThrow(new RegExp(`injected ${eventType.replace(/\./g, "\\.")} failure`));
-    const after = repo.get(m.id)!;
-    expect(after.status).toBe(before.status);
-    expect(after.result).toBe(before.result);
-    expect(after.completedAt).toBeNull();
-    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
-    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    try {
+      expect(() => service.finalize(m.id)).toThrow(new RegExp(`injected ${eventType.replace(/\./g, "\\.")} failure`));
+      const after = repo.get(m.id)!;
+      expect(after.status).toBe(before.status);
+      expect(after.result).toBe(before.result);
+      expect(after.completedAt).toBeNull();
+      expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+      expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+    } finally {
+      repo.appendEvent = origAppendEvent;
+    }
   }
 
   it("status event (mission.status_changed) failure rolls back the entire finalization", () => {
@@ -1257,6 +1415,221 @@ describe("F12 — finalization is fully atomic and internally consistent", () =>
     expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
     expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
     expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// BLOCKER 2 — invalid-state finalization must never commit contradictory state
+// ════════════════════════════════════════════════════════════════════════════
+describe("BLOCKER 2 — finalization lifecycle is centrally enforced", () => {
+  function snapshot(repo: ReturnType<typeof missionsRepository>, service: MissionService, missionId: string) {
+    return {
+      status: repo.get(missionId)!.status,
+      result: repo.get(missionId)!.result,
+      completedAt: repo.get(missionId)!.completedAt,
+      events: repo.listEvents(missionId).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(missionId)),
+    };
+  }
+
+  it("draft finalization throws and writes nothing", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Draft finalize" });
+    expect(repo.get(m.id)!.status).toBe("draft");
+    const before = snapshot(repo, service, m.id);
+    expect(() => service.finalize(m.id)).toThrow(/cannot be finalized from draft/i);
+    expect(snapshot(repo, service, m.id)).toEqual(before);
+  });
+
+  it("awaiting-criteria-approval finalization throws and writes nothing", async () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Awaiting approval finalize" });
+    await service.generateCriteria(m.id, "no test runner here");
+    expect(repo.get(m.id)!.status).toBe("awaiting_criteria_approval");
+    const before = snapshot(repo, service, m.id);
+    expect(() => service.finalize(m.id)).toThrow(/awaiting criteria approval/i);
+    expect(snapshot(repo, service, m.id)).toEqual(before);
+  });
+
+  it("reviewing without a persisted finalReview throws and writes nothing", () => {
+    const { service, repo, db } = setup();
+    const m = service.create("p1", { objective: "Reviewing without verdict" });
+    service.approveCriteria(m.id);
+    // Directly move the mission into "reviewing" (as runReview() would) WITHOUT
+    // ever applying a review verdict — simulates a review-in-flight crash
+    // before applyReview() persisted anything.
+    db.prepare("UPDATE missions SET status = 'reviewing', updated_at = ? WHERE id = ?").run(new Date().toISOString(), m.id);
+    expect(repo.get(m.id)!.status).toBe("reviewing");
+    expect(repo.get(m.id)!.finalReview).toBeNull();
+    const before = snapshot(repo, service, m.id);
+    expect(() => service.finalize(m.id)).toThrow(/without a persisted final review/i);
+    expect(snapshot(repo, service, m.id)).toEqual(before);
+  });
+
+  it("valid reviewed finalization succeeds and every persisted component agrees", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Valid finalize" });
+    service.approveCriteria(m.id);
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-valid-fin");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).not.toBe("draft");
+    expect(repo.get(m.id)!.status).toBe(finalized.status);
+    expect(repo.get(m.id)!.result!.status).toBe(finalized.status);
+    expect(repo.get(m.id)!.completedAt).not.toBeNull();
+    const completed = repo.listEvents(m.id).find((e) => e.type === "mission.completed")!;
+    expect(completed.data.status).toBe(finalized.status);
+  });
+
+  it("repeated healthy finalization is idempotent with no duplicate mission.completed event", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Repeat finalize" });
+    service.approveCriteria(m.id);
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-repeat-fin");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    const first = service.finalize(m.id);
+    const second = service.finalize(m.id);
+    const third = service.finalize(m.id);
+    expect(second.status).toBe(first.status);
+    expect(third.status).toBe(first.status);
+    const completedEvents = repo.listEvents(m.id).filter((e) => e.type === "mission.completed");
+    expect(completedEvents).toHaveLength(1);
+  });
+
+  it("every finalization failure point rolls back the full result/status/event/cursor tuple", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Full rollback" });
+    service.approveCriteria(m.id);
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-rollback-fin");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    const before = snapshot(repo, service, m.id);
+    repo.setResult = () => { throw new Error("injected setResult failure"); };
+    expect(() => service.finalize(m.id)).toThrow(/injected setResult failure/);
+    expect(snapshot(repo, service, m.id)).toEqual(before);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// MAJOR — legacy / partial terminal finalization reconciliation
+// ════════════════════════════════════════════════════════════════════════════
+describe("MAJOR — legacy/partial terminal finalization", () => {
+  function approvedReview(missionId: string): MissionReview {
+    return {
+      id: `review-${missionId}-${Math.random().toString(36).slice(2)}`, missionId, verdict: "approved",
+      criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [],
+      concerns: [], recommendedStatus: "completed", summary: "approved", reviewerProvider: "test", reviewerModel: "test",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /** Drives a mission all the way to a genuine "completed" grade (not the
+   *  degenerate zero-criteria "blocked" grade), so the full completion-tuple
+   *  reconciliation logic (rather than the cancelled/failed/blocked
+   *  short-circuit) is actually exercised. */
+  function completeMission(service: MissionService, repo: ReturnType<typeof missionsRepository>, objective: string) {
+    const m = service.create("p1", { objective });
+    service.approveCriteria(m.id);
+    service.addCriterion(m.id, "Independent reviewer approves the change", { kind: "review", describe: "x" });
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, `ev-complete-${m.id}`);
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    service.setReview(approvedReview(m.id));
+    return m;
+  }
+
+  it("a fully consistent completed tuple is a true idempotent no-op", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Consistent tuple" });
+    service.approveCriteria(m.id);
+    const req = service.listRequirementNodes(m.id)[0]!;
+    service.updateRequirementStatus(m.id, req.id, "active");
+    const ev = addEvidence(repo, m.id, "ev-consistent");
+    service.updateRequirementStatus(m.id, req.id, "verified", { fileHash: GOOD_HASH, evidenceRefs: [ev] });
+    service.finalize(m.id);
+    const before = {
+      status: repo.get(m.id)!.status,
+      result: repo.get(m.id)!.result,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+      cursor: JSON.stringify(service.getCursor(m.id)),
+    };
+    const again = service.finalize(m.id);
+    expect(again.status).toBe(before.status);
+    expect(repo.get(m.id)!.result).toEqual(before.result);
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(JSON.stringify(service.getCursor(m.id))).toBe(before.cursor);
+  });
+
+  it("reconciles a crash-boundary tuple missing its mission.completed event", () => {
+    const { service, repo, db } = setup();
+    const m = completeMission(service, repo, "Missing completed event");
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("completed");
+    // Simulate a crash immediately after finalize by deleting only the
+    // mission.completed event, leaving status/result/completedAt intact.
+    db.prepare("DELETE FROM mission_events WHERE mission_id = ? AND type = 'mission.completed'").run(m.id);
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
+    const reconciled = service.finalize(m.id);
+    expect(reconciled.status).toBe(finalized.status);
+    const events = repo.listEvents(m.id).filter((e) => e.type === "mission.completed");
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data.reconciled).toBe(true);
+  });
+
+  it("reconciles a crash-boundary tuple missing its result row", () => {
+    const { service, repo, db } = setup();
+    const m = completeMission(service, repo, "Missing result");
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("completed");
+    db.prepare("UPDATE missions SET result_json = NULL WHERE id = ?").run(m.id);
+    expect(repo.get(m.id)!.result).toBeNull();
+    const reconciled = service.finalize(m.id);
+    expect(reconciled.result).not.toBeNull();
+    expect(reconciled.result!.status).toBe(finalized.status);
+  });
+
+  it("throws an integrity error rather than silently overwriting a contradictory result", () => {
+    const { service, repo, db } = setup();
+    const m = completeMission(service, repo, "Contradictory tuple");
+    service.finalize(m.id);
+    // Corrupt the persisted result to disagree with the persisted status.
+    const corrupted = { ...repo.get(m.id)!.result!, status: "failed" as const };
+    db.prepare("UPDATE missions SET result_json = ? WHERE id = ?").run(JSON.stringify(corrupted), m.id);
+    expect(() => service.finalize(m.id)).toThrow(/finalization integrity error/i);
+  });
+
+  it("cancelled missions retain their intentional semantics and are never converted to success", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Cancel semantics" });
+    service.cancel(m.id);
+    expect(repo.get(m.id)!.status).toBe("cancelled");
+    const before = {
+      result: repo.get(m.id)!.result,
+      events: repo.listEvents(m.id).map((e) => e.type).join(","),
+    };
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("cancelled");
+    expect(repo.get(m.id)!.result).toBe(before.result); // still no result — untouched
+    expect(repo.listEvents(m.id).map((e) => e.type).join(",")).toBe(before.events);
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
+  });
+
+  it("blocked missions retain their intentional semantics and are never converted to success", () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Blocked semantics" });
+    repo.setStatus(m.id, "running", new Date().toISOString());
+    repo.setStatus(m.id, "blocked", new Date().toISOString());
+    expect(repo.get(m.id)!.status).toBe("blocked");
+    const finalized = service.finalize(m.id);
+    expect(finalized.status).toBe("blocked");
+    expect(repo.get(m.id)!.result).toBeNull();
+    expect(repo.listEvents(m.id).some((e) => e.type === "mission.completed")).toBe(false);
   });
 });
 

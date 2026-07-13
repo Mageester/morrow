@@ -433,13 +433,61 @@ export class MissionService {
   }
 
   // ── independent review ───────────────────────────────────────────────────
+  /**
+   * Validate that a mission may accept a review right now. Used BOTH before
+   * initiating a review (pre-provider-spend) and again, atomically, inside
+   * `applyReview`'s transaction against a freshly-reloaded row — so a
+   * finalize (or any other lifecycle mutation) that races a review-in-flight
+   * can never be applied over.
+   *
+   *  • Terminal missions never accept a review — a post-terminal review
+   *    attempt must write nothing.
+   *  • Only `running` (direct application, e.g. tests/synchronous callers) and
+   *    `reviewing` (in-flight, via runReview) are review-applicable states.
+   *  • The review-cycle budget is enforced HERE, not merely recorded: once
+   *    `reviewCyclesUsed >= maxReviewCycles` no further review — provider spend
+   *    or ledger mutation — is permitted.
+   */
+  private assertReviewApplicable(mission: Mission): void {
+    if (isTerminalMissionStatus(mission.status)) {
+      throw new MissionError(`Mission ${mission.id} is terminal (${mission.status}); a review cannot be applied`, "review_invalid_state");
+    }
+    if (mission.status !== "running" && mission.status !== "reviewing") {
+      throw new MissionError(`Mission ${mission.id} is not in a review-applicable state (${mission.status})`, "review_invalid_state");
+    }
+    if (mission.budget.reviewCyclesUsed >= mission.budget.maxReviewCycles) {
+      throw new MissionError(
+        `Mission ${mission.id} has exhausted its review-cycle budget (${mission.budget.maxReviewCycles})`,
+        "review_cycle_limit_exceeded",
+      );
+    }
+  }
+
   /** Run the independent reviewer as a SEPARATE execution with isolated
    *  instructions. Transitions running → reviewing, records the verdict, and
    *  returns the review. Does not itself grade the mission. */
   async runReview(missionId: string): Promise<MissionReview> {
     let mission = this.get(missionId);
-    if (mission.status === "running") mission = this.transition(missionId, "reviewing");
-    this.repo.appendEvent(missionId, "mission.review_started", "Independent review started", {}, this.now());
+    // Reject invalid/terminal states AND an exhausted review-cycle budget
+    // BEFORE any provider spend or ledger mutation.
+    this.assertReviewApplicable(mission);
+
+    if (mission.status === "running") {
+      const now = this.now();
+      this.repo.transaction(() => {
+        // Re-validate against the freshest row inside the transition
+        // transaction, then transition into `reviewing` and append
+        // `mission.review_started` atomically — both commit or roll back
+        // together.
+        const fresh = this.repo.get(missionId)!;
+        this.assertReviewApplicable(fresh);
+        assertMissionTransition(fresh.status, "reviewing");
+        this.repo.setStatus(missionId, "reviewing", now);
+        this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${fresh.status} → reviewing`, { from: fresh.status, to: "reviewing" }, now);
+        this.repo.appendEvent(missionId, "mission.review_started", "Independent review started", {}, now);
+      });
+      mission = this.get(missionId);
+    }
 
     const workspace = this.deps.getWorkspacePath(mission.projectId);
     const diff = workspace ? gitDiff(workspace) : "";
@@ -510,12 +558,25 @@ export class MissionService {
    * Because everything is inside a single repository transaction, any failure
    * (evidence, criterion, requirement node, event, freeze, or cursor) rolls the
    * whole review application back — no half-applied review survives.
+   *
+   * Race safety: the mission is RELOADED from persistence and RE-VALIDATED
+   * (`assertReviewApplicable`) as the FIRST statement inside this transaction
+   * — before `setReview` or any other write. A finalize (or any other
+   * lifecycle mutation) that completed between provider dispatch and this
+   * call, a mission that went terminal in the interim, or a review-cycle
+   * budget that is already exhausted, all cause this to throw BEFORE any
+   * write, so a stale/late provider result can never be partially persisted.
+   * This is also the ONLY place review application is persisted, so the
+   * public `setReview()` direct-application entry point is automatically
+   * covered by the same validation.
    */
   private applyReview(missionId: string, review: MissionReview): void {
     const now = this.now();
     this.repo.transaction(() => {
+      const mission = this.repo.get(missionId);
+      if (!mission) throw new MissionError(`Mission ${missionId} not found`, "not_found");
+      this.assertReviewApplicable(mission);
       this.repo.setReview(review);
-      const mission = this.repo.get(missionId)!;
       const budget = { ...mission.budget, reviewCyclesUsed: mission.budget.reviewCyclesUsed + 1 };
       this.repo.updateBudget(missionId, budget, now);
 
@@ -533,6 +594,17 @@ export class MissionService {
         // insufficient_evidence (the reviewer could not reach a verdict) — so the
         // non-approval itself is backed by real, mission-scoped provenance rather
         // than only a prose event.
+        //
+        // This early return is deliberately NOT followed by any requirement-node,
+        // freeze, or cursor recomputation, and that is correct rather than a
+        // staleness bug: criterion state does not feed cursor derivation, freeze
+        // is computed purely from requirement-node statuses, and a non-approving
+        // review never mutates a requirement node. Approving reviews (below) DO
+        // advance the authoritative objective node and therefore DO need the
+        // freeze/cursor recompute that `updateRequirementStatus` performs as part
+        // of its own atomic transition. Adding a no-op freeze/cursor recompute
+        // here would not fix anything real — it would only exist to satisfy a
+        // comment, which is exactly what this note is here to prevent.
         const evidenceStatus = review.verdict === "revisions_required" ? "failed" : "inconclusive";
         const evidence = this.repo.addEvidence({
           id: `ev-${randomUUID()}`, missionId, criterionIds: reviewCriterionIds, type: "review",
@@ -595,13 +667,144 @@ export class MissionService {
   }
 
   // ── grading / finalize ───────────────────────────────────────────────────
+  /**
+   * Centrally-enforced finalization lifecycle. Called BEFORE any durable
+   * write, both from the outer finalize() call and again, redundantly, from
+   * inside the finalization transaction against a freshly-reloaded row (so a
+   * concurrent mutation between the two reads can never slip a contradictory
+   * write through).
+   *
+   *  • `draft` and `awaiting_criteria_approval` may never finalize — no work
+   *    has been graded yet.
+   *  • `reviewing` may only finalize once a final review verdict has actually
+   *    been persisted (mission.finalReview); a review-in-flight mission must
+   *    never be closed out from under its own review.
+   *  • Terminal statuses are handled separately by
+   *    `reconcileTerminalFinalization` and never reach this assertion.
+   */
+  private assertFinalizable(mission: Mission): void {
+    if (mission.status === "draft") {
+      throw new MissionError(`Mission ${mission.id} cannot be finalized from draft`, "finalize_invalid_state");
+    }
+    if (mission.status === "awaiting_criteria_approval") {
+      throw new MissionError(`Mission ${mission.id} cannot be finalized while awaiting criteria approval`, "finalize_invalid_state");
+    }
+    if (mission.status === "reviewing" && !mission.finalReview) {
+      throw new MissionError(`Mission ${mission.id} cannot be finalized while reviewing without a persisted final review`, "finalize_invalid_state");
+    }
+  }
+
+  /**
+   * A terminal-status early return must never silently accept a historically
+   * partial (crash-boundary) completion tuple. This inspects the durable
+   * tuple — mission status, completedAt, result, matching mission.completed
+   * event, and a terminal cursor carrying the finalize marker — and either:
+   *   • no-ops when the tuple is already fully consistent (true idempotence);
+   *   • transactionally reconciles it when components are missing but the
+   *     intended outcome is unambiguous (the persisted status is the single
+   *     source of truth being backfilled into the other components);
+   *   • throws a `finalization_integrity_error` when components actively
+   *     contradict each other, rather than silently overwriting history.
+   *
+   * `cancelled` / `failed` / `blocked` missions are reached OUTSIDE the
+   * completion tuple (cancel(), recordFailure()) and carry their own
+   * intentional semantics — they never require a completion tuple and must
+   * never be converted into a successful finalization.
+   */
+  private reconcileTerminalFinalization(mission: Mission): Mission {
+    const status = mission.status;
+    if (status === "cancelled" || status === "failed" || status === "blocked") {
+      return mission;
+    }
+
+    const events = this.repo.listEvents(mission.id);
+    const matchingCompletedEvents = events.filter(
+      (e) => e.type === "mission.completed" && (e.data as any)?.status === status,
+    );
+    const anyCompletedEvents = events.filter((e) => e.type === "mission.completed");
+    const cursor = this.repo.getCursor(mission.id);
+    const cursorTerminal = !!cursor && cursor.allowedNextActions.length === 0;
+    const hasFinalizeMarker = cursor?.lastCompletedAction === "finalize";
+    const hasResult = mission.result !== null;
+    const resultMatches = hasResult && mission.result!.status === status;
+    const hasCompletedAt = mission.completedAt !== null;
+
+    // ── Contradiction detection: never silently overwrite history ──────────
+    if (hasResult && !resultMatches) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} status is ${status} but persisted result.status is ${mission.result!.status}`,
+        "finalization_integrity_error",
+      );
+    }
+    if (anyCompletedEvents.length > 0 && matchingCompletedEvents.length === 0) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} status is ${status} but no matching mission.completed event was recorded`,
+        "finalization_integrity_error",
+      );
+    }
+    if (matchingCompletedEvents.length > 1) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${mission.id} has ${matchingCompletedEvents.length} mission.completed events`,
+        "finalization_integrity_error",
+      );
+    }
+
+    const complete = resultMatches && hasCompletedAt && matchingCompletedEvents.length === 1 && cursorTerminal && hasFinalizeMarker;
+    if (complete) return mission; // fully consistent tuple: true idempotent no-op
+
+    // ── Missing-but-unambiguous: reconcile transactionally ──────────────────
+    const now = this.now();
+    this.repo.transaction(() => {
+      const fresh = this.repo.get(mission.id)!;
+      if (fresh.status !== status) {
+        throw new MissionError(
+          `Finalization integrity error: mission ${mission.id} status changed during reconciliation`,
+          "finalization_integrity_error",
+        );
+      }
+      if (!hasResult) {
+        const rebuilt = buildMissionResult(fresh, {
+          review: fresh.finalReview,
+          changedFiles: this.changedFilesFor(fresh),
+          humanInterventions: 0,
+          tasksCompleted: 0,
+          elapsedMs: fresh.startedAt ? Date.parse(now) - Date.parse(fresh.startedAt) : null,
+          spentUsd: fresh.budget.spentUsd || null,
+          finalStatus: status,
+        });
+        this.repo.setResult(mission.id, rebuilt, now);
+      }
+      if (!hasCompletedAt) {
+        // Backfills completed_at for a genuinely terminal status; does not
+        // change status itself (already terminal) and appends no duplicate
+        // status_changed event.
+        this.repo.setStatus(mission.id, status, now);
+      }
+      if (matchingCompletedEvents.length === 0) {
+        this.repo.appendEvent(
+          mission.id, "mission.completed", `Reconciled terminal finalization for ${status}`,
+          { status, reconciled: true }, now,
+        );
+      }
+      if (!cursorTerminal || !hasFinalizeMarker) {
+        this.advanceCursor(mission.id, { lastCompletedAction: "finalize" });
+      }
+    });
+    return this.get(mission.id);
+  }
+
   /** Grade the mission from criteria + review and set the terminal status. */
   finalize(missionId: string, opts?: { humanInterventions?: number; tasksCompleted?: number; elapsedMs?: number | null }): Mission {
     const mission = this.get(missionId);
-    // A terminal mission is already finalized; re-finalizing would recompute a
-    // fresh grade/result that could disagree with the persisted terminal status
-    // (invariant: result/status/events/cursor must always agree). Idempotent no-op.
-    if (isTerminalMissionStatus(mission.status)) return mission;
+    // A terminal mission is already finalized. Rather than blindly no-op
+    // (which could paper over a historically partial completion tuple), the
+    // durable tuple is explicitly reconciled or, if contradictory, rejected.
+    if (isTerminalMissionStatus(mission.status)) {
+      return this.reconcileTerminalFinalization(mission);
+    }
+    // ── Lifecycle validated BEFORE any durable write ────────────────────────
+    this.assertFinalizable(mission);
+
     const ledger = this.repo.listRequirementNodes(missionId);
     const status = gradeMission(mission.criteria, mission.finalReview?.verdict ?? null);
 
@@ -637,17 +840,23 @@ export class MissionService {
     });
 
     // The result, the terminal status change, both terminal events, AND the
-    // final cursor state commit or roll back together as one transaction. A
-    // ledger-gated downgrade can never be persisted without its matching
+    // final cursor state commit or roll back together as one transaction. The
+    // mission is RE-READ and RE-VALIDATED from persistence inside the
+    // transaction — a concurrent mutation between the outer checks above and
+    // this transaction can never slip a contradictory write through — and the
+    // status transition is a HARD assertion (assertMissionTransition): it is
+    // never conditionally skipped while completion state continues to write.
+    // A ledger-gated downgrade can never be persisted without its matching
     // completed event, cursor, and result, and vice-versa.
     const now = this.now();
     const finalStatus = gated;
     this.repo.transaction(() => {
+      const fresh = this.repo.get(missionId)!;
+      this.assertFinalizable(fresh);
+      assertMissionTransition(fresh.status, finalStatus);
       this.repo.setResult(missionId, result, now);
-      if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, finalStatus)) {
-        this.repo.setStatus(missionId, finalStatus, now);
-        this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${mission.status} → ${finalStatus}`, { from: mission.status, to: finalStatus }, now);
-      }
+      this.repo.setStatus(missionId, finalStatus, now);
+      this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${fresh.status} → ${finalStatus}`, { from: fresh.status, to: finalStatus }, now);
       this.repo.appendEvent(
         missionId, "mission.completed", result.summary,
         { status: finalStatus, ledgerGated: ledgerGate, authoritativeSatisfied, authoritativeNodes: ledger.filter((n) => n.authoritative).length },
@@ -925,12 +1134,17 @@ export class MissionService {
     }
 
     // ── Verification: require real, durable evidence ───────────────────────
+    // A hash-shaped string alone is NEVER trusted proof of completion — it is
+    // merely supplementary content-integrity metadata. Every transition to
+    // `verified` MUST carry at least one durable, mission-scoped, PASSED
+    // evidence reference. Hashes, when supplied, are validated strictly but
+    // can never substitute for evidence (hash-only verification is rejected).
     if (status === "verified") {
       const hashes = opts.fileHashes ?? (opts.fileHash ? [opts.fileHash] : []);
       const refs = opts.evidenceRefs ?? [];
-      if (hashes.length === 0 && refs.length === 0) {
+      if (refs.length === 0) {
         throw new MissionError(
-          `Requirement ${nodeId} verification requires at least one file hash or evidence reference`,
+          `Requirement ${nodeId} verification requires at least one durable evidence reference (a file hash alone is not proof of completion)`,
           "verification_requires_evidence",
         );
       }
