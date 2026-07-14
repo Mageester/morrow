@@ -186,8 +186,14 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   // Full reports carry the metering metadata; the summary stays scannable.
   if (opts.kind === "full") {
     lines.push(`Cost: ${aggregate.disclosure?.estimatedCostUsd ?? "unknown"}`);
-    if (usage) lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${usage.cached > 0 ? ` / ${formatNumber(usage.cached)} cached` : ""}`);
-    else lines.push("Tokens: unknown");
+    if (usage) {
+      const cachedSuffix = usage.cached !== null && usage.cached > 0
+        ? usage.cacheBreakdownComplete
+          ? ` / ${formatNumber(usage.cached)} cached`
+          : ` / cache breakdown incomplete (known cached: at least ${formatNumber(usage.cached)})`
+        : "";
+      lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${cachedSuffix}`);
+    } else lines.push("Tokens: unknown");
     if (aggregate.context) {
       const known = aggregate.context.contextWindowSource !== "fallback" && aggregate.context.contextWindowTokens > 0;
       const used = aggregate.context.inputTokensAfter ?? aggregate.context.inputTokensBefore;
@@ -347,10 +353,17 @@ function isFailedTool(tool: TaskAggregate["toolCalls"][number]): boolean {
   return tool.status === "failed";
 }
 
-function usageFromEvents(aggregate: TaskAggregate): { input: number; output: number; cached: number } | null {
+function usageFromEvents(aggregate: TaskAggregate): { input: number; output: number; cached: number | null; cacheBreakdownComplete: boolean } | null {
   let input = 0;
   let output = 0;
-  let cached = 0;
+  // Sums only the responses that reported a cached-token count. This is the
+  // exact cumulative cached total ONLY while cacheBreakdownComplete stays
+  // true; a report must never print an unqualified "N cached" once one
+  // response didn't report a breakdown — that reads as an exact fact when
+  // it is really a partial lower bound. It must also never print "0 cached"
+  // for a task whose provider(s) simply never reported cache usage at all.
+  let cached: number | null = null;
+  let cacheBreakdownComplete = true;
   let found = false;
   for (const event of uniqueEvents(aggregate)) {
     if (event.type !== "provider.usage") continue;
@@ -358,11 +371,12 @@ function usageFromEvents(aggregate: TaskAggregate): { input: number; output: num
     if (typeof p.inputTokens === "number" && typeof p.outputTokens === "number") {
       input += p.inputTokens;
       output += p.outputTokens;
-      if (typeof p.cachedInputTokens === "number") cached += p.cachedInputTokens;
+      if (typeof p.cachedInputTokens === "number") cached = (cached ?? 0) + p.cachedInputTokens;
+      else cacheBreakdownComplete = false;
       found = true;
     }
   }
-  return found ? { input, output, cached } : null;
+  return found ? { input, output, cached, cacheBreakdownComplete } : null;
 }
 
 function toolOutputText(tool: TaskAggregate["toolCalls"][number]): string {

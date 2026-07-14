@@ -28,6 +28,59 @@ describe("terminal usage state", () => {
     expect(state.usage).toBeUndefined();
   });
 
+  it("keeps cumulative cached tokens null (not 0) when no response has ever reported them", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    expect(state.usage?.cachedInputTokens).toBeNull();
+  });
+
+  it("preserves a known cumulative cached total across a later response that doesn't report one, but marks the breakdown incomplete", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    // The second response's own usage never reported caching, but that must
+    // not erase or zero out the subtotal already established by the first —
+    // it must, however, mark the breakdown incomplete so the 40 is read as
+    // a lower bound, not an exact cumulative cached total.
+    expect(state.usage?.cachedInputTokens).toBe(40);
+    expect(state.usage?.cacheBreakdownComplete).toBe(false);
+    expect(state.activeUsage?.cachedInputTokens).toBeNull();
+    expect(state.activeUsage?.cacheBreakdownComplete).toBe(false);
+  });
+
+  it("marks the cumulative breakdown complete only when every folded response reported one", () => {
+    const complete = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5, cachedInputTokens: 10 },
+    ]);
+    expect(complete.usage?.cacheBreakdownComplete).toBe(true);
+    expect(complete.usage?.cachedInputTokens).toBe(50); // 40 + 10, exact
+
+    const incomplete = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5, cachedInputTokens: 10 },
+    ]);
+    // Even though the LATEST response reported a breakdown, an earlier one
+    // in the same session didn't — the cumulative split can never become
+    // complete again once broken.
+    expect(incomplete.usage?.cacheBreakdownComplete).toBe(false);
+    expect(incomplete.usage?.cachedInputTokens).toBe(10); // partial, from response 2 only
+  });
+
+  it("separates the current (active) response's usage from the cumulative session total", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    // A UI reading activeUsage must see only the latest response's size, not
+    // the running session total — these must never be conflated.
+    expect(state.activeUsage).toMatchObject({ inputTokens: 50, outputTokens: 5, totalTokens: 55 });
+    expect(state.usage).toMatchObject({ inputTokens: 150, outputTokens: 25, totalTokens: 175 });
+  });
+
   it("accumulates authoritative estimated cost when every usage event supplies it", () => {
     const state = fold([
       { type: "usage.reported", provider: "ollama", model: "llama3.1", inputTokens: 100, outputTokens: 20, estimatedCostUsd: 0 },

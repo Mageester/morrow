@@ -34,13 +34,15 @@ import { createProvider, getProviderDefaultModel, providerCapabilities } from ".
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
-import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
+import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
-import { measureProviderRequest, prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
+import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
-import { providerRouteFingerprint, resolveEffectiveContext } from "../routing/effective-context.js";
+import { providerRouteFingerprint } from "../routing/effective-context.js";
+import { resolveModelBudget } from "../routing/model-budget.js";
+import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -70,6 +72,51 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; v
   } catch {
     return {};
   }
+}
+
+/**
+ * Normalize a persisted `provider.usage` event payload into a RequestUsage
+ * for folding into the cumulative seed on resume. Accepts both the current
+ * canonical shape and every pre-canonical legacy shape (inputTokens as the
+ * total prompt count; no explicit cacheBreakdownStatus/tokenSource/costSource)
+ * so an older task's history is re-derived honestly rather than silently
+ * dropped. Deliberately re-derives freshInputTokens from
+ * totalInputTokens/cachedInputTokens here rather than trusting any persisted
+ * `freshInputTokens` value, since an earlier version of this module computed
+ * that field incorrectly when the cache breakdown was unknown â€” resuming an
+ * old task must not resurrect that bug via stale event data. Returns null
+ * when the payload cannot be interpreted as a real usage report at all.
+ */
+function normalizePersistedUsagePayload(payload: Record<string, unknown>): RequestUsage | null {
+  const outputTokens = typeof payload.outputTokens === "number" ? payload.outputTokens : null;
+  const totalInputTokens = typeof payload.totalInputTokens === "number"
+    ? payload.totalInputTokens
+    : typeof payload.inputTokens === "number"
+      ? payload.inputTokens
+      : null;
+  if (outputTokens === null || totalInputTokens === null) return null;
+  const cachedInputTokens = typeof payload.cachedInputTokens === "number" ? payload.cachedInputTokens : null;
+  const freshInputTokens = cachedInputTokens !== null ? Math.max(0, totalInputTokens - cachedInputTokens) : null;
+  const costUsd = typeof payload.costUsd === "number"
+    ? payload.costUsd
+    : typeof payload.estimatedCostUsd === "number"
+      ? payload.estimatedCostUsd
+      : null;
+  return {
+    providerId: typeof payload.provider === "string" ? payload.provider : "unknown",
+    modelId: typeof payload.model === "string" ? payload.model : "unknown",
+    routeFingerprint: null,
+    totalInputTokens,
+    freshInputTokens,
+    cachedInputTokens,
+    outputTokens,
+    totalTokens: totalInputTokens + outputTokens,
+    cacheBreakdownStatus: cachedInputTokens !== null ? "reported" : "unavailable",
+    tokenSource: "provider-reported",
+    tokenConfidence: "exact",
+    costUsd,
+    costSource: costUsd !== null ? "morrow-estimated" : "unavailable",
+  };
 }
 
 function isProviderContextRejection(error: unknown): boolean {
@@ -625,7 +672,7 @@ export async function executeAgentChatTask({
     endpointLimitTokens: null,
     endpointLimitSource: "unknown" as const,
   };
-  const effectiveContext = resolveEffectiveContext({
+  const modelBudget = resolveModelBudget({
     providerId: providerType,
     selectedModel: contextModel,
     endpoint: {
@@ -635,7 +682,9 @@ export async function executeAgentChatTask({
       limitTokens: primaryRoute.endpointLimitTokens,
       limitSource: primaryRoute.endpointLimitSource,
     },
-    outputReserveTokens,
+    presetContextBudgetBytes: contextBytesLimit,
+    outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
   });
   const primaryRouteFingerprint = providerRouteFingerprint({
     providerId: providerType,
@@ -644,14 +693,6 @@ export async function executeAgentChatTask({
     endpointKind: primaryRoute.endpointKind,
     endpointHost: primaryRoute.endpointHost,
     endpointIdentityHash: primaryRoute.endpointIdentityHash,
-  });
-  const contextBudget = resolveContextBudget({
-    providerId: providerType,
-    model: contextModel,
-    presetContextBudgetBytes: contextBytesLimit,
-    outputBudgetTokens: preset.outputBudgetTokens,
-    userContextWindowTokens: effectiveContext.effectiveRequestLimitTokens,
-    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
   });
 
   // Stream candidates for live fallback: the primary first, then any injected
@@ -1794,6 +1835,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return;
   }
 
+  // Re-derive cumulative usage from the task's own persisted provider.usage
+  // history rather than trusting an in-memory total across a restart/resume
+  // â€” each historical event is folded in exactly once, here, on this single
+  // pass. Legacy events (persisted before the canonical usage shape existed)
+  // are normalized rather than skipped, so resuming an older task does not
+  // silently lose its prior accounting.
+  let cumulativeUsage: CumulativeUsage = records.listEvents(taskId)
+    .filter((ev) => ev.type === "provider.usage")
+    .reduce((acc, ev) => {
+      const usage = normalizePersistedUsagePayload(ev.payload as Record<string, unknown>);
+      return usage ? accumulateUsage(acc, usage) : acc;
+    }, EMPTY_CUMULATIVE_USAGE);
+
   while (true) {
     if (checkCancelled()) {
       handleCancellation();
@@ -1827,28 +1881,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // deterministic history compaction. The route-aware complete-envelope
         // gate below remains authoritative for the actual provider request,
         // including tools, continuation fields, overhead, and output reserve.
-        maxInputTokens: contextBudget.maxInputTokens,
+        maxInputTokens: modelBudget.compactionTargetTokens,
         compact: true,
         recentRawGroups: 1,
       });
       event("context.budget_calculated", {
         provider: providerType,
         model: contextModel,
-        contextWindowTokens: contextBudget.contextWindowTokens,
-        contextWindowSource: contextBudget.contextWindowSource,
-        exactModelLimit: contextBudget.exactModelLimit,
-        reservedOutputTokens: contextBudget.outputBudgetTokens,
-        reservedTokens: contextBudget.reservedTokens,
-        maxInputTokens: contextBudget.maxInputTokens,
-        modelCapacityTokens: effectiveContext.advertisedModelCapacityTokens,
-        modelCapacitySource: effectiveContext.advertisedModelCapacitySource,
-        endpointLimitTokens: effectiveContext.configuredEndpointLimitTokens,
-        endpointLimitSource: effectiveContext.endpointLimitSource,
-        effectiveRequestLimitTokens: effectiveContext.effectiveRequestLimitTokens,
-        effectiveLimitSource: effectiveContext.effectiveLimitSource,
-        maximumInputTokens: effectiveContext.maximumInputTokens,
-        endpointHost: effectiveContext.endpointHost,
-        endpointKind: effectiveContext.endpointKind,
+        canonicalModel: modelBudget.canonicalModelId,
+        contextWindowTokens: modelBudget.contextWindowTokens,
+        contextWindowSource: modelBudget.contextWindowSource,
+        contextWindowConfidence: modelBudget.contextWindowConfidence,
+        outputReserveTokens: modelBudget.outputReserveTokens,
+        safetyMarginTokens: modelBudget.safetyMarginTokens,
+        toolReserveTokens: modelBudget.toolReserveTokens,
+        totalReserveTokens: modelBudget.totalReserveTokens,
+        usableInputTokens: modelBudget.usableInputTokens,
+        compactionTargetTokens: modelBudget.compactionTargetTokens,
+        modelCapacityTokens: modelBudget.contextWindowTokens,
+        modelCapacitySource: modelBudget.contextWindowSource,
+        endpointLimitTokens: modelBudget.endpointLimitTokens,
+        endpointLimitSource: modelBudget.endpointLimitSource,
+        effectiveRequestLimitTokens: modelBudget.contextWindowTokens,
+        effectiveLimitSource: modelBudget.contextWindowSource,
+        maximumInputTokens: modelBudget.usableInputTokens,
+        maxInputTokens: modelBudget.compactionTargetTokens,
+        endpointHost: modelBudget.endpointHost,
+        endpointKind: modelBudget.endpointKind,
       });
       for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
       if (!preparedContext.ok) {
@@ -1890,7 +1949,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (preparedContext.removedGroups > 0 || preparedContext.compactedGroups > 0) {
         event("context.trimmed", {
           finalTokens: preparedContext.finalTokens,
-          maxInputTokens: contextBudget.maxInputTokens,
+          maxInputTokens: modelBudget.compactionTargetTokens,
           trimmedMessages: preparedContext.compactedGroups + preparedContext.removedGroups,
           compactedGroups: preparedContext.compactedGroups,
           removedGroups: preparedContext.removedGroups,
@@ -1935,7 +1994,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           endpointLimitTokens: null,
           endpointLimitSource: "unknown" as const,
         };
-        const resolution = resolveEffectiveContext({
+        // No presetContextBudgetBytes here: this resolution gates the actual
+        // wire request (compaction threshold + final admission), which must
+        // never be tighter than the model/endpoint's real usable capacity.
+        // The preset/dev byte budget only shapes the earlier, soft
+        // deterministic-trim pass (modelBudget.compactionTargetTokens above).
+        const resolution = resolveModelBudget({
           providerId: candidate.id,
           selectedModel: candidateModel,
           endpoint: {
@@ -1945,7 +2009,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             limitTokens: route.endpointLimitTokens,
             limitSource: route.endpointLimitSource,
           },
-          outputReserveTokens,
+          outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
+          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
         });
         const routeFingerprint = providerRouteFingerprint({
           providerId: candidate.id,
@@ -1981,7 +2046,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
       const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
-        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.maximumInputTokens * compactionThresholdRatio),
+        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
       );
       let projectionCheckpoint: ExecutionCheckpointSnapshot | null = null;
       let projectionCheckpointId: string | null = null;
@@ -1997,7 +2062,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               envelope: item.envelope,
               admission: { ok: true as const, measurement: measureProviderRequest(item.envelope) },
               compacted: false,
-              thresholdTokens: Math.floor(item.resolution.maximumInputTokens * compactionThresholdRatio),
+              thresholdTokens: Math.floor(item.resolution.usableInputTokens * compactionThresholdRatio),
               contentHash: createHash("sha256").update(JSON.stringify(item.envelope)).digest("hex"),
               originalMeasurement: measureProviderRequest(item.envelope),
             };
@@ -2008,16 +2073,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         event("context.budget_calculated", {
           provider: candidate.id,
           model: candidateModel,
-          modelCapacityTokens: resolution.advertisedModelCapacityTokens,
-          modelCapacitySource: resolution.advertisedModelCapacitySource,
-          endpointLimitTokens: resolution.configuredEndpointLimitTokens,
+          canonicalModel: resolution.canonicalModelId,
+          contextWindowTokens: resolution.contextWindowTokens,
+          contextWindowSource: resolution.contextWindowSource,
+          contextWindowConfidence: resolution.contextWindowConfidence,
+          modelCapacityTokens: resolution.contextWindowTokens,
+          modelCapacitySource: resolution.contextWindowSource,
+          endpointLimitTokens: resolution.endpointLimitTokens,
           endpointLimitSource: resolution.endpointLimitSource,
-          effectiveLimitSource: resolution.effectiveLimitSource,
-          outputReserveTokens,
+          effectiveLimitSource: resolution.contextWindowSource,
+          outputReserveTokens: resolution.outputReserveTokens,
+          totalReserveTokens: resolution.totalReserveTokens,
           currentRequestTokens: admission.measurement.inputTokens,
           totalRequestTokens: admission.measurement.totalRequestTokens,
-          maximumInputTokens: resolution.maximumInputTokens,
-          effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens,
+          usableInputTokens: resolution.usableInputTokens,
+          maximumInputTokens: resolution.usableInputTokens,
+          effectiveRequestLimitTokens: resolution.contextWindowTokens,
           admitted: admission.ok,
           compactionThresholdTokens: projection.thresholdTokens,
           projectionCompacted: projection.compacted,
@@ -2103,8 +2174,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           routeFingerprint: currentRouteFingerprint,
           endpointKind: selectedCandidate.route.endpointKind,
           endpointHost: selectedCandidate.route.endpointHost,
-          effectiveRequestLimitTokens: selectedCandidate.resolution.effectiveRequestLimitTokens,
-          effectiveLimitSource: selectedCandidate.resolution.effectiveLimitSource,
+          effectiveRequestLimitTokens: selectedCandidate.resolution.contextWindowTokens,
+          effectiveLimitSource: selectedCandidate.resolution.contextWindowSource,
         });
       }
       if (opened.deprioritizedRateLimited.length > 0) {
@@ -2136,19 +2207,54 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
 
         if (chunk.type === "done" && chunk.usage) {
-          const cost = calculateUsageCost({
-            inputTokens: chunk.usage.promptTokens,
-            outputTokens: chunk.usage.completionTokens,
-            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
-          }, resolveModelMetadata(opened.servedBy, servedModel));
+          // resolveRequestUsage/accumulateUsage (routing/usage-snapshot.ts) are
+          // the single source of truth for this response's usage and the
+          // running task total â€” never re-derived independently downstream.
+          const requestUsage = resolveRequestUsage({
+            providerId: opened.servedBy,
+            modelId: servedModel,
+            routeFingerprint: currentRouteFingerprint,
+            usage: chunk.usage,
+            metadata: resolveModelMetadata(opened.servedBy, servedModel),
+          });
+          cumulativeUsage = accumulateUsage(cumulativeUsage, requestUsage);
           event("provider.usage", {
             provider: opened.servedBy,
             model: servedModel,
-            inputTokens: chunk.usage.promptTokens,
-            outputTokens: chunk.usage.completionTokens,
-            totalTokens: chunk.usage.promptTokens + chunk.usage.completionTokens,
-            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
-            ...(cost.known ? { estimatedCostUsd: cost.usd } : {}),
+            // Legacy/display field: inputTokens is the TOTAL prompt token
+            // count (fresh + cached), matching every existing consumer's
+            // "X in" display â€” never confuse this with freshInputTokens
+            // below, which is null whenever the cache breakdown is unknown.
+            inputTokens: requestUsage.totalInputTokens,
+            outputTokens: requestUsage.outputTokens,
+            totalTokens: requestUsage.totalTokens,
+            ...(requestUsage.cachedInputTokens !== null ? { cachedInputTokens: requestUsage.cachedInputTokens } : {}),
+            ...(requestUsage.costUsd !== null ? { estimatedCostUsd: requestUsage.costUsd } : {}),
+            // Canonical fields (routing/usage-snapshot.ts): total input is
+            // always distinct from the (possibly unknown) fresh/cached
+            // split; cacheBreakdownStatus says explicitly whether that split
+            // is known for THIS response â€” freshInputTokens/cachedInputTokens
+            // must never be read as known unless it says "reported".
+            totalInputTokens: requestUsage.totalInputTokens,
+            ...(requestUsage.freshInputTokens !== null ? { freshInputTokens: requestUsage.freshInputTokens } : {}),
+            cacheBreakdownStatus: requestUsage.cacheBreakdownStatus,
+            tokenSource: requestUsage.tokenSource,
+            tokenConfidence: requestUsage.tokenConfidence,
+            costUsd: requestUsage.costUsd,
+            costSource: requestUsage.costSource,
+            routeFingerprint: requestUsage.routeFingerprint,
+            // Cumulative task/session totals as of this response â€” folded in
+            // exactly once per response, never re-derived by summing context
+            // snapshots. cumulativeCacheBreakdownComplete is false as soon as
+            // any one folded response lacked a cache breakdown; the known
+            // fresh/cached subtotals are then partial, not the true total.
+            cumulativeResponseCount: cumulativeUsage.responseCount,
+            cumulativeTotalInputTokens: cumulativeUsage.totalInputTokens,
+            cumulativeOutputTokens: cumulativeUsage.outputTokens,
+            cumulativeKnownFreshInputTokens: cumulativeUsage.knownFreshInputTokens,
+            cumulativeKnownCachedInputTokens: cumulativeUsage.knownCachedInputTokens,
+            cumulativeCacheBreakdownComplete: cumulativeUsage.cacheBreakdownComplete,
+            cumulativeCostUsd: cumulativeUsage.totalCostUsd,
           });
         }
 

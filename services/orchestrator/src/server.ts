@@ -61,20 +61,24 @@ function contextUsageFromEvents(events: Array<{ type: string; payload: Record<st
   const bool = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
   const exact = bool(count?.exact) ?? bool(trim?.exact);
   const method = str(count?.method) ?? str(trim?.countingMethod);
+  // "Canonical" fields are what every current agent execution path emits
+  // (routing/model-budget.ts's ModelBudget). The remaining fallbacks only
+  // exist to interpret event rows persisted before that unification and are
+  // never exercised by newly emitted events.
   return {
     providerId: str(budget?.provider) ?? str(count?.provider) ?? "unknown",
     model: str(budget?.model) ?? str(count?.model) ?? "unknown",
-    contextWindowTokens: num(budget?.modelCapacityTokens) ?? num(budget?.contextWindowTokens) ?? 0,
-    contextWindowSource: str(budget?.modelCapacitySource) ?? str(budget?.contextWindowSource) ?? "unknown",
-    modelCapacityTokens: num(budget?.modelCapacityTokens) ?? num(budget?.contextWindowTokens),
-    modelCapacitySource: str(budget?.modelCapacitySource) ?? str(budget?.contextWindowSource) ?? "unknown",
+    contextWindowTokens: num(budget?.contextWindowTokens) ?? num(budget?.modelCapacityTokens) ?? 0,
+    contextWindowSource: str(budget?.contextWindowSource) ?? str(budget?.modelCapacitySource) ?? "unknown",
+    modelCapacityTokens: num(budget?.contextWindowTokens) ?? num(budget?.modelCapacityTokens),
+    modelCapacitySource: str(budget?.contextWindowSource) ?? str(budget?.modelCapacitySource) ?? "unknown",
     endpointLimitTokens: num(budget?.endpointLimitTokens),
     endpointLimitSource: str(budget?.endpointLimitSource) ?? "unknown",
-    effectiveRequestLimitTokens: num(budget?.effectiveRequestLimitTokens) ?? num(budget?.contextWindowTokens),
-    effectiveLimitSource: str(budget?.effectiveLimitSource) ?? str(budget?.contextWindowSource) ?? "unknown",
-    maxInputTokens: num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
-    maximumInputTokens: num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? 0,
-    reservedTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? num(budget?.reservedTokens) ?? 0,
+    effectiveRequestLimitTokens: num(budget?.contextWindowTokens) ?? num(budget?.effectiveRequestLimitTokens),
+    effectiveLimitSource: str(budget?.contextWindowSource) ?? str(budget?.effectiveLimitSource) ?? "unknown",
+    maxInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
+    maximumInputTokens: num(budget?.usableInputTokens) ?? num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? 0,
+    reservedTokens: num(budget?.totalReserveTokens) ?? num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? num(budget?.reservedTokens) ?? 0,
     outputReserveTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? 0,
     currentRequestTokens: num(budget?.currentRequestTokens) ?? num(trim?.inputTokensAfter) ?? num(count?.tokens),
     inputTokensBefore: num(trim?.inputTokensBefore) ?? num(count?.tokens),
@@ -135,7 +139,7 @@ import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { buildProviderProjection } from "./execution/provider-projection.js";
-import { resolveEffectiveContext } from "./routing/effective-context.js";
+import { resolveModelBudget } from "./routing/model-budget.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -701,11 +705,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         endpointLimitTokens: null, endpointLimitSource: "unknown",
       };
     }
-    const resolution = resolveEffectiveContext({
+    const resolution = resolveModelBudget({
       providerId: decision.providerId,
       selectedModel: decision.model,
       endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
-      outputReserveTokens,
+      outputBudgetTokens: outputReserveTokens,
     });
     const messages: ChatMessage[] = convs.listMessages(conversationId).map((message) => ({ role: message.role, content: message.content }));
     if (messages.length < 2) throw new ApiError(409, "Not enough conversation history to compact", "CONTEXT_NOT_COMPACTABLE");
@@ -732,10 +736,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       routing: decision,
       context: {
         providerId: decision.providerId, model: decision.model,
-        modelCapacityTokens: resolution.advertisedModelCapacityTokens, modelCapacitySource: resolution.advertisedModelCapacitySource,
-        endpointLimitTokens: resolution.configuredEndpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
-        effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens, effectiveLimitSource: resolution.effectiveLimitSource,
-        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.maximumInputTokens,
+        modelCapacityTokens: resolution.contextWindowTokens, modelCapacitySource: resolution.contextWindowSource,
+        endpointLimitTokens: resolution.endpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
+        effectiveRequestLimitTokens: resolution.contextWindowTokens, effectiveLimitSource: resolution.contextWindowSource,
+        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.usableInputTokens,
+        usableInputTokens: resolution.usableInputTokens,
         currentRequestTokens: admission.measurement.inputTokens, countingMethod: admission.measurement.method, exact: admission.measurement.exact,
       },
     };
@@ -1000,11 +1005,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         endpointLimitTokens: null, endpointLimitSource: "unknown",
       };
     }
-    const resolution = resolveEffectiveContext({
+    const resolution = resolveModelBudget({
       providerId: decision.providerId,
       selectedModel: decision.model,
       endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
-      outputReserveTokens,
+      outputBudgetTokens: outputReserveTokens,
     });
 
     const durableMessages = convs.listMessages(assistant.conversationId);
@@ -1057,10 +1062,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       routing: decision,
       context: {
         providerId: decision.providerId, model: decision.model,
-        modelCapacityTokens: resolution.advertisedModelCapacityTokens, modelCapacitySource: resolution.advertisedModelCapacitySource,
-        endpointLimitTokens: resolution.configuredEndpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
-        effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens, effectiveLimitSource: resolution.effectiveLimitSource,
-        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.maximumInputTokens,
+        modelCapacityTokens: resolution.contextWindowTokens, modelCapacitySource: resolution.contextWindowSource,
+        endpointLimitTokens: resolution.endpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
+        effectiveRequestLimitTokens: resolution.contextWindowTokens, effectiveLimitSource: resolution.contextWindowSource,
+        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.usableInputTokens,
+        usableInputTokens: resolution.usableInputTokens,
         currentRequestTokens: admission.measurement.inputTokens, countingMethod: admission.measurement.method, exact: admission.measurement.exact,
       },
     };

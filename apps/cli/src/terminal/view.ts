@@ -169,7 +169,13 @@ function usageLabel(state: TerminalState): string {
   const u = state.usage;
   if (!u) return "Tokens unknown";
   const parts = [`${formatTokens(u.inputTokens)} in`, `${formatTokens(u.outputTokens)} out`];
-  if (u.cachedInputTokens > 0) parts.push(`${formatTokens(u.cachedInputTokens)} cached`);
+  // A "+" suffix means the cache breakdown is incomplete (at least one
+  // response never reported one): this is a known lower bound, not the
+  // exact cumulative cached total, and must read differently from a
+  // complete count.
+  if (u.cachedInputTokens !== null && u.cachedInputTokens > 0) {
+    parts.push(`${formatTokens(u.cachedInputTokens)}${u.cacheBreakdownComplete ? "" : "+"} cached`);
+  }
   return `Tokens ${parts.join(" - ")}`;
 }
 
@@ -451,7 +457,7 @@ export function statsLines(state: TerminalState, out: Output, opts: StatsOptions
     rows.push(["memory", m.memory ? "on" : "off"]);
   }
   const u = state.usage;
-  rows.push(["tokens", u ? [`${formatTokens(u.inputTokens)} in`, `${formatTokens(u.outputTokens)} out`, ...(u.cachedInputTokens > 0 ? [`${formatTokens(u.cachedInputTokens)} cached`] : [])].join(dot) : "unknown"]);
+  rows.push(["tokens", u ? [`${formatTokens(u.inputTokens)} in`, `${formatTokens(u.outputTokens)} out`, ...(u.cachedInputTokens !== null && u.cachedInputTokens > 0 ? [`${formatTokens(u.cachedInputTokens)}${u.cacheBreakdownComplete ? "" : "+"} cached`] : [])].join(dot) : "unknown"]);
   const cu = state.contextUsage;
   if (cu) {
     const limit = contextLimit(state);

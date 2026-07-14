@@ -1,7 +1,5 @@
 import type { ChatMessage, ProviderProtocol, ToolDefinition } from "../provider/base.js";
-import type { EffectiveContextResolution } from "../routing/effective-context.js";
 import { getEncoding } from "js-tiktoken";
-import { resolveModelMetadata } from "../routing/models.js";
 
 export interface ContextBudget {
   maxInputTokens: number;
@@ -15,7 +13,6 @@ export interface ContextTrimResult {
 }
 
 export type TokenCountMethod = "exact" | "estimate";
-export type ContextWindowSource = "known-model" | "user-config" | "fallback";
 
 export interface TokenCountResult {
   tokens: number;
@@ -54,19 +51,7 @@ export interface ProviderRequestMeasurement {
 
 export type ProviderAdmission =
   | { ok: true; measurement: ProviderRequestMeasurement }
-  | { ok: false; reason: "request_too_large"; measurement: ProviderRequestMeasurement; maximumInputTokens: number };
-
-export interface ResolvedContextBudget {
-  providerId: string;
-  model: string;
-  contextWindowTokens: number;
-  contextWindowSource: ContextWindowSource;
-  exactModelLimit: boolean;
-  outputBudgetTokens: number;
-  reservedTokens: number;
-  maxInputTokens: number;
-  safetyMarginTokens: number;
-}
+  | { ok: false; reason: "request_too_large"; measurement: ProviderRequestMeasurement; usableInputTokens: number };
 
 export interface ContextOperation {
   type:
@@ -106,8 +91,6 @@ export type ContextPrepareResult =
       tokenCount: TokenCountResult;
       operations: ContextOperation[];
     };
-
-const DEFAULT_FALLBACK_CONTEXT_WINDOW = 32768;
 
 let openAiEncoding: ReturnType<typeof getEncoding> | undefined;
 
@@ -231,10 +214,10 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
 
 export function admitProviderRequest(
   envelope: ProviderRequestEnvelope,
-  resolution: EffectiveContextResolution,
+  budget: { usableInputTokens: number },
 ): ProviderAdmission {
   const measurement = measureProviderRequest(envelope);
-  return admitMeasuredProviderRequest(measurement, resolution);
+  return admitMeasuredProviderRequest(measurement, budget);
 }
 
 /** Admission over an already measured wire envelope. Kept separate so
@@ -242,10 +225,10 @@ export function admitProviderRequest(
  * the same limit and output-reserve rule as locally tokenized requests. */
 export function admitMeasuredProviderRequest(
   measurement: ProviderRequestMeasurement,
-  resolution: EffectiveContextResolution,
+  budget: { usableInputTokens: number },
 ): ProviderAdmission {
-  if (measurement.inputTokens > resolution.maximumInputTokens) {
-    return { ok: false, reason: "request_too_large", measurement, maximumInputTokens: resolution.maximumInputTokens };
+  if (measurement.inputTokens > budget.usableInputTokens) {
+    return { ok: false, reason: "request_too_large", measurement, usableInputTokens: budget.usableInputTokens };
   }
   return { ok: true, measurement };
 }
@@ -261,38 +244,6 @@ export function inputTokenBudget(input: {
   if (!input.modelContextWindow) return presetBudget;
   const modelInputBudget = Math.max(1, input.modelContextWindow - (input.outputBudgetTokens ?? 0) - reserve);
   return Math.min(presetBudget, modelInputBudget);
-}
-
-export function resolveContextBudget(input: {
-  providerId: string;
-  model: string;
-  presetContextBudgetBytes: number;
-  outputBudgetTokens?: number | null;
-  userContextWindowTokens?: number | null;
-  toolCount?: number;
-  safetyMarginTokens?: number;
-}): ResolvedContextBudget {
-  const knownWindow = resolveModelMetadata(input.providerId, input.model).contextWindow;
-  const contextWindowTokens = input.userContextWindowTokens ?? knownWindow ?? DEFAULT_FALLBACK_CONTEXT_WINDOW;
-  const contextWindowSource: ContextWindowSource = input.userContextWindowTokens ? "user-config" : knownWindow ? "known-model" : "fallback";
-  const outputBudgetTokens = input.outputBudgetTokens ?? 2048;
-  const safetyMarginTokens = input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));
-  const toolReserve = (input.toolCount ?? 0) * 256;
-  const framingReserve = 512;
-  const reservedTokens = outputBudgetTokens + safetyMarginTokens + toolReserve + framingReserve;
-  const presetBudget = Math.max(1, Math.floor(input.presetContextBudgetBytes / 4));
-  const windowBudget = Math.max(1, contextWindowTokens - reservedTokens);
-  return {
-    providerId: input.providerId,
-    model: input.model,
-    contextWindowTokens,
-    contextWindowSource,
-    exactModelLimit: contextWindowSource !== "fallback",
-    outputBudgetTokens,
-    reservedTokens,
-    maxInputTokens: Math.max(1, Math.min(presetBudget, windowBudget)),
-    safetyMarginTokens,
-  };
 }
 
 function groupMessages(messages: ChatMessage[]): { mandatory: ChatMessage[]; groups: ChatMessage[][] } {

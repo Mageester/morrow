@@ -5,7 +5,7 @@ import { DEFAULT_PRESET_ID, isPresetId } from "../routing/presets.js";
 import { listModelsForProvider } from "../routing/models.js";
 import type { MissionCompletionFn } from "./service.js";
 import { admitProviderRequest } from "../execution/context-budget.js";
-import { resolveEffectiveContext } from "../routing/effective-context.js";
+import { resolveModelBudget } from "../routing/model-budget.js";
 
 /**
  * Build a provider-independent completion function for mission planning and
@@ -35,14 +35,14 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
     const provider = createProvider(primary.providerId, env, model);
     const providerRoute = provider.route;
     if (!providerRoute) throw new Error("Provider route metadata is unavailable; refusing an unverified mission completion request.");
-    const effective = resolveEffectiveContext({
+    const budget = resolveModelBudget({
       providerId: primary.providerId,
       selectedModel: model,
       endpoint: { kind: providerRoute.endpointKind, host: providerRoute.endpointHost, protocol: providerRoute.protocol, limitTokens: providerRoute.endpointLimitTokens, limitSource: providerRoute.endpointLimitSource },
-      outputReserveTokens: 2_000,
+      outputBudgetTokens: 2_000,
     });
-    const admission = admitProviderRequest({ providerId: primary.providerId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: 2_000 }, effective);
-    if (!admission.ok) throw new Error(`Mission completion request requires ${admission.measurement.totalRequestTokens} tokens but the effective route limit is ${effective.effectiveRequestLimitTokens}; no provider call was made.`);
+    const admission = admitProviderRequest({ providerId: primary.providerId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: 2_000 }, budget);
+    if (!admission.ok) throw new Error(`Mission completion request requires ${admission.measurement.totalRequestTokens} tokens but the usable input budget is ${budget.usableInputTokens}; no provider call was made.`);
     const candidates: FallbackCandidate[] = [{ id: primary.providerId, provider }];
     const opened = await openStreamWithFallback(candidates, messages, {
       temperature: o.temperature ?? 0.1,

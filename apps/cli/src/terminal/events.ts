@@ -89,10 +89,22 @@ export interface ContextUsageInfo {
 export interface UsageInfo {
   provider: string;
   model: string;
+  /** Total input tokens (fresh + cached combined), as reported by the
+   * provider. Always a complete, exact sum across every response. */
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  cachedInputTokens: number;
+  /** Known cached-token subtotal. Only the exact, complete cumulative cached
+   * total when `cacheBreakdownComplete` is true; otherwise a partial
+   * subtotal (a lower bound) from only the responses that reported one —
+   * never coerced to 0 for "the provider didn't say," and never displayed
+   * as the whole when it is partial. Null only when no response so far has
+   * reported a breakdown at all. */
+  cachedInputTokens: number | null;
+  /** True only when every response folded into this total reported a cache
+   * breakdown. False as soon as one didn't — from that point, inputTokens
+   * minus cachedInputTokens is NOT necessarily the fresh total. */
+  cacheBreakdownComplete: boolean;
   estimatedCostUsd: number | null;
   calls: number;
   providerChanges: string[];

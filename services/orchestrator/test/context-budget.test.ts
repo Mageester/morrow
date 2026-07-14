@@ -5,7 +5,6 @@ import {
   estimateTextTokens,
   inputTokenBudget,
   prepareContextForProvider,
-  resolveContextBudget,
   trimMessagesToBudget,
   validateProviderMessageOrdering,
   countChatTokens,
@@ -13,7 +12,7 @@ import {
   admitProviderRequest,
   admitMeasuredProviderRequest,
 } from "../src/execution/context-budget.js";
-import { resolveEffectiveContext } from "../src/routing/effective-context.js";
+import { resolveModelBudget } from "../src/routing/model-budget.js";
 import { getEncoding } from "js-tiktoken";
 
 describe("context budget", () => {
@@ -71,41 +70,6 @@ describe("context budget", () => {
     expect(estimated.exact).toBe(false);
     expect(estimated.method).toBe("estimate");
     expect(estimated.confidence).toBe("conservative");
-  });
-
-  it("centralizes model-aware budget resolution with source and reservations", () => {
-    const known = resolveContextBudget({
-      providerId: "anthropic",
-      model: "claude-3-5-sonnet-20241022",
-      presetContextBudgetBytes: 786432,
-      outputBudgetTokens: 4096,
-      toolCount: 3,
-    });
-    expect(known.contextWindowTokens).toBe(200000);
-    expect(known.contextWindowSource).toBe("known-model");
-    expect(known.reservedTokens).toBeGreaterThan(4096);
-    expect(known.maxInputTokens).toBeLessThan(200000);
-
-    const overridden = resolveContextBudget({
-      providerId: "openai",
-      model: "custom-large",
-      presetContextBudgetBytes: 999999,
-      outputBudgetTokens: 1024,
-      userContextWindowTokens: 16000,
-      toolCount: 0,
-    });
-    expect(overridden.contextWindowTokens).toBe(16000);
-    expect(overridden.contextWindowSource).toBe("user-config");
-
-    const unknown = resolveContextBudget({
-      providerId: "openai-compatible",
-      model: "unknown",
-      presetContextBudgetBytes: 524288,
-      outputBudgetTokens: 2048,
-      toolCount: 0,
-    });
-    expect(unknown.contextWindowSource).toBe("fallback");
-    expect(unknown.exactModelLimit).toBe(false);
   });
 
   it("validates provider ordering and rejects orphaned tool results or unresolved historical tool calls", () => {
@@ -267,7 +231,7 @@ describe("context budget", () => {
   });
 
   it("rejects an oversized complete request before admission", () => {
-    const resolution = resolveEffectiveContext({
+    const resolution = resolveModelBudget({
       providerId: "deepseek",
       selectedModel: "deepseek-v4-flash",
       endpoint: {
@@ -277,7 +241,7 @@ describe("context budget", () => {
         limitTokens: 131_072,
         limitSource: "provider-metadata",
       },
-      outputReserveTokens: 16_384,
+      outputBudgetTokens: 16_384,
     });
     const envelope = {
       providerId: "deepseek",
@@ -291,15 +255,15 @@ describe("context budget", () => {
     const admission = admitProviderRequest(envelope, resolution);
 
     expect(admission.ok).toBe(false);
-    expect(admission.measurement.inputTokens).toBeGreaterThan(resolution.maximumInputTokens);
+    expect(admission.measurement.inputTokens).toBeGreaterThan(resolution.usableInputTokens);
     expect(admission.measurement.outputReserveTokens).toBe(16_384);
   });
 
   it("rejects the incident's exact 148403-token request against 131072 before invocation", () => {
-    const resolution = resolveEffectiveContext({
+    const resolution = resolveModelBudget({
       providerId: "deepseek", selectedModel: "deepseek-v4-flash",
       endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
-      outputReserveTokens: 16_384,
+      outputBudgetTokens: 16_384,
     });
     const measurement = {
       inputTokens: 132_019,
@@ -313,6 +277,6 @@ describe("context budget", () => {
     const admission = admitMeasuredProviderRequest(measurement, resolution);
     expect(admission.ok).toBe(false);
     expect(admission.measurement.totalRequestTokens).toBe(148_403);
-    expect(resolution.effectiveRequestLimitTokens).toBe(131_072);
+    expect(resolution.contextWindowTokens).toBe(131_072);
   });
 });
