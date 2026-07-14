@@ -37,7 +37,7 @@ import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
-import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
+import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { measureProviderRequest, prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint, resolveEffectiveContext } from "../routing/effective-context.js";
@@ -1753,6 +1753,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     && replayableFinalTurn.toolCalls.length === 0
     && replayableFinalTurn.assistantText.trim().length > 0
     && !lastVerificationFailure) {
+    const priorNarration = durableTurns.slice(0, -1).map((t) => t.assistantText);
+    if (duplicatesPriorNarration(replayableFinalTurn.assistantText, priorNarration)) {
+      const message = "Stopping without completion: the final recorded turn duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
+      failCurrentSegment("duplicate_final_narration");
+      transitionAgentState("interrupted", { reason: "duplicate_final_narration", message });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
+    }
     for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
     completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
     return;
@@ -3133,6 +3143,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return;
   }
 
+  // Final transition is atomic with canonical-answer creation. If the process
+  // dies after the final provider turn was recorded but before this transaction,
+  // the replayable-final-turn path above completes it without another request.
+  const recordedTurns = continuity.listProviderTurns(taskId);
+  const finalTurn = recordedTurns.at(-1);
+  if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== canonicalFinalText) {
+    throw new Error("Canonical final turn is not durably recorded");
+  }
+
+  // Completion gate: a stalled model that re-emits the same scene-setting
+  // narration turn after turn must never have that repeated text mistaken for
+  // a genuine, novel conclusion just because it happened to arrive without a
+  // trailing tool call. Marking plan steps "completed" and storing this text
+  // as the canonical answer would be a false completion â€” stop truthfully
+  // instead, before any plan step is touched.
+  const priorNarration = recordedTurns.slice(0, -1).map((t) => t.assistantText);
+  if (duplicatesPriorNarration(canonicalFinalText, priorNarration)) {
+    const message = "Stopping without completion: the final answer duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
+    failCurrentSegment("duplicate_final_narration");
+    transitionAgentState("interrupted", { reason: "duplicate_final_narration", message, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return;
+  }
+
   // Complete plan steps
   records.updatePlanStepStatus(activeStepId, "completed", now());
   event("step.completed", { stepId: activeStepId });
@@ -3144,12 +3180,5 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
-  // Final transition is atomic with canonical-answer creation. If the process
-  // dies after the final provider turn was recorded but before this transaction,
-  // the replayable-final-turn path above completes it without another request.
-  const finalTurn = continuity.listProviderTurns(taskId).at(-1);
-  if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== canonicalFinalText) {
-    throw new Error("Canonical final turn is not durably recorded");
-  }
   completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
 }
