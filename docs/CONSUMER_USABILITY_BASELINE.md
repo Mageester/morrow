@@ -142,3 +142,153 @@ passed every acceptance criterion), but are worth tracking:
   in this pass since they were outside the six-journey scope). This
   baseline only re-verifies issue #1; the rest of that document's status
   should be treated as unconfirmed until re-run.
+
+## Journey G — self-hosting implementation integrity
+
+Added after a real Morrow-manages-Morrow self-hosting task, `1fcbc8ab-7827-
+4086-a6e7-b0477e752aaa` (project `morrow`, workspace this checkout, task type
+`agent_chat`, `2026-07-14T16:05–16:07Z`), produced a catastrophic false
+completion when Morrow was pointed at its own repository and asked to
+investigate/fix a real orchestrator concern:
+
+- 37 tool calls, 2 failed (`list_files` ×5, `read_file` ×5 completed + 2
+  failed, `run_command` ×18, `search_symbols` ×4, `search_text` ×3) — **zero**
+  `propose_patch` or `create_file` calls were ever attempted;
+- 503,751 input tokens consumed;
+- no implementation and no Git diff (`git diff` against the workspace was
+  empty for the whole session);
+- the persisted assistant message (40,591 characters) was almost entirely one
+  narration string — `"Good — clean working tree on
+  `fix/mission-tool-recovery-stall`. Let me inspect the relevant orchestrator
+  files."` — repeated dozens of times back-to-back;
+- all 3 plan steps (`Analyze & Plan`, `Read Workspace`, `Generate Answer`)
+  were marked `completed`;
+- the task's terminal status in `tasks.status` was `completed`, which the CLI
+  reports as "last task passed."
+
+This is architecturally the same trust failure as Journey A (a status lie),
+but a different mechanism: Journey A wrongly called honest, side-effect-free
+work a failure; this incident wrongly called a stalled, empty-handed
+investigation a success. Both erode the same invariant (#9 — distinct,
+truthful terminal states).
+
+### Reproduction design
+
+`services/orchestrator/test/journey-g-self-hosting-integrity.test.ts` exercises
+the real `executeAgentChatTask` execution path (not a standalone helper)
+against real sqlite-backed repositories (`task-records`, `conversations`,
+`change-sets`, `execution-continuity`) and a disposable Git repository
+containing a ~40 KB fixture source file (`big.js`, 900 helper functions plus
+one deliberately buggy `add()`) and its test (`big.test.js`), using a
+deterministic `MockProvider` fixture in place of the live model. Two cases:
+
+1. **Full green path** — inspects the large file, restates the same
+   orientation narration across two intermediate turns (realistic model
+   behavior — restating context is not itself a defect) while still making
+   distinct tool-call progress, applies one `propose_patch` fixing `add()`,
+   runs the test to verify, and gives one final, novel answer.
+2. **The proven root cause** — the model inspects the file, then narrates the
+   *exact same string* alongside a distinct read-only tool call three times,
+   then repeats that exact string one more time with **no** tool call
+   attached (the literal shape of the corpus incident: repeated narration
+   finally mistaken for a conclusion), and never calls a write tool.
+
+### Before / after results
+
+| Case | Before (pre-fix) | After (post-fix) |
+|---|---|---|
+| Full green path | PASS | PASS |
+| Duplicate-narration false completion | **FAIL** — `task.status` was `completed`, plan steps all `completed`, no Git diff, no canonical answer distinguishable from the repeated text | **PASS** — `task.status` is `interrupted`; `canonical_task_answers` has no row for the task; at least one plan step is left non-`completed`; no `task.completed` event was ever emitted |
+
+Confirmed by running the regression against the pre-fix code (`git stash` of
+the two-file fix, rerun, restore): the duplicate-narration case fails exactly
+as predicted (`expected 'completed' to be 'interrupted'`) before the fix and
+passes after it. The full-green-path case already passed before the fix,
+confirming the repair is additive and does not regress ordinary completions.
+
+### Enforced tool, turn, and request-size limits
+
+Exercised (not newly introduced by this pass — pre-existing, now verified
+under Journey G):
+
+- `maxTurns` (test uses 8) bounds provider turns per segment;
+  `adaptiveTurnCeiling` bounds the absolute ceiling at 24–36 turns regardless
+  of preset;
+- the loop detector (`services/orchestrator/src/execution/loop-detector.ts`)
+  bounds repeated *identical tool-call signatures* within a sliding window;
+- the stall guard interrupts after 3 turns with no observable progress
+  (`noProgressTurns >= 3`);
+- the full green-path journey completed in 6 tool calls / 7 provider turns —
+  well inside these ceilings, with no `/continue` required.
+
+### Root cause and repair
+
+**Root cause:** the natural "no more tool calls, no outstanding verification
+failure ⇒ complete" shortcut (`services/orchestrator/src/execution/agent.ts`,
+both the resume-time `replayableFinalTurn` path and the live end-of-loop
+completion gate) accepted the final turn's text as a genuine, novel
+conclusion purely because it arrived without a trailing tool call. It never
+checked whether that text was itself a verbatim repeat of earlier
+intermediate narration — the exact shape of the corpus incident, where a
+stalled investigation's leftover scene-setting sentence was persisted as the
+"final answer" and the task completed with zero delivered changes.
+
+**Repair (smallest coherent fix, two files):**
+
+- `services/orchestrator/src/execution/loop-detector.ts` — added
+  `duplicatesPriorNarration(candidate, priorTexts)`, a pure, deterministic,
+  whitespace-normalized exact-match check (mirrors the existing pure
+  predicates in this file: `stableStringify`, `toolCallSignature`).
+- `services/orchestrator/src/execution/agent.ts` — both completion paths now
+  call `duplicatesPriorNarration` against every earlier recorded provider
+  turn's `assistantText` **before** marking any plan step `completed` or
+  calling `completeWithCanonicalAnswer`. On a match, the task stops
+  truthfully as `interrupted` with reason `duplicate_final_narration` instead
+  of completing, and the plan step that was in progress is marked `skipped`
+  rather than `completed`.
+
+No architecture change: this reuses the existing durable-turn ledger
+(`agent_provider_turns`, already the source of truth for "each intermediate
+turn stored exactly once" since the `responseContent.slice()` provider-history
+fix) and the existing truthful-interruption pattern already used by the
+unverified-completion and loop/stall gates.
+
+### Regression coverage
+
+`services/orchestrator/test/journey-g-self-hosting-integrity.test.ts`, both
+cases. The duplicate-narration case is a deterministic, provider-independent
+regression for this exact incident: it fails against the pre-fix code and
+passes after it.
+
+### Remaining risks
+
+- The fix is a literal (whitespace-normalized) duplicate check, not a
+  semantic one. A model that paraphrases the same non-conclusion each turn
+  instead of repeating it verbatim would not be caught by this gate — that
+  would require semantic judgment of "is this actually a conclusion," which
+  is out of scope for a deterministic, architecture-preserving repair.
+- This pass does not address *why* the real corpus task spent its entire
+  budget re-reading overlapping chunks of `agent.ts` via `sed -n` (a
+  `read_file` size-limit workaround) without ever converging on a change —
+  the adaptive-progress heuristic (`turnMadeProgress` in
+  `adaptive-budget.ts`) counts any new tool-call signature as progress, even
+  near-duplicate re-reads with shifted line ranges. That is a real,
+  identified P2 efficiency gap (tracked here, not fixed in this pass) but it
+  did not by itself cause a false `completed` status — the duplicate-final-
+  narration gate is the mechanism that was proven to do that, and is what
+  this pass repairs.
+- `canonical_task_answers` and the durable-turn ledger were empty/absent
+  structures relative to the real corpus task's row-for-row data (that task
+  predates or ran under different code than this checkout's current
+  execution-continuity schema); Journey G is built from the *failure class*
+  the corpus task documents, not a byte-for-byte replay of its exact
+  provider trace.
+
+## Final result: 7/7 permanent consumer acceptance journeys pass
+
+A (read-only success), B (one-file edit), C (new file + test), D (repair a
+failing test), E (multi-file feature), F (controlled recovery under a
+read-limit), and G (self-hosting implementation integrity) all pass on this
+checkout after the two fixes recorded in this document (Journey A's
+`tool_not_permitted_in_mode` distinction, Journey G's
+`duplicatesPriorNarration` gate).

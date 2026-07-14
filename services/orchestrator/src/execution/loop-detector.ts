@@ -61,6 +61,21 @@ export interface LoopDetector {
   readonly size: number;
 }
 
+/**
+ * True when `candidate` is, after whitespace normalization, exactly the same
+ * text as one of the task's earlier turns. A stalled model that re-emits the
+ * same scene-setting narration turn after turn must never have that repeated
+ * text mistaken for a genuine, novel conclusion — this is a deterministic,
+ * content-based check independent of the loop/stall detectors above, which
+ * only look at tool-call signatures.
+ */
+export function duplicatesPriorNarration(candidate: string, priorTexts: string[]): boolean {
+  const normalize = (text: string) => text.trim().replace(/\s+/g, " ");
+  const normalizedCandidate = normalize(candidate);
+  if (!normalizedCandidate) return false;
+  return priorTexts.some((text) => normalize(text) === normalizedCandidate);
+}
+
 export function createLoopDetector(options: LoopDetectorOptions = {}): LoopDetector {
   const windowSize = Math.max(2, options.windowSize ?? 6);
   const repeatThreshold = Math.max(2, options.repeatThreshold ?? 3);
