@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
 
@@ -19,6 +20,7 @@ export interface AnthropicConfig {
    * matching the official subscription-login transport.
    */
   oauthToken?: string;
+  route?: ProviderRouteMetadata;
 }
 
 type AnthropicBlock =
@@ -47,7 +49,8 @@ function tryParseJson(value: string): unknown {
  */
 export class AnthropicProvider implements AiProvider {
   readonly id = "anthropic";
-  constructor(private config: AnthropicConfig) {}
+  readonly route: ProviderRouteMetadata | undefined;
+  constructor(private config: AnthropicConfig) { this.route = config.route; }
 
   private buildMessages(messages: ChatMessage[]): { system: string | undefined; messages: AnthropicMessage[] } {
     const systemParts: string[] = [];

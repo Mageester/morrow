@@ -31,9 +31,11 @@ function map(row: any): ContextSummaryRecord {
   };
 }
 
-export function contextSourceHash(input: { conversationId: string; sourceStartIndex: number; sourceEndIndex: number; content: string }): string {
+export function contextSourceHash(input: { conversationId: string; taskId?: string | null; sourceStartIndex: number; sourceEndIndex: number; content: string }): string {
   return createHash("sha256")
     .update(input.conversationId)
+    .update("\0")
+    .update(input.taskId ?? "conversation")
     .update("\0")
     .update(String(input.sourceStartIndex))
     .update("\0")
@@ -50,6 +52,7 @@ export function contextSummariesRepository(db: Database.Database) {
         input.sourceHash ??
         contextSourceHash({
           conversationId: input.conversationId,
+          taskId: input.taskId,
           sourceStartIndex: input.sourceStartIndex,
           sourceEndIndex: input.sourceEndIndex,
           content: input.content,
@@ -70,6 +73,11 @@ export function contextSummariesRepository(db: Database.Database) {
 
     latestForConversation(conversationId: string): ContextSummaryRecord | undefined {
       const row = db.prepare("SELECT * FROM context_summaries WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 1").get(conversationId);
+      return row ? map(row) : undefined;
+    },
+
+    latestManualForConversation(conversationId: string): ContextSummaryRecord | undefined {
+      const row = db.prepare("SELECT * FROM context_summaries WHERE conversation_id=? AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1").get(conversationId);
       return row ? map(row) : undefined;
     },
 

@@ -366,6 +366,60 @@ export function missionsRepository(db: Database.Database) {
       return db.prepare("SELECT * FROM mission_evidence WHERE mission_id = ? ORDER BY recorded_at ASC").all(missionId).map(mapEvidence);
     },
 
+    missionLinkedAgentAnswerState(missionId: string): {
+      hasAgentTask: boolean;
+      ownerTaskId: string | null;
+      ownerTaskStatus: string | null;
+      hasCanonicalAnswer: boolean;
+      canonicalEvidence: Record<string, unknown> | null;
+      evidenceCursorExists: boolean;
+      verificationEvidenceCovered: boolean;
+      sourceTurnIsFinal: boolean;
+    } {
+      const row = db.prepare(`SELECT
+        t.id AS task_id,
+        t.status AS task_status,
+        answer.evidence_json,
+        EXISTS(
+          SELECT 1 FROM task_events event
+          WHERE event.task_id=t.id
+            AND event.sequence=CAST(json_extract(answer.evidence_json,'$.durableEventCursor') AS INTEGER)
+        ) AS evidence_cursor_exists,
+        EXISTS(
+          SELECT 1 FROM task_events verification_event
+          WHERE verification_event.task_id=t.id
+            AND verification_event.type='tool.completed'
+            AND verification_event.sequence<=CAST(json_extract(answer.evidence_json,'$.durableEventCursor') AS INTEGER)
+            AND json_extract(verification_event.payload_json,'$.id')=json_extract(answer.evidence_json,'$.verification.toolCallId')
+            AND json_extract(verification_event.payload_json,'$.toolName')='run_command'
+            AND json_extract(verification_event.payload_json,'$.status')='completed'
+            AND CAST(json_extract(verification_event.payload_json,'$.exitCode') AS INTEGER)=0
+        ) AS verification_evidence_covered,
+        EXISTS(
+          SELECT 1 FROM agent_provider_turns turn
+          WHERE turn.task_id=t.id
+            AND turn.turn_key=json_extract(answer.evidence_json,'$.sourceTurnKey')
+            AND json_valid(turn.tool_calls_json)
+            AND json_extract(turn.tool_calls_json,'$.isFinal')=1
+        ) AS source_turn_is_final
+        FROM tasks t
+        LEFT JOIN canonical_task_answers answer ON answer.task_id=t.id AND answer.mission_id=t.mission_id
+        WHERE t.mission_id=? AND t.type='agent_chat'
+        ORDER BY t.created_at DESC,t.id DESC
+        LIMIT 1`).get(missionId) as { task_id: string; task_status: string; evidence_json: string | null; evidence_cursor_exists: number; verification_evidence_covered: number; source_turn_is_final: number } | undefined;
+      if (!row) return { hasAgentTask: false, ownerTaskId: null, ownerTaskStatus: null, hasCanonicalAnswer: false, canonicalEvidence: null, evidenceCursorExists: false, verificationEvidenceCovered: false, sourceTurnIsFinal: false };
+      return {
+        hasAgentTask: true,
+        ownerTaskId: row.task_id,
+        ownerTaskStatus: row.task_status,
+        hasCanonicalAnswer: row.evidence_json !== null,
+        canonicalEvidence: row.evidence_json === null ? null : JSON.parse(row.evidence_json) as Record<string, unknown>,
+        evidenceCursorExists: row.evidence_cursor_exists === 1,
+        verificationEvidenceCovered: row.verification_evidence_covered === 1,
+        sourceTurnIsFinal: row.source_turn_is_final === 1,
+      };
+    },
+
     getEvidence(id: string): MissionEvidence | undefined {
       const row = db.prepare("SELECT * FROM mission_evidence WHERE id = ?").get(id) as any;
       return row ? mapEvidence(row) : undefined;

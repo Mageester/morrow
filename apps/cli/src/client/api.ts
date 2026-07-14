@@ -98,9 +98,18 @@ export interface ContextUsageSummary {
   providerId: string;
   model: string;
   contextWindowTokens: number;
-  contextWindowSource: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  contextWindowSource: string;
+  modelCapacityTokens?: number | null;
+  modelCapacitySource?: string;
+  endpointLimitTokens?: number | null;
+  endpointLimitSource?: string;
+  effectiveRequestLimitTokens?: number | null;
+  effectiveLimitSource?: string;
   maxInputTokens: number;
+  maximumInputTokens?: number | null;
   reservedTokens: number;
+  outputReserveTokens?: number | null;
+  currentRequestTokens?: number | null;
   inputTokensBefore: number | null;
   inputTokensAfter: number | null;
   countingMethod: "exact" | "estimate" | null;
@@ -115,6 +124,17 @@ export interface ContextUsageSummary {
     sourceMessageCount: number;
     createdAt: string;
   } | null;
+}
+
+export interface CompactConversationResult {
+  compacted: boolean;
+  summary: { id: string; method: "deterministic" | "fallback"; sourceMessageCount: number; createdAt: string };
+  routing: RoutingDecision;
+  context: { providerId: string; model: string; modelCapacityTokens: number | null; modelCapacitySource: string; endpointLimitTokens: number | null; endpointLimitSource: string; effectiveRequestLimitTokens: number; effectiveLimitSource: string; outputReserveTokens: number; maximumInputTokens: number; currentRequestTokens: number; countingMethod: "exact" | "estimate"; exact: boolean };
+}
+
+export interface CompactTaskResult extends CompactConversationResult {
+  taskId: string;
 }
 
 export interface TaskTreeNode {
@@ -537,6 +557,12 @@ export class MorrowApi {
   }
   sendMessage(conversationId: string, content: string, options: SendMessageOptions = {}) {
     return this.req<SendMessageResult>("POST", `/api/conversations/${conversationId}/messages`, { content, ...options });
+  }
+  compactConversation(conversationId: string, projectId: string, options: Pick<SendMessageOptions, "preset" | "providerId" | "model"> = {}) {
+    return this.req<CompactConversationResult>("POST", `/api/conversations/${conversationId}/compact`, { projectId, ...options });
+  }
+  compactTask(taskId: string, projectId: string, options: Pick<SendMessageOptions, "preset" | "providerId" | "model"> = {}) {
+    return this.req<CompactTaskResult>("POST", `/api/tasks/${taskId}/compact`, { projectId, ...options });
   }
 
   // ── Providers / models / presets ────────────────────────────────────────────

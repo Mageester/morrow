@@ -73,6 +73,12 @@ export interface SessionBackend {
   subscribe(taskId: string, signal: AbortSignal, after?: number): AsyncIterable<RawTaskEvent>;
   cancel(taskId: string): Promise<void>;
   resume(taskId: string): Promise<void>;
+  compact?(taskId: string | null, settings: SendOptions): Promise<{
+    compacted: boolean;
+    summary: { id: string; method: "deterministic" | "fallback"; sourceMessageCount: number; createdAt: string };
+    routing: SessionRouting;
+    context: { effectiveRequestLimitTokens: number; effectiveLimitSource: string };
+  }>;
   getApproval(id: string): Promise<ApprovalView>;
   resolveApproval(id: string, decision: string, trustPattern?: string): Promise<void>;
   getPlan(taskId: string): Promise<Array<{ id: string; title: string; status: string }>>;
@@ -379,6 +385,7 @@ export class InteractiveSession {
         return this.exit();
       case "clear":
         this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [] };
+        this.pushNotice("info", "Screen cleared only. Saved conversation and provider context are unchanged; /compact saves a continuation summary, and provider preflight compacts request history when needed.");
         return void this.fullRepaint();
       case "help":
       case "?":
@@ -453,6 +460,19 @@ export class InteractiveSession {
       case "continue":
         await this.continueTask();
         return;
+      case "compact": {
+        if (!this.deps.backend.compact) {
+          this.pushNotice("warn", "Durable compaction is unavailable in this session.");
+          return void this.requestPaint(false);
+        }
+        try {
+          const result = await this.deps.backend.compact(this.lastTaskId, { ...this.settings });
+          this.pushNotice("info", `Saved deterministic continuation summary from ${result.summary.sourceMessageCount} messages; no model request was made. Route remains ${result.routing.provider}/${result.routing.model} (${result.routing.privacy}).`);
+        } catch (error) {
+          this.pushNotice("error", `Could not compact context: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return void this.requestPaint(false);
+      }
       case "resume":
         await this.showResumeDigest();
         return void this.requestPaint(false);
@@ -500,8 +520,8 @@ export class InteractiveSession {
         await this.showChangesDetail();
         return void this.requestPaint(false);
       case "context": {
-        const usage = this.contextUsageText();
-        this.pushNotice("info", usage ? `Context: ${this.resolvedModelText()}  ·  ${usage}` : "Context usage not available yet. Start a conversation first.");
+        const lines = this.contextUsageDetailLines();
+        this.pushNotice("info", lines ? `Context:\n${lines.join("\n")}` : "Context usage not available yet. Start a conversation first.");
         return void this.requestPaint(false);
       }
       case "diff":
@@ -1615,6 +1635,24 @@ export class InteractiveSession {
       cu.removedGroups > 0 ? `${cu.removedGroups} groups trimmed` : null,
     ].filter((x): x is string => x !== null);
     return [tokens, cu.method, ...extras].join("  ·  ");
+  }
+
+  private contextUsageDetailLines(): string[] | null {
+    const cu = this.term.contextUsage;
+    if (!cu) return null;
+    const value = (n: number | null | undefined) => n && n > 0 ? n.toLocaleString("en-US") : "unknown";
+    const summary = this.contextUsageText();
+    return [
+      `Route: ${this.resolvedModelText()}`,
+      ...(summary ? [`Usage: ${summary}`] : []),
+      `Model capacity: ${value(cu.modelCapacityTokens ?? (cu.contextWindowSource === "fallback" ? null : cu.contextLimitTokens))} (${cu.modelCapacitySource ?? cu.contextWindowSource ?? "unknown"})`,
+      `Endpoint limit: ${value(cu.endpointLimitTokens)} (${cu.endpointLimitSource ?? "unknown"})`,
+      `Effective request limit: ${value(cu.effectiveRequestLimitTokens ?? cu.contextLimitTokens)} (${cu.effectiveLimitSource ?? cu.contextWindowSource ?? "unknown"})`,
+      `Reserved output: ${value(cu.outputReserveTokens)}`,
+      `Maximum input: ${value(cu.maximumInputTokens)}`,
+      `Current request: ${value(cu.currentRequestTokens ?? cu.usedTokens)} (${cu.method})`,
+      `Compacted: ${cu.compactedGroups} groups · Removed: ${cu.removedGroups} groups`,
+    ];
   }
 
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMissionResult, formatTaskTree } from "../src/terminal/mission-control.js";
+import { formatContextStatus, formatMissionResult, formatTaskTree } from "../src/terminal/mission-control.js";
 import type { TaskAggregate, TaskTreeNode } from "../src/client/api.js";
 
 const baseTask = {
@@ -15,6 +15,30 @@ const baseTask = {
 };
 
 describe("Mission Control formatters", () => {
+  it("shows advertised and effective route limits without presenting 1M as usable through 128K", () => {
+    const context = {
+      providerId: "deepseek", model: "deepseek-v4-flash",
+      contextWindowTokens: 1_000_000, contextWindowSource: "model-metadata",
+      modelCapacityTokens: 1_000_000, modelCapacitySource: "model-metadata",
+      endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata",
+      effectiveRequestLimitTokens: 131_072, effectiveLimitSource: "provider-metadata",
+      maxInputTokens: 114_688, maximumInputTokens: 114_688,
+      reservedTokens: 16_384, outputReserveTokens: 16_384,
+      currentRequestTokens: 92_100, inputTokensBefore: 92_100, inputTokensAfter: 92_100,
+      countingMethod: "estimate" as const, exact: false, compactedGroups: 0, removedGroups: 0,
+      lastOperation: "context.budget_calculated", warning: "estimated token count", lastSummary: null,
+    };
+    const lines = formatContextStatus({ context } as TaskAggregate);
+    expect(lines).toEqual(expect.arrayContaining([
+      "Model capacity: 1,000,000 (model-metadata)",
+      "Endpoint limit: 131,072 (provider-metadata)",
+      "Effective request limit: 131,072 (provider-metadata)",
+      "Reserved output: 16,384",
+      "Maximum input: 114,688",
+      "Current request: 92,100 (estimated)",
+    ]));
+  });
+
   it("renders a nested task tree without internal route names", () => {
     const tree: TaskTreeNode = {
       task: baseTask,

@@ -354,6 +354,45 @@ describe("Agent Alpha", () => {
       expect(evidence[0]?.path).toBe("readme.md");
     });
 
+    it("projects each assistant turn once instead of recursively copying prior narration", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      projects.createProject({ id: "p1", name: "Projection", workspacePath: tempDir, createdAt: new Date().toISOString() });
+      writeFileSync(join(tempDir, "one.txt"), "one");
+      writeFileSync(join(tempDir, "two.txt"), "two");
+      convs.createConversation({ id: "c1", projectId: "p1", title: "Projection", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "Read both files", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      tasks.createTask({ id: "task-1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+
+      const requests: ChatMessage[][] = [];
+      let call = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages): AsyncIterable<ProviderChunk> {
+          requests.push(structuredClone(messages));
+          if (call++ === 0) {
+            yield { type: "text", text: "NARRATION_ONE" };
+            yield { type: "tool_call", toolCalls: [{ id: "read-one", index: 0, type: "function", function: { name: "read_file", arguments: '{"path":"one.txt"}' } }] };
+          } else if (call === 2) {
+            yield { type: "text", text: "NARRATION_TWO" };
+            yield { type: "tool_call", toolCalls: [{ id: "read-two", index: 0, type: "function", function: { name: "read_file", arguments: '{"path":"two.txt"}' } }] };
+          } else {
+            yield { type: "text", text: "FINAL_ANSWER" };
+          }
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+      const thirdAssistantTurns = requests[2]!.filter((message) => message.role === "assistant");
+      expect(thirdAssistantTurns.map((message) => message.content)).toEqual(["NARRATION_ONE", "NARRATION_TWO"]);
+      expect(requests[2]!.filter((message) => message.role === "tool")).toHaveLength(2);
+      expect(requests[2]!.map((message) => message.content).join("\n").match(/NARRATION_ONE/g)).toHaveLength(1);
+    });
+
     it("exposes search_symbols in read-only mode and returns concise indexed locations", async () => {
       const projects = projectRepository(db);
       const convs = conversationsRepository(db);

@@ -1,4 +1,5 @@
-import type { ChatMessage } from "../provider/base.js";
+import type { ChatMessage, ProviderProtocol, ToolDefinition } from "../provider/base.js";
+import type { EffectiveContextResolution } from "../routing/effective-context.js";
 import { getEncoding } from "js-tiktoken";
 import { resolveModelMetadata } from "../routing/models.js";
 
@@ -26,6 +27,34 @@ export interface TokenCountResult {
   confidence: "exact" | "conservative";
   marginTokens: number;
 }
+
+export interface ProviderRequestEnvelope {
+  providerId: string;
+  model: string;
+  protocol: ProviderProtocol;
+  messages: ChatMessage[];
+  tools: ToolDefinition[];
+  outputReserveTokens: number;
+}
+
+export interface ProviderRequestMeasurement {
+  inputTokens: number;
+  outputReserveTokens: number;
+  totalRequestTokens: number;
+  method: TokenCountMethod;
+  exact: boolean;
+  confidence: "exact" | "conservative";
+  components: {
+    messages: number;
+    toolSchemas: number;
+    providerContinuation: number;
+    protocolOverhead: number;
+  };
+}
+
+export type ProviderAdmission =
+  | { ok: true; measurement: ProviderRequestMeasurement }
+  | { ok: false; reason: "request_too_large"; measurement: ProviderRequestMeasurement; maximumInputTokens: number };
 
 export interface ResolvedContextBudget {
   providerId: string;
@@ -148,6 +177,77 @@ export function countChatTokens(messages: ChatMessage[], input: { providerId: st
     confidence: "conservative",
     marginTokens,
   };
+}
+
+const PROTOCOL_OVERHEAD: Record<ProviderProtocol, number> = {
+  "openai-chat": 12,
+  "openai-responses": 16,
+  "anthropic-messages": 14,
+  "gemini-generate-content": 14,
+  mock: 0,
+};
+
+function conservativeSerializedTokens(value: unknown): number {
+  const serialized = JSON.stringify(value);
+  // Provider-specific tokenizers differ, but every supported text protocol is
+  // ultimately UTF-8 on the wire. One token per byte is a safe upper bound for
+  // byte-fallback tokenizers and avoids the Unicode undercount produced by the
+  // ordinary prose estimator (notably joined emoji and combining sequences).
+  return Math.max(estimateTextTokens(serialized), Buffer.byteLength(serialized, "utf8"));
+}
+
+/** Count the complete normalized request envelope. Provider adapters serialize
+ * this same information onto the wire; private continuation data is counted but
+ * is never returned in diagnostics. */
+export function measureProviderRequest(envelope: ProviderRequestEnvelope): ProviderRequestMeasurement {
+  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, ...message }) => message), {
+    providerId: envelope.providerId,
+    model: envelope.model,
+  });
+  const continuationBase = envelope.messages.reduce((sum, message) => {
+    if (!message.providerContinuation) return sum;
+    return sum + conservativeSerializedTokens(message.providerContinuation);
+  }, 0);
+  const toolBase = conservativeSerializedTokens(envelope.tools.map((tool) => ({
+    type: "function",
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  })));
+  const protocolBase = PROTOCOL_OVERHEAD[envelope.protocol];
+  const toolSchemas = toolBase + Math.ceil(toolBase * 0.15);
+  const providerContinuation = continuationBase + Math.ceil(continuationBase * 0.15);
+  const protocolOverhead = protocolBase + Math.ceil(protocolBase * 0.15);
+  const hasEstimatedExtras = toolBase > 0 || continuationBase > 0 || protocolBase > 0;
+  const inputTokens = messageCount.tokens + toolSchemas + providerContinuation + protocolOverhead;
+  return {
+    inputTokens,
+    outputReserveTokens: envelope.outputReserveTokens,
+    totalRequestTokens: inputTokens + envelope.outputReserveTokens,
+    method: hasEstimatedExtras ? "estimate" : messageCount.method,
+    exact: messageCount.exact && !hasEstimatedExtras,
+    confidence: hasEstimatedExtras ? "conservative" : messageCount.confidence,
+    components: { messages: messageCount.tokens, toolSchemas, providerContinuation, protocolOverhead },
+  };
+}
+
+export function admitProviderRequest(
+  envelope: ProviderRequestEnvelope,
+  resolution: EffectiveContextResolution,
+): ProviderAdmission {
+  const measurement = measureProviderRequest(envelope);
+  return admitMeasuredProviderRequest(measurement, resolution);
+}
+
+/** Admission over an already measured wire envelope. Kept separate so
+ * provider-reported/reproduction measurements can be evaluated with exactly
+ * the same limit and output-reserve rule as locally tokenized requests. */
+export function admitMeasuredProviderRequest(
+  measurement: ProviderRequestMeasurement,
+  resolution: EffectiveContextResolution,
+): ProviderAdmission {
+  if (measurement.inputTokens > resolution.maximumInputTokens) {
+    return { ok: false, reason: "request_too_large", measurement, maximumInputTokens: resolution.maximumInputTokens };
+  }
+  return { ok: true, measurement };
 }
 
 export function inputTokenBudget(input: {
@@ -339,7 +439,7 @@ export function prepareContextForProvider(
   let candidate = [...mandatory, ...recent.flat()];
 
   if (input.compact && older.length > 0) {
-    summary = deterministicSummary(older, 0, older.length - 1);
+    summary = deterministicSummary(older, 0, older.flat().length - 1);
     if (summary) {
       candidate = [...mandatory, asSystemSummary(summary), ...recent.flat()];
       operations.push({

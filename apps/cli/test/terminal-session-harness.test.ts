@@ -88,6 +88,36 @@ function enter(stdin: any): void { stdin.emit("keypress", undefined, { name: "re
 function ctrlC(stdin: any): void { stdin.emit("keypress", undefined, { name: "c", ctrl: true }); }
 
 describe("interactive session: streaming, cancellation, resize", () => {
+  it("runs /compact through the durable backend with the current route settings", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const compact = vi.fn(async () => ({
+      compacted: true,
+      summary: { id: "summary-1", method: "deterministic" as const, sourceMessageCount: 4, createdAt: "2026-07-13T12:00:00.000Z" },
+      routing: { provider: "ollama", model: "qwen", preset: "private-local", fallback: false, overridden: true, privacy: "local-only" },
+      context: { effectiveRequestLimitTokens: 32768, effectiveLimitSource: "fallback" },
+    }));
+    const backend = { ...makeBackend(new EventGate(), () => {}), compact } as SessionBackend;
+    const app = new InteractiveSession({ io, stdin, out: plain, unicode: false, meta, settings: { ...settings, provider: "ollama", model: "qwen", preset: "private-local" }, backend, initialTaskId: "task-1", now: () => Date.now(), maxFps: 120 });
+    const done = app.run();
+    typeText(stdin, "/compact"); enter(stdin); await tick();
+    expect(compact).toHaveBeenCalledWith("task-1", expect.objectContaining({ provider: "ollama", model: "qwen", preset: "private-local" }));
+    expect(app.snapshot().notices.map((notice) => notice.text).join("\n")).toContain("deterministic continuation summary");
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+
+  it("labels /clear as screen-only and does not imply provider context was cleared", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const app = new InteractiveSession({ io, stdin, out: plain, unicode: false, meta, settings, backend: makeBackend(new EventGate(), () => {}), now: () => Date.now(), maxFps: 120 });
+    const done = app.run();
+    typeText(stdin, "/clear");
+    enter(stdin);
+    await tick();
+    expect(app.snapshot().notices.map((notice) => notice.text).join("\n")).toContain("provider context are unchanged");
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+
   it("rejects path-like and foreign /output references before fetching a task", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();

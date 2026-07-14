@@ -69,7 +69,16 @@ export interface ContextUsageInfo {
   maxTokens: number;
   /** Known model context window. Null means the registry could not assert it. */
   contextLimitTokens?: number | null;
-  contextWindowSource?: "known-model" | "provider-metadata" | "user-config" | "fallback";
+  contextWindowSource?: "known-model" | "model-metadata" | "provider-metadata" | "endpoint-override" | "user-config" | "fallback" | "unknown";
+  modelCapacityTokens?: number | null;
+  modelCapacitySource?: string;
+  endpointLimitTokens?: number | null;
+  endpointLimitSource?: string;
+  effectiveRequestLimitTokens?: number | null;
+  effectiveLimitSource?: string;
+  outputReserveTokens?: number | null;
+  maximumInputTokens?: number | null;
+  currentRequestTokens?: number | null;
   /** Percent of the known context window consumed; null when the limit is unknown. */
   percent?: number | null;
   method: "exact" | "estimate";

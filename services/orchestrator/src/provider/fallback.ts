@@ -23,6 +23,9 @@ import type { RateGuard } from "./rate-guard.js";
 export interface FallbackCandidate {
   id: string;
   provider: AiProvider;
+  /** Exact request envelope admitted for this route. When present, these
+   * values must be used instead of the shared compatibility arguments. */
+  request?: { messages: ChatMessage[]; options: StreamOptions; routeFingerprint: string };
 }
 
 export interface OpenStreamResult {
@@ -32,6 +35,7 @@ export interface OpenStreamResult {
   fellBackFrom: string[];
   /** Candidate ids tried last because the rate guard had them cooling down. */
   deprioritizedRateLimited: string[];
+  routeFingerprint: string | null;
   stream: AsyncIterable<ProviderChunk>;
 }
 
@@ -103,9 +107,11 @@ export async function openStreamWithFallback(
   let lastError: unknown;
 
   for (const candidate of ordered) {
-    if (options.abortSignal?.aborted) throw new Error("AbortError");
+    const candidateMessages = candidate.request?.messages ?? messages;
+    const candidateOptions = candidate.request?.options ?? options;
+    if (candidateOptions.abortSignal?.aborted) throw new Error("AbortError");
     try {
-      const iterator = candidate.provider.streamChat(messages, options)[Symbol.asyncIterator]();
+      const iterator = candidate.provider.streamChat(candidateMessages, candidateOptions)[Symbol.asyncIterator]();
       const first = await iterator.next();
       // An error chunk at the very start counts as a start failure. Preserve the
       // normalized classification so retry/rate-guard decisions stay precise.
@@ -119,9 +125,9 @@ export async function openStreamWithFallback(
         });
       }
       rateGuard?.reportSuccess(candidate.id);
-      return { servedBy: candidate.id, fellBackFrom, deprioritizedRateLimited: deprioritized, stream: prepend(first, iterator) };
+      return { servedBy: candidate.id, fellBackFrom, deprioritizedRateLimited: deprioritized, routeFingerprint: candidate.request?.routeFingerprint ?? null, stream: prepend(first, iterator) };
     } catch (err) {
-      if (options.abortSignal?.aborted) throw err;
+      if (candidateOptions.abortSignal?.aborted) throw err;
       if (isRateLimitError(err)) {
         rateGuard?.reportRateLimit(candidate.id, err instanceof ProviderError ? err.retryAfterMs : undefined);
       }
@@ -132,5 +138,15 @@ export async function openStreamWithFallback(
   }
 
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
-  throw new Error(`All ${candidates.length} provider(s) failed; last error: ${detail}`);
+  const message = `All ${candidates.length} provider(s) failed; last error: ${detail}`;
+  if (lastError instanceof ProviderError) {
+    throw new ProviderError(lastError.type, message, {
+      kind: lastError.kind,
+      retryable: lastError.retryable,
+      ...(lastError.status !== undefined ? { status: lastError.status } : {}),
+      ...(lastError.retryAfterMs !== undefined ? { retryAfterMs: lastError.retryAfterMs } : {}),
+    });
+  }
+  const aggregate = new Error(message, lastError instanceof Error ? { cause: lastError } : undefined);
+  throw aggregate;
 }

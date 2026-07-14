@@ -68,6 +68,43 @@ describe("Provider registry", () => {
     expect(() => createProvider("openai-compatible", {})).toThrow(ProviderError);
   });
 
+  it("attaches verified route limits to the exact endpoint being called", () => {
+    const defaultRoute = createProvider("deepseek", {
+      DEEPSEEK_API_KEY: "k",
+    }, "deepseek-v4-flash").route;
+    expect(defaultRoute).toMatchObject({
+      providerId: "deepseek",
+      endpointKind: "default",
+      endpointHost: "api.deepseek.com",
+      protocol: "openai-chat",
+      endpointLimitTokens: 131_072,
+      endpointLimitSource: "provider-metadata",
+    });
+    expect(defaultRoute?.endpointIdentityHash).toMatch(/^[a-f0-9]{64}$/);
+
+    const customUnknown = createProvider("deepseek", {
+      DEEPSEEK_API_KEY: "k",
+      DEEPSEEK_BASE_URL: "https://gateway.example/v1",
+    }, "deepseek-v4-flash").route;
+    expect(customUnknown).toMatchObject({
+      providerId: "deepseek",
+      endpointKind: "custom",
+      endpointHost: "gateway.example",
+      protocol: "openai-chat",
+      endpointLimitTokens: null,
+      endpointLimitSource: "unknown",
+    });
+    expect(customUnknown?.endpointIdentityHash).toMatch(/^[a-f0-9]{64}$/);
+
+    const customOverride = createProvider("deepseek", {
+      DEEPSEEK_API_KEY: "k",
+      DEEPSEEK_BASE_URL: "https://gateway.example/v1",
+      DEEPSEEK_CONTEXT_LIMIT: "65536",
+    }, "deepseek-v4-flash").route;
+    expect(customOverride?.endpointLimitTokens).toBe(65_536);
+    expect(customOverride?.endpointLimitSource).toBe("endpoint-override");
+  });
+
   it("exposes default models for known providers", () => {
     expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.4-mini");
     expect(getProviderDefaultModel("anthropic", {})).toBe("claude-3-5-sonnet-20241022");

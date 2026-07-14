@@ -13,6 +13,7 @@ import { approvalsRepository } from "../src/repositories/approvals.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import type { ProviderChunk } from "../src/provider/base.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -272,7 +273,7 @@ describe("Agent Repair E2E Vertical Slice", () => {
     const { project, task } = seedAgentTask(db1, tempWorkspace);
     const provider1 = new MockProvider({
       delayMs: 5,
-      chunks: [[text("Running the test."), tool("tc-1", 0, "run_command", { executable: "node", args: ["test/run.mjs"], purpose: "Run test" }), done]],
+      chunks: [[text("Running a restart-safe verification."), tool("tc-1", 0, "run_command", { executable: "node", args: ["-e", "console.log('restart-ok')"], purpose: "Verify resumed command execution" }), done]],
     });
     const runner1 = runnerFor(db1, provider1);
     runner1.run(task.id);
@@ -280,15 +281,24 @@ describe("Agent Repair E2E Vertical Slice", () => {
     const approvals1 = approvalsRepository(db1);
     const continuations1 = taskContinuationsRepository(db1);
     const start = Date.now();
-    while (approvals1.listByProject(project.id, "pending").length === 0) {
+    const continuity1 = executionContinuityRepository(db1);
+    while (approvals1.listByProject(project.id, "pending").length === 0 || !continuity1.latestCheckpoint(task.id)) {
       if (Date.now() - start > 10000) throw new Error("Timeout waiting for pre-restart approval");
       await new Promise((r) => setTimeout(r, 30));
     }
-    // Before restart: a resumable continuation is persisted and the command has not run.
+    // Before restart: the checkpoint and resumable continuation are durable,
+    // and the command has not entered its side-effect window.
     const cont = continuations1.get(task.id);
     expect(cont?.toolName).toBe("run_command");
     expect(cont?.args.executable).toBe("node");
+    expect(conversationsRepository(db1).listToolCallsForTask(task.id)[0]?.status).toBe("requested");
     const approvalId = approvals1.listByProject(project.id, "pending")[0]!.id;
+    // The test reopens SQLite in the same OS process, so its original PID would
+    // still look live even though this fixture is simulating a stopped
+    // orchestrator. Persist a provably dead owner to model the process boundary
+    // without weakening production's conservative PID-reuse fencing.
+    db1.prepare("UPDATE agent_execution_segments SET owner_id=? WHERE task_id=? AND status='running'")
+      .run("morrow-pid:999999999:simulated-stopped-process", task.id);
     db1.close(); // simulate process crash (approval never resolved in this process)
 
     // ── Second process: reopen the same database file.

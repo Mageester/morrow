@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
 
@@ -27,6 +28,7 @@ export interface CodexConfig {
   oauthToken: string;
   defaultModel: string;
   baseUrl?: string; // default https://chatgpt.com/backend-api/codex
+  route?: ProviderRouteMetadata;
 }
 
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
@@ -70,7 +72,8 @@ type ResponsesItem =
 
 export class CodexProvider implements AiProvider {
   readonly id = "openai";
-  constructor(private config: CodexConfig) {}
+  readonly route: ProviderRouteMetadata | undefined;
+  constructor(private config: CodexConfig) { this.route = config.route; }
 
   private buildRequest(messages: ChatMessage[]): { instructions: string | undefined; input: ResponsesItem[] } {
     const instructionParts: string[] = [];

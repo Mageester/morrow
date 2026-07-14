@@ -199,6 +199,17 @@ async function runInteractiveSession(
     subscribe: (taskId, signal, after) => streamTaskEvents(api.baseUrl, taskId, { signal, ...(after !== undefined ? { after } : {}) }),
     cancel: (taskId) => api.cancelTask(taskId),
     resume: (taskId) => api.resumeTask(taskId, project.id).then(() => undefined),
+    compact: (taskId, settings) => {
+      const options = {
+        preset: settings.preset,
+        ...(settings.provider ? { providerId: settings.provider } : {}),
+        ...(settings.model ? { model: settings.model } : {}),
+      };
+      const request = taskId
+        ? api.compactTask(taskId, project.id, options)
+        : api.compactConversation(conversation.id, project.id, options);
+      return request.then((result) => ({ ...result, routing: { provider: result.routing.providerId, model: result.routing.model, preset: result.routing.presetId, fallback: result.routing.fallbackUsed, overridden: result.routing.overridden, privacy: result.routing.privacy } }));
+    },
     async getApproval(id) {
       const a = await api.getApproval(id);
       return { id: a.id, kind: a.kind, details: a.details, projectId: a.projectId };
@@ -502,6 +513,7 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       return { exit: true };
     case "clear":
       process.stdout.write("\x1bc");
+      out.info("Screen cleared only. Saved conversation and provider context are unchanged; /compact saves a continuation summary, and provider preflight compacts request history when needed.");
       return {};
     case "new": {
       const conv = await api.createConversation(projectId, arg || undefined);
@@ -517,6 +529,10 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       }
       try {
         const conv = await api.getConversation(arg);
+        if (conv.projectId !== projectId) {
+          out.error(`Conversation ${arg} belongs to a different project. Switch to project ${conv.projectId} before resuming it.`);
+          return {};
+        }
         out.success(`Resumed ${conv.title} (${shortId(conv.id)}).`);
         const hist = await api.listMessages(conv.id);
         for (const m of hist.slice(-6)) renderHistoryMessage(ctx, m.role, m.content, m.streamingState);
@@ -1105,34 +1121,24 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       return {};
     }
     case "compact":
-      return compact(ctx, api, conversation);
+      return compact(ctx, api, projectId, conversation, session);
     default:
       out.warn(`Unknown command: /${cmd}. Type /help.`);
       return {};
   }
 }
 
-async function compact(ctx: Context, api: MorrowApi, conversation: Conversation): Promise<SlashResult> {
+async function compact(ctx: Context, api: MorrowApi, projectId: string, conversation: Conversation, session: SessionState): Promise<SlashResult> {
   const out = ctx.out;
-  const msgs = await api.listMessages(conversation.id);
-  if (msgs.length < 2) {
-    out.info("Not enough conversation yet to compact.");
-    return {};
-  }
-  out.info("Summarizing this conversation into a memory note…");
-  const sent = await api.sendMessage(
-    conversation.id,
-    "Summarize our conversation so far in 5 concise bullet points capturing key facts and decisions. Output only the bullets.",
-    { preset: ctx.preset(), useMemory: true }
-  );
-  const result = await streamChatTask(ctx, api, sent.task.id, sent.routing, { showActivity: false });
-  if (result.status === "completed" && result.content.trim()) {
-    const project = await api.getConversation(conversation.id);
-    await api.addMemory(project.projectId, "conversation", result.content.trim(), conversation.id);
-    out.success("Saved a conversation summary to memory; it will be injected into future turns.");
-  } else {
-    out.warn("Could not generate a summary.");
-  }
+  out.info("Compacting saved history locally…");
+  const options = { preset: session.preset, ...(session.provider ? { providerId: session.provider } : {}), ...(session.model ? { model: session.model } : {}) };
+  const taskId = await latestTaskId(api, conversation.id);
+  const task = taskId ? await api.getTask(taskId).catch(() => null) : null;
+  const result = taskId && task && (task.task.status === "running" || task.task.status === "interrupted")
+    ? await api.compactTask(taskId, projectId, options)
+    : await api.compactConversation(conversation.id, projectId, options);
+  out.info(`Route: ${result.routing.providerId}/${result.routing.model} · ${result.routing.privacy}`);
+  out.success(`Saved deterministic continuation summary (${result.summary.sourceMessageCount} messages); no model request was made.`);
   return {};
 }
 
@@ -1166,9 +1172,9 @@ function printReplHelp(ctx: Context) {
     ["/output [full|failures] [task-id]", "show a durable report by latest task, full id, or unique prefix"],
     ["/cancel", "cancel info (use Ctrl+C while streaming)"],
     ["/memory", "toggle memory for this session"],
-    ["/compact", "summarize history into a memory note"],
+    ["/compact", "durably compact the provider projection"],
     ["/export [file]", "export a sanitized task report"],
-    ["/clear", "clear the screen"],
+    ["/clear", "clear the screen only (provider context is unchanged)"],
     ["/exit", "quit"],
   ];
   out.keyValue(rows);

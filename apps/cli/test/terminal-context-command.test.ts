@@ -133,7 +133,12 @@ describe("/context and /status: model and context-limit truthfulness", () => {
       [
         {
           type: "context.budget_calculated",
-          payload: { maxInputTokens: 800000, contextWindowTokens: 1000000, contextWindowSource: "known-model" },
+          payload: {
+            modelCapacityTokens: 1_000_000, modelCapacitySource: "model-metadata",
+            endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata",
+            effectiveRequestLimitTokens: 131_072, effectiveLimitSource: "provider-metadata",
+            outputReserveTokens: 16_384, maximumInputTokens: 114_688, currentRequestTokens: 92_100,
+          },
         } as any,
         {
           type: "provider.usage",
@@ -146,7 +151,12 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     const line = notices.find((n) => n.startsWith("Context:"));
     expect(line).toBeDefined();
     expect(line).toContain("deepseek/deepseek-v4-pro");
-    expect(line).toContain("130000/1000000 tokens (13%)");
+    expect(line).toContain("Model capacity: 1,000,000 (model-metadata)");
+    expect(line).toContain("Endpoint limit: 131,072 (provider-metadata)");
+    expect(line).toContain("Effective request limit: 131,072 (provider-metadata)");
+    expect(line).toContain("Reserved output: 16,384");
+    expect(line).toContain("Maximum input: 114,688");
+    expect(line).toContain("Current request: 92,100 (exact)");
     expect(line).toContain("exact");
   });
 

@@ -17,6 +17,7 @@ import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
 import { contextSummariesRepository } from "../repositories/context-summaries.js";
+import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinuityRepository, type ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
@@ -28,16 +29,18 @@ import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
-import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk } from "../provider/base.js";
+import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError } from "../provider/base.js";
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
-import { openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
+import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature } from "./loop-detector.js";
-import { prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
+import { measureProviderRequest, prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
+import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
+import { providerRouteFingerprint, resolveEffectiveContext } from "../routing/effective-context.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -68,6 +71,14 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; v
     return {};
   }
 }
+
+function isProviderContextRejection(error: unknown): boolean {
+  if (!(error instanceof ProviderError)) return false;
+  if (error.status !== 400 && error.status !== 413 && error.status !== 422) return false;
+  return /(?:context|token|request).*(?:large|long|limit|maximum|max)|(?:large|long|limit|maximum|max).*(?:context|token|request)/i.test(error.message);
+}
+
+const MAX_AUTOMATIC_EXECUTION_SEGMENTS = 64;
 
 /**
  * Find installed skills relevant to a prompt by scoring each skill's
@@ -256,9 +267,14 @@ type Dependencies = {
   fallbackProviders?: AiProvider[];
   now?: () => string;
   maxTurns?: number;
+  /** Upper bound for unattended durable segments; injectable for boundary tests. */
+  maxAutomaticSegments?: number;
   maxFileBytes?: number;
   maxContextBytes?: number;
   abortSignal?: AbortSignal;
+  recovery?: { checkpointCursor: number; executionLease: { segmentId: string; ownerId: string; generation: number } };
+  /** Deterministic crash-boundary hook used by restart tests. Production callers omit it. */
+  onSegmentBoundary?: (reason: "context_pressure" | "turn_budget" | "provider_failure") => void | Promise<void>;
 };
 
 class AgentToolFailure extends Error {
@@ -401,9 +417,12 @@ export async function executeAgentChatTask({
   fallbackProviders,
   now = () => new Date().toISOString(),
   maxTurns,
+  maxAutomaticSegments,
   maxFileBytes,
   maxContextBytes,
-  abortSignal
+  abortSignal,
+  recovery,
+  onSegmentBoundary,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
@@ -416,11 +435,13 @@ export async function executeAgentChatTask({
   const continuationsRepo = taskContinuationsRepository(db);
   const contextSummaries = contextSummariesRepository(db);
   const symbolIndex = symbolIndexRepository(db);
+  const continuity = executionContinuityRepository(db);
 
   const task = tasks.getTaskById(taskId);
   if (!task || task.kind !== "agent_chat" || !["queued", "running", "interrupted"].includes(task.status)) {
     throw new Error("Task is not available for agent execution");
   }
+  const durableResume = continuity.latestCheckpoint(taskId) !== null;
 
   const project = projects.getProjectById(task.projectId);
   if (!project) {
@@ -475,6 +496,7 @@ export async function executeAgentChatTask({
     log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
   });
   let turn = 0;
+  let absoluteTurn = 0;
   const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) => {
     const timestamp = now();
     try {
@@ -507,7 +529,11 @@ export async function executeAgentChatTask({
   };
 
   if (!records.getAgentState(taskId)) transitionAgentState("idle");
-  transitionAgentState("understanding");
+  if (!durableResume) transitionAgentState("understanding");
+  if (durableResume && records.getAgentState(taskId)?.state === "interrupted") {
+    transitionAgentState("understanding", { event: "durable_resume" });
+    transitionAgentState("planning", { event: "durable_resume" });
+  }
 
   // Define plan. Default to the full agent capability for an interactive
   // session; ask/plan flows downgrade explicitly via the routing decision.
@@ -522,9 +548,15 @@ export async function executeAgentChatTask({
         { id: randomUUID(), position: 2, title: "Read Workspace", description: "Inspect project structure and read relevant files.", status: "pending" as const },
         { id: randomUUID(), position: 3, title: "Generate Answer", description: "Synthesize findings and stream response to user.", status: "pending" as const }
       ];
-  records.replacePlan(taskId, plan);
-  event("plan.created", { stepCount: plan.length });
-  transitionAgentState("planning", { stepCount: plan.length });
+  if (!durableResume) {
+    records.replacePlan(taskId, plan);
+    event("plan.created", { stepCount: plan.length });
+    transitionAgentState("planning", { stepCount: plan.length });
+  } else if (records.listPlanSteps(taskId).length === 0) {
+    // Compatibility for an execution that crashed before older runtimes
+    // durably created plan rows. Do not emit replayed plan lifecycle events.
+    records.replacePlan(taskId, plan);
+  }
 
   // Resolve routing decision + preset-derived execution budgets
   const routing = routingRepo.get(taskId);
@@ -541,15 +573,9 @@ export async function executeAgentChatTask({
   const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
   const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
   const turnCeiling = adaptiveTurnCeiling(turnsLimit);
+  const automaticSegmentLimit = Math.max(1, maxAutomaticSegments ?? MAX_AUTOMATIC_EXECUTION_SEGMENTS);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
-  const contextBudget = resolveContextBudget({
-    providerId,
-    model: resolvedModel || assistantMessageRow.model || `${providerId}-default`,
-    presetContextBudgetBytes: contextBytesLimit,
-    outputBudgetTokens: preset.outputBudgetTokens,
-    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
-  });
 
   // Resolve active provider: an injected provider wins (tests); otherwise the
   // deterministic mock for demo mode, or a registry-built real provider.
@@ -588,6 +614,45 @@ export async function executeAgentChatTask({
       return;
     }
   }
+
+  const contextModel = resolvedModel || assistantMessageRow.model || `${providerType}-model`;
+  const outputReserveTokens = preset.outputBudgetTokens ?? 2_048;
+  const primaryRoute = activeProvider.route ?? {
+    providerId: providerType,
+    protocol: providerType === "mock" ? "mock" as const : "openai-chat" as const,
+    endpointKind: "injected" as const,
+    endpointHost: null,
+    endpointLimitTokens: null,
+    endpointLimitSource: "unknown" as const,
+  };
+  const effectiveContext = resolveEffectiveContext({
+    providerId: providerType,
+    selectedModel: contextModel,
+    endpoint: {
+      kind: primaryRoute.endpointKind,
+      host: primaryRoute.endpointHost,
+      protocol: primaryRoute.protocol,
+      limitTokens: primaryRoute.endpointLimitTokens,
+      limitSource: primaryRoute.endpointLimitSource,
+    },
+    outputReserveTokens,
+  });
+  const primaryRouteFingerprint = providerRouteFingerprint({
+    providerId: providerType,
+    model: contextModel,
+    protocol: primaryRoute.protocol,
+    endpointKind: primaryRoute.endpointKind,
+    endpointHost: primaryRoute.endpointHost,
+    endpointIdentityHash: primaryRoute.endpointIdentityHash,
+  });
+  const contextBudget = resolveContextBudget({
+    providerId: providerType,
+    model: contextModel,
+    presetContextBudgetBytes: contextBytesLimit,
+    outputBudgetTokens: preset.outputBudgetTokens,
+    userContextWindowTokens: effectiveContext.effectiveRequestLimitTokens,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
+  });
 
   // Stream candidates for live fallback: the primary first, then any injected
   // fallbacks (tests) or â€” on the real registry path â€” every other *configured*
@@ -642,6 +707,39 @@ export async function executeAgentChatTask({
   }
   // else already `running` (resumed via the route) â€” no duplicate task.running event.
   convs.updateMessageContentAndState(assistantMessageRow.id, "", "streaming", now());
+
+  let executionOwnerId: string = recovery?.executionLease.ownerId ?? createExecutionLeaseOwnerId();
+  const initialSegment = recovery
+    ? continuity.getRunningSegment(taskId)
+    : continuity.openSegment({
+        taskId,
+        missionId: taskMissionId,
+        providerId: providerType,
+        model: contextModel,
+        routeJson: primaryRoute as unknown as Record<string, unknown>,
+        ownerId: executionOwnerId,
+        now: now(),
+      });
+  if (!initialSegment) throw new ExecutionLeaseFenceError("Recovered execution segment no longer exists");
+  let currentSegment = initialSegment;
+  if (recovery && (currentSegment.id !== recovery.executionLease.segmentId
+    || currentSegment.ownerId !== recovery.executionLease.ownerId
+    || currentSegment.generation !== recovery.executionLease.generation)) {
+    throw new ExecutionLeaseFenceError("Recovered execution segment lease no longer matches the fenced claim");
+  }
+
+  const currentFence = () => ({ ownerId: executionOwnerId, generation: currentSegment.generation });
+  const renewExecutionLease = (): void => {
+    const leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
+    if (!continuity.renewSegmentLease({ segmentId: currentSegment.id, ...currentFence(), leaseExpiresAt })) {
+      throw new ExecutionLeaseFenceError("Execution segment lease was lost; stale execution was stopped");
+    }
+  };
+  const failCurrentSegment = (reason: string): void => {
+    if (!continuity.failSegment(currentSegment.id, reason, now(), currentFence())) {
+      throw new ExecutionLeaseFenceError();
+    }
+  };
 
   // Setup tools definitions
   const tools: ToolDefinition[] = [
@@ -903,7 +1001,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
-  for (const msg of dbMessages) {
+  const manualProjection = contextSummaries.latestManualForConversation(conversationId);
+  if (manualProjection) {
+    chatMessages.push({
+      role: "system",
+      content: `User-requested durable conversation compaction (deterministic; original records remain stored):\n${manualProjection.content}`,
+    });
+  }
+  const projectedDbMessages = manualProjection
+    ? dbMessages.slice(Math.min(dbMessages.length, manualProjection.sourceEndIndex + 1))
+    : dbMessages;
+  for (const msg of projectedDbMessages) {
     if (msg.id === assistantMessageRow.id) break;
     chatMessages.push({
       role: msg.role === "user" ? "user" : "assistant",
@@ -912,6 +1020,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   }
 
   async function executeApprovedTool(toolName: string, args: any, tcId: string): Promise<string> {
+    renewExecutionLease();
     if (toolName === "run_command") {
       const exec = args.executable;
       const cmdArgs = args.args || [];
@@ -1309,6 +1418,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           isApproved = true;
         }
 
+        if (durableResume && isApproved && incompleteTc.status === "running") {
+          // Approval proves authorization, not whether the side effect happened.
+          // After a process crash the interval between applying a patch/command
+          // and durably recording its observation is ambiguous. Re-executing it
+          // could duplicate external or workspace effects, so recovery must stop
+          // for reconciliation instead of treating approval as an idempotency key.
+          const message = `Recovery paused: ${continuation.toolName} may have executed before the restart and requires side-effect reconciliation.`;
+          continuationsRepo.delete(taskId);
+          failCurrentSegment("ambiguous_tool_effect");
+          records.transitionAgentState(taskId, { id: randomUUID(), state: "interrupted", details: { reason: "ambiguous_tool_effect", toolCallId: continuation.toolCallId }, createdAt: now() });
+          records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "ambiguous_tool_effect", message } });
+          convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+          event("task.recovery_required", { reason: "ambiguous_tool_effect", toolCallId: continuation.toolCallId });
+          return;
+        }
+
         let resultStr = "";
         let isSuccess = true;
         let errorType = null;
@@ -1316,6 +1441,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
         if (isApproved) {
           try {
+            convs.upsertToolCall({
+              id: incompleteTc.id,
+              messageId: incompleteTc.messageId,
+              taskId,
+              toolName: incompleteTc.toolName,
+              argsJson: incompleteTc.argsJson,
+              status: "running",
+              createdAt: incompleteTc.createdAt,
+              startedAt: now(),
+            });
             resultStr = await executeApprovedTool(continuation.toolName, continuation.args, continuation.toolCallId);
             missionFailures.reportSuccess(continuation.toolName, continuation.args);
           } catch (err: any) {
@@ -1349,7 +1484,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           startedAt: incompleteTc.startedAt ?? null,
           completedAt: now()
         });
-
         continuationsRepo.delete(taskId);
 
         // Mirror the live tool path: once a resumed tool has executed we are
@@ -1364,31 +1498,108 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
+  const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "create_directory"]);
+  const completionStateFromCalls = (calls: ToolCallRecord[]): {
+    failure: { tool: string; detail: string } | null;
+    verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number };
+  } => {
+    let failure: { tool: string; detail: string } | null = null;
+    let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
+    for (const call of calls) {
+      if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
+      let failedOutcome: string | null = call.status === "failed" ? (call.errorMessage ?? "tool failed") : null;
+      if (call.toolName === "run_command" && call.status === "completed") {
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
+          if (typeof result.exitCode === "number") {
+            verification = { status: result.exitCode === 0 ? "passed" : "failed", toolCallId: call.id, exitCode: result.exitCode };
+            if (result.exitCode !== 0) failedOutcome = `command exited ${result.exitCode}`;
+          }
+        } catch { /* malformed raw results cannot establish passed verification */ }
+      } else if (call.status === "completed") {
+        const requiresVerification = taskMissionId !== null || verification.status !== "missing";
+        if (requiresVerification) {
+          verification = { status: "missing" };
+          failedOutcome = "workspace changed without subsequent verification; run verification after the final write";
+        }
+      }
+      failure = failedOutcome ? { tool: call.toolName, detail: failedOutcome } : null;
+    }
+    return { failure, verification };
+  };
+
   const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
-  if (finalToolCalls.length > 0) {
+  const durableTurns = continuity.listProviderTurns(taskId);
+  absoluteTurn = durableTurns.length;
+  if (durableTurns.length > 0) {
+    const callsById = new Map(finalToolCalls.map((call) => [call.id, call]));
+    const turnsForProjection: DurableProviderTurn[] = [];
+    for (const durable of durableTurns) {
+      const rawCalls = durable.toolCalls as Array<{ id: string; name: string; arguments: string }>;
+      const unresolved = rawCalls.find((raw) => {
+        const call = callsById.get(raw.id);
+        return !call || (call.status !== "completed" && call.status !== "failed");
+      });
+      if (unresolved) {
+        const message = `Recovery paused: tool ${unresolved.name} (${unresolved.id}) has no durable terminal observation.`;
+        failCurrentSegment("ambiguous_tool_effect");
+        const currentState = records.getAgentState(taskId)?.state;
+        if (currentState !== "interrupted") {
+          records.transitionAgentState(taskId, { id: randomUUID(), state: "interrupted", details: { reason: "ambiguous_tool_effect", toolCallId: unresolved.id }, createdAt: now() });
+        }
+        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "ambiguous_tool_effect", message } });
+        convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+        event("task.recovery_required", { reason: "ambiguous_tool_effect", toolCallId: unresolved.id });
+        return;
+      }
+      const providerContinuation = continuity.loadProviderContinuation(taskId, durable.turnKey, primaryRouteFingerprint);
+      turnsForProjection.push({
+        turnKey: durable.turnKey,
+        assistantText: durable.assistantText,
+        toolCalls: rawCalls,
+        ...(providerContinuation ? { providerContinuation, providerContinuationRouteFingerprint: primaryRouteFingerprint } : {}),
+      });
+      if (durable.segmentId === currentSegment.id) turn = Math.max(turn, durable.ordinal);
+    }
+    chatMessages.push(...buildProviderProjection({
+      prefixMessages: [],
+      turns: turnsForProjection,
+      toolResults: finalToolCalls.map((call) => ({ id: call.id, toolName: call.toolName, result: call.resultJson || "" })),
+      normalizeToolArguments: capToolArgumentsForContext,
+    }));
+  } else if (finalToolCalls.length > 0) {
+    // Compatibility projection for tasks created before migration 32. It is
+    // intentionally read-only; new turns are persisted discretely above.
     chatMessages.push({
       role: "assistant",
       content: responseContent,
-      toolCalls: finalToolCalls.map(tc => ({
-        id: tc.id,
-        type: "function",
-        function: { name: tc.toolName, arguments: tc.argsJson }
-      }))
+      toolCalls: finalToolCalls.map(tc => ({ id: tc.id, type: "function", function: { name: tc.toolName, arguments: tc.argsJson } }))
     });
-
-    for (const tc of finalToolCalls) {
-      chatMessages.push({
-        role: "tool",
-        name: tc.toolName,
-        toolCallId: tc.id,
-        content: tc.resultJson || ""
-      });
-    }
+    for (const tc of finalToolCalls) chatMessages.push({ role: "tool", name: tc.toolName, toolCallId: tc.id, content: tc.resultJson || "" });
     turn = 1;
   }
 
+  let appliedTaskProjectionId: string | null = null;
+  const applyLatestTaskProjection = (): void => {
+    const projection = contextSummaries.latestForTask(taskId);
+    if (!projection || projection.id === appliedTaskProjectionId || projection.conversationId !== conversationId) return;
+    const systemMessages = chatMessages.filter((message) => message.role === "system");
+    const durableMessages = chatMessages.filter((message) => message.role !== "system");
+    const end = Math.min(projection.sourceEndIndex, durableMessages.length - 1);
+    if (end < 0) return;
+    chatMessages.splice(0, chatMessages.length,
+      ...systemMessages,
+      { role: "system", content: `User-requested durable task compaction (task ${taskId}; original records remain stored):\n${projection.content}` },
+      ...durableMessages.slice(end + 1));
+    appliedTaskProjectionId = projection.id;
+  };
+  applyLatestTaskProjection();
+
   let completedWithoutMoreTools = false;
+  let canonicalFinalText = "";
   let emptyFinalResponseRetries = 0;
+  let providerRecoverySegments = 0;
+  let forceProviderCompaction = false;
   let totalBytesRead = 0;
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
@@ -1396,17 +1607,114 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // verification command exited non-zero. A subsequent successful mutation or a
   // clean verification clears it (the model recovered). See the completion gate
   // at the end of the loop.
-  let lastVerificationFailure: { tool: string; detail: string } | null = null;
-  const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "create_directory"]);
+  let lastVerificationFailure: { tool: string; detail: string } | null = completionStateFromCalls(finalToolCalls).failure;
   const steps = records.listPlanSteps(taskId);
 
   const planningStep = steps[0]!;
   const workspaceStep = steps.find((step) => step.title === "Read Workspace");
   const finalStep = steps[steps.length - 1]!;
 
-  let activeStepId = planningStep.id;
-  records.updatePlanStepStatus(activeStepId, "running", now());
-  event("step.started", { stepId: activeStepId });
+  const resumableStep = durableResume ? steps.find((step) => step.status === "running") ?? steps.find((step) => step.status === "pending") : null;
+  let activeStepId = (resumableStep ?? planningStep).id;
+  if (!durableResume || resumableStep?.status !== "running") {
+    records.updatePlanStepStatus(activeStepId, "running", now());
+    event("step.started", { stepId: activeStepId });
+  }
+
+  const persistExecutionCheckpoint = async (phase: string): Promise<string> => {
+    const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) })
+      .catch(() => ({ lines: [] as string[], truncated: false, timedOut: false }));
+    const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const tests = calls
+      .filter((call) => call.toolName === "run_command")
+      .map((call) => {
+        let exitCode: number | null = null;
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as Record<string, unknown>;
+          exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
+        } catch { /* exact raw result remains durable on the tool-call row */ }
+        return { command: call.argsJson, exitCode, result: call.resultJson ?? call.errorMessage ?? call.status };
+      });
+    const failedCalls = calls.filter((call) => call.status === "failed");
+    const lastEvent = records.listEvents(taskId).at(-1);
+    const snapshot: ExecutionCheckpointSnapshot = {
+      version: 1,
+      originalMission: latestUserPrompt,
+      hardRequirements: latestUserPrompt.trim() ? [latestUserPrompt] : [],
+      prohibitedActions: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:do not|don't|never|prohibited)\b/i.test(line)),
+      acceptanceCriteria: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:must|acceptance|required|prove|verify)\b/i.test(line)),
+      decisions: ["Continue through durable execution segments without treating an internal boundary as completion."],
+      completedWork: calls.filter((call) => call.status === "completed").map((call) => `${call.toolName}: ${call.argsJson}`),
+      currentPhase: phase,
+      filesChanged: status.lines.filter((line) => !line.startsWith("## ")).map((line) => line.slice(3).trim()),
+      gitStatus: status.lines.join("\n"),
+      tests,
+      unresolvedFailures: failedCalls.map((call) => `${call.toolName}: ${call.errorMessage ?? call.status}`),
+      recoveryAttempts: records.listEvents(taskId).filter((item) => item.type === "provider.fallback" || item.type === "task.recovery_requeued").map((item) => `${item.type}: ${JSON.stringify(item.payload)}`),
+      pendingWork: completedWithoutMoreTools ? [] : ["Continue provider execution and complete verification."],
+      approvals: { records: approvals.listByTask(taskId).map((approval) => ({ id: approval.id, kind: approval.kind, status: approval.status, decision: approval.decision })) },
+      taskId,
+      missionId: taskMissionId,
+      providerRouting: { providerId: providerType, model: contextModel, route: primaryRoute },
+      providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
+      evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
+    };
+    const checkpointId = randomUUID();
+    continuity.saveCheckpoint({
+      id: checkpointId,
+      taskId,
+      missionId: taskMissionId,
+      segmentId: currentSegment.id,
+      cursor: lastEvent?.sequence ?? 0,
+      snapshot,
+      ...currentFence(),
+      now: now(),
+    });
+    return checkpointId;
+  };
+
+  const interruptAtSegmentLimit = (checkpointId: string): boolean => {
+    if (currentSegment.sequence < automaticSegmentLimit) return false;
+    closeCurrentTurn({ final: false, aborted: true });
+    const message = `Automatic execution paused after ${automaticSegmentLimit} durable segments to bound unattended provider and tool usage.`;
+    failCurrentSegment("segment_budget_exhausted");
+    transitionAgentState("interrupted", { reason: "segment_budget_exhausted", message, checkpointId, turns: absoluteTurn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "segment_budget_exhausted", message, checkpointId } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return true;
+  };
+
+  const completeWithCanonicalAnswer = (finalText: string, sourceTurnKey: string): void => {
+    const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
+    const evidenceJson = {
+      sourceTurnKey,
+      durableEventCursor: records.listEvents(taskId).at(-1)?.sequence ?? 0,
+      verification: completionState.verification,
+      unresolvedBlocker: completionState.failure?.detail ?? null,
+      unresolvedFailures: completionState.failure ? [`${completionState.failure.tool}: ${completionState.failure.detail}`] : [],
+      status: taskMissionId ? "pending_mission_verification" : "completed",
+    };
+    db.transaction(() => {
+      continuity.createCanonicalAnswer({
+        id: randomUUID(), taskId, missionId: taskMissionId, segmentId: currentSegment.id, content: finalText, evidenceJson, ...currentFence(), now: now(),
+      });
+      if (!continuity.completeSegment(currentSegment.id, now(), currentFence())) throw new ExecutionLeaseFenceError();
+      // Old/checkpoint fixtures can resume before the active lifecycle was
+      // persisted. Walk only the missing legal states so canonical completion
+      // remains transactional without weakening the state machine globally.
+      const currentState = records.getAgentState(taskId)?.state;
+      if (!currentState) transitionAgentState("idle");
+      const resumableState = records.getAgentState(taskId)?.state;
+      if (resumableState === "idle" || resumableState === "interrupted") transitionAgentState("understanding", { event: "canonical_completion_resume" });
+      if (records.getAgentState(taskId)?.state === "understanding") transitionAgentState("planning", { event: "canonical_completion_resume" });
+      const preCompletionState = records.getAgentState(taskId)?.state;
+      if (preCompletionState === "waiting_for_approval" || preCompletionState === "executing_tool") transitionAgentState("observing", { event: "canonical_completion_resume" });
+      if (records.getAgentState(taskId)?.state !== "completed") transitionAgentState("completed");
+      records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
+      convs.updateMessageContentAndState(assistantMessageRow.id, finalText, "completed", now());
+    })();
+  };
 
   // Handle AbortSignal cancellation
   const checkCancelled = (): boolean => {
@@ -1423,6 +1731,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       records.transitionTask(taskId, "cancelled", { id: randomUUID(), createdAt: now(), payload: {} });
     }
     transitionAgentState("cancelled");
+    failCurrentSegment("cancelled");
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "cancelled", now());
     if (activeStepId) {
       records.updatePlanStepStatus(activeStepId, "failed", now());
@@ -1433,15 +1742,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   };
 
-  while (turn < turnCeiling) {
+  const replayableFinalTurn = durableTurns.at(-1);
+  if (replayableFinalTurn
+    && replayableFinalTurn.isFinal
+    && replayableFinalTurn.toolCalls.length === 0
+    && replayableFinalTurn.assistantText.trim().length > 0
+    && !lastVerificationFailure) {
+    for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
+    completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
+    return;
+  }
+
+  while (true) {
     if (checkCancelled()) {
       handleCancellation();
       return;
     }
 
+    renewExecutionLease();
+    applyLatestTaskProjection();
+
     turn++;
+    absoluteTurn++;
     const responseLengthAtTurnStart = responseContent.length;
-    currentTurnId = `${taskId}:turn-${turn}`;
+    currentTurnId = `${taskId}:turn-${absoluteTurn}`;
     currentTurnStartLen = responseLengthAtTurnStart;
     currentTurnOpen = true;
     event("assistant.turn_started", { turnId: currentTurnId });
@@ -1450,12 +1774,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let loopDetected: { signature: string; count: number } | null = null;
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
+    let currentReasoningContent = "";
+    let currentServedBy = providerType as string;
+    let currentRouteFingerprint = primaryRouteFingerprint;
 
     try {
-      const contextModel = resolvedModel || assistantMessageRow.model || `${providerType}-model`;
       const preparedContext = prepareContextForProvider(chatMessages, {
         providerId: providerType,
         model: contextModel,
+        // This first pass enforces the preset/user safety budget and performs
+        // deterministic history compaction. The route-aware complete-envelope
+        // gate below remains authoritative for the actual provider request,
+        // including tools, continuation fields, overhead, and output reserve.
         maxInputTokens: contextBudget.maxInputTokens,
         compact: true,
         recentRawGroups: 1,
@@ -1469,9 +1799,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         reservedOutputTokens: contextBudget.outputBudgetTokens,
         reservedTokens: contextBudget.reservedTokens,
         maxInputTokens: contextBudget.maxInputTokens,
+        modelCapacityTokens: effectiveContext.advertisedModelCapacityTokens,
+        modelCapacitySource: effectiveContext.advertisedModelCapacitySource,
+        endpointLimitTokens: effectiveContext.configuredEndpointLimitTokens,
+        endpointLimitSource: effectiveContext.endpointLimitSource,
+        effectiveRequestLimitTokens: effectiveContext.effectiveRequestLimitTokens,
+        effectiveLimitSource: effectiveContext.effectiveLimitSource,
+        maximumInputTokens: effectiveContext.maximumInputTokens,
+        endpointHost: effectiveContext.endpointHost,
+        endpointKind: effectiveContext.endpointKind,
       });
       for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
       if (!preparedContext.ok) {
+        failCurrentSegment("context_preflight_failed");
         transitionAgentState("failed", { message: preparedContext.actionableMessage });
         records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
         convs.updateMessageContentAndState(assistantMessageRow.id, preparedContext.actionableMessage, "failed", now());
@@ -1491,6 +1831,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           sourceMessageCount: preparedContext.summary.sourceMessageCount,
           createdAt: now(),
         });
+        // This projection is already applied to the in-memory request below.
+        // Reapplying it at the next loop would interpret its original durable
+        // message cursor against the compacted transient projection and could
+        // separate an assistant tool call from its result.
+        appliedTaskProjectionId = record.id;
         const last = records.listEvents(taskId).filter((ev) => ev.type === "context.compaction_completed").at(-1);
         if (last) {
           event("context.compaction_completed", {
@@ -1511,9 +1856,141 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           countingMethod: preparedContext.tokenCount.method,
           exact: preparedContext.tokenCount.exact,
         });
+        const checkpointId = await persistExecutionCheckpoint("context_compaction");
+        if (interruptAtSegmentLimit(checkpointId)) return;
+        currentSegment = continuity.rolloverSegment({
+          taskId,
+          currentSegmentId: currentSegment.id,
+          reason: "context_pressure",
+          providerId: providerType,
+          model: contextModel,
+          routeJson: primaryRoute as unknown as Record<string, unknown>,
+          ownerId: executionOwnerId,
+          generation: currentSegment.generation,
+          now: now(),
+        });
+        // Full records remain durable in conversation/tool/turn tables. Only
+        // the transient provider projection is replaced by the verified-fit
+        // compacted projection, making repeated rebuilds idempotent.
+        chatMessages.splice(0, chatMessages.length, ...preparedContext.messages);
+        turn = 1;
+        event("context.compaction_completed", {
+          checkpointId,
+          reason: "context_pressure",
+          automaticContinuation: true,
+          segmentSequence: currentSegment.sequence,
+        });
+        await onSegmentBoundary?.("context_pressure");
+      }
+      const candidateEnvelopes = streamCandidates.map((candidate) => {
+        const candidateModel = candidate.id === providerType
+          ? contextModel
+          : (getProviderDefaultModel(candidate.id as ProviderId, process.env) ?? `${candidate.id}-model`);
+        const route = candidate.provider.route ?? {
+          providerId: candidate.id,
+          protocol: candidate.id === "mock" ? "mock" as const : "openai-chat" as const,
+          endpointKind: "injected" as const,
+          endpointHost: null,
+          endpointLimitTokens: null,
+          endpointLimitSource: "unknown" as const,
+        };
+        const resolution = resolveEffectiveContext({
+          providerId: candidate.id,
+          selectedModel: candidateModel,
+          endpoint: {
+            kind: route.endpointKind,
+            host: route.endpointHost,
+            protocol: route.protocol,
+            limitTokens: route.endpointLimitTokens,
+            limitSource: route.endpointLimitSource,
+          },
+          outputReserveTokens,
+        });
+        const routeFingerprint = providerRouteFingerprint({
+          providerId: candidate.id,
+          model: candidateModel,
+          protocol: route.protocol,
+          endpointKind: route.endpointKind,
+          endpointHost: route.endpointHost,
+          endpointIdentityHash: route.endpointIdentityHash,
+        });
+        const candidateMessages = preparedContext.messages.map((message) => {
+          if (!message.providerContinuation) return message;
+          if (message.providerContinuationRouteFingerprint === routeFingerprint) return message;
+          const { providerContinuation: _private, providerContinuationRouteFingerprint: _binding, ...publicMessage } = message;
+          return publicMessage;
+        });
+        const candidateOptions = {
+          ...(abortSignal ? { abortSignal } : {}),
+          tools: exposedTools,
+          model: candidateModel,
+          timeoutMs: preset.timeoutMs,
+          temperature: preset.temperature,
+          maxOutputTokens: preset.outputBudgetTokens,
+        };
+        const envelope = {
+          providerId: candidate.id,
+          model: candidateModel,
+          protocol: route.protocol,
+          messages: candidateMessages,
+          tools: exposedTools,
+          outputReserveTokens,
+        };
+        return { candidate, candidateModel, route, resolution, routeFingerprint, candidateOptions, envelope };
+      });
+      const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
+      const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
+        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.maximumInputTokens * compactionThresholdRatio),
+      );
+      let projectionCheckpoint: ExecutionCheckpointSnapshot | null = null;
+      let projectionCheckpointId: string | null = null;
+      if (compactionNeeded) {
+        projectionCheckpointId = await persistExecutionCheckpoint("context_compaction");
+        projectionCheckpoint = continuity.latestCheckpoint(taskId)?.snapshot ?? null;
+        if (!projectionCheckpoint) throw new Error("Durable context checkpoint was not persisted");
+      }
+      const projectedCandidates = candidateEnvelopes.map((item) => {
+        const projection = projectionCheckpoint
+          ? projectProviderRequest({ checkpoint: projectionCheckpoint, envelope: item.envelope, resolution: item.resolution, thresholdRatio: compactionThresholdRatio, recentRawGroups: 1, forceCompaction: forceProviderCompaction })
+          : {
+              envelope: item.envelope,
+              admission: { ok: true as const, measurement: measureProviderRequest(item.envelope) },
+              compacted: false,
+              thresholdTokens: Math.floor(item.resolution.maximumInputTokens * compactionThresholdRatio),
+              contentHash: createHash("sha256").update(JSON.stringify(item.envelope)).digest("hex"),
+              originalMeasurement: measureProviderRequest(item.envelope),
+            };
+        return { ...item, projection };
+      });
+      const admittedCandidates = projectedCandidates.flatMap(({ candidate, candidateModel, resolution, routeFingerprint, candidateOptions, projection }) => {
+        const admission = projection.admission;
+        event("context.budget_calculated", {
+          provider: candidate.id,
+          model: candidateModel,
+          modelCapacityTokens: resolution.advertisedModelCapacityTokens,
+          modelCapacitySource: resolution.advertisedModelCapacitySource,
+          endpointLimitTokens: resolution.configuredEndpointLimitTokens,
+          endpointLimitSource: resolution.endpointLimitSource,
+          effectiveLimitSource: resolution.effectiveLimitSource,
+          outputReserveTokens,
+          currentRequestTokens: admission.measurement.inputTokens,
+          totalRequestTokens: admission.measurement.totalRequestTokens,
+          maximumInputTokens: resolution.maximumInputTokens,
+          effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens,
+          admitted: admission.ok,
+          compactionThresholdTokens: projection.thresholdTokens,
+          projectionCompacted: projection.compacted,
+          projectionHash: projection.contentHash,
+        });
+        return admission.ok
+          ? [{ ...candidate, request: { messages: projection.envelope.messages, options: candidateOptions, routeFingerprint } }]
+          : [];
+      });
+      if (admittedCandidates.length === 0) {
+        throw new Error("Provider request cannot fit the verified endpoint limit after automatic compaction; no provider call was made.");
       }
       const opened = await openStreamWithFallback(
-        streamCandidates,
+        admittedCandidates,
         preparedContext.messages,
         {
           ...(abortSignal ? { abortSignal } : {}),
@@ -1525,13 +2002,75 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         },
         globalRateGuard
       );
+      const selectedCandidate = projectedCandidates.find(({ candidate }) => candidate.id === opened.servedBy);
+      if (!selectedCandidate) throw new Error(`Selected provider route ${opened.servedBy} was not preflighted`);
+      const selectedProjection = selectedCandidate.projection;
+      let openedFreshSegment = false;
+      if (selectedProjection?.compacted) {
+        if (!projectionCheckpointId) throw new Error("Durable context checkpoint was not persisted");
+        if (interruptAtSegmentLimit(projectionCheckpointId)) return;
+        currentSegment = continuity.rolloverSegment({
+          taskId,
+          currentSegmentId: currentSegment.id,
+          reason: "context_pressure",
+          providerId: opened.servedBy,
+          model: selectedCandidate.candidateModel,
+          routeJson: selectedCandidate.route as unknown as Record<string, unknown>,
+          ownerId: executionOwnerId,
+          generation: currentSegment.generation,
+          now: now(),
+        });
+        openedFreshSegment = true;
+        chatMessages.splice(0, chatMessages.length, ...selectedProjection.envelope.messages);
+        turn = 1;
+        event("context.compaction_completed", {
+          checkpointId: projectionCheckpointId,
+          reason: "complete_envelope_threshold",
+          automaticContinuation: true,
+          projectionHash: selectedProjection.contentHash,
+          thresholdTokens: selectedProjection.thresholdTokens,
+          segmentSequence: currentSegment.sequence,
+        });
+        await onSegmentBoundary?.("context_pressure");
+      }
+      currentServedBy = opened.servedBy;
+      currentRouteFingerprint = opened.routeFingerprint ?? primaryRouteFingerprint;
       if (opened.fellBackFrom.length > 0) {
-        event("provider.fallback", { from: opened.fellBackFrom, servedBy: opened.servedBy });
+        if (!openedFreshSegment) {
+          const checkpointId = await persistExecutionCheckpoint("provider_route_switch");
+          if (interruptAtSegmentLimit(checkpointId)) return;
+          currentSegment = continuity.rolloverSegment({
+            taskId,
+            currentSegmentId: currentSegment.id,
+            reason: "provider_failure",
+            providerId: opened.servedBy,
+            model: selectedCandidate.candidateModel,
+            routeJson: selectedCandidate.route as unknown as Record<string, unknown>,
+            ownerId: executionOwnerId,
+            generation: currentSegment.generation,
+            now: now(),
+          });
+          openedFreshSegment = true;
+          await onSegmentBoundary?.("provider_failure");
+        }
+        event("provider.fallback", {
+          from: opened.fellBackFrom,
+          servedBy: opened.servedBy,
+          freshSegment: openedFreshSegment,
+          segmentSequence: currentSegment.sequence,
+          model: selectedCandidate.candidateModel,
+          routeFingerprint: currentRouteFingerprint,
+          endpointKind: selectedCandidate.route.endpointKind,
+          endpointHost: selectedCandidate.route.endpointHost,
+          effectiveRequestLimitTokens: selectedCandidate.resolution.effectiveRequestLimitTokens,
+          effectiveLimitSource: selectedCandidate.resolution.effectiveLimitSource,
+        });
       }
       if (opened.deprioritizedRateLimited.length > 0) {
         event("provider.rate_limited", { deprioritized: opened.deprioritizedRateLimited, servedBy: opened.servedBy });
       }
       const stream = opened.stream;
+      forceProviderCompaction = false;
       const servedModel = opened.servedBy === providerType
         ? (resolvedModel || assistantMessageRow.model || contextModel)
         : (getProviderDefaultModel(opened.servedBy as ProviderId, process.env) ?? `${opened.servedBy}-model`);
@@ -1543,7 +2082,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         }
 
         if (chunk.type === "error") {
-          throw new Error(chunk.error?.message || "Model provider error");
+          throw new ProviderError(chunk.error?.type ?? "provider_error", chunk.error?.message || "Model provider error", {
+            kind: chunk.error?.kind ?? "unknown",
+            retryable: chunk.error?.retryable ?? false,
+            ...(chunk.error?.status !== undefined ? { status: chunk.error.status } : {}),
+            ...(chunk.error?.retryAfterMs !== undefined ? { retryAfterMs: chunk.error.retryAfterMs } : {}),
+          });
+        }
+
+        if (chunk.providerContinuation?.reasoningContent) {
+          currentReasoningContent += chunk.providerContinuation.reasoningContent;
         }
 
         if (chunk.type === "done" && chunk.usage) {
@@ -1607,8 +2155,38 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       closeCurrentTurn({ final: false, aborted: true });
+      if ((isRetryableProviderError(e) || isProviderContextRejection(e)) && providerRecoverySegments < 2) {
+        providerRecoverySegments++;
+        forceProviderCompaction = isProviderContextRejection(e);
+        const checkpointId = await persistExecutionCheckpoint("provider_recovery");
+        if (interruptAtSegmentLimit(checkpointId)) return;
+        const failedProvider = currentServedBy;
+        currentSegment = continuity.rolloverSegment({
+          taskId,
+          currentSegmentId: currentSegment.id,
+          reason: "provider_failure",
+          providerId: providerType,
+          model: contextModel,
+          routeJson: primaryRoute as unknown as Record<string, unknown>,
+          ownerId: executionOwnerId,
+          generation: currentSegment.generation,
+          now: now(),
+        });
+        event("provider.fallback", {
+          from: [failedProvider],
+          servedBy: providerType,
+          freshSegment: true,
+          checkpointId,
+          recoveryAttempt: providerRecoverySegments,
+          contextRejection: forceProviderCompaction,
+        });
+        await onSegmentBoundary?.("provider_failure");
+        turn = 0;
+        continue;
+      }
       console.error("Provider stream error", e);
       const errMessage = e.message || "Failed to query AI provider";
+      failCurrentSegment("provider_failure");
       transitionAgentState("failed", { message: errMessage });
       records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: errMessage } });
       convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Error: ${errMessage}]`, "failed", now());
@@ -1623,6 +2201,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // Close it now, before tool execution or a cancellation check can run â€”
     // the turn itself already finished regardless of what happens next.
     closeCurrentTurn({ final: !(hasToolCalls && currentToolCalls.length > 0), hasToolCalls: hasToolCalls && currentToolCalls.length > 0 });
+
+    const turnText = responseContent.slice(responseLengthAtTurnStart);
+    const durableTurnKey = createHash("sha256")
+      .update(JSON.stringify({ segment: currentSegment.sequence, turn, text: turnText, toolCalls: currentToolCalls }))
+      .digest("hex");
+    continuity.recordProviderTurn({
+      id: randomUUID(), taskId, segmentId: currentSegment.id, turnKey: durableTurnKey,
+      ordinal: turn, assistantText: turnText, toolCalls: currentToolCalls,
+      isFinal: !(hasToolCalls && currentToolCalls.length > 0), ...currentFence(), now: now(),
+    });
+    if (currentReasoningContent) {
+      continuity.saveProviderContinuation({
+        id: randomUUID(), taskId, segmentId: currentSegment.id, providerId: currentServedBy,
+        routeFingerprint: currentRouteFingerprint,
+        turnKey: durableTurnKey, state: { reasoningContent: currentReasoningContent }, ...currentFence(), now: now(),
+      });
+    }
 
     if (checkCancelled()) {
       handleCancellation();
@@ -1645,7 +2240,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // Append assistant message with tool calls to prompt history
       chatMessages.push({
         role: "assistant",
-        content: responseContent,
+        // Provider history is a projection of discrete turns. `responseContent`
+        // is only the cumulative presentation buffer for the single UI row;
+        // copying it here made turn N recursively contain turns 1..N-1.
+        content: responseContent.slice(responseLengthAtTurnStart),
+        ...(currentReasoningContent ? {
+          providerContinuation: { reasoningContent: currentReasoningContent },
+          providerContinuationRouteFingerprint: currentRouteFingerprint,
+        } : {}),
         toolCalls: currentToolCalls.map(tc => ({
           id: tc.id,
           type: "function",
@@ -1663,7 +2265,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           taskId,
           toolName: tc.name,
           argsJson: tc.arguments,
-          status: "running",
+          // A requested call waiting for approval has not entered the side-
+          // effect window. It becomes running immediately before execution,
+          // which makes restart reconciliation non-ambiguous.
+          status: "requested",
           createdAt: now(),
           startedAt: now()
         });
@@ -1951,6 +2556,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                   // Transition state
                   transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
                   event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+                  await persistExecutionCheckpoint("waiting_for_approval");
 
                   // Block in-process
                   const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
@@ -1970,6 +2576,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
+              convs.upsertToolCall({
+                id: tc.id, messageId: assistantMessageRow.id, taskId,
+                toolName: tc.name, argsJson: tc.arguments, status: "running",
+                createdAt: toolCallRecord.createdAt, startedAt: now(),
+              });
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
           } else if (tc.name === "propose_patch" || tc.name === "create_file") {
@@ -2207,6 +2818,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 // Transition to waiting_for_approval
                 transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
                 event("approval.requested", { approvalId: approvalRecord.id, kind: "change_set" });
+                await persistExecutionCheckpoint("waiting_for_approval");
 
                 // Block in-process
                 const decision = await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
@@ -2225,6 +2837,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
+              convs.upsertToolCall({
+                id: tc.id, messageId: assistantMessageRow.id, taskId,
+                toolName: tc.name, argsJson: tc.arguments, status: "running",
+                createdAt: toolCallRecord.createdAt, startedAt: now(),
+              });
               resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
               // Report the createâ†’edit conversion in the tool result so the model
               // (and /output) see that create_file landed as a backed-up edit of
@@ -2277,6 +2894,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 continuationsRepo.save({ taskId, toolCallId: tc.id, toolName: "create_directory", args: dirArgs });
                 transitionAgentState("waiting_for_approval", { approvalId: approvalRecord.id });
                 event("approval.requested", { approvalId: approvalRecord.id, kind: "command" });
+                await persistExecutionCheckpoint("waiting_for_approval");
                 await ApprovalContinuationRegistry.awaitApproval(approvalRecord.id);
                 continuationsRepo.delete(taskId);
                 if (approvals.get(approvalRecord.id)!.status === "approved") isApproved = true;
@@ -2284,6 +2902,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               }
             }
             if (isApproved) {
+              convs.upsertToolCall({
+                id: tc.id, messageId: assistantMessageRow.id, taskId,
+                toolName: tc.name, argsJson: tc.arguments, status: "running",
+                createdAt: toolCallRecord.createdAt, startedAt: now(),
+              });
               resultStr = await executeApprovedTool("create_directory", dirArgs, tc.id);
             }
           } else if (tc.name === "find_skill" || tc.name === "load_skill") {
@@ -2342,6 +2965,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage,
           completedAt: now()
         });
+        if (VERIFY_OR_WRITE_TOOLS.has(tc.name)) {
+          lastVerificationFailure = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id)).failure;
+        }
         if (isSuccess) {
           const progressFingerprint = toolProgressFingerprint(tc.name, args, contextResultStr);
           if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
@@ -2361,6 +2987,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           status: isSuccess ? "completed" : "failed",
           elapsedMs: Date.now() - toolStartedAt,
           summary,
+          ...(tc.name === "run_command" ? (() => {
+            try {
+              const parsed = JSON.parse(resultStr) as { exitCode?: unknown };
+              return typeof parsed.exitCode === "number" ? { exitCode: parsed.exitCode } : {};
+            } catch { return {}; }
+          })() : {}),
           ...(isSuccess ? { outputRef: tc.id } : { error: errorMessage ?? summary }),
         });
         transitionAgentState("observing", {
@@ -2397,6 +3029,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           continue;
         }
         const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
+        failCurrentSegment("missing_final_answer");
         transitionAgentState("interrupted", { reason: "missing_final_answer", message, turns: turn });
         records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_final_answer", message, turns: turn } });
         convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
@@ -2404,12 +3037,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       // No more tool calls and a final answer was streamed, so we're done.
+      canonicalFinalText = responseContent.slice(responseLengthAtTurnStart);
       completedWithoutMoreTools = true;
       break;
     }
 
     if (loopDetected) {
       const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
+      failCurrentSegment("loop_detected");
       transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
       records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "loop_detected", message, turns: turn } });
       convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
@@ -2432,27 +3067,42 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
     if (noProgressTurns >= 3) {
       const message = "Task stalled after three turns without new observable progress.";
+      failCurrentSegment("stalled");
       transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
       records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
       convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
       if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
       return;
     }
+
+    if (turn >= turnCeiling) {
+      const checkpointId = await persistExecutionCheckpoint("adaptive_turn_boundary");
+      if (interruptAtSegmentLimit(checkpointId)) return;
+      currentSegment = continuity.rolloverSegment({
+        taskId,
+        currentSegmentId: currentSegment.id,
+        reason: "turn_budget",
+        providerId: providerType,
+        model: contextModel,
+        routeJson: primaryRoute as unknown as Record<string, unknown>,
+        ownerId: executionOwnerId,
+        generation: currentSegment.generation,
+        now: now(),
+      });
+      event("context.compaction_completed", {
+        checkpointId,
+        reason: "turn_budget",
+        automaticContinuation: true,
+        segmentSequence: currentSegment.sequence,
+      });
+      await onSegmentBoundary?.("turn_budget");
+      turn = 0;
+      noProgressTurns = 0;
+    }
   }
 
   if (checkCancelled()) {
     handleCancellation();
-    return;
-  }
-
-  if (!completedWithoutMoreTools && turn >= turnCeiling) {
-    const loopErrMsg = `Task adaptive turn budget reached (${turnCeiling}); continue the mission when ready.`;
-    transitionAgentState("interrupted", { reason: "turn_budget_reached", message: loopErrMsg, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "turn_budget_reached", message: loopErrMsg, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${loopErrMsg}]`, "interrupted", now());
-    if (activeStepId) {
-      records.updatePlanStepStatus(activeStepId, "skipped", now());
-    }
     return;
   }
 
@@ -2463,6 +3113,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // incomplete status instead, so the CLI and /output show the truth.
   if (completedWithoutMoreTools && lastVerificationFailure) {
     const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
+    failCurrentSegment("unverified_completion");
     transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
@@ -2481,8 +3132,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   }
 
-  // Final transition to completed
-  transitionAgentState("completed");
-  records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
-  convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "completed", now());
+  // Final transition is atomic with canonical-answer creation. If the process
+  // dies after the final provider turn was recorded but before this transaction,
+  // the replayable-final-turn path above completes it without another request.
+  const finalTurn = continuity.listProviderTurns(taskId).at(-1);
+  if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== canonicalFinalText) {
+    throw new Error("Canonical final turn is not durably recorded");
+  }
+  completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
 }

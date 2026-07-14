@@ -86,6 +86,21 @@ preserves system instructions and tool-call groups, compacts older eligible
 history into redacted persisted summaries, and refuses provider calls when the
 minimum viable prompt cannot fit. See [context-management.md](context-management.md).
 
+Durable mission execution is segmented without replacing the task, mission,
+event, provider, or Execution Kernel boundaries. Migration 32 adds execution
+segments, discrete provider turns, structured checkpoints, private provider
+continuations, and canonical task answers beside the existing authoritative raw
+records. The mutable conversation assistant row remains a presentation buffer;
+provider requests are rebuilt from discrete durable turns so prior narration is
+never recursively concatenated. A checkpoint, compaction, route change, restart,
+or turn-budget rollover cannot mark a task or mission complete.
+
+Migration 32 is additive and lazily compatible: existing tasks need no backfill
+and open their first segment on their next execution. Downgraded binaries ignore
+the new tables. Operational rollback may drop those five tables only after
+accepting the loss of resumability metadata; task, mission, conversation, event,
+tool, and working-tree records are unaffected.
+
 ## Symbol index
 
 Project code intelligence uses a local symbol index rather than sending whole

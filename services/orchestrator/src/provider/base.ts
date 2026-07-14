@@ -6,6 +6,45 @@ export interface ChatMessage {
   name?: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
+  /** Provider-owned protocol state required to continue a prior response.
+   * This is private transport data: never render, log, index, or summarize it. */
+  providerContinuation?: ProviderContinuationState;
+  /** Internal binding for providerContinuation. Adapters must not serialize it;
+   * the execution preflight uses it only to exclude stale state on route changes. */
+  providerContinuationRouteFingerprint?: string;
+}
+
+export type ProviderProtocol =
+  | "openai-chat"
+  | "openai-responses"
+  | "anthropic-messages"
+  | "gemini-generate-content"
+  | "mock";
+
+export type ContextLimitSource =
+  | "model-metadata"
+  | "provider-metadata"
+  | "endpoint-override"
+  | "fallback"
+  | "unknown";
+
+export interface ProviderRouteMetadata {
+  providerId: string;
+  protocol: ProviderProtocol;
+  endpointKind: "default" | "custom" | "injected";
+  endpointHost: string | null;
+  /** One-way identity of the complete configured base route (scheme, port,
+   * path, and query included). Safe to persist; the source URL is not. */
+  endpointIdentityHash?: string | null;
+  endpointLimitTokens: number | null;
+  endpointLimitSource: ContextLimitSource;
+}
+
+export interface ProviderContinuationState {
+  /** DeepSeek-compatible continuation field. Kept opaque from every public surface. */
+  reasoningContent?: string;
+  /** Reserved for other provider-required continuation protocol values. */
+  opaque?: Record<string, unknown>;
 }
 
 export interface ToolCall {
@@ -63,6 +102,9 @@ export interface ProviderChunk {
     completionTokens: number;
     cachedPromptTokens?: number;
   };
+  /** Private provider protocol state; callers must persist it only in the
+   * restricted continuation store and must never emit it as a task event. */
+  providerContinuation?: ProviderContinuationState;
 }
 
 export interface StreamOptions {
@@ -94,6 +136,8 @@ export interface ProviderMetadata {
 export interface AiProvider {
   /** Stable provider identifier (e.g. "openai", "anthropic"). */
   readonly id?: string;
+  /** Immutable description of the actual endpoint/protocol this instance calls. */
+  readonly route?: ProviderRouteMetadata | undefined;
   streamChat(messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk>;
 }
 

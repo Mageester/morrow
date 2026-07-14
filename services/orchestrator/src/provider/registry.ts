@@ -1,5 +1,5 @@
 import type { ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } from "@morrow/contracts";
-import { AiProvider, ProviderError } from "./base.js";
+import { AiProvider, ProviderError, type ProviderProtocol, type ProviderRouteMetadata } from "./base.js";
 import { OpenAiCompatibleProvider } from "./openai-compatible.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { CodexProvider } from "./codex.js";
@@ -12,6 +12,7 @@ import {
 } from "./credentials.js";
 import { providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
+import { createHash } from "node:crypto";
 
 /** Mark a status as configured/available because a subscription OAuth token is held. */
 function withOAuth(status: ProviderStatus): ProviderStatus {
@@ -28,6 +29,45 @@ function modelOverride(env: ProviderEnv, id: ProviderId): string | undefined {
 /** Resolve the effective model: explicit override → persisted default → built-in. */
 function resolveModel(env: ProviderEnv, id: ProviderId, explicit: string | undefined, fallback: string): string {
   return explicit || modelOverride(env, id) || fallback;
+}
+
+function configuredContextLimit(env: ProviderEnv, id: ProviderId): number | null {
+  const name = providerEnvMapping(id)?.contextLimitEnv;
+  const raw = name ? env[name] : undefined;
+  if (!raw?.trim()) return null;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ProviderError("invalid_context_limit", `${name} must be a positive safe integer`, { kind: "invalid_request" });
+  }
+  return value;
+}
+
+function routeMetadata(input: {
+  env: ProviderEnv;
+  id: ProviderId;
+  protocol: ProviderProtocol;
+  endpointKind: "default" | "custom" | "injected";
+  endpointHost: string | null;
+  defaultEndpointLimitTokens?: number;
+}): ProviderRouteMetadata {
+  const override = configuredContextLimit(input.env, input.id);
+  const providerLimit = input.endpointKind === "default" ? input.defaultEndpointLimitTokens ?? null : null;
+  const configuredBaseUrlName = providerEnvMapping(input.id)?.baseUrlEnv;
+  const configuredBaseUrl = configuredBaseUrlName ? input.env[configuredBaseUrlName]?.trim() : undefined;
+  const routeIdentity = configuredBaseUrl || `${input.protocol}:${input.endpointKind}:${input.endpointHost ?? "unknown"}`;
+  return {
+    providerId: input.id,
+    protocol: input.protocol,
+    endpointKind: input.endpointKind,
+    endpointHost: input.endpointHost,
+    endpointIdentityHash: createHash("sha256").update(routeIdentity.replace(/\/+$/, "")).digest("hex"),
+    endpointLimitTokens: override ?? providerLimit,
+    endpointLimitSource: override !== null
+      ? "endpoint-override"
+      : providerLimit !== null
+        ? "provider-metadata"
+        : "unknown",
+  };
 }
 
 interface ProviderDescriptor {
@@ -109,10 +149,10 @@ const DESCRIPTORS: ProviderDescriptor[] = [
       // through the CodexProvider. An API key uses the standard endpoint.
       const oauthToken = getStoredAccessTokenSync("openai", env);
       if (oauthToken) {
-        return new CodexProvider({ oauthToken, defaultModel: resolveModel(env, this.id, model, "gpt-5.5") });
+        return new CodexProvider({ oauthToken, defaultModel: resolveModel(env, this.id, model, "gpt-5.5"), route: routeMetadata({ env, id: this.id, protocol: "openai-responses", endpointKind: "default", endpointHost: "chatgpt.com" }) });
       }
       if (!c.configured) throw new ProviderError("not_configured", "OpenAI is not configured (sign in with OAuth or set OPENAI_API_KEY)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
+      return new OpenAiCompatibleProvider({ id: "openai", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true, route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }) });
     },
   },
   {
@@ -140,6 +180,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         baseUrl: c.baseUrl,
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         ...(oauthToken ? { oauthToken } : {}),
+        route: routeMetadata({ env, id: this.id, protocol: "anthropic-messages", endpointKind: c.endpointType, endpointHost: c.host }),
       });
     },
   },
@@ -159,7 +200,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "GEMINI_API_KEY", fallbackApiKeyEnv: "GOOGLE_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", defaultBaseUrl: "https://generativelanguage.googleapis.com" });
       if (!c.configured) throw new ProviderError("not_configured", "Gemini is not configured (GEMINI_API_KEY missing)", { kind: "auth" });
-      return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel) });
+      return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), route: routeMetadata({ env, id: this.id, protocol: "gemini-generate-content", endpointKind: c.endpointType, endpointHost: c.host }) });
     },
   },
   {
@@ -185,6 +226,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         includeUsage: true,
         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
+        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
       });
     },
   },
@@ -204,7 +246,21 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" });
       if (!c.configured) throw new ProviderError("not_configured", "DeepSeek is not configured (DEEPSEEK_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({ id: "deepseek", apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), includeUsage: true });
+      return new OpenAiCompatibleProvider({
+        id: "deepseek",
+        apiKey: c.apiKey!,
+        baseUrl: c.baseUrl,
+        defaultModel: resolveModel(env, this.id, model, this.defaultModel),
+        includeUsage: true,
+        route: routeMetadata({
+          env,
+          id: this.id,
+          protocol: "openai-chat",
+          endpointKind: c.endpointType,
+          endpointHost: c.host,
+          defaultEndpointLimitTokens: 131_072,
+        }),
+      });
     },
   },
   {
@@ -245,6 +301,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
       if (!resolvedModel) throw new ProviderError("not_configured", "OpenAI-compatible endpoint requires a model (set OPENAI_COMPAT_MODEL or pass an override)", { kind: "invalid_request" });
       const cfg: any = { id: "openai-compatible", baseUrl, defaultModel: resolvedModel, includeUsage: true };
       if (env.OPENAI_COMPAT_API_KEY) cfg.apiKey = env.OPENAI_COMPAT_API_KEY;
+      cfg.route = routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "custom", endpointHost: safeHost(baseUrl) });
       return new OpenAiCompatibleProvider(cfg);
     },
   },
@@ -280,7 +337,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     build(env, model) {
       const c = resolveLocalCredential(env, { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" });
       if (!c.configured) throw new ProviderError("not_configured", "Ollama is not enabled (set OLLAMA_BASE_URL to a running server)", { kind: "invalid_request" });
-      return new OpenAiCompatibleProvider({ id: "ollama", baseUrl: c.baseUrl, defaultModel: model || env.OLLAMA_MODEL || this.defaultModel, includeUsage: false });
+      return new OpenAiCompatibleProvider({ id: "ollama", baseUrl: c.baseUrl, defaultModel: model || env.OLLAMA_MODEL || this.defaultModel, includeUsage: false, route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }) });
     },
   },
 ];

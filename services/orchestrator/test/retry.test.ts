@@ -82,6 +82,57 @@ describe("POST /api/tasks/:taskId/retry", () => {
 });
 
 describe("POST /api/tasks/:taskId/resume", () => {
+  it("refuses an unchanged persisted oversize state before redispatching or calling a provider", async () => {
+    const db = openDatabase(":memory:");
+    let executorCalls = 0;
+    const runner = new TaskRunner(db, async () => { executorCalls++; });
+    const app = buildServer({ db, runner });
+    try {
+      seedTask(db, "interrupted");
+      taskRecordsRepository(db).appendEvent({ id: "oversize", taskId: "t1", type: "context.budget_calculated", payload: { admitted: false, currentRequestTokens: 148_403, effectiveRequestLimitTokens: 131_072 }, createdAt: new Date().toISOString() });
+
+      const res = await app.inject({ method: "POST", url: "/api/tasks/t1/resume", payload: { projectId: "p1" } });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe("CONTEXT_PREFLIGHT_REJECTED");
+      expect(executorCalls).toBe(0);
+      expect(taskRepository(db).getTaskById("t1")?.status).toBe("interrupted");
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("creates a task-scoped durable compaction without affecting another task", async () => {
+    const db = openDatabase(":memory:");
+    const runner = new TaskRunner(db, async () => {});
+    const app = buildServer({ db, runner });
+    const previousMock = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    try {
+      const ts = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: ts });
+      const conversations = conversationsRepository(db);
+      conversations.createConversation({ id: "c1", projectId: "p1", title: "C", createdAt: ts, updatedAt: ts });
+      conversations.appendMessage({ id: "old", conversationId: "c1", role: "user", content: "Old evidence that can be summarized. ".repeat(100), createdAt: new Date(Date.parse(ts) + 1).toISOString(), updatedAt: ts });
+      conversations.appendMessage({ id: "current", conversationId: "c1", role: "user", content: "Keep the current requirement.", createdAt: new Date(Date.parse(ts) + 2).toISOString(), updatedAt: ts });
+      taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "agent_chat", status: "interrupted", createdAt: new Date(Date.parse(ts) + 3).toISOString() });
+      conversations.appendMessage({ id: "assistant", conversationId: "c1", role: "assistant", content: "", taskId: "t1", streamingState: "interrupted", createdAt: new Date(Date.parse(ts) + 3).toISOString(), updatedAt: ts });
+
+      const res = await app.inject({ method: "POST", url: "/api/tasks/t1/compact", payload: { projectId: "p1", preset: "balanced", providerId: "mock", model: "mock-model" } });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ compacted: true, taskId: "t1", summary: { method: "deterministic" } });
+      const row = db.prepare("SELECT task_id taskId,conversation_id conversationId FROM context_summaries WHERE id=?").get(res.json().summary.id);
+      expect(row).toEqual({ taskId: "t1", conversationId: "c1" });
+    } finally {
+      if (previousMock === undefined) delete process.env.MOCK_PROVIDER;
+      else process.env.MOCK_PROVIDER = previousMock;
+      await app.close();
+      db.close();
+    }
+  });
+
   it("refuses to resume a persisted task from a different active project", async () => {
     const db = openDatabase(":memory:");
     const runner = new TaskRunner(db, async () => {});

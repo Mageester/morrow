@@ -201,14 +201,14 @@ export function conversationsRepository(db: Database.Database) {
 
     listToolCallsForMessage(messageId: string): ToolCallRecord[] {
       return db
-        .prepare("SELECT * FROM message_tool_calls WHERE message_id = ? ORDER BY created_at ASC")
+        .prepare("SELECT * FROM message_tool_calls WHERE message_id = ? ORDER BY created_at ASC, rowid ASC")
         .all(messageId)
         .map(mapToolCall);
     },
 
     listToolCallsForTask(taskId: string): ToolCallRecord[] {
       return db
-        .prepare("SELECT * FROM message_tool_calls WHERE task_id = ? ORDER BY created_at ASC")
+        .prepare("SELECT * FROM message_tool_calls WHERE task_id = ? ORDER BY created_at ASC, rowid ASC")
         .all(taskId)
         .map(mapToolCall);
     }

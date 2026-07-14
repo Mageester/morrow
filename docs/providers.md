@@ -58,6 +58,15 @@ Provider status exposes only `configured`, the default model, and the endpoint
 Ollama is an explicit opt-in: Morrow does not claim a local server exists unless
 `OLLAMA_BASE_URL` is set.
 
+Every provider also accepts a verified endpoint context override named
+`<PROVIDER>_CONTEXT_LIMIT` (for example `DEEPSEEK_CONTEXT_LIMIT` or
+`OPENAI_COMPAT_CONTEXT_LIMIT`). The value is a positive integer token limit for
+the exact configured route. Morrow does not infer that a custom gateway has the
+same limit as the provider's default endpoint. The default DeepSeek API route is
+recorded as 131,072 tokens; a custom DeepSeek URL must supply its own override or
+uses the labeled conservative fallback. Advertised model capacity is shown
+separately from the effective request limit.
+
 Each provider also honors a `<PROVIDER>_MODEL` variable (e.g. `DEEPSEEK_MODEL`,
 `OPENAI_MODEL`) that sets the default model. Setting a default model in the app
 or via `--model` writes this value.

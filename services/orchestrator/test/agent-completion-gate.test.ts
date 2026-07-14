@@ -6,17 +6,23 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { missionsRepository } from "../src/repositories/missions.js";
+import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-function seedYolo(db: any, workspacePath: string, prompt = "verify it") {
+function seedYolo(db: any, workspacePath: string, prompt = "verify it", missionLinked = false) {
   projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
+  const missionId = missionLinked
+    ? new MissionService({ repo: missionsRepository(db), getWorkspacePath: () => workspacePath, backupDir: join(workspacePath, ".morrow-checkpoints") })
+        .create("p", { objective: prompt }).id
+    : undefined;
   conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+  taskRepository(db).createTask({ id: "t", projectId: "p", ...(missionId ? { missionId } : {}), kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
     taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
@@ -73,11 +79,63 @@ describe("agent completion gate", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
+  it("does not clear a failed verification merely because a later workspace write succeeds", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(1)"], purpose: "verify" }), done],
+        [tool("w1", "create_file", { path: "after-failure.txt", content: "changed\n" }), done],
+        [text("fixed"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    expect(conversationsRepository(db).listToolCallsForTask("t").map((call: any) => call.id)).toEqual(["v1", "w1"]);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+  });
+
+  it("invalidates a passing verification when a later workspace write changes the verified state", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [tool("w1", "create_file", { path: "after-pass.txt", content: "changed\n" }), done],
+        [text("still verified"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+  });
+
+  it("does not report completed when a workspace write was never followed by verification", async () => {
+    seedYolo(db, ws, "change the workspace and verify it", true);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("w1", "create_file", { path: "unverified.txt", content: "changed\n" }), done],
+        [text("done without checking"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+  });
+
   it("still reports completed for an ordinary successful run", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
         [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [text("intermediate narration"), tool("v2", "git_status", {}), done],
         [text("done"), done],
       ],
       delayMs: 1,
@@ -87,6 +145,7 @@ describe("agent completion gate", () => {
     await runner.waitFor("t");
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")!.content).toBe("done");
     const terminalEvents = taskRecordsRepository(db).listEvents("t").filter((event: any) => event.type === "task.completed");
     expect(terminalEvents).toHaveLength(1);
   });
