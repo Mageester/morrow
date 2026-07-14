@@ -83,6 +83,24 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.stringify(chunks)).not.toContain("sk-secret-key");
   });
 
+  it("preserves DeepSeek reasoning continuation fields without rendering them as text", async () => {
+    const ref = mockFetch(sseResponse([
+      `data: {"choices":[{"delta":{"reasoning_content":"private-step"}}]}\n\n`,
+      `data: {"choices":[{"delta":{"content":"visible"}}]}\n\n`,
+      `data: [DONE]\n\n`,
+    ]));
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-reasoner" });
+    const chunks = await collect(provider, [
+      ...userMessages,
+      { role: "assistant", content: "prior", providerContinuation: { reasoningContent: "prior-private" } },
+      { role: "user", content: "continue" },
+    ]);
+
+    expect(chunks.find((chunk) => chunk.providerContinuation)?.providerContinuation).toEqual({ reasoningContent: "private-step" });
+    expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text).join("")).toBe("visible");
+    expect(JSON.parse(ref.captured!.init.body).messages[2].reasoning_content).toBe("prior-private");
+  });
+
   it("classifies HTTP errors into typed kinds", async () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
 

@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
 
@@ -12,6 +13,7 @@ export interface GeminiConfig {
   apiKey: string;
   baseUrl: string; // default https://generativelanguage.googleapis.com
   defaultModel: string;
+  route?: ProviderRouteMetadata;
 }
 
 function tryParseJson(value: string): unknown {
@@ -40,7 +42,8 @@ interface GeminiContent {
  */
 export class GeminiProvider implements AiProvider {
   readonly id = "gemini";
-  constructor(private config: GeminiConfig) {}
+  readonly route: ProviderRouteMetadata | undefined;
+  constructor(private config: GeminiConfig) { this.route = config.route; }
 
   private buildRequest(messages: ChatMessage[]): { systemInstruction?: { parts: GeminiPart[] }; contents: GeminiContent[] } {
     const systemParts: string[] = [];

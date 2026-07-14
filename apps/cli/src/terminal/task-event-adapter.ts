@@ -193,17 +193,26 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
 
     // ── Extended presentation events ──────────────────────────────────────
     case "context.budget_calculated": {
-      const maxInput = num(p.maxInputTokens) ?? 0;
-      const window = num(p.contextWindowTokens) ?? 0;
-      const source = str(p.contextWindowSource) as import("./events.js").ContextUsageInfo["contextWindowSource"] | undefined;
-      const knownLimit = source === "fallback" ? null : window || null;
+      const maxInput = num(p.maximumInputTokens) ?? num(p.maxInputTokens) ?? 0;
+      const window = num(p.effectiveRequestLimitTokens) ?? num(p.contextWindowTokens) ?? 0;
+      const source = (str(p.effectiveLimitSource) ?? str(p.contextWindowSource)) as import("./events.js").ContextUsageInfo["contextWindowSource"] | undefined;
+      const knownLimit = window || null;
       return withSource([{
         type: "context.usage",
         usage: {
-          usedTokens: 0,
+          usedTokens: num(p.currentRequestTokens) ?? 0,
           maxTokens: knownLimit ?? maxInput,
           contextLimitTokens: knownLimit,
           contextWindowSource: source ?? "fallback",
+          modelCapacityTokens: num(p.modelCapacityTokens) ?? null,
+          modelCapacitySource: str(p.modelCapacitySource) ?? "unknown",
+          endpointLimitTokens: num(p.endpointLimitTokens) ?? null,
+          endpointLimitSource: str(p.endpointLimitSource) ?? "unknown",
+          effectiveRequestLimitTokens: num(p.effectiveRequestLimitTokens) ?? null,
+          effectiveLimitSource: str(p.effectiveLimitSource) ?? "unknown",
+          outputReserveTokens: num(p.outputReserveTokens) ?? num(p.reservedOutputTokens) ?? null,
+          maximumInputTokens: num(p.maximumInputTokens) ?? num(p.maxInputTokens) ?? null,
+          currentRequestTokens: num(p.currentRequestTokens) ?? null,
           method: "estimate",
           compactedGroups: 0,
           removedGroups: 0,

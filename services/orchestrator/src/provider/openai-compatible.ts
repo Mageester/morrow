@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
 
@@ -20,6 +21,7 @@ export interface OpenAiCompatibleConfig {
   extraHeaders?: Record<string, string>;
   /** Send OpenAI usage streaming option. Disabled for providers that reject it. */
   includeUsage?: boolean;
+  route?: ProviderRouteMetadata;
 }
 
 /**
@@ -29,8 +31,10 @@ export interface OpenAiCompatibleConfig {
  */
 export class OpenAiCompatibleProvider implements AiProvider {
   readonly id: string;
+  readonly route: ProviderRouteMetadata | undefined;
   constructor(private config: OpenAiCompatibleConfig) {
     this.id = config.id;
+    this.route = config.route;
   }
 
   async *streamChat(messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
@@ -60,6 +64,9 @@ export class OpenAiCompatibleProvider implements AiProvider {
           : {}),
         ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}),
         ...(m.name ? { name: m.name } : {}),
+        ...(m.providerContinuation?.reasoningContent
+          ? { reasoning_content: m.providerContinuation.reasoningContent }
+          : {}),
       })),
       stream: true,
       ...(this.config.includeUsage ? { stream_options: { include_usage: true } } : {}),
@@ -149,6 +156,10 @@ export class OpenAiCompatibleProvider implements AiProvider {
       const out: ProviderChunk[] = [];
       if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
       const delta = parsed.choices?.[0]?.delta;
+      if (delta?.reasoning_content) out.push({
+        type: "text",
+        providerContinuation: { reasoningContent: delta.reasoning_content },
+      });
       if (delta?.content) out.push({ type: "text", text: delta.content });
       if (delta?.tool_calls) out.push({ type: "tool_call", toolCalls: delta.tool_calls.map((tc: any) => ({ id: tc.id, index: tc.index, type: "function", function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } })) });
       return out;

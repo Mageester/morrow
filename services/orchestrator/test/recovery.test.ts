@@ -10,6 +10,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { recoverRunningTasks, reconcileTasksOnStartup, type ReconcilableRunner } from "../src/recovery.js";
 import { TaskRunner } from "../src/runner.js";
+import { createExecutionLeaseOwnerId, executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -17,11 +18,11 @@ const now = "2026-01-01T00:00:00.000Z";
  *  duplicate guard so idempotency can be asserted deterministically. */
 class FakeRunner implements ReconcilableRunner {
   readonly active = new Set<string>();
-  readonly calls: { taskId: string; recovered: boolean }[] = [];
-  run(taskId: string, opts: { recovered?: boolean } = {}): void {
+  readonly calls: { taskId: string; recovered: boolean; resumeCheckpoint: boolean; checkpointCursor: number | null }[] = [];
+  run(taskId: string, opts: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: { segmentId: string; ownerId: string; generation: number } } = {}): void {
     if (this.active.has(taskId)) throw new Error("Duplicate execution rejected");
     this.active.add(taskId);
-    this.calls.push({ taskId, recovered: !!opts.recovered });
+    this.calls.push({ taskId, recovered: !!opts.recovered, resumeCheckpoint: !!opts.resumeCheckpoint, checkpointCursor: opts.checkpointCursor ?? null });
   }
   isActive(taskId: string): boolean {
     return this.active.has(taskId);
@@ -85,7 +86,112 @@ describe("startup reconciliation", () => {
     expect(records.getAggregate("run").task.status).toBe("interrupted");
     expect(records.getAggregate("done").task.status).toBe("verified");
     // The orphaned queued task is re-dispatched as a recovery, not a fresh create.
-    expect(runner.calls).toEqual([{ taskId: "q1", recovered: true }]);
+    expect(runner.calls).toEqual([{ taskId: "q1", recovered: true, resumeCheckpoint: false, checkpointCursor: null }]);
+    db.close();
+  });
+
+  it("claims and re-dispatches a checkpointed running agent without terminal replay", () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "mission-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    const continuity = executionContinuityRepository(db);
+    const deadOwnerId = "morrow-pid:999999999:mission";
+    const segment = continuity.openSegment({ taskId: "mission-task", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: deadOwnerId, now });
+    continuity.saveCheckpoint({ id: "cp", taskId: "mission-task", missionId: null, segmentId: segment.id, cursor: 7, snapshot: { version: 1, originalMission: "finish", hardRequirements: ["finish"], prohibitedActions: [], acceptanceCriteria: ["verified"], decisions: [], completedWork: [], currentPhase: "work", filesChanged: ["result.txt"], gitStatus: " M result.txt", tests: [], unresolvedFailures: [], recoveryAttempts: [], pendingWork: ["verify"], approvals: {}, taskId: "mission-task", missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: ["tests"] }, ownerId: deadOwnerId, generation: segment.generation, now });
+    const records = taskRecordsRepository(db);
+    records.appendEvent({ id: "before-restart", taskId: "mission-task", type: "task.created", payload: {}, createdAt: now });
+    const beforeEvents = records.listEvents("mission-task").map((event) => event.type);
+    const runner = new FakeRunner();
+
+    const summary = reconcileTasksOnStartup({ db, runner, now: () => now });
+
+    expect(summary).toEqual({ interrupted: 0, requeued: 1, cancelledOrphans: 0 });
+    expect(runner.calls).toEqual([{ taskId: "mission-task", recovered: true, resumeCheckpoint: true, checkpointCursor: 7 }]);
+    expect(taskRepository(db).getTaskById("mission-task")?.status).toBe("running");
+    expect(records.listEvents("mission-task").map((event) => event.type)).toEqual(beforeEvents);
+    expect(executionContinuityRepository(db).latestCheckpoint("mission-task")?.cursor).toBe(7);
+    db.close();
+  });
+
+  it("does not steal a checkpointed segment from a live orchestrator process", () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "live-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    const continuity = executionContinuityRepository(db);
+    const segment = continuity.openSegment({ taskId: "live-task", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: createExecutionLeaseOwnerId(), now, leaseExpiresAt: "2000-01-01T00:00:00.000Z" });
+    continuity.saveCheckpoint({ id: "live-cp", taskId: "live-task", missionId: null, segmentId: segment.id, cursor: 4, snapshot: { version: 1, originalMission: "finish", hardRequirements: ["finish"], prohibitedActions: [], acceptanceCriteria: ["verified"], decisions: [], completedWork: [], currentPhase: "work", filesChanged: [], gitStatus: "", tests: [], unresolvedFailures: [], recoveryAttempts: [], pendingWork: ["verify"], approvals: {}, taskId: "live-task", missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: ["tests"] }, ownerId: segment.ownerId!, generation: segment.generation, now });
+    const runner = new FakeRunner();
+
+    const summary = reconcileTasksOnStartup({ db, runner, now: () => now });
+
+    expect(summary).toEqual({ interrupted: 0, requeued: 0, cancelledOrphans: 0 });
+    expect(runner.calls).toEqual([]);
+    expect(taskRepository(db).getTaskById("live-task")?.status).toBe("running");
+    db.close();
+  });
+
+  it("reclaims a dead owner immediately even when its timestamp has not expired", () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "dead-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    const continuity = executionContinuityRepository(db);
+    const deadOwnerId = "morrow-pid:999999999:dead";
+    const segment = continuity.openSegment({ taskId: "dead-task", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: deadOwnerId, now, leaseExpiresAt: "2099-01-01T00:00:00.000Z" });
+    continuity.saveCheckpoint({ id: "dead-cp", taskId: "dead-task", missionId: null, segmentId: segment.id, cursor: 5, snapshot: { version: 1, originalMission: "finish", hardRequirements: [], prohibitedActions: [], acceptanceCriteria: [], decisions: [], completedWork: [], currentPhase: "work", filesChanged: [], gitStatus: "", tests: [], unresolvedFailures: [], recoveryAttempts: [], pendingWork: [], approvals: {}, taskId: "dead-task", missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: [] }, ownerId: deadOwnerId, generation: segment.generation, now });
+    const runner = new FakeRunner();
+
+    const summary = reconcileTasksOnStartup({ db, runner, now: () => now });
+
+    expect(summary).toEqual({ interrupted: 0, requeued: 1, cancelledOrphans: 0 });
+    expect(runner.calls).toHaveLength(1);
+    expect(continuity.getRunningSegment("dead-task")).toMatchObject({ ownerId: expect.not.stringContaining(deadOwnerId), generation: 2 });
+    db.close();
+  });
+
+  it("preserves an unknown legacy owner because its death cannot be proven", () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "legacy-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    const continuity = executionContinuityRepository(db);
+    const segment = continuity.openSegment({ taskId: "legacy-task", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: "legacy-owner", now, leaseExpiresAt: "2000-01-01T00:00:00.000Z" });
+    continuity.saveCheckpoint({ id: "legacy-cp", taskId: "legacy-task", missionId: null, segmentId: segment.id, cursor: 6, snapshot: { version: 1, originalMission: "finish", hardRequirements: [], prohibitedActions: [], acceptanceCriteria: [], decisions: [], completedWork: [], currentPhase: "work", filesChanged: [], gitStatus: "", tests: [], unresolvedFailures: [], recoveryAttempts: [], pendingWork: [], approvals: {}, taskId: "legacy-task", missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: [] }, ownerId: "legacy-owner", generation: segment.generation, now });
+    const runner = new FakeRunner();
+
+    const summary = reconcileTasksOnStartup({ db, runner, now: () => now });
+
+    expect(summary).toEqual({ interrupted: 0, requeued: 0, cancelledOrphans: 0 });
+    expect(runner.calls).toEqual([]);
+    expect(continuity.getRunningSegment("legacy-task")?.ownerId).toBe("legacy-owner");
+    db.close();
+  });
+
+  it("does not append a recovery task event when the runner resumes a claimed checkpoint", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "claimed", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    const records = taskRecordsRepository(db);
+    records.appendEvent({ id: "durable-before", taskId: "claimed", type: "task.created", payload: {}, createdAt: now });
+    const before = records.listEvents("claimed").map((event) => event.type);
+    const runner = new TaskRunner(db, async () => {});
+
+    runner.run("claimed", { recovered: true, resumeCheckpoint: true, checkpointCursor: 9, executionLease: { segmentId: "segment", ownerId: "owner", generation: 1 } });
+    await runner.waitFor("claimed");
+
+    expect(records.listEvents("claimed").map((event) => event.type)).toEqual(before);
+    db.close();
+  });
+
+  it("passes the durable checkpoint cursor to the recovered executor", async () => {
+    const db = openDatabase(":memory:");
+    seedProject(db);
+    taskRepository(db).createTask({ id: "cursor-task", projectId: "p", kind: "agent_chat", status: "running", createdAt: now });
+    let receivedCursor: number | null = null;
+    const runner = new TaskRunner(db, async (deps) => { receivedCursor = deps.recovery?.checkpointCursor ?? null; });
+
+    runner.run("cursor-task", { recovered: true, resumeCheckpoint: true, checkpointCursor: 23, executionLease: { segmentId: "segment", ownerId: "owner", generation: 1 } });
+    await runner.waitFor("cursor-task");
+
+    expect(receivedCursor).toBe(23);
     db.close();
   });
 
@@ -139,7 +245,7 @@ describe("startup reconciliation", () => {
     // `run` is already interrupted; `q1` is still queued in the fake but active,
     // so the duplicate guard skips it — exactly once-dispatched overall.
     expect(second).toEqual({ interrupted: 0, requeued: 0, cancelledOrphans: 0 });
-    expect(runner.calls).toEqual([{ taskId: "q1", recovered: true }]);
+    expect(runner.calls).toEqual([{ taskId: "q1", recovered: true, resumeCheckpoint: false, checkpointCursor: null }]);
     db.close();
   });
 

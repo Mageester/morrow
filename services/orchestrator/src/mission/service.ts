@@ -1046,6 +1046,48 @@ export class MissionService {
       const noAuthoritativeNodes = ledger.length === 0;
       const ledgerGate = graded.startsWith("completed") && !authoritativeSatisfied && !noAuthoritativeNodes;
       const finalStatus = ledgerGate ? "partially_completed" : graded;
+      const answerState = this.repo.missionLinkedAgentAnswerState(missionId);
+      if (finalStatus === "completed" && answerState.hasAgentTask) {
+        if (!answerState.hasCanonicalAnswer || !answerState.canonicalEvidence) {
+          throw new MissionError(
+            `Mission ${missionId} cannot complete without authoritative agent task ${answerState.ownerTaskId}'s canonical provider answer`,
+            "finalize_missing_canonical_answer",
+          );
+        }
+        if (answerState.ownerTaskStatus !== "completed") {
+          throw new MissionError(
+            `Mission ${missionId} cannot complete while authoritative agent task ${answerState.ownerTaskId} is ${answerState.ownerTaskStatus}`,
+            "finalize_canonical_task_incomplete",
+          );
+        }
+        const evidence = answerState.canonicalEvidence;
+        if (typeof evidence.sourceTurnKey !== "string" || evidence.sourceTurnKey.trim().length === 0 || !answerState.sourceTurnIsFinal || !Number.isSafeInteger(evidence.durableEventCursor) || !answerState.evidenceCursorExists) {
+          throw new MissionError(
+            `Mission ${missionId} canonical answer does not reference a durable final turn and evidence cursor`,
+            "finalize_invalid_canonical_evidence",
+          );
+        }
+        const verification = evidence.verification as { status?: unknown } | null | undefined;
+        if (!verification || verification.status !== "passed") {
+          throw new MissionError(
+            `Mission ${missionId} canonical answer is not backed by passed verification`,
+            "finalize_unverified_canonical_answer",
+          );
+        }
+        if (!answerState.verificationEvidenceCovered) {
+          throw new MissionError(
+            `Mission ${missionId} canonical answer evidence cursor does not cover its referenced successful verification`,
+            "finalize_invalid_canonical_evidence",
+          );
+        }
+        const failures = evidence.unresolvedFailures;
+        if (evidence.unresolvedBlocker !== null || !Array.isArray(failures) || failures.length > 0) {
+          throw new MissionError(
+            `Mission ${missionId} canonical answer still has an unresolved blocker or failure`,
+            "finalize_canonical_answer_blocked",
+          );
+        }
+      }
       const result = buildMissionResult(fresh, {
         review: fresh.finalReview,
         changedFiles: this.changedFilesFor(fresh),

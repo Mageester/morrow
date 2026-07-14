@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
+import { conversationsRepository } from "../src/repositories/conversations.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -81,6 +82,62 @@ describe("REST API and Task Runner Vertical Slice", () => {
       lastSummary: { id: "summary-1", method: "deterministic", sourceMessageCount: 2 },
     });
     expect(JSON.stringify(res.json().context)).not.toContain("secret");
+  });
+
+  it("durably compacts a conversation locally without creating a model task", async () => {
+    const now = "2026-07-13T12:00:00.000Z";
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p-compact", 1, "Project", tempDir, now, now);
+    db.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)").run("c-compact", "p-compact", "Context", now, now);
+    const conversations = conversationsRepository(db);
+    conversations.appendMessage({ id: "m1", conversationId: "c-compact", role: "user", content: "Goal: keep src/app.ts. api_key=do-not-store", createdAt: now, updatedAt: now });
+    conversations.appendMessage({ id: "m2", conversationId: "c-compact", role: "assistant", content: "Decision: run pnpm test and preserve privacy.", createdAt: now, updatedAt: now });
+    conversations.appendMessage({ id: "m3", conversationId: "c-compact", role: "user", content: "Continue with the current work.", createdAt: now, updatedAt: now });
+
+    const previousMock = process.env.MOCK_PROVIDER;
+    process.env.MOCK_PROVIDER = "true";
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/conversations/c-compact/compact",
+        payload: { projectId: "p-compact", preset: "balanced", providerId: "mock", model: "mock-model" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        compacted: true,
+        summary: { method: "deterministic", sourceMessageCount: 2 },
+        routing: { providerId: "mock", model: "mock-model" },
+        context: { providerId: "mock", model: "mock-model" },
+      });
+      expect(db.prepare("SELECT COUNT(*) n FROM tasks").get()).toEqual({ n: 0 });
+      const stored = db.prepare("SELECT method,content FROM context_summaries WHERE conversation_id=?").get("c-compact") as any;
+      expect(stored.method).toBe("deterministic");
+      expect(stored.content).toContain("src/app.ts");
+      expect(stored.content).not.toContain("do-not-store");
+    } finally {
+      if (previousMock === undefined) delete process.env.MOCK_PROVIDER;
+      else process.env.MOCK_PROVIDER = previousMock;
+    }
+  });
+
+  it("refuses to compact a conversation through a different active project", async () => {
+    const now = "2026-07-13T12:00:00.000Z";
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p-owner", 1, "Owner", tempDir, now, now);
+    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p-other", 1, "Other", tempDir, now, now);
+    db.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)").run("c-owner", "p-owner", "Context", now, now);
+    const conversations = conversationsRepository(db);
+    conversations.appendMessage({ id: "owner-m1", conversationId: "c-owner", role: "user", content: "Keep this task scoped.", createdAt: now, updatedAt: now });
+    conversations.appendMessage({ id: "owner-m2", conversationId: "c-owner", role: "assistant", content: "Scoped decision.", createdAt: now, updatedAt: now });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/conversations/c-owner/compact",
+      payload: { projectId: "p-other", preset: "balanced", providerId: "mock", model: "mock-model" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("CONVERSATION_PROJECT_MISMATCH");
+    expect(db.prepare("SELECT COUNT(*) n FROM context_summaries WHERE conversation_id=?").get("c-owner")).toEqual({ n: 0 });
   });
 
   it("serves a JSON liveness probe at the root and advertises no web UI", async () => {

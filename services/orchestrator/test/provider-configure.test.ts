@@ -13,6 +13,7 @@ const PROVIDER_KEYS = [
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_BASE_URL",
   "DEEPSEEK_MODEL",
+  "DEEPSEEK_CONTEXT_LIMIT",
   "OPENAI_API_KEY",
   "OPENAI_MODEL",
 ];
@@ -41,6 +42,31 @@ describe("provider configuration (secrets module)", () => {
     configureProvider(secretsFile, "deepseek", { apiKey: "k", model: "deepseek-reasoner", baseUrl: "https://api.deepseek.com/v1" }, env);
     expect(env.DEEPSEEK_MODEL).toBe("deepseek-reasoner");
     expect(env.DEEPSEEK_BASE_URL).toBe("https://api.deepseek.com/v1");
+  });
+
+  it("stores, hot-applies, and removes an endpoint context limit", () => {
+    const configured = configureProvider(secretsFile, "deepseek", {
+      endpointContextLimit: 131_072,
+    }, env);
+    expect(configured.written).toContain("DEEPSEEK_CONTEXT_LIMIT");
+    expect(env.DEEPSEEK_CONTEXT_LIMIT).toBe("131072");
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).DEEPSEEK_CONTEXT_LIMIT).toBe("131072");
+
+    const removed = removeProviderCredentials(secretsFile, "deepseek", env);
+    expect(removed.removed).toContain("DEEPSEEK_CONTEXT_LIMIT");
+    expect(env.DEEPSEEK_CONTEXT_LIMIT).toBeUndefined();
+  });
+
+  it("rejects invalid endpoint context limits without partial state", () => {
+    expect(() => configureProvider(secretsFile, "deepseek", {
+      apiKey: "would-be-partial",
+      endpointContextLimit: 0,
+    }, env)).toThrow(/positive safe integer/i);
+    expect(() => configureProvider(secretsFile, "deepseek", {
+      endpointContextLimit: 131_072.5,
+    }, env)).toThrow(/positive safe integer/i);
+    expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(existsSync(secretsFile)).toBe(false);
   });
 
   it("clears a value when given an empty string", () => {
@@ -154,6 +180,14 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     await json("POST", "/api/providers/deepseek/configure", { apiKey: "k" });
     const res = await json("POST", "/api/providers/deepseek/configure", { model: "deepseek-reasoner" });
     expect(res.body.status.defaultModel).toBe("deepseek-reasoner");
+  });
+
+  it("accepts an endpoint context limit", async () => {
+    const res = await json("POST", "/api/providers/deepseek/configure", {
+      endpointContextLimit: 131_072,
+    });
+    expect(res.status).toBe(200);
+    expect(process.env.DEEPSEEK_CONTEXT_LIMIT).toBe("131072");
   });
 
   it("removes credentials and reverts to not-configured", async () => {

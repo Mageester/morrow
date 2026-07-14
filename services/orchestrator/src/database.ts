@@ -889,5 +889,88 @@ export const migrations:Migration[]=[
       pointMission.run(latestCycleId,missionId);
     }
   }}
+  // ── Migration 32 ────────────────────────────────────────────────────────
+  // Durable agent execution is append-oriented and separate from the mutable
+  // conversation presentation row. Existing tasks require no backfill: their
+  // first post-upgrade execution opens segment 1 lazily. A rollback can ignore
+  // these additive tables; deleting them loses only resumability metadata, not
+  // task, mission, event, conversation, or working-tree records.
+  ,{id:32,name:"durable_segmented_execution",sql:`
+    CREATE TABLE agent_execution_segments (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+      sequence INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','checkpointed','completed','failed')),
+      boundary_reason TEXT,
+      provider_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      route_json TEXT NOT NULL,
+      owner_id TEXT,
+      lease_generation INTEGER NOT NULL DEFAULT 1 CHECK(lease_generation > 0),
+      lease_expires_at TEXT,
+      started_at TEXT NOT NULL,
+      closed_at TEXT,
+      UNIQUE(task_id, sequence)
+    );
+    CREATE UNIQUE INDEX agent_execution_segments_one_running
+      ON agent_execution_segments(task_id) WHERE status='running';
+    CREATE INDEX agent_execution_segments_task_idx
+      ON agent_execution_segments(task_id, sequence);
+
+    CREATE TABLE agent_provider_turns (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      segment_id TEXT NOT NULL REFERENCES agent_execution_segments(id) ON DELETE CASCADE,
+      turn_key TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      assistant_text TEXT NOT NULL,
+      tool_calls_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, turn_key),
+      UNIQUE(segment_id, ordinal)
+    );
+    CREATE INDEX agent_provider_turns_task_idx
+      ON agent_provider_turns(task_id, segment_id, ordinal);
+
+    CREATE TABLE agent_execution_checkpoints (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+      segment_id TEXT NOT NULL REFERENCES agent_execution_segments(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL,
+      durable_event_cursor INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, durable_event_cursor)
+    );
+    CREATE INDEX agent_execution_checkpoints_task_idx
+      ON agent_execution_checkpoints(task_id, durable_event_cursor DESC);
+
+    -- Provider-owned continuation is deliberately isolated from checkpoint,
+    -- event, conversation, search, and API-facing tables.
+    CREATE TABLE agent_provider_continuations (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      segment_id TEXT NOT NULL REFERENCES agent_execution_segments(id) ON DELETE CASCADE,
+      provider_id TEXT NOT NULL,
+      route_fingerprint TEXT NOT NULL,
+      turn_key TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, turn_key)
+    );
+
+    CREATE TABLE canonical_task_answers (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+      mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+      content TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX canonical_task_answers_mission_idx
+      ON canonical_task_answers(mission_id, created_at) WHERE mission_id IS NOT NULL;
+  `}
 ];
 export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}

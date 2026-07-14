@@ -64,10 +64,19 @@ function contextUsageFromEvents(events: Array<{ type: string; payload: Record<st
   return {
     providerId: str(budget?.provider) ?? str(count?.provider) ?? "unknown",
     model: str(budget?.model) ?? str(count?.model) ?? "unknown",
-    contextWindowTokens: num(budget?.contextWindowTokens) ?? 0,
-    contextWindowSource: str(budget?.contextWindowSource) ?? "fallback",
-    maxInputTokens: num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
-    reservedTokens: num(budget?.reservedTokens) ?? 0,
+    contextWindowTokens: num(budget?.modelCapacityTokens) ?? num(budget?.contextWindowTokens) ?? 0,
+    contextWindowSource: str(budget?.modelCapacitySource) ?? str(budget?.contextWindowSource) ?? "unknown",
+    modelCapacityTokens: num(budget?.modelCapacityTokens) ?? num(budget?.contextWindowTokens),
+    modelCapacitySource: str(budget?.modelCapacitySource) ?? str(budget?.contextWindowSource) ?? "unknown",
+    endpointLimitTokens: num(budget?.endpointLimitTokens),
+    endpointLimitSource: str(budget?.endpointLimitSource) ?? "unknown",
+    effectiveRequestLimitTokens: num(budget?.effectiveRequestLimitTokens) ?? num(budget?.contextWindowTokens),
+    effectiveLimitSource: str(budget?.effectiveLimitSource) ?? str(budget?.contextWindowSource) ?? "unknown",
+    maxInputTokens: num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? num(trim?.maxInputTokens) ?? 0,
+    maximumInputTokens: num(budget?.maximumInputTokens) ?? num(budget?.maxInputTokens) ?? 0,
+    reservedTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? num(budget?.reservedTokens) ?? 0,
+    outputReserveTokens: num(budget?.outputReserveTokens) ?? num(budget?.reservedOutputTokens) ?? 0,
+    currentRequestTokens: num(budget?.currentRequestTokens) ?? num(trim?.inputTokensAfter) ?? num(count?.tokens),
     inputTokensBefore: num(trim?.inputTokensBefore) ?? num(count?.tokens),
     inputTokensAfter: num(trim?.inputTokensAfter) ?? num(trim?.finalTokens) ?? null,
     countingMethod: method,
@@ -100,6 +109,7 @@ import { worktreesRepository } from "./repositories/worktrees.js";
 import { WorktreeManager, WorktreeError } from "./workspace/worktrees.js";
 import { integrationsRepository } from "./repositories/integrations.js";
 import { contextSummariesRepository } from "./repositories/context-summaries.js";
+import { executionContinuityRepository } from "./repositories/execution-continuity.js";
 import { symbolIndexRepository } from "./repositories/symbols.js";
 import { IntegrationManager, IntegrationError } from "./workspace/integrations.js";
 import { SymbolIndex } from "./workspace/symbol-index.js";
@@ -111,7 +121,8 @@ import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-polic
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { listProviderStatuses } from "./provider/registry.js";
+import { createProvider, listProviderStatuses } from "./provider/registry.js";
+import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
@@ -122,6 +133,9 @@ import { testProviderConnectivity } from "./provider/connectivity.js";
 import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
+import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
+import { buildProviderProjection } from "./execution/provider-projection.js";
+import { resolveEffectiveContext } from "./routing/effective-context.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -230,6 +244,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
   const integrationsRepo = integrationsRepository(deps.db);
   const contextSummariesRepo = contextSummariesRepository(deps.db);
+  const executionContinuityRepo = executionContinuityRepository(deps.db);
   const symbolIndexRepo = symbolIndexRepository(deps.db);
   const symbolIndex = new SymbolIndex(symbolIndexRepo);
   const integrationManager = new IntegrationManager(
@@ -658,6 +673,74 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return convs.listMessages(conversationId);
   });
 
+  app.post("/api/conversations/:conversationId/compact", async (request) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+    const body = z.object({
+      projectId: z.string().min(1),
+      preset: z.string().optional(),
+      providerId: ProviderIdSchema.optional(),
+      model: z.string().min(1).max(200).optional(),
+    }).strict().parse(request.body ?? {});
+    if (conversation.projectId !== body.projectId) {
+      throw new ApiError(403, "Conversation belongs to a different project and cannot be compacted here.", "CONVERSATION_PROJECT_MISMATCH");
+    }
+    const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
+    const routed = routePreset(presetId, process.env, body.providerId ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) } : undefined);
+    if (!routed.ok) throw new ApiError(400, routed.reason, "PRESET_UNAVAILABLE");
+    const decision = body.model && !body.providerId ? { ...routed.decision, model: body.model, overridden: true } : routed.decision;
+    const preset = getPreset(presetId)!;
+    const outputReserveTokens = preset.outputBudgetTokens ?? 2048;
+    let route: ProviderRouteMetadata;
+    if (decision.providerId === "mock") {
+      route = { providerId: "mock", protocol: "mock", endpointKind: "injected", endpointHost: null, endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" };
+    } else {
+      route = createProvider(decision.providerId, process.env, decision.model).route ?? {
+        providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+        endpointLimitTokens: null, endpointLimitSource: "unknown",
+      };
+    }
+    const resolution = resolveEffectiveContext({
+      providerId: decision.providerId,
+      selectedModel: decision.model,
+      endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
+      outputReserveTokens,
+    });
+    const messages: ChatMessage[] = convs.listMessages(conversationId).map((message) => ({ role: message.role, content: message.content }));
+    if (messages.length < 2) throw new ApiError(409, "Not enough conversation history to compact", "CONTEXT_NOT_COMPACTABLE");
+    const original = countChatTokens(messages, { providerId: decision.providerId, model: decision.model });
+    const prepared = prepareContextForProvider(messages, {
+      providerId: decision.providerId, model: decision.model,
+      maxInputTokens: Math.max(1, original.tokens - 1), compact: true, recentRawGroups: 1,
+    });
+    if (!prepared.ok || !prepared.summary) throw new ApiError(409, "Conversation history could not be compacted safely", "CONTEXT_NOT_COMPACTABLE");
+    const admission = admitProviderRequest({
+      providerId: decision.providerId, model: decision.model, protocol: route.protocol,
+      messages: prepared.messages, tools: [], outputReserveTokens,
+    }, resolution);
+    if (!admission.ok) throw new ApiError(409, "Compacted context still exceeds the effective request limit", "CONTEXT_PREFLIGHT_REJECTED");
+    const summary = contextSummariesRepo.record({
+      id: crypto.randomUUID(), projectId: conversation.projectId, conversationId, taskId: null,
+      method: prepared.summary.method, content: prepared.summary.content,
+      sourceStartIndex: prepared.summary.sourceStartIndex, sourceEndIndex: prepared.summary.sourceEndIndex,
+      sourceMessageCount: prepared.summary.sourceMessageCount, createdAt: new Date().toISOString(),
+    });
+    return {
+      compacted: true,
+      summary: { id: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, createdAt: summary.createdAt },
+      routing: decision,
+      context: {
+        providerId: decision.providerId, model: decision.model,
+        modelCapacityTokens: resolution.advertisedModelCapacityTokens, modelCapacitySource: resolution.advertisedModelCapacitySource,
+        endpointLimitTokens: resolution.configuredEndpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
+        effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens, effectiveLimitSource: resolution.effectiveLimitSource,
+        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.maximumInputTokens,
+        currentRequestTokens: admission.measurement.inputTokens, countingMethod: admission.measurement.method, exact: admission.measurement.exact,
+      },
+    };
+  });
+
   app.post("/api/conversations/:conversationId/messages", async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
     const conversation = convs.getConversation(conversationId);
@@ -875,6 +958,114 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return { taskId, status: updated?.status ?? task.status, outcome: "cancelled" };
   });
 
+  app.post("/api/tasks/:taskId/compact", async (request) => {
+    const { taskId } = request.params as { taskId: string };
+    const body = z.object({
+      projectId: z.string().min(1),
+      preset: z.string().optional(),
+      providerId: ProviderIdSchema.optional(),
+      model: z.string().min(1).max(200).optional(),
+    }).strict().parse(request.body ?? {});
+    const task = tasks.getTaskById(taskId);
+    if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
+    if (task.projectId !== body.projectId) {
+      throw new ApiError(403, "Task belongs to a different project and cannot be compacted here.", "TASK_PROJECT_MISMATCH");
+    }
+    if (task.kind !== "agent_chat") throw new ApiError(409, "Only agent chat tasks can be compacted", "TASK_NOT_COMPACTABLE");
+    if (task.status !== "running" && task.status !== "interrupted") {
+      throw new ApiError(409, `Task is ${task.status} and cannot be compacted`, "TASK_NOT_COMPACTABLE");
+    }
+
+    const assistant = deps.db.prepare(`SELECT id,conversation_id AS conversationId
+      FROM conversation_messages WHERE task_id=? AND role='assistant'
+      ORDER BY created_at DESC,id DESC LIMIT 1`).get(taskId) as { id: string; conversationId: string } | undefined;
+    if (!assistant) throw new ApiError(409, "Task has no durable conversation state to compact", "CONTEXT_NOT_COMPACTABLE");
+    const conversation = convs.getConversation(assistant.conversationId);
+    if (!conversation || conversation.projectId !== task.projectId) {
+      throw new ApiError(409, "Task conversation ownership is inconsistent", "TASK_CONVERSATION_MISMATCH");
+    }
+
+    const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
+    const routed = routePreset(presetId, process.env, body.providerId ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) } : undefined);
+    if (!routed.ok) throw new ApiError(400, routed.reason, "PRESET_UNAVAILABLE");
+    const decision = body.model && !body.providerId ? { ...routed.decision, model: body.model, overridden: true } : routed.decision;
+    const preset = getPreset(presetId)!;
+    const outputReserveTokens = preset.outputBudgetTokens ?? 2048;
+    let route: ProviderRouteMetadata;
+    if (decision.providerId === "mock") {
+      route = { providerId: "mock", protocol: "mock", endpointKind: "injected", endpointHost: null, endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" };
+    } else {
+      route = createProvider(decision.providerId, process.env, decision.model).route ?? {
+        providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+        endpointLimitTokens: null, endpointLimitSource: "unknown",
+      };
+    }
+    const resolution = resolveEffectiveContext({
+      providerId: decision.providerId,
+      selectedModel: decision.model,
+      endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
+      outputReserveTokens,
+    });
+
+    const durableMessages = convs.listMessages(assistant.conversationId);
+    const assistantIndex = durableMessages.findIndex((message) => message.id === assistant.id);
+    if (assistantIndex < 0) throw new ApiError(409, "Task conversation state is incomplete", "CONTEXT_NOT_COMPACTABLE");
+    const prefixMessages: ChatMessage[] = durableMessages.slice(0, assistantIndex).map((message) => ({ role: message.role, content: message.content }));
+    const turns = executionContinuityRepo.listProviderTurns(taskId).map((turn) => ({
+      turnKey: turn.turnKey,
+      assistantText: turn.assistantText,
+      toolCalls: turn.toolCalls.flatMap((raw) => {
+        if (!raw || typeof raw !== "object") return [];
+        const call = raw as { id?: unknown; name?: unknown; arguments?: unknown };
+        return typeof call.id === "string" && typeof call.name === "string" && typeof call.arguments === "string"
+          ? [{ id: call.id, name: call.name, arguments: call.arguments }]
+          : [];
+      }),
+    }));
+    const toolResults = convs.listToolCallsForTask(taskId).flatMap((call) =>
+      typeof call.resultJson === "string" ? [{ id: call.id, toolName: call.toolName, result: call.resultJson }] : [],
+    );
+    const messages = buildProviderProjection({ prefixMessages, turns, toolResults });
+    if (messages.length < 2) throw new ApiError(409, "Not enough task history to compact", "CONTEXT_NOT_COMPACTABLE");
+    const original = countChatTokens(messages, { providerId: decision.providerId, model: decision.model });
+    const prepared = prepareContextForProvider(messages, {
+      providerId: decision.providerId, model: decision.model,
+      maxInputTokens: Math.max(1, original.tokens - 1), compact: true, recentRawGroups: 1,
+    });
+    if (!prepared.ok || !prepared.summary) throw new ApiError(409, "Task history could not be compacted safely", "CONTEXT_NOT_COMPACTABLE");
+    const admission = admitProviderRequest({
+      providerId: decision.providerId, model: decision.model, protocol: route.protocol,
+      messages: prepared.messages, tools: [], outputReserveTokens,
+    }, resolution);
+    if (!admission.ok) throw new ApiError(409, "Compacted context still exceeds the effective request limit", "CONTEXT_PREFLIGHT_REJECTED");
+    const createdAt = new Date().toISOString();
+    const summary = contextSummariesRepo.record({
+      id: crypto.randomUUID(), projectId: task.projectId, conversationId: assistant.conversationId, taskId,
+      method: prepared.summary.method, content: prepared.summary.content,
+      sourceStartIndex: prepared.summary.sourceStartIndex, sourceEndIndex: prepared.summary.sourceEndIndex,
+      sourceMessageCount: prepared.summary.sourceMessageCount, createdAt,
+    });
+    records.appendEvent({
+      id: crypto.randomUUID(), taskId, type: "context.compaction_completed",
+      payload: { summaryId: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, manual: true },
+      createdAt,
+    });
+    return {
+      compacted: true,
+      taskId,
+      summary: { id: summary.id, method: summary.method, sourceMessageCount: summary.sourceMessageCount, createdAt: summary.createdAt },
+      routing: decision,
+      context: {
+        providerId: decision.providerId, model: decision.model,
+        modelCapacityTokens: resolution.advertisedModelCapacityTokens, modelCapacitySource: resolution.advertisedModelCapacitySource,
+        endpointLimitTokens: resolution.configuredEndpointLimitTokens, endpointLimitSource: resolution.endpointLimitSource,
+        effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens, effectiveLimitSource: resolution.effectiveLimitSource,
+        outputReserveTokens: resolution.outputReserveTokens, maximumInputTokens: resolution.maximumInputTokens,
+        currentRequestTokens: admission.measurement.inputTokens, countingMethod: admission.measurement.method, exact: admission.measurement.exact,
+      },
+    };
+  });
+
   app.post("/api/tasks/:taskId/resume", async (request, reply) => {
     const { taskId } = request.params as { taskId: string };
     const body = z.object({ projectId: z.string().min(1) }).parse(request.body ?? {});
@@ -885,6 +1076,18 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     if (task.status !== "interrupted") throw new ApiError(409, "Only interrupted tasks can be resumed", "TASK_NOT_RESUMABLE");
     if (task.kind === "agent_chat") {
+      const events = records.listEvents(taskId);
+      const rejectedBudget = [...events].reverse().find((event) => event.type === "context.budget_calculated" && event.payload.admitted === false);
+      const compactedAfterRejection = rejectedBudget
+        ? events.some((event) => event.sequence > rejectedBudget.sequence && event.type === "context.compaction_completed")
+        : true;
+      if (!compactedAfterRejection) {
+        throw new ApiError(
+          409,
+          "The saved provider request still exceeds its verified route limit. Compact this task before continuing; no provider request was made.",
+          "CONTEXT_PREFLIGHT_REJECTED",
+        );
+      }
       records.resumeInterruptedTask(taskId, { id: crypto.randomUUID(), createdAt: new Date().toISOString(), payload: { reason: "user_continue" } });
     } else {
       records.retryTask(taskId);
@@ -1227,7 +1430,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
     const body = (request.body ?? {}) as { humanInterventions?: number; tasksCompleted?: number };
-    return runMission(() => missionService.finalize(missionId, body));
+    const finalized = runMission(() => missionService.finalize(missionId, body));
+    const continuity = executionContinuityRepository(deps.db);
+    const ownerTask = deps.db.prepare("SELECT id FROM tasks WHERE mission_id=? AND type='agent_chat' ORDER BY created_at DESC,id DESC LIMIT 1").get(missionId) as { id: string } | undefined;
+    if (ownerTask) {
+      const canonical = continuity.getCanonicalAnswer(ownerTask.id);
+      if (!canonical) throw new ApiError(409, "Mission completion is missing its canonical provider answer", "MISSION_CANONICAL_ANSWER_REQUIRED");
+      continuity.updateCanonicalAnswerEvidence(ownerTask.id, {
+        ...canonical.evidenceJson,
+        status: finalized.status,
+        criteria: finalized.criteria.map((criterion) => ({ id: criterion.id, state: criterion.state })),
+        reviewVerdict: finalized.finalReview?.verdict ?? null,
+        completedAt: finalized.completedAt,
+      });
+    }
+    return finalized;
   });
 
   app.post("/api/missions/:missionId/checkpoints", async (request, reply) => {
@@ -1849,11 +2066,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         apiKey: noControlChars("apiKey").max(8192).optional(),
         baseUrl: z.string().max(2048).optional(),
         model: noControlChars("model").max(256).optional(),
+        endpointContextLimit: z.union([z.number().int().positive(), z.literal("")]).optional(),
       })
       .strict()
       .parse((request.body ?? {}) as unknown);
-    if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined) {
-      throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, or model).", "EMPTY_CONFIGURE");
+    if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined && body.endpointContextLimit === undefined) {
+      throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
     }
     if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
       try {

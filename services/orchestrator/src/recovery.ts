@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { taskRepository } from "./repositories/tasks.js";
+import {
+  createExecutionLeaseOwnerId,
+  executionLeaseOwnerStatus,
+  executionContinuityRepository,
+} from "./repositories/execution-continuity.js";
 
 /**
  * Minimal structural view of the task runner that reconciliation needs. Kept
@@ -9,12 +14,12 @@ import { taskRepository } from "./repositories/tasks.js";
  * is trivial to fake in tests.
  */
 export interface ReconcilableRunner {
-  run(taskId: string, opts?: { recovered?: boolean }): void;
+  run(taskId: string, opts?: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: { segmentId: string; ownerId: string; generation: number } }): void;
   isActive(taskId: string): boolean;
 }
 
 export interface ReconcileSummary {
-  /** `running` tasks marked `interrupted` (abrupt death; need user decision). */
+  /** Unknown/legacy `running` tasks marked `interrupted`. */
   interrupted: number;
   /** `queued` tasks re-dispatched to the runner (side-effect-free, safe). */
   requeued: number;
@@ -25,25 +30,45 @@ export interface ReconcileSummary {
 const TERMINAL_STATUSES = new Set(["completed", "verified", "failed", "cancelled"]);
 
 /**
- * Mark every `running` task as `interrupted` exactly once. A task persisted as
- * `running` when the process died may have produced partial side effects, so it
- * is never auto-resumed — it is surfaced as `interrupted` (plus a
- * `task.recovery_required` event) for an explicit user resume/retry decision.
+ * Mark non-preserved `running` tasks as `interrupted` exactly once. The startup
+ * reconciler excludes lease-claimed checkpointed agent work; direct callers and
+ * legacy/unknown work retain the conservative manual-recovery behavior.
  *
  * Idempotent: a second call finds no `running` rows and is a no-op. Returns the
  * number of tasks interrupted.
  */
-export function recoverRunningTasks(db: Database.Database, records = taskRecordsRepository(db), timestamp = new Date().toISOString()): number {
-  const rows = db.prepare("SELECT id, type FROM tasks WHERE status='running' ORDER BY id ASC").all() as { id: string; type: string }[];
-  const taskIds = rows.map((row) => row.id);
+export function recoverRunningTasks(
+  db: Database.Database,
+  records = taskRecordsRepository(db),
+  timestamp = new Date().toISOString(),
+  options: { preserveTaskIds?: ReadonlySet<string> } = {},
+): number {
+  const continuity = executionContinuityRepository(db);
+  const rows = (db.prepare("SELECT id, type FROM tasks WHERE status='running' ORDER BY id ASC").all() as { id: string; type: string }[])
+    .filter((row) => !options.preserveTaskIds?.has(row.id));
+  const taskIds: string[] = [];
   for (const row of rows) db.transaction(() => {
     const taskId = row.id;
+    if (row.type === "agent_chat") {
+      const runningSegment = continuity.getRunningSegment(taskId);
+      if (runningSegment) {
+        if (!runningSegment.ownerId || executionLeaseOwnerStatus(runningSegment.ownerId) !== "dead") return;
+        if (!continuity.failAbandonedSegment({
+          segmentId: runningSegment.id,
+          expectedOwnerId: runningSegment.ownerId,
+          expectedGeneration: runningSegment.generation,
+          reason: "restart_interrupted",
+          now: timestamp,
+        })) return;
+      }
+    }
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: timestamp, payload: {} });
     if (row.type === "agent_chat") {
       if (!records.getAgentState(taskId)) records.transitionAgentState(taskId, { id: randomUUID(), state: "idle", details: {}, createdAt: timestamp });
       records.transitionAgentState(taskId, { id: randomUUID(), state: "interrupted", details: { reason: "restart" }, createdAt: timestamp });
     }
     records.appendEvent({ id: randomUUID(), taskId, type: "task.recovery_required", payload: {}, createdAt: timestamp });
+    taskIds.push(taskId);
   })();
 
   // Transition streaming/queued messages to interrupted
@@ -66,12 +91,14 @@ export function recoverRunningTasks(db: Database.Database, records = taskRecords
  * constructed and before serving traffic. It makes persisted task state truthful
  * and consistent, then re-dispatches the work that is safe to resume:
  *
- *  1. `running` -> `interrupted` (via {@link recoverRunningTasks}). Not resumed.
- *  2. `queued` tasks are re-dispatched to the runner. A task only leaves `queued`
+ *  1. Claim checkpointed agent segments with a durable lease and resume them
+ *     without changing task/message state or appending a task lifecycle event.
+ *  2. Unknown `running` work -> `interrupted` via {@link recoverRunningTasks}.
+ *  3. `queued` tasks are re-dispatched to the runner. A task only leaves `queued`
  *     once its executor has begun (the executor's first persisted action is the
  *     `queued -> running` transition), so a task still in `queued` has done **no**
  *     work and re-running it cannot duplicate execution.
- *  3. Parent/child consistency: a `queued` child whose parent is already in a
+ *  4. Parent/child consistency: a `queued` child whose parent is already in a
  *     terminal state (or missing) can never be synthesized by that parent, so it
  *     is cancelled (`queued -> cancelled`, reason `parent_terminal`/`parent_missing`)
  *     instead of being run as orphaned work. A `queued` child whose parent is
@@ -85,9 +112,45 @@ export function reconcileTasksOnStartup(
   { db, runner, records = taskRecordsRepository(db), now = () => new Date().toISOString() }:
     { db: Database.Database; runner: ReconcilableRunner; records?: ReturnType<typeof taskRecordsRepository>; now?: () => string }
 ): ReconcileSummary {
-  // Step 1 runs first so a parent that was `running` is now `interrupted`
-  // (an "active" state for the child rule below) before children are evaluated.
-  const interrupted = recoverRunningTasks(db, records, now());
+  const reconciliationAt = now();
+  const continuity = executionContinuityRepository(db);
+  const resumable = db.prepare(`
+    SELECT DISTINCT t.id
+    FROM tasks t
+    JOIN agent_execution_segments s ON s.task_id=t.id AND s.status='running'
+    JOIN agent_execution_checkpoints c ON c.task_id=t.id
+    WHERE t.status='running' AND t.type='agent_chat'
+      AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.status='pending')
+    ORDER BY t.created_at ASC,t.id ASC
+  `).all() as { id: string }[];
+  const preservedResumable = new Set(resumable.map((row) => row.id));
+  const claimed: Array<{ taskId: string; checkpointCursor: number; executionLease: { segmentId: string; ownerId: string; generation: number } }> = [];
+  const leaseExpiresAt = new Date(Date.parse(reconciliationAt) + 5 * 60_000).toISOString();
+  for (const row of resumable) {
+    if (runner.isActive(row.id)) continue;
+    const running = continuity.getRunningSegment(row.id);
+    if (!running) continue;
+    if (executionLeaseOwnerStatus(running.ownerId) !== "dead") continue;
+    const ownerId = createExecutionLeaseOwnerId();
+    const claim = continuity.claimResumableSegment({
+      taskId: row.id,
+      ownerId,
+      expectedOwnerId: running.ownerId,
+      expectedGeneration: running.generation,
+      takeoverReason: "owner_dead",
+      now: reconciliationAt,
+      leaseExpiresAt,
+    });
+    if (claim) claimed.push({
+      taskId: row.id,
+      checkpointCursor: claim.checkpointCursor,
+      executionLease: { segmentId: claim.segment.id, ownerId, generation: claim.segment.generation },
+    });
+  }
+
+  // Legacy/unknown running work still follows the conservative interruption
+  // path. Claimed or actively leased checkpointed work remains non-terminal.
+  const interrupted = recoverRunningTasks(db, records, reconciliationAt, { preserveTaskIds: preservedResumable });
 
   const tasks = taskRepository(db);
   const queued = db
@@ -96,6 +159,12 @@ export function reconcileTasksOnStartup(
 
   let requeued = 0;
   let cancelledOrphans = 0;
+
+  for (const row of claimed) {
+    runner.run(row.taskId, { recovered: true, resumeCheckpoint: true, checkpointCursor: row.checkpointCursor, executionLease: row.executionLease });
+    requeued++;
+  }
+
   for (const row of queued) {
     if (runner.isActive(row.id)) continue; // idempotency / belt-and-suspenders
 

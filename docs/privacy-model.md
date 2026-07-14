@@ -61,3 +61,16 @@ Each category requires an explicit scope and retention rule.
 - No external provider fallback without disclosure
 - No plugin or skill access beyond declared capabilities
 - Complete deletion for user-requested local data removal
+- Provider continuation fields needed for protocol correctness are locally
+  access-restricted with task state, excluded from public events, logs,
+  summaries, full-text search, exports, and API responses, and never presented
+  as model reasoning.
+
+## Mission continuity retention
+
+Structured checkpoints contain concise decisions and execution facts, never
+hidden chain-of-thought. Full raw conversation, tool, and event records remain
+authoritative and are not destroyed by provider compaction. The provider only
+receives a bounded projection selected for that request; screen clearing has no
+retention effect. Deleting a task cascades its execution segments, provider
+turns, checkpoints, private continuation rows, and canonical answer.

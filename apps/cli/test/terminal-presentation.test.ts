@@ -164,6 +164,23 @@ describe("task-event-adapter: extended mapping", () => {
     expect(events[0]!.type).toBe("context.usage");
   });
 
+  it("maps every effective-route context field for interactive /context", () => {
+    const mapped = mapTaskEvent({
+      type: "context.budget_calculated",
+      payload: {
+        modelCapacityTokens: 1_000_000, modelCapacitySource: "model-metadata",
+        endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata",
+        effectiveRequestLimitTokens: 131_072, effectiveLimitSource: "provider-metadata",
+        outputReserveTokens: 16_384, maximumInputTokens: 114_688, currentRequestTokens: 92_100,
+      },
+    } as any);
+    expect(mapped[0]).toMatchObject({ type: "context.usage", usage: {
+      modelCapacityTokens: 1_000_000, endpointLimitTokens: 131_072,
+      effectiveRequestLimitTokens: 131_072, outputReserveTokens: 16_384,
+      maximumInputTokens: 114_688, currentRequestTokens: 92_100,
+    }});
+  });
+
   it("maps context.trimmed to context.usage", () => {
     const events = mapTaskEvent({
       type: "context.trimmed",

@@ -2,8 +2,20 @@ import type Database from "better-sqlite3";
 import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
+import { ExecutionLeaseFenceError } from "./repositories/execution-continuity.js";
 
-export type TaskExecutor = (deps: { db: Database.Database; taskId: string; abortSignal?: AbortSignal }) => Promise<void>;
+export interface ExecutionLeaseClaim {
+  segmentId: string;
+  ownerId: string;
+  generation: number;
+}
+
+export type TaskExecutor = (deps: {
+  db: Database.Database;
+  taskId: string;
+  abortSignal?: AbortSignal;
+  recovery?: { checkpointCursor: number; executionLease: ExecutionLeaseClaim };
+}) => Promise<void>;
 
 export class TaskRunner {
   private activeTasks = new Set<string>();
@@ -21,7 +33,7 @@ export class TaskRunner {
         await executeInspectWorkspaceTask({ db, taskId: deps.taskId });
       } else if (task.kind === "agent_chat") {
         const { executeAgentChatTask } = await import("./execution/agent.js");
-        await executeAgentChatTask({ db, taskId: deps.taskId, ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}) });
+        await executeAgentChatTask({ db, taskId: deps.taskId, ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}), ...(deps.recovery ? { recovery: deps.recovery } : {}) });
       } else {
         throw new Error(`Unsupported task kind: ${task.kind}`);
       }
@@ -33,7 +45,7 @@ export class TaskRunner {
     return this.activeTasks.has(taskId);
   }
 
-  run(taskId: string, opts: { recovered?: boolean } = {}) {
+  run(taskId: string, opts: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: ExecutionLeaseClaim } = {}) {
     if (this.activeTasks.has(taskId)) {
       throw new Error("Duplicate execution rejected");
     }
@@ -41,16 +53,18 @@ export class TaskRunner {
     this.activeTasks.add(taskId);
 
     const records = taskRecordsRepository(this.db);
-    // A fresh dispatch records `task.created`; a restart re-dispatch records
-    // `task.recovery_requeued` so the audit trail never claims the task was
-    // created twice.
-    records.appendEvent({
-      id: crypto.randomUUID(),
-      taskId,
-      type: opts.recovered ? "task.recovery_requeued" : "task.created",
-      payload: opts.recovered ? { reason: "restart" } : {},
-      createdAt: new Date().toISOString()
-    });
+    // Fresh/queued dispatches record their lifecycle boundary. A durable
+    // checkpoint reclaim already has an authoritative cursor, so appending a
+    // recovery event here would move that cursor and replay lifecycle history.
+    if (!opts.resumeCheckpoint) {
+      records.appendEvent({
+        id: crypto.randomUUID(),
+        taskId,
+        type: opts.recovered ? "task.recovery_requeued" : "task.created",
+        payload: opts.recovered ? { reason: "restart" } : {},
+        createdAt: new Date().toISOString()
+      });
+    }
 
     const controller = new AbortController();
     this.abortControllers.set(taskId, controller);
@@ -58,10 +72,22 @@ export class TaskRunner {
     const promise = new Promise<void>((resolve) => {
       setTimeout(async () => {
         try {
-          await this.executor({ db: this.db, taskId, abortSignal: controller.signal });
+          await this.executor({
+            db: this.db,
+            taskId,
+            abortSignal: controller.signal,
+            ...(opts.resumeCheckpoint && opts.checkpointCursor !== undefined && opts.executionLease
+              ? { recovery: { checkpointCursor: opts.checkpointCursor, executionLease: opts.executionLease } }
+              : {}),
+          });
         } catch (e: any) {
           if (controller.signal.aborted || e.message === "AbortError" || e.message === "Task execution cancelled") {
             // Already handled by cancellation path or abort catcher
+            return;
+          }
+          if (e instanceof ExecutionLeaseFenceError || e?.code === "EXECUTION_LEASE_LOST") {
+            // A stale executor has no authority to fail or otherwise mutate the
+            // task after ownership changed. The fenced winner remains active.
             return;
           }
           console.error("Task execution failed", e);

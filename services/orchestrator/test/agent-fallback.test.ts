@@ -9,6 +9,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import type { AiProvider, ProviderChunk } from "../src/provider/base.js";
 
 /** A provider that always fails to start with a retryable transport error. */
@@ -59,7 +60,12 @@ describe("agent live provider fallback", () => {
     const events = taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: any }>;
     const fb = events.find((e) => e.type === "provider.fallback");
     expect(fb).toBeDefined();
-    expect(fb!.payload.servedBy).toBe("secondary");
+    expect(fb!.payload).toMatchObject({ servedBy: "secondary", freshSegment: true, segmentSequence: 2 });
+    expect(fb!.payload.routeFingerprint).toEqual(expect.any(String));
+    expect(executionContinuityRepository(db).listSegments("t1").map((segment) => ({ providerId: segment.providerId, status: segment.status }))).toEqual([
+      { providerId: "mock", status: "checkpointed" },
+      { providerId: "secondary", status: "completed" },
+    ]);
   });
 
   it("fails the task when the primary error is fatal (non-retryable) — no masking via fallback", async () => {

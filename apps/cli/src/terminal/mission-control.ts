@@ -39,10 +39,14 @@ export function formatTaskTree(root: TaskTreeNode): string[] {
 export function formatContextStatus(aggregate: TaskAggregate): string[] {
   const context = aggregate.context ?? null;
   if (!context) return ["Context: not recorded"];
+  const tokens = (value: number | null | undefined) => value === null || value === undefined || value <= 0 ? "unknown" : value.toLocaleString("en-US");
   return [
-    `Tokens: ${context.inputTokensAfter ?? "unknown"} / ${context.maxInputTokens} (${context.exact ? "exact" : "estimated"})`,
-    `Window: ${context.contextWindowTokens} tokens (${context.contextWindowSource})`,
-    `Reserved: ${context.reservedTokens} tokens`,
+    `Model capacity: ${tokens(context.modelCapacityTokens ?? context.contextWindowTokens)} (${context.modelCapacitySource ?? context.contextWindowSource ?? "unknown"})`,
+    `Endpoint limit: ${tokens(context.endpointLimitTokens)} (${context.endpointLimitSource ?? "unknown"})`,
+    `Effective request limit: ${tokens(context.effectiveRequestLimitTokens ?? context.contextWindowTokens)} (${context.effectiveLimitSource ?? context.contextWindowSource ?? "unknown"})`,
+    `Reserved output: ${tokens(context.outputReserveTokens ?? context.reservedTokens)}`,
+    `Maximum input: ${tokens(context.maximumInputTokens ?? context.maxInputTokens)}`,
+    `Current request: ${tokens(context.currentRequestTokens ?? context.inputTokensAfter)} (${context.exact ? "exact" : "estimated"})`,
     `Compacted: ${context.compactedGroups} groups`,
     `Removed: ${context.removedGroups} groups`,
     `Last operation: ${context.lastOperation ?? "none"}`,

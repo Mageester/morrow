@@ -21,6 +21,8 @@ export interface ProviderEnvMapping {
   baseUrlEnv?: string;
   /** Env var holding the persisted default model id. */
   modelEnv?: string;
+  /** Env var holding a verified limit for the configured endpoint route. */
+  contextLimitEnv?: string;
   /** True for local providers (Ollama) configured by URL with no key. */
   local?: boolean;
 }
@@ -31,13 +33,13 @@ export interface ProviderEnvMapping {
  * value the registry reads.
  */
 export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
-  openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", modelEnv: "OPENAI_MODEL" },
-  anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", modelEnv: "ANTHROPIC_MODEL" },
-  gemini: { apiKeyEnv: "GEMINI_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", modelEnv: "GEMINI_MODEL" },
-  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", modelEnv: "OPENROUTER_MODEL" },
-  deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL" },
-  "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL" },
-  ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", local: true },
+  openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", modelEnv: "OPENAI_MODEL", contextLimitEnv: "OPENAI_CONTEXT_LIMIT" },
+  anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", modelEnv: "ANTHROPIC_MODEL", contextLimitEnv: "ANTHROPIC_CONTEXT_LIMIT" },
+  gemini: { apiKeyEnv: "GEMINI_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", modelEnv: "GEMINI_MODEL", contextLimitEnv: "GEMINI_CONTEXT_LIMIT" },
+  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
+  deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
+  "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
+  ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },
 };
 
 export function providerEnvMapping(id: ProviderId): ProviderEnvMapping | null {
@@ -111,6 +113,7 @@ export interface ConfigureProviderInput {
   apiKey?: string | undefined;
   baseUrl?: string | undefined;
   model?: string | undefined;
+  endpointContextLimit?: number | "" | undefined;
 }
 
 export interface ConfigureProviderResult {
@@ -156,6 +159,13 @@ export function configureProvider(
   if (input.model !== undefined && mapping.modelEnv) {
     updates.push({ envName: mapping.modelEnv, value: input.model });
   }
+  if (input.endpointContextLimit !== undefined && mapping.contextLimitEnv) {
+    const limit = input.endpointContextLimit;
+    if (limit !== "" && (!Number.isSafeInteger(limit) || limit <= 0)) {
+      throw new Error(`${mapping.contextLimitEnv} must be a positive safe integer.`);
+    }
+    updates.push({ envName: mapping.contextLimitEnv, value: limit === "" ? "" : String(limit) });
+  }
 
   // Validate every value BEFORE mutating env/file so a single bad value can
   // never leave a half-applied configuration behind.
@@ -197,7 +207,7 @@ export function removeProviderCredentials(
 ): { removed: string[] } {
   const mapping = providerEnvMapping(id);
   if (!mapping) return { removed: [] };
-  const names = [mapping.apiKeyEnv, mapping.baseUrlEnv, mapping.modelEnv].filter(
+  const names = [mapping.apiKeyEnv, mapping.baseUrlEnv, mapping.modelEnv, mapping.contextLimitEnv].filter(
     (n): n is string => !!n
   );
   const existing = readSecretsFileSafe(secretsFile);
