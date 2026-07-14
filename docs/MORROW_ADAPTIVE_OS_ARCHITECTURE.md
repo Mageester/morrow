@@ -306,23 +306,43 @@ exporting `RequestUsage`, `CumulativeUsage`, `resolveRequestUsage()`, and
 this module answers "how much did a request actually use, and what is known
 about it."
 
+> **Corrected during this PR's second amendment:** an earlier version of
+> `resolveRequestUsage` treated a response's *total* input tokens as fully
+> "fresh" whenever the provider omitted a cached-token breakdown
+> (`freshInputTokens = totalInputTokens` in that case) and labeled that
+> `"exact"`. That is not truthful — Morrow only knows the total, not the
+> split, when a provider doesn't report caching. The data model below is the
+> corrected version: `totalInputTokens` is a distinct field, always known
+> whenever usage is reported at all; `freshInputTokens`/`cachedInputTokens`
+> are `null` together unless the provider reports a real cache breakdown for
+> that response — never inferred one from the other.
+
 `RequestUsage` (one provider response) distinguishes:
 
 | Field | Meaning |
 |---|---|
-| `freshInputTokens` | input tokens NOT served from a provider cache; `null` only when the provider reported no usage at all for this response |
-| `cachedInputTokens` | input tokens served from cache; `null` when the provider does not report a cached-token breakdown — **never coerced to 0**, since "0 cached" and "caching status unknown" are different facts |
-| `outputTokens`, `totalTokens` | output tokens, and the sum of all three components — `totalTokens` is `null` unless every component is known |
-| `tokenSource`, `tokenConfidence` | `"provider-reported"`/`"exact"` when a provider usage chunk arrived, `"unavailable"` otherwise |
-| `costUsd`, `costSource` | `"morrow-estimated"` from the existing static pricing table (`routing/models.ts`'s `calculateUsageCost`) when pricing is authoritative, else `"unavailable"`. Morrow does not ingest real provider billing data anywhere in this codebase (verified by grep before writing this module), so `"provider-metered"` exists in the type only for a future real billing integration and is never produced today. |
+| `totalInputTokens` | the provider-reported total prompt/input tokens (fresh + cached combined); known whenever the provider reports usage at all, independent of whether a cache breakdown was also given |
+| `freshInputTokens`, `cachedInputTokens` | the fresh/cached split of the total above; **both `null` together** unless the provider also reported an explicit cached-token count for this response — never inferred, never "total treated as all-fresh" |
+| `cacheBreakdownStatus` | `"reported"` or `"unavailable"` — whether *this response's* fresh/cached split is known at all |
+| `outputTokens`, `totalTokens` | output tokens, and `totalInputTokens + outputTokens` when both known — deliberately does **not** require the fresh/cached split to be known |
+| `tokenSource`, `tokenConfidence` | `"provider-reported"`/`"exact"` when a provider usage chunk arrived at all — this describes total/output truth and is intentionally separate from `cacheBreakdownStatus`; a response can have exact total/output counts while its cache split stays unavailable, and the two must never be conflated |
+| `costUsd`, `costSource` | `"morrow-estimated"` from the existing static pricing table (`routing/models.ts`'s `calculateUsageCost`, computed from `totalInputTokens` and — only when known — the cached subtotal) when pricing is authoritative, else `"unavailable"`. An estimate computed without a known cache breakdown is a valid total-input-based estimate; it is not cache-adjusted and must never be presented as one. Morrow does not ingest real provider billing data anywhere in this codebase (verified by grep before writing this module), so `"provider-metered"` exists in the type only for a future real billing integration and is never produced today. |
 | `routeFingerprint` | the request's route identity when the caller has one; `null` when there is no stable per-request identity to attach — never fabricated |
 
 `CumulativeUsage` (the running task/session total) folds exactly one
 `RequestUsage` in at a time via `accumulateUsage(previous, request)`:
-`cachedInputTokens` and `totalCostUsd` stay `null` until the *first* response
-that reports a known value, then become a running sum of only the known
-contributions — a later response that doesn't report caching or cost never
-resets or poisons an already-established total.
+
+- `totalInputTokens` and `outputTokens` are always complete, exact sums —
+  the fresh/cached split's incompleteness never affects them.
+- `knownFreshInputTokens`/`knownCachedInputTokens` sum only the responses
+  that reported a cache breakdown.
+- `cacheBreakdownComplete` is `true` only while **every** folded response
+  reported one; it becomes `false` permanently the moment a single response
+  doesn't. From that point, the known fresh/cached subtotals are a partial
+  lower bound, not the true cumulative split — a consumer must present them
+  as "at least N," never as an unqualified, exact-looking total.
+- `totalCostUsd` stays `null` until the first response with a known cost is
+  folded in, then sums only the known contributions.
 
 **Consumers wired to this shape:**
 
@@ -335,33 +355,37 @@ resets or poisons an already-established total.
   over the task's own persisted `provider.usage` history
   (`normalizePersistedUsagePayload`) rather than trusted from an in-memory
   value that would not survive a restart — each historical event is folded
-  in exactly once.
+  in exactly once, and the fresh/cached split is always re-derived from
+  `totalInputTokens`/`cachedInputTokens` rather than trusting any persisted
+  `freshInputTokens` value, so resuming an old task cannot resurrect the
+  corrected bug above via stale event data.
 - `apps/cli/src/terminal/output-report.ts`'s `usageFromEvents` (feeding
-  `buildTaskReport`, i.e. task reports and `/output full`) — sums
-  `freshInputTokens`-equivalent input and output across every distinct
-  persisted `provider.usage` event (already deduplicated by the existing
-  event-identity mechanism, `event-ledger.ts`'s `dedupeRawEvents`, so a
-  replayed/re-delivered event cannot double-count), and now represents
-  "no response ever reported caching" as absent rather than `0`.
+  `buildTaskReport`, i.e. task reports and `/output full`) — sums total
+  input/output across every distinct persisted `provider.usage` event
+  (already deduplicated by the existing event-identity mechanism,
+  `event-ledger.ts`'s `dedupeRawEvents`, so a replayed/re-delivered event
+  cannot double-count), tracks whether every response reported a cache
+  breakdown, and renders an incomplete cached subtotal as
+  `"cache breakdown incomplete (known cached: at least N)"` rather than an
+  unqualified `"N cached"`.
 - `apps/cli/src/terminal/state.ts`'s `usage.reported` reducer (the terminal's
-  live/session usage state) — the same null-until-known, sum-of-known-values
-  rule now applies to its cumulative `cachedInputTokens`, matching
+  live/session usage state) — carries the same `cacheBreakdownComplete`
+  flag through `state.usage`/`state.activeUsage`, matching
   `accumulateUsage`'s semantics exactly even though the CLI does not import
   the orchestrator module directly (it reads the same wire event field
   names over the existing HTTP/event-stream boundary, the same pattern every
   other terminal event type already uses).
 - `apps/cli/src/terminal/view.ts` — the two status-line/`/status` renderers
-  that display cached-token counts now guard on `!== null`, so a task whose
-  provider never reported caching shows no cached figure at all, rather than
-  a fabricated `0 cached`.
+  append a `+` to a known-but-incomplete cached figure (e.g. `"40+ cached"`)
+  and guard on `!== null` so a task whose provider never reported caching at
+  all shows no cached figure, rather than a fabricated `0 cached`.
 
 **Legacy compatibility, precisely scoped:** `agent.ts` still emits the
 pre-existing flat `inputTokens`/`outputTokens`/`cachedInputTokens`/
 `estimatedCostUsd` fields alongside the new canonical ones in every
-`provider.usage` event, because existing CLI consumers' wire contract for
-"total input including cache" (`inputTokens`) predates and is distinct from
-the new `freshInputTokens` (cache-excluded) field — collapsing them would
-have silently changed what "100 in" means today. `normalizePersistedUsagePayload`
+`provider.usage` event (`inputTokens` is `totalInputTokens` under a legacy
+name, matching every existing consumer's "X in" display, which predates and
+is distinct from the fresh/cached split). `normalizePersistedUsagePayload`
 additionally accepts events persisted *before* this change (which have no
 canonical fields at all) so resuming an older task does not lose its prior
 accounting. Every event emitted by the current code carries the complete
@@ -408,23 +432,36 @@ consumes both of these; it is **not** built by this PR (see the roadmap).
    `?? 0`, so a provider that never reports caching would eventually display
    a definite "0 cached" rather than "unknown"). §4b's `usage-snapshot.ts`
    and the corresponding CLI fixes close this.
-4. **(Open, scoped to Roadmap M1)** The CLI's `terminal/state.ts` reads a
+4. **(Fixed by this PR's second amendment)** The `usage-snapshot.ts` module
+   introduced by fix #3 above itself had a subtler version of the same class
+   of bug: when a provider omitted the cached-token breakdown,
+   `resolveRequestUsage` treated the *entire* total as "fresh" and labeled it
+   `"exact"` — a fabricated split, not a fabricated zero, but dishonest in
+   the same way. `RequestUsage` now carries a distinct `totalInputTokens`
+   (always known when usage is reported) separate from
+   `freshInputTokens`/`cachedInputTokens` (both `null` together unless a real
+   cache breakdown was reported), and `CumulativeUsage` carries an explicit
+   `cacheBreakdownComplete` flag so a partial cached subtotal is never
+   presented as the exact cumulative split. See the corrected §4b and
+   `test/usage-snapshot.test.ts`/`test/agent-alpha.test.ts`'s explicit
+   complete-vs-incomplete-breakdown assertions.
+6. **(Open, scoped to Roadmap M1)** The CLI's `terminal/state.ts` reads a
    defensive union of old and new context-event field names rather than the
    canonical shape directly; harmless today, but should be simplified once
    the picker work (M1) touches that file anyway.
-5. **(Open, pre-existing, not part of this PR)** `docs/MORROW_STATUS.md` /
+7. **(Open, pre-existing, not part of this PR)** `docs/MORROW_STATUS.md` /
    `docs/CONTINUATION.md` are noted in `docs/CURRENT_STATE.md` as carrying
    stale test counts and a stale resume path; not re-verified in this
    session beyond confirming they are dated documents, not live sources.
-6. **(Open, environmental)** `test/mission-review-race.test.ts`,
+8. **(Open, environmental)** `test/mission-review-race.test.ts`,
    `test/database-migration-29.test.ts`, and `test/mission-kernel-contract.test.ts`
    fail on this Windows machine with `EPERM` on a temp-SQLite-file `rmSync`
    in `afterEach` — confirmed present on unmodified `main` (commit `0e6ae31`,
    identical to this branch's base commit) via `git stash`, re-confirmed
-   again during this amendment, so it is a pre-existing local environment
-   issue (likely a lingering file handle on Windows), not a regression from
-   this PR, and not something this PR's scope covers fixing.
-7. **(Flagged, not a code contradiction)** The adversarial/jailbreak skill
+   again during both amendments to this PR, so it is a pre-existing local
+   environment issue (likely a lingering file handle on Windows), not a
+   regression from this PR, and not something this PR's scope covers fixing.
+9. **(Flagged, not a code contradiction)** The adversarial/jailbreak skill
    set described in §2.4 sits in the same `skills/` directory as every
    legitimate skill, with no structural boundary preventing a future
    "evolve all skills" feature from including it by default. This

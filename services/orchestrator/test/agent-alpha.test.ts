@@ -389,34 +389,44 @@ describe("Agent Alpha", () => {
 
       const first = usageEvents[0]!.payload as Record<string, unknown>;
       // Current-request accounting: fresh is separate from cached, and
-      // separate from output.
+      // separate from output, because this response DID report a breakdown.
+      expect(first.totalInputTokens).toBe(100);
       expect(first.freshInputTokens).toBe(70); // 100 - 30 cached
       expect(first.cachedInputTokens).toBe(30);
       expect(first.outputTokens).toBe(20);
       expect(first.inputTokens).toBe(100); // legacy total-input display field
+      expect(first.cacheBreakdownStatus).toBe("reported");
       expect(first.tokenSource).toBe("provider-reported");
       expect(first.tokenConfidence).toBe("exact");
-      // Cumulative after exactly one response.
+      // Cumulative after exactly one, fully-reported response.
       expect(first.cumulativeResponseCount).toBe(1);
-      expect(first.cumulativeFreshInputTokens).toBe(70);
-      expect(first.cumulativeCachedInputTokens).toBe(30);
+      expect(first.cumulativeTotalInputTokens).toBe(100);
+      expect(first.cumulativeKnownFreshInputTokens).toBe(70);
+      expect(first.cumulativeKnownCachedInputTokens).toBe(30);
       expect(first.cumulativeOutputTokens).toBe(20);
+      expect(first.cumulativeCacheBreakdownComplete).toBe(true);
 
       const second = usageEvents[1]!.payload as Record<string, unknown>;
-      // This response's provider never reported a cached breakdown at all —
-      // it must be absent (unavailable), never coerced to 0.
+      // This response's provider never reported a cached breakdown at all.
+      // The total input is still known, but fresh/cached must BOTH be
+      // absent — never inferred as "150 fresh, 0 cached".
+      expect(second.totalInputTokens).toBe(150);
+      expect(second.inputTokens).toBe(150); // legacy total-input display field
+      expect(second.freshInputTokens).toBeUndefined();
       expect(second.cachedInputTokens).toBeUndefined();
-      expect(second.cachedInputTokensKnown).toBe(false);
-      expect(second.freshInputTokens).toBe(150);
+      expect(second.cacheBreakdownStatus).toBe("unavailable");
       expect(second.outputTokens).toBe(40);
-      // Cumulative total after the second response is separate from this
-      // single request's own size, and increased exactly once for it. The
-      // previously-known cached total is preserved, not reset to 0/unknown
-      // just because this response didn't report one.
+      // Cumulative total input is a complete, exact sum regardless of the
+      // breakdown gap. But the moment one response lacks a cache breakdown,
+      // the cumulative split can no longer be presented as exact/complete —
+      // the known fresh/cached subtotals freeze at what the first response
+      // contributed, they do not grow to a false "220/30" split.
       expect(second.cumulativeResponseCount).toBe(2);
-      expect(second.cumulativeFreshInputTokens).toBe(220); // 70 + 150
-      expect(second.cumulativeCachedInputTokens).toBe(30); // carried forward
+      expect(second.cumulativeTotalInputTokens).toBe(250); // 100 + 150
       expect(second.cumulativeOutputTokens).toBe(60); // 20 + 40
+      expect(second.cumulativeCacheBreakdownComplete).toBe(false);
+      expect(second.cumulativeKnownFreshInputTokens).toBe(70); // frozen from response 1 only
+      expect(second.cumulativeKnownCachedInputTokens).toBe(30); // frozen from response 1 only
     });
 
     it("projects each assistant turn once instead of recursively copying prior narration", async () => {

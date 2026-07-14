@@ -84,20 +84,38 @@ describe("durable terminal output reports", () => {
     expect(report).not.toContain("cached");
   });
 
-  it("sums fresh input, cached input, and output across every distinct provider.usage response", () => {
+  it("sums total input and output across every distinct provider.usage response, and never presents a partial cached subtotal as the exact total", () => {
     const report = buildTaskReport(aggregate({
       events: [
         { id: "e1", taskId: "task-1", sequence: 1, type: "provider.usage", createdAt: "2026-07-08T10:00:10.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 25, cachedInputTokens: 40 } } as any,
+        // This second response never reported a cache breakdown at all.
         { id: "e2", taskId: "task-1", sequence: 2, type: "provider.usage", createdAt: "2026-07-08T10:00:15.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 60, outputTokens: 10 } } as any,
       ],
     }), { kind: "full", legacyFinalAnswerFallback: "Done." });
-    // 100 + 60 in, 25 + 10 out — the report's cumulative total is the SUM
-    // across both distinct responses, not either response's own size.
+    // 100 + 60 in, 25 + 10 out — total input/output is always a complete,
+    // exact sum across both distinct responses, regardless of the cache
+    // breakdown gap.
     expect(report).toContain("160 in / 35 out");
-    // Cached is known from the first response and must still be reported
-    // (only 40, from the response that actually reported it) even though
-    // the second response's payload never mentioned caching at all.
-    expect(report).toContain("40 cached");
+    // The second response's missing breakdown means the cumulative cached
+    // total is no longer complete — the report must say so explicitly and
+    // present the known 40 as a lower bound, never as an unqualified,
+    // exact-looking "40 cached".
+    expect(report).toContain("cache breakdown incomplete");
+    expect(report).toContain("at least 40");
+    expect(report).not.toMatch(/\d+ cached(?!\s*\))/); // no bare "N cached" phrasing
+  });
+
+  it("shows an exact cached total when every response in the task reported a breakdown", () => {
+    const report = buildTaskReport(aggregate({
+      events: [
+        { id: "e1", taskId: "task-1", sequence: 1, type: "provider.usage", createdAt: "2026-07-08T10:00:10.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 25, cachedInputTokens: 40 } } as any,
+        { id: "e2", taskId: "task-1", sequence: 2, type: "provider.usage", createdAt: "2026-07-08T10:00:15.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 60, outputTokens: 10, cachedInputTokens: 15 } } as any,
+      ],
+    }), { kind: "full", legacyFinalAnswerFallback: "Done." });
+    expect(report).toContain("160 in / 35 out");
+    expect(report).toContain("55 cached"); // 40 + 15, exact — every response reported one
+    expect(report).not.toContain("incomplete");
+    expect(report).not.toContain("at least");
   });
 
   it("does not double-count usage when the same event is replayed/duplicated in the raw event list", () => {

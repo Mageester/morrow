@@ -77,19 +77,26 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; v
 /**
  * Normalize a persisted `provider.usage` event payload into a RequestUsage
  * for folding into the cumulative seed on resume. Accepts both the current
- * canonical shape and the pre-canonical legacy shape (inputTokens included
- * cached; no explicit tokenSource/costSource) so an older task's history is
- * re-derived honestly rather than silently dropped. Returns null when the
- * payload cannot be interpreted as a real usage report at all.
+ * canonical shape and every pre-canonical legacy shape (inputTokens as the
+ * total prompt count; no explicit cacheBreakdownStatus/tokenSource/costSource)
+ * so an older task's history is re-derived honestly rather than silently
+ * dropped. Deliberately re-derives freshInputTokens from
+ * totalInputTokens/cachedInputTokens here rather than trusting any persisted
+ * `freshInputTokens` value, since an earlier version of this module computed
+ * that field incorrectly when the cache breakdown was unknown — resuming an
+ * old task must not resurrect that bug via stale event data. Returns null
+ * when the payload cannot be interpreted as a real usage report at all.
  */
 function normalizePersistedUsagePayload(payload: Record<string, unknown>): RequestUsage | null {
   const outputTokens = typeof payload.outputTokens === "number" ? payload.outputTokens : null;
+  const totalInputTokens = typeof payload.totalInputTokens === "number"
+    ? payload.totalInputTokens
+    : typeof payload.inputTokens === "number"
+      ? payload.inputTokens
+      : null;
+  if (outputTokens === null || totalInputTokens === null) return null;
   const cachedInputTokens = typeof payload.cachedInputTokens === "number" ? payload.cachedInputTokens : null;
-  const canonicalFresh = typeof payload.freshInputTokens === "number" ? payload.freshInputTokens : null;
-  const legacyPrompt = typeof payload.inputTokens === "number" ? payload.inputTokens : null;
-  const freshInputTokens = canonicalFresh
-    ?? (legacyPrompt !== null ? Math.max(0, legacyPrompt - (cachedInputTokens ?? 0)) : null);
-  if (outputTokens === null || freshInputTokens === null) return null;
+  const freshInputTokens = cachedInputTokens !== null ? Math.max(0, totalInputTokens - cachedInputTokens) : null;
   const costUsd = typeof payload.costUsd === "number"
     ? payload.costUsd
     : typeof payload.estimatedCostUsd === "number"
@@ -99,10 +106,12 @@ function normalizePersistedUsagePayload(payload: Record<string, unknown>): Reque
     providerId: typeof payload.provider === "string" ? payload.provider : "unknown",
     modelId: typeof payload.model === "string" ? payload.model : "unknown",
     routeFingerprint: null,
+    totalInputTokens,
     freshInputTokens,
     cachedInputTokens,
     outputTokens,
-    totalTokens: freshInputTokens + (cachedInputTokens ?? 0) + outputTokens,
+    totalTokens: totalInputTokens + outputTokens,
+    cacheBreakdownStatus: cachedInputTokens !== null ? "reported" : "unavailable",
     tokenSource: "provider-reported",
     tokenConfidence: "exact",
     costUsd,
@@ -2212,19 +2221,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           event("provider.usage", {
             provider: opened.servedBy,
             model: servedModel,
-            // Legacy/display fields: inputTokens is the TOTAL prompt token
+            // Legacy/display field: inputTokens is the TOTAL prompt token
             // count (fresh + cached), matching every existing consumer's
-            // "X in" display and totalTokens computation — never confuse
-            // this with freshInputTokens below.
-            inputTokens: chunk.usage.promptTokens,
-            outputTokens: chunk.usage.completionTokens,
-            totalTokens: chunk.usage.promptTokens + chunk.usage.completionTokens,
+            // "X in" display — never confuse this with freshInputTokens
+            // below, which is null whenever the cache breakdown is unknown.
+            inputTokens: requestUsage.totalInputTokens,
+            outputTokens: requestUsage.outputTokens,
+            totalTokens: requestUsage.totalTokens,
             ...(requestUsage.cachedInputTokens !== null ? { cachedInputTokens: requestUsage.cachedInputTokens } : {}),
             ...(requestUsage.costUsd !== null ? { estimatedCostUsd: requestUsage.costUsd } : {}),
-            // Canonical fields (routing/usage-snapshot.ts): fresh input is
-            // distinct from cached input; cost carries an explicit source.
-            freshInputTokens: requestUsage.freshInputTokens,
-            cachedInputTokensKnown: requestUsage.cachedInputTokens !== null,
+            // Canonical fields (routing/usage-snapshot.ts): total input is
+            // always distinct from the (possibly unknown) fresh/cached
+            // split; cacheBreakdownStatus says explicitly whether that split
+            // is known for THIS response — freshInputTokens/cachedInputTokens
+            // must never be read as known unless it says "reported".
+            totalInputTokens: requestUsage.totalInputTokens,
+            ...(requestUsage.freshInputTokens !== null ? { freshInputTokens: requestUsage.freshInputTokens } : {}),
+            cacheBreakdownStatus: requestUsage.cacheBreakdownStatus,
             tokenSource: requestUsage.tokenSource,
             tokenConfidence: requestUsage.tokenConfidence,
             costUsd: requestUsage.costUsd,
@@ -2232,11 +2245,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             routeFingerprint: requestUsage.routeFingerprint,
             // Cumulative task/session totals as of this response — folded in
             // exactly once per response, never re-derived by summing context
-            // snapshots.
+            // snapshots. cumulativeCacheBreakdownComplete is false as soon as
+            // any one folded response lacked a cache breakdown; the known
+            // fresh/cached subtotals are then partial, not the true total.
             cumulativeResponseCount: cumulativeUsage.responseCount,
-            cumulativeFreshInputTokens: cumulativeUsage.freshInputTokens,
-            cumulativeCachedInputTokens: cumulativeUsage.cachedInputTokens,
+            cumulativeTotalInputTokens: cumulativeUsage.totalInputTokens,
             cumulativeOutputTokens: cumulativeUsage.outputTokens,
+            cumulativeKnownFreshInputTokens: cumulativeUsage.knownFreshInputTokens,
+            cumulativeKnownCachedInputTokens: cumulativeUsage.knownCachedInputTokens,
+            cumulativeCacheBreakdownComplete: cumulativeUsage.cacheBreakdownComplete,
             cumulativeCostUsd: cumulativeUsage.totalCostUsd,
           });
         }

@@ -504,12 +504,18 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           ? previous.providerChanges
           : [...previous.providerChanges, providerKey]
         : [providerKey];
+      // inputTokens is the TOTAL input (fresh + cached combined) as reported
+      // by the provider — always a complete, exact sum regardless of
+      // whether any individual response's cache breakdown is known.
       const inputTokens = (previous?.inputTokens ?? 0) + event.inputTokens;
       const outputTokens = (previous?.outputTokens ?? 0) + event.outputTokens;
-      // Null until a response reports a cached-token count, then a running
-      // sum of only the known contributions — never coerced to 0 for a
-      // response that simply didn't report caching, which would otherwise
-      // read as "definitely no caching happened."
+      // Known cached-token subtotal: sums only the responses that reported
+      // one. This is the exact cumulative cached total ONLY while
+      // cacheBreakdownComplete stays true; the moment one response doesn't
+      // report a breakdown, it becomes a partial lower bound and must never
+      // be presented as the whole (never coerced to 0 for "didn't report,"
+      // and never silently upgraded back to "complete" once broken).
+      const cacheBreakdownComplete = (previous?.cacheBreakdownComplete ?? true) && event.cachedInputTokens !== undefined;
       const cachedInputTokens =
         event.cachedInputTokens === undefined
           ? (previous?.cachedInputTokens ?? null)
@@ -527,6 +533,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           outputTokens,
           totalTokens: inputTokens + outputTokens,
           cachedInputTokens,
+          cacheBreakdownComplete,
           estimatedCostUsd,
           calls: (previous?.calls ?? 0) + 1,
           providerChanges,
@@ -538,6 +545,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           outputTokens: event.outputTokens,
           totalTokens: event.inputTokens + event.outputTokens,
           cachedInputTokens: event.cachedInputTokens ?? null,
+          cacheBreakdownComplete: event.cachedInputTokens !== undefined,
           estimatedCostUsd: event.estimatedCostUsd ?? null,
           calls: 1,
           providerChanges: [providerKey],
