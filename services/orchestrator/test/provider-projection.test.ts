@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExecutionCheckpointSnapshot } from "../src/repositories/execution-continuity.js";
 import { projectProviderRequest } from "../src/execution/provider-projection.js";
 import * as providerProjectionModule from "../src/execution/provider-projection.js";
-import { resolveEffectiveContext } from "../src/routing/effective-context.js";
+import { resolveModelBudget } from "../src/routing/model-budget.js";
 
 const snapshot: ExecutionCheckpointSnapshot = {
   version: 1,
@@ -27,7 +27,7 @@ const snapshot: ExecutionCheckpointSnapshot = {
   evidenceRequired: ["tests pass"],
 };
 
-const resolution = resolveEffectiveContext({
+const resolution = resolveModelBudget({
   providerId: "deepseek",
   selectedModel: "deepseek-v4-flash",
   endpoint: {
@@ -37,7 +37,7 @@ const resolution = resolveEffectiveContext({
     limitTokens: 131_072,
     limitSource: "provider-metadata",
   },
-  outputReserveTokens: 16_384,
+  outputBudgetTokens: 16_384,
 });
 
 describe("durable provider projection", () => {

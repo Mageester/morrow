@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ChatMessage } from "../provider/base.js";
-import type { EffectiveContextResolution } from "../routing/effective-context.js";
+import type { ModelBudget } from "../routing/model-budget.js";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import {
   admitProviderRequest,
@@ -143,14 +143,14 @@ function hashEnvelope(envelope: ProviderRequestEnvelope): string {
 export function projectProviderRequest(input: {
   checkpoint: ExecutionCheckpointSnapshot;
   envelope: ProviderRequestEnvelope;
-  resolution: EffectiveContextResolution;
+  resolution: ModelBudget;
   thresholdRatio?: number;
   recentRawGroups?: number;
   forceCompaction?: boolean;
 }): ProviderProjectionResult {
   const thresholdRatio = input.thresholdRatio ?? 0.8;
   if (!(thresholdRatio > 0 && thresholdRatio <= 1)) throw new Error("Context compaction threshold must be in (0, 1]");
-  const thresholdTokens = Math.floor(input.resolution.maximumInputTokens * thresholdRatio);
+  const thresholdTokens = Math.floor(input.resolution.usableInputTokens * thresholdRatio);
   const originalMeasurement = measureProviderRequest(input.envelope);
   const shouldCompact = input.forceCompaction === true || originalMeasurement.inputTokens >= thresholdTokens;
 

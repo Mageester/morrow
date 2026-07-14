@@ -4,6 +4,22 @@ Ordering optimizes for: high user value, architectural cleanliness, full
 testability, and unblocking later work. Each item is a coherent, committable
 slice. `[x]` = VERIFIED (backend + tests + matrix updated). `[~]` = in progress.
 
+**Adaptive-OS architecture track:** the verified current-state map, seven-layer
+reconciliation, and canonical lifecycle now live in
+[`docs/MORROW_ADAPTIVE_OS_ARCHITECTURE.md`](MORROW_ADAPTIVE_OS_ARCHITECTURE.md);
+the scored gap analysis and its (max five) milestones live in
+[`docs/MORROW_ADAPTIVE_OS_ROADMAP.md`](MORROW_ADAPTIVE_OS_ROADMAP.md). That
+roadmap's M0 (canonical model-capability + usage source of truth) is done as
+of this entry — `routing/model-budget.ts` — and supersedes any prior backlog
+item implying routing/context-budget metadata needed separate fixes; the
+"Correct provider capability registry" and "Automatic context preflight"
+items under **Beta.30 P0/P1** below should be read against that document's
+§4 and §6 rather than as a still-open, independent gap. The next adaptive-OS
+milestone is M1 (interactive model picker on the canonical truth) — see the
+roadmap for its gate. Terminal/mission-reliability sequencing (Terminal Event
+Integrity, Control Contract, Mission Guardian, durable mission execution)
+remains owned by `docs/BETA30_PRODUCT_GOAL.md` §12, unchanged by this note.
+
 ## Beta.30 (proposed — from beta.29 acceptance findings)
 
 Not yet scoped or started (`[ ]` throughout). Sourced from the structured

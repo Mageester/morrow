@@ -38,9 +38,10 @@ import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
-import { measureProviderRequest, prepareContextForProvider, resolveContextBudget } from "./context-budget.js";
+import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
-import { providerRouteFingerprint, resolveEffectiveContext } from "../routing/effective-context.js";
+import { providerRouteFingerprint } from "../routing/effective-context.js";
+import { resolveModelBudget } from "../routing/model-budget.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -625,7 +626,7 @@ export async function executeAgentChatTask({
     endpointLimitTokens: null,
     endpointLimitSource: "unknown" as const,
   };
-  const effectiveContext = resolveEffectiveContext({
+  const modelBudget = resolveModelBudget({
     providerId: providerType,
     selectedModel: contextModel,
     endpoint: {
@@ -635,7 +636,9 @@ export async function executeAgentChatTask({
       limitTokens: primaryRoute.endpointLimitTokens,
       limitSource: primaryRoute.endpointLimitSource,
     },
-    outputReserveTokens,
+    presetContextBudgetBytes: contextBytesLimit,
+    outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
   });
   const primaryRouteFingerprint = providerRouteFingerprint({
     providerId: providerType,
@@ -644,14 +647,6 @@ export async function executeAgentChatTask({
     endpointKind: primaryRoute.endpointKind,
     endpointHost: primaryRoute.endpointHost,
     endpointIdentityHash: primaryRoute.endpointIdentityHash,
-  });
-  const contextBudget = resolveContextBudget({
-    providerId: providerType,
-    model: contextModel,
-    presetContextBudgetBytes: contextBytesLimit,
-    outputBudgetTokens: preset.outputBudgetTokens,
-    userContextWindowTokens: effectiveContext.effectiveRequestLimitTokens,
-    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
   });
 
   // Stream candidates for live fallback: the primary first, then any injected
@@ -1827,28 +1822,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // deterministic history compaction. The route-aware complete-envelope
         // gate below remains authoritative for the actual provider request,
         // including tools, continuation fields, overhead, and output reserve.
-        maxInputTokens: contextBudget.maxInputTokens,
+        maxInputTokens: modelBudget.compactionTargetTokens,
         compact: true,
         recentRawGroups: 1,
       });
       event("context.budget_calculated", {
         provider: providerType,
         model: contextModel,
-        contextWindowTokens: contextBudget.contextWindowTokens,
-        contextWindowSource: contextBudget.contextWindowSource,
-        exactModelLimit: contextBudget.exactModelLimit,
-        reservedOutputTokens: contextBudget.outputBudgetTokens,
-        reservedTokens: contextBudget.reservedTokens,
-        maxInputTokens: contextBudget.maxInputTokens,
-        modelCapacityTokens: effectiveContext.advertisedModelCapacityTokens,
-        modelCapacitySource: effectiveContext.advertisedModelCapacitySource,
-        endpointLimitTokens: effectiveContext.configuredEndpointLimitTokens,
-        endpointLimitSource: effectiveContext.endpointLimitSource,
-        effectiveRequestLimitTokens: effectiveContext.effectiveRequestLimitTokens,
-        effectiveLimitSource: effectiveContext.effectiveLimitSource,
-        maximumInputTokens: effectiveContext.maximumInputTokens,
-        endpointHost: effectiveContext.endpointHost,
-        endpointKind: effectiveContext.endpointKind,
+        canonicalModel: modelBudget.canonicalModelId,
+        contextWindowTokens: modelBudget.contextWindowTokens,
+        contextWindowSource: modelBudget.contextWindowSource,
+        contextWindowConfidence: modelBudget.contextWindowConfidence,
+        outputReserveTokens: modelBudget.outputReserveTokens,
+        safetyMarginTokens: modelBudget.safetyMarginTokens,
+        toolReserveTokens: modelBudget.toolReserveTokens,
+        totalReserveTokens: modelBudget.totalReserveTokens,
+        usableInputTokens: modelBudget.usableInputTokens,
+        compactionTargetTokens: modelBudget.compactionTargetTokens,
+        modelCapacityTokens: modelBudget.contextWindowTokens,
+        modelCapacitySource: modelBudget.contextWindowSource,
+        endpointLimitTokens: modelBudget.endpointLimitTokens,
+        endpointLimitSource: modelBudget.endpointLimitSource,
+        effectiveRequestLimitTokens: modelBudget.contextWindowTokens,
+        effectiveLimitSource: modelBudget.contextWindowSource,
+        maximumInputTokens: modelBudget.usableInputTokens,
+        maxInputTokens: modelBudget.compactionTargetTokens,
+        endpointHost: modelBudget.endpointHost,
+        endpointKind: modelBudget.endpointKind,
       });
       for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
       if (!preparedContext.ok) {
@@ -1890,7 +1890,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (preparedContext.removedGroups > 0 || preparedContext.compactedGroups > 0) {
         event("context.trimmed", {
           finalTokens: preparedContext.finalTokens,
-          maxInputTokens: contextBudget.maxInputTokens,
+          maxInputTokens: modelBudget.compactionTargetTokens,
           trimmedMessages: preparedContext.compactedGroups + preparedContext.removedGroups,
           compactedGroups: preparedContext.compactedGroups,
           removedGroups: preparedContext.removedGroups,
@@ -1935,7 +1935,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           endpointLimitTokens: null,
           endpointLimitSource: "unknown" as const,
         };
-        const resolution = resolveEffectiveContext({
+        // No presetContextBudgetBytes here: this resolution gates the actual
+        // wire request (compaction threshold + final admission), which must
+        // never be tighter than the model/endpoint's real usable capacity.
+        // The preset/dev byte budget only shapes the earlier, soft
+        // deterministic-trim pass (modelBudget.compactionTargetTokens above).
+        const resolution = resolveModelBudget({
           providerId: candidate.id,
           selectedModel: candidateModel,
           endpoint: {
@@ -1945,7 +1950,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             limitTokens: route.endpointLimitTokens,
             limitSource: route.endpointLimitSource,
           },
-          outputReserveTokens,
+          outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
+          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? 12 : 8,
         });
         const routeFingerprint = providerRouteFingerprint({
           providerId: candidate.id,
@@ -1981,7 +1987,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
       const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
-        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.maximumInputTokens * compactionThresholdRatio),
+        measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
       );
       let projectionCheckpoint: ExecutionCheckpointSnapshot | null = null;
       let projectionCheckpointId: string | null = null;
@@ -1997,7 +2003,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               envelope: item.envelope,
               admission: { ok: true as const, measurement: measureProviderRequest(item.envelope) },
               compacted: false,
-              thresholdTokens: Math.floor(item.resolution.maximumInputTokens * compactionThresholdRatio),
+              thresholdTokens: Math.floor(item.resolution.usableInputTokens * compactionThresholdRatio),
               contentHash: createHash("sha256").update(JSON.stringify(item.envelope)).digest("hex"),
               originalMeasurement: measureProviderRequest(item.envelope),
             };
@@ -2008,16 +2014,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         event("context.budget_calculated", {
           provider: candidate.id,
           model: candidateModel,
-          modelCapacityTokens: resolution.advertisedModelCapacityTokens,
-          modelCapacitySource: resolution.advertisedModelCapacitySource,
-          endpointLimitTokens: resolution.configuredEndpointLimitTokens,
+          canonicalModel: resolution.canonicalModelId,
+          contextWindowTokens: resolution.contextWindowTokens,
+          contextWindowSource: resolution.contextWindowSource,
+          contextWindowConfidence: resolution.contextWindowConfidence,
+          modelCapacityTokens: resolution.contextWindowTokens,
+          modelCapacitySource: resolution.contextWindowSource,
+          endpointLimitTokens: resolution.endpointLimitTokens,
           endpointLimitSource: resolution.endpointLimitSource,
-          effectiveLimitSource: resolution.effectiveLimitSource,
-          outputReserveTokens,
+          effectiveLimitSource: resolution.contextWindowSource,
+          outputReserveTokens: resolution.outputReserveTokens,
+          totalReserveTokens: resolution.totalReserveTokens,
           currentRequestTokens: admission.measurement.inputTokens,
           totalRequestTokens: admission.measurement.totalRequestTokens,
-          maximumInputTokens: resolution.maximumInputTokens,
-          effectiveRequestLimitTokens: resolution.effectiveRequestLimitTokens,
+          usableInputTokens: resolution.usableInputTokens,
+          maximumInputTokens: resolution.usableInputTokens,
+          effectiveRequestLimitTokens: resolution.contextWindowTokens,
           admitted: admission.ok,
           compactionThresholdTokens: projection.thresholdTokens,
           projectionCompacted: projection.compacted,
@@ -2103,8 +2115,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           routeFingerprint: currentRouteFingerprint,
           endpointKind: selectedCandidate.route.endpointKind,
           endpointHost: selectedCandidate.route.endpointHost,
-          effectiveRequestLimitTokens: selectedCandidate.resolution.effectiveRequestLimitTokens,
-          effectiveLimitSource: selectedCandidate.resolution.effectiveLimitSource,
+          effectiveRequestLimitTokens: selectedCandidate.resolution.contextWindowTokens,
+          effectiveLimitSource: selectedCandidate.resolution.contextWindowSource,
         });
       }
       if (opened.deprioritizedRateLimited.length > 0) {
