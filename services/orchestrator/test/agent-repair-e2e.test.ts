@@ -56,7 +56,7 @@ function copyFixture(dest: string): void {
   writeFileSync(join(dest, "test", "run.mjs"), readFileSync(join(FIXTURE_DIR, "test", "run.mjs"), "utf8"));
 }
 
-function seedAgentTask(db: any, workspacePath: string) {
+function seedAgentTask(db: any, workspacePath: string, prompt = "Fix the failing test") {
   const projects = projectRepository(db);
   const convs = conversationsRepository(db);
   const tasks = taskRepository(db);
@@ -65,7 +65,7 @@ function seedAgentTask(db: any, workspacePath: string) {
 
   const project = projects.createProject({ id: "project-1", name: "E2E Project", workspacePath, createdAt: new Date().toISOString() });
   const conversation = convs.createConversation({ id: "conv-1", projectId: project.id, title: "Repair", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  convs.appendMessage({ id: "msg-user", conversationId: conversation.id, role: "user", content: "Fix the failing test", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  convs.appendMessage({ id: "msg-user", conversationId: conversation.id, role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   const task = tasks.createTask({ id: "task-1", projectId: project.id, kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   convs.appendMessage({ id: "msg-assistant", conversationId: conversation.id, role: "assistant", content: "", taskId: task.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   routingRepo.upsert({
@@ -270,7 +270,11 @@ describe("Agent Repair E2E Vertical Slice", () => {
 
     // ── First process: run until it blocks on the command approval, then crash.
     const db1 = openDatabase(dbFile);
-    const { project, task } = seedAgentTask(db1, tempWorkspace);
+    // This scenario exercises restart/resume continuity around a single
+    // approved verification command — it never proposes a code change, so its
+    // prompt must not read as an implementation request (see the missing-
+    // delivery-evidence completion gate in agent.ts / Journey G).
+    const { project, task } = seedAgentTask(db1, tempWorkspace, "Run the verification command and report the result.");
     const provider1 = new MockProvider({
       delayMs: 5,
       chunks: [[text("Running a restart-safe verification."), tool("tc-1", 0, "run_command", { executable: "node", args: ["-e", "console.log('restart-ok')"], purpose: "Verify resumed command execution" }), done]],

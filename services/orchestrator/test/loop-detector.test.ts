@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLoopDetector, toolCallSignature, stableStringify } from "../src/execution/loop-detector.js";
+import { createLoopDetector, toolCallSignature, stableStringify, duplicatesPriorNarration } from "../src/execution/loop-detector.js";
 
 describe("stableStringify", () => {
   it("is order-independent for object keys", () => {
@@ -71,5 +71,37 @@ describe("createLoopDetector", () => {
     const d = createLoopDetector({ windowSize: 0, repeatThreshold: 0 });
     d.record("x");
     expect(d.record("x").looping).toBe(true); // threshold clamped to 2
+  });
+});
+
+describe("duplicatesPriorNarration", () => {
+  it("matches an exact repeat", () => {
+    expect(duplicatesPriorNarration("Good — clean tree. Let me inspect.", ["Good — clean tree. Let me inspect."])).toBe(true);
+  });
+
+  it("matches after whitespace normalization (leading/trailing/internal runs, newlines, tabs)", () => {
+    const prior = "Good — clean tree.\nLet   me\tinspect.  ";
+    const candidate = "  Good — clean tree. Let me inspect.";
+    expect(duplicatesPriorNarration(candidate, [prior])).toBe(true);
+  });
+
+  it("does not flag genuinely novel text, even if similar in length or topic", () => {
+    const prior = ["Good — clean tree. Let me inspect the relevant files."];
+    expect(duplicatesPriorNarration("Fixed add() (it was subtracting); the test now passes.", prior)).toBe(false);
+    expect(duplicatesPriorNarration("Let me inspect the relevant files, then check the tests.", prior)).toBe(false);
+  });
+
+  it("is false for empty or whitespace-only candidates regardless of prior text", () => {
+    expect(duplicatesPriorNarration("", ["anything"])).toBe(false);
+    expect(duplicatesPriorNarration("   \n\t  ", ["anything"])).toBe(false);
+  });
+
+  it("is false when there is no prior narration at all", () => {
+    expect(duplicatesPriorNarration("Fixed the bug.", [])).toBe(false);
+  });
+
+  it("matches against any one of several distinct prior turns, not just the immediately preceding one", () => {
+    const prior = ["First orientation turn.", "Second, distinct turn.", "Good — clean tree. Let me inspect."];
+    expect(duplicatesPriorNarration("Good — clean tree. Let me inspect.", prior)).toBe(true);
   });
 });

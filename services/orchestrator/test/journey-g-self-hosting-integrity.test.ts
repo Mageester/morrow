@@ -27,6 +27,16 @@ import { tmpdir } from "node:os";
  * deterministic provider fixture standing in for the live model.
  */
 
+/** Wraps a provider to capture the exact request envelope (message history) sent on every call, so the request-size bound can be measured against the real provider-projection path instead of just counting tool calls. */
+class RequestCapturingProvider {
+  readonly requestSizes: number[] = [];
+  constructor(private readonly inner: MockProvider) {}
+  async *streamChat(messages: unknown[], options: any) {
+    this.requestSizes.push(JSON.stringify(messages).length);
+    yield* this.inner.streamChat(messages as any, options);
+  }
+}
+
 function initGitRepo(ws: string) {
   execFileSync("git", ["init", "-q"], { cwd: ws });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: ws });
@@ -103,7 +113,8 @@ describe("Journey G — self-hosting implementation integrity", () => {
       ],
       delayMs: 1,
     });
-    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    const capturing = new RequestCapturingProvider(provider);
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider: capturing as any, maxTurns: 8 }));
     runner.run("t");
     await runner.waitFor("t");
 
@@ -150,6 +161,17 @@ describe("Journey G — self-hosting implementation integrity", () => {
     const toolCalls = conversationsRepository(db).listToolCallsForTask("t");
     expect(toolCalls.length).toBeLessThanOrEqual(6);
     expect(turns.length).toBeLessThanOrEqual(7);
+
+    // Every provider request envelope stayed under an explicit bound, and the
+    // envelope did not recursively balloon as the repeated narration turns
+    // accumulated (the beta.30 defect class this journey targets was a
+    // request/response accumulator growing with every duplicated turn, not
+    // just tool-call/turn *counts*).
+    expect(capturing.requestSizes.length).toBeGreaterThan(0);
+    for (const size of capturing.requestSizes) expect(size).toBeLessThan(80_000);
+    const sizeAfterFileRead = capturing.requestSizes[2]!; // request for the turn after read_file's result first enters context
+    const finalRequestSize = capturing.requestSizes[capturing.requestSizes.length - 1]!;
+    expect(finalRequestSize - sizeAfterFileRead).toBeLessThan(6_000);
 
     // Terminal event log has exactly one completion, no interruption.
     const events = taskRecordsRepository(db).listEvents("t");
@@ -199,5 +221,63 @@ describe("Journey G — self-hosting implementation integrity", () => {
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
     expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
+  });
+
+  it("does not complete an implementation request on a NOVEL final answer alone when no write tool ever ran (general missing-delivery protection)", async () => {
+    seed(db, ws, REQUEST);
+    // Unlike the duplicate-narration case above, this final answer is
+    // genuinely novel — it never repeats earlier text. The
+    // duplicatesPriorNarration gate alone would let this one through. The
+    // request still explicitly asks for a file change (REQUEST says "fix the
+    // bug ... and verify"), and the model still never once calls a write
+    // tool, so completion must be refused on missing delivery evidence, not
+    // on duplicated text.
+    const provider = new MockProvider({
+      chunks: [
+        [tool("r1", "read_file", { path: "big.js" }), done],
+        [text("Investigating the reported issue."), tool("s1", "search_text", { query: "add" }), done],
+        [text("The add() function looks fine to me on inspection; no change appears necessary."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const task = taskRepository(db).getTaskById("t")!;
+    expect(task.status).toBe("interrupted");
+
+    const continuity = executionContinuityRepository(db);
+    expect(continuity.getCanonicalAnswer("t")).toBeNull();
+
+    const steps = taskRecordsRepository(db).listPlanSteps("t");
+    expect(steps.some((step: any) => step.status !== "completed")).toBe(true);
+
+    expect(changeSetsRepository(db).listByTask("t")).toHaveLength(0);
+    const gitDiff = execFileSync("git", ["diff", "HEAD", "--", "big.js"], { cwd: ws }).toString();
+    expect(gitDiff).toBe("");
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
+    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
+  });
+
+  it("still completes a plain read-only/Ask request with no write tool call and no diff (does not over-fire on requests that never asked for a change)", async () => {
+    seed(db, ws, "What does the add() function in big.js do? No changes needed, just explain it.");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("r1", "read_file", { path: "big.js" }), done],
+        [text("add(a, b) currently returns a - b, which looks like a subtraction bug relative to its name."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const task = taskRepository(db).getTaskById("t")!;
+    expect(task.status).toBe("completed");
+    const continuity = executionContinuityRepository(db);
+    expect(continuity.getCanonicalAnswer("t")).not.toBeNull();
   });
 });

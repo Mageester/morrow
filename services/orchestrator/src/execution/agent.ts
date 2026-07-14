@@ -1499,6 +1499,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   }
 
   const VERIFY_OR_WRITE_TOOLS = new Set(["run_command", "propose_patch", "create_file", "create_directory"]);
+  // Distinct from VERIFY_OR_WRITE_TOOLS: run_command can verify without ever
+  // changing the workspace, so it is not durable delivery evidence on its own.
+  const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "create_directory"]);
+  // A small, deterministic (no model call, no NLP) classifier for "this
+  // request's own wording asks for a workspace change" â€” the same
+  // regex-over-the-prompt technique already used above for acceptance
+  // criteria extraction. Read-only/plan-only modes are already excluded from
+  // this gate at the call site: they cannot call a write tool at all, so
+  // Journey A's "diagnose but do not modify" requests must never trip it.
+  const requestsWorkspaceChange = (prompt: string): boolean =>
+    /\b(fix|repair|patch|implement|refactor)\b/i.test(prompt)
+    // "add" is deliberately excluded here: it collides too easily with a
+    // function/variable *named* add (as in this journey's own fixture),
+    // which would misclassify a plain question about it as a change request.
+    || /\b(change|update|create|write|edit|modify)\b[\s\S]{0,60}\b(bug|file|function|test|code|feature|method|class|module)\b/i.test(prompt);
   const completionStateFromCalls = (calls: ToolCallRecord[]): {
     failure: { tool: string; detail: string } | null;
     verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number };
@@ -1759,6 +1774,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       failCurrentSegment("duplicate_final_narration");
       transitionAgentState("interrupted", { reason: "duplicate_final_narration", message });
       records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
+    }
+    if (agentMode === "agent"
+      && requestsWorkspaceChange(latestUserPrompt)
+      && !convs.listToolCallsForMessage(assistantMessageRow.id).some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed")) {
+      const message = "Stopping without completion: the request asks for a workspace change, but no write tool ever completed â€” there is no delivery evidence to justify completion.";
+      failCurrentSegment("missing_delivery_evidence");
+      transitionAgentState("interrupted", { reason: "missing_delivery_evidence", message });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_delivery_evidence", message } });
       convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
       if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
       return;
@@ -3164,6 +3190,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     failCurrentSegment("duplicate_final_narration");
     transitionAgentState("interrupted", { reason: "duplicate_final_narration", message, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return;
+  }
+
+  // Completion gate: a novel, non-duplicated final answer is not by itself
+  // proof that a requested implementation happened. If the request's own
+  // wording asks for a workspace change (agent mode only â€” read-only/plan-only
+  // modes never expose a write tool, so Journey A's "diagnose, do not modify"
+  // requests must still complete), require that a write tool actually
+  // completed before honoring "no more tool calls" as done.
+  if (agentMode === "agent"
+    && requestsWorkspaceChange(latestUserPrompt)
+    && !convs.listToolCallsForMessage(assistantMessageRow.id).some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed")) {
+    const message = "Stopping without completion: the request asks for a workspace change, but no write tool ever completed â€” there is no delivery evidence to justify completion.";
+    failCurrentSegment("missing_delivery_evidence");
+    transitionAgentState("interrupted", { reason: "missing_delivery_evidence", message, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_delivery_evidence", message, turns: turn } });
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
     if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return;
