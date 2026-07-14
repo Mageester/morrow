@@ -22,7 +22,7 @@ function seedYolo(db: any, workspacePath: string, prompt = "verify it", missionL
     : undefined;
   conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  taskRepository(db).createTask({ id: "t", projectId: "p", missionId, kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+  taskRepository(db).createTask({ id: "t", projectId: "p", ...(missionId ? { missionId } : {}), kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
     taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
