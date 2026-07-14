@@ -32,10 +32,14 @@ export interface ModelBudget {
    * any reserve is subtracted. */
   contextWindowTokens: number;
   contextWindowSource: ContextLimitSource;
-  /** "verified" when sourced from built-in model metadata or an endpoint's
-   * verified limit; "configured" when a user supplied an override or
-   * endpoint value we cannot independently verify; "unverified" when no
-   * source exists and the internal safe fallback was used. */
+  /** "verified" ONLY for built-in model metadata (routing/models.ts) or
+   * genuinely provider-reported metadata ("model-metadata" /
+   * "provider-metadata"). "configured" for a user-supplied context-window
+   * override or a configured endpoint limit ("endpoint-override") — Morrow
+   * cannot independently verify either against the real provider. "unverified"
+   * when no authoritative value exists at all and the internal safe fallback
+   * was used ("fallback" / "unknown"). Endpoint overrides are deliberately
+   * never "verified": a configured number is a claim, not a fact. */
   contextWindowConfidence: "verified" | "configured" | "unverified";
 
   endpointLimitTokens: number | null;
@@ -91,11 +95,11 @@ export function resolveModelBudget(input: {
   const contextWindowConfidence: ModelBudget["contextWindowConfidence"] =
     input.userContextWindowTokens
       ? "configured"
-      : contextWindowSource === "fallback"
+      : contextWindowSource === "fallback" || contextWindowSource === "unknown"
         ? "unverified"
-        : contextWindowSource === "unknown"
-          ? "unverified"
-          : "verified";
+        : contextWindowSource === "endpoint-override"
+          ? "configured"
+          : "verified"; // "model-metadata" | "provider-metadata"
 
   const outputReserveTokens = input.outputBudgetTokens ?? 2048;
   const safetyMarginTokens = input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));

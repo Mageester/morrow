@@ -354,6 +354,71 @@ describe("Agent Alpha", () => {
       expect(evidence[0]?.path).toBe("readme.md");
     });
 
+    it("distinguishes fresh vs cached vs output tokens per response and folds them into a cumulative total exactly once each, never inventing a cached count the provider didn't report", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+      const records = taskRecordsRepository(db);
+
+      projects.createProject({ id: "p1", name: "Usage Project", workspacePath: tempDir, createdAt: new Date().toISOString() });
+      convs.createConversation({ id: "c1", projectId: "p1", title: "Usage Chat", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "Do two things", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      tasks.createTask({ id: "task-1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
+      convs.appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+
+      // Turn 1 reports a cached-token breakdown; turn 2 reports usage but no
+      // cached breakdown at all (a provider that simply never sends one).
+      const mockProvider = new MockProvider({
+        chunks: [
+          [
+            { type: "tool_call", toolCalls: [{ id: "call-1", index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) } }] },
+            { type: "done", usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: 30 } },
+          ],
+          [
+            { type: "text", text: "Done." },
+            { type: "done", usage: { promptTokens: 150, completionTokens: 40 } },
+          ],
+        ],
+      });
+      writeFileSync(join(tempDir, "readme.md"), "hi");
+
+      await executeAgentChatTask({ db, taskId: "task-1", provider: mockProvider });
+
+      const usageEvents = records.listEvents("task-1").filter((event) => event.type === "provider.usage");
+      expect(usageEvents).toHaveLength(2);
+
+      const first = usageEvents[0]!.payload as Record<string, unknown>;
+      // Current-request accounting: fresh is separate from cached, and
+      // separate from output.
+      expect(first.freshInputTokens).toBe(70); // 100 - 30 cached
+      expect(first.cachedInputTokens).toBe(30);
+      expect(first.outputTokens).toBe(20);
+      expect(first.inputTokens).toBe(100); // legacy total-input display field
+      expect(first.tokenSource).toBe("provider-reported");
+      expect(first.tokenConfidence).toBe("exact");
+      // Cumulative after exactly one response.
+      expect(first.cumulativeResponseCount).toBe(1);
+      expect(first.cumulativeFreshInputTokens).toBe(70);
+      expect(first.cumulativeCachedInputTokens).toBe(30);
+      expect(first.cumulativeOutputTokens).toBe(20);
+
+      const second = usageEvents[1]!.payload as Record<string, unknown>;
+      // This response's provider never reported a cached breakdown at all —
+      // it must be absent (unavailable), never coerced to 0.
+      expect(second.cachedInputTokens).toBeUndefined();
+      expect(second.cachedInputTokensKnown).toBe(false);
+      expect(second.freshInputTokens).toBe(150);
+      expect(second.outputTokens).toBe(40);
+      // Cumulative total after the second response is separate from this
+      // single request's own size, and increased exactly once for it. The
+      // previously-known cached total is preserved, not reset to 0/unknown
+      // just because this response didn't report one.
+      expect(second.cumulativeResponseCount).toBe(2);
+      expect(second.cumulativeFreshInputTokens).toBe(220); // 70 + 150
+      expect(second.cumulativeCachedInputTokens).toBe(30); // carried forward
+      expect(second.cumulativeOutputTokens).toBe(60); // 20 + 40
+    });
+
     it("projects each assistant turn once instead of recursively copying prior narration", async () => {
       const projects = projectRepository(db);
       const convs = conversationsRepository(db);

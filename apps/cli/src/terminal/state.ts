@@ -506,7 +506,14 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         : [providerKey];
       const inputTokens = (previous?.inputTokens ?? 0) + event.inputTokens;
       const outputTokens = (previous?.outputTokens ?? 0) + event.outputTokens;
-      const cachedInputTokens = (previous?.cachedInputTokens ?? 0) + (event.cachedInputTokens ?? 0);
+      // Null until a response reports a cached-token count, then a running
+      // sum of only the known contributions — never coerced to 0 for a
+      // response that simply didn't report caching, which would otherwise
+      // read as "definitely no caching happened."
+      const cachedInputTokens =
+        event.cachedInputTokens === undefined
+          ? (previous?.cachedInputTokens ?? null)
+          : (previous?.cachedInputTokens ?? 0) + event.cachedInputTokens;
       const estimatedCostUsd =
         event.estimatedCostUsd === undefined || event.estimatedCostUsd === null || previous?.estimatedCostUsd === null
           ? null
@@ -530,7 +537,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           inputTokens: event.inputTokens,
           outputTokens: event.outputTokens,
           totalTokens: event.inputTokens + event.outputTokens,
-          cachedInputTokens: event.cachedInputTokens ?? 0,
+          cachedInputTokens: event.cachedInputTokens ?? null,
           estimatedCostUsd: event.estimatedCostUsd ?? null,
           calls: 1,
           providerChanges: [providerKey],

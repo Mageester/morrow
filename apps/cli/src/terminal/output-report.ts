@@ -186,7 +186,7 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   // Full reports carry the metering metadata; the summary stays scannable.
   if (opts.kind === "full") {
     lines.push(`Cost: ${aggregate.disclosure?.estimatedCostUsd ?? "unknown"}`);
-    if (usage) lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${usage.cached > 0 ? ` / ${formatNumber(usage.cached)} cached` : ""}`);
+    if (usage) lines.push(`Tokens: ${formatNumber(usage.input)} in / ${formatNumber(usage.output)} out${usage.cached !== null && usage.cached > 0 ? ` / ${formatNumber(usage.cached)} cached` : ""}`);
     else lines.push("Tokens: unknown");
     if (aggregate.context) {
       const known = aggregate.context.contextWindowSource !== "fallback" && aggregate.context.contextWindowTokens > 0;
@@ -347,10 +347,14 @@ function isFailedTool(tool: TaskAggregate["toolCalls"][number]): boolean {
   return tool.status === "failed";
 }
 
-function usageFromEvents(aggregate: TaskAggregate): { input: number; output: number; cached: number } | null {
+function usageFromEvents(aggregate: TaskAggregate): { input: number; output: number; cached: number | null } | null {
   let input = 0;
   let output = 0;
-  let cached = 0;
+  // Null until a response reports a cached-token count; then a running sum
+  // of only the known contributions. A report must never print "0 cached"
+  // for a task whose provider(s) simply never reported cache usage — that
+  // reads as a verified fact, not an absence of data.
+  let cached: number | null = null;
   let found = false;
   for (const event of uniqueEvents(aggregate)) {
     if (event.type !== "provider.usage") continue;
@@ -358,7 +362,7 @@ function usageFromEvents(aggregate: TaskAggregate): { input: number; output: num
     if (typeof p.inputTokens === "number" && typeof p.outputTokens === "number") {
       input += p.inputTokens;
       output += p.outputTokens;
-      if (typeof p.cachedInputTokens === "number") cached += p.cachedInputTokens;
+      if (typeof p.cachedInputTokens === "number") cached = (cached ?? 0) + p.cachedInputTokens;
       found = true;
     }
   }

@@ -47,32 +47,69 @@ separate authorization and scoping decision.
 
 ## Milestones (maximum five)
 
-### M0 — Canonical model-capability + usage truth *(this PR, DONE)*
+### M0 — Canonical model-capability, admission, and usage/cost truth *(this PR, DONE)*
 
-Delivered `routing/model-budget.ts` (`ModelBudget` / `resolveModelBudget`),
-wired into `execution/agent.ts` (primary + live-fallback paths),
-`execution/provider-projection.ts`, `mission/completion.ts`, and both
-`server.ts` context-compaction routes + event reader. Deterministic tests in
-`test/model-budget.test.ts` prove the historical defect (two different
-"usable input" numbers reaching different gates for the same request) is
-closed. `pnpm check`, `pnpm test` (orchestrator/cli), and `pnpm build` are
-green (see PR validation section).
+Two deliberately separate canonical sources of truth, per the ownership
+boundary stated at the top of `MORROW_ADAPTIVE_OS_ARCHITECTURE.md`:
+
+- **Capacity/admission:** `routing/model-budget.ts` (`ModelBudget` /
+  `resolveModelBudget`), wired into `execution/agent.ts` (primary +
+  live-fallback paths), `execution/provider-projection.ts`,
+  `mission/completion.ts`, and both `server.ts` context-compaction routes +
+  event reader. Deterministic tests in `test/model-budget.test.ts` prove the
+  historical defect (two different "usable input" numbers reaching different
+  gates for the same request) is closed, and — after an amendment following
+  independent review — that a configured endpoint/user context-window
+  override is labeled `"configured"`, never `"verified"`, distinct from a
+  genuinely provider-reported limit.
+- **Token/cost accounting:** `routing/usage-snapshot.ts` (`RequestUsage` /
+  `CumulativeUsage` / `resolveRequestUsage` / `accumulateUsage`), wired into
+  `execution/agent.ts`'s provider-usage ingestion (with cumulative totals
+  re-derived from persisted history on resume, never trusted from an
+  in-memory value alone), the `provider.usage` event shape, and the CLI's
+  task-report builder (`output-report.ts`), live session state
+  (`state.ts`), and status displays (`view.ts`). Deterministic tests in
+  `test/usage-snapshot.test.ts`, an end-to-end multi-turn test in
+  `test/agent-alpha.test.ts` (exercising the real `executeAgentChatTask`
+  path, not just the pure helper), and CLI-side tests in
+  `test/terminal-usage-state.test.ts` / `test/terminal-output-report.test.ts`
+  (exercising the real reducer and the real report builder) prove: fresh
+  input is distinct from cached input and from output; a single request's
+  usage is distinct from the cumulative task total; cumulative totals
+  increase exactly once per response and are immune to duplicate/replayed
+  events (via the existing event-identity dedup); a missing cached-token or
+  cost report stays honestly unavailable rather than becoming a fabricated
+  zero.
+
+`pnpm check`, `pnpm test` (orchestrator/cli), and `pnpm build` are green
+(see PR validation section) — modulo the three pre-existing, environment-only
+Windows `EPERM` test-cleanup failures reconfirmed against unmodified `main`
+(§6 of the architecture doc).
 
 **Gate (met):** routing and the terminal-facing event/API surface agree on
 context window, source, and usable budget for the same route; current-request
-vs. reserve vs. usable-ceiling are distinct, named fields, never conflated.
+vs. reserve vs. usable-ceiling are distinct, named fields, never conflated;
+current-request usage is distinct from cumulative usage everywhere it's
+displayed; unknown accounting data is never presented as a verified zero.
 
-**Explicitly deferred out of this slice:** the CLI's own display code
-(`terminal/state.ts`) still defensively reads old-or-new field names rather
-than the canonical shape only — safe today, cheap to simplify, and folded
-into M1 below since the picker work touches the same file anyway.
+**Explicitly deferred out of this slice:** the CLI's own context-event merge
+code (`terminal/state.ts`'s context-window field handling — distinct from the
+usage-state fixes made in this amendment) still defensively reads old-or-new
+field names rather than the canonical `ModelBudget` shape only — safe today,
+cheap to simplify, and folded into M1 below since the picker work touches the
+same file anyway. The interactive model picker itself is explicitly **not**
+part of this milestone.
 
 ### M1 — Interactive model picker on the canonical truth
 
 Build the Claude Code/OpenCode-quality searchable model picker
-(`/model`), consuming `ModelBudget` end-to-end: display provider, canonical
-model, verified/configured/unverified context window with its source,
-capabilities, and — where pricing is authoritative — cost class. Simplify
+(`/model`), consuming **both** canonical sources from M0 end-to-end: capacity
+and admission from `ModelBudget` (provider, canonical model,
+verified/configured/unverified context window with its source, capabilities)
+and cumulative usage/cost from the usage snapshot (session-to-date
+fresh/cached/output tokens and estimated cost, each honestly labeled
+unavailable where the provider never reported it) — never re-deriving either
+independently in picker-specific code. Simplify
 `apps/cli/src/terminal/state.ts`'s context-event merge to read only the
 canonical field names now that every emitting code path is unified (M0).
 Extend `/context` to show the itemized reserve breakdown (output/safety

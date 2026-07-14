@@ -28,6 +28,36 @@ describe("terminal usage state", () => {
     expect(state.usage).toBeUndefined();
   });
 
+  it("keeps cumulative cached tokens null (not 0) when no response has ever reported them", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    expect(state.usage?.cachedInputTokens).toBeNull();
+  });
+
+  it("preserves a known cumulative cached total across a later response that doesn't report one", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    // The second response's own usage never reported caching, but that must
+    // not erase or zero out the total already established by the first.
+    expect(state.usage?.cachedInputTokens).toBe(40);
+    expect(state.activeUsage?.cachedInputTokens).toBeNull();
+  });
+
+  it("separates the current (active) response's usage from the cumulative session total", () => {
+    const state = fold([
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 20 },
+      { type: "usage.reported", provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 50, outputTokens: 5 },
+    ]);
+    // A UI reading activeUsage must see only the latest response's size, not
+    // the running session total — these must never be conflated.
+    expect(state.activeUsage).toMatchObject({ inputTokens: 50, outputTokens: 5, totalTokens: 55 });
+    expect(state.usage).toMatchObject({ inputTokens: 150, outputTokens: 25, totalTokens: 175 });
+  });
+
   it("accumulates authoritative estimated cost when every usage event supplies it", () => {
     const state = fold([
       { type: "usage.reported", provider: "ollama", model: "llama3.1", inputTokens: 100, outputTokens: 20, estimatedCostUsd: 0 },

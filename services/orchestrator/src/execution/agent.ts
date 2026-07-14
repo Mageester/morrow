@@ -34,7 +34,7 @@ import { createProvider, getProviderDefaultModel, providerCapabilities } from ".
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
-import { calculateUsageCost, resolveModelMetadata } from "../routing/models.js";
+import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
@@ -42,6 +42,7 @@ import { measureProviderRequest, prepareContextForProvider } from "./context-bud
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
+import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
 
 /**
@@ -71,6 +72,42 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; v
   } catch {
     return {};
   }
+}
+
+/**
+ * Normalize a persisted `provider.usage` event payload into a RequestUsage
+ * for folding into the cumulative seed on resume. Accepts both the current
+ * canonical shape and the pre-canonical legacy shape (inputTokens included
+ * cached; no explicit tokenSource/costSource) so an older task's history is
+ * re-derived honestly rather than silently dropped. Returns null when the
+ * payload cannot be interpreted as a real usage report at all.
+ */
+function normalizePersistedUsagePayload(payload: Record<string, unknown>): RequestUsage | null {
+  const outputTokens = typeof payload.outputTokens === "number" ? payload.outputTokens : null;
+  const cachedInputTokens = typeof payload.cachedInputTokens === "number" ? payload.cachedInputTokens : null;
+  const canonicalFresh = typeof payload.freshInputTokens === "number" ? payload.freshInputTokens : null;
+  const legacyPrompt = typeof payload.inputTokens === "number" ? payload.inputTokens : null;
+  const freshInputTokens = canonicalFresh
+    ?? (legacyPrompt !== null ? Math.max(0, legacyPrompt - (cachedInputTokens ?? 0)) : null);
+  if (outputTokens === null || freshInputTokens === null) return null;
+  const costUsd = typeof payload.costUsd === "number"
+    ? payload.costUsd
+    : typeof payload.estimatedCostUsd === "number"
+      ? payload.estimatedCostUsd
+      : null;
+  return {
+    providerId: typeof payload.provider === "string" ? payload.provider : "unknown",
+    modelId: typeof payload.model === "string" ? payload.model : "unknown",
+    routeFingerprint: null,
+    freshInputTokens,
+    cachedInputTokens,
+    outputTokens,
+    totalTokens: freshInputTokens + (cachedInputTokens ?? 0) + outputTokens,
+    tokenSource: "provider-reported",
+    tokenConfidence: "exact",
+    costUsd,
+    costSource: costUsd !== null ? "morrow-estimated" : "unavailable",
+  };
 }
 
 function isProviderContextRejection(error: unknown): boolean {
@@ -1789,6 +1826,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     return;
   }
 
+  // Re-derive cumulative usage from the task's own persisted provider.usage
+  // history rather than trusting an in-memory total across a restart/resume
+  // — each historical event is folded in exactly once, here, on this single
+  // pass. Legacy events (persisted before the canonical usage shape existed)
+  // are normalized rather than skipped, so resuming an older task does not
+  // silently lose its prior accounting.
+  let cumulativeUsage: CumulativeUsage = records.listEvents(taskId)
+    .filter((ev) => ev.type === "provider.usage")
+    .reduce((acc, ev) => {
+      const usage = normalizePersistedUsagePayload(ev.payload as Record<string, unknown>);
+      return usage ? accumulateUsage(acc, usage) : acc;
+    }, EMPTY_CUMULATIVE_USAGE);
+
   while (true) {
     if (checkCancelled()) {
       handleCancellation();
@@ -2148,19 +2198,46 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         }
 
         if (chunk.type === "done" && chunk.usage) {
-          const cost = calculateUsageCost({
-            inputTokens: chunk.usage.promptTokens,
-            outputTokens: chunk.usage.completionTokens,
-            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
-          }, resolveModelMetadata(opened.servedBy, servedModel));
+          // resolveRequestUsage/accumulateUsage (routing/usage-snapshot.ts) are
+          // the single source of truth for this response's usage and the
+          // running task total — never re-derived independently downstream.
+          const requestUsage = resolveRequestUsage({
+            providerId: opened.servedBy,
+            modelId: servedModel,
+            routeFingerprint: currentRouteFingerprint,
+            usage: chunk.usage,
+            metadata: resolveModelMetadata(opened.servedBy, servedModel),
+          });
+          cumulativeUsage = accumulateUsage(cumulativeUsage, requestUsage);
           event("provider.usage", {
             provider: opened.servedBy,
             model: servedModel,
+            // Legacy/display fields: inputTokens is the TOTAL prompt token
+            // count (fresh + cached), matching every existing consumer's
+            // "X in" display and totalTokens computation — never confuse
+            // this with freshInputTokens below.
             inputTokens: chunk.usage.promptTokens,
             outputTokens: chunk.usage.completionTokens,
             totalTokens: chunk.usage.promptTokens + chunk.usage.completionTokens,
-            ...(chunk.usage.cachedPromptTokens !== undefined ? { cachedInputTokens: chunk.usage.cachedPromptTokens } : {}),
-            ...(cost.known ? { estimatedCostUsd: cost.usd } : {}),
+            ...(requestUsage.cachedInputTokens !== null ? { cachedInputTokens: requestUsage.cachedInputTokens } : {}),
+            ...(requestUsage.costUsd !== null ? { estimatedCostUsd: requestUsage.costUsd } : {}),
+            // Canonical fields (routing/usage-snapshot.ts): fresh input is
+            // distinct from cached input; cost carries an explicit source.
+            freshInputTokens: requestUsage.freshInputTokens,
+            cachedInputTokensKnown: requestUsage.cachedInputTokens !== null,
+            tokenSource: requestUsage.tokenSource,
+            tokenConfidence: requestUsage.tokenConfidence,
+            costUsd: requestUsage.costUsd,
+            costSource: requestUsage.costSource,
+            routeFingerprint: requestUsage.routeFingerprint,
+            // Cumulative task/session totals as of this response — folded in
+            // exactly once per response, never re-derived by summing context
+            // snapshots.
+            cumulativeResponseCount: cumulativeUsage.responseCount,
+            cumulativeFreshInputTokens: cumulativeUsage.freshInputTokens,
+            cumulativeCachedInputTokens: cumulativeUsage.cachedInputTokens,
+            cumulativeOutputTokens: cumulativeUsage.outputTokens,
+            cumulativeCostUsd: cumulativeUsage.totalCostUsd,
           });
         }
 

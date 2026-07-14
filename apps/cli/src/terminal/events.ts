@@ -92,7 +92,10 @@ export interface UsageInfo {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  cachedInputTokens: number;
+  /** Null until at least one provider response has reported a cached-token
+   * count — never coerced to 0 for "the provider didn't say." A real 0 and
+   * "unknown" are different facts. */
+  cachedInputTokens: number | null;
   estimatedCostUsd: number | null;
   calls: number;
   providerChanges: string[];

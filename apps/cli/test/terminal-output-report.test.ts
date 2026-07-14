@@ -79,6 +79,39 @@ describe("durable terminal output reports", () => {
     expect(report).toContain("100 in / 25 out");
     expect(report).toContain("Context: 21k / 128k");
     expect(report).toContain("Cost:");
+    // No provider.usage event in this fixture reports a cached-token count —
+    // the report must never claim "0 cached" (a fabricated fact), only omit it.
+    expect(report).not.toContain("cached");
+  });
+
+  it("sums fresh input, cached input, and output across every distinct provider.usage response", () => {
+    const report = buildTaskReport(aggregate({
+      events: [
+        { id: "e1", taskId: "task-1", sequence: 1, type: "provider.usage", createdAt: "2026-07-08T10:00:10.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 25, cachedInputTokens: 40 } } as any,
+        { id: "e2", taskId: "task-1", sequence: 2, type: "provider.usage", createdAt: "2026-07-08T10:00:15.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 60, outputTokens: 10 } } as any,
+      ],
+    }), { kind: "full", legacyFinalAnswerFallback: "Done." });
+    // 100 + 60 in, 25 + 10 out — the report's cumulative total is the SUM
+    // across both distinct responses, not either response's own size.
+    expect(report).toContain("160 in / 35 out");
+    // Cached is known from the first response and must still be reported
+    // (only 40, from the response that actually reported it) even though
+    // the second response's payload never mentioned caching at all.
+    expect(report).toContain("40 cached");
+  });
+
+  it("does not double-count usage when the same event is replayed/duplicated in the raw event list", () => {
+    const duplicated = buildTaskReport(aggregate({
+      events: [
+        { id: "e1", taskId: "task-1", sequence: 1, type: "provider.usage", createdAt: "2026-07-08T10:00:10.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 25 } } as any,
+        // A replayed/re-delivered copy of the SAME event (same id) — must
+        // collapse to a single contribution via the existing event-identity
+        // dedup (event-ledger.ts), not double the total.
+        { id: "e1", taskId: "task-1", sequence: 1, type: "provider.usage", createdAt: "2026-07-08T10:00:10.000Z", payload: { provider: "deepseek", model: "deepseek-v4-flash", inputTokens: 100, outputTokens: 25 } } as any,
+      ],
+    }), { kind: "full", legacyFinalAnswerFallback: "Done." });
+    expect(duplicated).toContain("100 in / 25 out");
+    expect(duplicated).not.toContain("200 in");
   });
 
   it("reports changed files from persisted evidence", () => {

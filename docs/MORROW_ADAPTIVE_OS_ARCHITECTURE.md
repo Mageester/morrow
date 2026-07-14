@@ -1,13 +1,27 @@
 # Morrow Adaptive OS — Architecture Map
 
 > Written 2026-07-14 on branch `feat/adaptive-os-foundation`, after PR #50
-> merged to `main` (commit `0e6ae31`). Every claim below is grounded in code
-> read during this session or in `docs/CURRENT_STATE.md` / `docs/MORROW_STATUS.md`
-> / `docs/BETA30_PRODUCT_GOAL.md` / `docs/CORTEX.md`, which are themselves
-> first-hand, dated inspection notes rather than aspirational descriptions.
-> Where this document and an older doc disagree, the code (verified this
-> session) wins, and the older doc should be treated as superseded on that
-> point.
+> merged to `main` (commit `0e6ae31`); amended 2026-07-14 (same PR #51,
+> pre-merge) after independent review found the initial slice did not yet
+> satisfy the mission's usage-accounting requirements. Every claim below is
+> grounded in code read during this session or in `docs/CURRENT_STATE.md` /
+> `docs/MORROW_STATUS.md` / `docs/BETA30_PRODUCT_GOAL.md` / `docs/CORTEX.md`,
+> which are themselves first-hand, dated inspection notes rather than
+> aspirational descriptions. Where this document and an older doc disagree,
+> the code (verified this session) wins, and the older doc should be treated
+> as superseded on that point.
+>
+> **Ownership boundary, stated precisely (do not conflate these two):**
+> `routing/model-budget.ts`'s `ModelBudget` owns **capacity and admission**
+> truth — how large a route's context window verifiably is, and how much of
+> it a request may use. `routing/usage-snapshot.ts`'s `RequestUsage` /
+> `CumulativeUsage` own **token and cost accounting** truth — how much a
+> request actually consumed, or is honestly known to have consumed. Neither
+> is derived from the other; a consumer that needs "did this fit" reads
+> `ModelBudget`, and a consumer that needs "what did this cost/use" reads the
+> usage snapshot. No Evolution Lab and no automatic skill mutation exist in
+> this codebase — see §2.7. The interactive model picker is the next
+> milestone and is **not** built by this PR (see the companion roadmap doc).
 
 ## 1. What Morrow actually is today
 
@@ -243,7 +257,7 @@ It distinguishes exactly the fields the mission required:
 |---|---|
 | `providerId`, `selectedModelId`, `canonicalModelId`, `displayName` | provider vs. requested vs. canonical model identity |
 | `capabilities` | streaming/toolCalls/vision, from the existing `routing/models.ts` registry |
-| `contextWindowTokens`, `contextWindowSource`, `contextWindowConfidence` | verified-or-configured context window, with honest `"verified"`/`"configured"`/`"unverified"` labeling — never a fabricated number |
+| `contextWindowTokens`, `contextWindowSource`, `contextWindowConfidence` | the context window, with honest, precisely-scoped confidence: `"verified"` **only** for built-in model metadata or genuinely provider-reported metadata (`"model-metadata"`/`"provider-metadata"`); `"configured"` for a user-supplied context-window override or a configured endpoint limit (`"endpoint-override"`) — a claim Morrow cannot independently verify against the real provider; `"unverified"` only when no authoritative value exists and the internal safe fallback was used. An amendment to this PR fixed an initial version of this logic that incorrectly labeled endpoint overrides `"verified"` — see the corrected `resolveModelBudget` and `test/model-budget.test.ts`'s explicit `"configured"` assertions. |
 | `endpointLimitTokens`, `endpointLimitSource` | the configured-endpoint half of that, kept visible and attributable |
 | `outputReserveTokens`, `safetyMarginTokens`, `toolReserveTokens`, `framingReserveTokens`, `totalReserveTokens` | the complete, itemized reserve — previously split across two files with two different formulas |
 | `usableInputTokens` | the **single** real provider-capacity ceiling every wire-admission gate must use |
@@ -283,6 +297,77 @@ new field names defensively; this is safe (it already worked, and continues
 to work, against the now-consistent event stream) but has not been simplified
 down to reading only canonical fields.
 
+## 4b. This PR's second foundation slice: canonical usage/cost accounting
+
+**New file:** `services/orchestrator/src/routing/usage-snapshot.ts`,
+exporting `RequestUsage`, `CumulativeUsage`, `resolveRequestUsage()`, and
+`accumulateUsage()`. This is a **separate** source of truth from `ModelBudget`
+(§4) — `ModelBudget` answers "how much is this route allowed to hold";
+this module answers "how much did a request actually use, and what is known
+about it."
+
+`RequestUsage` (one provider response) distinguishes:
+
+| Field | Meaning |
+|---|---|
+| `freshInputTokens` | input tokens NOT served from a provider cache; `null` only when the provider reported no usage at all for this response |
+| `cachedInputTokens` | input tokens served from cache; `null` when the provider does not report a cached-token breakdown — **never coerced to 0**, since "0 cached" and "caching status unknown" are different facts |
+| `outputTokens`, `totalTokens` | output tokens, and the sum of all three components — `totalTokens` is `null` unless every component is known |
+| `tokenSource`, `tokenConfidence` | `"provider-reported"`/`"exact"` when a provider usage chunk arrived, `"unavailable"` otherwise |
+| `costUsd`, `costSource` | `"morrow-estimated"` from the existing static pricing table (`routing/models.ts`'s `calculateUsageCost`) when pricing is authoritative, else `"unavailable"`. Morrow does not ingest real provider billing data anywhere in this codebase (verified by grep before writing this module), so `"provider-metered"` exists in the type only for a future real billing integration and is never produced today. |
+| `routeFingerprint` | the request's route identity when the caller has one; `null` when there is no stable per-request identity to attach — never fabricated |
+
+`CumulativeUsage` (the running task/session total) folds exactly one
+`RequestUsage` in at a time via `accumulateUsage(previous, request)`:
+`cachedInputTokens` and `totalCostUsd` stay `null` until the *first* response
+that reports a known value, then become a running sum of only the known
+contributions — a later response that doesn't report caching or cost never
+resets or poisons an already-established total.
+
+**Consumers wired to this shape:**
+
+- `execution/agent.ts` — the sole point where a provider's reported `usage`
+  chunk is turned into a `RequestUsage` (`resolveRequestUsage`), folded into
+  a task-scoped `cumulativeUsage` accumulator (`accumulateUsage`), and
+  emitted as a single `provider.usage` event carrying both the current
+  request's canonical fields and the cumulative totals as of that response.
+  The cumulative accumulator is re-derived once, at task start, by folding
+  over the task's own persisted `provider.usage` history
+  (`normalizePersistedUsagePayload`) rather than trusted from an in-memory
+  value that would not survive a restart — each historical event is folded
+  in exactly once.
+- `apps/cli/src/terminal/output-report.ts`'s `usageFromEvents` (feeding
+  `buildTaskReport`, i.e. task reports and `/output full`) — sums
+  `freshInputTokens`-equivalent input and output across every distinct
+  persisted `provider.usage` event (already deduplicated by the existing
+  event-identity mechanism, `event-ledger.ts`'s `dedupeRawEvents`, so a
+  replayed/re-delivered event cannot double-count), and now represents
+  "no response ever reported caching" as absent rather than `0`.
+- `apps/cli/src/terminal/state.ts`'s `usage.reported` reducer (the terminal's
+  live/session usage state) — the same null-until-known, sum-of-known-values
+  rule now applies to its cumulative `cachedInputTokens`, matching
+  `accumulateUsage`'s semantics exactly even though the CLI does not import
+  the orchestrator module directly (it reads the same wire event field
+  names over the existing HTTP/event-stream boundary, the same pattern every
+  other terminal event type already uses).
+- `apps/cli/src/terminal/view.ts` — the two status-line/`/status` renderers
+  that display cached-token counts now guard on `!== null`, so a task whose
+  provider never reported caching shows no cached figure at all, rather than
+  a fabricated `0 cached`.
+
+**Legacy compatibility, precisely scoped:** `agent.ts` still emits the
+pre-existing flat `inputTokens`/`outputTokens`/`cachedInputTokens`/
+`estimatedCostUsd` fields alongside the new canonical ones in every
+`provider.usage` event, because existing CLI consumers' wire contract for
+"total input including cache" (`inputTokens`) predates and is distinct from
+the new `freshInputTokens` (cache-excluded) field — collapsing them would
+have silently changed what "100 in" means today. `normalizePersistedUsagePayload`
+additionally accepts events persisted *before* this change (which have no
+canonical fields at all) so resuming an older task does not lose its prior
+accounting. Every event emitted by the current code carries the complete
+canonical shape unambiguously; the legacy fields are read-compatibility only,
+never the other way around.
+
 ## 5. Product experience contract (current vs. required)
 
 The public model Morrow should present is already correctly specified in
@@ -292,34 +377,59 @@ ordering: terminal experience → simple permission model → mission
 reliability → Cortex → memory → advanced features → cross-platform). This
 document does not restate that contract; it is accurate as written and
 should remain the single source for "what the user sees." What this
-architecture map adds is the machinery-hiding boundary made concrete by §4
+architecture map adds is the machinery-hiding boundary made concrete by §4/§4b
 above: the user-facing `/context` and `/model` surfaces, and task reports,
-must present numbers derived from exactly one `ModelBudget` resolution — not
-because the user needs to know that word, but because if two internal
-numbers can disagree, the user-visible ones eventually will too.
+must present capacity numbers derived from exactly one `ModelBudget`
+resolution and usage/cost numbers derived from exactly one usage-snapshot
+accumulation — not because the user needs to know either word, but because
+if two internal numbers can disagree, the user-visible ones eventually will
+too. The interactive model picker described in `BETA30_PRODUCT_GOAL.md` §3
+as part of the terminal-experience pillar is the next milestone that
+consumes both of these; it is **not** built by this PR (see the roadmap).
 
 ## 6. Contradictions and disconnected systems found this session
 
 1. **(Fixed by this PR)** Dual context/budget computation — §4.
-2. **(Open, scoped to Roadmap M1)** The CLI's `terminal/state.ts` reads a
+2. **(Fixed by this PR's amendment)** `ModelBudget`'s initial implementation
+   classified a configured endpoint context-window override as
+   `contextWindowConfidence: "verified"` — the same label used for genuine
+   built-in/provider-reported metadata. A configured value is a claim Morrow
+   cannot independently check against the real provider; it is now labeled
+   `"configured"`, and `test/model-budget.test.ts` asserts this explicitly
+   for an endpoint override, a genuinely provider-reported endpoint limit,
+   and an explicit user override, so the three cases cannot regress into
+   each other silently.
+3. **(Fixed by this PR's amendment)** No canonical usage/cost accounting
+   existed — `agent.ts` computed cost and emitted token counts ad hoc at the
+   point a provider's usage chunk arrived, with no cumulative-vs-current
+   distinction beyond what the CLI happened to reconstruct client-side, and
+   with cached-token/cost absence sometimes readable as a literal zero
+   (`apps/cli/src/terminal/state.ts`'s cumulative `cachedInputTokens` used
+   `?? 0`, so a provider that never reports caching would eventually display
+   a definite "0 cached" rather than "unknown"). §4b's `usage-snapshot.ts`
+   and the corresponding CLI fixes close this.
+4. **(Open, scoped to Roadmap M1)** The CLI's `terminal/state.ts` reads a
    defensive union of old and new context-event field names rather than the
    canonical shape directly; harmless today, but should be simplified once
-   the picker work (M2) touches that file anyway.
-3. **(Open, pre-existing, not part of this PR)** `docs/MORROW_STATUS.md` /
+   the picker work (M1) touches that file anyway.
+5. **(Open, pre-existing, not part of this PR)** `docs/MORROW_STATUS.md` /
    `docs/CONTINUATION.md` are noted in `docs/CURRENT_STATE.md` as carrying
    stale test counts and a stale resume path; not re-verified in this
    session beyond confirming they are dated documents, not live sources.
-4. **(Open, environmental)** `test/mission-review-race.test.ts`,
+6. **(Open, environmental)** `test/mission-review-race.test.ts`,
    `test/database-migration-29.test.ts`, and `test/mission-kernel-contract.test.ts`
    fail on this Windows machine with `EPERM` on a temp-SQLite-file `rmSync`
-   in `afterEach` — confirmed present on unmodified `main` via `git stash`
-   before starting this work, so it is a pre-existing local environment
+   in `afterEach` — confirmed present on unmodified `main` (commit `0e6ae31`,
+   identical to this branch's base commit) via `git stash`, re-confirmed
+   again during this amendment, so it is a pre-existing local environment
    issue (likely a lingering file handle on Windows), not a regression from
    this PR, and not something this PR's scope covers fixing.
-5. **(Flagged, not a code contradiction)** The adversarial/jailbreak skill
+7. **(Flagged, not a code contradiction)** The adversarial/jailbreak skill
    set described in §2.4 sits in the same `skills/` directory as every
    legitimate skill, with no structural boundary preventing a future
    "evolve all skills" feature from including it by default. This
    architecture treats that as a boundary gap: any Evolution Lab or
    skill-improvement design must add an explicit exclusion/allow-list before
-   it can safely iterate over `skills/` as a whole.
+   it can safely iterate over `skills/` as a whole. To be unambiguous: no
+   Evolution Lab and no automatic skill mutation exist anywhere in this
+   codebase as of this PR.

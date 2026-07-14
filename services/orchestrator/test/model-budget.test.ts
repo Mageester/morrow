@@ -85,7 +85,7 @@ describe("canonical model budget (single source of truth)", () => {
     expect(admission.ok).toBe(true);
   });
 
-  it("caps the endpoint-verified ceiling for the exact custom route only, never inherited across routes", () => {
+  it("caps the endpoint-configured ceiling for the exact custom route only, never inherited across routes", () => {
     const overridden = resolveModelBudget({
       providerId: "openai-compatible",
       selectedModel: "custom-large",
@@ -94,6 +94,33 @@ describe("canonical model budget (single source of truth)", () => {
     });
     expect(overridden.contextWindowTokens).toBe(65_536);
     expect(overridden.contextWindowSource).toBe("endpoint-override");
-    expect(overridden.contextWindowConfidence).toBe("verified");
+    // A configured endpoint limit is a claim Morrow cannot independently
+    // verify against the real provider — it must never read as "verified".
+    expect(overridden.contextWindowConfidence).toBe("configured");
+    expect(overridden.endpointLimitTokens).toBe(65_536);
+    expect(overridden.endpointLimitSource).toBe("endpoint-override");
+  });
+
+  it("labels a genuinely provider-reported endpoint limit as verified, distinct from a configured override", () => {
+    const budget = resolveModelBudget({
+      providerId: "deepseek",
+      selectedModel: "deepseek-v4-flash",
+      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
+      outputBudgetTokens: 16_384,
+    });
+    expect(budget.contextWindowSource).toBe("provider-metadata");
+    expect(budget.contextWindowConfidence).toBe("verified");
+  });
+
+  it("labels an explicit user context-window override as configured, never verified", () => {
+    const budget = resolveModelBudget({
+      providerId: "openai",
+      selectedModel: "custom-large",
+      endpoint: { kind: "injected", host: null, protocol: "openai-chat", limitTokens: null, limitSource: "unknown" },
+      outputBudgetTokens: 1024,
+      userContextWindowTokens: 16000,
+    });
+    expect(budget.contextWindowTokens).toBe(16000);
+    expect(budget.contextWindowConfidence).toBe("configured");
   });
 });
