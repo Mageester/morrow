@@ -174,99 +174,182 @@ truthful terminal states).
 
 ### Reproduction design
 
-`services/orchestrator/test/journey-g-self-hosting-integrity.test.ts` exercises
-the real `executeAgentChatTask` execution path (not a standalone helper)
-against real sqlite-backed repositories (`task-records`, `conversations`,
-`change-sets`, `execution-continuity`) and a disposable Git repository
-containing a ~40 KB fixture source file (`big.js`, 900 helper functions plus
-one deliberately buggy `add()`) and its test (`big.test.js`), using a
-deterministic `MockProvider` fixture in place of the live model. Two cases:
+Two files, exercising two different real paths, both required — a first pass
+of this document claimed 7/7 before all three hard requirements below were
+actually gated and tested; this revision corrects that.
+
+**`services/orchestrator/test/journey-g-self-hosting-integrity.test.ts`**
+exercises the real `executeAgentChatTask` execution path (not a standalone
+helper) against real sqlite-backed repositories (`task-records`,
+`conversations`, `change-sets`, `execution-continuity`) and a disposable Git
+repository containing a ~40 KB fixture source file (`big.js`, 900 helper
+functions plus one deliberately buggy `add()`) and its test (`big.test.js`),
+using a deterministic `MockProvider` fixture. Five cases:
 
 1. **Full green path** — inspects the large file, restates the same
    orientation narration across two intermediate turns (realistic model
    behavior — restating context is not itself a defect) while still making
    distinct tool-call progress, applies one `propose_patch` fixing `add()`,
-   runs the test to verify, and gives one final, novel answer.
-2. **The proven root cause** — the model inspects the file, then narrates the
-   *exact same string* alongside a distinct read-only tool call three times,
-   then repeats that exact string one more time with **no** tool call
-   attached (the literal shape of the corpus incident: repeated narration
-   finally mistaken for a conclusion), and never calls a write tool.
+   runs the test to verify, and gives one final, novel answer. Also captures
+   every provider request envelope via a `RequestCapturingProvider` wrapper to
+   assert an explicit size bound and that narration does not recursively grow
+   the request between turns (item 3 below).
+2. **Duplicate-narration false completion** (the literal corpus shape) — the
+   model inspects the file, narrates the *exact same string* alongside a
+   distinct read-only tool call three times, then repeats that exact string
+   one more time with **no** tool call attached, and never calls a write tool.
+3. **Missing-delivery protection with a *novel* final answer** (item 1 below)
+   — the model inspects the file, narrates novel (non-duplicated) text at
+   every turn, never calls a write tool, and gives a final answer that is
+   *also* novel — "The add() function looks fine to me on inspection; no
+   change appears necessary." This defeats the duplicate-narration check by
+   construction, so it isolates the second, independent gate.
+4. **Read-only/Ask requests still complete** — a prompt that explicitly asks
+   only for an explanation ("What does the add() function do? No changes
+   needed") with no write tool call must still complete normally; this proves
+   case 3's gate does not over-fire on requests that never asked for a change.
+
+**`apps/cli/test/journey-g-output-report.test.ts`** (item 2 below) exercises
+the actual `/output full` code path: a real orchestrator (`buildServer`) and
+the real `MorrowApi` HTTP client drive a full request end to end, then the
+same `buildTaskReport` / `selectCanonicalFinalAnswer` functions
+`apps/cli/src/commands/chat.ts`'s `"output"` case calls are invoked directly
+on the API's response — not a reimplementation of the report builder. Three
+cases (green path, missing-delivery interruption, duplicate-narration
+interruption) each assert the report's task id and `Status:` line match
+`api.getTask()`, and — for the green path — that the report's canonical
+answer matches the durable `canonical_task_answers` row read directly from
+the database; for the two interrupted cases, that no such row exists and the
+report never claims `Status: completed`.
 
 ### Before / after results
 
 | Case | Before (pre-fix) | After (post-fix) |
 |---|---|---|
 | Full green path | PASS | PASS |
-| Duplicate-narration false completion | **FAIL** — `task.status` was `completed`, plan steps all `completed`, no Git diff, no canonical answer distinguishable from the repeated text | **PASS** — `task.status` is `interrupted`; `canonical_task_answers` has no row for the task; at least one plan step is left non-`completed`; no `task.completed` event was ever emitted |
+| Duplicate-narration false completion | **FAIL** — `task.status` was `completed`, plan steps all `completed`, no Git diff, no canonical answer distinguishable from the repeated text | **PASS** — `task.status` is `interrupted`; `canonical_task_answers` has no row; at least one plan step is left non-`completed`; no `task.completed` event was ever emitted |
+| Missing-delivery protection, novel final answer | **FAIL** — a request explicitly asking for a fix ("fix the bug ... and verify") completed with `task.status: completed` on a *novel* final answer alone, with zero write-tool calls and no diff | **PASS** — `task.status` is `interrupted` (reason `missing_delivery_evidence`); no canonical answer; no diff |
+| Read-only/Ask request, no write tool, no diff | PASS (already correct — no gate applies) | PASS (confirms the new gate does not over-fire) |
+| `/output full` — green path | n/a (path not exercised before this revision) | PASS — same task id, `Status: completed`, `## Final Answer` section matches the durable canonical answer verbatim |
+| `/output full` — missing-delivery / duplicate-narration | n/a (path not exercised before this revision) | PASS — same task id, `Status: interrupted`, never `Status: completed` |
+| Request-size bound | n/a (only tool/turn *counts* were bounded before this revision) | PASS — every captured request envelope stays under 80 KB; growth from just after the file read to the final request stays under 6 KB despite two repeated-narration turns in between |
 
-Confirmed by running the regression against the pre-fix code (`git stash` of
-the two-file fix, rerun, restore): the duplicate-narration case fails exactly
-as predicted (`expected 'completed' to be 'interrupted'`) before the fix and
-passes after it. The full-green-path case already passed before the fix,
-confirming the repair is additive and does not regress ordinary completions.
+Confirmed by running each new regression against the pre-fix code (`git
+stash` of the fix files, rerun, restore): the duplicate-narration case and the
+novel-final-answer missing-delivery case each fail exactly as predicted
+(`expected 'completed' to be 'interrupted'`) before their respective fix and
+pass after it. The full-green-path and read-only/Ask cases already passed
+before the fix, confirming both repairs are additive and do not regress
+ordinary completions.
 
 ### Enforced tool, turn, and request-size limits
 
-Exercised (not newly introduced by this pass — pre-existing, now verified
-under Journey G):
-
 - `maxTurns` (test uses 8) bounds provider turns per segment;
   `adaptiveTurnCeiling` bounds the absolute ceiling at 24–36 turns regardless
-  of preset;
+  of preset (pre-existing, verified under Journey G);
 - the loop detector (`services/orchestrator/src/execution/loop-detector.ts`)
-  bounds repeated *identical tool-call signatures* within a sliding window;
+  bounds repeated *identical tool-call signatures* within a sliding window
+  (pre-existing);
 - the stall guard interrupts after 3 turns with no observable progress
-  (`noProgressTurns >= 3`);
+  (`noProgressTurns >= 3`, pre-existing);
+- **request-size bound (newly instrumented and asserted by this revision):**
+  a `RequestCapturingProvider` test wrapper records `JSON.stringify(messages)`
+  length for every provider call. The green-path journey's largest request
+  stays under 80 KB (dominated by the one legitimate ~40 KB file read, kept in
+  context for the rest of the task — expected, not a defect), and the growth
+  from immediately after that read to the final request stays under 6 KB even
+  though two turns in between repeat identical narration — proving the
+  request does not recursively re-accumulate narration turn over turn;
 - the full green-path journey completed in 6 tool calls / 7 provider turns —
   well inside these ceilings, with no `/continue` required.
 
 ### Root cause and repair
 
-**Root cause:** the natural "no more tool calls, no outstanding verification
-failure ⇒ complete" shortcut (`services/orchestrator/src/execution/agent.ts`,
-both the resume-time `replayableFinalTurn` path and the live end-of-loop
-completion gate) accepted the final turn's text as a genuine, novel
-conclusion purely because it arrived without a trailing tool call. It never
-checked whether that text was itself a verbatim repeat of earlier
-intermediate narration — the exact shape of the corpus incident, where a
-stalled investigation's leftover scene-setting sentence was persisted as the
-"final answer" and the task completed with zero delivered changes.
+Two independent, previously-unguarded ways a task could falsely report
+`completed`, both in `services/orchestrator/src/execution/agent.ts`'s natural
+"no more tool calls, no outstanding verification failure ⇒ complete"
+shortcut (both the resume-time `replayableFinalTurn` path and the live
+end-of-loop completion gate):
 
-**Repair (smallest coherent fix, two files):**
+1. **Duplicate final narration.** The shortcut accepted the final turn's text
+   as a genuine, novel conclusion purely because it arrived without a
+   trailing tool call, never checking whether that text was itself a verbatim
+   repeat of earlier intermediate narration — the exact shape of the corpus
+   incident.
+2. **Missing delivery evidence.** Independently, the shortcut also accepted
+   any *novel* final text as sufficient, even when the request's own wording
+   asked for a workspace change and the model never once called a write
+   tool. A duplicate-narration check alone cannot catch this — the text is
+   genuinely new each time, it just never represents delivered work.
+
+**Repair (two files, both gates additive to the existing shortcut):**
 
 - `services/orchestrator/src/execution/loop-detector.ts` — added
   `duplicatesPriorNarration(candidate, priorTexts)`, a pure, deterministic,
   whitespace-normalized exact-match check (mirrors the existing pure
   predicates in this file: `stableStringify`, `toolCallSignature`).
-- `services/orchestrator/src/execution/agent.ts` — both completion paths now
-  call `duplicatesPriorNarration` against every earlier recorded provider
-  turn's `assistantText` **before** marking any plan step `completed` or
-  calling `completeWithCanonicalAnswer`. On a match, the task stops
-  truthfully as `interrupted` with reason `duplicate_final_narration` instead
-  of completing, and the plan step that was in progress is marked `skipped`
-  rather than `completed`.
+- `services/orchestrator/src/execution/agent.ts`:
+  - both completion paths call `duplicatesPriorNarration` against every
+    earlier recorded provider turn's `assistantText` **before** marking any
+    plan step `completed` or calling `completeWithCanonicalAnswer`; a match
+    stops the task truthfully as `interrupted` (`duplicate_final_narration`).
+  - both completion paths also call a new, deterministic, regex-based
+    classifier, `requestsWorkspaceChange(prompt)` — the same
+    prompt-text-matching technique already used a few lines above it for
+    acceptance-criteria extraction — restricted to **agent mode only** (the
+    same mode Journeys B–F already require for any write tool to be
+    available at all; read-only/plan-only modes cannot expose a write tool,
+    so Journey A's "diagnose, do not modify" requests are structurally
+    excluded and never trip it). When the request's wording asks for a
+    change and no `propose_patch` / `create_file` / `create_directory` call
+    ever completed, the task stops truthfully as `interrupted`
+    (`missing_delivery_evidence`) instead of completing on text alone.
 
-No architecture change: this reuses the existing durable-turn ledger
-(`agent_provider_turns`, already the source of truth for "each intermediate
-turn stored exactly once" since the `responseContent.slice()` provider-history
-fix) and the existing truthful-interruption pattern already used by the
+No architecture change: both gates reuse the existing durable-turn ledger
+(`agent_provider_turns`), the existing `conversationsRepository` tool-call
+records, and the existing truthful-interruption pattern already used by the
 unverified-completion and loop/stall gates.
+
+One unrelated, pre-existing test needed a one-line correction as a direct
+consequence: `services/orchestrator/test/agent-repair-e2e.test.ts`'s
+restart/resume fixture used the shared prompt `"Fix the failing test"` for a
+scenario that, by design, only ever runs a single approved verification
+command and never proposes a code change (it is testing restart/resume
+continuity, not implementation delivery). The new gate correctly flagged that
+mismatch between the fixture's wording and its actual behavior; the fixture's
+prompt was corrected to `"Run the verification command and report the
+result."`, which is what it has always actually done.
 
 ### Regression coverage
 
-`services/orchestrator/test/journey-g-self-hosting-integrity.test.ts`, both
-cases. The duplicate-narration case is a deterministic, provider-independent
-regression for this exact incident: it fails against the pre-fix code and
-passes after it.
+- `services/orchestrator/test/journey-g-self-hosting-integrity.test.ts` (5
+  cases) and `services/orchestrator/test/loop-detector.test.ts` (6 new
+  `duplicatesPriorNarration` unit cases: exact repeat, whitespace
+  normalization across newlines/tabs/runs, genuinely novel text, empty
+  candidate, no prior turns, matching a non-adjacent prior turn).
+- `apps/cli/test/journey-g-output-report.test.ts` (3 cases) — the actual
+  `/output full` path.
+- Both the duplicate-narration case and the missing-delivery/novel-answer
+  case are deterministic, provider-independent regressions for this incident
+  class: each fails against its pre-fix code and passes after it.
 
 ### Remaining risks
 
-- The fix is a literal (whitespace-normalized) duplicate check, not a
-  semantic one. A model that paraphrases the same non-conclusion each turn
-  instead of repeating it verbatim would not be caught by this gate — that
-  would require semantic judgment of "is this actually a conclusion," which
-  is out of scope for a deterministic, architecture-preserving repair.
+- Both gates are literal/regex-based, not semantic. A model that paraphrases
+  the same non-conclusion each turn instead of repeating it verbatim would
+  defeat the duplicate-narration check; `requestsWorkspaceChange`'s
+  regex-over-the-prompt classifier is a best-effort heuristic (deliberately
+  excludes the word "add" to avoid colliding with this journey's own `add()`
+  fixture — a real, generalizable false-positive risk against any function or
+  variable name that doubles as an English change-verb). Neither gate
+  performs semantic judgment of "is this actually a conclusion" or "does this
+  request actually want a change" — that would require a model call, which is
+  out of scope for a deterministic, architecture-preserving repair.
+- The missing-delivery gate only requires a *completed* write-tool call, not
+  that its diff is still present at task end (an `undo` or a later revert
+  would not un-satisfy it). This mirrors the existing `VERIFY_OR_WRITE_TOOLS`
+  bookkeeping elsewhere in `agent.ts` and was not extended further in this
+  pass.
 - This pass does not address *why* the real corpus task spent its entire
   budget re-reading overlapping chunks of `agent.ts` via `sed -n` (a
   `read_file` size-limit workaround) without ever converging on a change —
@@ -274,9 +357,8 @@ passes after it.
   `adaptive-budget.ts`) counts any new tool-call signature as progress, even
   near-duplicate re-reads with shifted line ranges. That is a real,
   identified P2 efficiency gap (tracked here, not fixed in this pass) but it
-  did not by itself cause a false `completed` status — the duplicate-final-
-  narration gate is the mechanism that was proven to do that, and is what
-  this pass repairs.
+  did not by itself cause a false `completed` status — the two gates above
+  are the mechanisms proven to do that, and are what this pass repairs.
 - `canonical_task_answers` and the durable-turn ledger were empty/absent
   structures relative to the real corpus task's row-for-row data (that task
   predates or ran under different code than this checkout's current
@@ -288,7 +370,9 @@ passes after it.
 
 A (read-only success), B (one-file edit), C (new file + test), D (repair a
 failing test), E (multi-file feature), F (controlled recovery under a
-read-limit), and G (self-hosting implementation integrity) all pass on this
-checkout after the two fixes recorded in this document (Journey A's
-`tool_not_permitted_in_mode` distinction, Journey G's
-`duplicatesPriorNarration` gate).
+read-limit), and G (self-hosting implementation integrity — now covering
+duplicate-narration protection, general missing-delivery protection, real
+`/output full` consistency, and an explicit request-size bound, each with a
+proven before/after) all pass on this checkout after the fixes recorded in
+this document (Journey A's `tool_not_permitted_in_mode` distinction, Journey
+G's `duplicatesPriorNarration` and `requestsWorkspaceChange` gates).
