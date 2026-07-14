@@ -64,6 +64,11 @@ describe("agent security boundaries", () => {
     const runCall = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.toolName === "run_command");
     expect(runCall?.status).toBe("failed");
     expect(JSON.parse(runCall!.resultJson!).error).toMatch(/not permitted/i);
+    // A tool call denied purely because read-only mode forbids it is an
+    // expected constraint, not a failed verification: the task still
+    // produced a correct final answer and made no changes, so it must be
+    // reported as completed, not interrupted (consumer usability baseline).
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("does not resurrect a cancelled task when its approval is later resolved", async () => {

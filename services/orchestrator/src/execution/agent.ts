@@ -279,9 +279,9 @@ type Dependencies = {
 
 class AgentToolFailure extends Error {
   readonly resultJson: string;
-  readonly errorType: "tool_failed" | "safe_read_rejected";
+  readonly errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode";
 
-  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" = "tool_failed") {
+  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" = "tool_failed") {
     super(message);
     this.name = "AgentToolFailure";
     this.resultJson = JSON.stringify(result);
@@ -1507,6 +1507,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
+      // A call denied purely because the current mode forbids it (read-only /
+      // plan-only) is an expected constraint, not a failed verification â€” it
+      // must not block completion. See the matching skip in the live-path
+      // bookkeeping above.
+      if (call.errorType === "tool_not_permitted_in_mode") continue;
       let failedOutcome: string | null = call.status === "failed" ? (call.errorMessage ?? "tool failed") : null;
       if (call.toolName === "run_command" && call.status === "completed") {
         try {
@@ -2349,9 +2354,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
           // Defense in depth: execution/write tools are only ever permitted in
           // agent mode, even if a provider hallucinates a call the mode never
-          // exposed.
+          // exposed. This is an expected, correct constraint (not a failed
+          // verification) â€” it must not block an otherwise-complete read-only
+          // or plan-only task from reporting `completed` (see
+          // `tool_not_permitted_in_mode` handling in the completion gate).
           if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "create_directory") && activeToolProfile !== "agent") {
-            throw new Error(`Tool "${tc.name}" is not permitted in ${agentMode} mode`);
+            throw new AgentToolFailure(
+              `Tool "${tc.name}" is not permitted in ${agentMode} mode`,
+              { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
+              "tool_not_permitted_in_mode",
+            );
           }
 
           const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
@@ -2937,7 +2949,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // verification* â€” the classic "tests failed yet the task said
         // completed" hole. Treat mutations/verifications that either threw or
         // exited non-zero as an outstanding failure; a clean one clears it.
-        if (VERIFY_OR_WRITE_TOOLS.has(tc.name)) {
+        if (VERIFY_OR_WRITE_TOOLS.has(tc.name) && errorType !== "tool_not_permitted_in_mode") {
           let failedOutcome: string | null = null;
           if (!isSuccess) {
             failedOutcome = errorMessage ?? "tool failed";
