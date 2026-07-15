@@ -1895,6 +1895,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         outputReserveTokens: modelBudget.outputReserveTokens,
         safetyMarginTokens: modelBudget.safetyMarginTokens,
         toolReserveTokens: modelBudget.toolReserveTokens,
+        framingReserveTokens: modelBudget.framingReserveTokens,
         totalReserveTokens: modelBudget.totalReserveTokens,
         usableInputTokens: modelBudget.usableInputTokens,
         compactionTargetTokens: modelBudget.compactionTargetTokens,

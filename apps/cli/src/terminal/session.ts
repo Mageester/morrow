@@ -18,8 +18,9 @@ import type { AgentMode } from "@morrow/contracts";
 import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
+import { buildModelPickerItems, filterModelItems, modelDetailLines, type ModelPickerItem } from "./model-picker.js";
 import { composeApp, type OverlayPanel } from "./app-view.js";
-import { glyphs, statsLines, contextLimit, hardWrapLine } from "./view.js";
+import { glyphs, statsLines, contextLimit, contextConfidenceLabel, usageBreakdownLines, hardWrapLine } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
 import { PasteDecoder, normalizePaste } from "./paste.js";
 import { initialState, reduce, type TerminalState } from "./state.js";
@@ -106,6 +107,12 @@ export interface SessionBackend {
   getCapabilities?(): Promise<import("../commands/capabilities.js").CapabilityReport>;
   /** Known model registry for the /model picker (facts, not guesses). */
   listModels?(): Promise<import("@morrow/contracts").ModelStatus[]>;
+  /** Canonical per-model budget view for the /model detail panel — the same
+   *  resolveModelBudget() computation every agent execution path uses. */
+  getModelBudgets?(): Promise<import("@morrow/contracts").ModelBudgetView[]>;
+  /** Configured-provider status (for the picker's default-model marker and
+   *  auth/configuration state — never re-derived independently). */
+  listProviders?(): Promise<import("@morrow/contracts").ProviderStatus[]>;
   /** Read-only categorized Git status for /branch, /changes, and resume digest. */
   getGitStatus?(): Promise<import("../cli/gitinfo.js").GitStatus | null>;
   /** Recent tasks for the active project — powers /tasks and /output <task-id>. */
@@ -208,7 +215,7 @@ export class InteractiveSession {
     this.minIntervalMs = Math.max(1, Math.floor(1000 / (deps.maxFps ?? 30)));
     this.recentActivity = deps.recentActivity ?? [];
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
-    this.keyCtx = { commands: this.commands, paletteItems };
+    this.keyCtx = { commands: this.commands, paletteItems, modelItems: [] };
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
     this.lastTaskId = deps.initialTaskId ?? null;
   }
@@ -481,15 +488,7 @@ export class InteractiveSession {
         this.pushNotice("info", "Cleared this session's transcript. Prior history is still saved; /resume to review it.");
         return void this.fullRepaint();
       case "model":
-        if (arg) {
-          this.settings.model = arg === "auto" ? undefined : arg;
-          this.meta.model = this.settings.model ?? "auto";
-          // Changing the model mutates routing only; the conversation, task
-          // history, and streaming state are all preserved.
-          this.pushNotice("info", `Model set to ${this.settings.model ?? "auto (preset routing)"} — session preserved.`);
-          return void this.requestPaint(false);
-        }
-        await this.showModelPicker();
+        await this.handleModelCommand(arg);
         return void this.requestPaint(false);
       case "provider":
         if (arg) {
@@ -520,8 +519,17 @@ export class InteractiveSession {
         await this.showChangesDetail();
         return void this.requestPaint(false);
       case "context": {
+        // A real overlay panel, not a multi-line notice: recentNotices()
+        // renders each notice as a single terminal row, so a notice whose
+        // text itself contains newlines corrupts the frame's row accounting
+        // and visibly overlaps the bordered input box below it.
         const lines = this.contextUsageDetailLines();
-        this.pushNotice("info", lines ? `Context:\n${lines.join("\n")}` : "Context usage not available yet. Start a conversation first.");
+        if (!lines) {
+          this.pushNotice("info", "Context usage not available yet. Start a conversation first.");
+          return void this.requestPaint(false);
+        }
+        this.outputViewer = { title: "context", lines };
+        this.input = { ...this.input, overlay: "output" };
         return void this.requestPaint(false);
       }
       case "diff":
@@ -822,15 +830,18 @@ export class InteractiveSession {
     const perm = this.settings.autoApprove ? o.yellow("YOLO (auto-approve)") : "approval-gated";
     lines.push(`${o.gray("permissions")} ${perm}`);
     lines.push(`${o.gray("memory")}      ${this.settings.useMemory ? "on" : "off"}`);
-    // Session cost if we have a task to query.
-    if (this.lastTaskId) {
-      try {
-        const agg = await this.deps.backend.getTask(this.lastTaskId);
-        if (agg.disclosure?.estimatedCostUsd) {
-          lines.push(`${o.gray("cost")}       ${agg.disclosure.estimatedCostUsd}`);
-        }
-      } catch { /* cost is best-effort */ }
-    }
+    const taskState = this.term.status === "streaming" ? "running" : this.term.status === "idle" ? "idle" : this.term.status;
+    lines.push(`${o.gray("task")}        ${taskState}`);
+
+    // CURRENT REQUEST vs CUMULATIVE SESSION are visibly distinct sections —
+    // reading the wrong one as the other is exactly the mistake this guards
+    // against (a session total is never shown as though it were one
+    // request's usage, and vice versa).
+    lines.push("", o.bold("CURRENT REQUEST"));
+    for (const l of usageBreakdownLines("  ", this.term.activeUsage)) lines.push(l);
+    lines.push("", o.bold("CUMULATIVE SESSION"));
+    for (const l of usageBreakdownLines("  ", this.term.usage)) lines.push(l);
+
     this.outputViewer = { title: "status", lines };
     this.input = { ...this.input, overlay: "output" };
   }
@@ -932,24 +943,106 @@ export class InteractiveSession {
     return null;
   }
 
-  private async showModelPicker(): Promise<void> {
+  /**
+   * `/model` dispatch. `/model` alone opens the interactive picker (the
+   * normal path); `auto`/`current` are explicit direct forms; any other
+   * argument that matches a known model id verbatim still sets it directly
+   * (no regression for scripted/muscle-memory `/model <id>` use) — anything
+   * else opens the picker pre-filtered by what was typed, rather than
+   * silently accepting an unvalidated string.
+   */
+  private async handleModelCommand(rawArg: string): Promise<void> {
+    const arg = rawArg.trim();
+    if (!arg) return void this.openModelPicker();
+    if (arg === "auto") return void this.applyModelSelection(undefined);
+    if (arg === "current") return void this.showCurrentModelDetail();
+
     if (!this.deps.backend.listModels) {
-      this.pushNotice("info", `Model: ${this.settings.model ?? "auto (preset routing)"} — run \`morrow model\` for the full picker.`);
+      // No model registry available in this session — preserve the original,
+      // pre-picker behavior: accept the literal string as typed.
+      this.applyModelSelection(arg);
       return;
     }
     const models = await this.deps.backend.listModels().catch(() => null);
     if (models === null) {
-      this.pushNotice("warn", "Could not load models — is the orchestrator reachable?");
+      // A registry lookup hiccup must not block a direct model change — a
+      // stale/unknown id will surface honestly on the next real request.
+      this.applyModelSelection(arg);
       return;
     }
-    const { modelPickerLines } = await import("./model-picker.js");
-    const lines = modelPickerLines(
-      models,
-      { provider: this.settings.provider, model: this.settings.model },
-      this.deps.out,
-      this.deps.unicode
-    );
-    this.outputViewer = { title: "models", lines };
+    const exact = models.find((m) => m.model.id === arg);
+    if (exact) {
+      this.applyModelSelection(exact.model.id, exact.model.providerId);
+      return;
+    }
+    const [budgets, providers] = await Promise.all([
+      this.deps.backend.getModelBudgets ? this.deps.backend.getModelBudgets().catch(() => []) : Promise.resolve([]),
+      this.deps.backend.listProviders ? this.deps.backend.listProviders().catch(() => []) : Promise.resolve([]),
+    ]);
+    const items = buildModelPickerItems(models, budgets ?? [], providers ?? []);
+    // Anything that plausibly matches a real known model opens the picker,
+    // pre-filtered, so the user picks from real candidates instead of
+    // guessing an id. Nothing in the registry resembles it at all — a
+    // genuinely custom/OpenAI-compatible-endpoint id — sets it directly,
+    // exactly like a bare `/model <id>` always has.
+    const candidates = filterModelItems(arg, items).filter((i) => i.kind !== "custom");
+    if (candidates.length === 0) {
+      this.applyModelSelection(arg);
+      return;
+    }
+    this.keyCtx.modelItems = items;
+    this.input = { ...this.input, overlay: "model", modelQuery: arg, modelSelected: 0 };
+  }
+
+  /** The single mutation path for changing the configured model — used by
+   *  both a direct `/model <id>` and the picker's Enter action (which
+   *  submits the exact same `/model <id>` command line; see input-state.ts's
+   *  `reduceModelPicker`), so a picker selection can never diverge from
+   *  what manually typing the same id would do. */
+  private applyModelSelection(modelId: string | undefined, providerId?: string): void {
+    this.settings.model = modelId;
+    this.meta.model = modelId ?? "auto";
+    if (providerId) this.settings.provider = providerId;
+    this.pushNotice("info", `Model set to ${modelId ?? "auto (preset routing)"} — session preserved.`);
+  }
+
+  /** Fetch the real, canonical picker data (registry + ModelBudget +
+   *  provider status) once. Never a second, independently-built list — a
+   *  missing optional backend method simply degrades that one field. */
+  private async fetchModelPickerItems(): Promise<ModelPickerItem[] | null> {
+    if (!this.deps.backend.listModels) {
+      this.pushNotice("info", `Model: ${this.settings.model ?? "auto (preset routing)"} — run \`morrow model\` for the full picker.`);
+      return null;
+    }
+    const [models, budgets, providers] = await Promise.all([
+      this.deps.backend.listModels().catch(() => null),
+      this.deps.backend.getModelBudgets ? this.deps.backend.getModelBudgets().catch(() => []) : Promise.resolve([]),
+      this.deps.backend.listProviders ? this.deps.backend.listProviders().catch(() => []) : Promise.resolve([]),
+    ]);
+    if (models === null) {
+      this.pushNotice("warn", "Could not load models — is the orchestrator reachable?");
+      return null;
+    }
+    return buildModelPickerItems(models, budgets ?? [], providers ?? []);
+  }
+
+  private async openModelPicker(prefillQuery = ""): Promise<void> {
+    const items = await this.fetchModelPickerItems();
+    if (items === null) return;
+    this.keyCtx.modelItems = items;
+    this.input = { ...this.input, overlay: "model", modelQuery: prefillQuery, modelSelected: 0 };
+  }
+
+  /** `/model current` — the detail panel for the actually-active model,
+   *  without opening the full picker. */
+  private async showCurrentModelDetail(): Promise<void> {
+    const items = await this.fetchModelPickerItems();
+    if (items === null) return;
+    const currentId = this.settings.model ?? "auto";
+    const matches = filterModelItems(currentId, items);
+    const found = matches.find((i) => i.id === currentId) ?? matches[0] ?? items[0]!;
+    const lines = [`Route: ${this.resolvedModelText()}`, "", ...modelDetailLines(found, this.deps.out)];
+    this.outputViewer = { title: "current model", lines };
     this.input = { ...this.input, overlay: "output" };
   }
 
@@ -1637,22 +1730,36 @@ export class InteractiveSession {
     return [tokens, cu.method, ...extras].join("  ·  ");
   }
 
+  /**
+   * `/context`: concise, trustworthy, no raw internal field names or event
+   * rows — every number is either the canonical ModelBudget value or stated
+   * as unknown. Confidence is always one of verified/configured/unverified
+   * (`contextConfidenceLabel`), never a raw source string like
+   * "model-metadata" or "endpoint-override".
+   */
   private contextUsageDetailLines(): string[] | null {
     const cu = this.term.contextUsage;
     if (!cu) return null;
     const value = (n: number | null | undefined) => n && n > 0 ? n.toLocaleString("en-US") : "unknown";
-    const summary = this.contextUsageText();
-    return [
+    const confidence = contextConfidenceLabel(cu);
+    const windowTokens = cu.modelCapacityTokens ?? (cu.contextWindowSource === "fallback" ? null : cu.contextLimitTokens);
+    const safetyToolFraming = [cu.safetyMarginTokens, cu.toolReserveTokens, cu.framingReserveTokens];
+    const reserveKnown = safetyToolFraming.every((n) => n !== undefined && n !== null);
+    const u = this.term.usage;
+    const lines = [
       `Route: ${this.resolvedModelText()}`,
-      ...(summary ? [`Usage: ${summary}`] : []),
-      `Model capacity: ${value(cu.modelCapacityTokens ?? (cu.contextWindowSource === "fallback" ? null : cu.contextLimitTokens))} (${cu.modelCapacitySource ?? cu.contextWindowSource ?? "unknown"})`,
-      `Endpoint limit: ${value(cu.endpointLimitTokens)} (${cu.endpointLimitSource ?? "unknown"})`,
-      `Effective request limit: ${value(cu.effectiveRequestLimitTokens ?? cu.contextLimitTokens)} (${cu.effectiveLimitSource ?? cu.contextWindowSource ?? "unknown"})`,
+      `Model context window: ${value(windowTokens)}  (${confidence})`,
       `Reserved output: ${value(cu.outputReserveTokens)}`,
-      `Maximum input: ${value(cu.maximumInputTokens)}`,
-      `Current request: ${value(cu.currentRequestTokens ?? cu.usedTokens)} (${cu.method})`,
-      `Compacted: ${cu.compactedGroups} groups · Removed: ${cu.removedGroups} groups`,
+      `Safety/tool/framing reserve: ${reserveKnown ? (safetyToolFraming[0]! + safetyToolFraming[1]! + safetyToolFraming[2]!).toLocaleString("en-US") : "unknown"}`,
+      `Usable input capacity: ${value(cu.maximumInputTokens)}`,
+      `Current provider request: ${value(cu.currentRequestTokens ?? cu.usedTokens)} (${cu.method})`,
+      `Compaction threshold: ${value(cu.compactionTargetTokens)}`,
+      `Cumulative session usage: ${u ? `${u.inputTokens.toLocaleString("en-US")} in / ${u.outputTokens.toLocaleString("en-US")} out across ${u.calls} request${u.calls === 1 ? "" : "s"}` : "no requests yet"}`,
     ];
+    if (cu.compactedGroups > 0 || cu.removedGroups > 0) {
+      lines.push(`Compacted: ${cu.compactedGroups} groups · Removed: ${cu.removedGroups} groups`);
+    }
+    return lines;
   }
 
   /**
@@ -1702,7 +1809,7 @@ export class InteractiveSession {
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const overlayPanel = this.currentOverlayPanel();
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel }, {
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, currentModelId: this.settings.model ?? "auto" }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,

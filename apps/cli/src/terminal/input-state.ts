@@ -10,8 +10,9 @@
 import type { SlashCommand } from "./commands.js";
 import { clampSelection, completionCandidates } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
+import { filterModelItems, type ModelPickerItem } from "./model-picker.js";
 
-export type Overlay = "none" | "palette" | "output" | "history" | "tasktree" | "mission";
+export type Overlay = "none" | "palette" | "output" | "history" | "tasktree" | "mission" | "model";
 
 export interface InputState {
   buffer: string;
@@ -27,6 +28,10 @@ export interface InputState {
   completionDismissed: boolean;
   paletteQuery: string;
   paletteSelected: number;
+  /** Search text typed inside the /model picker overlay. */
+  modelQuery: string;
+  /** Selection index into the picker's currently *filtered* item list. */
+  modelSelected: number;
   /** True once Ctrl+C was pressed on an empty idle line (press again to exit). */
   confirmExit: boolean;
 }
@@ -50,6 +55,12 @@ export type InputAction =
 export interface KeyContext {
   commands: SlashCommand[];
   paletteItems: PaletteItem[];
+  /** Items the /model picker overlay is currently showing. Mutated in place
+   *  by the session controller when the picker opens or its data refreshes
+   *  (never rebuilt per keystroke — filtering/navigation stays pure here).
+   *  Optional/defaults to empty so callers that never open the picker (most
+   *  existing test fixtures) don't need to know about it. */
+  modelItems?: ModelPickerItem[];
 }
 
 export function initialInputState(history: string[] = []): InputState {
@@ -64,6 +75,8 @@ export function initialInputState(history: string[] = []): InputState {
     completionDismissed: false,
     paletteQuery: "",
     paletteSelected: 0,
+    modelQuery: "",
+    modelSelected: 0,
     confirmExit: false,
   };
 }
@@ -79,6 +92,13 @@ export function completionMatches(s: InputState, ctx: KeyContext): SlashCommand[
 
 export function paletteMatches(s: InputState, ctx: KeyContext): PaletteItem[] {
   return s.overlay === "palette" ? fuzzyPalette(s.paletteQuery, ctx.paletteItems) : [];
+}
+
+/** The /model picker's currently filtered, selectable rows (including any
+ *  synthetic "auto"/custom-id rows) — the single computation the reducer,
+ *  the renderer, and the acceptance tests all share. */
+export function modelPickerMatches(s: InputState, ctx: KeyContext): ModelPickerItem[] {
+  return s.overlay === "model" ? filterModelItems(s.modelQuery, ctx.modelItems ?? []) : [];
 }
 
 const r = (state: InputState, action: InputAction = { type: "repaint" }): { state: InputState; action: InputAction } => ({ state, action });
@@ -121,6 +141,9 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
     if (s.overlay === "palette") {
       s.paletteQuery = "";
       s.paletteSelected = 0;
+    } else if (s.overlay === "model") {
+      s.modelQuery = "";
+      s.modelSelected = 0;
     } else {
       s.buffer = s.buffer.slice(s.cursor);
       s.cursor = 0;
@@ -130,6 +153,7 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
 
   // ── Palette overlay ──────────────────────────────────────────────────────
   if (s.overlay === "palette") return reducePalette(s, key, ctx);
+  if (s.overlay === "model") return reduceModelPicker(s, key, ctx);
   if (s.overlay === "output" || s.overlay === "tasktree" || s.overlay === "mission") {
     if (key.name === "escape" || (key.ctrl && key.name === "c")) {
       s.overlay = "none";
@@ -243,6 +267,12 @@ function handleInterrupt(s: InputState): { state: InputState; action: InputActio
     s.paletteQuery = "";
     return r(s);
   }
+  if (s.overlay === "model") {
+    s.overlay = "none";
+    s.modelQuery = "";
+    s.modelSelected = 0;
+    return r(s);
+  }
   if (completionActive(s)) {
     s.completionDismissed = true;
     return r(s);
@@ -291,6 +321,59 @@ function reducePalette(s: InputState, key: KeyInput, ctx: KeyContext): { state: 
         if (clean) {
           s.paletteQuery += clean;
           s.paletteSelected = 0;
+          return r(s);
+        }
+      }
+      return r(s, { type: "none" });
+  }
+}
+
+/**
+ * The /model picker: search/filter, arrow navigation, Enter to select, Escape
+ * to cancel without changing anything. Enter never mutates settings directly
+ * — it synthesizes the exact `/model <id>` (or `/model auto`) command line
+ * and submits it through the normal input pipeline, so a picker selection
+ * and a manually typed `/model <id>` are provably the same code path. An
+ * unavailable (unconfigured-provider) model can be highlighted and inspected
+ * but Enter on it is a no-op — it can never be "falsely selected."
+ */
+function reduceModelPicker(s: InputState, key: KeyInput, ctx: KeyContext): { state: InputState; action: InputAction } {
+  const items = filterModelItems(s.modelQuery, ctx.modelItems ?? []);
+  switch (key.name) {
+    case "escape":
+      s.overlay = "none";
+      s.modelQuery = "";
+      s.modelSelected = 0;
+      return r(s);
+    case "return":
+    case "enter": {
+      if (items.length === 0) return r(s, { type: "none" });
+      const sel = clampSelection(s.modelSelected, items.length);
+      const item = items[sel]!;
+      if (item.kind === "model" && !item.available) return r(s, { type: "none" });
+      const value = item.kind === "auto" ? "/model auto" : `/model ${item.id}`;
+      s.overlay = "none";
+      s.modelQuery = "";
+      s.modelSelected = 0;
+      return r(commitHistory(s, value), { type: "submit", value });
+    }
+    case "up":
+      s.modelSelected = clampSelection(s.modelSelected - 1, items.length);
+      return r(s);
+    case "down":
+    case "tab":
+      s.modelSelected = clampSelection(s.modelSelected + 1, items.length);
+      return r(s);
+    case "backspace":
+      s.modelQuery = s.modelQuery.slice(0, -1);
+      s.modelSelected = 0;
+      return r(s);
+    default:
+      if (key.str && !key.ctrl && !key.meta) {
+        const clean = sanitizePrintable(key.str);
+        if (clean) {
+          s.modelQuery += clean;
+          s.modelSelected = 0;
           return r(s);
         }
       }

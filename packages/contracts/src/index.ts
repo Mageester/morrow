@@ -122,6 +122,35 @@ export const ModelStatusSchema=z.object({
   available:z.boolean(),
 }).strict();
 
+/**
+ * Confidence in an asserted context-window/budget number:
+ * "verified" — genuinely provider- or built-in-registry-reported;
+ * "configured" — a user- or endpoint-supplied override Morrow cannot
+ * independently verify against the real provider; "unverified" — no
+ * authoritative value at all (an internal safe fallback was used).
+ * Mirrors services/orchestrator's ModelBudget.contextWindowConfidence —
+ * this is a read-only view of that single canonical computation, never a
+ * second, independently-derived source of truth.
+ */
+export const ModelBudgetConfidenceSchema=z.enum(["verified","configured","unverified"]);
+export const ModelBudgetViewSchema=z.object({
+  providerId:ProviderIdSchema,
+  selectedModelId:z.string(),
+  canonicalModelId:z.string(),
+  displayName:z.string(),
+  configured:z.boolean(),
+  protocol:z.string(),
+  endpointKind:z.enum(["default","custom","injected"]),
+  endpointHost:z.string().nullable(),
+  contextWindowTokens:z.number().int().nonnegative(),
+  contextWindowConfidence:ModelBudgetConfidenceSchema,
+  usableInputTokens:z.number().int().nonnegative(),
+  outputReserveTokens:z.number().int().nonnegative(),
+  totalReserveTokens:z.number().int().nonnegative(),
+  capabilities:ModelCapabilitiesSchema,
+  pricing:ModelPricingSchema.nullable(),
+}).strict();
+
 // ── Presets and provider routing ─────────────────────────────────────────────
 
 export const PresetIdSchema=z.enum(["best-quality","balanced","fast","cheap","coding","research","private-local"]);
@@ -409,6 +438,8 @@ export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;
 export type ProviderStatus=z.infer<typeof ProviderStatusSchema>;
 export type ModelInfo=z.infer<typeof ModelInfoSchema>;
 export type ModelStatus=z.infer<typeof ModelStatusSchema>;
+export type ModelBudgetConfidence=z.infer<typeof ModelBudgetConfidenceSchema>;
+export type ModelBudgetView=z.infer<typeof ModelBudgetViewSchema>;
 export type ModelCapabilities=z.infer<typeof ModelCapabilitiesSchema>;
 export type PresetId=z.infer<typeof PresetIdSchema>;
 export type Preset=z.infer<typeof PresetSchema>;

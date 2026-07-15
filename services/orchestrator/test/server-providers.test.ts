@@ -68,6 +68,46 @@ describe("Provider / preset / memory API", () => {
     expect(JSON.stringify(status)).not.toMatch(/accessToken|refreshToken|access_token/);
   });
 
+  it("resolves a canonical model budget per model without crashing on unconfigured providers", async () => {
+    const prev = process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    try {
+      const { status, body } = await json("GET", "/api/models/budgets");
+      expect(status).toBe(200);
+      expect(Array.isArray(body)).toBe(true);
+      expect(body.length).toBeGreaterThan(0);
+      const deepseekChat = body.find((b: any) => b.providerId === "deepseek" && b.selectedModelId === "deepseek-chat");
+      expect(deepseekChat).toBeTruthy();
+      expect(deepseekChat.configured).toBe(false);
+      expect(["verified", "configured", "unverified"]).toContain(deepseekChat.contextWindowConfidence);
+      expect(deepseekChat.usableInputTokens).toBeGreaterThan(0);
+      expect(deepseekChat.totalReserveTokens).toBeGreaterThan(0);
+      // An unconfigured provider must never crash this endpoint, and must
+      // never be silently presented as "verified" — it stays honest.
+      expect(deepseekChat.contextWindowConfidence).not.toBe("verified");
+    } finally {
+      if (prev === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = prev;
+    }
+  });
+
+  it("reflects a configured endpoint override as 'configured' confidence, never 'verified'", async () => {
+    const prevKey = process.env.DEEPSEEK_API_KEY;
+    const prevLimit = process.env.DEEPSEEK_CONTEXT_LIMIT;
+    process.env.DEEPSEEK_API_KEY = "sk-test-budget-endpoint";
+    process.env.DEEPSEEK_CONTEXT_LIMIT = "40000";
+    try {
+      const { body } = await json("GET", "/api/models/budgets");
+      const deepseekChat = body.find((b: any) => b.providerId === "deepseek" && b.selectedModelId === "deepseek-chat");
+      expect(deepseekChat.configured).toBe(true);
+      expect(deepseekChat.contextWindowConfidence).toBe("configured");
+      expect(deepseekChat.contextWindowTokens).toBe(40000);
+    } finally {
+      if (prevKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = prevKey;
+      if (prevLimit === undefined) delete process.env.DEEPSEEK_CONTEXT_LIMIT; else process.env.DEEPSEEK_CONTEXT_LIMIT = prevLimit;
+    }
+  });
+
   async function makeConversation() {
     const project = (await json("POST", "/api/projects", { name: "Test", workspacePath: process.cwd() })).body;
     const conv = (await json("POST", `/api/projects/${project.id}/conversations`, { title: "Chat" })).body;

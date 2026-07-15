@@ -196,6 +196,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       const maxInput = num(p.maximumInputTokens) ?? num(p.maxInputTokens) ?? 0;
       const window = num(p.effectiveRequestLimitTokens) ?? num(p.contextWindowTokens) ?? 0;
       const source = (str(p.effectiveLimitSource) ?? str(p.contextWindowSource)) as import("./events.js").ContextUsageInfo["contextWindowSource"] | undefined;
+      const confidence = str(p.contextWindowConfidence) as import("./events.js").ContextUsageInfo["contextWindowConfidence"] | undefined;
       const knownLimit = window || null;
       return withSource([{
         type: "context.usage",
@@ -204,6 +205,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
           maxTokens: knownLimit ?? maxInput,
           contextLimitTokens: knownLimit,
           contextWindowSource: source ?? "fallback",
+          ...(confidence ? { contextWindowConfidence: confidence } : {}),
           modelCapacityTokens: num(p.modelCapacityTokens) ?? null,
           modelCapacitySource: str(p.modelCapacitySource) ?? "unknown",
           endpointLimitTokens: num(p.endpointLimitTokens) ?? null,
@@ -211,7 +213,13 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
           effectiveRequestLimitTokens: num(p.effectiveRequestLimitTokens) ?? null,
           effectiveLimitSource: str(p.effectiveLimitSource) ?? "unknown",
           outputReserveTokens: num(p.outputReserveTokens) ?? num(p.reservedOutputTokens) ?? null,
+          safetyMarginTokens: num(p.safetyMarginTokens) ?? null,
+          toolReserveTokens: num(p.toolReserveTokens) ?? null,
+          framingReserveTokens: num(p.framingReserveTokens) ?? null,
           maximumInputTokens: num(p.maximumInputTokens) ?? num(p.maxInputTokens) ?? null,
+          compactionTargetTokens: num(p.compactionTargetTokens) ?? null,
+          ...(p.endpointKind !== undefined ? { endpointKind: p.endpointKind as "default" | "custom" | "injected" } : {}),
+          endpointHost: (p.endpointHost as string | null | undefined) ?? null,
           currentRequestTokens: num(p.currentRequestTokens) ?? null,
           method: "estimate",
           compactedGroups: 0,
