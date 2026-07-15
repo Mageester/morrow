@@ -30,7 +30,8 @@ describe("service lifecycle", () => {
       out: new Output({ json: false, quiet: true, color: false }),
       config,
       paths: config.paths,
-      flags: { url: baseUrl },
+      flags: {},
+      serviceBaseUrl: baseUrl,
     });
   }
 

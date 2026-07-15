@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { calculateUsageCost, getModel, resolveModelMetadata } from "../src/routing/models.js";
+import type { ProviderStatus } from "@morrow/contracts";
+import { calculateUsageCost, getModel, listConfiguredCustomModels, resolveModelMetadata } from "../src/routing/models.js";
+
+function providerStatus(overrides: Partial<ProviderStatus>): ProviderStatus {
+  return {
+    version: 1,
+    id: "openai-compatible",
+    label: "OpenAI-compatible",
+    kind: "api-key",
+    configured: false,
+    available: false,
+    endpointType: "custom",
+    endpointHost: null,
+    authStatus: "missing",
+    capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: false, customEndpoint: true, local: false },
+    models: [],
+    defaultModel: null,
+    note: null,
+    setupHint: null,
+    ...overrides,
+  };
+}
 
 describe("authoritative model metadata", () => {
   it("knows the DeepSeek Flash context limit and usage capabilities", () => {
@@ -44,5 +65,47 @@ describe("authoritative model metadata", () => {
   it("calculates cost only with authoritative pricing", () => {
     const local = resolveModelMetadata("ollama", "llama3.1");
     expect(calculateUsageCost({ inputTokens: 1000, outputTokens: 500 }, local)).toEqual({ known: true, usd: 0, label: "$0.0000" });
+  });
+});
+
+// Regression coverage for a real bug: openai-compatible (a "bring your own
+// model" provider) has zero entries in BUILT_IN_MODELS, so a correctly
+// configured openai-compatible endpoint never showed up in /api/models or
+// /api/models/budgets at all — not even as "unavailable" the way a
+// provider-with-real-registry-entries would. That made a configured
+// openai-compatible model invisible in the /model picker.
+describe("listConfiguredCustomModels", () => {
+  it("synthesizes a model entry for a configured provider with no registry entries", () => {
+    const models = listConfiguredCustomModels([
+      providerStatus({ id: "openai-compatible", configured: true, defaultModel: "hy3-free", endpointHost: "opencode.ai" }),
+    ]);
+    expect(models).toHaveLength(1);
+    expect(models[0]?.providerId).toBe("openai-compatible");
+    expect(models[0]?.id).toBe("hy3-free");
+    expect(models[0]?.canonicalId).toBe("hy3-free");
+    expect(models[0]?.builtIn).toBe(false);
+    expect(models[0]?.contextWindow).toBeNull();
+    expect(models[0]?.pricing).toBeNull();
+  });
+
+  it("yields nothing for a provider that is not configured", () => {
+    const models = listConfiguredCustomModels([
+      providerStatus({ id: "openai-compatible", configured: false, defaultModel: "hy3-free" }),
+    ]);
+    expect(models).toHaveLength(0);
+  });
+
+  it("yields nothing for a configured provider with no default model set yet", () => {
+    const models = listConfiguredCustomModels([
+      providerStatus({ id: "openai-compatible", configured: true, defaultModel: null }),
+    ]);
+    expect(models).toHaveLength(0);
+  });
+
+  it("does not duplicate a provider that already has real registry entries", () => {
+    const models = listConfiguredCustomModels([
+      providerStatus({ id: "deepseek", configured: true, defaultModel: "deepseek-v4-flash" }),
+    ]);
+    expect(models).toHaveLength(0);
   });
 });

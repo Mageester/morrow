@@ -130,7 +130,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels, resolveReasoningCapability } from "./routing/models.js";
+import { listModels, listConfiguredCustomModels, resolveReasoningCapability } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -2186,8 +2186,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Built-in model registry with availability derived from configured providers.
   app.get("/api/models", async () => {
-    const configured = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
-    return listModels().map((model) => ({ model, available: configured.has(model.providerId) }));
+    const statuses = listProviderStatuses();
+    const configured = new Set(statuses.filter((s) => s.configured).map((s) => s.id));
+    const models = [...listModels(), ...listConfiguredCustomModels(statuses)];
+    return models.map((model) => ({ model, available: configured.has(model.providerId) }));
   });
 
   /**
@@ -2201,8 +2203,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
    * and never a thrown error) so an unconfigured provider can't crash this.
    */
   app.get("/api/models/budgets", async () => {
-    const configuredIds = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
-    return listModels().map((model): unknown => {
+    const budgetStatuses = listProviderStatuses();
+    const configuredIds = new Set(budgetStatuses.filter((s) => s.configured).map((s) => s.id));
+    const budgetModels = [...listModels(), ...listConfiguredCustomModels(budgetStatuses)];
+    return budgetModels.map((model): unknown => {
       const configured = configuredIds.has(model.providerId);
       let route: ProviderRouteMetadata;
       try {
