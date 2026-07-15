@@ -428,32 +428,133 @@ on its own. **This is recorded as a remaining limitation, not claimed as
 solved.** The fix is real, tested, and deterministic at the prompt level; it
 is not proven to be behaviorally sufficient by itself.
 
+## Phase 5b — Deterministic enforcement (external review follow-up)
+
+An automated review on the PR for this work (Codex) correctly pointed out
+that a system-prompt instruction alone cannot *guarantee* the disclosure
+behavior above, since `run_command` already records the exact command and
+exit code for every invocation — nothing was checking that record before
+letting a task reach "completed". This matched the Phase 5 write-up's own
+stated limitation, so a second, deterministic completion gate was added
+rather than treating a prompt instruction as sufficient by itself.
+
+**Mechanism** (`detectUndisclosedVerificationSubstitution` in
+`services/orchestrator/src/execution/agent.ts`, wired into the existing
+completion-gate sequence alongside `unverified_completion` and
+`missing_delivery_evidence`): reads the project's own `package.json`
+`scripts` for `test`/`build`/`lint`/`typecheck`; scans every `run_command`
+call in the task for (a) a direct invocation of that configured script via
+`npm`/`pnpm`/`yarn` and its real recorded exit code, and (b) a successful
+substitute invocation for the same purpose — either a non-package-manager
+executable, or the package manager itself bypassing its own scripts via
+`exec`/`dlx`/`npx`. If the configured script's last recorded outcome was a
+failure and a substitute succeeded, the task is stopped as `interrupted`
+(reason `undisclosed_verification_substitution`) **unless** the actual final
+answer text names the script, says something is broken/failing, and refers
+to the script/command/`package.json` context — all three together, checked
+by regex against the real final-answer text, not asked of the model.
+
+This is deliberately unlike the Phase 5 prompt instruction: it does not rely
+on the model choosing to comply. A task can still reach "completed" two
+ways — fixing the configured script, or genuinely disclosing the gap in the
+final answer — but it cannot reach "completed" by simply staying quiet.
+
+**Regression tests** (`services/orchestrator/test/agent-completion-gate.test.ts`,
+5 new cases, real `run_command` execution via the same pattern this file
+already uses elsewhere — `node -e`, real `npm`/`pnpm test` against a written
+`package.json`, not a mocked tool result):
+- does not report completed when a broken configured script was silently
+  worked around — confirmed **failing before** / **passing after** via a
+  scoped revert of just the `agent.ts` change.
+- reports completed when the substitution is honestly disclosed.
+- still reports completed when no configured verification script exists.
+- does not report completed when the substitute is run via the package
+  manager itself (`pnpm exec ...`) without disclosure.
+- reports completed for natural disclosure phrasing that names the script
+  and command context without saying the literal package-manager name.
+
+**A real bug found and fixed while building this, before it ever shipped:**
+the first implementation only treated a *non*-package-manager executable as
+a possible substitute, so `npm exec <tool>` / `pnpm exec <tool>` / `pnpm dlx
+<tool>` / `npx <tool>` — the package manager itself bypassing its own
+scripts, which is exactly what DeepSeek actually does — were invisible to
+it. This was caught by live-rerunning Journey L against real DeepSeek after
+the first version shipped: the task recorded `pnpm test` failing (exit 1)
+followed by `pnpm exec vitest run` passing, and the gate did not fire.
+Inspecting the actual recorded tool calls via the task API (not just the
+transcript) showed why. Fixed by explicitly classifying `exec`/`dlx`/`npx`
+invocations as substitutes even when the executable is a package manager;
+confirmed failing before / passing after with a regression test built from
+this exact real tool-call sequence (see the fourth bullet above). The
+disclosure regex had a matching gap in the same round — it required the
+literal word "test" and did not match the natural plural "tests" or
+paraphrased disclosures like "the project's `package.json` test script is
+broken" (no literal "npm"/"pnpm"/"yarn" token) — both were also fixed and
+covered by the fifth regression test above.
+
+**Live re-verification, honestly reported:** with both fixes in place, two
+further live re-runs of Journey L against real `deepseek-v4-pro` (tasks
+`b481e086-2470-4e44-880b-62366e68b0f2` and
+`0c019dcf-4c9e-407a-8ef3-794719089a02`, both from the exact `c35c86a`
+starting commit) both completed normally — inspecting the actual recorded
+tool calls confirmed this was correct in both cases: once because the model
+disclosed the broken script after the gate observed a real recorded
+`pnpm test` failure, and once because the model never actually invoked the
+broken script at all (so there was no recorded failure for the gate to
+act on), yet still disclosed unprompted from reading `package.json`
+directly. Neither trial exercised the gate's *interrupting* path with real
+DeepSeek output, because in both cases the model either disclosed or gave
+the gate no substitution to evaluate. The gate's interrupting behavior is
+proven at the unit level (deterministic, fail-before/pass-after, built from
+the exact tool-call sequence observed live) but has not been observed
+firing against a live, non-disclosing DeepSeek response in this session.
+This is recorded honestly as the current evidence boundary, not papered
+over: the mechanism no longer depends on the model's cooperation to work
+correctly when it has failure evidence to act on, but this session did not
+happen to produce a live trial where DeepSeek stayed silent for it to catch.
+
 ## Initial vs. final pass rate
 
 - **Initial: 5/6 PASS, 1/6 PARTIAL (83% strict pass rate).**
-- **Final (after Phase 5, live-reverified): 5/6 PASS, 1/6 PARTIAL — unchanged
-  for Journey L specifically in this one live re-run.** The deterministic
-  fix and its regression test are real and permanently in place; the live
-  behavioral change was not demonstrated in this trial. Journeys H, I, J, K,
-  M were not rerun post-fix since the fix is scoped to disclosure of broken
-  verification commands, a condition none of those five journeys exercise.
+- **After Phase 5 (prompt instruction, live-reverified): 5/6 PASS, 1/6
+  PARTIAL — unchanged for Journey L in that one live re-run.** The
+  deterministic-at-the-prompt-level fix and its regression test were real
+  and permanently in place; the live behavioral change was not demonstrated
+  in that trial.
+- **After Phase 5b (deterministic completion gate): the false-completion
+  path Journey L exposed can no longer occur silently**, regardless of
+  whether the model chooses to comply — a task with recorded evidence of a
+  failed configured script and an undisclosed successful substitute now
+  stops as `interrupted`, proven at the unit level with a regression test
+  built from a real, live-observed DeepSeek tool-call sequence. Two further
+  live re-runs both completed correctly (once via genuine disclosure the
+  gate recognized, once via a path the gate correctly left alone because no
+  substitution was ever recorded) — see Phase 5b for the honest boundary of
+  what was and was not observed live. Journeys H, I, J, K, M were not
+  rerun post-fix since neither fix touches behavior those five journeys
+  exercise.
 
-**This baseline does not claim the underlying reliability problem is
+**This baseline does not claim the underlying reliability problem is fully
 solved.** It claims: one real, reproducible, evidence-backed gap was found;
-one narrowly-scoped, permanently-tested fix was made for it; and an honest
-live re-check was performed and reported exactly as observed, including
-where it did not show the hoped-for effect.
+a first, narrowly-scoped fix was made and honestly shown to be insufficient
+on its own; an external review correctly identified the same insufficiency
+and a second, deterministic fix was added that does not depend on the
+model's cooperation; a real bug in that second fix's first draft was caught
+and repaired before shipping; and every claim here is backed by either a
+regression test or a live re-run's actual recorded data, not a transcript or
+a self-report.
 
 ## Remaining failures and risks
 
-1. **Journey L's disclosure gap is not proven fixed in live behavior**, per
-   the honest re-verification above. The system prompt now contains a clear,
-   tested instruction; DeepSeek did not visibly follow it in one live retry.
-   A stronger enforcement mechanism (e.g., a deterministic post-hoc check
-   that diffs the configured verification command's exit code against what
-   was actually reported, independent of the model choosing to mention it)
-   would be a more reliable fix than a prompt instruction alone, if outcome
-   evidence across more trials continues to show non-compliance.
+1. **The deterministic gate's interrupting path has not been observed
+   firing against a live, non-disclosing DeepSeek response** in this
+   session — both live re-runs after Phase 5b happened to complete
+   correctly (see Phase 5b). Its correctness is established at the unit
+   level (fail-before/pass-after, built from a real tool-call sequence
+   observed live), not yet by directly watching it interrupt a live,
+   non-cooperating model turn. The mechanism itself no longer requires
+   model cooperation to work correctly when it has failure evidence to act
+   on; only the "seen it fire live" evidence is still outstanding.
 2. **Malformed-diff recovery is frequent with DeepSeek** (nearly every
    journey). Morrow's handling of it is correct, but the frequency suggests
    DeepSeek's raw diff-generation reliability is a meaningful cost driver
@@ -521,16 +622,25 @@ git stash pop
 pnpm --filter @morrow/orchestrator test -- agent-alpha   # new test passes, 18/18
 ```
 
+Reproduce the Phase 5b deterministic-gate regression test failing/passing
+(this one is built from a real, live-observed DeepSeek tool-call sequence,
+not a synthetic one):
+
+```
+cd /home/user/morrow
+pnpm --filter @morrow/orchestrator test -- agent-completion-gate -t "pnpm exec"   # passes with the fix present
+```
+
 ## Full validation results (this session, branch `test/advanced-agent-consumer-proof`)
 
 | Command | Result |
 |---|---|
 | `pnpm --filter @morrow/orchestrator check` | clean |
-| `pnpm --filter @morrow/orchestrator test` | 98 files / 910 tests pass |
+| `pnpm --filter @morrow/orchestrator test` | 98 files / 915 tests pass (+ 10 pre-existing skips) |
 | `pnpm --filter @morrow/cli check` | clean |
 | `pnpm --filter @morrow/cli test` | 76 files / 658 tests pass |
 | `pnpm check` | 5/5 packages clean (turbo + repository validation) |
-| `pnpm test` | 7/7 tasks pass; orchestrator 98/98 files, 910 passed + 10 skipped (pre-existing, unrelated); cli 76/76 files, 658/658 |
+| `pnpm test` | 7/7 tasks pass; orchestrator 98/98 files, 915 passed + 10 skipped (pre-existing, unrelated); cli 76/76 files, 658/658 |
 | `pnpm build` | 4/4 buildable packages clean (`@morrow/cli` has no build script by design — it runs directly via `bin/morrow.mjs`) |
 
 No Windows-specific EPERM failure was encountered in this Linux session; the
@@ -540,10 +650,20 @@ mission's exception clause for that failure mode was not invoked (see
 ## Files changed in this proof
 
 - `services/orchestrator/src/execution/agent.ts` — one system-prompt
-  instruction added (Phase 5 fix).
+  instruction (Phase 5), plus a deterministic completion gate
+  (`detectUndisclosedVerificationSubstitution` and its helpers, Phase 5b)
+  that checks real recorded `run_command` exit codes and the real final
+  answer text rather than relying on the model to comply with the prompt
+  instruction.
 - `services/orchestrator/test/agent-alpha.test.ts` — one new regression
-  test, plus two pre-existing tests' context-budget constants re-tuned to
-  the new prompt length (mechanical consequence, not a behavior change).
+  test for the Phase 5 prompt instruction, plus two pre-existing tests'
+  context-budget constants re-tuned to the new prompt length (mechanical
+  consequence, not a behavior change).
+- `services/orchestrator/test/agent-completion-gate.test.ts` — five new
+  regression tests for the Phase 5b deterministic gate, including one built
+  directly from the exact tool-call sequence observed in a live DeepSeek
+  re-run (`pnpm test` fails, `pnpm exec vitest run` substitutes) that caught
+  a real gap in this fix's first draft before it shipped.
 - `docs/ADVANCED_AGENT_CONSUMER_BASELINE.md` — this document.
 
 No other files in the Morrow repository were modified. The disposable test
