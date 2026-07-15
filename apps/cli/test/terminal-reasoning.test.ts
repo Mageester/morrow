@@ -335,3 +335,108 @@ describe("/reasoning: atomic route through the real session", () => {
     ctrlC(stdin); ctrlC(stdin); await done;
   });
 });
+
+// ── The chosen reasoning actually reaches the outbound send (no silent drop) ─
+
+describe("/reasoning: the selected value reaches backend.send(), never silently dropped", () => {
+  it("a real chat message send carries the configured reasoning through to SessionBackend.send()", async () => {
+    const io = new FakeTermIO(); const stdin = fakeStdin();
+    const gate = new EventGate();
+    const captured: Array<{ text: string; opts: any }> = [];
+    const backend = makeBackend(gate, {
+      listModels: async () => REG_MODELS,
+      getModelBudgets: async () => [] as ModelBudgetView[],
+      listProviders: async () => [provider("openai", "gpt-5.5"), provider("deepseek", "deepseek-chat")],
+      send: async (text, opts) => {
+        captured.push({ text, opts });
+        return { taskId: "task-1" };
+      },
+    });
+    const app = new InteractiveSession({ io, stdin, out: plain, unicode: false, meta: { ...meta }, settings: { ...settings }, backend, now: () => Date.now(), maxFps: 120 });
+    const done = app.run();
+    typeText(stdin, "/model gpt-5.5"); key(stdin, "return"); await tick();
+    typeText(stdin, "/reasoning high"); key(stdin, "return"); await tick();
+    typeText(stdin, "hello there"); key(stdin, "return"); await tick();
+    gate.end();
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.text).toBe("hello there");
+    // This is the exact gap that made the picker/UI PR incomplete: the
+    // selected reasoning must be present on the object handed to send(),
+    // not just held in in-memory UI state nothing ever reads.
+    expect(captured[0]!.opts.reasoning).toEqual({ mode: "effort", effort: "high" });
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+
+  it("with no reasoning selected (Auto), send() carries no reasoning field", async () => {
+    const io = new FakeTermIO(); const stdin = fakeStdin();
+    const gate = new EventGate();
+    const captured: Array<{ opts: any }> = [];
+    const backend = makeBackend(gate, {
+      listModels: async () => REG_MODELS,
+      send: async (text, opts) => { captured.push({ opts }); return { taskId: "task-1" }; },
+    });
+    const app = new InteractiveSession({ io, stdin, out: plain, unicode: false, meta: { ...meta }, settings: { ...settings }, backend, now: () => Date.now(), maxFps: 120 });
+    const done = app.run();
+    typeText(stdin, "hello"); key(stdin, "return"); await tick();
+    gate.end();
+    expect(captured[0]!.opts.reasoning).toBeUndefined();
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+});
+
+// ── Display surfaces show reasoning: header meta, /status, /cost, /model current ─
+
+describe("reasoning is visible on every user-facing route surface", () => {
+  // /status's overlay is clipped to available rows, and the bordered startup
+  // panel (shown until the first message starts a conversation) leaves little
+  // room — so, exactly like the existing /status test suite, send one message
+  // through to completion first to reach the compact live layout before
+  // opening it.
+  function makeAppWithGate(io: FakeTermIO, stdin: any) {
+    const gate = new EventGate();
+    const backend = makeBackend(gate, {
+      listModels: async () => REG_MODELS,
+      getModelBudgets: async () => [] as ModelBudgetView[],
+      listProviders: async () => [provider("openai", "gpt-5.5"), provider("deepseek", "deepseek-chat")],
+    });
+    const app = new InteractiveSession({ io, stdin, out: plain, unicode: false, meta: { ...meta }, settings: { ...settings }, backend, now: () => Date.now(), maxFps: 120 });
+    return { app, gate };
+  }
+  async function pastStartup(stdin: any, gate: EventGate) {
+    typeText(stdin, "go"); key(stdin, "return"); await tick();
+    gate.end();
+    await tick();
+  }
+
+  it("/status shows the resolved reasoning alongside the model", async () => {
+    const io = new FakeTermIO(); const stdin = fakeStdin();
+    const { app, gate } = makeAppWithGate(io, stdin); const done = app.run();
+    typeText(stdin, "/model gpt-5.5"); key(stdin, "return"); await tick();
+    typeText(stdin, "/reasoning high"); key(stdin, "return"); await tick();
+    await pastStartup(stdin, gate);
+    typeText(stdin, "/status"); key(stdin, "return"); await tick();
+    expect(io.all()).toContain("reasoning");
+    expect(io.all()).toContain("High");
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+
+  it("/status shows Auto before any reasoning is configured", async () => {
+    const io = new FakeTermIO(); const stdin = fakeStdin();
+    const { app, gate } = makeAppWithGate(io, stdin); const done = app.run();
+    await pastStartup(stdin, gate);
+    typeText(stdin, "/status"); key(stdin, "return"); await tick();
+    expect(io.all()).toContain("Auto");
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+
+  it("the header reflects the configured reasoning once set, and omits it at Auto", async () => {
+    const io = new FakeTermIO(); const stdin = fakeStdin();
+    const { app, gate } = makeAppWithGate(io, stdin); const done = app.run();
+    typeText(stdin, "/model gpt-5.5"); key(stdin, "return"); await tick();
+    await pastStartup(stdin, gate);
+    io.writes = [];
+    typeText(stdin, "/reasoning high"); key(stdin, "return"); await tick();
+    expect(io.all()).toContain("reasoning High");
+    ctrlC(stdin); ctrlC(stdin); await done;
+  });
+});

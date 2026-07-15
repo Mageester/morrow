@@ -10,7 +10,15 @@
  */
 import type { Output } from "../cli/output.js";
 import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
+import { isReasoningCompatible, normalizeReasoningForRoute } from "@morrow/contracts";
 import { clampSelection } from "./completion.js";
+
+// isReasoningCompatible/normalizeReasoningForRoute are the single, shared
+// implementation (packages/contracts/src/reasoning.ts) — the orchestrator's
+// send-time validation and per-candidate fallback reset use the exact same
+// functions, so the CLI's picker/reset behavior can never diverge from what
+// the server will actually accept.
+export { isReasoningCompatible, normalizeReasoningForRoute };
 
 /** An explicit "we know nothing" capability — used when a route omits one. */
 export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "none", efforts: [], budgets: [], source: "unknown" };
@@ -81,35 +89,6 @@ export function reasoningStatusText(cfg: ReasoningConfiguration | undefined): st
     case "provider-fixed":
       return "Fixed";
   }
-}
-
-/** Whether a normalized reasoning config is a valid selection for a route. */
-export function isReasoningCompatible(cfg: ReasoningConfiguration, cap: RouteReasoningCapability): boolean {
-  if (cfg.mode === "auto") return true; // always valid — provider default
-  switch (cap.control) {
-    case "none":
-      return cfg.mode === "off"; // a no-op, harmless
-    case "fixed":
-      return cfg.mode === "provider-fixed";
-    case "effort":
-      return cfg.mode === "effort" && cap.efforts.includes(cfg.effort);
-    case "budget":
-      return cfg.mode === "off" || (cfg.mode === "budget" && (cap.budgets.length === 0 || cap.budgets.includes(cfg.tokens)));
-  }
-}
-
-/**
- * Normalize a reasoning config against a route it's moving to. Compatible
- * configs pass through unchanged; incompatible ones fall back to Auto (never a
- * silently-wrong setting), reporting the change so the caller can disclose it.
- */
-export function normalizeReasoningForRoute(
-  cfg: ReasoningConfiguration | undefined,
-  cap: RouteReasoningCapability
-): { config: ReasoningConfiguration; changed: boolean } {
-  const current = cfg ?? { mode: "auto" };
-  if (isReasoningCompatible(current, cap)) return { config: current, changed: false };
-  return { config: { mode: "auto" }, changed: true };
 }
 
 export interface ReasoningPickerOptions {

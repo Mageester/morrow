@@ -52,6 +52,7 @@ export interface SendOptions {
   model?: string | undefined;
   preset: string;
   useMemory: boolean;
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface ApprovalView {
@@ -68,6 +69,9 @@ export interface SessionRouting {
   fallback: boolean;
   overridden: boolean;
   privacy: string;
+  /** The reasoning selection frozen into this route at send time. Absent
+   *  means Auto (the route's own default) — never inferred otherwise. */
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface SessionBackend {
@@ -228,7 +232,7 @@ export class InteractiveSession {
     this.recentActivity = deps.recentActivity ?? [];
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
     this.keyCtx = { commands: this.commands, paletteItems, modelItems: [] };
-    this.syncReasoningMeta();
+    this.meta.reasoning = this.settings.reasoning ? reasoningStatusText(this.settings.reasoning) : undefined;
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
     this.lastTaskId = deps.initialTaskId ?? null;
   }
@@ -838,6 +842,7 @@ export class InteractiveSession {
       `${o.gray("workspace")} ${this.meta.workspacePath}`,
       `${o.gray("mode")}       ${mode}`,
       `${o.gray("model")}      ${this.resolvedModelText()}`,
+      `${o.gray("reasoning")}  ${this.resolvedReasoningText()}`,
       `${o.gray("branch")}     ${this.meta.branch ?? "—"}`,
     ];
     // Git dirty state (cheap if getGitStatus is available).
@@ -893,6 +898,7 @@ export class InteractiveSession {
         `${o.gray("estimated")}   ${cost}`,
       ];
       if (agg.routing?.model) lines.push(`${o.gray("model")}        ${agg.routing.model}`);
+      if (agg.routing?.reasoning) lines.push(`${o.gray("reasoning")}    ${reasoningStatusText(agg.routing.reasoning)}`);
       this.outputViewer = { title: "cost", lines };
       this.input = { ...this.input, overlay: "output" };
     } catch {
@@ -1170,9 +1176,12 @@ export class InteractiveSession {
     this.pushNotice("info", `Reasoning set to ${reasoningStatusText(this.settings.reasoning)}${forLabel} — session preserved.`);
   }
 
-  /** Mirror the active reasoning into the header meta (shown only when non-Auto). */
+  /** Mirror the active reasoning into the header meta (shown only when
+   *  non-Auto) and resync `term.meta` so the header actually repaints with
+   *  it — same fix needed for the model change this always accompanies. */
   private syncReasoningMeta(): void {
     this.meta.reasoning = this.settings.reasoning ? reasoningStatusText(this.settings.reasoning) : undefined;
+    this.resyncTermMeta();
   }
 
   /** Resolve the current route's reasoning capability + display label from the
@@ -1660,6 +1669,14 @@ export class InteractiveSession {
 
   private refreshModeLabel(): void {
     this.meta.mode = modeLabel(this.settings.mode, this.settings.autoApprove);
+    this.resyncTermMeta();
+  }
+
+  /** `term.meta` is a snapshot taken at `session.started` — mutating
+   *  `this.meta` directly (model, reasoning, mode, ...) never reaches the
+   *  renderer on its own. Every mutation site must re-dispatch through here
+   *  so the header (and anything else reading `term.meta`) can't go stale. */
+  private resyncTermMeta(): void {
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
   }
 
@@ -1877,6 +1894,18 @@ export class InteractiveSession {
     if (routing?.provider && routing.model) return `${routing.provider}/${routing.model}`;
     const historical = this.term.usage;
     return historical?.provider && historical.model ? `${historical.provider}/${historical.model}` : `${this.meta.provider}/${this.meta.model}`;
+  }
+
+  /** Same precedence as `resolvedModelText()` — a live per-turn usage event
+   *  (the actual reasoning attached to the request that produced it) beats
+   *  the send-time routing decision, which beats the currently configured
+   *  default. Never conflated with "what's selected in the UI right now". */
+  private resolvedReasoningText(): string {
+    const u = this.term.activeUsage;
+    if (u) return reasoningStatusText(u.reasoning);
+    const routing = this.term.routing;
+    if (routing) return reasoningStatusText(routing.reasoning);
+    return reasoningStatusText(this.settings.reasoning);
   }
 
   /**

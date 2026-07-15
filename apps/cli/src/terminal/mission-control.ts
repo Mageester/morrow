@@ -1,4 +1,5 @@
 import type { TaskAggregate, TaskTreeNode } from "../client/api.js";
+import { reasoningStatusText } from "./reasoning.js";
 
 function short(id: string): string {
   return id.length <= 8 ? id : id.slice(0, 8).replace(/-$/, "");
@@ -87,6 +88,7 @@ export function formatMissionResult(aggregate: TaskAggregate): string[] {
   const lines = [
     `Status: ${statusLabel(task.status)} (${task.status})`,
     `Provider/model: ${aggregate.routing?.providerId ?? disclosure?.provider ?? "unknown"} / ${aggregate.routing?.model ?? "unknown"}`,
+    `Reasoning: ${reasoningStatusText(aggregate.routing?.reasoning)}`,
     `Mode/privacy: ${aggregate.routing?.mode ?? "unknown"} / ${aggregate.routing?.privacy ?? "unknown"}`,
     `Plan: ${aggregate.plan.length ? aggregate.plan.map((step) => `${step.title}=${step.status}`).join("; ") : "none recorded"}`,
     `Files affected: ${files.size ? [...files].join(", ") : "none recorded"}`,

@@ -33,6 +33,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError }
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
+import { translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
@@ -43,7 +44,7 @@ import { buildProviderProjection, projectProviderRequest, type DurableProviderTu
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
-import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile } from "@morrow/contracts";
+import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration } from "@morrow/contracts";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -615,6 +616,12 @@ export async function executeAgentChatTask({
   const providerId = (routing?.providerId ?? (assistantMessageRow.provider as ProviderId | null) ?? "openai") as ProviderId;
   const resolvedModel: string | undefined = routing?.model ?? assistantMessageRow.model ?? undefined;
   const useMemory = routing?.useMemory ?? true;
+  // The reasoning selection frozen into the routing decision at send time
+  // (server.ts already validated it against the primary route). Retry/resume
+  // re-read this same durable value â€” never "current session settings",
+  // which the orchestrator has no notion of. Per-candidate compatibility is
+  // re-checked below since a fallback candidate's capability can differ.
+  const requestedReasoning: ReasoningConfiguration | undefined = routing?.decision.reasoning;
   // Mode is the single source of truth for which tools are exposed. plan-only
   // gets no tools, read-only (inspect) gets read-only tools, agent gets all.
   const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
@@ -2027,6 +2034,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           const { providerContinuation: _private, providerContinuationRouteFingerprint: _binding, ...publicMessage } = message;
           return publicMessage;
         });
+        // Fallback-safe reasoning: the requested selection was validated
+        // against the PRIMARY route at send time (server.ts), but a fallback
+        // candidate can have a different provider/model with a different real
+        // capability. Re-validate per candidate with the exact function the
+        // adapter itself uses (translateReasoning) and reset to the route's
+        // default (omit the field) rather than ever forward a combination
+        // that candidate's adapter would reject â€” this is what keeps a
+        // provider failover from aborting on an unrelated reasoning mismatch.
+        const candidateReasoning: ReasoningConfiguration | undefined =
+          requestedReasoning && requestedReasoning.mode !== "auto" && !translateReasoning(requestedReasoning, route.protocol, resolution.reasoning).ok
+            ? undefined
+            : requestedReasoning;
         const candidateOptions = {
           ...(abortSignal ? { abortSignal } : {}),
           tools: exposedTools,
@@ -2034,6 +2053,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           timeoutMs: preset.timeoutMs,
           temperature: preset.temperature,
           maxOutputTokens: preset.outputBudgetTokens,
+          ...(candidateReasoning ? { reasoning: candidateReasoning, reasoningCapability: resolution.reasoning } : {}),
         };
         const envelope = {
           providerId: candidate.id,
@@ -2111,7 +2131,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           model: resolvedModel || assistantMessageRow.model || undefined,
           timeoutMs: preset.timeoutMs,
           temperature: preset.temperature,
-          maxOutputTokens: preset.outputBudgetTokens
+          maxOutputTokens: preset.outputBudgetTokens,
+          // Reasoning intentionally omitted here: this object is only a
+          // fallback default fallback.ts uses when a candidate lacks its own
+          // `request.options` (see FallbackCandidate) â€” every admitted
+          // candidate above always sets one, with its own per-candidate
+          // validated `reasoning`/`reasoningCapability`. Forwarding the raw,
+          // unvalidated `requestedReasoning` here would risk sending a
+          // combination that was never checked against this specific route.
         },
         globalRateGuard
       );
@@ -2222,6 +2249,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           event("provider.usage", {
             provider: opened.servedBy,
             model: servedModel,
+            // The reasoning actually attached to the request that produced
+            // this response â€” the per-candidate, capability-validated value,
+            // never the raw requested one. On any successful response these
+            // are identical (translateReasoning is all-or-nothing); this only
+            // diverges from `routing.reasoning` when a fallback candidate
+            // reset it. Omitted (not `null`) when no override was sent.
+            ...(selectedCandidate.candidateOptions.reasoning ? { reasoning: selectedCandidate.candidateOptions.reasoning } : {}),
             // Legacy/display field: inputTokens is the TOTAL prompt token
             // count (fresh + cached), matching every existing consumer's
             // "X in" display â€” never confuse this with freshInputTokens

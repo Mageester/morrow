@@ -130,7 +130,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels } from "./routing/models.js";
+import { listModels, resolveReasoningCapability } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -140,6 +140,7 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
+import { translateReasoning } from "./provider/reasoning.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -831,6 +832,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       }
       decision = { ...decision, mode, toolProfile, autoApprove };
     }
+
+    // Validate the requested reasoning against the resolved route's real
+    // capability BEFORE any task is created — an unsupported combination must
+    // never reach a provider request, and the caller must find out about it
+    // as a normal 400, not a mid-task failure. translateReasoning is the same
+    // function the adapters use to build the wire params, so "accepted here"
+    // and "will actually be sent" can never disagree. Auto never needs
+    // validation — it always defers to the route's own default.
+    if (body.reasoning && body.reasoning.mode !== "auto") {
+      let reasoningRoute: ProviderRouteMetadata;
+      if (decision.providerId === "mock") {
+        reasoningRoute = { providerId: "mock", protocol: "mock", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
+      } else {
+        try {
+          reasoningRoute = createProvider(decision.providerId, process.env, decision.model).route ?? {
+            providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+            endpointLimitTokens: null, endpointLimitSource: "unknown",
+          };
+        } catch {
+          reasoningRoute = { providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
+        }
+      }
+      const capability = resolveReasoningCapability(decision.providerId, decision.model);
+      const translated = translateReasoning(body.reasoning, reasoningRoute.protocol, capability);
+      if (!translated.ok) throw new ApiError(400, translated.reason, "REASONING_UNSUPPORTED");
+    }
+    // Frozen into the durable routing decision, exactly like provider/model —
+    // retry/resume replay this value rather than re-reading current settings.
+    decision = { ...decision, ...(body.reasoning ? { reasoning: body.reasoning } : {}) };
 
     const timestamp = new Date().toISOString();
 

@@ -11,6 +11,7 @@
  * interactive controller handles by prompting, not a render event.
  */
 import type { TerminalEvent } from "./events.js";
+import { ReasoningConfigurationSchema, type ReasoningConfiguration } from "@morrow/contracts";
 
 export interface RawTaskEvent {
   id?: string;
@@ -26,6 +27,13 @@ function str(v: unknown): string | undefined {
 }
 function num(v: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;
+}
+/** Validates against the canonical schema rather than trusting the wire
+ *  shape — an untrusted/stale payload degrades to "unknown" (Auto), never a
+ *  malformed reasoning object reaching the renderer. */
+function reasoningConfig(v: unknown): ReasoningConfiguration | undefined {
+  const parsed = ReasoningConfigurationSchema.safeParse(v);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** Map one SSE task event to zero or more terminal events. */
@@ -162,6 +170,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       if (!provider || !model || inputTokens === undefined || outputTokens === undefined) return [];
       const cachedInputTokens = num(p.cachedInputTokens);
       const estimatedCostUsd = num(p.estimatedCostUsd);
+      const reasoning = reasoningConfig(p.reasoning);
       return withSource([{
         type: "usage.reported",
         provider,
@@ -170,6 +179,7 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
         outputTokens,
         ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
         ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {}),
       }]);
     }
 

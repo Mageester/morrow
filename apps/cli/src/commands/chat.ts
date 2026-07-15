@@ -183,6 +183,7 @@ async function runInteractiveSession(
         ...(opts.autoApprove && opts.mode === "agent" ? { autoApprove: true } : {}),
         ...(session.worktreeId ? { worktreeId: session.worktreeId } : {}),
         ...(session.missionId ? { missionId: session.missionId } : {}),
+        ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
       });
       return {
         taskId: sent.task.id,
@@ -193,6 +194,7 @@ async function runInteractiveSession(
           fallback: sent.routing.fallbackUsed,
           overridden: sent.routing.overridden,
           privacy: sent.routing.privacy,
+          reasoning: sent.routing.reasoning,
         },
       };
     },
@@ -208,7 +210,7 @@ async function runInteractiveSession(
       const request = taskId
         ? api.compactTask(taskId, project.id, options)
         : api.compactConversation(conversation.id, project.id, options);
-      return request.then((result) => ({ ...result, routing: { provider: result.routing.providerId, model: result.routing.model, preset: result.routing.presetId, fallback: result.routing.fallbackUsed, overridden: result.routing.overridden, privacy: result.routing.privacy } }));
+      return request.then((result) => ({ ...result, routing: { provider: result.routing.providerId, model: result.routing.model, preset: result.routing.presetId, fallback: result.routing.fallbackUsed, overridden: result.routing.overridden, privacy: result.routing.privacy, reasoning: result.routing.reasoning } }));
     },
     async getApproval(id) {
       const a = await api.getApproval(id);

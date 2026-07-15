@@ -48,6 +48,7 @@ import type {
   MissionSpecialistRole,
   MissionVerificationStrategy,
   CreateMissionInput,
+  ReasoningConfiguration,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
@@ -60,6 +61,7 @@ export interface SendMessageOptions {
   autoApprove?: boolean;
   worktreeId?: string;
   missionId?: string;
+  reasoning?: ReasoningConfiguration;
 }
 
 export interface SendMessageResult {

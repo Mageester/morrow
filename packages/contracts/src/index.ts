@@ -250,6 +250,11 @@ export const RoutingDecisionSchema=z.object({
   mode:AgentModeSchema.optional(),
   toolProfile:ToolProfileSchema.optional(),
   autoApprove:z.boolean().optional(),
+  // The reasoning selection attached to this route at send time. Frozen into
+  // the durable decision record so retry/resume reuse exactly what was
+  // requested, never re-reading "current session settings" (routing/model
+  // overrides already behave this way — see execution/agent.ts).
+  reasoning:ReasoningConfigurationSchema.optional(),
 }).strict();
 
 export const SendMessageSchema=z.object({
@@ -1063,3 +1068,5 @@ export {
 } from "./mission-state.js";
 
 export * from "./cortex.js";
+
+export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";
