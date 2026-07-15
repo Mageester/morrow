@@ -12,6 +12,7 @@ import { stripAnsi } from "../cli/output.js";
 import type { SlashCommand } from "./commands.js";
 import { completionCandidates, renderMenu } from "./completion.js";
 import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
+import { filterModelItems, renderModelPicker, type ModelPickerItem } from "./model-picker.js";
 import { completionActive, type InputState } from "./input-state.js";
 import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
@@ -71,6 +72,13 @@ export interface AppFrameContext {
   recentActivity?: RecentActivityItem[];
   /** The active overlay's content, if one is open. */
   overlayPanel?: OverlayPanel | null;
+  /** The /model picker's real item list — see input-state.ts's KeyContext,
+   *  which the same array is mutated into (never a second, independently
+   *  built list). Empty unless the model overlay is open. */
+  modelItems?: ModelPickerItem[];
+  /** The currently configured model id ("auto" when unset), so the picker
+   *  can mark the current selection without recomputing it. */
+  currentModelId?: string | undefined;
 }
 
 export interface AppFrame {
@@ -118,6 +126,17 @@ export function composeApp(
     });
     bottom = [...noticeLines, ...palette];
     cursorWithinBottom = { row: noticeLines.length + 1, col: stripAnsi(palette[1] ?? "").length };
+  } else if (input.overlay === "model") {
+    const items = filterModelItems(input.modelQuery, ctx.modelItems ?? []);
+    const picker = renderModelPicker(items, out, {
+      query: input.modelQuery,
+      selected: input.modelSelected,
+      maxRows: Math.min(8, Math.max(3, Math.floor((opts.rows - top.length - 4) / 2))),
+      unicode,
+      currentModelId: ctx.currentModelId,
+    });
+    bottom = [...noticeLines, ...picker];
+    cursorWithinBottom = { row: noticeLines.length + 1, col: stripAnsi(picker[1] ?? "").length };
   } else {
     const built = buildInputBlock(input, out, unicode, ctx, opts);
     bottom = [...noticeLines, ...built.lines];

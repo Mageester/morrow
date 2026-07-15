@@ -55,6 +55,14 @@ export { filterCommands, matchScore, renderMenu, clampSelection } from "./comple
 export { readLineWithCompletion, PROMPT_EXIT, type PromptOptions } from "./prompt.js";
 export { composeApp, welcomeLines, type AppFrame, type AppFrameOptions, type AppFrameContext } from "./app-view.js";
 export { modelPickerLines, modelFactsLine, formatContextWindow, type ModelSelection } from "./model-picker.js";
+export {
+  buildModelPickerItems,
+  filterModelItems,
+  renderModelPicker,
+  modelDetailLines,
+  type ModelPickerItem,
+  type ModelPickerViewOptions,
+} from "./model-picker.js";
 export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
 export { activityDetailLines, activityGroupSummary, agentDetailLine } from "./activity-view.js";
 export { stageLabel } from "./view.js";

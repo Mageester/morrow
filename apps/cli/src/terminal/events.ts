@@ -70,6 +70,12 @@ export interface ContextUsageInfo {
   /** Known model context window. Null means the registry could not assert it. */
   contextLimitTokens?: number | null;
   contextWindowSource?: "known-model" | "model-metadata" | "provider-metadata" | "endpoint-override" | "user-config" | "fallback" | "unknown";
+  /** The canonical ModelBudget.contextWindowConfidence, when the emitting
+   *  event is recent enough to carry it — "verified"/"configured"/
+   *  "unverified" (see routing/model-budget.ts). Absent for older event rows
+   *  predating that field; callers must derive an honest label from
+   *  `contextWindowSource` in that case, never assume "verified". */
+  contextWindowConfidence?: "verified" | "configured" | "unverified";
   modelCapacityTokens?: number | null;
   modelCapacitySource?: string;
   endpointLimitTokens?: number | null;
@@ -77,7 +83,19 @@ export interface ContextUsageInfo {
   effectiveRequestLimitTokens?: number | null;
   effectiveLimitSource?: string;
   outputReserveTokens?: number | null;
+  /** Safety-margin, tool-definition, and message-framing reserve — the parts
+   *  of ModelBudget.totalReserveTokens beyond the output reserve. Absent for
+   *  older event rows; never fabricated when unknown. */
+  safetyMarginTokens?: number | null;
+  toolReserveTokens?: number | null;
+  framingReserveTokens?: number | null;
   maximumInputTokens?: number | null;
+  /** The soft compaction target (ModelBudget.compactionTargetTokens) — never
+   *  a provider-enforced ceiling, just the point deterministic trimming aims
+   *  for before the real request-size gate. Null/absent when unknown. */
+  compactionTargetTokens?: number | null;
+  endpointKind?: "default" | "custom" | "injected";
+  endpointHost?: string | null;
   currentRequestTokens?: number | null;
   /** Percent of the known context window consumed; null when the limit is unknown. */
   percent?: number | null;

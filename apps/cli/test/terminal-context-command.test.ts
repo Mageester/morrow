@@ -98,7 +98,7 @@ function typeText(stdin: any, text: string): void {
 function enter(stdin: any): void { stdin.emit("keypress", undefined, { name: "return" }); }
 function ctrlC(stdin: any): void { stdin.emit("keypress", undefined, { name: "c", ctrl: true }); }
 
-async function runNoticeCommand(events: RawTaskEvent[], command: string): Promise<{ notices: string[]; io: FakeTermIO }> {
+async function runNoticeCommand(events: RawTaskEvent[], command: string): Promise<{ notices: string[]; frame: string; io: FakeTermIO }> {
   const io = new FakeTermIO();
   const stdin = fakeStdin();
   const gate = new EventGate();
@@ -121,15 +121,17 @@ async function runNoticeCommand(events: RawTaskEvent[], command: string): Promis
   await tick();
 
   const notices = app.snapshot().notices.map((n) => n.text);
+  const frame = io.writes.join("");
+  stdin.emit("keypress", undefined, { name: "escape" });
   ctrlC(stdin);
   ctrlC(stdin);
   await done;
-  return { notices, io };
+  return { notices, frame, io };
 }
 
 describe("/context and /status: model and context-limit truthfulness", () => {
   it("shows the actually-routed DeepSeek provider/model and its real known context window", async () => {
-    const { notices } = await runNoticeCommand(
+    const { frame } = await runNoticeCommand(
       [
         {
           type: "context.budget_calculated",
@@ -148,20 +150,18 @@ describe("/context and /status: model and context-limit truthfulness", () => {
       ],
       "/context",
     );
-    const line = notices.find((n) => n.startsWith("Context:"));
-    expect(line).toBeDefined();
-    expect(line).toContain("deepseek/deepseek-v4-pro");
-    expect(line).toContain("Model capacity: 1,000,000 (model-metadata)");
-    expect(line).toContain("Endpoint limit: 131,072 (provider-metadata)");
-    expect(line).toContain("Effective request limit: 131,072 (provider-metadata)");
-    expect(line).toContain("Reserved output: 16,384");
-    expect(line).toContain("Maximum input: 114,688");
-    expect(line).toContain("Current request: 92,100 (exact)");
-    expect(line).toContain("exact");
+    expect(frame).toContain("deepseek/deepseek-v4-pro");
+    // The confidence label, not the raw internal source string.
+    expect(frame).toContain("Model context window: 1,000,000  (verified)");
+    expect(frame).not.toContain("model-metadata");
+    expect(frame).not.toContain("provider-metadata");
+    expect(frame).toContain("Reserved output: 16,384");
+    expect(frame).toContain("Usable input capacity: 114,688");
+    expect(frame).toContain("Current provider request: 92,100 (exact)");
   });
 
   it("displays 'limit unknown' honestly for a model the registry cannot assert a window for, instead of a guessed number", async () => {
-    const { notices } = await runNoticeCommand(
+    const { frame } = await runNoticeCommand(
       [
         {
           type: "context.budget_calculated",
@@ -175,17 +175,19 @@ describe("/context and /status: model and context-limit truthfulness", () => {
       ],
       "/context",
     );
-    const line = notices.find((n) => n.startsWith("Context:"));
-    expect(line).toBeDefined();
-    expect(line).toContain("deepseek/deepseek-chat");
-    expect(line).toContain("4200 tokens (limit unknown)");
-    // Must not silently substitute the fallback input budget (32768) as if
-    // it were the model's real context window.
-    expect(line).not.toContain("32768");
+    expect(frame).toContain("deepseek/deepseek-chat");
+    expect(frame).toContain("Model context window: unknown  (unverified)");
+    expect(frame).toContain("Current provider request: 4,200 (estimate)");
+    // Must not silently substitute the fallback input budget (32,768) as if
+    // it were the model's real context window — it may appear only as the
+    // (distinct) usable-input-capacity figure.
+    const windowLine = frame.split("\n").find((l) => l.includes("Model context window:"))!;
+    expect(windowLine).not.toContain("32768");
+    expect(windowLine).not.toContain("32,768");
   });
 
   it("used/max/percent never contradict each other after a mid-turn token-count event resets the internal maxTokens field to 0", async () => {
-    const { notices } = await runNoticeCommand(
+    const { frame } = await runNoticeCommand(
       [
         {
           type: "context.budget_calculated",
@@ -197,10 +199,12 @@ describe("/context and /status: model and context-limit truthfulness", () => {
       ],
       "/context",
     );
-    const line = notices.find((n) => n.startsWith("Context:"))!;
-    expect(line).toContain("16000/128000 tokens (13%)");
-    expect(line).not.toContain("/0 tokens");
-    expect(line).not.toContain("(0%)");
+    expect(frame).toContain("Model context window: 128,000  (verified)");
+    expect(frame).toContain("Current provider request: 16,000 (exact)");
+    // The historical defect: a mid-turn token-count event clobbering the
+    // internal maxTokens field to 0 must never surface as a 0-based window.
+    expect(frame).not.toContain("Model context window: 0");
+    expect(frame).not.toContain("unknown  (verified)");
   });
 
   it("reflects a later routed/switched model on the next /context call, not the first turn's model forever", async () => {
@@ -231,7 +235,8 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     typeText(stdin, "/context");
     enter(stdin);
     await tick();
-    expect(app.snapshot().notices.at(-1)!.text).toContain("openai/gpt-5.4-mini");
+    expect(io.writes.join("")).toContain("openai/gpt-5.4-mini");
+    stdin.emit("keypress", undefined, { name: "escape" });
 
     // A fresh task routes (or the user explicitly switches) to a different model.
     typeText(stdin, "continue with something else");
@@ -242,11 +247,15 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     gates["task-2"]!.end();
     await tick();
 
+    const writesBeforeSecondContext = io.writes.length;
     typeText(stdin, "/context");
     enter(stdin);
     await tick();
-    expect(app.snapshot().notices.at(-1)!.text).toContain("anthropic/claude-3-5-sonnet-20241022");
+    const secondContextFrame = io.writes.slice(writesBeforeSecondContext).join("");
+    expect(secondContextFrame).toContain("anthropic/claude-3-5-sonnet-20241022");
+    expect(secondContextFrame).not.toContain("openai/gpt-5.4-mini");
 
+    stdin.emit("keypress", undefined, { name: "escape" });
     ctrlC(stdin);
     ctrlC(stdin);
     await done;
@@ -281,10 +290,13 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     typeText(stdin, "/context");
     enter(stdin);
     await tick();
+    const frame = io.writes.join("");
 
-    expect(app.snapshot().notices.at(-1)!.text).toContain("deepseek/deepseek-v4-pro");
-    expect(app.snapshot().notices.at(-1)!.text).toContain("120000/1000000 tokens (12%)");
+    expect(frame).toContain("deepseek/deepseek-v4-pro");
+    expect(frame).toContain("Model context window: 1,000,000  (verified)");
+    expect(frame).toContain("Current provider request: 120,000 (exact)");
 
+    stdin.emit("keypress", undefined, { name: "escape" });
     ctrlC(stdin);
     ctrlC(stdin);
     await done;
@@ -313,15 +325,19 @@ describe("/context and /status: model and context-limit truthfulness", () => {
     typeText(stdin, "/context");
     enter(stdin);
     await tick();
-    const contextNotice = app.snapshot().notices.at(-1)!.text;
+    const contextFrame = io.writes.join("");
+    stdin.emit("keypress", undefined, { name: "escape" });
 
     typeText(stdin, "/status");
     enter(stdin);
     await tick();
     const statusRendered = io.writes.join("");
 
-    expect(contextNotice).toContain("deepseek/deepseek-v4-flash");
-    expect(contextNotice).toContain("5000/128000 tokens (4%)");
+    expect(contextFrame).toContain("deepseek/deepseek-v4-flash");
+    expect(contextFrame).toContain("Model context window: 128,000  (verified)");
+    expect(contextFrame).toContain("Current provider request: 5,000 (exact)");
+    // /status's compact context line is the same contextUsageText() summary
+    // both commands share — it can never disagree with /context's numbers.
     expect(statusRendered).toContain("deepseek/deepseek-v4-flash");
     expect(statusRendered).toContain("5000/128000 tokens (4%)");
 

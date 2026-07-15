@@ -7,6 +7,7 @@ import type {
   ConversationMessage,
   ProviderStatus,
   ModelStatus,
+  ModelBudgetView,
   PresetStatus,
   RoutingDecision,
   MemoryEntry,
@@ -581,6 +582,10 @@ export class MorrowApi {
     );
   }
   listModels() { return this.req<ModelStatus[]>("GET", "/api/models"); }
+  /** Canonical per-model budget view (routing/model-budget.ts) for every
+   *  known model — powers the /model detail panel with real usable-input,
+   *  reserve, and confidence numbers instead of a second guess at them. */
+  getModelBudgets() { return this.req<ModelBudgetView[]>("GET", "/api/models/budgets"); }
   listPresets() { return this.req<PresetStatus[]>("GET", "/api/presets"); }
 
   // ── Tools / permissions / audit ─────────────────────────────────────────────

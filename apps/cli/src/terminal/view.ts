@@ -7,7 +7,7 @@
  */
 import type { Output } from "../cli/output.js";
 import { stripAnsi } from "../cli/output.js";
-import type { ActivityKind, ProgressStage } from "./events.js";
+import type { ActivityKind, ProgressStage, UsageInfo } from "./events.js";
 import type { ActivityEntry, PatchEntry, RecoveryEntry, TerminalState, ToolCard } from "./state.js";
 
 export type MorrowAvatarState = "idle" | "thinking" | "running-tool" | "completed" | "failed" | "paused";
@@ -118,7 +118,7 @@ export function formatElapsed(ms: number): string {
   return `${m}m${s.toString().padStart(2, "0")}s`;
 }
 
-function formatTokens(tokens: number): string {
+export function formatTokens(tokens: number): string {
   if (!Number.isFinite(tokens) || tokens < 0) return "unknown";
   if (tokens >= 1_000_000) {
     const m = tokens / 1_000_000;
@@ -179,6 +179,30 @@ function usageLabel(state: TerminalState): string {
   return `Tokens ${parts.join(" - ")}`;
 }
 
+/**
+ * Honest token/cache lines for one usage bucket (a single current request,
+ * or a cumulative total) — never a fabricated fresh/cached split. Mirrors
+ * the exact wording the mission spec calls out: a complete breakdown reads
+ * as "fresh"/"cached" numbers that sum to the total; an incomplete one
+ * reads as a stated total plus an explicit "at least" lower bound, never a
+ * confident-looking split that isn't backed by real provider data.
+ */
+export function usageBreakdownLines(label: string, u: UsageInfo | undefined): string[] {
+  if (!u) return [`${label}: no requests yet`];
+  const lines = [`${label} input: ${formatTokens(u.inputTokens)} total`];
+  if (u.cachedInputTokens === null) {
+    lines.push(`${label} cache breakdown: unavailable`);
+  } else if (u.cacheBreakdownComplete) {
+    const fresh = Math.max(0, u.inputTokens - u.cachedInputTokens);
+    lines.push(`${label} fresh: ${formatTokens(fresh)}  ${label} cached: ${formatTokens(u.cachedInputTokens)}`);
+  } else {
+    lines.push(`${label} cache breakdown: incomplete`, `${label} known cached: ≥${formatTokens(u.cachedInputTokens)}`);
+  }
+  lines.push(`${label} output: ${formatTokens(u.outputTokens)}`);
+  if (u.estimatedCostUsd !== null) lines.push(`${label} cost: $${u.estimatedCostUsd.toFixed(u.estimatedCostUsd < 0.01 ? 4 : 2)}`);
+  return lines;
+}
+
 function costLabel(state: TerminalState): string {
   const cost = state.usage?.estimatedCostUsd;
   if (cost === undefined || cost === null) return "Cost unknown";
@@ -197,6 +221,33 @@ export function contextLimit(state: TerminalState): number | null {
   if (!u) return null;
   if (u.contextLimitTokens !== undefined) return u.contextLimitTokens;
   return u.contextWindowSource === "fallback" ? null : u.maxTokens;
+}
+
+/**
+ * The user-facing confidence label for a context-window number: "verified"
+ * (genuinely provider-/registry-reported), "configured" (a user- or
+ * endpoint-supplied override Morrow cannot independently verify), or
+ * "unverified" (no authoritative value at all). Prefers the canonical
+ * `contextWindowConfidence` the orchestrator already computed once
+ * (routing/model-budget.ts) — the fallback derivation from the raw source
+ * string only exists for event rows persisted before that field existed,
+ * and must never be shown to the user as a raw source string itself
+ * ("model-metadata", "endpoint-override", …).
+ */
+export function contextConfidenceLabel(u: TerminalState["contextUsage"]): "verified" | "configured" | "unverified" {
+  if (!u) return "unverified";
+  if (u.contextWindowConfidence) return u.contextWindowConfidence;
+  switch (u.contextWindowSource) {
+    case "model-metadata":
+    case "provider-metadata":
+    case "known-model":
+      return "verified";
+    case "endpoint-override":
+    case "user-config":
+      return "configured";
+    default:
+      return "unverified";
+  }
 }
 
 function contextLabel(state: TerminalState): string {

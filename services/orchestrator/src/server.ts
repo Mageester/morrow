@@ -2160,6 +2160,62 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return listModels().map((model) => ({ model, available: configured.has(model.providerId) }));
   });
 
+  /**
+   * The canonical per-model budget view — every number here comes from the
+   * single resolveModelBudget() computation (routing/model-budget.ts), the
+   * same function every agent execution path uses. This exists so the CLI's
+   * model picker/detail panel can show real usable-input/reserve/confidence
+   * numbers for a model it hasn't sent a request with yet, without ever
+   * re-deriving that math itself. Providers that are not configured resolve
+   * against a null/"unknown" endpoint route (never a live credential lookup,
+   * and never a thrown error) so an unconfigured provider can't crash this.
+   */
+  app.get("/api/models/budgets", async () => {
+    const configuredIds = new Set(listProviderStatuses().filter((s) => s.configured).map((s) => s.id));
+    return listModels().map((model): unknown => {
+      const configured = configuredIds.has(model.providerId);
+      let route: ProviderRouteMetadata;
+      try {
+        route = configured
+          ? createProvider(model.providerId, process.env, model.id).route ?? {
+              providerId: model.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+              endpointLimitTokens: null, endpointLimitSource: "unknown",
+            }
+          : {
+              providerId: model.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+              endpointLimitTokens: null, endpointLimitSource: "unknown",
+            };
+      } catch {
+        route = {
+          providerId: model.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
+          endpointLimitTokens: null, endpointLimitSource: "unknown",
+        };
+      }
+      const budget = resolveModelBudget({
+        providerId: model.providerId,
+        selectedModel: model.id,
+        endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
+      });
+      return {
+        providerId: budget.providerId,
+        selectedModelId: budget.selectedModelId,
+        canonicalModelId: budget.canonicalModelId,
+        displayName: budget.displayName,
+        configured,
+        protocol: budget.protocol,
+        endpointKind: budget.endpointKind,
+        endpointHost: budget.endpointHost,
+        contextWindowTokens: budget.contextWindowTokens,
+        contextWindowConfidence: budget.contextWindowConfidence,
+        usableInputTokens: budget.usableInputTokens,
+        outputReserveTokens: budget.outputReserveTokens,
+        totalReserveTokens: budget.totalReserveTokens,
+        capabilities: budget.capabilities,
+        pricing: model.pricing,
+      };
+    });
+  });
+
   // Presets with live availability + resolved provider/model. In mock mode every
   // preset resolves to the mock provider so the UI reflects what will actually run.
   app.get("/api/presets", async () => {

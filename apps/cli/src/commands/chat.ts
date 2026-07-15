@@ -255,6 +255,8 @@ async function runInteractiveSession(
     listAgents: () => api.listAgents(project.id).catch(() => []),
     getCapabilities: () => import("./capabilities.js").then((m) => m.reportCapabilities(api)),
     listModels: () => api.listModels(),
+    getModelBudgets: () => api.getModelBudgets(),
+    listProviders: () => api.listProviders(),
     getGitStatus: async () => gitStatus(project.workspacePath),
     getCortexStaleness: () => api.intelligenceStaleness(project.id).catch(() => null),
     listTasks: () => api.listTasks(project.id),
