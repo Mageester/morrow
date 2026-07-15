@@ -60,9 +60,22 @@ export {
   filterModelItems,
   renderModelPicker,
   modelDetailLines,
+  modelPickerDetail,
+  itemReasoning,
   type ModelPickerItem,
   type ModelPickerViewOptions,
 } from "./model-picker.js";
+export {
+  reasoningOptions,
+  renderReasoningPicker,
+  reasoningStatusText,
+  describeReasoningControl,
+  isReasoningCompatible,
+  normalizeReasoningForRoute,
+  formatBudget,
+  UNKNOWN_REASONING,
+  type ReasoningOption,
+} from "./reasoning.js";
 export { approvalDecisionForKey, approvalDecisionLabel, approvalActionsLine, type ApprovalDecision, type ApprovalKey } from "./approvals.js";
 export { activityDetailLines, activityGroupSummary, agentDetailLine } from "./activity-view.js";
 export { stageLabel } from "./view.js";

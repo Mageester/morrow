@@ -37,6 +37,9 @@ export interface SessionMeta {
   branch: string;
   provider: string;
   model: string;
+  /** Active reasoning label (e.g. "High", "16k thinking"). Undefined = Auto,
+   *  which the header omits so the default route reads clean. */
+  reasoning?: string | undefined;
   /** Human privacy label, e.g. "local · on this machine" or "cloud". */
   privacy: string;
   /** Human mode label, e.g. "Agent · approvals required" or YOLO. */

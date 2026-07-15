@@ -101,6 +101,22 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.parse(ref.captured!.init.body).messages[2].reasoning_content).toBe("prior-private");
   });
 
+  it("injects a valid reasoning effort into the request body, and rejects an unsupported one before the request", async () => {
+    const effortCap = { control: "effort" as const, efforts: ["low", "medium", "high"] as const, budgets: [], source: "registry" as const };
+    const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.5" });
+    await collect(provider, userMessages, { reasoning: { mode: "effort", effort: "high" }, reasoningCapability: { ...effortCap, efforts: [...effortCap.efforts] } });
+    expect(JSON.parse(ref.captured!.init.body).reasoning_effort).toBe("high");
+
+    // A token budget has no OpenAI wire form — the adapter fails fast with an
+    // invalid_request error and never sends the request.
+    let sent = false;
+    globalThis.fetch = (async () => { sent = true; return sseResponse([`data: [DONE]\n\n`]); }) as any;
+    const chunks = await collect(provider, userMessages, { reasoning: { mode: "budget", tokens: 8192 }, reasoningCapability: { control: "budget", efforts: [], budgets: [8192], source: "provider-metadata" } });
+    expect(sent).toBe(false);
+    expect(chunks.at(-1)?.error?.kind).toBe("invalid_request");
+  });
+
   it("classifies HTTP errors into typed kinds", async () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
 

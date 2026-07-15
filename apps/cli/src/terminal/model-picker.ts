@@ -11,9 +11,10 @@
  * whole picker is snapshot-testable with a no-color `Output`.
  */
 import type { Output } from "../cli/output.js";
-import type { ModelInfo, ModelStatus, ModelBudgetView, ProviderStatus } from "@morrow/contracts";
+import type { ModelInfo, ModelStatus, ModelBudgetView, ProviderStatus, RouteReasoningCapability } from "@morrow/contracts";
 import { glyphs } from "./view.js";
 import { clampSelection } from "./completion.js";
+import { UNKNOWN_REASONING, describeReasoningControl } from "./reasoning.js";
 
 export interface ModelSelection {
   provider?: string | undefined;
@@ -108,6 +109,16 @@ export interface ModelPickerItem {
   /** The canonical resolveModelBudget() view for this model, when the
    *  orchestrator has one. Null (not fabricated) when unavailable. */
   budget?: ModelBudgetView | null;
+  /** The route's reasoning capability with provenance — from the resolved
+   *  budget when available, else the registry model, else an explicit
+   *  "unknown/none". Never guessed. */
+  reasoning: RouteReasoningCapability;
+}
+
+/** Reasoning capability for a picker item, honouring metadata precedence
+ *  (resolved budget over registry) and falling back to explicit "unknown". */
+export function itemReasoning(status?: ModelStatus, budget?: ModelBudgetView | null): RouteReasoningCapability {
+  return budget?.reasoning ?? status?.model.reasoning ?? UNKNOWN_REASONING;
 }
 
 /**
@@ -123,7 +134,7 @@ export function buildModelPickerItems(
 ): ModelPickerItem[] {
   const defaultByProvider = new Map(providers.map((p) => [p.id, p.defaultModel]));
   const items: ModelPickerItem[] = [
-    { kind: "auto", id: "auto", providerId: null, label: "Auto — preset routing", available: true, isDefault: false },
+    { kind: "auto", id: "auto", providerId: null, label: "Auto — preset routing", available: true, isDefault: false, reasoning: UNKNOWN_REASONING },
   ];
   for (const status of models) {
     const m = status.model;
@@ -137,6 +148,7 @@ export function buildModelPickerItems(
       isDefault: defaultByProvider.get(m.providerId) === m.id,
       status,
       budget,
+      reasoning: itemReasoning(status, budget),
     });
   }
   return items;
@@ -181,6 +193,7 @@ export function filterModelItems(query: string, items: ModelPickerItem[]): Model
       label: `Use "${query.trim()}" as a custom model id`,
       available: true,
       isDefault: false,
+      reasoning: UNKNOWN_REASONING,
     });
   }
   return base;
@@ -189,17 +202,6 @@ export function filterModelItems(query: string, items: ModelPickerItem[]): Model
 function priceLabel(m: ModelInfo): string {
   if (!m.pricing) return `cost ${m.costClass}`;
   return `$${m.pricing.inputUsdPerMillion}/$${m.pricing.outputUsdPerMillion} per M tok`;
-}
-
-function modelPickerFacts(m: ModelInfo): string {
-  const parts = [
-    m.speedClass === "unknown" ? "speed unknown" : m.speedClass,
-    formatContextWindow(m.contextWindow),
-    m.capabilities.toolCalls ? "tools" : "no tools",
-    ...(m.capabilities.vision ? ["vision"] : []),
-    priceLabel(m),
-  ];
-  return parts.join("  ·  ");
 }
 
 /**
@@ -244,6 +246,7 @@ export function modelDetailLines(item: ModelPickerItem, out: Output): string[] {
     ["Output reserve", b ? formatContextWindow(b.outputReserveTokens) : "unknown"],
     ["Tool support", m.capabilities.toolCalls ? "yes" : "no"],
     ["Vision support", m.capabilities.vision ? "yes" : "no"],
+    ["Reasoning", `${describeReasoningControl(item.reasoning)}${item.reasoning.source === "unknown" ? "" : `  (${item.reasoning.source})`}`],
     ["Pricing", priceLabel(m)],
     ["State", item.available ? "configured & available" : `provider not configured — run \`morrow auth login ${m.providerId}\``],
   ];
@@ -262,19 +265,49 @@ export interface ModelPickerViewOptions {
 }
 
 /**
- * Render the interactive picker: search box, a scroll-safe, provider-grouped
- * list (selection stays centered so ↑/↓ always has an on-screen target — the
- * same windowing the slash-completion menu uses), and the highlighted item's
- * detail panel. Pure and snapshot-testable; the caller supplies the already
- * -filtered item list (see `filterModelItems`) so this function never
- * re-derives it.
+ * The compact, highlighted-only detail block (mission spec §1). Claude
+ * Code-quality restraint: a model name, its provider + a free/default marker,
+ * one facts line (context · tools · reasoning), and the exact route — never a
+ * five-tag, table-of-everything "database screen". The full table lives in
+ * `modelDetailLines` for `/model current`. Every fact is real or "unknown".
+ */
+export function modelPickerDetail(item: ModelPickerItem, out: Output): string[] {
+  if (item.kind === "auto") {
+    return [out.bold("Auto"), out.gray("Preset routing picks provider + model per request · /preset to tune")];
+  }
+  if (item.kind === "custom") {
+    return [out.bold(item.id), out.gray("Custom id · limits, pricing & reasoning unknown until a live response")];
+  }
+  const m = item.status!.model;
+  const b = item.budget ?? null;
+  const ctx = formatContextWindow(b ? b.contextWindowTokens : m.contextWindow);
+  const free = m.costClass === "free";
+  const markers = [
+    ...(free ? ["free"] : []),
+    ...(item.isDefault ? ["default"] : []),
+    ...(item.available ? [] : ["not configured"]),
+  ];
+  const reasoningWord = item.reasoning.control === "none" ? "no reasoning" : `reasoning: ${item.reasoning.control}`;
+  const providerLine = out.gray(`${m.providerId}${markers.length ? " · " + markers.join(" · ") : ""}`);
+  const factsLine = out.gray(`${ctx} context · ${m.capabilities.toolCalls ? "tools" : "no tools"} · ${reasoningWord}`);
+  const host = b?.endpointHost ? ` · ${b.endpointHost}` : "";
+  const routeLine = out.gray(`Route: ${m.providerId}/${m.id}${host}`);
+  return [out.bold(m.label), providerLine, factsLine, routeLine];
+}
+
+/**
+ * Render the interactive picker (mission spec §1): a search box, a scroll-safe
+ * list showing only name · provider · state markers, and one compact detail
+ * block for the highlighted route. Deliberately minimal — no per-row facts,
+ * pricing, or endpoint dumps. Pure and snapshot-testable; the caller supplies
+ * the already-filtered item list (see `filterModelItems`).
  */
 export function renderModelPicker(items: ModelPickerItem[], out: Output, opts: ModelPickerViewOptions): string[] {
   const g = glyphs(opts.unicode);
   const pointer = opts.unicode ? "›" : ">";
   const currentId = opts.currentModelId ?? "auto";
   const lines: string[] = [];
-  lines.push(out.bold("  Select a model") + out.gray("   (type to filter · ↑/↓ move · Enter select · Esc cancel)"));
+  lines.push(out.bold("  Select model") + out.gray("   ↑/↓ move · Enter select · Tab reasoning · Esc close"));
   lines.push(`  ${out.cyan(">")} ${opts.query}${out.gray("▏")}`);
   lines.push("");
 
@@ -288,43 +321,34 @@ export function renderModelPicker(items: ModelPickerItem[], out: Output, opts: M
   const start = Math.min(Math.max(0, selected - Math.floor(maxRows / 2)), Math.max(0, items.length - maxRows));
   const shown = items.slice(start, start + maxRows);
 
-  let lastProvider: string | null = null;
   for (const [i, item] of shown.entries()) {
     const idx = start + i;
     const isSelected = idx === selected;
-    if (item.kind === "model" && item.providerId !== lastProvider) {
-      lines.push(`  ${out.gray(item.providerId!)}`);
-      lastProvider = item.providerId;
-    } else if (item.kind !== "model") {
-      lastProvider = null;
-    }
-
     const marker = isSelected ? out.cyan(pointer) : " ";
     const isCurrent = item.id === currentId;
     const dot = isCurrent ? out.cyan(g.run) : " ";
-    let label = item.kind === "model" ? `${item.label}  ${out.gray(item.id)}` : item.label;
+
+    let label = item.label;
     if (item.kind === "model" && !item.available) label = out.gray(label);
     else if (isCurrent) label = out.cyan(label);
     else if (isSelected) label = out.bold(label);
 
+    // Only the essentials: name, provider/gateway, and state markers. No
+    // context/pricing/endpoint noise — that's the highlighted detail block.
+    const provider = item.kind === "model" ? out.gray(item.providerId!) : "";
     const tags: string[] = [];
     if (isCurrent) tags.push(out.cyan("current"));
-    if (item.isDefault) tags.push(out.gray("default"));
+    else if (item.isDefault) tags.push(out.gray("default"));
+    if (item.kind === "model" && item.status?.model.costClass === "free") tags.push(out.gray("free"));
     if (item.kind === "model" && !item.available) tags.push(out.yellow("not configured"));
-    const facts = item.kind === "model" ? out.gray(modelPickerFacts(item.status!.model)) : "";
     const tagStr = tags.length ? "  " + tags.join(out.gray(" · ")) : "";
-    // Tags (current/default/not-configured) come immediately after the
-    // label, before the facts — a width-clipped terminal drops the facts
-    // first and never silently swallows a state marker.
-    lines.push(`  ${marker}${dot} ${label}${tagStr}${facts ? "  " + facts : ""}`);
+    lines.push(`  ${marker}${dot} ${label}${provider ? "  " + provider : ""}${tagStr}`);
   }
   if (items.length > shown.length) {
     lines.push(out.gray(`    …${items.length - shown.length} more — keep scrolling`));
   }
 
   lines.push("");
-  const highlighted = items[selected]!;
-  lines.push(`  ${out.gray("─".repeat(4))} detail ${out.gray("─".repeat(4))}`);
-  for (const l of modelDetailLines(highlighted, out)) lines.push(`  ${l}`);
+  for (const l of modelPickerDetail(items[selected]!, out)) lines.push(`  ${l}`);
   return lines;
 }

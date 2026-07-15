@@ -14,11 +14,12 @@
  */
 import readline from "node:readline";
 import type { Output } from "../cli/output.js";
-import type { AgentMode } from "@morrow/contracts";
+import type { AgentMode, ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import { modeLabel, parseModeName } from "../cli/identity.js";
 import { SLASH_COMMANDS, type SlashCommand } from "./commands.js";
 import { staticPaletteItems, type PaletteItem } from "./palette.js";
-import { buildModelPickerItems, filterModelItems, modelDetailLines, type ModelPickerItem } from "./model-picker.js";
+import { buildModelPickerItems, filterModelItems, modelDetailLines, itemReasoning, type ModelPickerItem } from "./model-picker.js";
+import { normalizeReasoningForRoute, reasoningStatusText, isReasoningCompatible, describeReasoningControl, UNKNOWN_REASONING } from "./reasoning.js";
 import { composeApp, type OverlayPanel } from "./app-view.js";
 import { glyphs, statsLines, contextLimit, contextConfidenceLabel, usageBreakdownLines, hardWrapLine } from "./view.js";
 import { completionActive, initialInputState, insertPaste, reduceKey, type InputState, type KeyContext } from "./input-state.js";
@@ -138,6 +139,10 @@ export interface SessionSettings {
   model?: string | undefined;
   preset: string;
   useMemory: boolean;
+  /** Normalized reasoning selection for the active route. Undefined = Auto
+   *  (route/preset default). Kept consistent with the model: moving to a route
+   *  that can't honour it resets it to Auto (see applyModelSelection). */
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface SessionDeps {
@@ -167,6 +172,13 @@ export class InteractiveSession {
   private readonly meta: SessionMeta;
   private readonly commands: SlashCommand[];
   private readonly keyCtx: KeyContext;
+  /** The active route's reasoning capability, tracked so `/reasoning` and the
+   *  status line reflect the real route without a re-fetch. */
+  private currentReasoningCap: RouteReasoningCapability = UNKNOWN_REASONING;
+  /** The route the reasoning overlay is configuring: the current route (from
+   *  `/reasoning`) or a not-yet-applied model (Tab in the picker), applied
+   *  together with the chosen reasoning so a route stays atomic. */
+  private reasoningRoute: { modelId: string | undefined; providerId: string | undefined; label: string; capability: RouteReasoningCapability } | null = null;
   private active = false;
   private busy = false;
   private tick = 0;
@@ -216,6 +228,7 @@ export class InteractiveSession {
     this.recentActivity = deps.recentActivity ?? [];
     const paletteItems = [...staticPaletteItems(this.commands), ...(deps.extraPaletteItems ?? [])];
     this.keyCtx = { commands: this.commands, paletteItems, modelItems: [] };
+    this.syncReasoningMeta();
     this.term = reduce(this.term, { type: "session.started", meta: this.meta });
     this.lastTaskId = deps.initialTaskId ?? null;
   }
@@ -313,8 +326,15 @@ export class InteractiveSession {
       return void this.requestPaint(false);
     }
 
+    const wasReasoningOverlay = this.input.overlay === "reasoning";
     const { state, action } = reduceKey(this.input, k, this.keyCtx);
     this.input = state;
+    // Leaving the reasoning overlay without applying (Esc/back) must discard the
+    // route it staged — otherwise a later typed `/reasoning` would wrongly bind
+    // to a model the user never picked. A submit clears it in the handler.
+    if (wasReasoningOverlay && this.input.overlay !== "reasoning" && action.type !== "submit") {
+      this.reasoningRoute = null;
+    }
     switch (action.type) {
       case "submit":
         void this.onSubmit(action.value);
@@ -327,6 +347,9 @@ export class InteractiveSession {
         break;
       case "repaint":
         this.requestPaint(false);
+        break;
+      case "open-reasoning":
+        void this.openReasoningPickerForModel(action.forModelId);
         break;
       case "interrupt":
       case "none":
@@ -489,6 +512,9 @@ export class InteractiveSession {
         return void this.fullRepaint();
       case "model":
         await this.handleModelCommand(arg);
+        return void this.requestPaint(false);
+      case "reasoning":
+        await this.handleReasoningCommand(arg);
         return void this.requestPaint(false);
       case "provider":
         if (arg) {
@@ -980,7 +1006,9 @@ export class InteractiveSession {
         this.pushNotice("warn", `${exact.model.id} is not available — provider "${exact.model.providerId}" is not configured. Run \`morrow auth login ${exact.model.providerId}\` first.`);
         return;
       }
-      this.applyModelSelection(exact.model.id, exact.model.providerId);
+      const budget = (this.deps.backend.getModelBudgets ? await this.deps.backend.getModelBudgets().catch(() => []) : [])
+        .find((b) => b.providerId === exact.model.providerId && b.selectedModelId === exact.model.id) ?? null;
+      this.applyModelSelection(exact.model.id, exact.model.providerId, itemReasoning(exact, budget));
       return;
     }
     const [budgets, providers] = await Promise.all([
@@ -1006,12 +1034,40 @@ export class InteractiveSession {
    *  both a direct `/model <id>` and the picker's Enter action (which
    *  submits the exact same `/model <id>` command line; see input-state.ts's
    *  `reduceModelPicker`), so a picker selection can never diverge from
-   *  what manually typing the same id would do. */
-  private applyModelSelection(modelId: string | undefined, providerId?: string): void {
+   *  what manually typing the same id would do.
+   *
+   *  A route is provider + model + reasoning applied together (mission spec §7):
+   *  the reasoning that survives a model change must be one the new route can
+   *  actually honour. Anything incompatible resets to Auto, disclosed plainly,
+   *  rather than being silently carried into a request the endpoint will reject. */
+  private applyModelSelection(modelId: string | undefined, providerId?: string, capability: RouteReasoningCapability = UNKNOWN_REASONING): void {
+    const previousReasoning = this.settings.reasoning;
     this.settings.model = modelId;
     this.meta.model = modelId ?? "auto";
     if (providerId) this.settings.provider = providerId;
+    this.currentReasoningCap = capability;
+
+    const { config, changed } = normalizeReasoningForRoute(previousReasoning, capability);
+    this.settings.reasoning = config.mode === "auto" ? undefined : config;
+    this.syncReasoningMeta();
     this.pushNotice("info", `Model set to ${modelId ?? "auto (preset routing)"} — session preserved.`);
+    if (changed) {
+      this.pushNotice("info", `Reasoning changed from ${reasoningStatusText(previousReasoning)} to Auto — ${this.reasoningResetReason(capability)}.`);
+    }
+  }
+
+  /** Why an incompatible reasoning setting had to reset, in plain language. */
+  private reasoningResetReason(cap: RouteReasoningCapability): string {
+    switch (cap.control) {
+      case "none":
+        return "this route does not expose reasoning controls";
+      case "fixed":
+        return "this route's reasoning depth is fixed by the provider";
+      case "effort":
+        return "this route configures reasoning by effort level";
+      case "budget":
+        return "this route configures reasoning by a thinking-token budget";
+    }
   }
 
   /** Fetch the real, canonical picker data (registry + ModelBudget +
@@ -1049,9 +1105,116 @@ export class InteractiveSession {
     const currentId = this.settings.model ?? "auto";
     const matches = filterModelItems(currentId, items);
     const found = matches.find((i) => i.id === currentId) ?? matches[0] ?? items[0]!;
-    const lines = [`Route: ${this.resolvedModelText()}`, "", ...modelDetailLines(found, this.deps.out)];
+    const out = this.deps.out;
+    const lines = [
+      `Route: ${this.resolvedModelText()}`,
+      `Reasoning: ${reasoningStatusText(this.settings.reasoning)}${found.reasoning.control === "none" ? "" : `  ·  ${describeReasoningControl(found.reasoning)}`}`,
+      "",
+      ...modelDetailLines(found, out),
+    ];
     this.outputViewer = { title: "current model", lines };
     this.input = { ...this.input, overlay: "output" };
+  }
+
+  // ── Reasoning control (mission spec §6) ──────────────────────────────────
+  //
+  // `/reasoning` (or Tab from the /model picker) opens a selector scoped to the
+  // route's real capability; a typed `/reasoning <level>` applies directly. A
+  // route is applied atomically: choosing reasoning for a not-yet-selected model
+  // (Tab) sets provider + model + reasoning together.
+
+  /** Parse a `/reasoning` argument into a normalized config, or null if it
+   *  isn't a recognizable reasoning selection. */
+  private parseReasoningArg(arg: string): ReasoningConfiguration | null {
+    const a = arg.trim().toLowerCase();
+    if (a === "auto") return { mode: "auto" };
+    if (a === "off" || a === "none") return { mode: "off" };
+    if (a === "low" || a === "medium" || a === "high") return { mode: "effort", effort: a };
+    if (a === "fixed" || a === "provider-fixed") return { mode: "provider-fixed" };
+    if (/^\d[\d_,]*k?$/.test(a)) {
+      const tokens = a.endsWith("k") ? Math.round(parseFloat(a.slice(0, -1).replace(/[_,]/g, "")) * 1000) : parseInt(a.replace(/[_,]/g, ""), 10);
+      if (Number.isSafeInteger(tokens) && tokens > 0) return { mode: "budget", tokens };
+    }
+    return null;
+  }
+
+  private async handleReasoningCommand(rawArg: string): Promise<void> {
+    const arg = rawArg.trim();
+    if (!arg) return void this.openReasoningPicker();
+
+    const config = this.parseReasoningArg(arg);
+    if (!config) {
+      this.pushNotice("warn", "Usage: /reasoning [auto|off|low|medium|high|<tokens>] — or /reasoning to open the selector.");
+      return;
+    }
+    // A pending route (from the picker's Tab) applies model + reasoning
+    // together; otherwise reasoning targets the current route.
+    const route = this.reasoningRoute;
+    this.reasoningRoute = null;
+    const capability = route?.capability ?? this.currentReasoningCap;
+
+    if (!isReasoningCompatible(config, capability)) {
+      this.pushNotice("warn", `${route?.label ?? "This route"} does not support that reasoning setting — it uses ${describeReasoningControl(capability).toLowerCase()}.`);
+      return;
+    }
+    // Apply the model half of the route first, if the picker staged a new one.
+    if (route && route.modelId !== undefined && route.modelId !== this.settings.model) {
+      this.settings.model = route.modelId;
+      this.meta.model = route.modelId;
+      if (route.providerId) this.settings.provider = route.providerId;
+      this.currentReasoningCap = capability;
+    }
+    this.settings.reasoning = config.mode === "auto" ? undefined : config;
+    this.syncReasoningMeta();
+    const forLabel = route ? ` for ${route.label}` : "";
+    this.pushNotice("info", `Reasoning set to ${reasoningStatusText(this.settings.reasoning)}${forLabel} — session preserved.`);
+  }
+
+  /** Mirror the active reasoning into the header meta (shown only when non-Auto). */
+  private syncReasoningMeta(): void {
+    this.meta.reasoning = this.settings.reasoning ? reasoningStatusText(this.settings.reasoning) : undefined;
+  }
+
+  /** Resolve the current route's reasoning capability + display label from the
+   *  registry, for `/reasoning` with no pending picker route. */
+  private async resolveCurrentReasoningRoute(): Promise<{ modelId: string | undefined; providerId: string | undefined; label: string; capability: RouteReasoningCapability }> {
+    const modelId = this.settings.model;
+    if (!modelId || modelId === "auto") {
+      return { modelId: undefined, providerId: this.settings.provider, label: "Auto (preset routing)", capability: UNKNOWN_REASONING };
+    }
+    const items = (await this.fetchModelPickerItems()) ?? [];
+    const item = items.find((i) => i.kind === "model" && i.id === modelId);
+    return {
+      modelId,
+      providerId: this.settings.provider,
+      label: item?.label ?? modelId,
+      capability: item?.reasoning ?? this.currentReasoningCap,
+    };
+  }
+
+  /** `/reasoning` with no argument: configure reasoning for the current route. */
+  private async openReasoningPicker(): Promise<void> {
+    const route = await this.resolveCurrentReasoningRoute();
+    this.reasoningRoute = route;
+    this.currentReasoningCap = route.capability;
+    this.keyCtx.reasoningCap = route.capability;
+    this.input = { ...this.input, overlay: "reasoning", reasoningSelected: 0, reasoningReturnsToModel: false };
+  }
+
+  /** Tab from the /model picker: configure reasoning for the highlighted model,
+   *  applied together with it when the user picks a level. */
+  private openReasoningPickerForModel(modelId: string): void {
+    const item = (this.keyCtx.modelItems ?? []).find((i) => i.kind === "model" && i.id === modelId);
+    if (!item || !item.available) {
+      this.pushNotice("info", "Reasoning can only be configured for an available model.");
+      return;
+    }
+    // Only stage the route — do NOT touch currentReasoningCap, which reflects
+    // the *active* route. Tabbing to inspect a model must not change what a
+    // subsequently typed `/reasoning` validates against.
+    this.reasoningRoute = { modelId: item.id, providerId: item.providerId ?? undefined, label: item.label, capability: item.reasoning };
+    this.keyCtx.reasoningCap = item.reasoning;
+    this.input = { ...this.input, overlay: "reasoning", reasoningSelected: 0, reasoningReturnsToModel: true };
   }
 
   private async showSearch(query: string): Promise<void> {
@@ -1817,7 +1980,7 @@ export class InteractiveSession {
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const overlayPanel = this.currentOverlayPanel();
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, currentModelId: this.settings.model ?? "auto" }, {
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, currentModelId: this.settings.model ?? "auto", currentReasoning: this.settings.reasoning, reasoningRouteLabel: this.reasoningRoute?.label }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,

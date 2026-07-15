@@ -2212,6 +2212,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         totalReserveTokens: budget.totalReserveTokens,
         capabilities: budget.capabilities,
         pricing: model.pricing,
+        reasoning: budget.reasoning,
       };
     });
   });

@@ -93,6 +93,47 @@ export const ModelCapabilitiesSchema=z.object({
   toolCalls:z.boolean(),
   vision:z.boolean(),
 }).strict();
+
+// ── Reasoning / thinking control ─────────────────────────────────────────────
+//
+// A route's reasoning behaviour is NOT uniform across providers, so it is
+// modelled explicitly rather than assumed. `ReasoningConfiguration` is the
+// single normalized shape every surface uses; each provider adapter translates
+// it into that provider's real request format (see the orchestrator's
+// translateReasoning). `RouteReasoningCapability` describes what a specific
+// route actually exposes, with explicit provenance — never a guess.
+export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+/**
+ * How a route exposes reasoning control:
+ *   "none"   — the route has no reasoning controls (Not configurable);
+ *   "effort" — discrete effort levels (low/medium/high);
+ *   "budget" — a token budget for thinking (e.g. off/2k/8k/16k/max);
+ *   "fixed"  — reasoning is on but fixed by the provider (Fixed by provider).
+ */
+export const ReasoningControlSchema=z.enum(["none","effort","budget","fixed"]);
+/** Where a reasoning fact came from — parallels ContextLimitSource provenance. */
+export const ReasoningSourceSchema=z.enum(["provider-metadata","capability-probe","registry","unknown"]);
+export const RouteReasoningCapabilitySchema=z.object({
+  control:ReasoningControlSchema,
+  /** Supported effort levels — only meaningful when control === "effort". */
+  efforts:z.array(ReasoningEffortSchema),
+  /** Supported thinking-token budgets — only meaningful when control === "budget". */
+  budgets:z.array(z.number().int().positive()),
+  source:ReasoningSourceSchema,
+}).strict();
+/**
+ * The normalized reasoning selection carried by a route. Every provider adapter
+ * must accept this exact union; unsupported combinations are rejected before a
+ * request is issued, never silently coerced.
+ */
+export const ReasoningConfigurationSchema=z.discriminatedUnion("mode",[
+  z.object({mode:z.literal("auto")}).strict(),
+  z.object({mode:z.literal("off")}).strict(),
+  z.object({mode:z.literal("effort"),effort:ReasoningEffortSchema}).strict(),
+  z.object({mode:z.literal("budget"),tokens:z.number().int().positive()}).strict(),
+  z.object({mode:z.literal("provider-fixed")}).strict(),
+]);
+
 export const ModelPricingSchema=z.object({
   inputUsdPerMillion:z.number().nonnegative(),
   outputUsdPerMillion:z.number().nonnegative(),
@@ -116,6 +157,11 @@ export const ModelInfoSchema=z.object({
   costClass:ModelCostClassSchema,
   privacy:ModelPrivacyClassSchema,
   builtIn:z.boolean(),
+  /** What reasoning control this model exposes, with provenance. Optional so
+   * existing construction sites and older cached rows stay valid; consumers
+   * fall back to an explicit "unknown"/"none" capability when absent, never a
+   * guessed one. */
+  reasoning:RouteReasoningCapabilitySchema.optional(),
 }).strict();
 export const ModelStatusSchema=z.object({
   model:ModelInfoSchema,
@@ -149,6 +195,10 @@ export const ModelBudgetViewSchema=z.object({
   totalReserveTokens:z.number().int().nonnegative(),
   capabilities:ModelCapabilitiesSchema,
   pricing:ModelPricingSchema.nullable(),
+  /** Reasoning capability of this resolved route, with provenance. Optional so
+   * older cached budget rows remain valid; the picker falls back to an explicit
+   * "unknown" capability when absent. */
+  reasoning:RouteReasoningCapabilitySchema.optional(),
 }).strict();
 
 // ── Presets and provider routing ─────────────────────────────────────────────
@@ -157,7 +207,7 @@ export const PresetIdSchema=z.enum(["best-quality","balanced","fast","cheap","co
 export const ToolProfileSchema=z.enum(["read-only","none","agent"]);
 export const AgentModeSchema=z.enum(["read-only","plan-only","agent"]);
 export const PresetPrivacySchema=z.enum(["local-only","prefers-local","cloud"]);
-export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+// ReasoningEffortSchema is defined in the model section above (reasoning control).
 export const PresetSchema=z.object({
   version:SchemaVersionSchema,
   id:PresetIdSchema,
@@ -207,6 +257,10 @@ export const SendMessageSchema=z.object({
   preset:PresetIdSchema.optional(),
   providerId:ProviderIdSchema.optional(),
   model:z.string().min(1).max(200).optional(),
+  // Normalized per-request reasoning override for the resolved route. Absent
+  // means "use the preset/route default". The orchestrator validates this
+  // against the route's real capability and rejects unsupported combinations.
+  reasoning:ReasoningConfigurationSchema.optional(),
   mode:AgentModeSchema.optional(),
   useMemory:z.boolean().optional(),
   autoApprove:z.boolean().optional(),
@@ -441,6 +495,11 @@ export type ModelStatus=z.infer<typeof ModelStatusSchema>;
 export type ModelBudgetConfidence=z.infer<typeof ModelBudgetConfidenceSchema>;
 export type ModelBudgetView=z.infer<typeof ModelBudgetViewSchema>;
 export type ModelCapabilities=z.infer<typeof ModelCapabilitiesSchema>;
+export type ReasoningEffort=z.infer<typeof ReasoningEffortSchema>;
+export type ReasoningControl=z.infer<typeof ReasoningControlSchema>;
+export type ReasoningSource=z.infer<typeof ReasoningSourceSchema>;
+export type RouteReasoningCapability=z.infer<typeof RouteReasoningCapabilitySchema>;
+export type ReasoningConfiguration=z.infer<typeof ReasoningConfigurationSchema>;
 export type PresetId=z.infer<typeof PresetIdSchema>;
 export type Preset=z.infer<typeof PresetSchema>;
 export type PresetStatus=z.infer<typeof PresetStatusSchema>;

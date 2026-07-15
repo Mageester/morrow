@@ -22,6 +22,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "changes", description: "show staged, modified, and untracked files" },
   { name: "provider", arg: "[id]", description: "show or set the active provider" },
   { name: "model", arg: "[id]", description: "show or set the active model" },
+  { name: "reasoning", arg: "[auto|off|low|medium|high|<tokens>]", subcommands: ["auto", "off", "low", "medium", "high"], description: "show or set reasoning/thinking for the active route" },
   { name: "preset", arg: "[id]", description: "show or set the active preset" },
   { name: "mode", arg: "[ask|plan|build|mission]", subcommands: ["ask", "plan", "build", "mission"], description: "show or set the product mode" },
   { name: "yolo", arg: "[on|off|status|policy]", subcommands: ["on", "off", "status", "policy"], description: "manage workspace-autonomous mode" },
