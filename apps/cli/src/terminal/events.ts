@@ -9,6 +9,7 @@
  * This decoupling is the core architectural rule of the terminal runtime: there
  * is no path from a producer to the screen that bypasses an event.
  */
+import type { ReasoningConfiguration } from "@morrow/contracts";
 
 /** Observable agent actions. Internal chain-of-thought is never an activity. */
 export type ActivityKind =
@@ -37,6 +38,9 @@ export interface SessionMeta {
   branch: string;
   provider: string;
   model: string;
+  /** Active reasoning label (e.g. "High", "16k thinking"). Undefined = Auto,
+   *  which the header omits so the default route reads clean. */
+  reasoning?: string | undefined;
   /** Human privacy label, e.g. "local · on this machine" or "cloud". */
   privacy: string;
   /** Human mode label, e.g. "Agent · approvals required" or YOLO. */
@@ -126,6 +130,12 @@ export interface UsageInfo {
   estimatedCostUsd: number | null;
   calls: number;
   providerChanges: string[];
+  /** The reasoning actually attached to the request that produced this
+   *  response (see agent.ts's `provider.usage` event) — only ever set on the
+   *  per-turn `activeUsage` snapshot, not the cumulative total, since a
+   *  session's turns can legitimately use different reasoning. Absent = Auto
+   *  (no override was sent for this response). */
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 /** Background process info. */
@@ -186,6 +196,8 @@ export type TerminalEvent =
       fallback: boolean;
       overridden: boolean;
       privacy: string;
+      /** The reasoning frozen into the route at send time. Absent = Auto. */
+      reasoning?: ReasoningConfiguration | undefined;
     }
   | { type: "user.message"; text: string }
   /** A new model turn has begun. Every delta/end after this belongs to `turnId`
@@ -235,7 +247,7 @@ export type TerminalEvent =
    *  incorrectly mark this problem recovered. */
   | { type: "recovery.strategy"; tool?: string; strategy: string; detail?: string; file?: string }
   | { type: "notice"; level: "info" | "warn" | "error"; text: string }
-  | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null }
+  | { type: "usage.reported"; provider: string; model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; estimatedCostUsd?: number | null; reasoning?: ReasoningConfiguration | undefined }
   | { type: "task.completed" }
   | { type: "task.failed"; message: string }
   | { type: "task.cancelled" }

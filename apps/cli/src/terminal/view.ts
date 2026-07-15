@@ -477,10 +477,13 @@ export function headerLines(state: TerminalState, out: Output, opts: HeaderOptio
   }
 
   const gitPart = git ? `${dot}${out.gray(git.replace(/ · /g, ` ${g.dot} `))}` : "";
+  // Reasoning is shown only when active (non-Auto), so the default route's
+  // header stays clean and unchanged.
+  const reasoningPart = m.reasoning ? `${dot}${out.gray(`reasoning ${m.reasoning}`)}` : "";
   return [
     `  ${g.mark} ${out.bold("MORROW")}`,
     clipToWidth(`  ${out.cyan(m.projectName)}${gitPart}`, columns),
-    clipToWidth(`  ${out.gray(m.model)}${dot}${modeChip}`, columns),
+    clipToWidth(`  ${out.gray(m.model)}${reasoningPart}${dot}${modeChip}`, columns),
   ];
 }
 

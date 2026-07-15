@@ -11,8 +11,10 @@ import type { SlashCommand } from "./commands.js";
 import { clampSelection, completionCandidates } from "./completion.js";
 import { fuzzyPalette, type PaletteItem } from "./palette.js";
 import { filterModelItems, type ModelPickerItem } from "./model-picker.js";
+import { reasoningOptions } from "./reasoning.js";
+import type { RouteReasoningCapability } from "@morrow/contracts";
 
-export type Overlay = "none" | "palette" | "output" | "history" | "tasktree" | "mission" | "model";
+export type Overlay = "none" | "palette" | "output" | "history" | "tasktree" | "mission" | "model" | "reasoning";
 
 export interface InputState {
   buffer: string;
@@ -32,6 +34,11 @@ export interface InputState {
   modelQuery: string;
   /** Selection index into the picker's currently *filtered* item list. */
   modelSelected: number;
+  /** Selection index into the reasoning selector's options list. */
+  reasoningSelected: number;
+  /** True when the reasoning overlay was opened from the /model picker (Tab),
+   *  so Escape returns to the picker rather than closing everything. */
+  reasoningReturnsToModel: boolean;
   /** True once Ctrl+C was pressed on an empty idle line (press again to exit). */
   confirmExit: boolean;
 }
@@ -50,7 +57,11 @@ export type InputAction =
   | { type: "submit"; value: string }
   | { type: "clear-screen" }
   | { type: "exit" }
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  /** Open the reasoning selector for a specific highlighted model (Tab in the
+   *  /model picker). The controller resolves the route + capability and opens
+   *  the overlay; the reducer stays pure and free of any registry lookup. */
+  | { type: "open-reasoning"; forModelId: string };
 
 export interface KeyContext {
   commands: SlashCommand[];
@@ -61,6 +72,10 @@ export interface KeyContext {
    *  Optional/defaults to empty so callers that never open the picker (most
    *  existing test fixtures) don't need to know about it. */
   modelItems?: ModelPickerItem[];
+  /** The reasoning capability of the route the reasoning overlay is currently
+   *  configuring. Set by the controller when the overlay opens; the reducer
+   *  reads it to know which options exist. Optional/undefined off the overlay. */
+  reasoningCap?: RouteReasoningCapability;
 }
 
 export function initialInputState(history: string[] = []): InputState {
@@ -77,6 +92,8 @@ export function initialInputState(history: string[] = []): InputState {
     paletteSelected: 0,
     modelQuery: "",
     modelSelected: 0,
+    reasoningSelected: 0,
+    reasoningReturnsToModel: false,
     confirmExit: false,
   };
 }
@@ -99,6 +116,12 @@ export function paletteMatches(s: InputState, ctx: KeyContext): PaletteItem[] {
  *  the renderer, and the acceptance tests all share. */
 export function modelPickerMatches(s: InputState, ctx: KeyContext): ModelPickerItem[] {
   return s.overlay === "model" ? filterModelItems(s.modelQuery, ctx.modelItems ?? []) : [];
+}
+
+/** The reasoning selector's currently selectable options — shared by the
+ *  reducer and the renderer so navigation and display never disagree. */
+export function reasoningPickerMatches(s: InputState, ctx: KeyContext) {
+  return s.overlay === "reasoning" && ctx.reasoningCap ? reasoningOptions(ctx.reasoningCap) : [];
 }
 
 const r = (state: InputState, action: InputAction = { type: "repaint" }): { state: InputState; action: InputAction } => ({ state, action });
@@ -154,6 +177,7 @@ export function reduceKey(state: InputState, key: KeyInput, ctx: KeyContext): { 
   // ── Palette overlay ──────────────────────────────────────────────────────
   if (s.overlay === "palette") return reducePalette(s, key, ctx);
   if (s.overlay === "model") return reduceModelPicker(s, key, ctx);
+  if (s.overlay === "reasoning") return reduceReasoningPicker(s, key, ctx);
   if (s.overlay === "output" || s.overlay === "tasktree" || s.overlay === "mission") {
     if (key.name === "escape" || (key.ctrl && key.name === "c")) {
       s.overlay = "none";
@@ -361,9 +385,17 @@ function reduceModelPicker(s: InputState, key: KeyInput, ctx: KeyContext): { sta
       s.modelSelected = clampSelection(s.modelSelected - 1, items.length);
       return r(s);
     case "down":
-    case "tab":
       s.modelSelected = clampSelection(s.modelSelected + 1, items.length);
       return r(s);
+    case "tab": {
+      // Tab configures reasoning for the highlighted model (mission spec §6).
+      // Only a real, available model has a reasoning route; auto/custom/
+      // unavailable rows have nothing to configure, so Tab is a no-op there.
+      if (items.length === 0) return r(s, { type: "none" });
+      const item = items[clampSelection(s.modelSelected, items.length)]!;
+      if (item.kind !== "model" || !item.available) return r(s, { type: "none" });
+      return r(s, { type: "open-reasoning", forModelId: item.id });
+    }
     case "backspace":
       s.modelQuery = s.modelQuery.slice(0, -1);
       s.modelSelected = 0;
@@ -377,6 +409,46 @@ function reduceModelPicker(s: InputState, key: KeyInput, ctx: KeyContext): { sta
           return r(s);
         }
       }
+      return r(s, { type: "none" });
+  }
+}
+
+/**
+ * The reasoning selector: arrow navigation over the route's supported options,
+ * Enter to apply (submits `/reasoning <arg>` — the same single code path a
+ * typed command takes), Escape to go back. A route with no adjustable
+ * reasoning shows an informational panel; Enter there is inert. Escape returns
+ * to the /model picker when the selector was opened from it (Tab), otherwise
+ * closes the overlay entirely.
+ */
+function reduceReasoningPicker(s: InputState, key: KeyInput, ctx: KeyContext): { state: InputState; action: InputAction } {
+  const options = reasoningPickerMatches(s, ctx);
+  switch (key.name) {
+    case "escape":
+      s.overlay = s.reasoningReturnsToModel ? "model" : "none";
+      s.reasoningSelected = 0;
+      s.reasoningReturnsToModel = false;
+      return r(s);
+    case "return":
+    case "enter": {
+      if (options.length === 0) return r(s, { type: "none" });
+      const opt = options[clampSelection(s.reasoningSelected, options.length)]!;
+      const value = `/reasoning ${opt.arg}`;
+      s.overlay = "none";
+      s.reasoningSelected = 0;
+      s.reasoningReturnsToModel = false;
+      return r(commitHistory(s, value), { type: "submit", value });
+    }
+    case "up":
+      if (options.length === 0) return r(s, { type: "none" });
+      s.reasoningSelected = clampSelection(s.reasoningSelected - 1, options.length);
+      return r(s);
+    case "down":
+    case "tab":
+      if (options.length === 0) return r(s, { type: "none" });
+      s.reasoningSelected = clampSelection(s.reasoningSelected + 1, options.length);
+      return r(s);
+    default:
       return r(s, { type: "none" });
   }
 }

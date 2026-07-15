@@ -13,7 +13,9 @@ import type { SlashCommand } from "./commands.js";
 import { completionCandidates, renderMenu } from "./completion.js";
 import { fuzzyPalette, renderPalette, type PaletteItem } from "./palette.js";
 import { filterModelItems, renderModelPicker, type ModelPickerItem } from "./model-picker.js";
+import { renderReasoningPicker } from "./reasoning.js";
 import { completionActive, type InputState } from "./input-state.js";
+import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import type { SessionMeta } from "./events.js";
 import type { TerminalState } from "./state.js";
 import {
@@ -79,6 +81,13 @@ export interface AppFrameContext {
   /** The currently configured model id ("auto" when unset), so the picker
    *  can mark the current selection without recomputing it. */
   currentModelId?: string | undefined;
+  /** The reasoning capability of the route the reasoning overlay is
+   *  configuring — set by the controller when that overlay opens. */
+  reasoningCap?: RouteReasoningCapability | undefined;
+  /** The active reasoning selection, marked in the reasoning selector. */
+  currentReasoning?: ReasoningConfiguration | undefined;
+  /** Display label for the route the reasoning overlay is configuring. */
+  reasoningRouteLabel?: string | undefined;
 }
 
 export interface AppFrame {
@@ -137,6 +146,15 @@ export function composeApp(
     });
     bottom = [...noticeLines, ...picker];
     cursorWithinBottom = { row: noticeLines.length + 1, col: stripAnsi(picker[1] ?? "").length };
+  } else if (input.overlay === "reasoning") {
+    const picker = renderReasoningPicker(ctx.reasoningCap ?? { control: "none", efforts: [], budgets: [], source: "unknown" }, out, {
+      selected: input.reasoningSelected,
+      unicode,
+      routeLabel: ctx.reasoningRouteLabel,
+      current: ctx.currentReasoning,
+    });
+    bottom = [...noticeLines, ...picker];
+    cursorWithinBottom = { row: noticeLines.length + 1, col: 0 };
   } else {
     const built = buildInputBlock(input, out, unicode, ctx, opts);
     bottom = [...noticeLines, ...built.lines];

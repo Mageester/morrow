@@ -7,6 +7,7 @@
  * and activity are bounded so a long session cannot grow memory without limit.
  */
 import type { ActivityKind, ApprovalSource, SessionMeta, TerminalEvent, UsageInfo } from "./events.js";
+import type { ReasoningConfiguration } from "@morrow/contracts";
 import { sanitizeTerminalText } from "../cli/output.js";
 
 export type SessionStatus = "idle" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted" | "budget-reached" | "stalled";
@@ -85,6 +86,7 @@ export interface RoutingInfo {
   fallback: boolean;
   overridden: boolean;
   privacy: string;
+  reasoning?: ReasoningConfiguration | undefined;
 }
 
 export interface NoticeEntry {
@@ -190,6 +192,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           fallback: event.fallback,
           overridden: event.overridden,
           privacy: event.privacy,
+          reasoning: event.reasoning,
         },
       };
 
@@ -549,6 +552,7 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
           estimatedCostUsd: event.estimatedCostUsd ?? null,
           calls: 1,
           providerChanges: [providerKey],
+          reasoning: event.reasoning,
         },
       };
     }

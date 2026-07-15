@@ -8,6 +8,7 @@ import {
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
+import { translateReasoning } from "./reasoning.js";
 
 export interface OpenAiCompatibleConfig {
   /** Provider identifier surfaced in disclosures (openai, openrouter, deepseek, ...). */
@@ -75,6 +76,16 @@ export class OpenAiCompatibleProvider implements AiProvider {
     if (typeof options.temperature === "number") body.temperature = options.temperature;
     if (typeof options.maxOutputTokens === "number") body.max_tokens = options.maxOutputTokens;
     if (options.responseFormat === "json_object") body.response_format = { type: "json_object" };
+
+    if (options.reasoning) {
+      const capability = options.reasoningCapability ?? { control: "none", efforts: [], budgets: [], source: "unknown" };
+      const translated = translateReasoning(options.reasoning, "openai-chat", capability);
+      if (!translated.ok) {
+        yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: translated.reason, retryable: false } };
+        return;
+      }
+      Object.assign(body, translated.params);
+    }
 
     if (options.tools && options.tools.length > 0) {
       body.tools = options.tools.map((t) => ({

@@ -1,5 +1,6 @@
+import type { RouteReasoningCapability } from "@morrow/contracts";
 import type { ContextLimitSource, ProviderProtocol } from "../provider/base.js";
-import { resolveModelMetadata } from "./models.js";
+import { resolveModelMetadata, resolveReasoningCapability } from "./models.js";
 import {
   resolveEffectiveContext,
   type EffectiveContextEndpointInput,
@@ -22,6 +23,8 @@ export interface ModelBudget {
   canonicalModelId: string;
   displayName: string;
   capabilities: { streaming: boolean; toolCalls: boolean; vision: boolean };
+  /** What reasoning control this exact route exposes, with provenance. */
+  reasoning: RouteReasoningCapability;
 
   protocol: ProviderProtocol;
   endpointKind: EffectiveContextEndpointInput["kind"];
@@ -119,6 +122,7 @@ export function resolveModelBudget(input: {
     canonicalModelId: metadata.canonicalId,
     displayName: metadata.label,
     capabilities: { ...metadata.capabilities },
+    reasoning: resolveReasoningCapability(input.providerId, input.selectedModel),
     protocol: input.endpoint.protocol,
     endpointKind: input.endpoint.kind,
     endpointHost: input.endpoint.host,

@@ -1,3 +1,4 @@
+import type { ReasoningConfiguration, RouteReasoningCapability } from "@morrow/contracts";
 import { redactSecrets } from "./credentials.js";
 
 export interface ChatMessage {
@@ -115,6 +116,15 @@ export interface StreamOptions {
   temperature?: number | null;
   maxOutputTokens?: number | null;
   responseFormat?: "json_object";
+  /** Normalized reasoning selection for this request. When present, the adapter
+   * translates it (see provider/reasoning.ts) against `reasoningCapability` and
+   * merges the resulting params into the wire body — or fails with an
+   * invalid-request error for an unsupported combination. Absent means "use the
+   * route/provider default". */
+  reasoning?: ReasoningConfiguration;
+  /** The resolved route's verified reasoning capability, paired with
+   * `reasoning` so the adapter validates against real support, never a guess. */
+  reasoningCapability?: RouteReasoningCapability;
 }
 
 /** Capability flags surfaced to the UI and used by the router. */

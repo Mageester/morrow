@@ -1,6 +1,24 @@
-import type { ModelInfo, ProviderId } from "@morrow/contracts";
+import type { ModelInfo, ProviderId, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
 
 type Pricing = NonNullable<ModelInfo["pricing"]>;
+
+// ── Reasoning capability, with provenance ────────────────────────────────────
+//
+// The built-in registry is the lowest-priority ("registry") source of reasoning
+// truth; a live provider probe or provider-returned metadata (higher priority)
+// would override it. When nothing is known the capability is an explicit
+// "unknown/none" — never a guessed control surface.
+export const UNKNOWN_REASONING: RouteReasoningCapability = { control: "none", efforts: [], budgets: [], source: "unknown" };
+
+function effort(levels: ReasoningEffort[] = ["low", "medium", "high"]): RouteReasoningCapability {
+  return { control: "effort", efforts: levels, budgets: [], source: "registry" };
+}
+function fixedReasoning(): RouteReasoningCapability {
+  return { control: "fixed", efforts: [], budgets: [], source: "registry" };
+}
+function noReasoning(): RouteReasoningCapability {
+  return { control: "none", efforts: [], budgets: [], source: "registry" };
+}
 
 /**
  * Authoritative model metadata registry.
@@ -27,6 +45,7 @@ function model(
     speed?: ModelInfo["speedClass"];
     cost?: ModelInfo["costClass"];
     privacy?: ModelInfo["privacy"];
+    reasoning?: RouteReasoningCapability;
   }
 ): ModelInfo {
   return {
@@ -50,6 +69,9 @@ function model(
     costClass: opts.cost ?? "unknown",
     privacy: opts.privacy ?? "remote",
     builtIn: true,
+    // Default: no reasoning controls. Only models with a known reasoning
+    // surface opt in below — the registry never claims a control it can't back.
+    reasoning: opts.reasoning ?? noReasoning(),
   };
 }
 
@@ -61,10 +83,10 @@ const freeLocal: Pricing = {
 };
 
 export const BUILT_IN_MODELS: ModelInfo[] = [
-  // OpenAI
-  model("openai", "gpt-5.5", "GPT-5.5", { aliases: ["gpt5.5"], vision: true, speed: "powerful", cost: "high" }),
-  model("openai", "gpt-5.4", "GPT-5.4", { aliases: ["gpt5.4"], vision: true, speed: "powerful", cost: "medium" }),
-  model("openai", "gpt-5.4-mini", "GPT-5.4 mini", { aliases: ["gpt5.4-mini"], vision: true, speed: "fast", cost: "low" }),
+  // OpenAI (reasoning models expose discrete effort levels via reasoning_effort)
+  model("openai", "gpt-5.5", "GPT-5.5", { aliases: ["gpt5.5"], vision: true, speed: "powerful", cost: "high", reasoning: effort() }),
+  model("openai", "gpt-5.4", "GPT-5.4", { aliases: ["gpt5.4"], vision: true, speed: "powerful", cost: "medium", reasoning: effort() }),
+  model("openai", "gpt-5.4-mini", "GPT-5.4 mini", { aliases: ["gpt5.4-mini"], vision: true, speed: "fast", cost: "low", reasoning: effort() }),
 
   // Anthropic
   model("anthropic", "claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet", { contextWindow: 200000, vision: true, speed: "powerful", cost: "medium" }),
@@ -81,14 +103,15 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   model("openrouter", "deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (via OpenRouter)", { contextWindow: 1000000, speed: "powerful", cost: "low" }),
   model("openrouter", "deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (via OpenRouter)", { contextWindow: 1000000, speed: "fast", cost: "low" }),
   model("openrouter", "anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet (via OpenRouter)", { contextWindow: 200000, vision: true, speed: "powerful", cost: "medium" }),
-  model("openrouter", "openai/gpt-5.4", "GPT-5.4 (via OpenRouter)", { vision: true, speed: "powerful", cost: "medium" }),
+  model("openrouter", "openai/gpt-5.4", "GPT-5.4 (via OpenRouter)", { vision: true, speed: "powerful", cost: "medium", reasoning: effort() }),
   model("openrouter", "google/gemini-flash-1.5", "Gemini Flash 1.5 (via OpenRouter)", { contextWindow: 1000000, vision: true, speed: "fast", cost: "low" }),
 
   // DeepSeek
   model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, speed: "powerful", cost: "low" }),
   model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, speed: "fast", cost: "low" }),
   model("deepseek", "deepseek-chat", "DeepSeek Chat", { speed: "balanced", cost: "low" }),
-  model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { speed: "powerful", cost: "low" }),
+  // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
+  model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
 
   // Ollama (local)
   model("ollama", "llama3.1", "Llama 3.1 (local)", { contextWindow: 128000, pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
@@ -115,11 +138,24 @@ function unknownModel(providerId: string, id: string): ModelInfo {
     costClass: "unknown",
     privacy: providerId === "ollama" ? "local" : "remote",
     builtIn: false,
+    // A model the registry has never heard of: its reasoning surface is
+    // genuinely unknown, never assumed to match a family default.
+    reasoning: UNKNOWN_REASONING,
   };
 }
 
 export function listModels(): ModelInfo[] {
   return BUILT_IN_MODELS;
+}
+
+/**
+ * The reasoning capability for a route, resolved through the metadata
+ * precedence (provider metadata → probe → registry → unknown). Today only the
+ * registry and the unknown fallback are populated; higher-priority sources slot
+ * in here without any caller change.
+ */
+export function resolveReasoningCapability(providerId: string, id: string): RouteReasoningCapability {
+  return resolveModelMetadata(providerId, id).reasoning ?? UNKNOWN_REASONING;
 }
 
 export function resolveModelMetadata(providerId: string, id: string): ModelInfo {

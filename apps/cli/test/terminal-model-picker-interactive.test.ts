@@ -344,7 +344,7 @@ describe("/model: real interactive session end-to-end", () => {
     enter(stdin);
     await tick();
     expect(app.inputSnapshot().overlay).toBe("model");
-    expect(io.all()).toContain("Select a model");
+    expect(io.all()).toContain("Select model");
     escape(stdin); // close the overlay first — Ctrl+C on an open overlay closes it, not the app
     ctrlC(stdin); ctrlC(stdin);
     await done;

@@ -1,6 +1,8 @@
-import type { ConversationMessage } from "@morrow/contracts";
+import type { ConversationMessage, ReasoningConfiguration } from "@morrow/contracts";
+import { ReasoningConfigurationSchema } from "@morrow/contracts";
 import type { TaskAggregate } from "../client/api.js";
 import { dedupeRawEvents } from "./event-ledger.js";
+import { reasoningStatusText } from "./reasoning.js";
 
 export type ReportKind = "summary" | "full" | "failures";
 
@@ -186,6 +188,7 @@ export function buildTaskReport(aggregate: TaskAggregate, opts: TaskReportOption
   // Full reports carry the metering metadata; the summary stays scannable.
   if (opts.kind === "full") {
     lines.push(`Cost: ${aggregate.disclosure?.estimatedCostUsd ?? "unknown"}`);
+    lines.push(`Reasoning: ${reasoningStatusText(effectiveReasoning(aggregate))}`);
     if (usage) {
       const cachedSuffix = usage.cached !== null && usage.cached > 0
         ? usage.cacheBreakdownComplete
@@ -377,6 +380,26 @@ function usageFromEvents(aggregate: TaskAggregate): { input: number; output: num
     }
   }
   return found ? { input, output, cached, cacheBreakdownComplete } : null;
+}
+
+/**
+ * The reasoning actually attached to the request that produced the most
+ * recent response — the last `provider.usage` event's `reasoning` field, the
+ * same per-response ground truth agent.ts records (see execution/agent.ts).
+ * Falls back to the send-time requested value (`aggregate.routing.reasoning`)
+ * only when no usage event has landed yet (task still running, or failed
+ * before any response) — the two agree on every completed, successful task.
+ */
+function effectiveReasoning(aggregate: TaskAggregate): ReasoningConfiguration | undefined {
+  const events = uniqueEvents(aggregate);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type !== "provider.usage") continue;
+    const parsed = ReasoningConfigurationSchema.safeParse((event.payload as Record<string, unknown>).reasoning);
+    if (parsed.success) return parsed.data;
+    break; // most recent usage event exists but carried no reasoning — Auto, not "unknown"
+  }
+  return aggregate.routing?.reasoning;
 }
 
 function toolOutputText(tool: TaskAggregate["toolCalls"][number]): string {
