@@ -1,4 +1,3 @@
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -7,6 +6,9 @@ import type { Context } from "../cli/context.js";
 import { MorrowApi } from "../client/api.js";
 import { CliError, EXIT, notFound, usageError } from "../cli/errors.js";
 import { flagBool, flagString } from "../cli/args.js";
+import { ask, askMultiline, askSecret, confirm, select } from "../cli/prompts.js";
+
+export { ask, askMultiline, askSecret, confirm, select };
 
 export function isInteractive(ctx: Context): boolean {
   return Boolean(process.stdin.isTTY) && !ctx.out.json && !ctx.out.quiet;
@@ -16,11 +18,24 @@ export function isInteractive(ctx: Context): boolean {
  * Resolve the active project with a strict, safety-first precedence:
  *
  *   1. Explicit `--project <id|name|path>` (an intentional override).
- *   2. A registered project whose workspace IS the current directory. This comes
- *      BEFORE the configured default so a command launched inside project B can
- *      never silently operate on project A just because A is the saved default.
- *   3. The configured default project.
- *   4. Interactive selection or an actionable error.
+ *   2. A registered project whose workspace IS (or contains) the current
+ *      directory, or the nearest parent Git root. This comes BEFORE the
+ *      configured default so a command launched inside project B can never
+ *      silently operate on project A just because A is the saved default.
+ *   3. Only once cwd matches no registered workspace does the configured
+ *      default even become a candidate — and reaching for it always means
+ *      resuming a DIFFERENT workspace than cwd, never an automatic act: a
+ *      human present gets an explicit choice, everyone else (one-shot,
+ *      --json, CI, PTY-driven automation with no one to answer a prompt)
+ *      gets a hard refusal naming exactly why and how to proceed explicitly.
+ *      Commands that tolerate no project at all (`required: false`) simply
+ *      proceed unscoped instead of being silently attributed to it.
+ *   4. Interactive selection or an actionable error when there is no
+ *      candidate of any kind.
+ *
+ * The only automatic (non-prompted, non-refused) resolution is cwd matching
+ * a durable, registered workspace — steps 1-2. Everything past that point is
+ * either an explicit user choice or a refusal, never a silent guess.
  *
  * Throws a clear error when none can be resolved and `required` is set.
  */
@@ -71,24 +86,30 @@ export async function resolveProject(
     if (matches.length > 1) throw usageError("Multiple registered projects match this Git repository.", "Pass --project <id> to choose one explicitly.");
   }
 
-  // 4. The configured default project (only when cwd is not itself a workspace).
-  // This directory has no registered project of its own, so falling back to
-  // the default is reasonable — but it must never be a *silent* switch. If
-  // the default happens to be some unrelated project from days ago, the user
-  // should find out from the terminal, not by noticing later that changes
-  // landed somewhere unexpected.
-  if (configured) {
-    if (configuredProject) {
-      if (!ctx.out.json) {
-        ctx.out.warn(
-          `This directory isn't a registered Morrow project — resuming "${configuredProject.name}" instead. Run \`morrow init\` here to start fresh in this directory.`
-        );
-      }
-      return configuredProject;
+  // 4. This directory has no registered project of its own, and no Git-root
+  // match either — the only remaining known project is the configured
+  // default, which is by definition a DIFFERENT workspace than cwd. That is
+  // exactly "a previous task belongs to another workspace": it must never be
+  // resumed automatically. Commands that tolerate no project at all
+  // (`required: false`, e.g. an unscoped `audit list`) simply proceed with
+  // no project rather than being silently attributed to an unrelated one.
+  if (configured && configuredProject) {
+    if (!opts.required) return null;
+    const stillExists = canonicalDirectory(configuredProject.workspacePath) !== null;
+    const reason = stillExists
+      ? `at a different location (${configuredProject.workspacePath})`
+      : "at a location that no longer exists on disk";
+    if (isInteractive(ctx)) {
+      return interactiveProjectSelection(ctx, api, projects, { project: configuredProject, reason });
     }
-    // A stale default (project since removed) should not hard-fail resolution;
-    // fall through to explicit interactive selection or a clear refusal below.
+    throw usageError(
+      `This directory isn't a registered Morrow project. The last-used project, "${configuredProject.name}", is ${reason}.`,
+      `Pass --project ${configuredProject.id} to resume it explicitly, --project "${cwd}" to work here instead, or run \`morrow init\` in this directory.`
+    );
   }
+  // A stale default (project id no longer registered) has no "different
+  // workspace" to guard against; fall through to plain interactive selection
+  // or refusal below.
 
   // 5. Interactive users get an explicit choice instead of silent filesystem
   //    access. Non-interactive commands fail with a clear refusal.
@@ -277,11 +298,30 @@ function containsManyGitRepos(path: string, threshold: number): boolean {
   return false;
 }
 
-async function interactiveProjectSelection(ctx: Context, api: MorrowApi, projects: Project[]): Promise<Project | null> {
+/**
+ * Blocking, explicit-choice project selection. When `staleDefault` is given,
+ * a previous task/default belongs to a different workspace than cwd — this
+ * is the ONLY path allowed to resume it, and only via an explicit choice a
+ * human actually made, never automatically.
+ */
+async function interactiveProjectSelection(
+  ctx: Context,
+  api: MorrowApi,
+  projects: Project[],
+  staleDefault?: { project: Project; reason: string },
+): Promise<Project | null> {
   ctx.out.heading("Choose a project");
-  ctx.out.info("Morrow will not inspect files until a project is explicit.");
+  const resumeChoice = staleDefault ? `Resume "${staleDefault.project.name}" anyway` : null;
+  if (staleDefault) {
+    ctx.out.info(
+      `This directory isn't a registered Morrow project. Your last-used project, "${staleDefault.project.name}", is ${staleDefault.reason} — a different workspace than here.`
+    );
+  } else {
+    ctx.out.info("Morrow will not inspect files until a project is explicit.");
+  }
   const recent = projects.filter((p) => isSafeProjectRoot(p.workspacePath).safe);
   const choices = [
+    ...(resumeChoice ? [resumeChoice] : []),
     ...(recent.length > 0 ? ["Open an existing project"] : []),
     "Register this folder",
     "Initialize this folder",
@@ -289,6 +329,7 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
     "Exit",
   ];
   const choice = choices[await select(ctx, "When launched outside a project", choices, (item) => item)]!;
+  if (resumeChoice && choice === resumeChoice) return staleDefault!.project;
   if (choice === "Open an existing project") {
     const idx = await select(ctx, "Recent projects", recent, (p) => `${p.name}  ${ctx.out.gray(p.workspacePath)}`);
     return recent[idx]!;
@@ -307,101 +348,8 @@ async function interactiveProjectSelection(ctx: Context, api: MorrowApi, project
   throw new CliError("No project selected.", { exitCode: EXIT.CANCELLED, code: "CANCELLED" });
 }
 
-// ── Interactive prompts ───────────────────────────────────────────────────────
-
-export function ask(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
-export function askMultiline(question: string, opts: { endMarker?: string } = {}): Promise<string> {
-  const endMarker = opts.endMarker ?? ".";
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const lines: string[] = [];
-  process.stderr.write(question);
-  process.stderr.write(`\nEnd with a single ${JSON.stringify(endMarker)} on its own line.\n`);
-  return new Promise((resolve) => {
-    rl.on("line", (line) => {
-      if (line === endMarker) {
-        rl.close();
-        resolve(lines.join("\n"));
-        return;
-      }
-      lines.push(line);
-    });
-  });
-}
-
-export async function confirm(question: string, defaultYes = false): Promise<boolean> {
-  const suffix = defaultYes ? " [Y/n] " : " [y/N] ";
-  const answer = (await ask(question + suffix)).toLowerCase();
-  if (!answer) return defaultYes;
-  return answer === "y" || answer === "yes";
-}
-
-/** Numbered single-choice selection from a list. Returns the chosen index. */
-export async function select<T>(ctx: Context, title: string, items: T[], render: (item: T) => string): Promise<number> {
-  if (items.length === 0) throw new CliError("Nothing to select.", { exitCode: EXIT.USAGE });
-  ctx.out.diag("");
-  ctx.out.diag(ctx.out.bold(title));
-  items.forEach((item, i) => ctx.out.diag(`  ${ctx.out.cyan(String(i + 1))}. ${render(item)}`));
-  while (true) {
-    const answer = await ask(`Select 1-${items.length}: `);
-    const n = Number(answer);
-    if (Number.isInteger(n) && n >= 1 && n <= items.length) return n - 1;
-    ctx.out.warn("Invalid selection.");
-  }
-}
-
-const CTRL_C = 3;
-const BACKSPACE_A = 8;
-const LF = 10;
-const CR = 13;
-const BACKSPACE_B = 127;
-
-/** Masked secret input (e.g. API keys). Falls back to plain read if not a TTY. */
-export function askSecret(question: string): Promise<string> {
-  const stdin = process.stdin;
-  if (!stdin.isTTY) return ask(question);
-  return new Promise((resolve) => {
-    process.stderr.write(question);
-    let value = "";
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    const finish = () => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.removeListener("data", onData);
-      process.stderr.write("\n");
-    };
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        const code = ch.charCodeAt(0);
-        if (code === LF || code === CR) {
-          finish();
-          resolve(value);
-          return;
-        }
-        if (code === CTRL_C) {
-          finish();
-          process.exit(EXIT.CANCELLED);
-        }
-        if (code === BACKSPACE_A || code === BACKSPACE_B) {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += ch;
-      }
-    };
-    stdin.on("data", onData);
-  });
-}
+// Interactive prompt primitives (ask, askMultiline, askSecret, confirm, select)
+// live in ../cli/prompts.js and are re-exported above for existing importers.
 
 // ── Formatting ────────────────────────────────────────────────────────────────
 
