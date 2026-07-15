@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Output } from "../src/cli/output.js";
-import { greeting, compactWordmark, largeWordmark, modeLabel, modeWord, parseModeName, privacyLabel, isLocalProvider, TAGLINE } from "../src/cli/identity.js";
+import { greeting, compactWordmark, modeLabel, modeWord, parseModeName, privacyLabel, isLocalProvider, TAGLINE } from "../src/cli/identity.js";
 
 const plain = new Output({ json: false, quiet: false, color: false });
 
@@ -17,15 +17,9 @@ describe("Morrow identity", () => {
     const ascii = compactWordmark(plain, false);
     expect(uni).toContain("MORROW");
     expect(uni).toContain("✧");
+    expect(uni).toContain(TAGLINE);
     expect(ascii).toContain("MORROW");
     // No non-ASCII glyphs in the ASCII variant.
-    expect(/[^\x00-\x7F]/.test(ascii)).toBe(false);
-  });
-
-  it("renders a large wordmark with no non-ASCII glyphs in ASCII mode", () => {
-    const ascii = largeWordmark(plain, false).join("\n");
-    expect(ascii).toContain("M  O  R  R  O  W");
-    expect(ascii).toContain(TAGLINE);
     expect(/[^\x00-\x7F]/.test(ascii)).toBe(false);
   });
 

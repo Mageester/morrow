@@ -7,7 +7,7 @@ import { streamChatTask } from "./stream.js";
 import { renderMarkdown } from "../cli/markdown.js";
 import { flagString, flagBool } from "../cli/args.js";
 import { CliError, EXIT, usageError } from "../cli/errors.js";
-import { largeWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
+import { compactWordmark, greeting, modeLabel, parseModeName, privacyLabel } from "../cli/identity.js";
 import { readLineWithCompletion, PROMPT_EXIT } from "../terminal/prompt.js";
 import { InteractiveSession, type SessionBackend, type SessionSettings } from "../terminal/session.js";
 import { SLASH_COMMANDS, type SlashCommand } from "../terminal/commands.js";
@@ -420,7 +420,7 @@ async function runRepl(ctx: Context, api: MorrowApi, project: Project, initial: 
   const history = await api.listMessages(conversation.id);
   const resuming = history.length > 0;
 
-  for (const line of largeWordmark(out, unicode)) out.print(line);
+  out.print("  " + compactWordmark(out, unicode));
   out.print("  " + greeting(new Date()) + (name ? `, ${name}.` : "."));
   out.print();
   out.keyValue([
