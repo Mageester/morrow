@@ -3,7 +3,7 @@
 ## Versioning
 
 Morrow follows semantic versioning (SemVer 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE]`.
-The current release is `v0.1.0-beta.29`.
+The current release is `v0.1.0-beta.30`.
 
 - **Pre-release**: `v0.1.0-beta.1`, `v0.1.0-beta.2`, etc.
 - **Release candidate**: `v0.1.0-rc.1`
@@ -30,8 +30,8 @@ The current release is `v0.1.0-beta.29`.
 ## Artifact Naming
 
 ```
-Morrow-v0.1.0-beta.29-windows-x64.zip
-morrow-v0.1.0-beta.29-checksums.txt
+Morrow-v0.1.0-beta.30-windows-x64.zip
+morrow-v0.1.0-beta.30-checksums.txt
 release-manifest.json
 ```
 
@@ -89,7 +89,7 @@ morrow uninstall — Remove application, prompt about user data
 ## Publication sequence
 
 1. Merge the release PR after required CI and independent security review.
-2. Dispatch `.github/workflows/release.yml` with `0.1.0-beta.29`.
+2. Dispatch `.github/workflows/release.yml` with `0.1.0-beta.30`.
 3. Confirm the GitHub prerelease contains the ZIP, checksum, `latest.json`, and
    `release-manifest.json`, and that their version/checksum values agree.
 4. Publish `installer/install.ps1` and `dist/latest.json` to the website/CDN
@@ -113,20 +113,20 @@ operator with that deployment authority and step 5 passes.
 
 ```json
 {
-  "version": "0.1.0-beta.29",
+  "version": "0.1.0-beta.30",
   "channel": "beta",
-  "releasedAt": "2026-06-23T00:00:00Z",
+  "releasedAt": "2026-07-15T00:00:00Z",
   "artifacts": [
     {
       "platform": "windows-x64",
       "type": "portable",
-      "filename": "Morrow-v0.1.0-beta.29-windows-x64.zip",
+      "filename": "Morrow-v0.1.0-beta.30-windows-x64.zip",
       "size": 0,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.29/Morrow-v0.1.0-beta.29-windows-x64.zip"
+      "url": "https://github.com/Mageester/morrow/releases/download/v0.1.0-beta.30/Morrow-v0.1.0-beta.30-windows-x64.zip"
     }
   ],
-  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.29",
+  "releaseNotes": "https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.30",
   "minimumNodeVersion": "22.0.0"
 }
 ```
