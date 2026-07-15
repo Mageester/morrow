@@ -227,12 +227,19 @@ export function modelDetailLines(item: ModelPickerItem, out: Output): string[] {
   const m = item.status!.model;
   const b = item.budget ?? null;
   const confidence = b?.contextWindowConfidence ?? (m.contextWindow !== null && m.builtIn ? "verified" : "unverified");
+  // The budget's resolved window (real ceiling — endpoint override, provider
+  // metadata, or model metadata, whichever wins) is authoritative whenever
+  // it's available; the static registry value is only a fallback for
+  // browsing before a budget has been resolved. Showing the registry number
+  // here while Usable input/Output reserve below are already budget-derived
+  // would silently disagree with its own confidence label.
+  const contextWindowTokens = b ? b.contextWindowTokens : m.contextWindow;
   const rows: Array<[string, string]> = [
     ["Provider", m.providerId],
     ["Selected model", m.id],
     ["Canonical id", m.canonicalId],
     ["Endpoint", b ? `${b.protocol}  ·  ${b.endpointKind}${b.endpointHost ? `  ·  ${b.endpointHost}` : ""}` : "unknown"],
-    ["Context window", `${formatContextWindow(m.contextWindow)}  (${confidence})`],
+    ["Context window", `${formatContextWindow(contextWindowTokens)}  (${confidence})`],
     ["Usable input", b ? formatContextWindow(b.usableInputTokens) : "unknown"],
     ["Output reserve", b ? formatContextWindow(b.outputReserveTokens) : "unknown"],
     ["Tool support", m.capabilities.toolCalls ? "yes" : "no"],

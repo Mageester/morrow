@@ -117,6 +117,24 @@ describe("model picker: real item construction and filtering", () => {
     expect(modelDetailLines(chat, plain).join("\n")).toMatch(/\(unverified\)|unknown/);
   });
 
+  it("shows the budget's resolved context window, not the static registry value, when a budget is available", () => {
+    // gpt-5.5's registry entry has contextWindow: 128000 (the model() fixture
+    // default), but its resolved budget below reports a different, smaller
+    // configured-endpoint override — the detail panel must show the budget's
+    // number, since that's what Usable input/Output reserve are computed
+    // from, not the stale registry figure.
+    const overriddenBudgets: ModelBudgetView[] = [
+      budget("openai", "gpt-5.5", { contextWindowTokens: 40000, contextWindowConfidence: "configured" }),
+    ];
+    const items = buildModelPickerItems(models, overriddenBudgets, providers);
+    const full = items.find((i) => i.id === "gpt-5.5")!;
+    const lines = modelDetailLines(full, plain);
+    const windowLine = lines.find((l) => l.includes("Context window"))!;
+    expect(windowLine).toContain("40k");
+    expect(windowLine).toContain("(configured)");
+    expect(windowLine).not.toContain("128k");
+  });
+
   it("the auto and custom detail panels never fabricate model metadata", () => {
     const items = buildModelPickerItems(models, budgets, providers);
     const auto = items[0]!;
@@ -455,6 +473,23 @@ describe("/model: real interactive session end-to-end", () => {
     await tick();
     expect(app.inputSnapshot().overlay).toBe("none");
     expect(app.snapshot().notices.at(-1)!.text).toContain("Model set to gpt-5.5");
+    ctrlC(stdin); ctrlC(stdin);
+    await done;
+  });
+
+  it("direct /model <id> for a real but unconfigured-provider model is rejected, exactly like Enter on it in the picker", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const app = makeApp(io, stdin);
+    const done = app.run();
+    typeText(stdin, "/model deepseek-chat"); // deepseek is unconfigured in REGISTRY_PROVIDERS
+    enter(stdin);
+    await tick();
+    expect(app.inputSnapshot().overlay).toBe("none");
+    const notice = app.snapshot().notices.at(-1)!.text;
+    expect(notice).not.toContain("Model set to");
+    expect(notice).toContain("not available");
+    expect(notice).toContain("deepseek");
     ctrlC(stdin); ctrlC(stdin);
     await done;
   });

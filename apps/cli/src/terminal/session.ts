@@ -972,6 +972,14 @@ export class InteractiveSession {
     }
     const exact = models.find((m) => m.model.id === arg);
     if (exact) {
+      // The same unavailable-model guard the picker enforces on Enter: a
+      // direct `/model <id>` for a real but unconfigured-provider model must
+      // be rejected too, never silently applied (it would otherwise set
+      // `settings.provider` to a provider the next request can't reach).
+      if (!exact.available) {
+        this.pushNotice("warn", `${exact.model.id} is not available — provider "${exact.model.providerId}" is not configured. Run \`morrow auth login ${exact.model.providerId}\` first.`);
+        return;
+      }
       this.applyModelSelection(exact.model.id, exact.model.providerId);
       return;
     }
