@@ -14,6 +14,7 @@
     "check": "turbo check && node scripts/validate-repository.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "test": "turbo run test",
+    "smoke:acceptance-foundation": "node scripts/acceptance-foundation-smoke.mjs",
     "test:watch": "turbo run test --watch"
   },
   "devDependencies": {

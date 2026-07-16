@@ -47,6 +47,18 @@ export function collectAcceptanceSecrets(env: NodeJS.ProcessEnv): string[] {
     .filter((value) => value.length >= 4);
 }
 
+export function validateAcceptanceRunPaths(runRoot: string, state: AcceptanceRunState): { fixturePath: string | null; productHome: string | null } {
+  return {
+    fixturePath: state.fixture ? assertContainedPath(runRoot, state.fixture.path) : null,
+    productHome: state.product ? assertContainedPath(runRoot, state.product.home) : null,
+  };
+}
+
+export function classifyAcceptanceFailure(error: unknown): "BLOCKED" | "FAIL" {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+  return code === "ENOENT" || code === "EACCES" ? "BLOCKED" : "FAIL";
+}
+
 function newRunId(now = new Date()): string {
   const stamp = now.toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   return `run-${stamp}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
@@ -171,6 +183,7 @@ export async function resumeAcceptance(runId: string, options: AcceptanceRunnerO
     return { state, reportJson: paths.json, reportMarkdown: paths.markdown };
   }
   if (state.activeStep === "product") {
+    validateAcceptanceRunPaths(store.runRoot(state.runId), state);
     if (!state.fixture || !verifyFixtureUnchanged(state.fixture).unchanged) throw new Error("Cannot safely resume: the read-only fixture changed after interruption");
     state.recoveryCount += 1;
     store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Resumed interrupted read-only product invocation without repeating completed steps" });
@@ -183,7 +196,8 @@ export async function resumeAcceptance(runId: string, options: AcceptanceRunnerO
 async function execute(store: AcceptanceStore, state: AcceptanceRunState, options: AcceptanceRunnerOptions, secrets: string[]): Promise<AcceptanceRunResult> {
   const invoke = options.invoke ?? defaultInvoker(options.executable, options.entrypoint);
   const runRoot = store.runRoot(state.runId);
-  const productHome = state.product?.home ?? assertContainedPath(runRoot, join(runRoot, "product-home"));
+  const persistedPaths = validateAcceptanceRunPaths(runRoot, state);
+  const productHome = persistedPaths.productHome ?? assertContainedPath(runRoot, join(runRoot, "product-home"));
   const port = options.port ?? await availablePort();
   const childEnv = buildAcceptanceChildEnvironment(options.env ?? process.env, productHome, port);
   try {
@@ -251,9 +265,12 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
   } catch (error) {
     if (options.simulateAbruptInterruption) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    const entry = store.appendEvidence(state.runId, { step: state.activeStep ?? "runner", kind: "failure", status: "failed", summary: message });
+    const failureDisposition = classifyAcceptanceFailure(error);
+    if (failureDisposition === "BLOCKED") state.disposition = "BLOCKED";
+    const evidenceStatus = failureDisposition === "BLOCKED" ? "inconclusive" : "failed";
+    const entry = store.appendEvidence(state.runId, { step: state.activeStep ?? "runner", kind: "failure", status: evidenceStatus, summary: message });
     const key = state.activeStep === "product" || state.activeStep === "product-init" ? "product_exit" : "product_persistence";
-    state.checks[key] = makeCheck("failed", message, [entry.id]);
+    state.checks[key] = makeCheck(evidenceStatus, message, [entry.id]);
     state.message = message;
   } finally {
     if (!options.simulateAbruptInterruption && state.fixture) {
@@ -280,8 +297,9 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
   store.save(state);
   paths = writeAcceptanceReports(store, state, store.readEvidence(state.runId));
   if (state.disposition === "PASS") {
-    if (state.fixture) rmSync(state.fixture.path, { recursive: true, force: true });
-    rmSync(productHome, { recursive: true, force: true });
+    const cleanupPaths = validateAcceptanceRunPaths(runRoot, state);
+    if (cleanupPaths.fixturePath) rmSync(cleanupPaths.fixturePath, { recursive: true, force: true });
+    if (cleanupPaths.productHome) rmSync(cleanupPaths.productHome, { recursive: true, force: true });
   }
   return { state, reportJson: paths.json, reportMarkdown: paths.markdown };
 }

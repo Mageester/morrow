@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildAcceptanceChildEnvironment, resumeAcceptance, runAcceptance, type AcceptanceInvocation } from "../src/acceptance/runner.js";
+import { buildAcceptanceChildEnvironment, classifyAcceptanceFailure, resumeAcceptance, runAcceptance, validateAcceptanceRunPaths, type AcceptanceInvocation } from "../src/acceptance/runner.js";
 import { AcceptanceStore } from "../src/acceptance/storage.js";
 
 const roots: string[] = [];
@@ -44,9 +44,35 @@ describe("acceptance child environment", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.RANDOM_SECRET).toBeUndefined();
   });
+
+  it("distinguishes unavailable executables from observed product failures", () => {
+    expect(classifyAcceptanceFailure(Object.assign(new Error("missing runtime"), { code: "ENOENT" }))).toBe("BLOCKED");
+    expect(classifyAcceptanceFailure(new Error("product returned incorrect evidence"))).toBe("FAIL");
+  });
 });
 
 describe("foundation acceptance runner", () => {
+  it("rejects tampered persisted fixture and product paths before resume or cleanup", () => {
+    const acceptanceRoot = root();
+    const store = new AcceptanceStore(acceptanceRoot);
+    const runRoot = store.runRoot("run-20260716-10000009");
+    const base = {
+      schemaVersion: 1 as const, runId: "run-20260716-10000009", scenarioId: "foundation-smoke-v1" as const,
+      lifecycle: "running" as const, disposition: "NOT RUN" as const, startedAt: "t", updatedAt: "t", completedAt: null,
+      activeStep: null, completedSteps: [], recoveryCount: 0, source: null, checks: {}, artifacts: [], message: null,
+    };
+    expect(() => validateAcceptanceRunPaths(runRoot, {
+      ...base,
+      fixture: { path: join(runRoot, "..", "outside-fixture"), startingSha: "a".repeat(40), startingStatus: "" },
+      product: { home: join(runRoot, "product-home"), entrypoint: "morrow", packaged: true, version: "v", taskId: null, exitCode: null },
+    })).toThrow(/outside/i);
+    expect(() => validateAcceptanceRunPaths(runRoot, {
+      ...base,
+      fixture: { path: join(runRoot, "fixture"), startingSha: "a".repeat(40), startingStatus: "" },
+      product: { home: join(runRoot, "..", "outside-home"), entrypoint: "morrow", packaged: true, version: "v", taskId: null, exitCode: null },
+    })).toThrow(/outside/i);
+  });
+
   it("persists step boundaries, invokes consumer commands, and produces a PASS report", async () => {
     const acceptanceRoot = root();
     const calls: string[][] = [];

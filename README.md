@@ -121,6 +121,11 @@ pnpm install
 - `pnpm --filter @morrow/orchestrator smoke:vertical-slice`: deterministic inspect-workspace E2E.
 - `pnpm --filter @morrow/orchestrator smoke:agent-alpha`: agent chat E2E via the mock provider.
 - `pnpm --filter @morrow/orchestrator smoke:providers`: provider registry + routing checks (offline).
+- `pnpm smoke:acceptance-foundation`: run the deterministic packaged-product acceptance smoke after building the portable package.
+
+The consumer CLI also exposes `morrow acceptance run|resume|report`. Foundation
+runs are isolated, resumable, local-only, and produce redacted JSON/Markdown
+evidence. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 
 ### Running Individual Services
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
