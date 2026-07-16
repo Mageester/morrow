@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,7 @@ test("acceptance artifact inspection requires a PASS with product and fixture pr
   try {
     mkdirSync(join(root, "artifacts"), { recursive: true });
     writeFileSync(join(root, "report.json"), JSON.stringify({
+      scenarioId: "foundation-smoke-v1",
       disposition: "PASS",
       fixture: { startingSha: "a".repeat(40) },
       product: { packaged: true, taskId: "task-1", exitCode: 0 },
@@ -46,12 +47,36 @@ test("acceptance artifact inspection rejects non-pass and leaked secret evidence
     writeFileSync(join(root, "evidence.jsonl"), "");
     assert.throws(() => inspectAcceptanceArtifacts(root, ["canary-secret"]), /PASS/);
     writeFileSync(join(root, "report.json"), JSON.stringify({
-      disposition: "PASS", fixture: { startingSha: "b".repeat(40) },
+      scenarioId: "foundation-smoke-v1", disposition: "PASS", fixture: { startingSha: "b".repeat(40) },
       product: { packaged: true, taskId: "task-2", exitCode: 0 },
       checks: { product_persistence: { status: "passed" }, secrets_absent: { status: "passed" } },
     }));
     writeFileSync(join(root, "evidence.jsonl"), `${JSON.stringify({ step: "product-persistence", status: "passed" })}\n`);
     assert.throws(() => inspectAcceptanceArtifacts(root, ["canary-secret"]), /secret/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("durable acceptance inspection requires all fault and ledger proofs", () => {
+  const root = mkdtempSync(join(tmpdir(), "morrow-acceptance-artifact-test-"));
+  try {
+    const passed = Object.fromEntries([
+      "product_persistence", "secrets_absent", "premature_completion", "context_rollover",
+      "provider_failure", "false_no_progress", "abrupt_process_restart", "stable_mission_identity",
+      "unique_operation_keys", "terminal_completion",
+    ].map((key) => [key, { status: "passed" }]));
+    writeFileSync(join(root, "report.json"), JSON.stringify({
+      scenarioId: "durable-autonomy-v1", disposition: "PASS", fixture: { startingSha: "c".repeat(40) },
+      product: { packaged: true, taskId: "task-3", missionId: "mission-3", exitCode: 0 }, checks: passed,
+    }));
+    writeFileSync(join(root, "report.md"), "# PASS\n");
+    writeFileSync(join(root, "evidence.jsonl"), `${JSON.stringify({ step: "product-persistence", status: "passed" })}\n`);
+    assert.equal(inspectAcceptanceArtifacts(root, [], "durable-autonomy-v1").missionId, "mission-3");
+    const report = JSON.parse(readFileSync(join(root, "report.json"), "utf8"));
+    report.checks.context_rollover.status = "failed";
+    writeFileSync(join(root, "report.json"), JSON.stringify(report));
+    assert.throws(() => inspectAcceptanceArtifacts(root, [], "durable-autonomy-v1"), /context_rollover/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

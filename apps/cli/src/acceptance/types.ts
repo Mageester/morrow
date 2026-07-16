@@ -3,6 +3,7 @@ export type AcceptanceDisposition = (typeof ACCEPTANCE_DISPOSITIONS)[number];
 
 export type AcceptanceLifecycle = "created" | "running" | "completed";
 export type EvidenceStatus = "passed" | "failed" | "inconclusive" | "info";
+export type AcceptanceScenarioId = "foundation-smoke-v1" | "durable-autonomy-v1";
 
 export interface FixtureState {
   path: string;
@@ -16,6 +17,7 @@ export interface ProductState {
   packaged: boolean;
   version: string;
   taskId: string | null;
+  missionId?: string | null;
   exitCode: number | null;
 }
 
@@ -33,7 +35,7 @@ export interface AcceptanceCheck {
 export interface AcceptanceRunState {
   schemaVersion: 1;
   runId: string;
-  scenarioId: "foundation-smoke-v1";
+  scenarioId: AcceptanceScenarioId;
   lifecycle: AcceptanceLifecycle;
   disposition: AcceptanceDisposition;
   startedAt: string;
@@ -78,6 +80,7 @@ export interface AcceptanceReport {
     packaged: boolean;
     exitCode: number | null;
     taskId: string | null;
+    missionId: string | null;
   } | null;
   fixture: { startingSha: string } | null;
   sourceUntouched: boolean | null;

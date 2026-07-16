@@ -7,6 +7,7 @@ only internal modules. It is deliberately separate from ordinary unit tests.
 
 ```powershell
 morrow acceptance run
+morrow acceptance run --scenario durable-autonomy-v1
 morrow acceptance resume <run-id>
 morrow acceptance report <run-id>
 ```
@@ -22,9 +23,18 @@ normal workspace tool, then inspects the persisted task through `morrow audit`.
 Successful disposable workspaces are removed after their reports are durable;
 failed/inconclusive workspaces are retained for diagnosis.
 
-This scenario is local and unmetered. It does not prove real-model coding,
-browser/vision, context rollover, provider failover, Cortex memory, or automatic
-skill creation.
+The versioned `durable-autonomy-v1` scenario retains the foundation proof and
+then drives the production durable mission controller and SQLite operation
+ledger through five deterministic injected faults: premature completion,
+context rollover, provider failure, legitimate no-progress investigation, and
+an abrupt controller restart. PASS additionally requires one stable mission ID
+per continuation, unique durable operation keys, the expected recovery ledger,
+Guardian rejection before validation where applicable, and terminal
+Guardian-gated completion.
+
+Both deterministic scenarios are local and unmetered. They do not replace the
+separate real-model coding, browser/vision, Cortex memory, automatic skill
+creation, or long-run release gates.
 
 ## Package proof
 
@@ -33,12 +43,14 @@ After building the portable package:
 ```powershell
 node scripts/package-release.mjs 0.1.0-beta.30 --skip-build
 pnpm smoke:acceptance-foundation
+pnpm smoke:acceptance-durable
 ```
 
 The package smoke copies the portable product to a temporary install root,
 invokes its bundled launcher/runtime, verifies the reports and leak scan, stops
 the packaged service, removes the disposable install, and retains only redacted
-evidence under `.artifacts/acceptance-foundation/<run-id>`.
+evidence under `.artifacts/acceptance-foundation/<run-id>` or
+`.artifacts/acceptance-durable-autonomy/<run-id>`.
 
 ## Security boundary
 
@@ -47,3 +59,7 @@ removed, a private `MORROW_HOME`, loopback-only service state, and
 `MOCK_PROVIDER=true`. Git and product processes use fixed executable/argument
 arrays with `shell: false`. No remote, push, deployment, purchase, or credential
 mutation is part of the scenario.
+
+Fault injection occurs only inside the packaged acceptance runner at the
+controller's dependency boundary. It does not add an environment-controlled
+fault or bypass path to the production orchestrator API.

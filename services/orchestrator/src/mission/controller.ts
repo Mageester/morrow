@@ -457,11 +457,8 @@ export class MissionController {
   }
 
   private activeTask(runtime: MissionRuntime, snapshot: ControllerSnapshot) {
-    if (runtime.activeTaskId) {
-      const active = snapshot.tasks.find((task) => task.id === runtime.activeTaskId);
-      if (active) return active;
-    }
-    return snapshot.tasks.at(-1);
+    if (!runtime.activeTaskId) return undefined;
+    return snapshot.tasks.find((task) => task.id === runtime.activeTaskId);
   }
 
   private result(

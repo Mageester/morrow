@@ -7,12 +7,13 @@ import { resumeAcceptance, runAcceptance } from "../acceptance/runner.js";
 import { writeAcceptanceReports } from "../acceptance/report.js";
 import { AcceptanceStore } from "../acceptance/storage.js";
 import { MORROW_VERSION } from "../service/update.js";
+import { flagString } from "../cli/args.js";
 
 export function printAcceptanceHelp(out: Output): number {
   out.print([
     "Morrow acceptance",
     "",
-    "  morrow acceptance run                 run the deterministic packaged foundation smoke",
+    "  morrow acceptance run [--scenario foundation-smoke-v1|durable-autonomy-v1]",
     "  morrow acceptance resume <run-id>     resume an interrupted acceptance run",
     "  morrow acceptance report <run-id>     regenerate reports from durable state/evidence",
     "",
@@ -34,7 +35,13 @@ export async function acceptanceCommand(ctx: Context, sub: string | undefined, a
     sourceCwd: process.cwd(),
   };
   let result;
-  if (sub === "run") result = await runAcceptance(common);
+  if (sub === "run") {
+    const requested = flagString(ctx.flags, "scenario") ?? "foundation-smoke-v1";
+    if (requested !== "foundation-smoke-v1" && requested !== "durable-autonomy-v1") {
+      throw usageError(`Unknown acceptance scenario: ${requested}`, "Try: foundation-smoke-v1 or durable-autonomy-v1");
+    }
+    result = await runAcceptance({ ...common, scenarioId: requested });
+  }
   else if (sub === "resume") {
     const id = args[0];
     if (!id) throw usageError("Usage: morrow acceptance resume <run-id>");

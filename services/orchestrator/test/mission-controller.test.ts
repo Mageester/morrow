@@ -59,6 +59,7 @@ describe("durable mission controller", () => {
   function harness(
     state: MissionRuntimeState,
     snapshot: Partial<ControllerSnapshot> = {},
+    options: { activeTaskId?: string | null } = {},
   ) {
     const runtime = missionRuntimeRepository(db);
     runtime.create({ missionId: "mission-1", state, now });
@@ -75,6 +76,19 @@ describe("durable mission controller", () => {
       recovery: null,
       ...snapshot,
     };
+    const activeTaskId = options.activeTaskId === undefined ? current.tasks.at(-1)?.id : options.activeTaskId;
+    if (activeTaskId) {
+      const active = current.tasks.find((task) => task.id === activeTaskId);
+      taskRepository(db).createTask({
+        id: activeTaskId,
+        projectId: "project-1",
+        missionId: "mission-1",
+        kind: "agent_chat",
+        status: active?.status ?? "queued",
+        createdAt: now,
+      });
+      runtime.setActiveTask({ missionId: "mission-1", taskId: activeTaskId, fence, now });
+    }
     const dispatchWorker = vi.fn((_input: { missionId: string; idempotencyKey: string }) => {
       if (!taskRepository(db).getTaskById("task-1")) {
         taskRepository(db).createTask({
@@ -222,6 +236,17 @@ describe("durable mission controller", () => {
     expect((await controller.tick("mission-1", fence)).runtime.state).toBe("replanning");
   });
 
+  it("dispatches a replacement worker after recovery clears the historical active task", async () => {
+    const recovered = harness("executing", {
+      tasks: [{ id: "task-failed", status: "interrupted" }],
+    }, { activeTaskId: null });
+
+    await recovered.controller.tick("mission-1", recovered.fence);
+
+    expect(recovered.dispatchWorker).toHaveBeenCalledTimes(1);
+    expect(recovered.runtime.get("mission-1")?.activeTaskId).toBe("task-1");
+  });
+
   it("clears the failed active worker before dispatching a replacement strategy", async () => {
     const recovering = harness("recovering", {
       tasks: [{ id: "task-1", status: "failed" }],
@@ -235,21 +260,6 @@ describe("durable mission controller", () => {
         exhausted: false,
       },
     });
-    taskRepository(db).createTask({
-      id: "task-1",
-      projectId: "project-1",
-      missionId: "mission-1",
-      kind: "agent_chat",
-      status: "failed",
-      createdAt: now,
-    });
-    recovering.runtime.setActiveTask({
-      missionId: "mission-1",
-      taskId: "task-1",
-      fence: recovering.fence,
-      now,
-    });
-
     const result = await recovering.controller.tick("mission-1", recovering.fence);
 
     expect(result.runtime.state).toBe("replanning");

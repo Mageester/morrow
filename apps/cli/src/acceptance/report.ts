@@ -14,15 +14,31 @@ export const REQUIRED_FOUNDATION_CHECKS = [
   "secrets_absent",
 ] as const;
 
-export function classifyFoundationRun(state: AcceptanceRunState): AcceptanceDisposition {
+export const REQUIRED_DURABLE_AUTONOMY_CHECKS = [
+  "premature_completion",
+  "context_rollover",
+  "provider_failure",
+  "false_no_progress",
+  "abrupt_process_restart",
+  "stable_mission_identity",
+  "unique_operation_keys",
+  "terminal_completion",
+] as const;
+
+export function classifyAcceptanceRun(state: AcceptanceRunState): AcceptanceDisposition {
   if (state.disposition === "BLOCKED") return "BLOCKED";
   const checks = Object.values(state.checks);
   if (checks.length === 0) return "NOT RUN";
   if (checks.some((check) => check.status === "failed")) return "FAIL";
   if (checks.some((check) => check.status === "inconclusive")) return "INCONCLUSIVE";
-  if (REQUIRED_FOUNDATION_CHECKS.some((key) => state.checks[key]?.status !== "passed")) return "INCONCLUSIVE";
+  const required = state.scenarioId === "durable-autonomy-v1"
+    ? [...REQUIRED_FOUNDATION_CHECKS, ...REQUIRED_DURABLE_AUTONOMY_CHECKS]
+    : REQUIRED_FOUNDATION_CHECKS;
+  if (required.some((key) => state.checks[key]?.status !== "passed")) return "INCONCLUSIVE";
   return "PASS";
 }
+
+export const classifyFoundationRun = classifyAcceptanceRun;
 
 function replaceLocalPaths<T>(value: T, runRoot: string): T {
   if (typeof value === "string") {
@@ -56,6 +72,7 @@ function makeReport(store: AcceptanceStore, state: AcceptanceRunState, evidence:
       packaged: state.product.packaged,
       exitCode: state.product.exitCode,
       taskId: state.product.taskId,
+      missionId: state.product.missionId ?? null,
     } : null,
     fixture: state.fixture ? { startingSha: state.fixture.startingSha } : null,
     sourceUntouched: state.checks.source_untouched ? state.checks.source_untouched.status === "passed" : null,

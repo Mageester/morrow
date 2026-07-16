@@ -16,6 +16,10 @@ export {
 export { TaskRunner, type TaskExecutor } from "./runner.js";
 export { recoverRunningTasks, reconcileTasksOnStartup, reconcileMissionsOnStartup } from "./recovery.js";
 export { MissionControllerRunner, createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
+export { MissionController, type ControllerSnapshot } from "./mission/controller.js";
+export { missionRuntimeRepository } from "./repositories/mission-runtime.js";
+export { projectRepository } from "./repositories/projects.js";
+export { taskRepository } from "./repositories/tasks.js";
 
 // Execution building blocks. Exposed so an embedding host (and integration
 // tests exercising the real CLI client path) can stand up a deterministic

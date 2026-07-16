@@ -15,6 +15,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "test": "turbo run test",
     "smoke:acceptance-foundation": "node scripts/acceptance-foundation-smoke.mjs",
+    "smoke:acceptance-durable": "node scripts/acceptance-foundation-smoke.mjs --scenario durable-autonomy-v1",
     "test:watch": "turbo run test --watch"
   },
   "devDependencies": {

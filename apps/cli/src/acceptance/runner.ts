@@ -4,9 +4,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { createFoundationFixture, verifyFixtureUnchanged } from "./fixture.js";
-import { classifyFoundationRun, writeAcceptanceReports } from "./report.js";
+import { classifyAcceptanceRun, writeAcceptanceReports } from "./report.js";
 import { AcceptanceStore, assertContainedPath } from "./storage.js";
-import type { AcceptanceCheck, AcceptanceRunState, SourceFingerprint } from "./types.js";
+import type { AcceptanceCheck, AcceptanceRunState, AcceptanceScenarioId, SourceFingerprint } from "./types.js";
+import { runDurableAutonomyScenarios } from "./scenarios/durable-autonomy.js";
 
 export interface InvocationResult { exitCode: number; stdout: string; stderr: string }
 export interface InvocationOptions { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }
@@ -24,6 +25,7 @@ export interface AcceptanceRunnerOptions {
   env?: NodeJS.ProcessEnv;
   invoke?: AcceptanceInvocation;
   simulateAbruptInterruption?: boolean;
+  scenarioId?: AcceptanceScenarioId;
 }
 
 export interface AcceptanceRunResult { state: AcceptanceRunState; reportJson: string; reportMarkdown: string }
@@ -163,10 +165,10 @@ export async function runAcceptance(options: AcceptanceRunnerOptions): Promise<A
   const productHome = assertContainedPath(root, join(root, "product-home"));
   const now = new Date().toISOString();
   const state: AcceptanceRunState = {
-    schemaVersion: 1, runId: id, scenarioId: "foundation-smoke-v1", lifecycle: "created", disposition: "NOT RUN",
+    schemaVersion: 1, runId: id, scenarioId: options.scenarioId ?? "foundation-smoke-v1", lifecycle: "created", disposition: "NOT RUN",
     startedAt: now, updatedAt: now, completedAt: null, activeStep: null, completedSteps: [], recoveryCount: 0,
     fixture: null,
-    product: { home: productHome, entrypoint: options.entrypoint, packaged: options.packaged, version: options.version, taskId: null, exitCode: null },
+    product: { home: productHome, entrypoint: options.entrypoint, packaged: options.packaged, version: options.version, taskId: null, missionId: null, exitCode: null },
     source: fingerprintSource(options.sourceCwd), checks: {}, artifacts: [], message: null,
   };
   store.create(state);
@@ -187,6 +189,14 @@ export async function resumeAcceptance(runId: string, options: AcceptanceRunnerO
     if (!state.fixture || !verifyFixtureUnchanged(state.fixture).unchanged) throw new Error("Cannot safely resume: the read-only fixture changed after interruption");
     state.recoveryCount += 1;
     store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Resumed interrupted read-only product invocation without repeating completed steps" });
+    state.activeStep = null;
+    store.save(state);
+  }
+  if (state.activeStep === "durable-autonomy") {
+    const scenarioRoot = assertContainedPath(store.runRoot(state.runId), join(store.runRoot(state.runId), "durable-autonomy"));
+    rmSync(scenarioRoot, { recursive: true, force: true });
+    state.recoveryCount += 1;
+    store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Reset the contained disposable scenario runtime before resuming acceptance" });
     state.activeStep = null;
     store.save(state);
   }
@@ -250,6 +260,45 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
       completeStep(store, state, "product-persistence");
     }
 
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("durable-autonomy")) {
+      beginStep(store, state, "durable-autonomy");
+      const scenarioRoot = assertContainedPath(runRoot, join(runRoot, "durable-autonomy"));
+      const result = await runDurableAutonomyScenarios({ root: scenarioRoot });
+      const artifact = writeArtifact(store, state, "durable-autonomy.json", `${JSON.stringify(result, null, 2)}\n`);
+      state.product.missionId = result.scenarios[0]?.missionId ?? null;
+      for (const scenario of result.scenarios) {
+        const entry = store.appendEvidence(state.runId, {
+          step: "durable-autonomy",
+          kind: "controller-fault-scenario",
+          status: scenario.passed ? "passed" : "failed",
+          summary: scenario.passed
+            ? `${scenario.fault} continued to ${scenario.terminalState} on one mission with ${scenario.dispatchCount} dispatch(es)`
+            : `${scenario.fault} failed: ${scenario.message ?? "unknown failure"}`,
+          artifact,
+          details: {
+            missionId: scenario.missionId,
+            operationKeys: scenario.operationKeys,
+            recoveryCategories: scenario.recoveryCategories,
+            guardianRejections: scenario.guardianRejections,
+            controllerOwners: scenario.controllerOwners,
+          },
+        });
+        state.checks[scenario.fault] = makeCheck(entry.status, entry.summary, [entry.id]);
+      }
+      const stable = result.scenarios.every((scenario) => scenario.missionIds.length === 1 && scenario.missionIds[0] === scenario.missionId);
+      const unique = result.scenarios.every((scenario) => new Set(scenario.operationKeys).size === scenario.operationKeys.length);
+      const terminal = result.scenarios.every((scenario) => scenario.terminalState === "completed");
+      for (const [key, passed, summary] of [
+        ["stable_mission_identity", stable, "Every continuation retained one stable mission identity"],
+        ["unique_operation_keys", unique, "Every durable side effect retained a unique idempotency key"],
+        ["terminal_completion", terminal, "Every injected fault reached Guardian-gated completion"],
+      ] as const) {
+        const entry = store.appendEvidence(state.runId, { step: "durable-autonomy", kind: "ledger-invariant", status: passed ? "passed" : "failed", summary });
+        state.checks[key] = makeCheck(entry.status, entry.summary, [entry.id]);
+      }
+      completeStep(store, state, "durable-autonomy");
+    }
+
     if (!state.completedSteps.includes("integrity")) {
       beginStep(store, state, "integrity");
       const fixture = verifyFixtureUnchanged(state.fixture);
@@ -279,7 +328,7 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
   }
 
   state.activeStep = null;
-  state.disposition = classifyFoundationRun(state);
+  state.disposition = classifyAcceptanceRun(state);
   state.updatedAt = new Date().toISOString();
   store.save(state);
   let paths = writeAcceptanceReports(store, state, store.readEvidence(state.runId));
@@ -289,7 +338,7 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
   const leak = reportLeak(rawReports, secrets);
   const leakEntry = store.appendEvidence(state.runId, { step: "report", kind: "redaction-scan", status: leak ? "failed" : "passed", summary: leak ? `Report leak scan found ${leak}` : "Report leak scan found no credential material" });
   state.checks.secrets_absent = makeCheck(leak ? "failed" : "passed", leakEntry.summary, [leakEntry.id]);
-  state.disposition = classifyFoundationRun(state);
+  state.disposition = classifyAcceptanceRun(state);
   state.lifecycle = "completed";
   state.completedAt = new Date().toISOString();
   state.updatedAt = state.completedAt;
@@ -300,6 +349,9 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
     const cleanupPaths = validateAcceptanceRunPaths(runRoot, state);
     if (cleanupPaths.fixturePath) rmSync(cleanupPaths.fixturePath, { recursive: true, force: true });
     if (cleanupPaths.productHome) rmSync(cleanupPaths.productHome, { recursive: true, force: true });
+    if (state.scenarioId === "durable-autonomy-v1") {
+      rmSync(assertContainedPath(runRoot, join(runRoot, "durable-autonomy")), { recursive: true, force: true });
+    }
   }
   return { state, reportJson: paths.json, reportMarkdown: paths.markdown };
 }
