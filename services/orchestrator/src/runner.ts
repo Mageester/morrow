@@ -21,6 +21,7 @@ export class TaskRunner {
   private activeTasks = new Set<string>();
   private activePromises = new Map<string, Promise<void>>();
   private abortControllers = new Map<string, AbortController>();
+  private settledListeners = new Set<(taskId: string) => void>();
   private executor: TaskExecutor;
 
   constructor(private db: Database.Database, executor?: TaskExecutor) {
@@ -43,6 +44,11 @@ export class TaskRunner {
   /** True while a task is executing (or queued to execute) in this process. */
   isActive(taskId: string): boolean {
     return this.activeTasks.has(taskId);
+  }
+
+  onSettled(listener: (taskId: string) => void): () => void {
+    this.settledListeners.add(listener);
+    return () => this.settledListeners.delete(listener);
   }
 
   run(taskId: string, opts: { recovered?: boolean; resumeCheckpoint?: boolean; checkpointCursor?: number; executionLease?: ExecutionLeaseClaim } = {}) {
@@ -125,6 +131,9 @@ export class TaskRunner {
           this.activeTasks.delete(taskId);
           this.activePromises.delete(taskId);
           this.abortControllers.delete(taskId);
+          for (const listener of this.settledListeners) {
+            try { listener(taskId); } catch { /* observers never break runner cleanup */ }
+          }
           resolve();
         }
       }, 0);

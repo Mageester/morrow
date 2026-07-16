@@ -17,7 +17,7 @@ import { approvalsRepository } from "../repositories/approvals.js";
 import { changeSetsRepository } from "../repositories/change-sets.js";
 import { taskContinuationsRepository } from "../repositories/task-continuations.js";
 import { contextSummariesRepository } from "../repositories/context-summaries.js";
-import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinuityRepository, type ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
+import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinuityRepository, type ExecutionCheckpointSnapshot, type MissionWorkerOutcome } from "../repositories/execution-continuity.js";
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
@@ -125,8 +125,6 @@ function isProviderContextRejection(error: unknown): boolean {
   if (error.status !== 400 && error.status !== 413 && error.status !== 422) return false;
   return /(?:context|token|request).*(?:large|long|limit|maximum|max)|(?:large|long|limit|maximum|max).*(?:context|token|request)/i.test(error.message);
 }
-
-const MAX_AUTOMATIC_EXECUTION_SEGMENTS = 64;
 
 /**
  * Find installed skills relevant to a prompt by scoring each skill's
@@ -627,7 +625,11 @@ export async function executeAgentChatTask({
   const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
   const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
   const turnCeiling = adaptiveTurnCeiling(turnsLimit);
-  const automaticSegmentLimit = Math.max(1, maxAutomaticSegments ?? MAX_AUTOMATIC_EXECUTION_SEGMENTS);
+  // Durable segment rollover is a continuity mechanism, not a terminal budget.
+  // An explicit caller policy may cap segments; there is no hidden default.
+  const automaticSegmentLimit = maxAutomaticSegments === undefined
+    ? null
+    : Math.max(1, maxAutomaticSegments);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
 
@@ -1742,13 +1744,37 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const interruptAtSegmentLimit = (checkpointId: string): boolean => {
-    if (currentSegment.sequence < automaticSegmentLimit) return false;
+    if (automaticSegmentLimit === null || currentSegment.sequence < automaticSegmentLimit) return false;
     closeCurrentTurn({ final: false, aborted: true });
     const message = `Automatic execution paused after ${automaticSegmentLimit} durable segments to bound unattended provider and tool usage.`;
     failCurrentSegment("segment_budget_exhausted");
     transitionAgentState("interrupted", { reason: "segment_budget_exhausted", message, checkpointId, turns: absoluteTurn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "segment_budget_exhausted", message, checkpointId } });
     convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return true;
+  };
+
+  const returnMissionWorkerOutcome = async (
+    outcome: Exclude<MissionWorkerOutcome, "candidate_answer_ready">,
+    message: string,
+  ): Promise<boolean> => {
+    if (!taskMissionId) return false;
+    closeCurrentTurn({ final: false, aborted: true });
+    const checkpointId = await persistExecutionCheckpoint(outcome);
+    failCurrentSegment(outcome);
+    transitionAgentState("interrupted", { reason: outcome, message, checkpointId, turns: absoluteTurn });
+    records.transitionTask(taskId, "interrupted", {
+      id: randomUUID(),
+      createdAt: now(),
+      payload: { reason: outcome, message, checkpointId, missionId: taskMissionId },
+    });
+    convs.updateMessageContentAndState(
+      assistantMessageRow.id,
+      `${responseContent}\n\n[Controller recovery required: ${message}]`,
+      "interrupted",
+      now(),
+    );
     if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return true;
   };
@@ -1767,7 +1793,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       continuity.createCanonicalAnswer({
         id: randomUUID(), taskId, missionId: taskMissionId, segmentId: currentSegment.id, content: finalText, evidenceJson, ...currentFence(), now: now(),
       });
-      if (!continuity.completeSegment(currentSegment.id, now(), currentFence())) throw new ExecutionLeaseFenceError();
+      if (!continuity.completeSegment(
+        currentSegment.id,
+        now(),
+        currentFence(),
+        taskMissionId ? "candidate_answer_ready" : "task_complete",
+      )) throw new ExecutionLeaseFenceError();
       // Old/checkpoint fixtures can resume before the active lifecycle was
       // persisted. Walk only the missing legal states so canonical completion
       // remains transactional without weakening the state machine globally.
@@ -1919,6 +1950,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
       if (!preparedContext.ok) {
+        if (await returnMissionWorkerOutcome("context_rollover_required", preparedContext.actionableMessage)) return;
         failCurrentSegment("context_preflight_failed");
         transitionAgentState("failed", { message: preparedContext.actionableMessage });
         records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
@@ -2368,6 +2400,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       }
       console.error("Provider stream error", e);
       const errMessage = e.message || "Failed to query AI provider";
+      if (await returnMissionWorkerOutcome("provider_recovery_required", errMessage)) return;
       failCurrentSegment("provider_failure");
       transitionAgentState("failed", { message: errMessage });
       records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: errMessage } });
@@ -3226,6 +3259,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           continue;
         }
         const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
+        if (await returnMissionWorkerOutcome("provider_recovery_required", message)) return;
         failCurrentSegment("missing_final_answer");
         transitionAgentState("interrupted", { reason: "missing_final_answer", message, turns: turn });
         records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_final_answer", message, turns: turn } });
@@ -3241,6 +3275,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
     if (loopDetected) {
       const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
+      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
       failCurrentSegment("loop_detected");
       transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
       records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "loop_detected", message, turns: turn } });
@@ -3264,6 +3299,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
     if (noProgressTurns >= 3) {
       const message = "Task stalled after three turns without new observable progress.";
+      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
       failCurrentSegment("stalled");
       transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
       records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
@@ -3310,6 +3346,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // incomplete status instead, so the CLI and /output show the truth.
   if (completedWithoutMoreTools && lastVerificationFailure) {
     const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
+    if (await returnMissionWorkerOutcome("validation_required", message)) return;
     failCurrentSegment("unverified_completion");
     transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
@@ -3336,6 +3373,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const priorNarration = recordedTurns.slice(0, -1).map((t) => t.assistantText);
   if (duplicatesPriorNarration(canonicalFinalText, priorNarration)) {
     const message = "Stopping without completion: the final answer duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
+    if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
     failCurrentSegment("duplicate_final_narration");
     transitionAgentState("interrupted", { reason: "duplicate_final_narration", message, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message, turns: turn } });
@@ -3354,6 +3392,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     && requestsWorkspaceChange(latestUserPrompt)
     && !convs.listToolCallsForMessage(assistantMessageRow.id).some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed")) {
     const message = "Stopping without completion: the request asks for a workspace change, but no write tool ever completed â€” there is no delivery evidence to justify completion.";
+    if (await returnMissionWorkerOutcome("validation_required", message)) return;
     failCurrentSegment("missing_delivery_evidence");
     transitionAgentState("interrupted", { reason: "missing_delivery_evidence", message, turns: turn });
     records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_delivery_evidence", message, turns: turn } });

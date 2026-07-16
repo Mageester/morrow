@@ -56,6 +56,70 @@ describe("durable agent segments", () => {
     }
   });
 
+  it("has no implicit segment terminal and records a mission answer as a Guardian candidate", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-no-implicit-segment-cap-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      db.prepare(`INSERT INTO missions
+        (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run("mission-1", 1, "p", "Continue beyond internal boundaries", "running", 1, "{}", at, at);
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "old-u", conversationId: "c", role: "user", content: "OLD_CONTEXT ".repeat(140_000), createdAt: new Date(Date.parse(at) + 1).toISOString(), updatedAt: at });
+      convs.appendMessage({ id: "old-a", conversationId: "c", role: "assistant", content: "Old response", createdAt: new Date(Date.parse(at) + 2).toISOString(), updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Continue and return a candidate answer.", createdAt: new Date(Date.parse(at) + 3).toISOString(), updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", missionId: "mission-1", kind: "agent_chat", status: "queued", createdAt: new Date(Date.parse(at) + 4).toISOString() });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: new Date(Date.parse(at) + 4).toISOString(), updatedAt: at });
+      const insertSegment = db.prepare(`INSERT INTO agent_execution_segments
+        (id,task_id,mission_id,sequence,status,boundary_reason,provider_id,model,route_json,owner_id,lease_generation,lease_expires_at,started_at,closed_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      for (let sequence = 1; sequence <= 64; sequence++) {
+        insertSegment.run(
+          `historical-${sequence}`,
+          "t",
+          "mission-1",
+          sequence,
+          "checkpointed",
+          "context_pressure",
+          "deepseek",
+          "deepseek-v4-flash",
+          "{}",
+          null,
+          1,
+          null,
+          at,
+          at,
+        );
+      }
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "deepseek",
+        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com", endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" },
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerCalls += 1;
+          yield { type: "text", text: "Candidate result for Guardian validation." };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider, maxContextBytes: 4_000_000 });
+
+      expect(providerCalls).toBe(1);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+      expect(executionContinuityRepository(db).listSegments("t").at(-1)).toMatchObject({
+        status: "completed",
+        boundaryReason: "candidate_answer_ready",
+      });
+      expect(missionsRepository(db).get("mission-1")?.status).toBe("running");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("checkpoints and automatically continues across an adaptive turn boundary", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-segments-"));
     const db = openDatabase(":memory:");
@@ -128,6 +192,83 @@ describe("durable agent segments", () => {
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
       expect(executionContinuityRepository(db).listSegments("t").map((segment) => segment.status)).toEqual(["checkpointed", "completed"]);
       expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.recoveryAttempts).toBeDefined();
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("checkpoints a mission context preflight failure for controller rollover", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-mission-context-rollover-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      db.prepare(`INSERT INTO missions
+        (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run("mission-1", 1, "p", "Preserve an oversized requirement", "running", 1, "{}", at, at);
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: `Keep this requirement intact: ${"X".repeat(700_000)}`, createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", missionId: "mission-1", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "deepseek",
+        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com", endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" },
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerCalls += 1;
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider, maxContextBytes: 20 });
+
+      expect(providerCalls).toBe(0);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
+      expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.currentPhase)
+        .toBe("context_rollover_required");
+      expect(executionContinuityRepository(db).listSegments("t").at(-1)?.boundaryReason)
+        .toBe("context_rollover_required");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an exhausted mission provider failure to controller recovery", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-mission-provider-recovery-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      db.prepare(`INSERT INTO missions
+        (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run("mission-1", 1, "p", "Recover through another provider", "running", 1, "{}", at, at);
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Continue after the provider fails.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", missionId: "mission-1", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let calls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          calls += 1;
+          throw new ProviderError("network", "connection reset", { kind: "network", retryable: true });
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider });
+
+      expect(calls).toBe(3);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
+      expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.currentPhase)
+        .toBe("provider_recovery_required");
+      expect(executionContinuityRepository(db).listSegments("t").at(-1)?.boundaryReason)
+        .toBe("provider_recovery_required");
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

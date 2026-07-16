@@ -27,6 +27,7 @@ export interface ObservableTaskRunner {
   isActive(taskId: string): boolean;
   waitFor(taskId: string): Promise<void>;
   cancel?(taskId: string): void;
+  onSettled?(listener: (taskId: string) => void): () => void;
 }
 
 export interface MissionControllerRunnerDependencies {
@@ -227,7 +228,7 @@ export function createDefaultMissionControllerRunner(
     }),
     now,
   });
-  return new MissionControllerRunner({
+  const controllerRunner = new MissionControllerRunner({
     runtime,
     controller,
     taskRunner: dependencies.taskRunner,
@@ -235,4 +236,10 @@ export function createDefaultMissionControllerRunner(
     now,
     ...(dependencies.leaseMs === undefined ? {} : { leaseMs: dependencies.leaseMs }),
   });
+  dependencies.taskRunner.onSettled?.((taskId) => {
+    const task = dependencies.db.prepare("SELECT mission_id AS missionId FROM tasks WHERE id=?")
+      .get(taskId) as { missionId: string | null } | undefined;
+    if (task?.missionId) controllerRunner.wake(task.missionId);
+  });
+  return controllerRunner;
 }
