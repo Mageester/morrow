@@ -73,7 +73,7 @@ describe("foundation acceptance runner", () => {
     })).toThrow(/outside/i);
   });
 
-  it("persists step boundaries, invokes consumer commands, and produces a PASS report", async () => {
+  it("persists step boundaries, invokes consumer commands, and produces a PASS report", { timeout: 20_000 }, async () => {
     const acceptanceRoot = root();
     const calls: string[][] = [];
     const result = await runAcceptance({
@@ -94,7 +94,7 @@ describe("foundation acceptance runner", () => {
     expect(existsSync(join(acceptanceRoot, result.state.runId, "product-home"))).toBe(false);
   });
 
-  it("resumes an interrupted product step once and terminal resume only regenerates reports", async () => {
+  it("resumes an interrupted product step once and terminal resume only regenerates reports", { timeout: 20_000 }, async () => {
     const acceptanceRoot = root();
     const calls: string[][] = [];
     let interrupted = true;

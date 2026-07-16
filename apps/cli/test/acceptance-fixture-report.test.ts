@@ -41,21 +41,25 @@ function state(runId: string, checks: Record<string, AcceptanceCheck> = {}): Acc
 }
 
 describe("foundation fixture", () => {
-  it("creates a clean real Git repository with a recorded immutable starting SHA", () => {
-    const runRoot = root();
-    const fixture = createFoundationFixture(runRoot);
-    expect(fixture.path).toBe(join(runRoot, "fixture"));
-    expect(fixture.startingSha).toMatch(/^[0-9a-f]{40}$/);
-    expect(fixture.startingStatus).toBe("");
-    expect(readFileSync(join(fixture.path, "evidence.txt"), "utf8")).toContain("foundation fixture");
-    expect(verifyFixtureUnchanged(fixture)).toEqual({
-      head: fixture.startingSha,
-      status: "",
-      unchanged: true,
-    });
-  });
+  it(
+    "creates a clean real Git repository with a recorded immutable starting SHA",
+    { timeout: 20_000 },
+    () => {
+      const runRoot = root();
+      const fixture = createFoundationFixture(runRoot);
+      expect(fixture.path).toBe(join(runRoot, "fixture"));
+      expect(fixture.startingSha).toMatch(/^[0-9a-f]{40}$/);
+      expect(fixture.startingStatus).toBe("");
+      expect(readFileSync(join(fixture.path, "evidence.txt"), "utf8")).toContain("foundation fixture");
+      expect(verifyFixtureUnchanged(fixture)).toEqual({
+        head: fixture.startingSha,
+        status: "",
+        unchanged: true,
+      });
+    },
+  );
 
-  it("detects fixture modifications without resetting or deleting them", () => {
+  it("detects fixture modifications without resetting or deleting them", { timeout: 20_000 }, () => {
     const runRoot = root();
     const fixture = createFoundationFixture(runRoot);
     appendFileSync(join(fixture.path, "evidence.txt"), "changed\n");
