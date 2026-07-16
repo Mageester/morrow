@@ -530,6 +530,19 @@ export const OAuthFindingSchema=z.object({
   documentationUrl:z.string().nullable(),
 }).strict();
 export type OAuthFinding=z.infer<typeof OAuthFindingSchema>;
+
+// Live subscription-OAuth connection state for a provider (never carries token
+// material — see services/orchestrator/src/provider/oauth-flow.ts).
+export const OAuthProviderStatusSchema=z.object({
+  id:z.enum(["anthropic","openai"]),
+  label:z.string(),
+  providerId:z.string(),
+  status:z.enum(["connected","disconnected","expired"]),
+  expiresAt:z.string().nullable(),
+  scope:z.string().nullable(),
+  warning:z.string(),
+}).strict();
+export type OAuthProviderStatus=z.infer<typeof OAuthProviderStatusSchema>;
 export type UpdateConversationInput=z.infer<typeof UpdateConversationSchema>;
 
 // ── Tool catalog, permissions, audit, provider connectivity ──────────────────
