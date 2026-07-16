@@ -77,6 +77,7 @@ export const MissionOperationKindSchema = z.enum([
   "wait_for_tool",
   "wait_for_approval",
   "validate_criteria",
+  "run_review",
   "guardian_review",
   "recover",
   "cancel_worker",

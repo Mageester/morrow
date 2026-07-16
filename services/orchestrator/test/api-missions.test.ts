@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
@@ -12,13 +12,27 @@ describe("Mission REST API", () => {
   let app: any;
   let tempDir: string;
   let workspace: string;
+  let missionActive: boolean;
+  let missionControllerRunner: {
+    run: ReturnType<typeof vi.fn<(missionId: string) => void>>;
+    wake: ReturnType<typeof vi.fn<(missionId: string) => void>>;
+    cancel: ReturnType<typeof vi.fn<(missionId: string) => void>>;
+    isActive: ReturnType<typeof vi.fn<(missionId: string) => boolean>>;
+  };
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "morrow-mapi-"));
     workspace = mkdtempSync(join(tmpdir(), "morrow-mws-"));
     spawnSync("git", ["init", "-b", "main"], { cwd: workspace });
     db = openDatabase(join(tempDir, "morrow.db"));
-    app = buildServer({ db, runner: new TaskRunner(db) });
+    missionActive = false;
+    missionControllerRunner = {
+      run: vi.fn(() => { missionActive = true; }),
+      wake: vi.fn(),
+      cancel: vi.fn(() => { missionActive = false; }),
+      isActive: vi.fn(() => missionActive),
+    };
+    app = buildServer({ db, runner: new TaskRunner(db), missionControllerRunner });
     const now = "2026-07-04T00:00:00.000Z";
     db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p1", 1, "Proj", workspace, now, now);
   });
@@ -52,7 +66,7 @@ describe("Mission REST API", () => {
     app.close(); db.close();
     // Reopen the DB + a brand-new server, as a service restart would.
     db = openDatabase(join(tempDir, "morrow.db"));
-    app = buildServer({ db, runner: new TaskRunner(db) });
+    app = buildServer({ db, runner: new TaskRunner(db), missionControllerRunner });
     const res = await app.inject({ method: "GET", url: `/api/missions/${m.id}` });
     expect(res.statusCode).toBe(200);
     expect(res.json().objective).toBe("Durable objective");
@@ -116,5 +130,34 @@ describe("Mission REST API", () => {
   it("returns 404 for an unknown mission", async () => {
     const res = await app.inject({ method: "GET", url: "/api/missions/mission-does-not-exist" });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("starts one durable controller and exposes its persisted runtime projection", async () => {
+    const mission = await createMission("Continue after the CLI exits");
+    await app.inject({ method: "POST", url: `/api/missions/${mission.id}/approve` });
+
+    const first = await app.inject({ method: "POST", url: `/api/missions/${mission.id}/start` });
+    const replay = await app.inject({ method: "POST", url: `/api/missions/${mission.id}/start` });
+
+    expect(first.statusCode).toBe(202);
+    expect(replay.statusCode).toBe(202);
+    expect(missionControllerRunner.run).toHaveBeenCalledTimes(1);
+    expect(first.json()).toMatchObject({
+      id: mission.id,
+      runtime: {
+        missionId: mission.id,
+        state: "created",
+        operations: [],
+        progress: [],
+        recoveryDecisions: [],
+      },
+    });
+
+    const status = await app.inject({ method: "GET", url: `/api/missions/${mission.id}` });
+    expect(status.json().runtime).toMatchObject({ missionId: mission.id, state: "created" });
+
+    const cancelled = await app.inject({ method: "POST", url: `/api/missions/${mission.id}/cancel` });
+    expect(cancelled.json().runtime.state).toBe("cancelled");
+    expect(missionControllerRunner.cancel).toHaveBeenCalledWith(mission.id);
   });
 });

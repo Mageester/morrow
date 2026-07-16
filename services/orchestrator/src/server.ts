@@ -100,6 +100,7 @@ import { changeSetsRepository } from "./repositories/change-sets.js";
 import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { missionsRepository } from "./repositories/missions.js";
+import { missionRuntimeRepository } from "./repositories/mission-runtime.js";
 import { MissionService, MissionError } from "./mission/service.js";
 import { ensureCortexSpecialistAgents } from "./mission/specialists.js";
 import { buildMissionCompletion } from "./mission/completion.js";
@@ -176,7 +177,12 @@ export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
   /** Wake durable mission ownership after task or approval state changes. */
-  missionControllerRunner?: { wake(missionId: string): void };
+  missionControllerRunner?: {
+    run?(missionId: string): void;
+    wake(missionId: string): void;
+    cancel?(missionId: string): void;
+    isActive?(missionId: string): boolean;
+  };
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
@@ -229,6 +235,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
   const missions = missionsRepository(deps.db);
+  const missionRuntime = missionRuntimeRepository(deps.db);
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -241,6 +248,42 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
     cortex: cortexService,
   });
+  const missionProjection = (missionId: string) => {
+    const mission = missionService.get(missionId);
+    const runtime = missionRuntime.get(missionId);
+    if (!runtime) return { ...mission, runtime: null };
+    const operations = missionRuntime.listOperations(missionId);
+    const guardian = missionService.assessGuardian(missionId);
+    const providerModelHistory = deps.db.prepare(`SELECT segment.provider_id AS providerId,segment.model,
+        segment.sequence,segment.status,segment.boundary_reason AS boundaryReason
+      FROM agent_execution_segments segment
+      JOIN tasks task ON task.id=segment.task_id
+      WHERE task.mission_id=? ORDER BY segment.started_at,segment.id`)
+      .all(missionId);
+    return {
+      ...mission,
+      runtime: {
+        ...runtime,
+        currentOperation: runtime.activeOperationId
+          ? operations.find((operation) => operation.id === runtime.activeOperationId) ?? null
+          : null,
+        operations,
+        transitions: missionRuntime.listTransitions(missionId),
+        progress: missionRuntime.listProgress(missionId),
+        recoveryDecisions: missionRuntime.listRecoveryDecisions(missionId),
+        guardian,
+        blocker: guardian.passed
+          ? null
+          : [...guardian.blocked, ...guardian.failed, ...guardian.missing].at(0)?.detail ?? null,
+        providerModelHistory,
+        evidenceCounts: {
+          passed: mission.evidence.filter((item) => item.status === "passed").length,
+          failed: mission.evidence.filter((item) => item.status === "failed").length,
+          inconclusive: mission.evidence.filter((item) => item.status === "inconclusive").length,
+        },
+      },
+    };
+  };
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   // A `running` row from a previous orchestrator run is unobservable — mark it
@@ -1203,19 +1246,27 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const parsed = CreateMissionSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError(400, "Invalid mission request", "VALIDATION_ERROR");
-    const mission = missionService.create(projectId, parsed.data);
+    let mission!: ReturnType<typeof missionService.create>;
+    deps.db.transaction(() => {
+      mission = missionService.create(projectId, parsed.data);
+      missionRuntime.create({ missionId: mission.id, now: mission.createdAt });
+    })();
     ensureCortexSpecialistAgents(projectId, agents);
     reply.status(201);
-    return mission;
+    return missionProjection(mission.id);
   });
 
   app.get("/api/projects/:projectId/missions", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
-    return missionService.listByProject(projectId);
+    return missionService.listByProject(projectId).map((mission) => missionProjection(mission.id));
   });
 
-  app.get("/api/missions/:missionId", async (request) => requireMission((request.params as { missionId: string }).missionId));
+  app.get("/api/missions/:missionId", async (request) => {
+    const missionId = (request.params as { missionId: string }).missionId;
+    requireMission(missionId);
+    return missionProjection(missionId);
+  });
 
   app.get("/api/missions/:missionId/criteria", async (request) => requireMission((request.params as { missionId: string }).missionId).criteria);
   app.get("/api/missions/:missionId/evidence", async (request) => requireMission((request.params as { missionId: string }).missionId).evidence);
@@ -1223,7 +1274,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/missions/:missionId/checkpoints", async (request) => requireMission((request.params as { missionId: string }).missionId).checkpoints);
   app.get("/api/missions/:missionId/result", async (request) => {
     const m = requireMission((request.params as { missionId: string }).missionId);
-    return { status: m.status, result: m.result, finalReview: m.finalReview };
+    return { status: m.status, result: m.result, finalReview: m.finalReview, runtime: missionProjection(m.id).runtime };
+  });
+
+  app.post("/api/missions/:missionId/start", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = requireMission(missionId);
+    if (mission.status !== "running" && mission.status !== "reviewing") {
+      throw new ApiError(409, `Mission must be approved before start; current status is ${mission.status}`, "MISSION_NOT_STARTABLE");
+    }
+    if (!missionRuntime.get(missionId)) missionRuntime.create({ missionId, now: new Date().toISOString() });
+    if (!deps.missionControllerRunner?.run || !deps.missionControllerRunner.isActive) {
+      throw new ApiError(503, "Durable mission controller is unavailable", "MISSION_CONTROLLER_UNAVAILABLE");
+    }
+    if (!deps.missionControllerRunner.isActive(missionId)) deps.missionControllerRunner.run(missionId);
+    reply.status(202);
+    return missionProjection(missionId);
   });
   app.get("/api/missions/:missionId/events", async (request) => {
     requireMission((request.params as { missionId: string }).missionId);
@@ -1339,13 +1405,29 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/missions/:missionId/cancel", async (request) => {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
-    return runMission(() => missionService.cancel(missionId));
+    deps.missionControllerRunner?.cancel?.(missionId);
+    const cancelled = runMission(() => missionService.cancel(missionId));
+    const runtime = missionRuntime.get(missionId);
+    if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
+      missionRuntime.transition({
+        missionId,
+        from: runtime.state,
+        to: "cancelled",
+        cause: "user_cancelled",
+        actor: "user",
+        details: {},
+        now: new Date().toISOString(),
+      });
+    }
+    return { ...cancelled, runtime: missionProjection(missionId).runtime };
   });
 
   app.post("/api/missions/:missionId/resume", async (request) => {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
-    return runMission(() => missionService.resume(missionId));
+    const resumed = runMission(() => missionService.resume(missionId));
+    deps.missionControllerRunner?.wake(missionId);
+    return { ...resumed, runtime: missionProjection(missionId).runtime };
   });
 
   // ── Morrow Cortex: persistent project intelligence ─────────────────────────

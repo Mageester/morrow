@@ -36,6 +36,8 @@ export interface MissionControllerDependencies {
   loadSnapshot(missionId: string): ControllerSnapshot;
   dispatchWorker(input: { missionId: string; idempotencyKey: string }): Promise<{ taskId: string }> | { taskId: string };
   finalizeMission(missionId: string): Promise<unknown> | unknown;
+  validateMission?(missionId: string): Promise<unknown> | unknown;
+  reviewMission?(missionId: string): Promise<unknown> | unknown;
   resolveApproval?(approvalId: string): Promise<unknown> | unknown;
   now?: () => string;
   createId?: () => string;
@@ -237,12 +239,41 @@ export class MissionController {
 
   private async validationTick(
     missionId: string,
-    _runtime: MissionRuntime,
+    runtime: MissionRuntime,
     snapshot: ControllerSnapshot,
     fence: MissionRuntimeLeaseFence,
     now: string,
   ): Promise<ControllerTickResult> {
     if (!snapshot.guardianDecision.passed) {
+      const requested = new Set(snapshot.guardianDecision.nextActions);
+      if (this.dependencies.validateMission && [
+        "validate_criteria",
+        "validate_requirements",
+        "run_required_validation",
+      ].some((action) => requested.has(action))) {
+        const result = await this.runGuardianAction(
+          missionId,
+          runtime,
+          fence,
+          now,
+          "validate_criteria",
+          "guardian:validate",
+          () => this.dependencies.validateMission!(missionId),
+        );
+        if (result) return result;
+      }
+      if (this.dependencies.reviewMission && requested.has("run_independent_review")) {
+        const result = await this.runGuardianAction(
+          missionId,
+          runtime,
+          fence,
+          now,
+          "run_review",
+          "guardian:review",
+          () => this.dependencies.reviewMission!(missionId),
+        );
+        if (result) return result;
+      }
       this.dependencies.runtime.transition({
         missionId,
         from: "validating",
@@ -323,6 +354,60 @@ export class MissionController {
       now,
     });
     return this.result(missionId, "complete:guardian", false, false);
+  }
+
+  private async runGuardianAction(
+    missionId: string,
+    runtime: MissionRuntime,
+    fence: MissionRuntimeLeaseFence,
+    now: string,
+    kind: "validate_criteria" | "run_review",
+    strategyFingerprint: string,
+    action: () => Promise<unknown> | unknown,
+  ): Promise<ControllerTickResult | null> {
+    const operation = this.dependencies.runtime.enqueueOperation({
+      missionId,
+      idempotencyKey: `${kind}:${missionId}:task:${runtime.activeTaskId ?? runtime.transitionSequence}`,
+      kind,
+      strategyFingerprint,
+      input: { taskId: runtime.activeTaskId },
+      fence,
+      now,
+    });
+    if (operation.status === "completed") return null;
+    this.dependencies.runtime.startOperation({ missionId, operationId: operation.id, fence, now });
+    try {
+      await action();
+      this.dependencies.runtime.completeOperation({
+        missionId,
+        operationId: operation.id,
+        fence,
+        result: { completed: true },
+        effectEvidenceIds: [],
+        now,
+      });
+      return this.result(missionId, `guardian_action:${kind}`, true, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.dependencies.runtime.failOperation({
+        missionId,
+        operationId: operation.id,
+        fence,
+        result: { message },
+        now,
+      });
+      this.dependencies.runtime.transition({
+        missionId,
+        from: "validating",
+        to: "recovering",
+        cause: "guardian_action_failed",
+        actor: "guardian",
+        details: { kind, operationId: operation.id, message },
+        fence,
+        now,
+      });
+      return this.result(missionId, `recover:${kind}`, true, false);
+    }
   }
 
   private async recordRecovery(

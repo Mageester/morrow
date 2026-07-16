@@ -48,6 +48,11 @@ import type {
   MissionSpecialistRole,
   MissionVerificationStrategy,
   CreateMissionInput,
+  MissionRuntime,
+  MissionOperation,
+  MissionRuntimeTransition,
+  MissionProgressObservation,
+  MissionRecoveryDecision,
   ReasoningConfiguration,
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
@@ -63,6 +68,20 @@ export interface SendMessageOptions {
   missionId?: string;
   reasoning?: ReasoningConfiguration;
 }
+
+export type DurableMission = Mission & {
+  runtime: (MissionRuntime & {
+    currentOperation: MissionOperation | null;
+    operations: MissionOperation[];
+    transitions: MissionRuntimeTransition[];
+    progress: MissionProgressObservation[];
+    recoveryDecisions: MissionRecoveryDecision[];
+    guardian: { passed: boolean; nextActions: string[] };
+    blocker: string | null;
+    providerModelHistory: Array<{ providerId: string; model: string; sequence: number; status: string; boundaryReason: string | null }>;
+    evidenceCounts: { passed: number; failed: number; inconclusive: number };
+  }) | null;
+};
 
 export interface SendMessageResult {
   task: Task;
@@ -398,13 +417,16 @@ export class MorrowApi {
 
   // ── Verified Missions ─────────────────────────────────────────────────────
   createMission(projectId: string, input: CreateMissionInput) {
-    return this.req<Mission>("POST", `/api/projects/${projectId}/missions`, input);
+    return this.req<DurableMission>("POST", `/api/projects/${projectId}/missions`, input);
   }
   listMissions(projectId: string) {
-    return this.req<Mission[]>("GET", `/api/projects/${projectId}/missions`);
+    return this.req<DurableMission[]>("GET", `/api/projects/${projectId}/missions`);
   }
   getMission(missionId: string) {
-    return this.req<Mission>("GET", `/api/missions/${missionId}`);
+    return this.req<DurableMission>("GET", `/api/missions/${missionId}`);
+  }
+  startMission(missionId: string) {
+    return this.req<DurableMission>("POST", `/api/missions/${missionId}/start`);
   }
   getMissionEvents(missionId: string) {
     return this.req<MissionEvent[]>("GET", `/api/missions/${missionId}/events`);
@@ -452,7 +474,7 @@ export class MorrowApi {
     return this.req<{ ok: boolean; restored: string[]; removed: string[]; missing: string[] }>("POST", `/api/missions/${missionId}/rollback`, { checkpointId });
   }
   cancelMission(missionId: string) {
-    return this.req<Mission>("POST", `/api/missions/${missionId}/cancel`);
+    return this.req<DurableMission>("POST", `/api/missions/${missionId}/cancel`);
   }
 
   // ── Morrow Cortex ──────────────────────────────────────────────────────────
@@ -505,7 +527,7 @@ export class MorrowApi {
     return this.req<PlanRevision[]>("GET", `/api/missions/${missionId}/revisions`);
   }
   resumeMission(missionId: string) {
-    return this.req<Mission>("POST", `/api/missions/${missionId}/resume`);
+    return this.req<DurableMission>("POST", `/api/missions/${missionId}/resume`);
   }
 
   // ── Named workspace checkpoints ───────────────────────────────────────────

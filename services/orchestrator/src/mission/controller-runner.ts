@@ -221,6 +221,8 @@ export function createDefaultMissionControllerRunner(
       return { taskId: result.task.id };
     },
     finalizeMission: (missionId) => missionService.finalize(missionId),
+    validateMission: (missionId) => missionService.verifyAll(missionId),
+    reviewMission: (missionId) => missionService.runReview(missionId),
     resolveApproval: (approvalId) => approvals.resolve(approvalId, {
       decision: "allow_once",
       note: "Applied an approval already authorized by mission policy.",

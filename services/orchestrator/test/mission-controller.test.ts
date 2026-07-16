@@ -89,16 +89,20 @@ describe("durable mission controller", () => {
       return { taskId: "task-1" };
     });
     const finalizeMission = vi.fn();
+    const validateMission = vi.fn();
+    const reviewMission = vi.fn();
     const resolveApproval = vi.fn();
     const controller = new MissionController({
       runtime,
       loadSnapshot: () => current,
       dispatchWorker,
       finalizeMission,
+      validateMission,
+      reviewMission,
       resolveApproval,
       now: () => now,
     });
-    return { runtime, fence, current, controller, dispatchWorker, finalizeMission, resolveApproval };
+    return { runtime, fence, current, controller, dispatchWorker, finalizeMission, validateMission, reviewMission, resolveApproval };
   }
 
   it.each([
@@ -169,8 +173,38 @@ describe("durable mission controller", () => {
   });
 
   it("moves failed validation through recovery and replanning", async () => {
-    const validating = harness("validating", { guardianDecision: failedGuardian });
+    const validating = harness("validating", {
+      guardianDecision: { ...failedGuardian, nextActions: ["apply_review_revisions"] },
+    });
     expect((await validating.controller.tick("mission-1", validating.fence)).runtime.state).toBe("recovering");
+  });
+
+  it("executes Guardian-requested criterion validation before recovery", async () => {
+    const decision = { ...failedGuardian, nextActions: ["validate_criteria", "run_required_validation"] };
+    const validating = harness("validating", { guardianDecision: decision });
+
+    const result = await validating.controller.tick("mission-1", validating.fence);
+
+    expect(result.runtime.state).toBe("validating");
+    expect(validating.validateMission).toHaveBeenCalledWith("mission-1");
+    expect(validating.runtime.listOperations("mission-1")).toContainEqual(expect.objectContaining({
+      kind: "validate_criteria",
+      status: "completed",
+    }));
+  });
+
+  it("executes independent review only after validation evidence exists", async () => {
+    const decision = { ...failedGuardian, nextActions: ["run_independent_review"] };
+    const validating = harness("validating", { guardianDecision: decision });
+
+    const result = await validating.controller.tick("mission-1", validating.fence);
+
+    expect(result.runtime.state).toBe("validating");
+    expect(validating.reviewMission).toHaveBeenCalledWith("mission-1");
+    expect(validating.runtime.listOperations("mission-1")).toContainEqual(expect.objectContaining({
+      kind: "run_review",
+      status: "completed",
+    }));
   });
 
   it("selects a recovery before replanning", async () => {
