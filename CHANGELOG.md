@@ -6,6 +6,31 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.30] - 2026-07-15
+
+### Added - model and reasoning routing
+
+- **Interactive `/model` picker.** Choose a provider/model from a compact,
+  live route picker instead of editing configuration by hand; live status and
+  context reporting reflect the actual selection instead of a cached guess.
+- **Normalized reasoning control.** Reasoning effort is a single, provider-
+  normalized setting that is actually wired through to the outbound provider
+  request, replacing the previous per-provider drift.
+- **Adaptive-OS orchestrator architecture.** A canonical model-budget
+  foundation and architecture map for adaptive orchestration replace ad hoc
+  budget handling.
+
+### Fixed - mission and terminal integrity
+
+- Advanced missions continue across context-window limits instead of
+  stalling silently.
+- Read-only tasks that finish successfully no longer report as interrupted,
+  and repeated narration no longer masquerades as a false completion.
+- General missing-delivery protection closes gaps where `/output full` and
+  related report paths could drop content.
+- Terminal events use a single event-identity boundary, closing a recovery
+  cross-flow bug.
+
 ## [0.1.0-beta.29] - 2026-07-11
 
 ### Changed - task-first terminal clarity

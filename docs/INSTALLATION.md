@@ -1,6 +1,6 @@
 # Morrow installation
 
-Morrow v0.1.0-beta.29 is an unsigned Windows 10/11 x64 Early Access release.
+Morrow v0.1.0-beta.30 is an unsigned Windows 10/11 x64 Early Access release.
 The installed product is terminal-only and includes its own Node.js runtime;
 Git, Node.js, and pnpm are not required for the Windows install.
 
@@ -74,7 +74,7 @@ undone.
 
 ## Linux source build
 
-Linux remains source-build only. macOS is not supported in beta.29.
+Linux remains source-build only. macOS is not supported in beta.30.
 
 Requirements: Node.js 22 or newer and pnpm 10.x.
 

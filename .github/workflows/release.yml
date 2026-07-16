@@ -82,9 +82,11 @@ jobs:
             irm https://morrowproject.getaxiom.ca/install.ps1 | iex
             ```
 
-            Beta.29 makes terminal tasks quieter and more truthful, hardens
-            project-scoped reports and resume behavior, and consolidates a
-            redacted consumer-grade `morrow doctor`.
+            Beta.30 adds model and reasoning routing — an interactive `/model`
+            picker with honest live status/context, and a normalized
+            reasoning-effort control wired through to the provider request —
+            and hardens mission continuity across context-window limits and
+            terminal event/recovery integrity.
 
             The installer downloads this artifact, verifies its SHA-256, and
             launches the loopback-only local service. Expect breaking changes.
