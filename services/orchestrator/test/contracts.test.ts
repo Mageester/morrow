@@ -13,6 +13,9 @@ import {
   ModelInfoSchema,
   OAuthFindingSchema,
   MissionSpecialistRoleSchema,
+  MissionOperationSchema,
+  MissionProgressObservationSchema,
+  MissionRecoveryDecisionSchema,
 } from "@morrow/contracts";
 import { listPresets } from "../src/routing/presets.js";
 import { listProviderStatuses } from "../src/provider/registry.js";
@@ -123,5 +126,52 @@ describe("Contract schemas", () => {
     expect(() => SendMessageSchema.parse({ content: "hello", preset: "balanced" })).not.toThrow();
     expect(() => SendMessageSchema.parse({ content: "   " })).toThrow();
     expect(() => SendMessageSchema.parse({ content: "hi", providerId: "nope" })).toThrow();
+  });
+
+  it("validates durable mission operation, progress, and recovery records", () => {
+    const now = new Date().toISOString();
+    expect(() => MissionOperationSchema.parse({
+      version: 1,
+      id: "operation-1",
+      missionId: "mission-1",
+      sequence: 1,
+      idempotencyKey: "dispatch:requirement-1",
+      kind: "dispatch_worker",
+      status: "pending",
+      strategyFingerprint: "primary:openai:gpt-5.6",
+      input: { requirementId: "requirement-1" },
+      result: null,
+      effectEvidenceIds: [],
+      attempt: 0,
+      startedAt: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    })).not.toThrow();
+    expect(() => MissionProgressObservationSchema.parse({
+      version: 1,
+      id: "progress-1",
+      missionId: "mission-1",
+      operationId: "operation-1",
+      kind: "uncertainty_reduced",
+      summary: "Eliminated the provider-auth hypothesis.",
+      evidenceIds: ["evidence-1"],
+      strategyFingerprint: "diagnose:provider-auth",
+      createdAt: now,
+    })).not.toThrow();
+    expect(() => MissionRecoveryDecisionSchema.parse({
+      version: 1,
+      id: "recovery-1",
+      missionId: "mission-1",
+      operationId: "operation-1",
+      category: "provider_failure",
+      diagnosis: "The selected route failed before producing a tool result.",
+      failedStrategyFingerprint: "primary:openai:gpt-5.6",
+      nextStrategyFingerprint: "fallback:anthropic:claude-sonnet-5",
+      action: "switch_provider",
+      retryCondition: null,
+      exhausted: false,
+      createdAt: now,
+    })).not.toThrow();
   });
 });
