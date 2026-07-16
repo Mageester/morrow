@@ -30,6 +30,10 @@ export class AcceptanceStore {
     return assertContainedPath(this.root, join(this.root, runId));
   }
 
+  redact<T>(value: T): T {
+    return redactAcceptanceValue(value, this.secrets);
+  }
+
   create(state: AcceptanceRunState): void {
     const root = this.runRoot(state.runId);
     if (existsSync(join(root, "state.json"))) throw new Error(`Acceptance run already exists: ${state.runId}`);
@@ -49,7 +53,7 @@ export class AcceptanceStore {
     mkdirSync(root, { recursive: true });
     const target = join(root, "state.json");
     const temporary = join(root, "state.json.tmp");
-    const safe = redactAcceptanceValue(state, this.secrets);
+    const safe = this.redact(state);
     writeFileSync(temporary, `${JSON.stringify(safe, null, 2)}\n`, "utf8");
     renameSync(temporary, target);
   }
@@ -57,14 +61,14 @@ export class AcceptanceStore {
   appendEvidence(runId: string, input: NewEvidenceEntry): EvidenceEntry {
     const entries = this.readEvidence(runId);
     const sequence = entries.length + 1;
-    const entry = redactAcceptanceValue<EvidenceEntry>({
+    const entry = this.redact<EvidenceEntry>({
       schemaVersion: 1,
       id: `${runId}-e${String(sequence).padStart(4, "0")}`,
       runId,
       sequence,
       timestamp: new Date().toISOString(),
       ...input,
-    }, this.secrets);
+    });
     appendFileSync(join(this.runRoot(runId), "evidence.jsonl"), `${JSON.stringify(entry)}\n`, "utf8");
     return entry;
   }
