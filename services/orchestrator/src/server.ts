@@ -20,7 +20,6 @@ import {
   PatchConventionSchema,
   type PresetId,
   type ProviderId,
-  type RoutingDecision,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -130,7 +129,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels, listConfiguredCustomModels, resolveReasoningCapability } from "./routing/models.js";
+import { listModels, listConfiguredCustomModels } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -140,7 +139,7 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { translateReasoning } from "./provider/reasoning.js";
+import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -749,195 +748,24 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   app.post("/api/conversations/:conversationId/messages", async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
-    const conversation = convs.getConversation(conversationId);
-    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
-    
     const body = SendMessageSchema.parse(request.body);
-
-    // Idempotent replay: a repeated send with the same key returns the original
-    // task and messages (200) instead of dispatching the agent a second time.
     const idempotencyKey = readIdempotencyKey(request);
-    if (idempotencyKey) {
-      const existing = tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey);
-      if (existing) {
-        const msgs = convs.listMessages(conversationId);
-        const assistantIndex = msgs.findIndex((m) => m.taskId === existing.id && m.role === "assistant");
-        const assistantMessage = assistantIndex >= 0 ? msgs[assistantIndex] : null;
-        const userMessage = assistantIndex >= 0 ? [...msgs.slice(0, assistantIndex)].reverse().find((m) => m.role === "user") ?? null : null;
-        reply.status(200);
-        return {
-          task: existing,
-          userMessage,
-          assistantMessage,
-          routing: routingRepo.get(existing.id)?.decision ?? null,
-          aggregateUrl: `/api/tasks/${existing.id}`,
-          sseUrl: `/api/tasks/${existing.id}/events/stream`,
-          replayed: true,
-        };
-      }
-    }
-
-    if (body.worktreeId) {
-      const wt = worktreesRepo.get(body.worktreeId);
-      if (!wt || wt.projectId !== conversation.projectId) throw new ApiError(404, "Worktree not found in this project", "NOT_FOUND");
-      if (wt.status !== "active") throw new ApiError(409, `Worktree is ${wt.status}; create a fresh one`, "CONFLICT");
-    }
-
-    // A mission-linked task routes agent tool failures into that mission's
-    // failure ledger. Reject cross-project links so a mission can never
-    // accumulate failures from another project's execution.
-    if (body.missionId) {
-      const mission = missions.get(body.missionId);
-      if (!mission || mission.projectId !== conversation.projectId) throw new ApiError(404, "Mission not found in this project", "NOT_FOUND");
-    }
-
-    const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
-    const mode = body.mode ?? "agent";
-    const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
-    // YOLO / auto-approve only has meaning when execution tools are exposed.
-    // Inspect (read-only) and plan-only never request approvals, so we refuse to
-    // record an auto-approve flag for them rather than imply it does something.
-    const autoApprove = mode === "agent" && body.autoApprove === true;
-
-    // Resolve the provider+model the agent will actually use, and report it.
-    let decision: RoutingDecision;
-    if (process.env.MOCK_PROVIDER === "true" && !body.providerId) {
-      const preset = getPreset(presetId)!;
-      decision = {
-        version: 1,
-        presetId,
-        providerId: "mock",
-        model: "mock-model",
-        reason: "Routed to mock provider (MOCK_PROVIDER=true).",
-        fallbackUsed: false,
-        overridden: false,
-        privacy: preset.privacy,
-        candidates: [{ providerId: "mock", configured: true, reason: "mock enabled" }],
-        mode,
-        toolProfile,
-        autoApprove,
-      };
-    } else {
-      const override = body.providerId
-        ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) }
-        : undefined;
-      const result = routePreset(presetId, process.env, override);
-      if (!result.ok) {
-        throw new ApiError(400, result.reason, "PRESET_UNAVAILABLE");
-      }
-      decision = result.decision;
-      // Model-only override (keep routed provider, force the model id).
-      if (body.model && !body.providerId) {
-        decision = { ...decision, model: body.model, overridden: true };
-      }
-      decision = { ...decision, mode, toolProfile, autoApprove };
-    }
-
-    // Validate the requested reasoning against the resolved route's real
-    // capability BEFORE any task is created — an unsupported combination must
-    // never reach a provider request, and the caller must find out about it
-    // as a normal 400, not a mid-task failure. translateReasoning is the same
-    // function the adapters use to build the wire params, so "accepted here"
-    // and "will actually be sent" can never disagree. Auto never needs
-    // validation — it always defers to the route's own default.
-    if (body.reasoning && body.reasoning.mode !== "auto") {
-      let reasoningRoute: ProviderRouteMetadata;
-      if (decision.providerId === "mock") {
-        reasoningRoute = { providerId: "mock", protocol: "mock", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
-      } else {
-        try {
-          reasoningRoute = createProvider(decision.providerId, process.env, decision.model).route ?? {
-            providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
-            endpointLimitTokens: null, endpointLimitSource: "unknown",
-          };
-        } catch {
-          reasoningRoute = { providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
-        }
-      }
-      const capability = resolveReasoningCapability(decision.providerId, decision.model);
-      const translated = translateReasoning(body.reasoning, reasoningRoute.protocol, capability);
-      if (!translated.ok) throw new ApiError(400, translated.reason, "REASONING_UNSUPPORTED");
-    }
-    // Frozen into the durable routing decision, exactly like provider/model —
-    // retry/resume replay this value rather than re-reading current settings.
-    decision = { ...decision, ...(body.reasoning ? { reasoning: body.reasoning } : {}) };
-
-    const timestamp = new Date().toISOString();
-
-    // Create the task before appending any messages so a lost race on the
-    // idempotency unique index can't leave a duplicate user message behind.
-    let task;
     try {
-      task = tasks.createTask({
-        id: crypto.randomUUID(),
-        projectId: conversation.projectId,
-        kind: "agent_chat",
-        status: "queued",
+      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId,
+        ...body,
         ...(idempotencyKey ? { idempotencyKey } : {}),
-        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
-        ...(body.missionId ? { missionId: body.missionId } : {}),
-        createdAt: timestamp,
       });
-    } catch (e) {
-      // Concurrent duplicate with the same key: replay the winner.
-      const winner = idempotencyKey ? tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey) : undefined;
-      if (!winner) throw e;
-      reply.status(200);
-      return {
-        task: winner,
-        userMessage: null,
-        assistantMessage: null,
-        routing: routingRepo.get(winner.id)?.decision ?? null,
-        aggregateUrl: `/api/tasks/${winner.id}`,
-        sseUrl: `/api/tasks/${winner.id}/events/stream`,
-        replayed: true,
-      };
+      reply.status(result.replayed ? 200 : 202);
+      if (result.replayed) return result;
+      const { replayed: _replayed, ...response } = result;
+      return response;
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) {
+        throw new ApiError(error.statusCode, error.message, error.code);
+      }
+      throw error;
     }
-
-    const userMsg = convs.appendMessage({
-      id: crypto.randomUUID(),
-      conversationId,
-      role: "user",
-      content: body.content,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-    records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
-
-    const assistantMsg = convs.appendMessage({
-      id: crypto.randomUUID(),
-      conversationId,
-      role: "assistant",
-      content: "",
-      taskId: task.id,
-      streamingState: "queued",
-      provider: decision.providerId,
-      model: decision.model,
-      createdAt: new Date(Date.now() + 50).toISOString(),
-      updatedAt: new Date(Date.now() + 50).toISOString(),
-    });
-
-    routingRepo.upsert({
-      taskId: task.id,
-      presetId,
-      providerId: decision.providerId,
-      model: decision.model,
-      useMemory: body.useMemory ?? true,
-      decision,
-      createdAt: timestamp,
-    });
-
-    deps.runner.run(task.id);
-
-    reply.status(202);
-    return {
-      task,
-      userMessage: userMsg,
-      assistantMessage: assistantMsg,
-      routing: decision,
-      aggregateUrl: `/api/tasks/${task.id}`,
-      sseUrl: `/api/tasks/${task.id}/events/stream`,
-    };
   });
 
   // Subagent delegation: a subagent is a child task with its own scope, linked
