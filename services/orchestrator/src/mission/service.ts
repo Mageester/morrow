@@ -24,6 +24,7 @@ import { buildContractFromInput } from "./contract-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
+import { evaluateGuardian } from "./guardian.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -1094,6 +1095,69 @@ export class MissionService {
           );
         }
       }
+      if (finalStatus === "completed") {
+        const changedFiles = this.changedFilesFor(fresh);
+        const canonicalEvidence = answerState.canonicalEvidence;
+        const canonicalVerification = canonicalEvidence?.verification as { status?: unknown } | null | undefined;
+        const guardianDependencies = this.repo.guardianDependencies(missionId);
+        const completedValidationKinds = [...new Set(
+          fresh.evidence.filter((item) => item.status === "passed").map((item) => item.type),
+        )];
+        const decision = evaluateGuardian({
+          missionId,
+          criteria: fresh.criteria.map((criterion) => ({
+            id: criterion.id,
+            state: criterion.state,
+            evidenceIds: criterion.evidenceIds,
+          })),
+          requirements: ledger.map((requirement) => ({
+            id: requirement.id,
+            authoritative: requirement.authoritative,
+            status: requirement.status,
+            evidenceRefs: requirement.evidenceRefs,
+          })),
+          evidence: fresh.evidence.map((item) => ({
+            id: item.id,
+            criterionIds: item.criterionIds,
+            status: item.status,
+          })),
+          operations: guardianDependencies.operations,
+          tasks: guardianDependencies.tasks,
+          approvals: guardianDependencies.approvals,
+          canonicalAnswer: {
+            required: answerState.hasAgentTask,
+            present: answerState.hasCanonicalAnswer,
+            durableEvidenceValid: !answerState.hasAgentTask || (
+              answerState.sourceTurnIsFinal
+              && answerState.evidenceCursorExists
+              && answerState.verificationEvidenceCovered
+            ),
+            verificationPassed: !answerState.hasAgentTask || canonicalVerification?.status === "passed",
+            unresolvedBlocker: typeof canonicalEvidence?.unresolvedBlocker === "string"
+              ? canonicalEvidence.unresolvedBlocker
+              : null,
+            unresolvedFailures: Array.isArray(canonicalEvidence?.unresolvedFailures)
+              ? canonicalEvidence.unresolvedFailures.filter((item): item is string => typeof item === "string")
+              : [],
+          },
+          reviewVerdict: fresh.finalReview?.verdict ?? null,
+          requiredValidationKinds: [...new Set(
+            fresh.criteria
+              .filter((criterion) => criterion.state !== "waived")
+              .map((criterion) => criterion.verification.kind),
+          )],
+          completedValidationKinds,
+          changedFiles,
+          diffChecked: true,
+          protectedPathViolations: changedFiles.filter(isProtectedMissionPath),
+        });
+        if (!decision.passed) {
+          throw new MissionError(
+            `Mission ${missionId} failed Guardian completion: ${[...decision.missing, ...decision.failed, ...decision.blocked].map((item) => item.detail).join(" ")}`,
+            "finalize_guardian_rejected",
+          );
+        }
+      }
       const result = buildMissionResult(fresh, {
         review: fresh.finalReview,
         changedFiles: this.changedFilesFor(fresh),
@@ -1517,6 +1581,16 @@ function gitDiff(workspace: string): string {
     out += `\n# untracked files:\n${untrackedList.stdout.trim()}`;
   }
   return out;
+}
+
+function isProtectedMissionPath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase();
+  return normalized === ".env"
+    || normalized.startsWith(".env.")
+    || normalized === ".morrow/secrets.json"
+    || normalized.startsWith(".morrow/credentials/")
+    || normalized.endsWith("/id_rsa")
+    || normalized.endsWith("/id_ed25519");
 }
 
 function hasMissingWorkspaceFileReference(command: string, workspace: string): boolean {

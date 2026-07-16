@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { missionsRepository } from "../src/repositories/missions.js";
-import { MissionService, type MissionCompletionFn } from "../src/mission/service.js";
+import { MissionError, MissionService, type MissionCompletionFn } from "../src/mission/service.js";
 import type { ChatMessage } from "../src/provider/base.js";
 
 const roots: string[] = [];
@@ -388,6 +388,34 @@ describe("MissionService — independent review and honest grading", () => {
     await service.runReview(m.id);
     const final = service.finalize(m.id);
     expect(final.status).toBe("partially_completed");
+  });
+
+  it("Guardian rejects full completion when a protected secrets path changed", async () => {
+    const completion: MissionCompletionFn = async (_messages, options) =>
+      options.purpose === "review"
+        ? { text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], summary: "ok" }) }
+        : { text: "[]" };
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    mkdirSync(join(workspace, ".morrow"));
+    writeFileSync(join(workspace, ".morrow", "secrets.json"), "{\"token\":\"must-not-ship\"}\n");
+    const mission = service.create("p1", { objective: "Repair" });
+    const criterion = service.addCriterion(mission.id, "a.js parses", {
+      kind: "command",
+      command: "node --check a.js",
+      expectExitCode: 0,
+    });
+    service.approveCriteria(mission.id);
+    await service.verifyCriterion(mission.id, criterion.id);
+    await service.runReview(mission.id);
+
+    expect(() => service.finalize(mission.id)).toThrowError(MissionError);
+    try {
+      service.finalize(mission.id);
+    } catch (error) {
+      expect((error as MissionError).code).toBe("finalize_guardian_rejected");
+    }
+    expect(service.get(mission.id).status).toBe("reviewing");
   });
 });
 

@@ -5,7 +5,7 @@ import type {
   MissionEvent, MissionEventType, MissionVerificationStrategy,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
   RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
-  InvalidationEntry,
+  InvalidationEntry, MissionOperationStatus, TaskStatus, ApprovalStatus,
 } from "@morrow/contracts";
 
 /** A requirement node as supplied at contract-build time (before persistence). */
@@ -755,6 +755,27 @@ export function missionsRepository(db: Database.Database) {
     getCursor(missionId: string): MissionCursor | undefined {
       const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(missionId) as any;
       return row ? mapCursor(row) : undefined;
+    },
+
+    guardianDependencies(missionId: string) {
+      const operations = (db.prepare(`SELECT id,status,effect_evidence_ids_json
+        FROM mission_operations WHERE mission_id=? ORDER BY sequence`).all(missionId) as Array<{
+          id: string; status: string; effect_evidence_ids_json: string;
+        }>).map((row) => ({
+        id: row.id,
+        status: row.status as MissionOperationStatus,
+        effectEvidenceIds: JSON.parse(row.effect_evidence_ids_json) as string[],
+      }));
+      const tasks = (db.prepare("SELECT id,status FROM tasks WHERE mission_id=? ORDER BY created_at,id")
+        .all(missionId) as Array<{ id: string; status: string }>)
+        .map((row) => ({ id: row.id, status: row.status as TaskStatus }));
+      const approvals = (db.prepare(`SELECT approval.id,approval.status
+        FROM approvals approval
+        JOIN tasks task ON task.id=approval.task_id
+        WHERE task.mission_id=? ORDER BY approval.created_at,approval.id`).all(missionId) as Array<{
+          id: string; status: string;
+        }>).map((row) => ({ id: row.id, status: row.status as ApprovalStatus }));
+      return { operations, tasks, approvals };
     },
 
     // ── project active mission pointer (separate per project) ──────────────
