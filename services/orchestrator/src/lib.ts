@@ -14,7 +14,8 @@ export {
   migrateLegacyDatabase,
 } from "./home.js";
 export { TaskRunner, type TaskExecutor } from "./runner.js";
-export { recoverRunningTasks } from "./recovery.js";
+export { recoverRunningTasks, reconcileTasksOnStartup, reconcileMissionsOnStartup } from "./recovery.js";
+export { MissionControllerRunner, createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
 
 // Execution building blocks. Exposed so an embedding host (and integration
 // tests exercising the real CLI client path) can stand up a deterministic

@@ -24,7 +24,7 @@ import { buildContractFromInput } from "./contract-extractor.js";
 import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
-import { evaluateGuardian } from "./guardian.js";
+import { evaluateGuardian, type GuardianDecision } from "./guardian.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -1026,6 +1026,67 @@ export class MissionService {
     return this.get(mission.id);
   }
 
+  /** Evaluate the exact evidence contract used by successful finalization. */
+  assessGuardian(missionId: string): GuardianDecision {
+    const mission = this.get(missionId);
+    const ledger = this.repo.listRequirementNodes(missionId);
+    const answerState = this.repo.missionLinkedAgentAnswerState(missionId);
+    const canonicalEvidence = answerState.canonicalEvidence;
+    const canonicalVerification = canonicalEvidence?.verification as { status?: unknown } | null | undefined;
+    const guardianDependencies = this.repo.guardianDependencies(missionId);
+    const changedFiles = this.changedFilesFor(mission);
+    return evaluateGuardian({
+      missionId,
+      criteria: mission.criteria.map((criterion) => ({
+        id: criterion.id,
+        state: criterion.state,
+        evidenceIds: criterion.evidenceIds,
+      })),
+      requirements: ledger.map((requirement) => ({
+        id: requirement.id,
+        authoritative: requirement.authoritative,
+        status: requirement.status,
+        evidenceRefs: requirement.evidenceRefs,
+      })),
+      evidence: mission.evidence.map((item) => ({
+        id: item.id,
+        criterionIds: item.criterionIds,
+        status: item.status,
+      })),
+      operations: guardianDependencies.operations,
+      tasks: guardianDependencies.tasks,
+      approvals: guardianDependencies.approvals,
+      canonicalAnswer: {
+        required: answerState.hasAgentTask,
+        present: answerState.hasCanonicalAnswer,
+        durableEvidenceValid: !answerState.hasAgentTask || (
+          answerState.sourceTurnIsFinal
+          && answerState.evidenceCursorExists
+          && answerState.verificationEvidenceCovered
+        ),
+        verificationPassed: !answerState.hasAgentTask || canonicalVerification?.status === "passed",
+        unresolvedBlocker: typeof canonicalEvidence?.unresolvedBlocker === "string"
+          ? canonicalEvidence.unresolvedBlocker
+          : null,
+        unresolvedFailures: Array.isArray(canonicalEvidence?.unresolvedFailures)
+          ? canonicalEvidence.unresolvedFailures.filter((item): item is string => typeof item === "string")
+          : [],
+      },
+      reviewVerdict: mission.finalReview?.verdict ?? null,
+      requiredValidationKinds: [...new Set(
+        mission.criteria
+          .filter((criterion) => criterion.state !== "waived")
+          .map((criterion) => criterion.verification.kind),
+      )],
+      completedValidationKinds: [...new Set(
+        mission.evidence.filter((item) => item.status === "passed").map((item) => item.type),
+      )],
+      changedFiles,
+      diffChecked: true,
+      protectedPathViolations: changedFiles.filter(isProtectedMissionPath),
+    });
+  }
+
   /** Grade the mission from criteria + review and set the terminal status. */
   finalize(missionId: string, opts?: { humanInterventions?: number; tasksCompleted?: number; elapsedMs?: number | null }): Mission {
     // Lease recovery is its own durable step so an expired reservation stays
@@ -1096,61 +1157,7 @@ export class MissionService {
         }
       }
       if (finalStatus === "completed") {
-        const changedFiles = this.changedFilesFor(fresh);
-        const canonicalEvidence = answerState.canonicalEvidence;
-        const canonicalVerification = canonicalEvidence?.verification as { status?: unknown } | null | undefined;
-        const guardianDependencies = this.repo.guardianDependencies(missionId);
-        const completedValidationKinds = [...new Set(
-          fresh.evidence.filter((item) => item.status === "passed").map((item) => item.type),
-        )];
-        const decision = evaluateGuardian({
-          missionId,
-          criteria: fresh.criteria.map((criterion) => ({
-            id: criterion.id,
-            state: criterion.state,
-            evidenceIds: criterion.evidenceIds,
-          })),
-          requirements: ledger.map((requirement) => ({
-            id: requirement.id,
-            authoritative: requirement.authoritative,
-            status: requirement.status,
-            evidenceRefs: requirement.evidenceRefs,
-          })),
-          evidence: fresh.evidence.map((item) => ({
-            id: item.id,
-            criterionIds: item.criterionIds,
-            status: item.status,
-          })),
-          operations: guardianDependencies.operations,
-          tasks: guardianDependencies.tasks,
-          approvals: guardianDependencies.approvals,
-          canonicalAnswer: {
-            required: answerState.hasAgentTask,
-            present: answerState.hasCanonicalAnswer,
-            durableEvidenceValid: !answerState.hasAgentTask || (
-              answerState.sourceTurnIsFinal
-              && answerState.evidenceCursorExists
-              && answerState.verificationEvidenceCovered
-            ),
-            verificationPassed: !answerState.hasAgentTask || canonicalVerification?.status === "passed",
-            unresolvedBlocker: typeof canonicalEvidence?.unresolvedBlocker === "string"
-              ? canonicalEvidence.unresolvedBlocker
-              : null,
-            unresolvedFailures: Array.isArray(canonicalEvidence?.unresolvedFailures)
-              ? canonicalEvidence.unresolvedFailures.filter((item): item is string => typeof item === "string")
-              : [],
-          },
-          reviewVerdict: fresh.finalReview?.verdict ?? null,
-          requiredValidationKinds: [...new Set(
-            fresh.criteria
-              .filter((criterion) => criterion.state !== "waived")
-              .map((criterion) => criterion.verification.kind),
-          )],
-          completedValidationKinds,
-          changedFiles,
-          diffChecked: true,
-          protectedPathViolations: changedFiles.filter(isProtectedMissionPath),
-        });
+        const decision = this.assessGuardian(missionId);
         if (!decision.passed) {
           throw new MissionError(
             `Mission ${missionId} failed Guardian completion: ${[...decision.missing, ...decision.failed, ...decision.blocked].map((item) => item.detail).join(" ")}`,

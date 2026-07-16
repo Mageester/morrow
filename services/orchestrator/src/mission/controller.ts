@@ -107,6 +107,7 @@ export class MissionController {
         return this.validationTick(missionId, runtime, snapshot, fence, now);
       case "recovering":
         if (snapshot.recovery?.exhausted) return transition("blocked", "strategies_exhausted");
+        this.dependencies.runtime.setActiveTask({ missionId, taskId: null, fence, now });
         return transition("replanning", "recovery_selected");
       case "blocked":
       case "completed":

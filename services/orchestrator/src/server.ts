@@ -175,6 +175,8 @@ function parseEventCursor(value: string): number {
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
+  /** Wake durable mission ownership after task or approval state changes. */
+  missionControllerRunner?: { wake(missionId: string): void };
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
@@ -1801,6 +1803,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       // recorded, but a dead task is never revived; drop any latched wakeup.
       ApprovalContinuationRegistry.clear(approvalId);
     }
+    if (t?.missionId) deps.missionControllerRunner?.wake(t.missionId);
 
     return resolved;
   });

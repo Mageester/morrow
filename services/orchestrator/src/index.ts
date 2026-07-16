@@ -4,7 +4,8 @@ import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultD
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { TaskRunner } from "./runner.js";
-import { reconcileTasksOnStartup } from "./recovery.js";
+import { reconcileMissionsOnStartup } from "./recovery.js";
+import { createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 
@@ -22,18 +23,24 @@ migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevel
 const db = openDatabase(dbPath);
 
 const runner = new TaskRunner(db);
+const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
 
-// Reconcile persisted task state after a restart: interrupt tasks that were
-// mid-flight, re-dispatch orphaned `queued` work, and cancel subagent children
-// whose parent is no longer active. Runs once, before serving traffic.
-const reconciliation = reconcileTasksOnStartup({ db, runner });
-if (reconciliation.interrupted || reconciliation.requeued || reconciliation.cancelledOrphans) {
+// Reclaim durable missions first, then reconcile their checkpoint-aware tasks.
+// Both standalone and packaged startup use this exact path.
+const reconciliation = reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
+if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliation.requeued || reconciliation.cancelledOrphans) {
   console.log(
-    `Startup reconciliation: ${reconciliation.interrupted} interrupted, ` +
+    `Startup reconciliation: ${reconciliation.missionsResumed} mission(s) resumed, ` +
+    `${reconciliation.interrupted} interrupted, ` +
     `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled`
   );
 }
-const app = buildServer({ db, runner, secretsFile: join(resolveMorrowHome(process.env), "secrets.env") });
+const app = buildServer({
+  db,
+  runner,
+  missionControllerRunner,
+  secretsFile: join(resolveMorrowHome(process.env), "secrets.env"),
+});
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence
 // is governed by each schedule's next_run_at, so a missed minute simply runs at

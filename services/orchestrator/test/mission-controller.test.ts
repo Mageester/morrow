@@ -188,6 +188,40 @@ describe("durable mission controller", () => {
     expect((await controller.tick("mission-1", fence)).runtime.state).toBe("replanning");
   });
 
+  it("clears the failed active worker before dispatching a replacement strategy", async () => {
+    const recovering = harness("recovering", {
+      tasks: [{ id: "task-1", status: "failed" }],
+      recovery: {
+        category: "provider_failure",
+        diagnosis: "The prior provider failed.",
+        failedStrategyFingerprint: "provider:primary",
+        nextStrategyFingerprint: "provider:fallback",
+        action: "switch_provider",
+        retryCondition: null,
+        exhausted: false,
+      },
+    });
+    taskRepository(db).createTask({
+      id: "task-1",
+      projectId: "project-1",
+      missionId: "mission-1",
+      kind: "agent_chat",
+      status: "failed",
+      createdAt: now,
+    });
+    recovering.runtime.setActiveTask({
+      missionId: "mission-1",
+      taskId: "task-1",
+      fence: recovering.fence,
+      now,
+    });
+
+    const result = await recovering.controller.tick("mission-1", recovering.fence);
+
+    expect(result.runtime.state).toBe("replanning");
+    expect(result.runtime.activeTaskId).toBeNull();
+  });
+
   it("only Guardian can complete and finalizes before the terminal transition", async () => {
     const { controller, fence, finalizeMission } = harness("validating", {
       guardianDecision: passedGuardian,

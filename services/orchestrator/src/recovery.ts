@@ -7,6 +7,7 @@ import {
   executionLeaseOwnerStatus,
   executionContinuityRepository,
 } from "./repositories/execution-continuity.js";
+import type { MissionControllerRunner } from "./mission/controller-runner.js";
 
 /**
  * Minimal structural view of the task runner that reconciliation needs. Kept
@@ -25,6 +26,11 @@ export interface ReconcileSummary {
   requeued: number;
   /** `queued` orphans cancelled because their parent is no longer active. */
   cancelledOrphans: number;
+}
+
+export interface MissionReconcileSummary extends ReconcileSummary {
+  /** Non-terminal durable mission controllers scheduled for recovery. */
+  missionsResumed: number;
 }
 
 const TERMINAL_STATUSES = new Set(["completed", "verified", "failed", "cancelled"]);
@@ -201,4 +207,36 @@ export function reconcileTasksOnStartup(
   }
 
   return { interrupted, requeued, cancelledOrphans };
+}
+
+/**
+ * Unified process-start recovery. Mission controllers are scheduled first so
+ * they establish fenced ownership before checkpoint-aware task recovery runs.
+ * A final wake observes any task state reconciled in the second phase.
+ */
+export function reconcileMissionsOnStartup(
+  { db, runner, controllerRunner, records, now = () => new Date().toISOString() }:
+    {
+      db: Database.Database;
+      runner: ReconcilableRunner;
+      controllerRunner: Pick<MissionControllerRunner, "run" | "wake" | "isActive">;
+      records?: ReturnType<typeof taskRecordsRepository>;
+      now?: () => string;
+    },
+): MissionReconcileSummary {
+  const missions = db.prepare(`SELECT mission_id AS missionId
+    FROM mission_runtime
+    WHERE state NOT IN ('blocked','completed','cancelled','abandoned','superseded')
+    ORDER BY created_at,mission_id`).all() as Array<{ missionId: string }>;
+
+  let missionsResumed = 0;
+  for (const row of missions) {
+    if (controllerRunner.isActive(row.missionId)) continue;
+    controllerRunner.run(row.missionId);
+    missionsResumed += 1;
+  }
+
+  const taskSummary = reconcileTasksOnStartup({ db, runner, ...(records ? { records } : {}), now });
+  for (const row of missions) controllerRunner.wake(row.missionId);
+  return { missionsResumed, ...taskSummary };
 }
