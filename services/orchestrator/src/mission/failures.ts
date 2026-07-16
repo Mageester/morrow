@@ -10,10 +10,19 @@ import type { MissionFailureCategory } from "@morrow/contracts";
 export function categorizeFailure(operation: string, message: string): MissionFailureCategory {
   const m = `${operation}\n${message}`.toLowerCase();
   if (/hunk|patch context|context mismatch|expected .* at line|patch conflict|line count mismatch/.test(m)) return "patch_context_mismatch";
-  if (/loop detected|no measurable progress|repeated identical/.test(m)) return "loop_detected";
+  if (/context (window|limit|budget).*(exceed|exhaust|full)|maximum context|too many tokens/.test(m)) return "context_exhaustion";
+  if (/model .*not (available|found|supported)|unknown model|model access denied/.test(m)) return "model_unavailable";
+  if (/rate limit|quota|\b429\b/.test(m)) return "rate_limit";
+  if (/econnreset|enotfound|dns|network (error|unreachable)|socket hang up/.test(m)) return "network_failure";
+  if (/invalid (tool )?(argument|parameter)|tool arguments.*(malformed|schema)/.test(m)) return "invalid_tool_arguments";
+  if (/verification (failed|failure)|criterion.*not verified/.test(m)) return "verification_failure";
+  if (/approval (required|pending)|requires explicit approval/.test(m)) return "approval_required";
+  if (/loop detected|no measurable progress|repeated identical|same strategy/.test(m)) return "repeated_strategy";
+  if (/may have executed|unknown side effect|effect.*ambiguous/.test(m)) return "unknown_effect";
+  if (/process (crashed|interrupted|terminated)|orchestrator restart/.test(m)) return "process_interruption";
   if (/\btest(s)? (failed|failing)|assertion|expect\(|✗|✖/.test(m)) return "test_failure";
   if (/build failed|compilation|tsc error|cannot find module|type error|ts\d{3,}/.test(m)) return "build_failure";
-  if (/rate limit|quota|provider error|model provider|upstream|502|503|429/.test(m)) return "provider_failure";
+  if (/provider error|model provider|upstream|\b502\b|\b503\b/.test(m)) return "provider_failure";
   if (/permission denied|not permitted|approval denied|forbidden|eacces/.test(m)) return "permission_denied";
   if (/timeout|timed out|deadline exceeded|etimedout/.test(m)) return "timeout";
   if (/invalid (json|output|response)|could not parse|malformed/.test(m)) return "invalid_output";
@@ -69,7 +78,41 @@ export function planRecovery(category: MissionFailureCategory, attempt: number, 
     case "build_failure":
       return { strategy: "resolve-build-error", exhausted: false, steps: ["Read the compiler error location", "Fix the specific type/import error"] };
     case "provider_failure":
-      return { strategy: "provider-fallback", exhausted: false, steps: ["Fall back to an alternate provider/model and retry"] };
+      if (attempt === 1) return { strategy: "provider-fallback", exhausted: false, steps: ["Fall back to an alternate configured provider and retry"] };
+      if (attempt === 2) return { strategy: "switch-model", exhausted: false, steps: ["Select a different available model on the fallback provider"] };
+      return { strategy: "reduce-request-retry", exhausted: false, steps: ["Reduce request scope and retry on the healthiest available route"] };
+    case "model_unavailable":
+      return attempt === 1
+        ? { strategy: "switch-model", exhausted: false, steps: ["Select a model confirmed available for this account"] }
+        : { strategy: "provider-fallback", exhausted: false, steps: ["Switch to a configured provider with an available model"] };
+    case "rate_limit":
+      if (attempt === 1) return { strategy: "bounded-backoff", exhausted: false, steps: ["Wait for the provider retry window"] };
+      if (attempt === 2) return { strategy: "provider-fallback", exhausted: false, steps: ["Switch to an alternate configured provider"] };
+      return { strategy: "switch-model", exhausted: false, steps: ["Use a separately limited available model"] };
+    case "network_failure":
+      return attempt === 1
+        ? { strategy: "connectivity-diagnosis", exhausted: false, steps: ["Check DNS and provider endpoint reachability"] }
+        : { strategy: "provider-fallback", exhausted: false, steps: ["Use a reachable alternate provider"] };
+    case "context_exhaustion":
+      return attempt === 1
+        ? { strategy: "checkpoint-and-compact", exhausted: false, steps: ["Persist a checkpoint and compact durable context"] }
+        : { strategy: "reproject-minimum-context", exhausted: false, steps: ["Reproject only hard requirements, evidence, decisions, and pending work"] };
+    case "invalid_tool_arguments":
+      return { strategy: "repair-tool-arguments", exhausted: false, steps: ["Validate arguments against the tool schema and repair only invalid fields"] };
+    case "verification_failure":
+      return attempt === 1
+        ? { strategy: "focused-diagnosis", exhausted: false, steps: ["Diagnose the failing criterion from direct evidence"] }
+        : { strategy: "replan-from-evidence", exhausted: false, steps: ["Replace the disproven approach with an evidence-backed plan"] };
+    case "approval_required":
+      return { strategy: "request-approval", exhausted: true, steps: ["Record the exact approval and effect required before resuming"] };
+    case "unknown_effect":
+      return { strategy: "verify-effect", exhausted: false, steps: ["Inspect durable evidence before deciding whether replay is safe"] };
+    case "process_interruption":
+      return { strategy: "restore-checkpoint", exhausted: false, steps: ["Reclaim the durable checkpoint and reconcile completed operations"] };
+    case "repeated_strategy":
+      return attempt === 1
+        ? { strategy: "focused-diagnosis", exhausted: false, steps: ["Diagnose why the current strategy cannot progress"] }
+        : { strategy: "alternate-approach", exhausted: false, steps: ["Select a strategy with a distinct fingerprint"] };
     case "timeout":
       return { strategy: "reduce-scope-retry", exhausted: false, steps: ["Reduce operation scope and retry once"] };
     case "permission_denied":

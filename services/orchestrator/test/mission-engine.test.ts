@@ -14,7 +14,9 @@ describe("failure normalization", () => {
     expect(categorizeFailure("propose_patch", "Hunk line count mismatch @@ -1,2 +1,2 @@")).toBe("patch_context_mismatch");
     expect(categorizeFailure("run npm test", "2 tests failed: expect(...)")).toBe("test_failure");
     expect(categorizeFailure("tsc", "TS2345 type error cannot find module")).toBe("build_failure");
-    expect(categorizeFailure("call model", "rate limit 429")).toBe("provider_failure");
+    expect(categorizeFailure("call model", "rate limit 429")).toBe("rate_limit");
+    expect(categorizeFailure("call model", "model is not available for this account")).toBe("model_unavailable");
+    expect(categorizeFailure("provider request", "upstream provider error 503")).toBe("provider_failure");
     expect(categorizeFailure("write file", "permission denied EACCES")).toBe("permission_denied");
   });
 });
@@ -29,6 +31,11 @@ describe("recovery escalation", () => {
 
   it("treats permission failures as non-auto-recoverable", () => {
     expect(planRecovery("permission_denied", 1).exhausted).toBe(true);
+  });
+
+  it("changes provider recovery strategy on every attempt", () => {
+    const strategies = [1, 2, 3].map((attempt) => planRecovery("provider_failure", attempt).strategy);
+    expect(new Set(strategies).size).toBe(3);
   });
 });
 

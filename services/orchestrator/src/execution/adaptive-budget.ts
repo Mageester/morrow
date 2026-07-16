@@ -29,6 +29,5 @@ export function toolProgressFingerprint(toolName: string, args: unknown, observa
 }
 
 export function turnMadeProgress(input: TurnProgress): boolean {
-  if (input.responseChars > 0) return true;
   return input.completedToolSignatures.some((signature) => !input.repeatedToolSignatures.includes(signature));
 }

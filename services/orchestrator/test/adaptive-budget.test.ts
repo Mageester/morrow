@@ -31,4 +31,12 @@ describe("adaptive agent budget", () => {
     expect(first).toBe(repeated);
     expect(turnMadeProgress({ responseChars: 0, completedToolSignatures: [repeated], repeatedToolSignatures: [first] })).toBe(false);
   });
+
+  it("does not treat narration length as durable progress", () => {
+    expect(turnMadeProgress({
+      responseChars: 10_000,
+      completedToolSignatures: [],
+      repeatedToolSignatures: [],
+    })).toBe(false);
+  });
 });

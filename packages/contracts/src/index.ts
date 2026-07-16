@@ -691,7 +691,10 @@ export type MissionEvidence=z.infer<typeof MissionEvidenceSchema>;
 
 export const MissionFailureCategorySchema=z.enum([
   "tool_error","patch_context_mismatch","test_failure","build_failure","provider_failure",
-  "permission_denied","timeout","invalid_output","loop_detected","unknown",
+  "model_unavailable","rate_limit","network_failure","context_exhaustion",
+  "invalid_tool_arguments","verification_failure","approval_required","repeated_strategy",
+  "unknown_effect","process_interruption","permission_denied","timeout","invalid_output",
+  "loop_detected","unknown",
 ]);
 export type MissionFailureCategory=z.infer<typeof MissionFailureCategorySchema>;
 export const MissionFailureSchema=z.object({
