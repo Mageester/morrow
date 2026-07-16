@@ -20,6 +20,74 @@ import { MissionService } from "../src/mission/service.js";
 import { buildServer } from "../src/server.js";
 
 describe("durable agent segments", () => {
+  it("pauses an unknown custom endpoint capacity with a durable checkpoint instead of failing the task", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-unknown-context-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Continue the work.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "openai-compatible",
+        route: { providerId: "openai-compatible", protocol: "openai-chat", endpointKind: "custom", endpointHost: "example.test", endpointLimitTokens: null, endpointLimitSource: "unknown" },
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerCalls++;
+          yield { type: "text", text: "must not run" };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider });
+
+      expect(providerCalls).toBe(0);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
+      expect(executionContinuityRepository(db).latestCheckpoint("t")).not.toBeNull();
+      expect(taskRecordsRepository(db).listEvents("t").some((event) => event.payload.reason === "context_capacity_unknown")).toBe(true);
+      expect(convs.getMessage("a")?.streamingState).toBe("interrupted");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a task resumable when the complete provider envelope cannot be admitted after compaction", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-context-admission-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Continue the work.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "openai-compatible",
+        route: { providerId: "openai-compatible", protocol: "openai-chat", endpointKind: "custom", endpointHost: "example.test", endpointLimitTokens: 16_000, endpointLimitSource: "endpoint-override" },
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerCalls++;
+          yield { type: "text", text: "must not run" };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider });
+
+      expect(providerCalls).toBe(0);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
+      expect(taskRecordsRepository(db).listEvents("t").some((event) => event.payload.reason === "context_request_not_admitted")).toBe(true);
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("enforces the unattended segment cap before a context-pressure rollover", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-segment-cap-"));
     const db = openDatabase(":memory:");

@@ -89,7 +89,7 @@ async function status(ctx: Context, api: MorrowApi): Promise<number> {
 async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
   const id = args[0];
   const ALL = [...Object.keys(KEY_ENV), "ollama"];
-  if (!id) throw usageError("Usage: morrow providers configure <provider> [--key <key>] [--url <url>] [--model <id>]", `Providers: ${ALL.join(", ")}`);
+  if (!id) throw usageError("Usage: morrow providers configure <provider> [--key <key>] [--url <url>] [--model <id>] [--context-limit <tokens>]", `Providers: ${ALL.join(", ")}`);
 
   // openai/anthropic support "sign in with your subscription" OAuth. Use it by
   // default — pass --key explicitly to fall back to plain API-key setup instead.
@@ -97,7 +97,15 @@ async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<
     return oauthLogin(ctx, api, id as "openai" | "anthropic");
   }
 
-  const input: { apiKey?: string; baseUrl?: string; model?: string } = {};
+  const input: { apiKey?: string; baseUrl?: string; model?: string; endpointContextLimit?: number } = {};
+  const rawContextLimit = flagString(ctx.flags, "context-limit");
+  if (rawContextLimit !== undefined) {
+    const contextLimit = Number(rawContextLimit);
+    if (!Number.isSafeInteger(contextLimit) || contextLimit <= 0) {
+      throw usageError("--context-limit must be a positive integer token count.");
+    }
+    input.endpointContextLimit = contextLimit;
+  }
 
   if (id === "ollama" || id === "openai-compatible") {
     // URL-configured providers (Ollama is local; the compat endpoint is generic).
@@ -107,8 +115,8 @@ async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<
       url = await ask(`Base URL${def ? ` [${def}]` : ""}: `);
       if (!url && def) url = def;
     }
-    if (!url) throw usageError(`A base URL is required for ${id} (pass --url).`);
-    input.baseUrl = url;
+    if (!url && rawContextLimit === undefined) throw usageError(`A base URL is required for ${id} (pass --url).`);
+    if (url) input.baseUrl = url;
     if (id === "openai-compatible") {
       let key = flagString(ctx.flags, "key");
       if (key === undefined && isInteractive(ctx)) key = await askSecret("API key (optional, blank to skip): ");

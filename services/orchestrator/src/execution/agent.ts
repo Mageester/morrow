@@ -126,6 +126,22 @@ function isProviderContextRejection(error: unknown): boolean {
   return /(?:context|token|request).*(?:large|long|limit|maximum|max)|(?:large|long|limit|maximum|max).*(?:context|token|request)/i.test(error.message);
 }
 
+/**
+ * Raised only when Morrow itself declines to send a request because its local
+ * capacity preflight cannot admit it. This is operationally different from a
+ * provider failure: the work is still intact and must remain resumable after
+ * the user corrects an endpoint limit or trims the task.
+ */
+class ContextPreflightError extends Error {
+  constructor(
+    readonly reason: "context_capacity_unknown" | "context_request_not_admitted",
+    message: string,
+  ) {
+    super(message);
+    this.name = "ContextPreflightError";
+  }
+}
+
 const MAX_AUTOMATIC_EXECUTION_SEGMENTS = 64;
 
 /**
@@ -1919,6 +1935,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       for (const op of preparedContext.operations) event(op.type, { ...op.payload, provider: providerType, model: contextModel });
       if (!preparedContext.ok) {
+        if (modelBudget.contextWindowTokens === 0) {
+          throw new ContextPreflightError(
+            "context_capacity_unknown",
+            `Morrow paused before contacting ${providerType}/${contextModel}: this endpoint has no configured or provider-reported context limit. Set the exact endpoint capacity, then use /continue. No provider call was made.`,
+          );
+        }
         failCurrentSegment("context_preflight_failed");
         transitionAgentState("failed", { message: preparedContext.actionableMessage });
         records.transitionTask(taskId, "failed", { id: randomUUID(), createdAt: now(), payload: { message: preparedContext.actionableMessage } });
@@ -2120,7 +2142,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           : [];
       });
       if (admittedCandidates.length === 0) {
-        throw new Error("Provider request cannot fit the verified endpoint limit after automatic compaction; no provider call was made.");
+        throw new ContextPreflightError(
+          "context_request_not_admitted",
+          "Provider request cannot fit the configured or provider-reported endpoint limit after automatic compaction; no provider call was made. Adjust the endpoint context limit only if you know the exact value, then use /continue.",
+        );
       }
       const opened = await openStreamWithFallback(
         admittedCandidates,
@@ -2337,6 +2362,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       closeCurrentTurn({ final: false, aborted: true });
+      if (e instanceof ContextPreflightError) {
+        const checkpointId = await persistExecutionCheckpoint(e.reason);
+        failCurrentSegment(e.reason);
+        transitionAgentState("interrupted", { reason: e.reason, message: e.message, checkpointId, turns: absoluteTurn });
+        records.transitionTask(taskId, "interrupted", {
+          id: randomUUID(),
+          createdAt: now(),
+          payload: { reason: e.reason, message: e.message, checkpointId },
+        });
+        convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${e.message}]`, "interrupted", now());
+        if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+        return;
+      }
       if ((isRetryableProviderError(e) || isProviderContextRejection(e)) && providerRecoverySegments < 2) {
         providerRecoverySegments++;
         forceProviderCompaction = isProviderContextRejection(e);

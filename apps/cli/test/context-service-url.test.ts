@@ -25,7 +25,7 @@ describe("providers configure --url does not redirect the Morrow service target"
     const home = mkdtempSync(join(tmpdir(), "morrow-cli-service-url-"));
     tempDirs.push(home);
     const config = ConfigStore.load({ MORROW_HOME: home, ...env }, home);
-    const parsed = parseArgs(argv, { valueFlags: ["url", "model", "key"] });
+    const parsed = parseArgs(argv, { valueFlags: ["url", "model", "key", "context-limit"] });
     const ctx = new Context({ out: new Output({ json: false, quiet: true, color: false }), config, paths: config.paths, flags: parsed.flags });
     return { ctx, parsed };
   }
@@ -49,6 +49,15 @@ describe("providers configure --url does not redirect the Morrow service target"
     ]);
 
     expect(flagString(ctx.flags, "url")).toBe("https://opencode.ai/zen/v1");
+  });
+
+  it("preserves an explicit endpoint context limit for provider configuration", () => {
+    const { ctx } = contextForArgv([
+      "providers", "configure", "openai-compatible",
+      "--context-limit", "260000",
+    ]);
+
+    expect(flagString(ctx.flags, "context-limit")).toBe("260000");
   });
 
   it("MORROW_SERVICE_URL still overrides the service target independently of any --url flag", () => {

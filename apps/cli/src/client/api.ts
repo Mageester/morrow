@@ -578,7 +578,7 @@ export class MorrowApi {
   exchangeOAuthCode(id: string, code: string) { return this.req<OAuthProviderStatus>("POST", `/api/providers/${id}/oauth/exchange`, { code }); }
   signOutOAuth(id: string) { return this.req<{ ok: boolean; provider: string }>("POST", `/api/providers/${id}/oauth/signout`, {}); }
   testProvider(id: string) { return this.req<ProviderTestResult>("POST", `/api/providers/${id}/test`, undefined, { timeoutMs: 15000 }); }
-  configureProvider(id: string, input: { apiKey?: string; baseUrl?: string; model?: string }) {
+  configureProvider(id: string, input: { apiKey?: string; baseUrl?: string; model?: string; endpointContextLimit?: number }) {
     return this.req<{ ok: boolean; provider: string; written: string[]; cleared: string[]; securePermissions: boolean; shadowedByEnv: string[]; status: ProviderStatus | null }>(
       "POST", `/api/providers/${id}/configure`, input
     );
