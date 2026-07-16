@@ -18,6 +18,7 @@ import type {
   ApprovalDecision,
   CommandTrust,
   OAuthFinding,
+  OAuthProviderStatus,
   ToolSpec,
   PermissionProfile,
   ProjectIntelligence,
@@ -572,6 +573,10 @@ export class MorrowApi {
   providerStatus() { return this.req<{ configured: boolean; provider: string; model: string }>("GET", "/api/provider/status"); }
   listProviders() { return this.req<ProviderStatus[]>("GET", "/api/providers"); }
   listOAuth() { return this.req<OAuthFinding[]>("GET", "/api/providers/oauth"); }
+  oauthStatus() { return this.req<OAuthProviderStatus[]>("GET", "/api/providers/oauth/status"); }
+  startOAuth(id: string) { return this.req<{ authorizeUrl: string; redirectUri: string; manual: true }>("POST", `/api/providers/${id}/oauth/start`, {}); }
+  exchangeOAuthCode(id: string, code: string) { return this.req<OAuthProviderStatus>("POST", `/api/providers/${id}/oauth/exchange`, { code }); }
+  signOutOAuth(id: string) { return this.req<{ ok: boolean; provider: string }>("POST", `/api/providers/${id}/oauth/signout`, {}); }
   testProvider(id: string) { return this.req<ProviderTestResult>("POST", `/api/providers/${id}/test`, undefined, { timeoutMs: 15000 }); }
   configureProvider(id: string, input: { apiKey?: string; baseUrl?: string; model?: string }) {
     return this.req<{ ok: boolean; provider: string; written: string[]; cleared: string[]; securePermissions: boolean; shadowedByEnv: string[]; status: ProviderStatus | null }>(
