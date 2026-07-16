@@ -45,7 +45,8 @@ function checkpointSnapshot(taskId = "t") {
 
 describe("durable segmented execution migration", () => {
   it("is a versioned additive migration with restart-safe continuity tables", () => {
-    expect(migrations.at(-1)).toMatchObject({ id: 32, name: "durable_segmented_execution" });
+    expect(migrations.find((migration) => migration.id === 32))
+      .toMatchObject({ id: 32, name: "durable_segmented_execution" });
     const db = seeded();
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((row) => row.name));
     for (const name of [
