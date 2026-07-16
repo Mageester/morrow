@@ -6,6 +6,50 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.30] - 2026-07-16
+
+### Added - model and reasoning routing
+
+- **Interactive `/model` picker.** Choose a provider/model from a compact,
+  live route picker instead of editing configuration by hand; live status and
+  context reporting reflect the actual selection instead of a cached guess.
+- **Normalized reasoning control.** Reasoning effort is a single, provider-
+  normalized setting that is actually wired through to the outbound provider
+  request, replacing the previous per-provider drift.
+- **Adaptive-OS orchestrator architecture.** A canonical model-budget
+  foundation and architecture map for adaptive orchestration replace ad hoc
+  budget handling.
+
+### Fixed - mission and terminal integrity
+
+- Advanced missions continue across context-window limits instead of
+  stalling silently.
+- Read-only tasks that finish successfully no longer report as interrupted,
+  and repeated narration no longer masquerades as a false completion.
+- General missing-delivery protection closes gaps where `/output full` and
+  related report paths could drop content.
+- Terminal events use a single event-identity boundary, closing a recovery
+  cross-flow bug.
+
+### Fixed - openai-compatible provider and mission reliability
+
+- **`--url` flag collision.** `morrow providers configure <id> --url <url>`
+  no longer silently redirects the CLI's own service-target resolution to
+  the provider's endpoint URL.
+- **Custom `openai-compatible` models are now visible.** A configured custom
+  model previously had zero entries in the built-in model registry and never
+  appeared in `/api/models`; it now surfaces correctly.
+- **`run_command` no longer crashes on malformed tool-call arguments.** A
+  non-array `args` value from a model now produces a clean, retryable tool
+  error instead of a raw `args.map is not a function` crash.
+- **Mission success criteria no longer invent an impossible JS entry-point
+  check.** The heuristic fallback used when no model-drafted criteria are
+  available previously assumed every project has an `index.js`/`server.js`
+  entry point, even static HTML/CSS projects with no JavaScript at all — an
+  unwinnable criterion that could mark an otherwise-flawless mission as
+  failed. It now checks the actual workspace before proposing that
+  criterion, and omits it when no JS entry point exists.
+
 ## [0.1.0-beta.29] - 2026-07-11
 
 ### Changed - task-first terminal clarity

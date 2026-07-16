@@ -42,7 +42,7 @@ describe("morrow root command", () => {
 
   it("prints package version without contacting service", async () => {
     await expect(run(["--version"])).resolves.toBe(0);
-    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0-beta.29");
+    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0-beta.30");
   });
 
   it("reports a corrupt config as JSON instead of failing before doctor starts", async () => {
