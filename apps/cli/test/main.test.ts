@@ -24,6 +24,7 @@ describe("morrow root command", () => {
     expect(help).toContain("morrow resume");
     expect(help).toContain("morrow onboard");
     expect(help).toContain("morrow auth");
+    expect(help).toContain("morrow acceptance");
     expect(help).not.toContain("morrow open");
     expect(help).not.toContain("browser");
     // Advanced/admin commands are de-emphasized but discoverable.
@@ -161,6 +162,14 @@ describe("morrow root command", () => {
     expect(help).toContain("morrow mission list");
     expect(help).toContain("morrow mission failures");
     expect(err).not.toContain("Morrow is ready");
+  });
+
+  it("exposes acceptance help without onboarding or starting the service", async () => {
+    await expect(run(["acceptance", "--help"])).resolves.toBe(0);
+    const help = stdout.mock.calls.map(([value]) => String(value)).join("");
+    expect(help).toContain("morrow acceptance run");
+    expect(help).toContain("morrow acceptance resume");
+    expect(help).toContain("morrow acceptance report");
   });
 
   it("exposes a dry-run uninstall that removes launcher/app surfaces while preserving data by default", async () => {

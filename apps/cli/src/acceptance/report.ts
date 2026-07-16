@@ -27,7 +27,7 @@ export function classifyFoundationRun(state: AcceptanceRunState): AcceptanceDisp
 function replaceLocalPaths<T>(value: T, runRoot: string): T {
   if (typeof value === "string") {
     const variants = [runRoot, runRoot.replace(/\\/g, "/")];
-    let output = value;
+    let output: string = value;
     for (const variant of variants) output = output.split(variant).join("<run-root>");
     return output as T;
   }
