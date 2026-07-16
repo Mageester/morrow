@@ -139,10 +139,12 @@ export function missionRuntimeRepository(db: Database.Database) {
       cause: string;
       actor: MissionRuntimeTransitionActor;
       details?: Record<string, unknown>;
+      fence?: MissionRuntimeLeaseFence;
       now: string;
     }): MissionRuntimeTransition {
       return db.transaction(() => {
         assertMissionRuntimeTransition(input.from, input.to, input.cause);
+        if (input.fence) assertFence(input.missionId, input.fence, input.now);
         const current = runtimeFromRow(requireRuntimeRow(input.missionId));
         if (current.state !== input.from) {
           throw new Error(`Mission runtime state changed: expected ${input.from}, found ${current.state}`);
@@ -194,6 +196,20 @@ export function missionRuntimeRepository(db: Database.Database) {
         .run(input.now, input.missionId, input.fence.ownerId, input.fence.generation).changes === 1;
     },
 
+    requireLease(input: { missionId: string; fence: MissionRuntimeLeaseFence; now: string }): MissionRuntime {
+      assertFence(input.missionId, input.fence, input.now);
+      return runtimeFromRow(requireRuntimeRow(input.missionId));
+    },
+
+    setActiveTask(input: { missionId: string; taskId: string | null; fence: MissionRuntimeLeaseFence; now: string }): MissionRuntime {
+      assertFence(input.missionId, input.fence, input.now);
+      const updated = db.prepare(`UPDATE mission_runtime SET active_task_id=?,updated_at=?
+        WHERE mission_id=? AND lease_owner=? AND lease_generation=?`)
+        .run(input.taskId, input.now, input.missionId, input.fence.ownerId, input.fence.generation);
+      if (updated.changes !== 1) throw new MissionRuntimeLeaseFenceError();
+      return runtimeFromRow(requireRuntimeRow(input.missionId));
+    },
+
     enqueueOperation(input: {
       id?: string;
       missionId: string;
@@ -201,9 +217,11 @@ export function missionRuntimeRepository(db: Database.Database) {
       kind: MissionOperationKind;
       strategyFingerprint: string | null;
       input: Record<string, unknown>;
+      fence?: MissionRuntimeLeaseFence;
       now: string;
     }): MissionOperation {
       return db.transaction(() => {
+        if (input.fence) assertFence(input.missionId, input.fence, input.now);
         const existingRow = db.prepare("SELECT * FROM mission_operations WHERE mission_id=? AND idempotency_key=?")
           .get(input.missionId, input.idempotencyKey) as any;
         if (existingRow) {
@@ -369,30 +387,34 @@ export function missionRuntimeRepository(db: Database.Database) {
       action: MissionRecoveryAction;
       retryCondition: string | null;
       exhausted: boolean;
+      fence?: MissionRuntimeLeaseFence;
       now: string;
     }) {
-      const decision = MissionRecoveryDecisionSchema.parse({
-        version: 1,
-        id: input.id ?? randomUUID(),
-        missionId: input.missionId,
-        operationId: input.operationId,
-        category: input.category,
-        diagnosis: input.diagnosis,
-        failedStrategyFingerprint: input.failedStrategyFingerprint,
-        nextStrategyFingerprint: input.nextStrategyFingerprint,
-        action: input.action,
-        retryCondition: input.retryCondition,
-        exhausted: input.exhausted,
-        createdAt: input.now,
-      });
-      db.prepare(`INSERT INTO mission_recovery_decisions
-        (id,mission_id,operation_id,category,diagnosis,failed_strategy_fingerprint,next_strategy_fingerprint,
-         action,retry_condition,exhausted,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(decision.id, decision.missionId, decision.operationId, decision.category, decision.diagnosis,
-          decision.failedStrategyFingerprint, decision.nextStrategyFingerprint, decision.action,
-          decision.retryCondition, decision.exhausted ? 1 : 0, decision.createdAt);
-      return decision;
+      return db.transaction(() => {
+        if (input.fence) assertFence(input.missionId, input.fence, input.now);
+        const decision = MissionRecoveryDecisionSchema.parse({
+          version: 1,
+          id: input.id ?? randomUUID(),
+          missionId: input.missionId,
+          operationId: input.operationId,
+          category: input.category,
+          diagnosis: input.diagnosis,
+          failedStrategyFingerprint: input.failedStrategyFingerprint,
+          nextStrategyFingerprint: input.nextStrategyFingerprint,
+          action: input.action,
+          retryCondition: input.retryCondition,
+          exhausted: input.exhausted,
+          createdAt: input.now,
+        });
+        db.prepare(`INSERT INTO mission_recovery_decisions
+          (id,mission_id,operation_id,category,diagnosis,failed_strategy_fingerprint,next_strategy_fingerprint,
+           action,retry_condition,exhausted,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(decision.id, decision.missionId, decision.operationId, decision.category, decision.diagnosis,
+            decision.failedStrategyFingerprint, decision.nextStrategyFingerprint, decision.action,
+            decision.retryCondition, decision.exhausted ? 1 : 0, decision.createdAt);
+        return decision;
+      })();
     },
 
     listRecoveryDecisions(missionId: string) {
