@@ -52,6 +52,17 @@ import type {
 } from "@morrow/contracts";
 import { CliError, EXIT } from "../cli/errors.js";
 
+/** Live subscription sign-in state for one OAuth-capable provider — never carries token material. */
+export interface OAuthConnectionStatus {
+  id: "anthropic" | "openai";
+  label: string;
+  providerId: string;
+  status: "connected" | "disconnected" | "expired";
+  expiresAt: string | null;
+  scope: string | null;
+  warning: string;
+}
+
 export interface SendMessageOptions {
   preset?: string;
   providerId?: string;
@@ -572,6 +583,20 @@ export class MorrowApi {
   providerStatus() { return this.req<{ configured: boolean; provider: string; model: string }>("GET", "/api/provider/status"); }
   listProviders() { return this.req<ProviderStatus[]>("GET", "/api/providers"); }
   listOAuth() { return this.req<OAuthFinding[]>("GET", "/api/providers/oauth"); }
+  /** Live subscription sign-in state (connected/expired/disconnected); never includes token material. */
+  oauthStatus() { return this.req<OAuthConnectionStatus[]>("GET", "/api/providers/oauth/status"); }
+  /** Begin subscription sign-in: returns the authorization URL to open in a browser. */
+  startOAuthLogin(id: string) {
+    return this.req<{ authorizeUrl: string; redirectUri: string; manual: true }>("POST", `/api/providers/${id}/oauth/start`);
+  }
+  /** Exchange the pasted authorization code (or full redirect URL) for tokens. */
+  completeOAuthLogin(id: string, code: string) {
+    return this.req<OAuthConnectionStatus>("POST", `/api/providers/${id}/oauth/exchange`, { code });
+  }
+  /** Remove stored subscription sign-in tokens for a provider. */
+  oauthLogout(id: string) {
+    return this.req<{ ok: boolean; provider: string }>("POST", `/api/providers/${id}/oauth/signout`);
+  }
   testProvider(id: string) { return this.req<ProviderTestResult>("POST", `/api/providers/${id}/test`, undefined, { timeoutMs: 15000 }); }
   configureProvider(id: string, input: { apiKey?: string; baseUrl?: string; model?: string }) {
     return this.req<{ ok: boolean; provider: string; written: string[]; cleared: string[]; securePermissions: boolean; shadowedByEnv: string[]; status: ProviderStatus | null }>(

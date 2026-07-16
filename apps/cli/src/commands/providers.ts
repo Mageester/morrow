@@ -1,8 +1,8 @@
 import type { Context } from "../cli/context.js";
 import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
-import { askSecret, isInteractive } from "./common.js";
-import { flagString } from "../cli/args.js";
+import { ask, askSecret, confirm, isInteractive } from "./common.js";
+import { flagBool, flagString } from "../cli/args.js";
 import { usageError, CliError, EXIT } from "../cli/errors.js";
 
 /** Environment variable that holds each provider's API key. */
@@ -14,6 +14,24 @@ const KEY_ENV: Record<string, string> = {
   deepseek: "DEEPSEEK_API_KEY",
   "openai-compatible": "OPENAI_COMPAT_API_KEY",
 };
+
+/** Providers that support "sign in with your subscription" OAuth (see provider/oauth-flow.ts). */
+const OAUTH_LOGIN: Record<string, { findingId: string; label: string }> = {
+  openai: { findingId: "codex-oauth", label: "ChatGPT / Codex (OpenAI)" },
+  anthropic: { findingId: "claude-oauth", label: "Claude (Anthropic)" },
+};
+
+/** Friendly names for `providers login|logout` that resolve to the underlying provider id. */
+const LOGIN_ALIASES: Record<string, string> = {
+  codex: "openai",
+  chatgpt: "openai",
+  claude: "anthropic",
+};
+
+function resolveLoginId(raw: string): string {
+  const lower = raw.toLowerCase();
+  return LOGIN_ALIASES[lower] ?? lower;
+}
 
 export async function providersCommand(ctx: Context, sub: string, args: string[]): Promise<number> {
   await ensureRunning(ctx);
@@ -30,16 +48,21 @@ export async function providersCommand(ctx: Context, sub: string, args: string[]
       return remove(ctx, api, args);
     case "test":
       return test(ctx, api, args);
+    case "login":
+      return login(ctx, api, args);
+    case "logout":
+      return logout(ctx, api, args);
     default:
-      throw usageError(`Unknown providers subcommand: ${sub}`, "Try: list, status, configure, remove, test");
+      throw usageError(`Unknown providers subcommand: ${sub}`, "Try: list, status, configure, remove, test, login, logout");
   }
 }
 
 async function list(ctx: Context, api: MorrowApi): Promise<number> {
   const providers = await api.listProviders();
   const oauth = await api.listOAuth();
+  const connections = await api.oauthStatus();
   if (ctx.out.json) {
-    ctx.out.data({ providers, oauth });
+    ctx.out.data({ providers, oauth, connections });
     return EXIT.OK;
   }
   ctx.out.heading("Providers");
@@ -61,7 +84,21 @@ async function list(ctx: Context, api: MorrowApi): Promise<number> {
     const mark = f.status === "available" ? ctx.out.green("available") : ctx.out.yellow("unavailable");
     ctx.out.print(`  ${mark}  ${ctx.out.bold(f.label)}`);
     ctx.out.print(ctx.out.gray(`    ${f.reason}`));
-    ctx.out.print(ctx.out.gray(`    → ${f.recommendation}`));
+    const providerId = Object.keys(OAUTH_LOGIN).find((id) => OAUTH_LOGIN[id]!.findingId === f.id);
+    const conn = providerId ? connections.find((c) => c.id === providerId) : undefined;
+    if (providerId && conn) {
+      if (conn.status === "connected") {
+        ctx.out.print(
+          `    ${ctx.out.green("● signed in")}${conn.expiresAt ? ctx.out.gray(` — expires ${conn.expiresAt}`) : ""} — \`morrow providers logout ${providerId}\` to disconnect.`
+        );
+      } else if (conn.status === "expired") {
+        ctx.out.print(`    ${ctx.out.yellow("○ session expired")} — run \`morrow providers login ${providerId}\` to reconnect.`);
+      } else {
+        ctx.out.print(`    ${ctx.out.gray("○ not signed in")} — run \`morrow providers login ${providerId}\` to use your subscription instead of an API key.`);
+      }
+    } else {
+      ctx.out.print(ctx.out.gray(`    → ${f.recommendation}`));
+    }
   }
   return EXIT.OK;
 }
@@ -163,4 +200,76 @@ async function test(ctx: Context, api: MorrowApi, args: string[]): Promise<numbe
   ctx.out.error(`${id}: ${result.detail}`);
   if (!result.configured) ctx.out.info(`Configure it with \`morrow providers configure ${id}\`.`);
   return EXIT.PROVIDER;
+}
+
+/**
+ * Subscription sign-in ("log in with ChatGPT" / "log in with Claude"): opens the
+ * provider's real OAuth authorization URL and exchanges the pasted authorization
+ * code for tokens, so usage is billed against the subscription instead of an API
+ * key. See services/orchestrator/src/provider/oauth-flow.ts for the flow itself.
+ */
+async function login(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
+  const raw = args[0];
+  if (!raw) {
+    throw usageError(
+      "Usage: morrow providers login <provider>",
+      `Subscription sign-in supports: ${Object.entries(OAUTH_LOGIN).map(([id, meta]) => `${id} (${meta.label})`).join(", ")}. Try \`morrow providers login codex\`.`
+    );
+  }
+  const id = resolveLoginId(raw);
+  const meta = OAUTH_LOGIN[id];
+  if (!meta) {
+    throw usageError(
+      `"${raw}" does not support subscription sign-in.`,
+      `Use an API key instead: morrow providers configure ${raw}`
+    );
+  }
+
+  if (!ctx.out.json) {
+    const findings = await api.listOAuth();
+    const finding = findings.find((f) => f.id === meta.findingId);
+    ctx.out.heading(`Sign in — ${meta.label}`);
+    if (finding) ctx.out.warn(finding.reason);
+  }
+  if (isInteractive(ctx) && !flagBool(ctx.flags, "yes")) {
+    const proceed = await confirm(`Sign in with your ${meta.label} account now?`, true);
+    if (!proceed) {
+      ctx.out.info("Sign-in cancelled.");
+      return EXIT.CANCELLED;
+    }
+  }
+
+  const { authorizeUrl } = await api.startOAuthLogin(id);
+  ctx.out.print("");
+  ctx.out.print(`Open this URL and sign in with your ${meta.label} account:`);
+  ctx.out.print("");
+  ctx.out.print(`  ${authorizeUrl}`);
+  ctx.out.print("");
+
+  let code = flagString(ctx.flags, "code");
+  if (!code) code = await ask("After approving, paste the authorization code (or the full redirected URL) here: ");
+  if (!code) throw new CliError("No authorization code provided.", { code: "NO_CODE", exitCode: EXIT.USAGE });
+
+  const status = await api.completeOAuthLogin(id, code);
+  ctx.out.success(`Signed in to ${status.label} — usage now runs against your subscription instead of an API key.`);
+  if (status.expiresAt) ctx.out.info(`Token expires ${status.expiresAt}; Morrow refreshes it automatically while it's used.`);
+  if (ctx.out.json) ctx.out.data(status);
+  return EXIT.OK;
+}
+
+async function logout(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
+  const raw = args[0];
+  if (!raw) throw usageError("Usage: morrow providers logout <provider>");
+  const id = resolveLoginId(raw);
+  const meta = OAUTH_LOGIN[id];
+  if (!meta) {
+    throw usageError(
+      `"${raw}" has no subscription sign-in to remove.`,
+      `Remove a stored API key instead: morrow providers remove ${raw}`
+    );
+  }
+  await api.oauthLogout(id);
+  ctx.out.success(`Signed out of ${meta.label}.`);
+  if (ctx.out.json) ctx.out.data({ provider: id, signedOut: true });
+  return EXIT.OK;
 }

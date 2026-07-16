@@ -107,12 +107,27 @@ changes.
 
 | Flow | Status | Finding | Recommendation |
 |------|--------|---------|----------------|
-| Codex / ChatGPT (OpenAI) | Available | Subscription sign-in via the Codex CLI's first-party OAuth client + PKCE. ChatGPT/Codex tokens target OpenAI's Codex backend and may need extra configuration for general chat. Tokens stored locally. | Sign in in the app, or use the OpenAI provider with `OPENAI_API_KEY`. |
-| Claude (Anthropic) | Available | Subscription sign-in via Claude Code's first-party OAuth client + PKCE. Subscription inference is intended for Anthropic's own tools and may be rejected. Tokens stored locally. | Sign in in the app, or use the Anthropic provider with `ANTHROPIC_API_KEY`. |
+| Codex / ChatGPT (OpenAI) | Available | Subscription sign-in via the Codex CLI's first-party OAuth client + PKCE. ChatGPT/Codex tokens target OpenAI's Codex backend and may need extra configuration for general chat. Tokens stored locally. | `morrow providers login codex`, or use the OpenAI provider with `OPENAI_API_KEY`. |
+| Claude (Anthropic) | Available | Subscription sign-in via Claude Code's first-party OAuth client + PKCE. Subscription inference is intended for Anthropic's own tools and may be rejected. Tokens stored locally. | `morrow providers login claude`, or use the Anthropic provider with `ANTHROPIC_API_KEY`. |
 | Gemini (Google) | Unavailable | The documented Generative Language API uses API keys; Google OAuth applies to Cloud/Vertex accounts, not consumer-subscription third-party sign-in. | Use the Gemini provider with `GEMINI_API_KEY`, or run Ollama locally. |
 
 Operators should re-verify the linked provider documentation, as terms change.
 The live findings are served at `GET /api/providers/oauth`.
+
+### Signing in from the CLI
+
+```
+morrow providers login codex     # or: openai, chatgpt
+morrow providers login claude    # or: anthropic
+```
+
+This prints an authorization URL (Codex opens `auth.openai.com`, Claude opens
+`claude.ai`); open it, approve the sign-in, and paste back the authorization
+code (or the full redirected URL) when prompted. On success, inference for that
+provider runs against the signed-in subscription instead of an API key —
+`morrow providers list` shows the live connection state, and
+`morrow providers logout <provider>` removes the stored tokens. Non-interactive
+use can pass the code directly: `morrow providers login codex --code <code>`.
 
 ## Manual end-to-end verification
 

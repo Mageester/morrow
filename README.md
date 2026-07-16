@@ -174,9 +174,11 @@ credential reference, honest OAuth findings, and manual verification steps.
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT
   (OpenAI) via their first-party OAuth client ids and PKCE, behind an explicit
-  security/ToS warning; tokens are stored locally. These reuse first-party
-  client ids and may break if the provider changes them. Gemini has no
-  comparable consumer-subscription OAuth and stays API-key only.
+  security/ToS warning; tokens are stored locally. Run `morrow providers login
+  codex` (or `claude`) to sign in and use subscription usage instead of an API
+  key. These reuse first-party client ids and may break if the provider
+  changes them. Gemini has no comparable consumer-subscription OAuth and stays
+  API-key only.
 
 ## Ownership and licensing
 

@@ -6,6 +6,17 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added
+
+- **`morrow providers login codex|claude`.** The server-side "sign in with your
+  subscription" OAuth flow (PKCE against OpenAI's/Anthropic's first-party
+  clients) existed but had no CLI entry point. `morrow providers login <codex|
+  claude|openai|anthropic>` walks the authorize-URL / paste-code exchange;
+  `morrow providers logout <provider>` clears the stored tokens; `morrow
+  providers list` shows the live connected/expired/disconnected state per
+  provider. Once signed in, chat/agent requests use the ChatGPT or Claude
+  subscription instead of `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`.
+
 ## [0.1.0-beta.29] - 2026-07-11
 
 ### Changed - task-first terminal clarity

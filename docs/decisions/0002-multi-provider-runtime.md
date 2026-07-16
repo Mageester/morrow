@@ -64,6 +64,14 @@ are reported as honestly unavailable with an API-key recommendation. See
 > comparable consumer-subscription OAuth and remains API-key only. The honest
 > per-provider findings live in `src/provider/oauth.ts` (`OAUTH_FINDINGS`).
 
+> **Update (2026-07-16):** The sign-in flow itself (`oauth/start`,
+> `oauth/exchange`, `oauth/signout`) was implemented server-side from the start,
+> but nothing actually drove it — `docs/providers.md` told operators to "sign in
+> in the app" when no app exposed the flow. Added `morrow providers login
+> <codex|claude>` / `morrow providers logout <codex|claude>` to the CLI so the
+> flow is reachable; `morrow providers list` now also shows the live
+> connected/expired/disconnected state per provider.
+
 ## Consequences
 
 ### Positive

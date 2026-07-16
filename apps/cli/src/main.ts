@@ -239,6 +239,7 @@ function printHelp(out: Output): number {
     b("Setup"),
     `  morrow onboard               ${g("guided first-run setup")}`,
     `  morrow auth login|status     ${g("connect a model provider")}`,
+    `  morrow providers login codex ${g("sign in with ChatGPT/Claude — use subscription usage, no API key")}`,
     `  morrow model                 ${g("choose a model")}`,
     `  morrow settings              ${g("view or change preferences")}`,
     `  morrow doctor                ${g("check your environment")}`,
