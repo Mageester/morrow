@@ -458,6 +458,124 @@ function assertWriteAllowedByFileContract(path: string, allowedFiles: Set<string
   }
 }
 
+const KNOWN_VERIFICATION_SCRIPTS = ["test", "build", "lint", "typecheck"] as const;
+type VerificationScriptName = typeof KNOWN_VERIFICATION_SCRIPTS[number];
+const PACKAGE_MANAGER_EXECUTABLES = new Set(["npm", "pnpm", "yarn"]);
+// Bare (unanchored) word-form alternations per script name, shared by the
+// purpose-based substitute classifier and the disclosure check below so both
+// recognize "tests"/"testing"/"builds" etc, not just the bare script name.
+const VERIFICATION_WORD_PATTERNS: Record<VerificationScriptName, string> = {
+  test: "test(?:s|ing)?",
+  build: "build(?:s|ing)?",
+  lint: "lint(?:s|ing)?",
+  typecheck: "type ?check(?:s|ing)?",
+};
+const VERIFICATION_CATEGORY_PATTERNS: Record<VerificationScriptName, RegExp> = Object.fromEntries(
+  KNOWN_VERIFICATION_SCRIPTS.map((name) => [name, new RegExp(`\\b${VERIFICATION_WORD_PATTERNS[name]}\\b`, "i")]),
+) as Record<VerificationScriptName, RegExp>;
+
+/** Reads the subset of package.json's own "scripts" that this gate understands, if any. */
+function readConfiguredVerificationScripts(workspacePath: string): Map<VerificationScriptName, string> {
+  const found = new Map<VerificationScriptName, string>();
+  try {
+    const pkgPath = join(workspacePath, "package.json");
+    if (!existsSync(pkgPath)) return found;
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, unknown> };
+    for (const name of KNOWN_VERIFICATION_SCRIPTS) {
+      const command = pkg.scripts?.[name];
+      if (typeof command === "string" && command.trim()) found.set(name, command.trim());
+    }
+  } catch { /* an unreadable or non-Node manifest simply has no configured scripts to check */ }
+  return found;
+}
+
+/** Does this run_command invocation execute a package.json script directly (npm/pnpm/yarn [run] <name>)? */
+function packageManagerScriptInvocation(executable: string, args: string[]): VerificationScriptName | null {
+  if (!PACKAGE_MANAGER_EXECUTABLES.has(executable)) return null;
+  const candidate = args[0] === "run" ? args[1] : args[0];
+  return candidate !== undefined && (KNOWN_VERIFICATION_SCRIPTS as readonly string[]).includes(candidate)
+    ? (candidate as VerificationScriptName)
+    : null;
+}
+
+// A package manager can also be used to bypass its own scripts and invoke a
+// tool directly (npm exec, pnpm exec/dlx, yarn dlx) or via npx — these are
+// substitute invocations, not configured-script invocations, even though the
+// executable is still one of npm/pnpm/yarn.
+function isRawToolInvocation(executable: string, args: string[]): boolean {
+  if (executable === "npx") return true;
+  return PACKAGE_MANAGER_EXECUTABLES.has(executable) && (args[0] === "exec" || args[0] === "dlx");
+}
+
+/**
+ * Deterministic completion gate for the gap found in the advanced-agent-
+ * consumer-proof Journey L: a project's own configured verification script
+ * (package.json) failed for a reason unrelated to the requested change, the
+ * agent substituted a different command for the same purpose and it passed,
+ * but the final answer never says the configured command is still broken.
+ * A system-prompt instruction alone cannot guarantee that disclosure
+ * actually happens — this checks the real recorded exit codes of every
+ * run_command call and the real final answer text, not the model's
+ * self-report. Returns null when there is nothing to disclose: no configured
+ * script, the configured script was never attempted or did not fail, no
+ * substitute ran successfully, or disclosure is already present.
+ */
+function detectUndisclosedVerificationSubstitution(
+  workspacePath: string,
+  calls: ToolCallRecord[],
+  finalText: string,
+): { scriptName: VerificationScriptName; configuredCommand: string; substituteCommand: string } | null {
+  const configured = readConfiguredVerificationScripts(workspacePath);
+  if (configured.size === 0) return null;
+
+  const configuredPassed = new Map<VerificationScriptName, boolean>();
+  const substituteCommand = new Map<VerificationScriptName, string>();
+  for (const call of calls) {
+    if (call.toolName !== "run_command" || call.status !== "completed") continue;
+    let args: { executable?: unknown; args?: unknown; purpose?: unknown };
+    try { args = JSON.parse(call.argsJson) as typeof args; } catch { continue; }
+    const executable = typeof args.executable === "string" ? args.executable : "";
+    const argList = Array.isArray(args.args) ? args.args.filter((a): a is string => typeof a === "string") : [];
+    const purpose = typeof args.purpose === "string" ? args.purpose : "";
+    let exitCode: number | null = null;
+    try {
+      const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
+      exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
+    } catch { continue; }
+    if (exitCode === null) continue;
+
+    const configuredScript = packageManagerScriptInvocation(executable, argList);
+    if (configuredScript && configured.has(configuredScript)) {
+      configuredPassed.set(configuredScript, exitCode === 0);
+      continue;
+    }
+    const isSubstituteCandidate = !PACKAGE_MANAGER_EXECUTABLES.has(executable) || isRawToolInvocation(executable, argList);
+    if (!isSubstituteCandidate || exitCode !== 0) continue;
+    for (const scriptName of configured.keys()) {
+      if (VERIFICATION_CATEGORY_PATTERNS[scriptName].test(purpose)) {
+        substituteCommand.set(scriptName, `${executable} ${argList.join(" ")}`.trim());
+      }
+    }
+  }
+
+  for (const [scriptName, command] of configured) {
+    const substitute = substituteCommand.get(scriptName);
+    if (configuredPassed.get(scriptName) !== false || !substitute) continue;
+    // Disclosure is judged on the final answer actually naming the script
+    // (in any of its natural word forms), saying something is broken/failing,
+    // and referring to the configured command/script context — all three
+    // co-occurring in a short completion report is a reliable, if informal,
+    // signal of genuine disclosure rather than an unrelated mention of tests.
+    const mentionsScript = VERIFICATION_CATEGORY_PATTERNS[scriptName].test(finalText);
+    const mentionsBrokenState = /\b(broken|fail(?:s|ing)?|crash(?:es)?|error(?:s)?|does(?:n't| not) work)\b/i.test(finalText);
+    const mentionsConfiguredContext = /\b(script|command|package\.json|npm|pnpm|yarn)\b/i.test(finalText);
+    if (!(mentionsScript && mentionsBrokenState && mentionsConfiguredContext)) {
+      return { scriptName, configuredCommand: command, substituteCommand: substitute };
+    }
+  }
+  return null;
+}
+
 export async function executeAgentChatTask({
   db,
   taskId,
@@ -1004,6 +1122,7 @@ Running commands with run_command (each argument is a separate array element; th
 - Package managers work directly: run_command executable "npm" args ["install"]; executable "npm" args ["run","build"]; executable "npm" args ["test"]. Same for pnpm/yarn/node/git.
 - Avoid interactive scaffolders (e.g. "npm create vite") — they hang waiting for input. Instead write the project files yourself with create_file and install dependencies with npm install.
 - If a command is denied, do not repeat it. Switch to the allowed equivalent (a file tool, or a non-shell command) described in the error.
+- If the project's own configured verification command (e.g. a package.json script like "test", "build", or "lint") fails for a reason unrelated to the change you were asked to make — a broken script, a bad flag, a misconfigured tool — do not silently substitute a different command and report only that substitute's result. Your final report MUST name the exact command you actually ran when it differs from the project's own configured one, and MUST say plainly that the project's own configured command is still broken. Fix the broken script yourself when it is cheap and in scope; otherwise disclose it rather than leaving a false impression that the project's normal verification command works.
 
 Morrow ships installed skills (reusable expert workflows). They ARE available — never tell the user skills are unavailable. When a relevant skill is listed below or found via find_skill, call load_skill for it and follow its workflow. After completing a complex multi-step task, save the approach with create_skill.`
   });
@@ -3316,6 +3435,28 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
     if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
     return;
+  }
+
+  // Completion gate: the project's own configured verification script
+  // (package.json) failed during this task for a reason unrelated to the
+  // change, a different command was substituted for it and passed, and the
+  // final answer never says the configured command is still broken. Unlike
+  // the system-prompt instruction asking the model to disclose this, this
+  // check is deterministic: it reads the actual recorded exit codes and the
+  // actual final text, so a silent substitution cannot reach "completed"
+  // just because the model chose not to mention it. Honest disclosure (or
+  // actually fixing the script) both clear this gate.
+  if (completedWithoutMoreTools) {
+    const substitution = detectUndisclosedVerificationSubstitution(workspacePath, convs.listToolCallsForMessage(assistantMessageRow.id), canonicalFinalText);
+    if (substitution) {
+      const message = `Stopping without completion: the project's own configured "${substitution.scriptName}" script (\`${substitution.configuredCommand}\`) failed during this task and was never fixed. A different command (\`${substitution.substituteCommand}\`) was used instead and it passed, but the final answer never discloses that the configured command is still broken.`;
+      failCurrentSegment("undisclosed_verification_substitution");
+      transitionAgentState("interrupted", { reason: "undisclosed_verification_substitution", message, turns: turn });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "undisclosed_verification_substitution", message, turns: turn } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
+    }
   }
 
   // Final transition is atomic with canonical-answer creation. If the process

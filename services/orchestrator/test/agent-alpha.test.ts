@@ -607,14 +607,14 @@ describe("Agent Alpha", () => {
       };
 
       // Budget is comfortably larger than the mandatory system prompt + latest
-      // request (~600 tokens) but far smaller than either ~1800-token old
+      // request (~1075 tokens) but far smaller than either ~1800-token old
       // message, so both stale turns must be trimmed while the system prompt and
       // latest request survive.
       await executeAgentChatTask({
         db,
         taskId: "task-1",
         provider,
-        maxContextBytes: 3600
+        maxContextBytes: 4300
       });
 
       const sent = captured[0]!.map((message) => message.content).join("\n");
@@ -624,7 +624,79 @@ describe("Agent Alpha", () => {
       expect(sent).not.toContain("OLD_ASSISTANT_CONTEXT");
 
       const trimEvent = taskRecordsRepository(db).listEvents("task-1").find((event) => event.type === "context.trimmed");
-      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 900 });
+      expect(trimEvent?.payload).toMatchObject({ trimmedMessages: 2, maxInputTokens: 1075 });
+    });
+
+    /**
+     * Regression for a real consumer-journey finding (advanced-agent-consumer
+     * baseline, journey L): given a task whose own configured verification
+     * command (e.g. package.json's "test" script) was broken for a reason
+     * unrelated to the agent's changes, the agent worked around it by running
+     * a different command directly, then reported "tests pass" without ever
+     * saying the project's own configured command was still broken — a
+     * factually-true but misleading completion. The system prompt must tell
+     * the agent to disclose that substitution explicitly.
+     */
+    it("instructs the agent to disclose when it had to substitute a different command for a broken configured verification script", async () => {
+      const projects = projectRepository(db);
+      const convs = conversationsRepository(db);
+      const tasks = taskRepository(db);
+
+      projects.createProject({
+        id: "p1",
+        name: "Disclosure Project",
+        workspacePath: tempDir,
+        createdAt: new Date().toISOString()
+      });
+      convs.createConversation({
+        id: "c1",
+        projectId: "p1",
+        title: "Disclosure Chat",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:00:00.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-user",
+        conversationId: "c1",
+        role: "user",
+        content: "Add a feature and make sure tests pass.",
+        createdAt: "2026-07-15T00:00:01.000Z",
+        updatedAt: "2026-07-15T00:00:01.000Z"
+      });
+      tasks.createTask({
+        id: "task-disclosure",
+        projectId: "p1",
+        kind: "agent_chat",
+        status: "queued",
+        createdAt: "2026-07-15T00:00:02.000Z"
+      });
+      convs.appendMessage({
+        id: "msg-assistant",
+        conversationId: "c1",
+        role: "assistant",
+        content: "",
+        taskId: "task-disclosure",
+        streamingState: "queued",
+        createdAt: "2026-07-15T00:00:02.000Z",
+        updatedAt: "2026-07-15T00:00:02.000Z"
+      });
+
+      const captured: ChatMessage[][] = [];
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
+          captured.push(messages);
+          yield { type: "text", text: "done" };
+          yield { type: "done" };
+        }
+      };
+
+      await executeAgentChatTask({ db, taskId: "task-disclosure", provider });
+
+      const systemPrompt = captured[0]!.find((m) => m.role === "system")!.content;
+      expect(systemPrompt).toMatch(/configured verification command/i);
+      expect(systemPrompt).toMatch(/must name the exact command you actually ran/i);
+      expect(systemPrompt).toMatch(/still broken/i);
     });
 
     it("compacts old history into a persisted summary before falling back to raw history trimming", async () => {
@@ -697,7 +769,7 @@ describe("Agent Alpha", () => {
         }
       };
 
-      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 3600 });
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 4300 });
 
       const sent = captured[0]!.map((message) => message.content).join("\n");
       expect(sent).toContain("Context summary (deterministic");

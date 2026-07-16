@@ -10,7 +10,7 @@ import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -265,5 +265,105 @@ describe("agent completion gate", () => {
     expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
     expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
     expect(events.some((e: any) => e.type === "task.failed")).toBe(false);
+  });
+
+  it("does not report completed when a broken configured verification script was silently worked around", async () => {
+    writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", version: "1.0.0", scripts: { test: 'node -e "process.exit(1)"' } }));
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        // The project's own configured "test" script actually fails.
+        [tool("v1", "run_command", { executable: "npm", args: ["test"], purpose: "run the project's test suite" }), done],
+        // A substitute for the same purpose is used instead, and it passes.
+        [tool("v2", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "run tests directly since npm test is broken" }), done],
+        // The final answer never discloses that npm test itself is still broken.
+        [text("All tests pass."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
+    expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.reason === "undisclosed_verification_substitution")).toBe(true);
+  });
+
+  it("reports completed when the substitution for a broken configured script is honestly disclosed", async () => {
+    writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", version: "1.0.0", scripts: { test: 'node -e "process.exit(1)"' } }));
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "npm", args: ["test"], purpose: "run the project's test suite" }), done],
+        [tool("v2", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "run tests directly since npm test is broken" }), done],
+        [text("Ran the tests directly and all pass, but note the project's own `npm test` script is still broken (unrelated to this change)."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("still reports completed when no configured verification script exists to disclose", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "run tests directly since npm test is broken" }), done],
+        [text("All tests pass."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("does not report completed when the substitute is run via the package manager itself (pnpm exec) without disclosure", async () => {
+    // Reproduces the exact live pattern observed re-running Journey L against
+    // DeepSeek after the fix: the model ran the configured script through
+    // pnpm, it failed, then used "pnpm exec ..." (still executable "pnpm",
+    // but bypassing the configured script) as the substitute.
+    writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", version: "1.0.0", scripts: { test: "vitest run --bad-flag" } }));
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "pnpm", args: ["test"], purpose: "Run full test suite" }), done],
+        [tool("v2", "run_command", { executable: "pnpm", args: ["exec", "node", "-e", "process.exit(0)"], purpose: "Run test suite with correct vitest command" }), done],
+        [text("All tests pass."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.reason === "undisclosed_verification_substitution")).toBe(true);
+  });
+
+  it("reports completed for natural disclosure phrasing that names the script and command context without saying the literal package manager name", async () => {
+    writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "t", version: "1.0.0", scripts: { test: 'node -e "process.exit(1)"' } }));
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "npm", args: ["test"], purpose: "Run full test suite" }), done],
+        [tool("v2", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "Run test suite with correct vitest command" }), done],
+        [text("10/10 tests pass. Note: the project's `package.json` test script is broken (unrelated to this change); I ran the tests directly instead."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 });
