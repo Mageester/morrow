@@ -180,7 +180,7 @@ export class MissionService {
         drafts = [];
       }
     }
-    if (drafts.length === 0) drafts = this.heuristicCriteria(mission.objective, repoSummary);
+    if (drafts.length === 0) drafts = this.heuristicCriteria(mission.objective, repoSummary, this.deps.getWorkspacePath(mission.projectId));
     this.repo.addCriteria(missionId, drafts.map((d) => ({ id: `crit-${randomUUID()}`, description: d.description, verification: d.verification, state: "proposed" as MissionCriterionState })), this.now());
     this.repo.appendEvent(missionId, "mission.criteria_generated", `Generated ${drafts.length} success criteria`, { count: drafts.length }, this.now());
     // Auto-approve missions display AND persist the approved contract.
@@ -192,15 +192,21 @@ export class MissionService {
   /** Heuristic criteria when no model is available — every one is measurable
    *  (has an executable verification), so a mission can actually reach a full
    *  grade. We avoid vague "runtime" criteria that carry no runnable command. */
-  private heuristicCriteria(objective: string, repoSummary: string): DraftCriterion[] {
+  private heuristicCriteria(objective: string, repoSummary: string, workspace?: string): DraftCriterion[] {
     const drafts: DraftCriterion[] = [];
     const hasTest = /"test"|test|spec|vitest|jest|mocha/i.test(repoSummary);
     if (hasTest) {
       drafts.push({ description: "The existing test suite passes", verification: { kind: "test", command: "npm test", describe: "Test suite exit code 0" } });
     } else {
-      // No test script: prove the primary entry at least parses cleanly.
-      const entry = /server\.js/.test(repoSummary) ? "src/server.js" : /index\.js/.test(repoSummary) ? "src/index.js" : "index.js";
-      drafts.push({ description: `The entry file ${entry} parses without a syntax error`, verification: { kind: "command", command: `node --check ${entry}`, expectExitCode: 0 } });
+      // No test script: prove the primary entry at least parses cleanly — but only
+      // when a JS entry point actually exists. A project with no JS at all (a static
+      // HTML/CSS site, for example) has nothing here to assert, and guessing a path
+      // that doesn't exist produces an unwinnable criterion.
+      const candidates = ["server.js", "src/server.js", "index.js", "src/index.js"];
+      const entry = workspace ? candidates.find((c) => existsSync(resolve(workspace, c))) : undefined;
+      if (entry) {
+        drafts.push({ description: `The entry file ${entry} parses without a syntax error`, verification: { kind: "command", command: `node --check ${entry}`, expectExitCode: 0 } });
+      }
     }
     drafts.push({ description: "The final diff contains no unrelated changes outside the intended fix", verification: { kind: "diff", pathScope: "**", describe: "Changes stay within scope" } });
     drafts.push({ description: "An independent reviewer approves the change against the objective", verification: { kind: "review", describe: "Independent reviewer verdict" } });

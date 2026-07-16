@@ -24,12 +24,17 @@ export class Context {
     config: ConfigStore;
     paths: MorrowPaths;
     flags: Record<string, string | boolean>;
+    /** Programmatic override of the resolved service base URL, e.g. for
+     *  pointing a test harness at an ephemeral server. Never set from CLI
+     *  argv — no `--url`-style flag feeds this, to keep the service target
+     *  independent from any subcommand's own `--url` (see resolveService). */
+    serviceBaseUrl?: string;
   }) {
     this.out = opts.out;
     this.config = opts.config;
     this.paths = opts.paths;
     this.flags = opts.flags;
-    this.service = resolveService(opts.config, opts.flags, opts.paths);
+    this.service = resolveService(opts.config, opts.flags, opts.paths, opts.serviceBaseUrl);
   }
 
   api(): MorrowApi {
@@ -48,12 +53,22 @@ export class Context {
   }
 }
 
-function resolveService(config: ConfigStore, flags: Record<string, string | boolean>, paths: MorrowPaths): ServiceConfig {
+function resolveService(config: ConfigStore, flags: Record<string, string | boolean>, paths: MorrowPaths, explicitBaseUrl?: string): ServiceConfig {
   const svc = config.merged.service ?? {};
   const host = flagString(flags, "host") ?? svc.host ?? process.env.MORROW_BIND_HOST ?? "127.0.0.1";
   const portRaw = flagString(flags, "port") ?? (svc.port !== undefined ? String(svc.port) : undefined) ?? process.env.PORT;
   const port = portRaw ? Number(portRaw) : 4317;
-  const baseUrl = flagString(flags, "url") ?? svc.baseUrl ?? `http://${host}:${port}`;
+  // No CLI flag resolves the target Morrow service's own base URL: `--url` is
+  // already the documented, tested flag for `providers configure`'s provider
+  // endpoint (e.g. `providers configure openai-compatible --url <endpoint>`),
+  // and a shared global `flags` object means the two would otherwise collide —
+  // `providers configure ... --url https://example.com` would silently point
+  // the CLI's own API client at https://example.com instead of the local
+  // service. Point the CLI at a remote/non-default service via the
+  // MORROW_SERVICE_URL env var, the `service.baseUrl` config key, or (for
+  // programmatic/test callers only) Context's `serviceBaseUrl` option instead
+  // (configFromEnvironment() already folds MORROW_SERVICE_URL into svc.baseUrl).
+  const baseUrl = explicitBaseUrl ?? svc.baseUrl ?? `http://${host}:${port}`;
   const dbPath = flagString(flags, "db") ?? svc.dbPath ?? process.env.DATABASE_URL ?? paths.defaultDbPath;
   return { host, port, baseUrl, dbPath };
 }

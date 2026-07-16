@@ -71,12 +71,28 @@ describe("MissionService — creation and persistence", () => {
 describe("MissionService — criteria", () => {
   it("falls back to heuristic criteria when no model is available and awaits approval", async () => {
     const { service } = setup();
-    writeFileSync(join(setupWs(service), "package.json"), "{}");
+    const ws = setupWs(service);
+    writeFileSync(join(ws, "package.json"), "{}");
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src", "index.js"), "module.exports = {};\n");
     const m = service.create("p1", { objective: "Fix bugs" });
     const after = await service.generateCriteria(m.id, "package.json, src/index.js");
     expect(after.criteria.length).toBeGreaterThanOrEqual(3);
+    expect(after.criteria.some((c) => c.verification.command === "node --check src/index.js")).toBe(true);
     expect(after.status).toBe("awaiting_criteria_approval");
     expect(after.criteria.every((c) => c.state === "proposed")).toBe(true);
+  });
+
+  it("does not invent an entry-file criterion for a project with no JS entry point", async () => {
+    const { service } = setup();
+    const ws = setupWs(service);
+    writeFileSync(join(ws, "index.html"), "<!doctype html><html></html>\n");
+    writeFileSync(join(ws, "style.css"), "body { margin: 0; }\n");
+    const m = service.create("p1", { objective: "Add a new page to the static site" });
+    const after = await service.generateCriteria(m.id, "index.html, style.css");
+    expect(after.criteria.some((c) => /node --check/.test(c.verification.command ?? ""))).toBe(false);
+    expect(after.criteria.length).toBeGreaterThanOrEqual(2);
+    expect(after.status).toBe("awaiting_criteria_approval");
   });
 
   it("uses model criteria and rewrites vague ones", async () => {

@@ -71,6 +71,32 @@ describe("agent security boundaries", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
+  // Regression: a model can violate run_command's declared `args: string[]`
+  // schema (e.g. send a single space-joined string instead of an array).
+  // `args.args || []` only guards falsy values, so a truthy non-array slipped
+  // straight into command-policy's `args.map(...)` and crashed the task with
+  // an opaque host-side "args.map is not a function" TypeError instead of a
+  // normal, retryable tool-call error.
+  it("rejects a non-array run_command args with a clear error instead of crashing", async () => {
+    seed(db, ws, "agent");
+    const provider = new MockProvider({
+      chunks: [[tool("x1", "run_command", { executable: "node", args: "--check script.js", purpose: "x" }), done], [text("ok"), done]],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+    const runCall = conversationsRepository(db).listToolCallsForTask("t").find((c: any) => c.toolName === "run_command");
+    expect(runCall?.status).toBe("failed");
+    expect(JSON.parse(runCall!.resultJson!).error).toMatch(/args.*must be an array/i);
+    // The task itself must not be left crashed/stuck by the host-side
+    // TypeError this used to throw — it must reach a real terminal status.
+    // A genuine schema-violating tool call from the model (unlike a
+    // permission-mode boundary) is correctly surfaced as "interrupted" for
+    // review rather than silently treated as a clean completion.
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
   it("does not resurrect a cancelled task when its approval is later resolved", async () => {
     const { project } = seed(db, ws, "agent");
     const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "x" }), done], [text("should not run"), done]], delayMs: 1 });

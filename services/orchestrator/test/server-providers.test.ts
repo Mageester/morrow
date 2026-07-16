@@ -68,6 +68,48 @@ describe("Provider / preset / memory API", () => {
     expect(JSON.stringify(status)).not.toMatch(/accessToken|refreshToken|access_token/);
   });
 
+  // Regression: openai-compatible has no BUILT_IN_MODELS entries (it's a
+  // bring-your-own-model endpoint), so a configured openai-compatible model
+  // previously never appeared in /api/models or /api/models/budgets at all —
+  // unlike a provider with real registry rows, which still lists as
+  // "unavailable" when unconfigured. That made the /model picker unable to
+  // show a configured OpenCode Zen (or any other openai-compatible) model.
+  it("surfaces a configured openai-compatible model in /api/models and /api/models/budgets", async () => {
+    const prevUrl = process.env.OPENAI_COMPAT_BASE_URL;
+    const prevModel = process.env.OPENAI_COMPAT_MODEL;
+    process.env.OPENAI_COMPAT_BASE_URL = "https://opencode.ai/zen/v1";
+    process.env.OPENAI_COMPAT_MODEL = "hy3-free";
+    try {
+      const models = (await json("GET", "/api/models")).body;
+      const hy3 = models.find((m: any) => m.model.providerId === "openai-compatible" && m.model.id === "hy3-free");
+      expect(hy3).toBeTruthy();
+      expect(hy3.available).toBe(true);
+
+      const budgets = (await json("GET", "/api/models/budgets")).body;
+      const hy3Budget = budgets.find((b: any) => b.providerId === "openai-compatible" && b.selectedModelId === "hy3-free");
+      expect(hy3Budget).toBeTruthy();
+      expect(hy3Budget.configured).toBe(true);
+      expect(hy3Budget.endpointHost).toBe("opencode.ai");
+    } finally {
+      if (prevUrl === undefined) delete process.env.OPENAI_COMPAT_BASE_URL; else process.env.OPENAI_COMPAT_BASE_URL = prevUrl;
+      if (prevModel === undefined) delete process.env.OPENAI_COMPAT_MODEL; else process.env.OPENAI_COMPAT_MODEL = prevModel;
+    }
+  });
+
+  it("does not list an unconfigured openai-compatible model", async () => {
+    const prevUrl = process.env.OPENAI_COMPAT_BASE_URL;
+    const prevModel = process.env.OPENAI_COMPAT_MODEL;
+    delete process.env.OPENAI_COMPAT_BASE_URL;
+    delete process.env.OPENAI_COMPAT_MODEL;
+    try {
+      const models = (await json("GET", "/api/models")).body;
+      expect(models.some((m: any) => m.model.providerId === "openai-compatible")).toBe(false);
+    } finally {
+      if (prevUrl !== undefined) process.env.OPENAI_COMPAT_BASE_URL = prevUrl;
+      if (prevModel !== undefined) process.env.OPENAI_COMPAT_MODEL = prevModel;
+    }
+  });
+
   it("resolves a canonical model budget per model without crashing on unconfigured providers", async () => {
     const prev = process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;

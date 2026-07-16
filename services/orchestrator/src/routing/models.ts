@@ -1,4 +1,4 @@
-import type { ModelInfo, ProviderId, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
+import type { ModelInfo, ProviderId, ProviderStatus, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
 
 type Pricing = NonNullable<ModelInfo["pricing"]>;
 
@@ -120,7 +120,7 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   model("ollama", "phi3", "Phi-3 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
 ];
 
-function unknownModel(providerId: string, id: string): ModelInfo {
+export function unknownModel(providerId: string, id: string): ModelInfo {
   return {
     version: 1,
     id,
@@ -173,6 +173,22 @@ export function getModel(id: string): ModelInfo | undefined {
 
 export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
   return BUILT_IN_MODELS.filter((m) => m.providerId === providerId);
+}
+
+/**
+ * Synthesized entries for configured "bring your own model" providers (today:
+ * openai-compatible) that have zero built-in registry rows because their
+ * model space cannot be known in advance. Without this, a correctly
+ * configured openai-compatible endpoint never appears in `/api/models` or the
+ * `/model` picker — the registry has nothing to return for it at all, unlike
+ * providers with real registry entries where "not configured" still lists the
+ * model as unavailable. Providers that already have registry entries are
+ * untouched; a provider with no configured default model yields nothing.
+ */
+export function listConfiguredCustomModels(providers: ProviderStatus[]): ModelInfo[] {
+  return providers
+    .filter((p) => p.configured && p.defaultModel && listModelsForProvider(p.id).length === 0)
+    .map((p) => unknownModel(p.id, p.defaultModel!));
 }
 
 export interface UsageForCost {

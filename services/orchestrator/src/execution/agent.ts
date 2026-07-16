@@ -2657,13 +2657,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             event("workspace.inspected", { kind: "git_log", resultCount: result.commits.length, truncated: result.truncated || result.timedOut });
           } else if (tc.name === "run_command") {
             const exec = args.executable;
-            const cmdArgs = args.args || [];
+            const rawArgs = args.args;
             const cmdCwd = args.cwd || "";
             const purpose = args.purpose || "";
 
             if (typeof exec !== "string") {
               throw new Error("Missing required argument: executable");
             }
+            // A model can violate the declared `args: string[]` schema (e.g. send
+            // a single space-joined string instead of an array). Reject that with
+            // a clear, retryable tool error here rather than crashing later inside
+            // command-policy's `args.map(...)` with an opaque host-side TypeError.
+            if (rawArgs !== undefined && (!Array.isArray(rawArgs) || !rawArgs.every((a) => typeof a === "string"))) {
+              throw new Error(`Invalid argument: "args" must be an array of strings, got ${JSON.stringify(rawArgs)}`);
+            }
+            const cmdArgs: string[] = rawArgs ?? [];
 
             // Command risk classification
             const policy = classifyCommand(exec, cmdArgs);
