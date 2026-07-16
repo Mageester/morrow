@@ -130,10 +130,10 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels, listConfiguredCustomModels, resolveReasoningCapability } from "./routing/models.js";
+import { listModels, listConfiguredCustomModels, resolveModelMetadata, resolveReasoningCapability } from "./routing/models.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
-import { testProviderConnectivity } from "./provider/connectivity.js";
+import { discoverProviderModels, testProviderConnectivity } from "./provider/connectivity.js";
 import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
@@ -2184,12 +2184,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     });
   });
 
-  // Built-in model registry with availability derived from configured providers.
+  // Resolve picker rows from the exact authenticated provider surface. The
+  // bundled catalog contributes metadata only; it never claims account access.
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
     const configured = new Set(statuses.filter((s) => s.configured).map((s) => s.id));
-    const models = [...listModels(), ...listConfiguredCustomModels(statuses)];
-    return models.map((model) => ({ model, available: configured.has(model.providerId) }));
+    const discovered = (await Promise.all(statuses.filter((status) => status.configured).map((status) => discoverProviderModels(status.id)))).flat();
+    const discoveredProviders = new Set(discovered.map((model) => model.providerId));
+    const discoveredCanonical = new Set(discovered.map((model) => `${model.providerId}:${resolveModelMetadata(model.providerId, model.providerModelId).canonicalId}`));
+    const baseline = [...listModels(), ...listConfiguredCustomModels(statuses)];
+    const discoveredModels = discovered.map((discovery) => {
+      const resolved = resolveModelMetadata(discovery.providerId, discovery.providerModelId);
+      return { ...resolved, id: discovery.providerModelId };
+    });
+    const unique = new Map<string, typeof baseline[number]>();
+    for (const model of [...baseline, ...discoveredModels]) unique.set(`${model.providerId}:${model.canonicalId}`, model);
+    return [...unique.values()].map((model) => ({ model, available: configured.has(model.providerId) && (!discoveredProviders.has(model.providerId) || discoveredCanonical.has(`${model.providerId}:${model.canonicalId}`)) }));
   });
 
   /**
@@ -2205,7 +2215,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/models/budgets", async () => {
     const budgetStatuses = listProviderStatuses();
     const configuredIds = new Set(budgetStatuses.filter((s) => s.configured).map((s) => s.id));
-    const budgetModels = [...listModels(), ...listConfiguredCustomModels(budgetStatuses)];
+    const discovered = (await Promise.all(budgetStatuses.filter((status) => status.configured).map((status) => discoverProviderModels(status.id)))).flat();
+    const baseline = [...listModels(), ...listConfiguredCustomModels(budgetStatuses)];
+    const uniqueBudgetModels = new Map<string, typeof baseline[number]>();
+    for (const model of [...baseline, ...discovered.map((item) => ({ ...resolveModelMetadata(item.providerId, item.providerModelId), id: item.providerModelId }))]) {
+      uniqueBudgetModels.set(`${model.providerId}:${model.canonicalId}`, model);
+    }
+    const budgetModels = [...uniqueBudgetModels.values()];
     return budgetModels.map((model): unknown => {
       const configured = configuredIds.has(model.providerId);
       let route: ProviderRouteMetadata;

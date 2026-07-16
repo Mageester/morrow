@@ -15,6 +15,7 @@ export interface EffectiveContextInput {
   selectedModel: string;
   endpoint: EffectiveContextEndpointInput;
   outputReserveTokens: number;
+  /** Kept for API compatibility; it is never promoted to a provider limit. */
   fallbackLimitTokens?: number;
 }
 
@@ -29,14 +30,12 @@ export interface EffectiveContextResolution {
   advertisedModelCapacitySource: ContextLimitSource;
   configuredEndpointLimitTokens: number | null;
   endpointLimitSource: ContextLimitSource;
-  effectiveRequestLimitTokens: number;
+  effectiveRequestLimitTokens: number | null;
   effectiveLimitSource: ContextLimitSource;
   outputReserveTokens: number;
-  maximumInputTokens: number;
+  maximumInputTokens: number | null;
   fallbackLimitTokens: number | null;
 }
-
-const DEFAULT_SAFE_FALLBACK_TOKENS = 32_768;
 
 export function providerRouteFingerprint(input: {
   providerId: string;
@@ -65,15 +64,14 @@ function positiveInteger(value: number | null | undefined, label: string): numbe
 
 /**
  * Resolve the request ceiling for the exact provider route. Publicly unknown
- * capacities remain null; the labelled conservative fallback is only the
- * internal admission ceiling when neither route nor model has a verified value.
+ * capacities remain null. An internal convenience value must never become a
+ * provider admission ceiling.
  */
 export function resolveEffectiveContext(input: EffectiveContextInput): EffectiveContextResolution {
   const metadata = resolveModelMetadata(input.providerId, input.selectedModel);
   const advertised = positiveInteger(metadata.contextWindow, "model context capacity");
   const endpointLimit = positiveInteger(input.endpoint.limitTokens, "endpoint context limit");
   const outputReserveTokens = positiveInteger(input.outputReserveTokens, "output reserve") ?? 0;
-  const fallback = positiveInteger(input.fallbackLimitTokens ?? DEFAULT_SAFE_FALLBACK_TOKENS, "fallback context limit")!;
 
   const candidates: Array<{ tokens: number; source: ContextLimitSource }> = [];
   if (advertised !== null) candidates.push({ tokens: advertised, source: "model-metadata" });
@@ -81,12 +79,11 @@ export function resolveEffectiveContext(input: EffectiveContextInput): Effective
 
   // A custom/injected route with no verified endpoint ceiling must not inherit
   // marketing metadata from a model served by some other route.
-  if (endpointLimit === null && input.endpoint.kind !== "default") {
+  if (endpointLimit === null && input.endpoint.kind !== "default" && input.providerId !== "mock" && input.providerId !== "deterministic-local") {
     candidates.length = 0;
   }
-  if (candidates.length === 0) candidates.push({ tokens: fallback, source: "fallback" });
-  const effective = candidates.reduce((smallest, candidate) => candidate.tokens < smallest.tokens ? candidate : smallest);
-  if (outputReserveTokens >= effective.tokens) {
+  const effective = candidates.length ? candidates.reduce((smallest, candidate) => candidate.tokens < smallest.tokens ? candidate : smallest) : null;
+  if (effective && outputReserveTokens >= effective.tokens) {
     throw new Error(`Output reserve (${outputReserveTokens}) must be smaller than effective context limit (${effective.tokens})`);
   }
 
@@ -101,10 +98,10 @@ export function resolveEffectiveContext(input: EffectiveContextInput): Effective
     advertisedModelCapacitySource: advertised === null ? "unknown" : "model-metadata",
     configuredEndpointLimitTokens: endpointLimit,
     endpointLimitSource: endpointLimit === null ? "unknown" : input.endpoint.limitSource,
-    effectiveRequestLimitTokens: effective.tokens,
-    effectiveLimitSource: effective.source,
+    effectiveRequestLimitTokens: effective?.tokens ?? null,
+    effectiveLimitSource: effective?.source ?? "unknown",
     outputReserveTokens,
-    maximumInputTokens: effective.tokens - outputReserveTokens,
-    fallbackLimitTokens: effective.source === "fallback" ? fallback : null,
+    maximumInputTokens: effective ? effective.tokens - outputReserveTokens : null,
+    fallbackLimitTokens: null,
   };
 }

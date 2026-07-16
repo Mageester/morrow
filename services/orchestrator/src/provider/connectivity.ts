@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderTestResult } from "@morrow/contracts";
+import type { ModelAuthMode, ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
@@ -61,19 +61,18 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-function sampleModels(json: unknown): string[] {
+function modelIds(json: unknown): string[] {
   try {
     const anyJson = json as any;
     // OpenAI-style: { data: [{ id }] }
     if (Array.isArray(anyJson?.data)) {
-      return anyJson.data.map((m: any) => m?.id).filter((x: unknown) => typeof x === "string").slice(0, 5);
+      return anyJson.data.map((m: any) => m?.id).filter((x: unknown) => typeof x === "string");
     }
     // Anthropic: { data: [{ id }] } (covered above). Gemini: { models: [{ name }] }
     if (Array.isArray(anyJson?.models)) {
       return anyJson.models
         .map((m: any) => (typeof m?.name === "string" ? m.name.replace(/^models\//, "") : m?.id))
         .filter((x: unknown) => typeof x === "string")
-        .slice(0, 5);
     }
   } catch {
     /* ignore shape errors — sampling is best-effort */
@@ -81,11 +80,25 @@ function sampleModels(json: unknown): string[] {
   return [];
 }
 
+function sampleModels(json: unknown): string[] {
+  return modelIds(json).slice(0, 5);
+}
+
 interface PlannedRequest {
   url: string;
   headers: Record<string, string>;
   host: string | null;
 }
+
+export interface DiscoveredProviderModel {
+  providerId: ProviderId;
+  authMode: ModelAuthMode;
+  providerModelId: string;
+  discoveredAt: string;
+}
+
+const discoveryCache = new Map<string, { expiresAt: number; models: DiscoveredProviderModel[] }>();
+const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
 
 function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
   switch (id) {
@@ -142,6 +155,39 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       return { configured: true };
     default:
       return { configured: false, reason: `Unknown provider: ${id}` };
+  }
+}
+
+/**
+ * Return model IDs exposed by the exact authenticated provider surface. The
+ * result deliberately carries no credentials or endpoint URL and is cached in
+ * memory only. A failed discovery returns no assertion of availability.
+ */
+export async function discoverProviderModels(id: ProviderId, env: ProviderEnv = process.env, timeoutMs = 1500): Promise<DiscoveredProviderModel[]> {
+  const plan = planRequest(id, env);
+  if (!plan.configured || !plan.request) return [];
+  const authMode: ModelAuthMode = id === "openai" && getStoredAccessTokenSync("openai", env)
+    ? "codex-oauth"
+    : id === "ollama" ? "local"
+      : id === "openai-compatible" ? "custom"
+        : "api-key";
+  const cacheKey = `${id}:${authMode}:${plan.request.host ?? "unknown"}`;
+  const cached = discoveryCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.models;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(plan.request.url, { method: "GET", headers: plan.request.headers, signal: controller.signal });
+    const body = await readBoundedJson(response);
+    if (!response.ok) return [];
+    const discoveredAt = new Date().toISOString();
+    const models = [...new Set(modelIds(body))].map((providerModelId) => ({ providerId: id, authMode, providerModelId, discoveredAt }));
+    discoveryCache.set(cacheKey, { expiresAt: Date.now() + DISCOVERY_TTL_MS, models });
+    return models;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
 

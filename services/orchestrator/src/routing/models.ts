@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderId, ProviderStatus, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
+import { BUNDLED_CATALOG, resolveBundledDescriptor } from "../model-catalog/catalog.js";
 
 type Pricing = NonNullable<ModelInfo["pricing"]>;
 
@@ -83,6 +84,10 @@ const freeLocal: Pricing = {
 };
 
 export const BUILT_IN_MODELS: ModelInfo[] = [
+  // Deterministic in-process test transport. Its fixed envelope is part of the
+  // implementation, not inferred provider metadata.
+  model("mock", "mock-model", "Mock model", { contextWindow: 128000, maxOutputTokens: 4096, tokenUsage: false, streamingUsage: false, speed: "fast", cost: "free", privacy: "local" }),
+
   // OpenAI (reasoning models expose discrete effort levels via reasoning_effort)
   model("openai", "gpt-5.5", "GPT-5.5", { aliases: ["gpt5.5"], vision: true, speed: "powerful", cost: "high", reasoning: effort() }),
   model("openai", "gpt-5.4", "GPT-5.4", { aliases: ["gpt5.4"], vision: true, speed: "powerful", cost: "medium", reasoning: effort() }),
@@ -145,7 +150,7 @@ export function unknownModel(providerId: string, id: string): ModelInfo {
 }
 
 export function listModels(): ModelInfo[] {
-  return BUILT_IN_MODELS;
+  return [...BUILT_IN_MODELS, ...BUNDLED_CATALOG.models.map((model) => resolveModelMetadata(model.providerId, model.providerModelId))];
 }
 
 /**
@@ -160,6 +165,37 @@ export function resolveReasoningCapability(providerId: string, id: string): Rout
 
 export function resolveModelMetadata(providerId: string, id: string): ModelInfo {
   const normalized = id.trim();
+  const catalog = resolveBundledDescriptor(providerId, normalized);
+  if (catalog) {
+    return {
+      version: 1,
+      id: catalog.providerModelId,
+      canonicalId: catalog.canonicalModelId,
+      aliases: catalog.aliases,
+      providerId: catalog.providerId,
+      label: catalog.displayName,
+      contextWindow: catalog.contextWindowTokens,
+      maxOutputTokens: catalog.maxOutputTokens,
+      pricing: catalog.pricing,
+      tokenUsage: false,
+      streamingUsage: false,
+      capabilities: {
+        streaming: catalog.capabilities.streaming ?? false,
+        toolCalls: catalog.capabilities.toolCalls ?? false,
+        vision: catalog.capabilities.imageInput ?? false,
+      },
+      speedClass: "unknown",
+      costClass: "unknown",
+      privacy: "remote",
+      builtIn: true,
+      reasoning: {
+        control: catalog.supportedReasoningEfforts.length ? "effort" : "none",
+        efforts: catalog.supportedReasoningEfforts,
+        budgets: [],
+        source: "registry",
+      },
+    };
+  }
   const exact = BUILT_IN_MODELS.find((m) => m.providerId === providerId && m.id === normalized);
   if (exact) return exact;
   const alias = BUILT_IN_MODELS.find((m) => m.providerId === providerId && m.aliases.includes(normalized));
@@ -168,11 +204,14 @@ export function resolveModelMetadata(providerId: string, id: string): ModelInfo 
 }
 
 export function getModel(id: string): ModelInfo | undefined {
-  return BUILT_IN_MODELS.find((m) => m.id === id || m.aliases.includes(id));
+  return BUILT_IN_MODELS.find((m) => m.id === id || m.aliases.includes(id))
+    ?? BUNDLED_CATALOG.models.map((model) => resolveModelMetadata(model.providerId, model.providerModelId)).find((model) => model.id === id || model.aliases.includes(id));
 }
 
 export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
-  return BUILT_IN_MODELS.filter((m) => m.providerId === providerId);
+  return [...BUILT_IN_MODELS.filter((m) => m.providerId === providerId), ...BUNDLED_CATALOG.models
+    .filter((model) => model.providerId === providerId)
+    .map((model) => resolveModelMetadata(model.providerId, model.providerModelId))];
 }
 
 /**

@@ -80,6 +80,7 @@ describe("reasoning: real send → execution → wire-body pipeline (HTTP)", () 
     tempHome = mkdtempSync(join(tmpdir(), "morrow-reasoning-home-"));
     process.env.MORROW_HOME = tempHome; // isolate from any real stored OAuth token
     process.env.OPENAI_API_KEY = "sk-test-reasoning-pipeline";
+    process.env.OPENAI_CONTEXT_LIMIT = "128000";
     process.env.ANTHROPIC_API_KEY = "sk-ant-test-reasoning-pipeline";
     process.env.DEEPSEEK_API_KEY = "sk-deepseek-test-reasoning-pipeline"; // configured so the rejection test fails on reasoning, not on an unconfigured provider
     db = openDatabase(":memory:");
@@ -201,6 +202,8 @@ describe("reasoning: real send → execution → wire-body pipeline (HTTP)", () 
  *  the same fixture agent-fallback.test.ts uses. */
 function throwingProvider(message: string): AiProvider {
   return {
+    id: "openai",
+    route: { providerId: "openai", protocol: "openai-chat", endpointKind: "default", endpointHost: "test.invalid", endpointLimitTokens: 128000, endpointLimitSource: "provider-metadata" },
     async *streamChat(): AsyncIterable<ProviderChunk> {
       throw new Error(message);
     },
@@ -211,6 +214,7 @@ function throwingProvider(message: string): AiProvider {
 function capturingProvider(id: string, capture: { options: StreamOptions | null }): AiProvider {
   return {
     id,
+    route: { providerId: id, protocol: "openai-chat", endpointKind: "default", endpointHost: "test.invalid", endpointLimitTokens: 128000, endpointLimitSource: "provider-metadata" },
     async *streamChat(_messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
       capture.options = options;
       yield { type: "text", text: "answer via fallback" };

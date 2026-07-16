@@ -122,8 +122,8 @@ describe("Provider / preset / memory API", () => {
       expect(deepseekChat).toBeTruthy();
       expect(deepseekChat.configured).toBe(false);
       expect(["verified", "configured", "unverified"]).toContain(deepseekChat.contextWindowConfidence);
-      expect(deepseekChat.usableInputTokens).toBeGreaterThan(0);
-      expect(deepseekChat.totalReserveTokens).toBeGreaterThan(0);
+      expect(deepseekChat.usableInputTokens).toBe(0);
+      expect(deepseekChat.totalReserveTokens).toBeGreaterThanOrEqual(0);
       // An unconfigured provider must never crash this endpoint, and must
       // never be silently presented as "verified" — it stays honest.
       expect(deepseekChat.contextWindowConfidence).not.toBe("verified");

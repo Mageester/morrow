@@ -29,8 +29,10 @@ describe("canonical model budget (single source of truth)", () => {
       presetContextBudgetBytes: 524288,
       outputBudgetTokens: 2048,
     });
-    expect(budget.contextWindowSource).toBe("fallback");
+    expect(budget.contextWindowSource).toBe("unknown");
     expect(budget.contextWindowConfidence).toBe("unverified");
+    expect(budget.contextWindowTokens).toBe(0);
+    expect(budget.usableInputTokens).toBe(0);
   });
 
   it("resolves aliases to the canonical model while preserving the selection and display name", () => {

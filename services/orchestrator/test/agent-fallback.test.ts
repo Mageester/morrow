@@ -15,6 +15,8 @@ import type { AiProvider, ProviderChunk } from "../src/provider/base.js";
 /** A provider that always fails to start with a retryable transport error. */
 function throwingProvider(message: string): AiProvider {
   return {
+    id: "mock",
+    route: { providerId: "mock", protocol: "mock", endpointKind: "default", endpointHost: null, endpointLimitTokens: 128000, endpointLimitSource: "provider-metadata" },
     // eslint-disable-next-line require-yield
     async *streamChat(): AsyncIterable<ProviderChunk> {
       throw new Error(message);
@@ -46,6 +48,7 @@ describe("agent live provider fallback", () => {
   it("completes via the fallback provider when the primary fails to start, and records the fallback", async () => {
     const secondary = new MockProvider({ chunks: [[{ type: "text", text: "answer via fallback" }, { type: "done" }]] });
     (secondary as unknown as { id: string }).id = "secondary";
+    (secondary as unknown as { route: unknown }).route = { providerId: "secondary", protocol: "mock", endpointKind: "default", endpointHost: null, endpointLimitTokens: 128000, endpointLimitSource: "provider-metadata" };
 
     await executeAgentChatTask({
       db,

@@ -23,6 +23,19 @@ function providerStatus(overrides: Partial<ProviderStatus>): ProviderStatus {
 }
 
 describe("authoritative model metadata", () => {
+  it("resolves GPT-5.6 Sol as the canonical Codex OAuth model", () => {
+    const meta = resolveModelMetadata("openai", "gpt-5.6");
+    expect(meta.canonicalId).toBe("gpt-5.6-sol");
+    expect(meta.contextWindow).toBe(1_050_000);
+    expect(meta.maxOutputTokens).toBe(128_000);
+    expect(meta.reasoning?.efforts).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("resolves GPT-5.6 Terra and Luna without duplicating Sol aliases", () => {
+    expect(resolveModelMetadata("openai", "gpt-5.6-terra").canonicalId).toBe("gpt-5.6-terra");
+    expect(resolveModelMetadata("openai", "gpt-5.6-luna").canonicalId).toBe("gpt-5.6-luna");
+  });
+
   it("knows the DeepSeek Flash context limit and usage capabilities", () => {
     const meta = resolveModelMetadata("deepseek", "deepseek-v4-flash");
     expect(meta?.canonicalId).toBe("deepseek-v4-flash");

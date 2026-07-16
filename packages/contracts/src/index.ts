@@ -102,7 +102,7 @@ export const ModelCapabilitiesSchema=z.object({
 // it into that provider's real request format (see the orchestrator's
 // translateReasoning). `RouteReasoningCapability` describes what a specific
 // route actually exposes, with explicit provenance — never a guess.
-export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+export const ReasoningEffortSchema=z.enum(["none","low","medium","high","xhigh","max"]);
 /**
  * How a route exposes reasoning control:
  *   "none"   — the route has no reasoning controls (Not configurable);
@@ -166,6 +166,26 @@ export const ModelInfoSchema=z.object({
 export const ModelStatusSchema=z.object({
   model:ModelInfoSchema,
   available:z.boolean(),
+}).strict();
+
+/** Stable, provider/auth-surface-aware model identity and metadata. */
+export const ModelAuthModeSchema=z.enum(["api-key","codex-oauth","oauth","local","custom","unknown"]);
+export const ModelLifecycleSchema=z.enum(["current","preview","legacy","deprecated","unavailable","custom"]);
+export const ModelMetadataConfidenceSchema=z.enum(["authoritative","provider-reported","curated","user-supplied","unknown"]);
+export const ModelDescriptorSchema=z.object({
+  providerId:ProviderIdSchema,
+  authMode:ModelAuthModeSchema,
+  canonicalModelId:z.string().min(1),
+  providerModelId:z.string().min(1),
+  aliases:z.array(z.string()),
+  displayName:z.string().min(1),
+  family:z.string().nullable(), generation:z.string().nullable(), lifecycle:ModelLifecycleSchema,
+  available:z.boolean(), availabilitySource:z.enum(["provider-discovery","configured","catalog","unknown"]),
+  contextWindowTokens:z.number().int().positive().nullable(), maxOutputTokens:z.number().int().positive().nullable(),
+  usableInputTokens:z.number().int().nonnegative().nullable(), outputReserveTokens:z.number().int().nonnegative().nullable(), totalReserveTokens:z.number().int().nonnegative().nullable(),
+  supportedReasoningEfforts:z.array(ReasoningEffortSchema), defaultReasoningEffort:ReasoningEffortSchema.nullable(),
+  capabilities:z.object({textInput:z.boolean().nullable(),imageInput:z.boolean().nullable(),textOutput:z.boolean().nullable(),toolCalls:z.boolean().nullable(),streaming:z.boolean().nullable(),structuredOutput:z.boolean().nullable(),reasoning:z.boolean().nullable()}).strict(),
+  pricing:ModelPricingSchema.nullable(), metadataSource:z.string().nullable(), metadataSourceVersion:z.string().nullable(), metadataFetchedAt:z.string().datetime().nullable(), confidence:ModelMetadataConfidenceSchema,
 }).strict();
 
 /**
@@ -500,6 +520,9 @@ export type ModelStatus=z.infer<typeof ModelStatusSchema>;
 export type ModelBudgetConfidence=z.infer<typeof ModelBudgetConfidenceSchema>;
 export type ModelBudgetView=z.infer<typeof ModelBudgetViewSchema>;
 export type ModelCapabilities=z.infer<typeof ModelCapabilitiesSchema>;
+export type ModelDescriptor=z.infer<typeof ModelDescriptorSchema>;
+export type ModelAuthMode=z.infer<typeof ModelAuthModeSchema>;
+export type ModelLifecycle=z.infer<typeof ModelLifecycleSchema>;
 export type ReasoningEffort=z.infer<typeof ReasoningEffortSchema>;
 export type ReasoningControl=z.infer<typeof ReasoningControlSchema>;
 export type ReasoningSource=z.infer<typeof ReasoningSourceSchema>;

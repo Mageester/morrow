@@ -47,7 +47,7 @@ describe("route-aware effective context", () => {
     expect(resolved.maximumInputTokens).toBe(61_440);
   });
 
-  it("keeps unknown capacities unknown while using a labelled safe fallback", () => {
+  it("keeps unknown capacities unknown without inventing an admission limit", () => {
     const resolved = resolveEffectiveContext({
       providerId: "openai-compatible",
       selectedModel: "unknown-model",
@@ -59,14 +59,13 @@ describe("route-aware effective context", () => {
         limitSource: "unknown",
       },
       outputReserveTokens: 2_048,
-      fallbackLimitTokens: 32_768,
     });
 
     expect(resolved.advertisedModelCapacityTokens).toBeNull();
     expect(resolved.configuredEndpointLimitTokens).toBeNull();
-    expect(resolved.effectiveRequestLimitTokens).toBe(32_768);
-    expect(resolved.effectiveLimitSource).toBe("fallback");
-    expect(resolved.maximumInputTokens).toBe(30_720);
+    expect(resolved.effectiveRequestLimitTokens).toBeNull();
+    expect(resolved.effectiveLimitSource).toBe("unknown");
+    expect(resolved.maximumInputTokens).toBeNull();
   });
 
   it("resolves aliases to the canonical model while preserving the selection", () => {

@@ -91,7 +91,9 @@ export function resolveModelBudget(input: {
     ...(input.fallbackLimitTokens !== undefined ? { fallbackLimitTokens: input.fallbackLimitTokens } : {}),
   });
 
-  const contextWindowTokens = input.userContextWindowTokens ?? effective.effectiveRequestLimitTokens;
+  // Zero is the established public representation for unknown capacity. It is
+  // never admitted as a provider limit: usable input is also zero.
+  const contextWindowTokens = input.userContextWindowTokens ?? effective.effectiveRequestLimitTokens ?? 0;
   const contextWindowSource: ContextLimitSource = input.userContextWindowTokens
     ? "endpoint-override"
     : effective.effectiveLimitSource;
@@ -105,16 +107,16 @@ export function resolveModelBudget(input: {
           : "verified"; // "model-metadata" | "provider-metadata"
 
   const outputReserveTokens = input.outputBudgetTokens ?? 2048;
-  const safetyMarginTokens = input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));
+  const safetyMarginTokens = contextWindowTokens === 0 ? 0 : input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));
   const toolReserveTokens = (input.toolCount ?? 0) * 256;
   const framingReserveTokens = 512;
   const totalReserveTokens = outputReserveTokens + safetyMarginTokens + toolReserveTokens + framingReserveTokens;
 
-  const usableInputTokens = Math.max(1, contextWindowTokens - totalReserveTokens);
+  const usableInputTokens = Math.max(0, contextWindowTokens - totalReserveTokens);
   const presetBudget = input.presetContextBudgetBytes !== undefined
-    ? Math.max(1, Math.floor(input.presetContextBudgetBytes / 4))
+    ? Math.max(0, Math.floor(input.presetContextBudgetBytes / 4))
     : usableInputTokens;
-  const compactionTargetTokens = Math.max(1, Math.min(presetBudget, usableInputTokens));
+  const compactionTargetTokens = Math.max(0, Math.min(presetBudget, usableInputTokens));
 
   return {
     providerId: input.providerId,
