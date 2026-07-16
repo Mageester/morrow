@@ -297,13 +297,15 @@ export async function exchangeCode(
   if (state && state !== pend.state) {
     throw new Error("State mismatch — the authorization response does not match the request. Start again.");
   }
+  // `state` is a callback-CSRF check (already verified above); it is not part
+  // of the OAuth2 token-exchange request. Sending it anyway made every real
+  // sign-in fail — OpenAI's token endpoint rejects unrecognized parameters.
   const token = await postToken(cfg, {
     grant_type: "authorization_code",
     code,
     redirect_uri: cfg.redirectUri,
     client_id: cfg.clientId,
     code_verifier: pend.verifier,
-    ...(state ? { state } : {}),
   });
   if (!token.accessToken) throw new Error("Token endpoint did not return an access token.");
   const store = readTokenStore(env);
