@@ -25,7 +25,7 @@ export class OpenAiProvider implements AiProvider {
       id: "openai",
       apiKey,
       baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-      defaultModel: options.model || "gpt-5.4-mini",
+      defaultModel: options.model || "gpt-5.6-sol",
       includeUsage: true,
     });
 

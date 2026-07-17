@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel } from "../src/provider/registry.js";
+import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
 import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
 import { listModels } from "../src/routing/models.js";
@@ -106,8 +106,8 @@ describe("Provider registry", () => {
   });
 
   it("exposes default models for known providers", () => {
-    expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.4-mini");
-    expect(getProviderDefaultModel("anthropic", {})).toBe("claude-3-5-sonnet-20241022");
+    expect(getProviderDefaultModel("openai", {})).toBe("gpt-5.6-sol");
+    expect(getProviderDefaultModel("anthropic", {})).toBe("claude-opus-4-8");
     expect(getProviderDefaultModel("deepseek", {})).toBe("deepseek-v4-flash");
     expect(getProviderDefaultModel("openrouter", {})).toBe("openrouter/auto");
   });
@@ -120,7 +120,7 @@ describe("Preset router", () => {
     if (res.ok) {
       expect(res.decision.providerId).toBe("openai");
       expect(res.decision.fallbackUsed).toBe(false);
-      expect(res.decision.model).toBe("gpt-5.4-mini");
+      expect(res.decision.model).toBe("gpt-5.6-terra");
     }
   });
 
@@ -138,6 +138,30 @@ describe("Preset router", () => {
     const res = routePreset("balanced", {});
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toContain("no configured provider");
+  });
+
+  it("does not route to an arbitrary account model when no reviewed preset preference is available", () => {
+    installProviderModelDiscoveries([{
+      providerId: "openai",
+      authMode: "openai-api-key",
+      status: "available",
+      models: [{
+        providerModelId: "account-legacy-only",
+        displayName: "Account Legacy Only",
+        contextWindow: null,
+        maxOutputTokens: null,
+        capabilities: { streaming: null, toolCalls: null, vision: null },
+        metadataSource: "provider-reported",
+      }],
+      errorKind: null,
+      fetchedAt: "2026-07-16T20:00:00.000Z",
+    }]);
+    try {
+      const result = routePreset("balanced", { OPENAI_API_KEY: "k" });
+      expect(result.ok).toBe(false);
+    } finally {
+      installProviderModelDiscoveries([]);
+    }
   });
 
   it("only routes private-local to a local provider", () => {

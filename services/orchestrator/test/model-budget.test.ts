@@ -7,17 +7,17 @@ describe("canonical model budget (single source of truth)", () => {
   it("resolves verified model capacity and derives one usable-input number", () => {
     const budget = resolveModelBudget({
       providerId: "anthropic",
-      selectedModel: "claude-3-5-sonnet-20241022",
+      selectedModel: "claude-sonnet-5",
       endpoint: { kind: "default", host: null, protocol: "anthropic-messages", limitTokens: null, limitSource: "unknown" },
       presetContextBudgetBytes: 786432,
       outputBudgetTokens: 4096,
       toolCount: 3,
     });
-    expect(budget.contextWindowTokens).toBe(200000);
+    expect(budget.contextWindowTokens).toBe(1_000_000);
     expect(budget.contextWindowSource).toBe("model-metadata");
     expect(budget.contextWindowConfidence).toBe("verified");
     expect(budget.totalReserveTokens).toBeGreaterThan(4096);
-    expect(budget.usableInputTokens).toBeLessThan(200000);
+    expect(budget.usableInputTokens).toBeLessThan(1_000_000);
     expect(budget.usableInputTokens).toBeGreaterThan(0);
   });
 

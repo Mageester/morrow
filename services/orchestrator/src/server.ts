@@ -20,6 +20,7 @@ import {
   PatchConventionSchema,
   type PresetId,
   type ProviderId,
+  type ProviderAuthMode,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -101,6 +102,7 @@ import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { missionsRepository } from "./repositories/missions.js";
 import { missionRuntimeRepository } from "./repositories/mission-runtime.js";
+import { providerModelDiscoveryRepository } from "./repositories/provider-model-discovery.js";
 import { MissionService, MissionError } from "./mission/service.js";
 import { ensureCortexSpecialistAgents } from "./mission/specialists.js";
 import { buildMissionCompletion } from "./mission/completion.js";
@@ -125,12 +127,13 @@ import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-polic
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createProvider, listProviderStatuses } from "./provider/registry.js";
+import { createProvider, installProviderModelDiscoveries, listProviderStatuses } from "./provider/registry.js";
 import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels, listConfiguredCustomModels } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -186,6 +189,11 @@ export type ServerDependencies = {
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
+  modelCatalog?: ModelCatalog;
+  /** Injectable account-model discovery transport for deterministic tests. */
+  providerConnectivityTest?: typeof testProviderConnectivity;
+  /** Defaults on outside tests; discovery failures never block server startup. */
+  backgroundModelDiscovery?: boolean;
   /** Injectable so the diagnostics route is fast and deterministic in tests. */
   diagnosticsRunner?: DiagnosticsRunner;
   /** Injectable messaging adapters; defaults to env-configured ones. */
@@ -236,6 +244,38 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const checkpoints = checkpointsRepository(deps.db);
   const missions = missionsRepository(deps.db);
   const missionRuntime = missionRuntimeRepository(deps.db);
+  const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
+  installProviderModelDiscoveries(providerModelDiscovery.list());
+  const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
+  const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
+    const result = await providerConnectivityTest(providerId, process.env);
+    const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
+    if (authMode) {
+      providerModelDiscovery.upsert({
+        providerId,
+        authMode,
+        status: result.ok ? "available" : "unavailable",
+        models: result.models,
+        errorKind: result.errorKind,
+        fetchedAt: new Date().toISOString(),
+      });
+      installProviderModelDiscoveries(providerModelDiscovery.list());
+    }
+    return result;
+  };
+  if (deps.backgroundModelDiscovery ?? process.env.NODE_ENV !== "test") {
+    const configured = listProviderStatuses().filter((status) => status.configured && status.authMode && status.id !== "mock");
+    queueMicrotask(() => {
+      void Promise.allSettled(configured.map((status) => refreshProviderModelDiscovery(status.id, status.authMode)));
+    });
+  }
+  const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
+    cacheDir: join(resolveMorrowHome(process.env), "catalog"),
+    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+    bundledModels: BUILT_IN_MODELS,
+  });
+  installModelCatalog(modelCatalog.current().models);
+  void modelCatalog.refresh().then((snapshot) => installModelCatalog(snapshot.models)).catch(() => undefined);
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -1986,7 +2026,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { providerId } = request.params as { providerId: string };
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
-    return testProviderConnectivity(parsed.data, process.env);
+    return refreshProviderModelDiscovery(parsed.data);
   });
 
   // Save provider credentials from the app (no PowerShell / env vars / restart).
@@ -2100,9 +2140,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // Built-in model registry with availability derived from configured providers.
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
-    const configured = new Set(statuses.filter((s) => s.configured).map((s) => s.id));
-    const models = [...listModels(), ...listConfiguredCustomModels(statuses)];
-    return models.map((model) => ({ model, available: configured.has(model.providerId) }));
+    return resolveModelStatuses(statuses, providerModelDiscovery.list());
   });
 
   /**

@@ -16,8 +16,14 @@ function isLocal(id: ProviderId): boolean {
 
 function preferredModel(preset: Preset, providerId: ProviderId, env: ProviderEnv): string | null {
   const prefs = preset.modelPreferences[providerId] ?? [];
-  if (prefs.length) return prefs[0]!;
-  return getProviderDefaultModel(providerId, env);
+  const status = getProviderStatus(providerId, env);
+  const available = new Set(status?.models ?? []);
+  const preferred = prefs.find((model) => available.size === 0 || available.has(model));
+  // Once the active account surface supplied a model list, never substitute an
+  // arbitrary provider default that the preset did not recommend. This keeps
+  // automatic routing on reviewed/current choices and lets the next provider
+  // candidate take over honestly.
+  return preferred ?? (available.size === 0 ? getProviderDefaultModel(providerId, env) : null);
 }
 
 /**

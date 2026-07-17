@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderTestResult } from "@morrow/contracts";
+import type { DiscoveredModel, ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
@@ -61,20 +61,36 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-function sampleModels(json: unknown): string[] {
+function normalizeModels(json: unknown): DiscoveredModel[] {
   try {
     const anyJson = json as any;
-    // OpenAI-style: { data: [{ id }] }
-    if (Array.isArray(anyJson?.data)) {
-      return anyJson.data.map((m: any) => m?.id).filter((x: unknown) => typeof x === "string").slice(0, 5);
-    }
-    // Anthropic: { data: [{ id }] } (covered above). Gemini: { models: [{ name }] }
-    if (Array.isArray(anyJson?.models)) {
-      return anyJson.models
-        .map((m: any) => (typeof m?.name === "string" ? m.name.replace(/^models\//, "") : m?.id))
-        .filter((x: unknown) => typeof x === "string")
-        .slice(0, 5);
-    }
+    const rows: any[] = Array.isArray(anyJson?.data) ? anyJson.data : Array.isArray(anyJson?.models) ? anyJson.models : [];
+    return rows.slice(0, 500).flatMap((entry): DiscoveredModel[] => {
+      const id = typeof entry?.name === "string"
+        ? entry.name.replace(/^models\//, "")
+        : entry?.id ?? entry?.slug ?? entry?.model;
+      if (typeof id !== "string" || !id.trim()) return [];
+      const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
+      const reportedCapabilities = entry?.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {};
+      const reportedBoolean = (...values: unknown[]): boolean | null => {
+        const value = values.find((candidate) => typeof candidate === "boolean");
+        return typeof value === "boolean" ? value : null;
+      };
+      return [{
+        providerModelId: id,
+        displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
+        contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
+          .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens]
+          .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        capabilities: {
+          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming),
+          toolCalls: reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
+          vision: reportedBoolean(reportedCapabilities.vision),
+        },
+        metadataSource: "provider-reported",
+      }];
+    });
   } catch {
     /* ignore shape errors — sampling is best-effort */
   }
@@ -168,6 +184,7 @@ export async function testProviderConnectivity(
     detail: "",
     errorKind: null,
     modelsSample: [],
+    models: [],
   };
 
   const plan = planRequest(id, env);
@@ -188,7 +205,8 @@ export async function testProviderConnectivity(
     const latencyMs = Date.now() - startedAt;
     const body = await readBoundedJson(res);
     if (res.ok) {
-      return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: sampleModels(body) };
+      const models = normalizeModels(body);
+      return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
     }
     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
     return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };

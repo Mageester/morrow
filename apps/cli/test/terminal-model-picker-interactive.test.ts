@@ -9,6 +9,7 @@ import type { ModelStatus, ModelBudgetView, ProviderStatus } from "@morrow/contr
 import { reduceKey, initialInputState, type KeyContext } from "../src/terminal/input-state.js";
 import { buildModelPickerItems, filterModelItems, renderModelPicker, modelDetailLines } from "../src/terminal/model-picker.js";
 import { clipToWidth } from "../src/terminal/view.js";
+import { visibleModelsForAccount } from "../src/commands/models.js";
 
 /**
  * Deterministic acceptance coverage for the interactive /model picker
@@ -85,6 +86,43 @@ describe("model picker: real item construction and filtering", () => {
     expect(chat.available).toBe(false);
   });
 
+  it("shows only provider-proven available models by default while retaining an unavailable current pin", () => {
+    const available = model("openai", "gpt-live", "GPT Live", { lifecycle: "current" });
+    available.availability = "available";
+    available.authMode = "openai-api-key";
+    available.availabilitySource = "provider-reported";
+    const unavailable = model("openai", "gpt-retired", "GPT Retired", { lifecycle: "deprecated" }, false);
+    unavailable.availability = "unavailable";
+    unavailable.availabilitySource = "provider-reported";
+    unavailable.availabilityReason = "not returned by this account";
+    const unknown = model("anthropic", "claude-unknown", "Claude Unknown", {}, false);
+    unknown.availability = "unknown";
+    const legacy = model("openai", "gpt-legacy", "GPT Legacy", { lifecycle: "legacy" });
+    legacy.availability = "available";
+    const custom = model("openai", "account-custom", "Account Custom", { lifecycle: "custom" });
+    custom.availability = "available";
+
+    const defaultItems = buildModelPickerItems([unknown, unavailable, legacy, custom, available], [], [provider("openai", "gpt-live")]);
+    expect(defaultItems.map((item) => item.id)).toEqual(["auto", "gpt-live"]);
+
+    const pinnedItems = buildModelPickerItems([available, unavailable], [], [provider("openai", "gpt-live")], "gpt-retired");
+    expect(pinnedItems.map((item) => item.id)).toContain("gpt-retired");
+    expect(modelDetailLines(pinnedItems.find((item) => item.id === "gpt-retired")!, plain).join("\n"))
+      .toContain("not returned by this account");
+  });
+
+  it("orders configured providers first and discloses auth mode and metadata provenance", () => {
+    const configured = model("openai", "gpt-live", "GPT Live", { lifecycle: "current", metadataSource: "provider-reported", metadataVersion: "account", confidence: "reported" });
+    configured.availability = "available";
+    configured.authMode = "openai-api-key";
+    const legacy = model("deepseek", "deepseek-old", "DeepSeek Old");
+    const items = buildModelPickerItems([legacy, configured], [], [provider("openai", "gpt-live"), provider("deepseek", null, false)]);
+    expect(items[1]!.id).toBe("gpt-live");
+    const details = modelDetailLines(items[1]!, plain).join("\n");
+    expect(details).toContain("openai-api-key");
+    expect(details).toContain("provider-reported");
+  });
+
   it("filters by label, id, and provider", () => {
     const items = buildModelPickerItems(models, budgets, providers);
     expect(filterModelItems("deepseek", items).some((i) => i.id === "deepseek-chat")).toBe(true);
@@ -135,6 +173,20 @@ describe("model picker: real item construction and filtering", () => {
     expect(windowLine).not.toContain("128k");
   });
 
+  it("does not render internal fallback token numbers as model facts when budget confidence is unverified", () => {
+    const fallback = budget("deepseek", "deepseek-chat", {
+      contextWindowTokens: 65536,
+      usableInputTokens: 60000,
+      outputReserveTokens: 2048,
+      contextWindowConfidence: "unverified",
+    });
+    const items = buildModelPickerItems(models, [fallback], providers, "deepseek-chat");
+    const details = modelDetailLines(items.find((item) => item.id === "deepseek-chat")!, plain).join("\n");
+    expect(details).toContain("Context window  unknown");
+    expect(details).not.toContain("65k");
+    expect(details).not.toContain("60k");
+  });
+
   it("the auto and custom detail panels never fabricate model metadata", () => {
     const items = buildModelPickerItems(models, budgets, providers);
     const auto = items[0]!;
@@ -159,6 +211,24 @@ describe("model picker: real item construction and filtering", () => {
     const lines = renderModelPicker([], plain, { query: "", selected: 0, maxRows: 5, unicode: false });
     expect(lines.join("\n")).toContain("No models available");
     expect(lines.join("\n")).toContain("morrow auth login");
+  });
+});
+
+describe("models command visibility", () => {
+  it("defaults to proven availability, preserves the current pin, and supports an explicit diagnostic view", () => {
+    const live = model("openai", "live", "Live", { lifecycle: "current" });
+    live.availability = "available";
+    const unknown = model("openai", "unknown", "Unknown", {}, false);
+    unknown.availability = "unknown";
+    const unavailable = model("openai", "gone", "Gone", {}, false);
+    unavailable.availability = "unavailable";
+    const legacy = model("openai", "legacy", "Legacy", { lifecycle: "legacy" });
+    legacy.availability = "available";
+    const custom = model("openai", "custom", "Custom", { lifecycle: "custom" });
+    custom.availability = "available";
+    expect(visibleModelsForAccount([unknown, unavailable, legacy, custom, live]).map((status) => status.model.id)).toEqual(["live"]);
+    expect(visibleModelsForAccount([unknown, unavailable, legacy, custom, live], "gone").map((status) => status.model.id)).toEqual(["gone", "live"]);
+    expect(visibleModelsForAccount([unknown, unavailable, legacy, custom, live], undefined, true)).toHaveLength(5);
   });
 });
 

@@ -36,7 +36,7 @@ export function formatContextWindow(tokens: number | null): string {
 export function modelFactsLine(status: ModelStatus, out: Output): string {
   const m = status.model;
   const facts: string[] = [];
-  facts.push(m.capabilities.toolCalls ? "tools yes" : "tools no");
+  facts.push(m.capabilitySource === "unknown" ? "tools unknown" : m.capabilities.toolCalls ? "tools yes" : "tools no");
   // JSON/structured-output support is not exposed by the model registry, so it
   // is honestly unknown at this layer rather than inferred.
   facts.push("json unknown");
@@ -106,6 +106,8 @@ export interface ModelPickerItem {
   available: boolean;
   isDefault: boolean;
   status?: ModelStatus;
+  /** Account/auth surface used to establish availability, when known. */
+  providerStatus?: ProviderStatus | null;
   /** The canonical resolveModelBudget() view for this model, when the
    *  orchestrator has one. Null (not fabricated) when unavailable. */
   budget?: ModelBudgetView | null;
@@ -130,13 +132,31 @@ export function itemReasoning(status?: ModelStatus, budget?: ModelBudgetView | n
 export function buildModelPickerItems(
   models: ModelStatus[],
   budgets: ModelBudgetView[] = [],
-  providers: ProviderStatus[] = []
+  providers: ProviderStatus[] = [],
+  currentModelId?: string
 ): ModelPickerItem[] {
   const defaultByProvider = new Map(providers.map((p) => [p.id, p.defaultModel]));
+  const providerById = new Map(providers.map((p) => [p.id, p]));
   const items: ModelPickerItem[] = [
     { kind: "auto", id: "auto", providerId: null, label: "Auto — preset routing", available: true, isDefault: false, reasoning: UNKNOWN_REASONING },
   ];
-  for (const status of models) {
+  const visible = models.filter((status) => {
+    if (status.model.id === currentModelId) return true;
+    if (status.availability === undefined) return true;
+    return status.availability === "available" && (status.model.lifecycle === "current" || status.model.lifecycle === "preview");
+  });
+  visible.sort((a, b) => {
+    const aCurrent = a.model.id === currentModelId ? 1 : 0;
+    const bCurrent = b.model.id === currentModelId ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+    const aConfigured = providerById.get(a.model.providerId)?.configured ? 1 : 0;
+    const bConfigured = providerById.get(b.model.providerId)?.configured ? 1 : 0;
+    if (aConfigured !== bConfigured) return bConfigured - aConfigured;
+    const lifecycleRank = (status: ModelStatus) => status.model.lifecycle === "current" ? 0 : status.model.lifecycle === "preview" ? 1 : 2;
+    const lifecycle = lifecycleRank(a) - lifecycleRank(b);
+    return lifecycle;
+  });
+  for (const status of visible) {
     const m = status.model;
     const budget = budgets.find((b) => b.providerId === m.providerId && b.selectedModelId === m.id) ?? null;
     items.push({
@@ -147,6 +167,7 @@ export function buildModelPickerItems(
       available: status.available,
       isDefault: defaultByProvider.get(m.providerId) === m.id,
       status,
+      providerStatus: providerById.get(m.providerId) ?? null,
       budget,
       reasoning: itemReasoning(status, budget),
     });
@@ -235,20 +256,33 @@ export function modelDetailLines(item: ModelPickerItem, out: Output): string[] {
   // browsing before a budget has been resolved. Showing the registry number
   // here while Usable input/Output reserve below are already budget-derived
   // would silently disagree with its own confidence label.
-  const contextWindowTokens = b ? b.contextWindowTokens : m.contextWindow;
+  const contextWindowTokens = confidence === "unverified" ? null : b ? b.contextWindowTokens : m.contextWindow;
+  const authMode = item.status?.authMode ?? item.providerStatus?.authMode ?? "unknown";
+  const provenance = [m.metadataSource ?? "unknown", m.metadataVersion, m.confidence].filter(Boolean).join(" / ");
+  const normalizedAvailability = item.status?.availability;
+  const availabilityDetail = normalizedAvailability === "available"
+    ? `available via ${authMode}`
+    : normalizedAvailability === "unknown"
+      ? `availability unknown via ${authMode}${item.status?.availabilityReason ? ` - ${item.status.availabilityReason}` : ""}`
+      : normalizedAvailability === "unavailable"
+        ? `unavailable via ${authMode}${item.status?.availabilityReason ? ` - ${item.status.availabilityReason}` : ""}`
+        : item.available ? "configured & available (legacy server)" : `provider not configured - run \`morrow auth login ${m.providerId}\``;
   const rows: Array<[string, string]> = [
     ["Provider", m.providerId],
+    ["Auth mode", authMode],
     ["Selected model", m.id],
     ["Canonical id", m.canonicalId],
     ["Endpoint", b ? `${b.protocol}  ·  ${b.endpointKind}${b.endpointHost ? `  ·  ${b.endpointHost}` : ""}` : "unknown"],
     ["Context window", `${formatContextWindow(contextWindowTokens)}  (${confidence})`],
-    ["Usable input", b ? formatContextWindow(b.usableInputTokens) : "unknown"],
-    ["Output reserve", b ? formatContextWindow(b.outputReserveTokens) : "unknown"],
-    ["Tool support", m.capabilities.toolCalls ? "yes" : "no"],
-    ["Vision support", m.capabilities.vision ? "yes" : "no"],
+    ["Usable input", b && confidence !== "unverified" ? formatContextWindow(b.usableInputTokens) : "unknown"],
+    ["Output reserve", b && confidence !== "unverified" ? formatContextWindow(b.outputReserveTokens) : "unknown"],
+    ["Tool support", m.capabilitySource === "unknown" ? "unknown" : m.capabilities.toolCalls ? "yes" : "no"],
+    ["Vision support", m.capabilitySource === "unknown" ? "unknown" : m.capabilities.vision ? "yes" : "no"],
     ["Reasoning", `${describeReasoningControl(item.reasoning)}${item.reasoning.source === "unknown" ? "" : `  (${item.reasoning.source})`}`],
     ["Pricing", priceLabel(m)],
-    ["State", item.available ? "configured & available" : `provider not configured — run \`morrow auth login ${m.providerId}\``],
+    ["Metadata", provenance],
+    ["Availability", availabilityDetail],
+    ["State", availabilityDetail],
   ];
   const width = rows.reduce((w, [k]) => Math.max(w, k.length), 0);
   return [out.bold(m.label), ...rows.map(([k, v]) => `${out.gray(k.padEnd(width + 2))}${v}`)];
@@ -280,16 +314,17 @@ export function modelPickerDetail(item: ModelPickerItem, out: Output): string[] 
   }
   const m = item.status!.model;
   const b = item.budget ?? null;
-  const ctx = formatContextWindow(b ? b.contextWindowTokens : m.contextWindow);
+  const ctx = formatContextWindow(b?.contextWindowConfidence === "unverified" ? null : b ? b.contextWindowTokens : m.contextWindow);
   const free = m.costClass === "free";
   const markers = [
     ...(free ? ["free"] : []),
     ...(item.isDefault ? ["default"] : []),
-    ...(item.available ? [] : ["not configured"]),
+    ...(item.available ? [] : [item.status?.availability === "unknown" ? "availability unknown" : item.status?.availability === "unavailable" ? "unavailable" : "not configured"]),
   ];
   const reasoningWord = item.reasoning.control === "none" ? "no reasoning" : `reasoning: ${item.reasoning.control}`;
   const providerLine = out.gray(`${m.providerId}${markers.length ? " · " + markers.join(" · ") : ""}`);
-  const factsLine = out.gray(`${ctx} context · ${m.capabilities.toolCalls ? "tools" : "no tools"} · ${reasoningWord}`);
+  const toolFact = m.capabilitySource === "unknown" ? "tools unknown" : m.capabilities.toolCalls ? "tools" : "no tools";
+  const factsLine = out.gray(`${ctx} context · ${toolFact} · ${reasoningWord}`);
   const host = b?.endpointHost ? ` · ${b.endpointHost}` : "";
   const routeLine = out.gray(`Route: ${m.providerId}/${m.id}${host}`);
   return [out.bold(m.label), providerLine, factsLine, routeLine];
@@ -340,7 +375,9 @@ export function renderModelPicker(items: ModelPickerItem[], out: Output, opts: M
     if (isCurrent) tags.push(out.cyan("current"));
     else if (item.isDefault) tags.push(out.gray("default"));
     if (item.kind === "model" && item.status?.model.costClass === "free") tags.push(out.gray("free"));
-    if (item.kind === "model" && !item.available) tags.push(out.yellow("not configured"));
+    if (item.kind === "model" && !item.available) {
+      tags.push(out.yellow(item.status?.availability === "unknown" ? "availability unknown" : item.status?.availability === "unavailable" ? "unavailable" : "not configured"));
+    }
     const tagStr = tags.length ? "  " + tags.join(out.gray(" · ")) : "";
     lines.push(`  ${marker}${dot} ${label}${provider ? "  " + provider : ""}${tagStr}`);
   }

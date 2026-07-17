@@ -1066,6 +1066,17 @@ export const migrations:Migration[]=[
     CREATE INDEX mission_recovery_decisions_mission_idx
       ON mission_recovery_decisions(mission_id, created_at, id);
   `}
+  ,{id:34,name:"provider_model_discovery",sql:`
+    CREATE TABLE provider_model_discovery (
+      provider_id TEXT NOT NULL,
+      auth_mode TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('available','unavailable')),
+      models_json TEXT NOT NULL,
+      error_kind TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY(provider_id, auth_mode)
+    );
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

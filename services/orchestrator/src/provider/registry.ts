@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } from "@morrow/contracts";
+import type { ProviderAuthMode, ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } from "@morrow/contracts";
 import { AiProvider, ProviderError, type ProviderProtocol, type ProviderRouteMetadata } from "./base.js";
 import { OpenAiCompatibleProvider } from "./openai-compatible.js";
 import { AnthropicProvider } from "./anthropic.js";
@@ -13,10 +13,42 @@ import {
 import { providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { createHash } from "node:crypto";
+import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
+
+let modelDiscoveries: ProviderModelDiscovery[] = [];
+
+export function installProviderModelDiscoveries(discoveries: ProviderModelDiscovery[]): void {
+  modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
+}
+
+function withDiscovery(status: ProviderStatus): ProviderStatus {
+  const authMode = status.authMode ?? "unknown";
+  const discovery = modelDiscoveries.find((item) => item.providerId === status.id && item.authMode === authMode);
+  if (!discovery) return status;
+  if (discovery.status === "unavailable") return { ...status, available: false };
+  const models = discovery.models.map((model) => model.providerModelId);
+  if (models.length === 0) return { ...status, available: true };
+  return {
+    ...status,
+    available: true,
+    models,
+    defaultModel: status.defaultModel && models.includes(status.defaultModel) ? status.defaultModel : models[0] ?? null,
+  };
+}
 
 /** Mark a status as configured/available because a subscription OAuth token is held. */
-function withOAuth(status: ProviderStatus): ProviderStatus {
-  return { ...status, configured: true, available: true, authStatus: "configured" };
+function withOAuth(status: ProviderStatus, authMode: ProviderAuthMode): ProviderStatus {
+  return { ...status, configured: true, available: true, authStatus: "configured", authMode };
+}
+
+function apiKeyAuthMode(id: ProviderId): ProviderAuthMode {
+  return ({
+    openai: "openai-api-key",
+    anthropic: "anthropic-api-key",
+    gemini: "gemini-api-key",
+    openrouter: "openrouter-api-key",
+    deepseek: "deepseek-api-key",
+  } as Partial<Record<ProviderId, ProviderAuthMode>>)[id] ?? "unknown";
 }
 
 /** Persisted default-model override for a provider, if the operator set one. */
@@ -113,6 +145,7 @@ function apiKeyStatus(
     endpointType: cred.endpointType,
     endpointHost: cred.host,
     authStatus: cred.configured ? "configured" : "missing",
+    authMode: apiKeyAuthMode(d.id),
     capabilities: d.capabilities,
     models,
     defaultModel,
@@ -127,8 +160,8 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     label: "OpenAI",
     kind: "api-key",
     capabilities: caps({ vision: true, customEndpoint: true }),
-    defaultModel: "gpt-5.4-mini",
-    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+    defaultModel: "gpt-5.6-sol",
+    models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
     note: null,
     status(env) {
@@ -138,7 +171,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         // Subscription sign-in routes through the Codex backend, which serves its
         // own model slugs (gpt-5.x), not the api.openai.com model ids.
         const override = modelOverride(env, "openai");
-        return { ...withOAuth(s), defaultModel: override || "gpt-5.5", models: ["gpt-5.5", ...s.models] };
+        return { ...withOAuth(s, "codex-oauth"), defaultModel: override || "gpt-5.5", models: ["gpt-5.5", ...s.models] };
       }
       return s;
     },
@@ -160,14 +193,14 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     label: "Anthropic",
     kind: "api-key",
     capabilities: caps({ vision: true, customEndpoint: true }),
-    defaultModel: "claude-3-5-sonnet-20241022",
-    models: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+    defaultModel: "claude-opus-4-8",
+    models: ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
     setupHint: "Set ANTHROPIC_API_KEY (and optionally ANTHROPIC_BASE_URL).",
     note: null,
     status(env) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
       const s = apiKeyStatus(this, c, env);
-      return getStoredAccessTokenSync("anthropic", env) ? withOAuth(s) : s;
+      return getStoredAccessTokenSync("anthropic", env) ? withOAuth(s, "anthropic-oauth") : s;
     },
     build(env, model) {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
@@ -189,8 +222,8 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     label: "Google Gemini",
     kind: "api-key",
     capabilities: caps({ vision: true }),
-    defaultModel: "gemini-1.5-flash",
-    models: ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+    defaultModel: "gemini-3.5-flash",
+    models: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
     setupHint: "Set GEMINI_API_KEY (or GOOGLE_API_KEY).",
     note: null,
     status(env) {
@@ -209,7 +242,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     kind: "api-key",
     capabilities: caps({ vision: true, customEndpoint: true }),
     defaultModel: "openrouter/auto",
-    models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "anthropic/claude-3.5-sonnet", "openai/gpt-5.4", "google/gemini-flash-1.5"],
+    models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
     setupHint: "Set OPENROUTER_API_KEY.",
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
@@ -287,6 +320,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         endpointType: "custom",
         endpointHost: safeHost(baseUrl),
         authStatus: configured ? (hasKey ? "configured" : "not-applicable") : "missing",
+        authMode: safeHost(baseUrl) === "opencode.ai" ? "opencode-zen" : "custom-compatible",
         capabilities: this.capabilities,
         models: model ? [model] : [],
         defaultModel: model || null,
@@ -327,6 +361,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
         endpointType: c.endpointType,
         endpointHost: c.host,
         authStatus: "not-applicable",
+        authMode: "ollama",
         capabilities: this.capabilities,
         models: env.OLLAMA_MODELS ? env.OLLAMA_MODELS.split(",").map((s) => s.trim()).filter(Boolean) : this.models,
         defaultModel: model,
@@ -345,9 +380,9 @@ const DESCRIPTORS: ProviderDescriptor[] = [
 const BY_ID = new Map<ProviderId, ProviderDescriptor>(DESCRIPTORS.map((d) => [d.id, d]));
 
 export function listProviderStatuses(env: ProviderEnv = process.env): ProviderStatus[] {
-  const statuses = DESCRIPTORS.map((d) => d.status(env));
+  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env)));
   if (env.MOCK_PROVIDER === "true") {
-    statuses.push({
+    statuses.push(withDiscovery({
       version: 1,
       id: "mock",
       label: "Mock provider (testing)",
@@ -357,12 +392,13 @@ export function listProviderStatuses(env: ProviderEnv = process.env): ProviderSt
       endpointType: "default",
       endpointHost: null,
       authStatus: "not-applicable",
+      authMode: "mock",
       capabilities: caps({ local: true, vision: false }),
       models: ["mock-model"],
       defaultModel: "mock-model",
       note: "Deterministic in-memory provider. Only present because MOCK_PROVIDER=true.",
       setupHint: "Unset MOCK_PROVIDER to use real providers.",
-    });
+    }));
   }
   return statuses;
 }

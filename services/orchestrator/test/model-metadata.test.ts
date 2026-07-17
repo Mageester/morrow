@@ -45,6 +45,25 @@ describe("authoritative model metadata", () => {
     expect(meta?.contextWindow).toBeNull();
     expect(meta?.pricing).toBeNull();
     expect(meta?.builtIn).toBe(false);
+    expect(meta?.metadataSource).toBe("unknown");
+    expect(meta?.confidence).toBe("unknown");
+    expect(meta?.family).toBeNull();
+  });
+
+  it("describes current bundled models with normalized provenance instead of name inference", () => {
+    const meta = resolveModelMetadata("openai", "gpt-5.6-sol");
+    expect(meta).toMatchObject({
+      providerModelId: "gpt-5.6-sol",
+      canonicalId: "gpt-5.6-sol",
+      family: "gpt-5.6",
+      generation: "5.6",
+      lifecycle: "current",
+      metadataSource: "bundled-catalog",
+      metadataVersion: expect.any(String),
+      confidence: "verified",
+      contextWindow: 1_050_000,
+      maxOutputTokens: 128_000,
+    });
   });
 
   it("does not confuse the same model slug across provider changes", () => {

@@ -253,10 +253,9 @@ describe("reasoning: fallback candidate compatibility (direct execution)", () =>
   it("resets reasoning to Auto for a fallback candidate that can't honor it — the request still succeeds, never aborted by the mismatch", async () => {
     seed({ mode: "effort", effort: "high" }); // valid for the primary (openai/gpt-5.5, registry: effort)
     const capture: { options: StreamOptions | null } = { options: null };
-    // Fallback candidate is registry-modeled as "anthropic" — every built-in
-    // Anthropic model has reasoning control "none", so effort/high cannot
-    // survive the per-candidate translateReasoning check.
-    const secondary = capturingProvider("anthropic", capture);
+    // The local fallback's default model has no reasoning control, so
+    // effort/high cannot survive the per-candidate translation check.
+    const secondary = capturingProvider("ollama", capture);
 
     await executeAgentChatTask({
       db, taskId: "t1", provider: throwingProvider("ECONNREFUSED"), fallbackProviders: [secondary],

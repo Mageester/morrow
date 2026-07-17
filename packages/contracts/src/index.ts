@@ -68,6 +68,10 @@ export const ProviderCapabilitiesSchema=z.object({
   local:z.boolean(),
 }).strict();
 export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applicable","unavailable"]);
+export const ProviderAuthModeSchema=z.enum([
+  "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
+  "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+]);
 export const ProviderStatusSchema=z.object({
   version:SchemaVersionSchema,
   id:ProviderIdSchema,
@@ -78,6 +82,7 @@ export const ProviderStatusSchema=z.object({
   endpointType:z.enum(["default","custom"]),
   endpointHost:z.string().nullable(),
   authStatus:ProviderAuthStatusSchema,
+  authMode:ProviderAuthModeSchema.optional(),
   capabilities:ProviderCapabilitiesSchema,
   models:z.array(z.string()),
   defaultModel:z.string().nullable(),
@@ -102,7 +107,7 @@ export const ModelCapabilitiesSchema=z.object({
 // it into that provider's real request format (see the orchestrator's
 // translateReasoning). `RouteReasoningCapability` describes what a specific
 // route actually exposes, with explicit provenance — never a guess.
-export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+export const ReasoningEffortSchema=z.enum(["low","medium","high","xhigh","max"]);
 /**
  * How a route exposes reasoning control:
  *   "none"   — the route has no reasoning controls (Not configurable);
@@ -143,20 +148,29 @@ export const ModelPricingSchema=z.object({
 export const ModelInfoSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
+  providerModelId:z.string().optional(),
   canonicalId:z.string(),
   aliases:z.array(z.string()),
   providerId:ProviderIdSchema,
   label:z.string(),
+  family:z.string().nullable().optional(),
+  generation:z.string().nullable().optional(),
+  lifecycle:z.enum(["current","preview","legacy","deprecated","custom","unknown"]).optional(),
   contextWindow:z.number().int().positive().nullable(),
   maxOutputTokens:z.number().int().positive().nullable(),
   pricing:ModelPricingSchema.nullable(),
   tokenUsage:z.boolean(),
   streamingUsage:z.boolean(),
   capabilities:ModelCapabilitiesSchema,
+  capabilitySource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
   speedClass:ModelSpeedClassSchema,
   costClass:ModelCostClassSchema,
   privacy:ModelPrivacyClassSchema,
   builtIn:z.boolean(),
+  metadataSource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
+  metadataVersion:z.string().optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
+  confidence:z.enum(["verified","reported","configured","unknown"]).optional(),
   /** What reasoning control this model exposes, with provenance. Optional so
    * existing construction sites and older cached rows stay valid; consumers
    * fall back to an explicit "unknown"/"none" capability when absent, never a
@@ -166,6 +180,11 @@ export const ModelInfoSchema=z.object({
 export const ModelStatusSchema=z.object({
   model:ModelInfoSchema,
   available:z.boolean(),
+  availability:z.enum(["available","unavailable","unknown"]).optional(),
+  availabilitySource:z.enum(["provider-reported","configured","catalog","unknown"]).optional(),
+  availabilityReason:z.string().nullable().optional(),
+  authMode:ProviderAuthModeSchema.optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
 }).strict();
 
 /**
@@ -493,6 +512,7 @@ export type DiagnosticsReport=z.infer<typeof DiagnosticsReportSchema>;
 
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
+export type ProviderAuthMode=z.infer<typeof ProviderAuthModeSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;
 export type ProviderStatus=z.infer<typeof ProviderStatusSchema>;
 export type ModelInfo=z.infer<typeof ModelInfoSchema>;
@@ -580,6 +600,19 @@ export const AuditEntrySchema=z.object({
 }).strict();
 export type AuditEntry=z.infer<typeof AuditEntrySchema>;
 
+export const DiscoveredModelSchema=z.object({
+  providerModelId:z.string().min(1).max(300),
+  displayName:z.string().min(1).max(500),
+  contextWindow:z.number().int().positive().nullable(),
+  maxOutputTokens:z.number().int().positive().nullable(),
+  capabilities:z.object({
+    streaming:z.boolean().nullable(),
+    toolCalls:z.boolean().nullable(),
+    vision:z.boolean().nullable(),
+  }).strict(),
+  metadataSource:z.literal("provider-reported"),
+}).strict();
+export type DiscoveredModel=z.infer<typeof DiscoveredModelSchema>;
 export const ProviderTestResultSchema=z.object({
   id:ProviderIdSchema,
   ok:z.boolean(),
@@ -590,6 +623,7 @@ export const ProviderTestResultSchema=z.object({
   detail:z.string(),
   errorKind:z.string().nullable(),
   modelsSample:z.array(z.string()),
+  models:z.array(DiscoveredModelSchema),
 }).strict();
 export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
 
