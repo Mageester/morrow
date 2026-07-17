@@ -1175,6 +1175,22 @@ export async function executeAgentChatTask({
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
   const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+
+  // ── Mission-contract anchoring across continuations ────────────────────────
+  // The durable mission contract must never be re-derived from a trivial
+  // continuation prompt ("continue", "keep going"): beta.31 lost the original
+  // definition of done exactly this way — a large mission got reduced to
+  // "scaffold exists, build passes". When this task's prompt is a bare
+  // continuation and a previous task in this conversation left a durable
+  // checkpoint, that checkpoint's contract is the authority. Within one task,
+  // the earliest persisted contract always wins (see persistExecutionCheckpoint).
+  const CONTINUATION_PROMPT_RE = /^\s*\/?(?:continue|resume|keep\s+going|go\s+on|proceed|carry\s+on|finish(?:\s+the)?\s*(?:mission|task|work)?)[\s.!]*$/i;
+  const isContinuationPrompt = latestUserPrompt.trim().length <= 120 && CONTINUATION_PROMPT_RE.test(latestUserPrompt.trim());
+  const previousTaskId = [...dbMessages].reverse()
+    .find((m) => m.role === "assistant" && m.taskId && m.taskId !== taskId)?.taskId ?? null;
+  const inheritedContractSnapshot = isContinuationPrompt && previousTaskId
+    ? continuity.latestCheckpoint(previousTaskId)?.snapshot ?? null
+    : null;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(latestUserPrompt);
@@ -2176,12 +2192,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       });
     const failedCalls = calls.filter((call) => call.status === "failed");
     const lastEvent = records.listEvents(taskId).at(-1);
+    // The mission contract is immutable once persisted: an earlier checkpoint
+    // for this task (or an inherited one from the task this prompt continues)
+    // owns originalMission/hardRequirements/prohibitedActions/acceptanceCriteria.
+    // Execution state (completed work, files, tests, failures) is always fresh.
+    const contractOwner = continuity.latestCheckpoint(taskId)?.snapshot ?? inheritedContractSnapshot;
     const snapshot: ExecutionCheckpointSnapshot = {
       version: 1,
-      originalMission: latestUserPrompt,
-      hardRequirements: latestUserPrompt.trim() ? [latestUserPrompt] : [],
-      prohibitedActions: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:do not|don't|never|prohibited)\b/i.test(line)),
-      acceptanceCriteria: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:must|acceptance|required|prove|verify)\b/i.test(line)),
+      originalMission: contractOwner?.originalMission ?? latestUserPrompt,
+      hardRequirements: contractOwner
+        ? contractOwner.hardRequirements
+        : latestUserPrompt.trim() ? [latestUserPrompt] : [],
+      prohibitedActions: contractOwner
+        ? contractOwner.prohibitedActions
+        : latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:do not|don't|never|prohibited)\b/i.test(line)),
+      acceptanceCriteria: contractOwner
+        ? contractOwner.acceptanceCriteria
+        : latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:must|acceptance|required|prove|verify)\b/i.test(line)),
       decisions: ["Continue through durable execution segments without treating an internal boundary as completion."],
       completedWork: calls.filter((call) => call.status === "completed").map((call) => `${call.toolName}: ${call.argsJson}`),
       currentPhase: phase,
