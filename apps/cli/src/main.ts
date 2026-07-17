@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs, flagBool, flagString } from "./cli/args.js";
@@ -292,14 +292,60 @@ async function doctor(ctx: Context): Promise<number> {
     const identityOk = health.ok === true && health.service === "morrow-orchestrator";
     checks.push({ name: "orchestrator", ok: identityOk, detail: identityOk ? `${health.service}; api ${health.apiVersion}; port ${ctx.service.port}; migrations ${health.migrations.applied}/${health.migrations.latest ?? "?"}` : "unexpected service identity", critical: true, fix: "Stop the process on the configured port, then run `morrow start`." });
     const providers = await ctx.api().listProviders();
-    const configured = providers.filter((provider) => provider.configured).length;
-    checks.push({ name: "providers", ok: configured > 0, detail: `${configured} configured`, critical: false, fix: "Run `morrow auth login`." });
+    const configuredProviders = providers.filter((provider) => provider.configured);
+    // "N configured" alone told a beta.31 consumer nothing when routing later
+    // failed. Name each configured route: provider, auth mode, endpoint host,
+    // and default model — the same facts the router consumes.
+    checks.push({
+      name: "providers",
+      ok: configuredProviders.length > 0,
+      detail: configuredProviders.length > 0
+        ? configuredProviders.map((provider) => `${provider.id} (${provider.authMode ?? "unknown"}${provider.endpointHost ? ` @ ${provider.endpointHost}` : ""}${provider.defaultModel ? `, model ${provider.defaultModel}` : ""})`).join("; ")
+        : "0 configured",
+      critical: false,
+      fix: "Run `morrow auth login`.",
+    });
+    // The selected route + its effective context, from the same canonical
+    // ModelBudget computation execution uses — never re-derived here.
+    const selectedModel = ctx.config.get("defaults.model") as string | undefined;
+    const selectedProvider = ctx.config.get("defaults.provider") as string | undefined;
+    const activePreset = (ctx.config.get("defaults.preset") as string | undefined) ?? "balanced";
+    const budgets = await ctx.api().getModelBudgets().catch(() => null);
+    const budget = selectedModel ? budgets?.find((entry) => entry.selectedModelId === selectedModel && (!selectedProvider || entry.providerId === selectedProvider)) : undefined;
+    checks.push({
+      name: "route",
+      ok: true,
+      detail: `preset ${activePreset}; selected ${selectedProvider ?? "auto"}/${selectedModel ?? "auto"}`
+        + (budget ? `; context ${budget.contextWindowTokens.toLocaleString()} (${budget.contextWindowSource}, ${budget.contextWindowConfidence}); usable input ${budget.usableInputTokens.toLocaleString()}` : ""),
+      critical: false,
+    });
     const projects = await ctx.api().listProjects();
     const registered = Boolean(ctx.paths.repoRoot && projects.some((project) => project.workspacePath.toLowerCase() === ctx.paths.repoRoot!.toLowerCase()));
-    checks.push({ name: "repository", ok: registered, detail: ctx.paths.repoRoot ? (registered ? "current repository registered" : "current repository not registered") : "not running inside a Morrow workspace", critical: false, fix: "Run `morrow init` from the repository." });
+    // Say precisely which of the three distinct things is missing: a Git
+    // repository at cwd, a Morrow project registration for it, or both.
+    checks.push({
+      name: "repository",
+      ok: registered,
+      detail: ctx.paths.repoRoot
+        ? (registered ? `current repository registered (${ctx.paths.repoRoot})` : `Git repository found at ${ctx.paths.repoRoot}, but it is not registered as a Morrow project`)
+        : "current directory is not inside a Git repository (Morrow projects are Git repositories)",
+      critical: false,
+      fix: ctx.paths.repoRoot ? "Run `morrow init` from the repository." : "Run `git init` (or cd into your project), then `morrow init`.",
+    });
   } catch {
     checks.push({ name: "orchestrator", ok: false, detail: `not reachable on ${ctx.service.host}:${ctx.service.port}`, critical: true, fix: "Run `morrow start`, then retry `morrow doctor`." });
   }
+  // Logs truthfulness: doctor previously printed the log path while `morrow
+  // logs` reported "No logs at <same path>". State whether the file exists.
+  const logExists = existsSync(ctx.paths.logFile);
+  checks.push({
+    name: "logs",
+    ok: true,
+    detail: logExists
+      ? `${ctx.paths.logFile} (${statSync(ctx.paths.logFile).size.toLocaleString()} bytes)`
+      : `no log file yet at ${ctx.paths.logFile} — it is created when this CLI starts the service (\`morrow start\`)`,
+    critical: false,
+  });
   const ok = aggregateDoctor(checks).ok;
   const exportPath = flagBool(ctx.flags, "export") ? writeDiagnosticExport(doctorPayload(ok, checks, ctx.paths.logFile, diagnosticDirectory(ctx.paths.home)), ctx.paths.home) : undefined;
   const payload = doctorPayload(ok, checks, ctx.paths.logFile, exportPath ?? diagnosticDirectory(ctx.paths.home));
@@ -424,7 +470,20 @@ async function update(ctx: Context): Promise<number> {
 
 async function serviceStop(ctx: Context): Promise<number> { const stopped = await stop(ctx); if (ctx.out.json) ctx.out.data({ stopped }); else ctx.out.info(stopped ? "Service stopped." : "Service was not running."); return EXIT.OK; }
 async function restart(ctx: Context): Promise<number> { await stop(ctx); await serveDetached(ctx); return EXIT.OK; }
-async function logs(ctx: Context): Promise<number> { const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100)); if (ctx.out.json) ctx.out.data({ path: ctx.paths.logFile, content }); else ctx.out.print(content || `No logs at ${ctx.paths.logFile}.`); return EXIT.OK; }
+async function logs(ctx: Context): Promise<number> {
+  const content = tailLog(ctx, Number(flagString(ctx.flags, "lines") ?? 100));
+  if (ctx.out.json) {
+    ctx.out.data({ path: ctx.paths.logFile, exists: existsSync(ctx.paths.logFile), content });
+  } else if (content) {
+    ctx.out.print(content);
+  } else {
+    // Truthful empty state: say why the file may not exist rather than a bare
+    // "No logs at <path>" that contradicts doctor's "Logs: <path>".
+    ctx.out.print(`No log file at ${ctx.paths.logFile}.`);
+    ctx.out.print("The log is created when this CLI starts the service (`morrow start`). If the orchestrator was started another way, or with a different MORROW_HOME, its logs are wherever that process wrote them.");
+  }
+  return EXIT.OK;
+}
 
 async function configCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
   const scope = flagString(ctx.flags, "scope") === "project" ? "project" : "user";
