@@ -44,15 +44,19 @@ describe("agent tool-argument recovery", () => {
   let db: any;
   let ws: string;
   let warn: any;
+  let prevHome: string | undefined;
 
   beforeEach(() => {
     ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-toolargs-")));
+    prevHome = process.env.MORROW_HOME;
+    process.env.MORROW_HOME = join(ws, ".morrow-home");
     db = openDatabase(":memory:");
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => {
     warn.mockRestore();
     try { db.close(); } catch {}
+    if (prevHome === undefined) delete process.env.MORROW_HOME; else process.env.MORROW_HOME = prevHome;
     rmSync(ws, { recursive: true, force: true });
   });
 
@@ -71,6 +75,9 @@ describe("agent tool-argument recovery", () => {
     expect(readFileSync(join(ws, "note.txt"), "utf8")).toBe("hello");
     expect(calls(db).find((c: any) => c.id === "fenced")!.status).toBe("completed");
     expect(argEvents(db)).toHaveLength(0);
+    // File-write side effects (content-addressed backups) must land in the
+    // isolated MORROW_HOME, never in the real user home.
+    expect(existsSync(join(ws, ".morrow-home", "backups"))).toBe(true);
   });
 
   it("accepts a large valid create_file payload without entering repair", async () => {

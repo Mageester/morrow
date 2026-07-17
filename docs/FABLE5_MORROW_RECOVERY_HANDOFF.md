@@ -14,6 +14,10 @@
 - Pushed: yes (all commits below are on origin)
 - Full test state at last commit: orchestrator 1126 pass / 0 fail; CLI 739 pass / 0 fail;
   `pnpm -r build` green across the workspace.
+- (2026-07-17, remote Linux session @ 5d616e3) Checkout re-validated: build green, all
+  focused smoke suites green (details under "Tests run"), packaging-flow unit tests
+  27/27 non-skipped pass. Release gate NOT executable in that environment — see
+  "Why the release gate could not run" below. Verdict unchanged: **NOT READY**.
 
 ## Original mission (summary)
 
@@ -72,6 +76,13 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 - (2026-07-17) **Terminal viewport clamp** (commit "fix(terminal)"): composeApp frames are
   clamped to terminal rows with overlay/input priority — fixes ghost frames, stale content,
   and the /model-not-visible-until-arrow-key defect. Full CLI suite: 738 pass.
+- (2026-07-17, remote Linux session) **Test-isolation leak fix** (commit
+  "test(orchestrator): isolate MORROW_HOME in tool-argument-repair tests"):
+  agent-tool-argument-repair.test.ts ran the agent file-write path without setting
+  MORROW_HOME, so a plain `vitest run` created `~/.morrow/backups` in the REAL user home
+  (verified by bisection: the leak appeared only when this file ran). Fixed with the
+  established prevHome/temp-home idiom used by sibling agent tests, plus a regression
+  assertion that content-addressed backups land inside the isolated MORROW_HOME.
 
 ## Architectural decisions
 
@@ -85,7 +96,17 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 
 ## Tests run
 
-- None yet this session.
+- (2026-07-17, remote Linux session) Checkout health at 5d616e3 + leak fix:
+  - `pnpm install --frozen-lockfile` and `pnpm -r build` green.
+  - Orchestrator focused smoke: routing, model-metadata, mission-task-dispatcher,
+    provider-projection, mission-contract-continuity, canonical-completion-invariants,
+    agent-tool-argument-repair — 7 files, 70 tests, all pass.
+  - CLI focused smoke: terminal-presentation.test.ts — 22 tests, all pass.
+  - Packaging/installer flow unit tests (`node --test scripts/package-release.test.mjs
+    release-workflow.test.mjs install-integration.test.mjs installer-cli-only.test.mjs
+    install-activation.test.mjs launcher-dispatch.test.mjs package-command.test.mjs`):
+    27 pass / 0 fail / 12 skipped. Every skip is the opt-in Windows-only install
+    integration suite (`MORROW_RUN_INSTALL_ITEST=1` + `process.platform === "win32"`).
 
 ## Current failures / unresolved work
 
@@ -122,6 +143,32 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 8. fix(cli): truthful doctor and logs
 9. fix(execution): completion sweep closes plan steps from a fresh read (+ contracts:
    context.rollover_escalated event type)
+10. test(orchestrator): isolate MORROW_HOME in tool-argument-repair tests (fixes the
+    real-home `~/.morrow/backups` leak; adds isolated-home regression assertion)
+
+## Why the release gate could not run in the 2026-07-17 remote session
+
+A remote Linux container session (branch tip 5d616e3) attempted the gate and verified the
+checkout is healthy, but the gate itself is environmentally impossible there. The blockers
+are facts of the environment, not of the code — do NOT weaken the gate to fit the
+environment:
+
+1. **Packaging is Windows-hosted.** `scripts/package-release.mjs` shells out to
+   `powershell.exe` (runtime download, step 7 archive) and EXECUTES the bundled
+   `runtime/node.exe` (a Windows PE binary) for the ABI-matched npm install and the two
+   hard verification gates (better-sqlite3 probe, bundled-CLI `--help`). No
+   powershell/pwsh/wine exists on the Linux host, and `node.exe` cannot execute there.
+2. **The consumer install path is Windows-only.** `installer/install.ps1` requires
+   Windows 10+ x64 + PowerShell 5.1+, installs to `%LOCALAPPDATA%\Morrow`, and pulls
+   `https://morrowproject.getaxiom.ca/releases/latest.json`. The opt-in install
+   integration tests are gated on `process.platform === "win32"`.
+3. **No provider credential exists in the container.** A full sweep (environment
+   variables, `~`, `/root/.morrow`, repo `.env*`, filesystem search for
+   opencode/zen/OPENAI_COMPAT material) found no OpenCode Zen or any other real provider
+   key. Real provider execution cannot be faked, so the mission leg cannot run.
+
+Conclusion recorded by that session: **NOT READY** — sole remaining gate is task 10, and
+it must run on the Windows machine that has the OpenCode Zen route configured.
 
 ## Next step (the release gate)
 
