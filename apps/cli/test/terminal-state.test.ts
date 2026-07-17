@@ -136,6 +136,25 @@ describe("terminal state reducer", () => {
     expect(s.patches.every((p) => p.applied)).toBe(true);
   });
 
+  it("collapses repeated fail→recover cycles of the same problem into one counted entry (beta.31 recovery spam)", () => {
+    let events: Parameters<typeof fold>[0] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = `call-${i}`;
+      events = [
+        ...events,
+        { type: "recovery.problem", tool: "create_file", message: "Invalid tool arguments format" },
+        { type: "recovery.strategy", tool: "create_file", strategy: "repair arguments against the schema" },
+        { type: "tool.start", id, name: "create_file", purpose: "src/Component.tsx" },
+        { type: "tool.end", id, status: "completed" },
+      ];
+    }
+    const s = fold(events);
+    // Three identical repair cycles are ONE story: "×3 … succeeded", never
+    // three separate "Recovering … succeeded" walls.
+    expect(s.recoveries).toHaveLength(1);
+    expect(s.recoveries[0]).toMatchObject({ tool: "create_file", message: "Invalid tool arguments format", count: 3, status: "recovered" });
+  });
+
   it("transitions terminal status and records failure message", () => {
     expect(fold([{ type: "task.completed" }]).status).toBe("completed");
     expect(fold([{ type: "task.cancelled" }]).status).toBe("cancelled");

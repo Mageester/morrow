@@ -46,6 +46,27 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 
 - (2026-07-17) Branch created; root-cause investigation for failures #2/#3/#4 done with
   file-level evidence (above). Task list established (10 workstreams).
+- (2026-07-17) **Route truth** (commit "fix(routing): route truth"): routePreset now
+  considers configured providers outside the preset order (explicit recorded candidates);
+  resolveProviderForModel added; dispatcher rejects unroutable model-only selections with
+  MODEL_UNROUTABLE before execution; CLI fallback message never renders "? → x".
+  Tests: routing.test.ts (21 pass), mission-task-dispatcher.test.ts (6 pass),
+  terminal-presentation.test.ts (22 pass).
+- (2026-07-17) **Context metadata truth** (commit "fix(models)"): env context-limit
+  overrides (OPENAI_COMPAT_CONTEXT_LIMIT etc.) flow into resolveModelStatuses with
+  user-supplied/configured provenance; models info + /api/models + picker agree with the
+  runtime preflight. Tests: model-metadata.test.ts (15 pass).
+- (2026-07-17) **Automatic rollover** (commit "feat(execution)"): projectMinimalContinuation
+  escalation (truncate oversized tool results → checkpoint-only continuation) replaces the
+  "cannot fit ... after automatic compaction" dead-end; context.rollover_escalated event.
+  Tests: provider-projection.test.ts (8 pass) + 66 continuity/compaction tests pass.
+- (2026-07-17) **Mission contract immutability** (commit "fix(execution)"): checkpoint
+  contract fields owned by earliest checkpoint of the task; continuation-style prompts
+  ("continue"/"resume") inherit the previous task's contract in the same conversation.
+  Tests: mission-contract-continuity.test.ts (3 pass).
+- (2026-07-17) **Terminal viewport clamp** (commit "fix(terminal)"): composeApp frames are
+  clamped to terminal rows with overlay/input priority — fixes ghost frames, stale content,
+  and the /model-not-visible-until-arrow-key defect. Full CLI suite: 738 pass.
 
 ## Architectural decisions
 

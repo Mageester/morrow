@@ -365,13 +365,20 @@ export function reduce(state: TerminalState, event: TerminalEvent, now: () => nu
         const sameCall = state.recoveries.findIndex((recovery) => recovery.toolCallId === activeToolCallId && recovery.status !== "recovered");
         if (sameCall >= 0) return state;
       }
-      // Group identical failures across distinct attempts into one counted entry.
-      const idx = state.recoveries.findIndex((recovery) => recovery.tool === tool && recovery.message === message && recovery.file === file && recovery.status !== "recovered");
+      // Group identical failures into one counted entry — including across
+      // completed recovery cycles. Beta.31 rendered every fail→recover cycle
+      // of the same problem as its own "Recovering … succeeded" story, so a
+      // run with a dozen malformed-argument repairs looked broken even while
+      // work continued. One problem = one line; a recurrence reopens the same
+      // entry ("×N") instead of appending another.
+      const idx = state.recoveries.findIndex((recovery) => recovery.tool === tool && recovery.message === message && recovery.file === file);
       if (idx >= 0) {
         const recoveries = [...state.recoveries];
+        const existingEntry = recoveries[idx]!;
         recoveries[idx] = {
-          ...recoveries[idx]!,
-          count: recoveries[idx]!.count + 1,
+          ...existingEntry,
+          count: existingEntry.count + 1,
+          status: existingEntry.status === "recovered" ? "failed" as const : existingEntry.status,
           at: now(),
           ...(activeToolCallId ? { toolCallId: activeToolCallId } : {}),
         };
