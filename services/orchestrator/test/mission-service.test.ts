@@ -419,6 +419,125 @@ describe("MissionService — independent review and honest grading", () => {
   });
 });
 
+describe("MissionService — review normalization robustness (production path)", () => {
+  function reviewSetup(completion: MissionCompletionFn) {
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const m = service.create("p1", { objective: "Repair" });
+    const cmd = service.addCriterion(m.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    const rev = service.addCriterion(m.id, "independent reviewer approves", { kind: "review" });
+    service.approveCriteria(m.id);
+    return { service, m, cmd, rev };
+  }
+
+  it("normalizes the real OpenCode Zen failure shape (empty content, finish_reason length) via the single dedicated repair call", async () => {
+    let reviewCalls = 0;
+    const completion: MissionCompletionFn = async (_m, opts) => {
+      if (opts.purpose !== "review") return { text: "[]" };
+      reviewCalls += 1;
+      // First call: sanitized shape of the actual production failure — the
+      // reasoning model burned its whole output budget on hidden
+      // chain-of-thought and the visible content was empty.
+      if (reviewCalls === 1) return { text: "", finishReason: "length" };
+      return {
+        text: JSON.stringify({ verdict: "approved", recommendedStatus: "completed", criterionJudgments: [{ index: 1, judgment: "satisfied", note: "ok" }], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], summary: "Approved after recovering from truncation." }),
+      };
+    };
+    const { service, m, cmd, rev } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(reviewCalls).toBe(2);
+    expect(review.verdict).toBe("approved");
+    expect(service.get(m.id).criteria.find((c) => c.id === rev.id)!.state).toBe("verified");
+  });
+
+  it("normalizes an unambiguous alternate-key, fenced response without needing a repair call", async () => {
+    let reviewCalls = 0;
+    const completion: MissionCompletionFn = async (_m, opts) => {
+      if (opts.purpose !== "review") return { text: "[]" };
+      reviewCalls += 1;
+      return {
+        text: [
+          "Here is my assessment after careful consideration:",
+          "```json",
+          JSON.stringify({ decision: "approve", judgments: [{ criterionIndex: 1, result: "satisfied" }], recommendation: "completed", explanation: "Looks correct." }),
+          "```",
+        ].join("\n"),
+      };
+    };
+    const { service, m, cmd, rev } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(reviewCalls).toBe(1); // recovered locally; no repair call needed
+    expect(review.verdict).toBe("approved");
+    expect(service.get(m.id).criteria.find((c) => c.id === rev.id)!.state).toBe("verified");
+  });
+
+  it("a genuine rejection survives the repair round-trip and is never flipped to approval", async () => {
+    let reviewCalls = 0;
+    const completion: MissionCompletionFn = async (_m, opts) => {
+      if (opts.purpose !== "review") return { text: "[]" };
+      reviewCalls += 1;
+      if (reviewCalls === 1) return { text: "I have concerns about this change that I cannot express cleanly right now." };
+      return { text: JSON.stringify({ verdict: "revisions_required", recommendedStatus: "partially_completed", criterionJudgments: [{ index: 1, judgment: "not_satisfied", note: "no proof" }], regressionRisks: [], suspiciousChanges: [], missingVerification: ["proof of fix"], concerns: ["unverified"], summary: "Not ready." }) };
+    };
+    const { service, m, cmd } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(reviewCalls).toBe(2);
+    expect(review.verdict).toBe("revisions_required");
+    const final = service.finalize(m.id);
+    expect(final.status).not.toBe("completed");
+  });
+
+  it("genuinely ambiguous output remains blocked even after the repair call also fails to parse", async () => {
+    let reviewCalls = 0;
+    const completion: MissionCompletionFn = async (_m, opts) => {
+      if (opts.purpose !== "review") return { text: "[]" };
+      reviewCalls += 1;
+      return { text: "I am still not sure how to evaluate this; there is ambiguity I cannot resolve." };
+    };
+    const { service, m, cmd } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(reviewCalls).toBe(2); // original + exactly one bounded repair call, never more
+    expect(review.verdict).toBe("insufficient_evidence");
+    const final = service.finalize(m.id);
+    expect(final.status).not.toBe("completed");
+  });
+
+  it("malformed output at every stage can never cause automatic approval", async () => {
+    const completion: MissionCompletionFn = async (_m, opts) =>
+      opts.purpose === "review" ? { text: "{{{ not json at all, just garbage ]]" } : { text: "[]" };
+    const { service, m, cmd } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+    const review = await service.runReview(m.id);
+    expect(review.verdict).toBe("insufficient_evidence");
+    const final = service.finalize(m.id);
+    expect(final.status).not.toBe("completed");
+  });
+
+  it("never logs raw provider text or embedded secrets, only redacted diagnostics", async () => {
+    const canary = "sk-super-secret-canary-token-should-never-be-logged";
+    const completion: MissionCompletionFn = async (_m, opts) =>
+      opts.purpose === "review" ? { text: `some unparseable text that happens to embed a credential: ${canary}` } : { text: "[]" };
+    const { service, m, cmd } = reviewSetup(completion);
+    await service.verifyCriterion(m.id, cmd.id);
+
+    const warnings: string[] = [];
+    const spy = (...args: unknown[]) => warnings.push(args.map((a) => String(a)).join(" "));
+    const original = console.warn;
+    console.warn = spy;
+    try {
+      await service.runReview(m.id);
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings.length).toBeGreaterThan(0);
+    for (const line of warnings) expect(line).not.toContain(canary);
+  });
+});
+
 describe("MissionService — restart and resume", () => {
   it("reconstructs the full mission from persistence with a brand-new service instance", async () => {
     const home = tmp("mission-home-");

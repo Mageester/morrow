@@ -26,6 +26,17 @@ export interface SourceFingerprint {
   statusHash: string | null;
 }
 
+export interface PackageProvenanceState {
+  packaged: boolean;
+  sourceCommit: string | null;
+  dirty: boolean | null;
+  version: string | null;
+  buildTimestamp: string | null;
+  schemaCatalogVersion: number | null;
+  manifestHash: string | null;
+  matchesIntendedCommit: boolean | null;
+}
+
 export interface AcceptanceCheck {
   status: EvidenceStatus;
   summary: string;
@@ -47,6 +58,7 @@ export interface AcceptanceRunState {
   fixture: FixtureState | null;
   product: ProductState | null;
   source: SourceFingerprint | null;
+  provenance: PackageProvenanceState | null;
   checks: Record<string, AcceptanceCheck>;
   artifacts: string[];
   message: string | null;
@@ -84,6 +96,7 @@ export interface AcceptanceReport {
   } | null;
   fixture: { startingSha: string } | null;
   sourceUntouched: boolean | null;
+  provenance: PackageProvenanceState | null;
   recoveryCount: number;
   checks: Record<string, AcceptanceCheck>;
   evidence: EvidenceEntry[];

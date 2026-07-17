@@ -23,7 +23,20 @@ export const REQUIRED_DURABLE_AUTONOMY_CHECKS = [
   "stable_mission_identity",
   "unique_operation_keys",
   "terminal_completion",
+  "sustained_autonomy_production_run",
+  "sustained_autonomy_work_units",
+  "sustained_autonomy_rollovers",
+  "sustained_autonomy_recoveries",
+  "sustained_autonomy_restart",
+  "sustained_autonomy_no_duplicates",
+  "sustained_autonomy_guardian",
+  "sustained_autonomy_terminal",
+  "sustained_autonomy_no_deadline",
+  "sustained_autonomy_integrity",
 ] as const;
+
+/** Only enforced for packaged runs (see runner.ts's `options.packaged` gate). */
+export const REQUIRED_PACKAGED_CHECKS = ["package_provenance"] as const;
 
 export function classifyAcceptanceRun(state: AcceptanceRunState): AcceptanceDisposition {
   if (state.disposition === "BLOCKED") return "BLOCKED";
@@ -31,9 +44,12 @@ export function classifyAcceptanceRun(state: AcceptanceRunState): AcceptanceDisp
   if (checks.length === 0) return "NOT RUN";
   if (checks.some((check) => check.status === "failed")) return "FAIL";
   if (checks.some((check) => check.status === "inconclusive")) return "INCONCLUSIVE";
-  const required = state.scenarioId === "durable-autonomy-v1"
-    ? [...REQUIRED_FOUNDATION_CHECKS, ...REQUIRED_DURABLE_AUTONOMY_CHECKS]
-    : REQUIRED_FOUNDATION_CHECKS;
+  const required: readonly string[] = [
+    ...(state.scenarioId === "durable-autonomy-v1"
+      ? [...REQUIRED_FOUNDATION_CHECKS, ...REQUIRED_DURABLE_AUTONOMY_CHECKS]
+      : REQUIRED_FOUNDATION_CHECKS),
+    ...(state.product?.packaged ? REQUIRED_PACKAGED_CHECKS : []),
+  ];
   if (required.some((key) => state.checks[key]?.status !== "passed")) return "INCONCLUSIVE";
   return "PASS";
 }
@@ -76,6 +92,7 @@ function makeReport(store: AcceptanceStore, state: AcceptanceRunState, evidence:
     } : null,
     fixture: state.fixture ? { startingSha: state.fixture.startingSha } : null,
     sourceUntouched: state.checks.source_untouched ? state.checks.source_untouched.status === "passed" : null,
+    provenance: state.provenance,
     recoveryCount: state.recoveryCount,
     checks: state.checks,
     evidence: safeEvidence(store, state.runId, evidence),

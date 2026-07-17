@@ -33,7 +33,7 @@ function state(runId: string, checks: Record<string, AcceptanceCheck> = {}): Acc
     recoveryCount: 0,
     fixture: null,
     product: null,
-    source: null,
+    source: null, provenance: null,
     checks,
     artifacts: [],
     message: null,

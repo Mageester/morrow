@@ -16,7 +16,17 @@ import { buildCriteriaPrompt, parseCriteriaFromModel, isVagueCriterion, rewriteV
 import { runVerification, type RunOptions } from "./evidence-runner.js";
 import { categorizeFailure, normalizeSignature, planRecovery, type RecoveryPlan } from "./failures.js";
 import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candidateFiles, isGitRepo } from "./checkpoints.js";
-import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, type ReviewContext } from "./reviewer.js";
+import { buildReviewMessages, buildReviewRepairMessages, isReviewParseFailure, parseReviewVerdict, parseReviewVerdictWithDiagnostics, fallbackParsed, type ReviewContext } from "./reviewer.js";
+import type { ReviewParseDiagnostics } from "./review-normalize.js";
+
+/** Redacted, hash-only diagnostic trail for a review parse failure. Never
+ * includes raw provider text — only the bounded attempt log, a content hash,
+ * and the finish reason — so this is safe to log even though the reviewer's
+ * output could in principle echo workspace content. */
+function logReviewParseFailure(missionId: string, stage: "original" | "repair", diagnostics: ReviewParseDiagnostics): void {
+  // eslint-disable-next-line no-console
+  console.warn("[review_parse_failure]", JSON.stringify({ missionId, stage, ...diagnostics }));
+}
 import { buildMissionResult } from "./result.js";
 import { extractMissionLearnings } from "./learning-extractor.js";
 import { selectActiveNode, deriveAllowedActions, canReopenNode, computeFrozen, isDependencyBlocked, allAuthoritativeSatisfied, assertRequirementTransition, isValidFileHash } from "./kernel.js";
@@ -30,7 +40,7 @@ import { evaluateGuardian, type GuardianDecision } from "./guardian.js";
 export type MissionCompletionFn = (
   messages: ChatMessage[],
   opts: { purpose: "planning" | "review"; temperature?: number },
-) => Promise<{ text: string; provider?: string; model?: string; usdCost?: number }>;
+) => Promise<{ text: string; provider?: string; model?: string; usdCost?: number; finishReason?: string | null }>;
 
 export interface MissionServiceDeps {
   repo: MissionsRepository;
@@ -617,18 +627,32 @@ export class MissionService {
       if (this.deps.completion) {
         try {
           const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
-          parsed = parseReviewVerdict(res.text, mission.criteria);
+          const first = parseReviewVerdictWithDiagnostics(res.text, mission.criteria, { finishReason: res.finishReason ?? null });
+          parsed = first.parsed;
           provider = res.provider ?? null; model = res.model ?? null;
           if (res.usdCost) usdCost += res.usdCost;
           if (isReviewParseFailure(parsed)) {
+            logReviewParseFailure(missionId, "original", first.diagnostics);
+            // ONE dedicated repair call, asking the model to reformat its own
+            // prior answer — never to re-decide. The bounded local extraction
+            // pipeline above already tried every deterministic recovery; this
+            // is the single network-bound fallback, capped here.
             const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
-            const repairedParsed = parseReviewVerdict(repaired.text, mission.criteria);
-            if (!isReviewParseFailure(repairedParsed)) parsed = repairedParsed;
+            const second = parseReviewVerdictWithDiagnostics(repaired.text, mission.criteria, { finishReason: repaired.finishReason ?? null });
+            if (isReviewParseFailure(second.parsed)) logReviewParseFailure(missionId, "repair", second.diagnostics);
+            else parsed = second.parsed;
             provider = repaired.provider ?? provider; model = repaired.model ?? model;
             if (repaired.usdCost) usdCost += repaired.usdCost;
           }
-        } catch {
-          parsed = parseReviewVerdict("", mission.criteria); // insufficient_evidence
+        } catch (error) {
+          // Distinguish a genuinely empty/unparseable provider response from
+          // the completion call itself throwing (network error, rate limit,
+          // or an admission rejection when the review request would exceed
+          // the model's usable input budget) — these are different failure
+          // classes and collapsing them into one message hides the real cause.
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn("[review_call_failed]", JSON.stringify({ missionId, message: message.slice(0, 500) }));
+          parsed = fallbackParsed(`provider call failed: ${message.slice(0, 200)}`); // insufficient_evidence, never approval
         }
       } else {
         parsed = parseReviewVerdict("", mission.criteria); // no reviewer available → insufficient
@@ -1595,8 +1619,8 @@ export class MissionService {
 }
 
 function gitDiff(workspace: string): string {
-  const staged = spawnSync("git", ["diff", "--no-color"], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
-  const untrackedList = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: workspace, encoding: "utf8" });
+  const staged = spawnSync("git", ["diff", "--no-color"], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+  const untrackedList = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   let out = staged.status === 0 ? staged.stdout : "";
   if (untrackedList.status === 0 && untrackedList.stdout.trim()) {
     out += `\n# untracked files:\n${untrackedList.stdout.trim()}`;

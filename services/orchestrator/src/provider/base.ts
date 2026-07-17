@@ -147,6 +147,12 @@ export interface ProviderChunk {
     completionTokens: number;
     cachedPromptTokens?: number;
   };
+  /** The wire protocol's own reason the response ended, when the adapter can
+   * observe it (e.g. OpenAI-style `finish_reason`). "length" means the
+   * provider was cut off by the output-token budget — including mid
+   * chain-of-thought for a reasoning model, before it ever wrote its answer.
+   * Absent when the protocol does not expose this. */
+  finishReason?: "stop" | "length" | "tool_calls" | "content_filter" | "other";
   /** Private provider protocol state; callers must persist it only in the
    * restricted continuation store and must never emit it as a task event. */
   providerContinuation?: ProviderContinuationState;

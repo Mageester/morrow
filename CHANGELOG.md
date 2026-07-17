@@ -6,6 +6,24 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Release status - 0.1.0-beta.31 is conditionally ready
+
+Deterministic and packaged acceptance gates (foundation, durable-autonomy,
+sustained-autonomy) pass. The remaining certification gate — a completed,
+funded, real-external-model Guardian mission run from the packaged product —
+has not yet been run. See `docs/ACCEPTANCE.md#release-status-01.0-beta31`.
+This release is not stable, final, or fully verified until that gate runs.
+
+### Fixed - the packaged long-run acceptance gate was fabricating its own evidence
+
+- Replaced the packaged `extended-run` scenario, which wrote its own progress,
+  recovery, rollover, checkpoint, and Guardian records and then verified them,
+  with a genuine `sustained-autonomy` scenario that drives the real
+  `MissionControllerRunner`, `TaskRunner`, `executeAgentChatTask`, context
+  accountant, recovery planner, startup reconciliation, and Guardian. The only
+  scripted boundary is the external model turn. See
+  `services/orchestrator/src/acceptance/sustained-autonomy.ts`.
+
 ## [0.1.0-beta.31] - 2026-07-16
 
 ### Added - durable autonomy and evidence gates

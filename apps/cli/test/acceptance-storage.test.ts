@@ -32,7 +32,7 @@ function initialState(runId = "run-20260716-abcdef12"): AcceptanceRunState {
     recoveryCount: 0,
     fixture: null,
     product: null,
-    source: null,
+    source: null, provenance: null,
     checks: {},
     artifacts: [],
     message: null,

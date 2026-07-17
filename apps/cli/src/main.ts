@@ -28,6 +28,7 @@ import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { acceptanceCommand, printAcceptanceHelp } from "./commands/acceptance.js";
+import { provenanceCommand } from "./commands/provenance.js";
 import { SLASH_COMMANDS } from "./terminal/commands.js";
 import { probePnpm } from "./service/pnpm.js";
 import { ensureRunning, serveDetached, serveForeground, stop, tailLog } from "./service/lifecycle.js";
@@ -41,7 +42,7 @@ export const VERSION = MORROW_VERSION;
 
 const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "acceptance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
@@ -86,7 +87,7 @@ export async function run(argv: string[]): Promise<number> {
     const ctx = new Context({ out, config, paths: config.paths, flags: parsed.flags });
 
     // Auto-detect first launch
-    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "doctor", "uninstall", "logs", "capabilities", "acceptance"].includes(invocation.root);
+    const isSetupCmd = invocation.kind === "command" && ["onboard", "serve", "start", "stop", "restart", "status", "doctor", "uninstall", "logs", "capabilities", "acceptance", "provenance"].includes(invocation.root);
     if (!isSetupCmd) {
       let onboarded = config.get("user.onboarded") === true;
       if (!onboarded) {
@@ -134,6 +135,7 @@ export async function run(argv: string[]): Promise<number> {
       case "new": return await chatWith({ new: true });
       case "cortex": return await cortexCommand(ctx, sub, args);
       case "acceptance": return await acceptanceCommand(ctx, sub, args);
+      case "provenance": return await provenanceCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "capabilities": return await capabilitiesCommand(ctx);
       case "mission": {
         // A bare `morrow mission` (no objective/subcommand) opens the interactive

@@ -9,7 +9,7 @@ import {
 } from "../src/acceptance/scenarios/durable-autonomy.js";
 import { runAcceptance, type AcceptanceInvocation } from "../src/acceptance/runner.js";
 import { createFoundationFixture } from "../src/acceptance/fixture.js";
-import { runExtendedProductiveMission } from "../src/acceptance/scenarios/extended-run.js";
+import { runSustainedAutonomyAcceptance } from "@morrow/orchestrator";
 
 const roots: string[] = [];
 
@@ -18,25 +18,28 @@ afterEach(() => {
 });
 
 describe("durable autonomy packaged acceptance scenarios", () => {
-  it("runs a productive extended workload with checkpoints, rollover, restart, and recovery", async () => {
-    const root = mkdtempSync(join(tmpdir(), "morrow-extended-acceptance-"));
+  it("drives the real controller/runner/Guardian stack through a sustained productive mission", async () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-sustained-acceptance-"));
     roots.push(root);
 
-    const result = await runExtendedProductiveMission({ root });
+    const result = await runSustainedAutonomyAcceptance({ root });
 
-    expect(result.passed, result.message ?? "extended run failed").toBe(true);
-    expect(result.workUnits).toBeGreaterThanOrEqual(96);
-    expect(result.progressObservations).toBeGreaterThanOrEqual(result.workUnits);
-    expect(result.checkpoints).toBeGreaterThanOrEqual(8);
-    expect(result.contextSegments).toBeGreaterThanOrEqual(4);
-    expect(result.contextBoundaryReasons).toContain("context_pressure");
-    expect(result.recoveryCategories).toEqual(expect.arrayContaining(["provider_failure", "tool_failure"]));
-    expect(result.databaseRestarts).toBeGreaterThanOrEqual(1);
-    expect(result.processHealth).toBe("ok");
+    expect(result.passed, result.message ?? "sustained autonomy scenario failed").toBe(true);
+    expect(result.productiveWorkUnits).toBeGreaterThanOrEqual(96);
+    expect(result.progressObservationCount).toBeGreaterThan(0);
+    expect(result.contextRolloverCount).toBeGreaterThanOrEqual(3);
+    expect(result.checkpointCount).toBeGreaterThan(0);
+    expect(result.recoveryCount).toBeGreaterThanOrEqual(2);
+    expect(result.databaseRestartCount).toBe(1);
+    expect(result.leaseGenerationAfterRestart).toBeGreaterThan(result.leaseGenerationBeforeRestart);
+    expect(result.duplicateCompletedOperations).toBe(0);
+    expect(result.guardianRejectionCount).toBeGreaterThan(0);
+    expect(result.guardianAuthorizationCount).toBe(1);
+    expect(result.sqliteIntegrity).toBe("ok");
     expect(result.deadlineMs).toBeNull();
     expect(result.userContinuations).toBe(0);
     expect(result.terminalState).toBe("completed");
-  });
+  }, 60_000);
 
   it("continues one durable mission through every deterministic fault", async () => {
     const root = mkdtempSync(join(tmpdir(), "morrow-durable-acceptance-"));
@@ -74,13 +77,24 @@ describe("durable autonomy packaged acceptance scenarios", () => {
     expect(scenario("abrupt_process_restart").dispatchCount).toBe(1);
   });
 
-  it("registers durable-autonomy-v1 without weakening foundation checks", { timeout: 20_000 }, async () => {
+  it("registers durable-autonomy-v1 without weakening foundation checks", { timeout: 90_000 }, async () => {
     const acceptanceRoot = mkdtempSync(join(tmpdir(), "morrow-durable-runner-"));
     roots.push(acceptanceRoot);
     // Use a dedicated immutable Git source so concurrent repository-fixture
     // tests cannot transiently change the integrity fingerprint for this run.
     const source = createFoundationFixture(join(acceptanceRoot, "source"));
     const invoke: AcceptanceInvocation = async (args, options) => {
+      if (args[0] === "provenance") return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          packaged: true,
+          provenance: {
+            schemaVersion: 1, version: "0.1.0-test", sourceCommit: source.startingSha, dirty: false,
+            buildTimestamp: "2026-07-16T00:00:00.000Z", schemaCatalogVersion: 1, manifestHash: "e".repeat(64),
+          },
+        }),
+        stderr: "",
+      };
       if (args[0] === "init") return { exitCode: 0, stdout: JSON.stringify({ id: "project-1" }), stderr: "" };
       if (args[0] === "ask") return { exitCode: 0, stdout: JSON.stringify({ status: "completed", task: { id: "task-1", status: "completed" }, evidence: [{ path: "evidence.txt" }] }), stderr: "" };
       if (args[0] === "yolo") {
@@ -191,6 +205,7 @@ describe("durable autonomy packaged acceptance scenarios", () => {
     expect(result.state.disposition).toBe("PASS");
     expect(result.state.product?.missionId).toBe("mission-acceptance-premature_completion");
     expect(result.state.checks).toMatchObject({
+      package_provenance: { status: "passed" },
       product_persistence: { status: "passed" },
       premature_completion: { status: "passed" },
       abrupt_process_restart: { status: "passed" },
@@ -204,7 +219,16 @@ describe("durable autonomy packaged acceptance scenarios", () => {
       automatic_memory: { status: "passed" },
       automatic_skills: { status: "passed" },
       model_truth: { status: "passed" },
-      extended_productive_run: { status: "passed" },
+      sustained_autonomy_production_run: { status: "passed" },
+      sustained_autonomy_work_units: { status: "passed" },
+      sustained_autonomy_rollovers: { status: "passed" },
+      sustained_autonomy_recoveries: { status: "passed" },
+      sustained_autonomy_restart: { status: "passed" },
+      sustained_autonomy_no_duplicates: { status: "passed" },
+      sustained_autonomy_guardian: { status: "passed" },
+      sustained_autonomy_terminal: { status: "passed" },
+      sustained_autonomy_no_deadline: { status: "passed" },
+      sustained_autonomy_integrity: { status: "passed" },
     });
   });
 });

@@ -3,6 +3,18 @@
 Morrow's acceptance foundation tests the packaged product rather than calling
 only internal modules. It is deliberately separate from ordinary unit tests.
 
+## Release status (0.1.0-beta.31)
+
+This release is **conditionally ready**, not stable, final, or fully verified.
+The deterministic unit/integration suites and the packaged acceptance gates
+below (foundation, durable-autonomy, sustained-autonomy) have passed. The one
+outstanding certification gate is a completed, funded, real-external-model
+Guardian mission run from the packaged product on a fresh coding fixture (see
+"Package proof" below) — the deterministic/scripted provider gates prove the
+production stack's mechanics, not a real model's output quality end to end.
+Do not describe this release as stable, final, perfect, or verified ready
+until that gate has been run and recorded.
+
 ## Commands
 
 ```powershell
@@ -39,13 +51,22 @@ controller. PASS requires all of the following:
   skill and apply it automatically in Mission C;
 - compare packaged model list/detail output before and after a service restart,
   with limits either sourced positive integers or explicitly unknown;
-- exercise the durable mission ledger across a database close/reopen. NOTE
-  (Beta.31, unresolved): this scenario writes its own progress, recovery,
-  rollover, checkpoint, and Guardian records rather than driving the controller,
-  so it proves durable-ledger integrity only. It is NOT evidence of an extended
-  productive run, and its work-unit, rollover, recovery, deadline, and
-  user-continuation figures must not be cited as such until the scenario is
-  rebuilt on the real controller; and
+- drive a sustained-autonomy mission through the real production stack
+  (`MissionControllerRunner`, `TaskRunner`, `executeAgentChatTask`, the real
+  context accountant, recovery planner, startup reconciliation, and Guardian).
+  The only injected boundary is the external model turn, using the documented
+  TaskRunner executor/completion seam; every measured effect — progress
+  observations, context rollovers, checkpoints, classified recoveries, the
+  SQLite close/reopen, lease-generation advancement under a new controller
+  owner, the real Guardian rejection and subsequent authorization, and the
+  terminal completion — is produced by production code reacting to those
+  turns, not written directly by the scenario. PASS requires at least 96
+  production-created work units, at least 3 production-triggered context
+  rollovers, at least 2 classified recoveries, exactly one real database
+  restart with lease-generation advancement, zero duplicated completed
+  operations, a real Guardian rejection followed by exactly one real Guardian
+  authorization, no configured deadline, zero observed user continuations, and
+  SQLite integrity; and
 - drive five deterministic controller faults: premature completion, context
   rollover, provider failure, legitimate no-progress investigation, and an
   abrupt controller restart, while retaining one mission ID, unique durable

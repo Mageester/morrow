@@ -8,8 +8,7 @@ import { classifyAcceptanceRun, writeAcceptanceReports } from "./report.js";
 import { AcceptanceStore, assertContainedPath } from "./storage.js";
 import type { AcceptanceCheck, AcceptanceRunState, AcceptanceScenarioId, SourceFingerprint } from "./types.js";
 import { runDurableAutonomyScenarios } from "./scenarios/durable-autonomy.js";
-import { runExtendedProductiveMission } from "./scenarios/extended-run.js";
-import { runBrowserSiteAcceptance, runCortexLearningAcceptance, type BrowserSiteAcceptanceResult, type CortexLearningAcceptanceResult } from "@morrow/orchestrator";
+import { runBrowserSiteAcceptance, runCortexLearningAcceptance, runSustainedAutonomyAcceptance, type BrowserSiteAcceptanceResult, type CortexLearningAcceptanceResult, type SustainedAutonomyAcceptanceResult } from "@morrow/orchestrator";
 
 export interface InvocationResult { exitCode: number; stdout: string; stderr: string }
 export interface InvocationOptions { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }
@@ -28,8 +27,16 @@ export interface AcceptanceRunnerOptions {
   invoke?: AcceptanceInvocation;
   simulateAbruptInterruption?: boolean;
   scenarioId?: AcceptanceScenarioId;
+  /** Intended source commit the package should reflect. Defaults to the commit
+   *  fingerprinted from sourceCwd. Override only for tests that need to model
+   *  a deliberate mismatch. */
+  intendedSourceCommit?: string;
+  /** Explicit escape hatches; both default to false (strict rejection). */
+  allowProvenanceMismatch?: boolean;
+  allowDirtyPackage?: boolean;
   browserSiteScenario?: (input: { root: string }) => Promise<BrowserSiteAcceptanceResult>;
   cortexLearningScenario?: (input: { root: string }) => Promise<CortexLearningAcceptanceResult>;
+  sustainedAutonomyScenario?: (input: { root: string }) => Promise<SustainedAutonomyAcceptanceResult>;
 }
 
 export interface AcceptanceRunResult { state: AcceptanceRunState; reportJson: string; reportMarkdown: string }
@@ -193,7 +200,7 @@ export async function runAcceptance(options: AcceptanceRunnerOptions): Promise<A
     startedAt: now, updatedAt: now, completedAt: null, activeStep: null, completedSteps: [], recoveryCount: 0,
     fixture: null,
     product: { home: productHome, entrypoint: options.entrypoint, packaged: options.packaged, version: options.version, taskId: null, missionId: null, exitCode: null },
-    source: fingerprintSource(options.sourceCwd), checks: {}, artifacts: [], message: null,
+    source: fingerprintSource(options.sourceCwd), provenance: null, checks: {}, artifacts: [], message: null,
   };
   store.create(state);
   return execute(store, state, options, secrets);
@@ -246,6 +253,12 @@ export async function resumeAcceptance(runId: string, options: AcceptanceRunnerO
     state.activeStep = null;
     store.save(state);
   }
+  if (state.activeStep === "package-provenance") {
+    state.recoveryCount += 1;
+    store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Re-read the idempotent packaged provenance report after interruption" });
+    state.activeStep = null;
+    store.save(state);
+  }
   if (state.activeStep === "model-truth") {
     state.recoveryCount += 1;
     store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Reran the idempotent model-truth probes after interruption" });
@@ -274,6 +287,49 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
     }
     if (!state.fixture || !state.product) throw new Error("Acceptance run is missing fixture or product state");
     mkdirSync(productHome, { recursive: true });
+
+    if (options.packaged && !state.completedSteps.includes("package-provenance")) {
+      beginStep(store, state, "package-provenance");
+      const invoked = await invoke(["provenance", "--json", "--no-color", "--quiet"], { cwd: state.fixture.path, env: childEnv, timeoutMs: 15_000 });
+      const artifact = writeArtifact(store, state, "package-provenance.json", invoked.stdout);
+      const payload = parseJsonOutput(invoked.stdout);
+      const provenance = payload?.provenance ?? null;
+      const isPackaged = Boolean(payload?.packaged) && provenance !== null;
+      const intendedCommit = options.intendedSourceCommit ?? state.source?.commit ?? null;
+      const matchesIntendedCommit = isPackaged && intendedCommit !== null ? provenance.sourceCommit === intendedCommit : null;
+      const dirty: boolean | null = isPackaged ? Boolean(provenance.dirty) : null;
+      state.provenance = {
+        packaged: isPackaged,
+        sourceCommit: isPackaged ? provenance.sourceCommit ?? null : null,
+        dirty,
+        version: isPackaged ? provenance.version ?? null : null,
+        buildTimestamp: isPackaged ? provenance.buildTimestamp ?? null : null,
+        schemaCatalogVersion: isPackaged ? provenance.schemaCatalogVersion ?? null : null,
+        manifestHash: isPackaged ? provenance.manifestHash ?? null : null,
+        matchesIntendedCommit,
+      };
+      if (!isPackaged) throw new Error("Packaged acceptance run requires embedded PROVENANCE.json, but the running binary reported none");
+      if (matchesIntendedCommit === false && !options.allowProvenanceMismatch) {
+        throw new Error(`Stale package: binary was built from commit ${provenance.sourceCommit ?? "unknown"}, but the intended source commit is ${intendedCommit}`);
+      }
+      if (dirty === true && !options.allowDirtyPackage) {
+        throw new Error("Package was built from a dirty worktree; rejecting unless allowDirtyPackage is explicitly set");
+      }
+      const passed = isPackaged && matchesIntendedCommit !== false && (dirty !== true || Boolean(options.allowDirtyPackage));
+      const entry = store.appendEvidence(state.runId, {
+        step: "package-provenance",
+        kind: "package-provenance",
+        status: passed ? "passed" : "failed",
+        summary: passed
+          ? `Packaged binary reported provenance for commit ${provenance.sourceCommit}, matching the intended source commit, with manifest hash ${String(provenance.manifestHash).slice(0, 12)}…`
+          : "Packaged binary provenance did not match the intended source commit or was built dirty",
+        artifact,
+        details: { sourceCommit: provenance.sourceCommit, intendedCommit, dirty, manifestHash: provenance.manifestHash, version: provenance.version, buildTimestamp: provenance.buildTimestamp },
+      });
+      state.checks.package_provenance = makeCheck(entry.status, entry.summary, [entry.id]);
+      completeStep(store, state, "package-provenance");
+    }
+
     writeFileSync(join(productHome, "config.json"), `${JSON.stringify({ user: { onboarded: true }, service: { port }, defaults: { mode: "read-only", useMemory: false } }, null, 2)}\n`, "utf8");
 
     if (!state.completedSteps.includes("product-init")) {
@@ -484,9 +540,9 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
       beginStep(store, state, "durable-autonomy");
       const scenarioRoot = assertContainedPath(runRoot, join(runRoot, "durable-autonomy"));
       const result = await runDurableAutonomyScenarios({ root: scenarioRoot });
-      const extendedRun = await runExtendedProductiveMission({ root: join(scenarioRoot, "extended-productive-run") });
+      const sustainedAutonomy = await (options.sustainedAutonomyScenario ?? runSustainedAutonomyAcceptance)({ root: join(scenarioRoot, "sustained-autonomy") });
       const artifact = writeArtifact(store, state, "durable-autonomy.json", `${JSON.stringify(result, null, 2)}\n`);
-      const extendedArtifact = writeArtifact(store, state, "extended-productive-run.json", `${JSON.stringify(extendedRun, null, 2)}\n`);
+      const sustainedArtifact = writeArtifact(store, state, "sustained-autonomy.json", `${JSON.stringify(sustainedAutonomy, null, 2)}\n`);
       state.product.missionId = result.scenarios[0]?.missionId ?? null;
       for (const scenario of result.scenarios) {
         const entry = store.appendEvidence(state.runId, {
@@ -518,30 +574,50 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
         const entry = store.appendEvidence(state.runId, { step: "durable-autonomy", kind: "ledger-invariant", status: passed ? "passed" : "failed", summary });
         state.checks[key] = makeCheck(entry.status, entry.summary, [entry.id]);
       }
-      const extendedEntry = store.appendEvidence(state.runId, {
+      const sustainedEntry = store.appendEvidence(state.runId, {
         step: "durable-autonomy",
-        kind: "extended-productive-run",
-        status: extendedRun.passed ? "passed" : "failed",
-        summary: extendedRun.passed
-          // This scenario writes the records it then reads back, so its figures
-          // demonstrate durable-ledger integrity across a database restart and
-          // nothing about autonomous execution. Do not restore productive-run
-          // wording until the scenario drives the real controller.
-          ? `Durable ledger survived ${extendedRun.databaseRestarts} database restart(s) with ${extendedRun.checkpoints} checkpoints intact (scenario-authored records; NOT evidence of a productive run)`
-          : `Durable ledger integrity scenario failed: ${extendedRun.message ?? "unknown failure"}`,
-        artifact: extendedArtifact,
+        kind: "sustained-autonomy",
+        status: sustainedAutonomy.passed ? "passed" : "failed",
+        summary: sustainedAutonomy.passed
+          ? `Production controller/runner stack completed ${sustainedAutonomy.productiveWorkUnits} real work units through ${sustainedAutonomy.contextRolloverCount} context rollovers, ${sustainedAutonomy.recoveryCount} classified recoveries, a real SQLite close/reopen, a real Guardian rejection, and real Guardian authorization`
+          : `Sustained-autonomy scenario failed: ${sustainedAutonomy.message ?? "unknown failure"}`,
+        artifact: sustainedArtifact,
         details: {
-          missionId: extendedRun.missionId,
-          progressObservations: extendedRun.progressObservations,
-          recoveryCategories: extendedRun.recoveryCategories,
-          contextBoundaryReasons: extendedRun.contextBoundaryReasons,
-          deadlineMs: extendedRun.deadlineMs,
-          userContinuations: extendedRun.userContinuations,
-          processHealth: extendedRun.processHealth,
-          wallClockMs: extendedRun.wallClockMs,
+          missionId: sustainedAutonomy.missionId,
+          productiveWorkUnits: sustainedAutonomy.productiveWorkUnits,
+          progressObservationCount: sustainedAutonomy.progressObservationCount,
+          contextRolloverCount: sustainedAutonomy.contextRolloverCount,
+          checkpointCount: sustainedAutonomy.checkpointCount,
+          recoveryCategories: sustainedAutonomy.recoveryCategories,
+          databaseRestartCount: sustainedAutonomy.databaseRestartCount,
+          leaseGenerationBeforeRestart: sustainedAutonomy.leaseGenerationBeforeRestart,
+          leaseGenerationAfterRestart: sustainedAutonomy.leaseGenerationAfterRestart,
+          duplicateCompletedOperations: sustainedAutonomy.duplicateCompletedOperations,
+          guardianRejectionCount: sustainedAutonomy.guardianRejectionCount,
+          guardianAuthorizationCount: sustainedAutonomy.guardianAuthorizationCount,
+          transitionActors: sustainedAutonomy.transitionActors,
+          deadlineMs: sustainedAutonomy.deadlineMs,
+          userContinuations: sustainedAutonomy.userContinuations,
+          sqliteIntegrity: sustainedAutonomy.sqliteIntegrity,
+          wallClockMs: sustainedAutonomy.wallClockMs,
         },
       });
-      state.checks.extended_productive_run = makeCheck(extendedEntry.status, extendedEntry.summary, [extendedEntry.id]);
+      state.checks.sustained_autonomy_production_run = makeCheck(sustainedEntry.status, sustainedEntry.summary, [sustainedEntry.id]);
+      const sustainedInvariants: Array<[string, boolean, string]> = [
+        ["sustained_autonomy_work_units", sustainedAutonomy.productiveWorkUnits >= 96, `Production execution produced ${sustainedAutonomy.productiveWorkUnits} real work units (>=96 required)`],
+        ["sustained_autonomy_rollovers", sustainedAutonomy.contextRolloverCount >= 3, `Production context accounting triggered ${sustainedAutonomy.contextRolloverCount} rollover(s) (>=3 required)`],
+        ["sustained_autonomy_recoveries", sustainedAutonomy.recoveryCount >= 2, `The production recovery planner classified ${sustainedAutonomy.recoveryCount} recover(y/ies) (>=2 required)`],
+        ["sustained_autonomy_restart", sustainedAutonomy.databaseRestartCount === 1 && sustainedAutonomy.leaseGenerationAfterRestart > sustainedAutonomy.leaseGenerationBeforeRestart, "A real SQLite close/reopen was followed by lease-generation advancement under a new owner"],
+        ["sustained_autonomy_no_duplicates", sustainedAutonomy.duplicateCompletedOperations === 0, "No completed side effect ran a second time after the restart"],
+        ["sustained_autonomy_guardian", sustainedAutonomy.guardianRejectionCount > 0 && sustainedAutonomy.guardianAuthorizationCount === 1, "The real Guardian rejected the first candidate and authorized exactly one terminal completion after correction"],
+        ["sustained_autonomy_terminal", sustainedAutonomy.terminalState === "completed", "The mission reached a production-created terminal completion"],
+        ["sustained_autonomy_no_deadline", sustainedAutonomy.deadlineMs === null && sustainedAutonomy.userContinuations === 0, "The mission ran to completion without a configured arbitrary deadline or an observed user continuation"],
+        ["sustained_autonomy_integrity", sustainedAutonomy.sqliteIntegrity === "ok", "SQLite integrity_check reported ok after the run"],
+      ];
+      for (const [key, passed, summary] of sustainedInvariants) {
+        const entry = store.appendEvidence(state.runId, { step: "durable-autonomy", kind: "sustained-autonomy-invariant", status: passed ? "passed" : "failed", summary });
+        state.checks[key] = makeCheck(entry.status, entry.summary, [entry.id]);
+      }
       completeStep(store, state, "durable-autonomy");
     }
 
@@ -566,17 +642,19 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
     const entry = store.appendEvidence(state.runId, { step: state.activeStep ?? "runner", kind: "failure", status: evidenceStatus, summary: message });
     const key = state.activeStep === "product" || state.activeStep === "product-init"
       ? "product_exit"
-      : state.activeStep === "write-capable-fix"
-        ? "write_capable_bug_fix"
-        : state.activeStep === "browser-company-site"
-          ? "browser_company_site"
-          : state.activeStep === "cortex-learning"
-            ? "automatic_memory"
-            : state.activeStep === "model-truth"
-              ? "model_truth"
-              : state.activeStep === "durable-autonomy"
-                ? "terminal_completion"
-                : "product_persistence";
+      : state.activeStep === "package-provenance"
+        ? "package_provenance"
+        : state.activeStep === "write-capable-fix"
+          ? "write_capable_bug_fix"
+          : state.activeStep === "browser-company-site"
+            ? "browser_company_site"
+            : state.activeStep === "cortex-learning"
+              ? "automatic_memory"
+              : state.activeStep === "model-truth"
+                ? "model_truth"
+                : state.activeStep === "durable-autonomy"
+                  ? "terminal_completion"
+                  : "product_persistence";
     state.checks[key] = makeCheck(evidenceStatus, message, [entry.id]);
     state.message = message;
   } finally {

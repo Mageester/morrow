@@ -15,7 +15,7 @@ export {
 } from "./home.js";
 export { TaskRunner, type TaskExecutor } from "./runner.js";
 export { recoverRunningTasks, reconcileTasksOnStartup, reconcileMissionsOnStartup } from "./recovery.js";
-export { MissionControllerRunner, createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
+export { MissionControllerRunner, createDefaultMissionControllerRunner, isMissionRuntimeTerminal } from "./mission/controller-runner.js";
 export { MissionController, type ControllerSnapshot } from "./mission/controller.js";
 export { missionRuntimeRepository } from "./repositories/mission-runtime.js";
 export {
@@ -32,6 +32,7 @@ export { taskRepository } from "./repositories/tasks.js";
 export { executeAgentChatTask } from "./execution/agent.js";
 export { runBrowserSiteAcceptance, MORROW_COMPANY_SITE_PROMPT, type BrowserSiteAcceptanceResult } from "./acceptance/browser-site.js";
 export { runCortexLearningAcceptance, type CortexLearningAcceptanceResult } from "./acceptance/cortex-learning.js";
+export { runSustainedAutonomyAcceptance, type SustainedAutonomyAcceptanceResult } from "./acceptance/sustained-autonomy.js";
 export { MockProvider } from "./provider/mock.js";
 
 export { listProviderStatuses, getProviderStatus, isProviderConfigured, createProvider, PROVIDER_IDS } from "./provider/registry.js";
