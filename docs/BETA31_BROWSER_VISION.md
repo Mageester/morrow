@@ -8,7 +8,9 @@ Beta.31 connects Morrow's hardened Playwright controller to the durable agent ru
 - Snapshot, console, click, fill, key, select, viewport, screenshot, download, and close operations use the approved session. The session is closed on every task exit path.
 - Screenshots and downloads stay under `MORROW_HOME/artifacts/browser/<task-id>`. Screenshot evidence records route, viewport, byte size, SHA-256, and whether vision attachment was allowed.
 - PNG bytes are attached ephemerally only when the selected model has non-unknown, positive vision metadata. OpenAI Chat, OpenAI Responses/Codex, Anthropic Messages, and Gemini transports have tested native image serialization. Base64 is not stored in conversation text, tool output, events, or audit records.
+- Screenshot budget accounting uses verified viewport pixels (with a conservative overhead) rather than treating base64 transport bytes as text tokens. Recovered legacy images without dimensions use a conservative decoded-byte estimate.
 - A durable restart may reattach the latest screenshot only after artifact-root containment, symlink, size, and SHA-256 checks pass.
+- Packaged Windows sessions default to the installed Microsoft Edge channel. Source/development sessions retain Playwright's normal browser selection, and an explicit configured browser still wins.
 
 Frontend changes have a deterministic post-change completion gate. Completion requires an approved navigation, explicit DOM snapshot, console/page-error inspection, at least one relevant interaction, and vision-attached screenshots at 1440x900, 768x1024, and 390x844. Missing evidence interrupts the task or returns a mission worker to Guardian validation; model narration cannot bypass the gate.
 
@@ -22,6 +24,6 @@ Frontend changes have a deterministic post-change completion gate. Completion re
 
 ## Evidence and rollback
 
-Focused proof lives in `agent-browser.test.ts`, `browser-injection.test.ts`, `provider-vision.test.ts`, `context-budget.test.ts`, and `tools-catalog.test.ts`. The production-path test launches real Chromium through the agent boundary against an approved loopback server and verifies a real PNG, semantic interaction, console evidence, and cleanup.
+Focused proof lives in `agent-browser.test.ts`, `browser-injection.test.ts`, `provider-vision.test.ts`, `context-budget.test.ts`, and `tools-catalog.test.ts`. The packaged `durable-autonomy-v1` acceptance scenario additionally creates a real responsive site through agent file tools, launches a browser against an approved loopback server, runs the source test, DOM snapshot, console checks, semantic interaction, and captures vision-attached PNGs at 1440x900, 768x1024, and 390x844.
 
 Rollback removes the agent browser tool definitions and provider image fields while leaving task artifacts and audit history intact. It must not delete user workspaces, screenshots, downloads, approvals, or mission evidence.

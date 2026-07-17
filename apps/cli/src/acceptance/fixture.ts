@@ -41,6 +41,48 @@ export function createFoundationFixture(runRoot: string): FixtureState {
   return { path: fixture, startingSha, startingStatus };
 }
 
+export function createWriteFixFixture(runRoot: string): FixtureState {
+  const fixture = assertContainedPath(runRoot, join(runRoot, "write-fix-fixture"));
+  if (existsSync(fixture)) throw new Error("Write-fix acceptance fixture already exists");
+  mkdirSync(join(fixture, "src"), { recursive: true });
+  mkdirSync(join(fixture, "test"), { recursive: true });
+  writeFileSync(join(fixture, "src", "cart.mjs"), [
+    "export function tax(subtotal, rate = 0.13) {",
+    "  return subtotal + rate;",
+    "}",
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(join(fixture, "src", "receipt.mjs"), [
+    "export function receiptLine(item) {",
+    "  return `${item.name} x ${item.quantity}: $${item.price.toFixed(2)}`;",
+    "}",
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(join(fixture, "test", "cart.test.mjs"), [
+    'import test from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { tax } from "../src/cart.mjs";',
+    'import { receiptLine } from "../src/receipt.mjs";',
+    "",
+    'test("calculates tax", () => assert.equal(tax(20), 2.6));',
+    'test("prints a quantity-aware receipt line", () => {',
+    '  assert.equal(receiptLine({ name: "Coffee", price: 3.5, quantity: 2 }), "Coffee x 2: $7.00");',
+    "});",
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(join(fixture, "package.json"), `${JSON.stringify({ name: "morrow-beta31-write-fix", private: true, type: "module", scripts: { test: "node --test" } }, null, 2)}\n`, "utf8");
+
+  git(fixture, ["init"]);
+  git(fixture, ["config", "user.name", "Morrow Acceptance"]);
+  git(fixture, ["config", "user.email", "acceptance@invalid.local"]);
+  git(fixture, ["config", "core.autocrlf", "false"]);
+  git(fixture, ["add", "--", "src/cart.mjs", "src/receipt.mjs", "test/cart.test.mjs", "package.json"]);
+  git(fixture, ["commit", "-m", "test: seed write-fix fixture"]);
+  const startingSha = git(fixture, ["rev-parse", "HEAD"]);
+  const startingStatus = git(fixture, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  return { path: fixture, startingSha, startingStatus };
+}
+
 export function verifyFixtureUnchanged(fixture: FixtureState): { head: string; status: string; unchanged: boolean } {
   const head = git(fixture.path, ["rev-parse", "HEAD"]);
   const status = git(fixture.path, ["status", "--porcelain=v1", "--untracked-files=all"]);

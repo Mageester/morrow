@@ -61,6 +61,35 @@ describe("Mission REST API", () => {
     expect(badBody.statusCode).toBe(400);
   });
 
+  it("persists an explicit execution route for every later worker dispatch", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/projects/p1/missions",
+      payload: {
+        objective: "Repair with the selected model",
+        preset: "coding",
+        providerId: "deepseek",
+        model: "deepseek-v4-pro",
+        reasoning: { mode: "auto" },
+      },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json().execution).toEqual({
+      preset: "coding",
+      providerId: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: { mode: "auto" },
+    });
+
+    app.close();
+    db.close();
+    db = openDatabase(join(tempDir, "morrow.db"));
+    app = buildServer({ db, runner: new TaskRunner(db), missionControllerRunner });
+    const persisted = await app.inject({ method: "GET", url: `/api/missions/${created.json().id}` });
+    expect(persisted.json().execution).toEqual(created.json().execution);
+  });
+
   it("persists a mission across a fresh server over the same database", async () => {
     const m = await createMission("Durable objective");
     app.close(); db.close();

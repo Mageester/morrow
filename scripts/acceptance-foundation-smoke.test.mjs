@@ -65,6 +65,17 @@ test("durable acceptance inspection requires all fault and ledger proofs", () =>
       "product_persistence", "secrets_absent", "premature_completion", "context_rollover",
       "provider_failure", "false_no_progress", "abrupt_process_restart", "stable_mission_identity",
       "unique_operation_keys", "terminal_completion",
+      "extended_productive_run",
+      "write_capable_bug_fix",
+      "malformed_tool_recovery",
+      "command_failure_recovery",
+      "diff_inspected",
+      "browser_company_site",
+      "browser_vision",
+      "frontend_visual_validation",
+      "automatic_memory",
+      "automatic_skills",
+      "model_truth",
     ].map((key) => [key, { status: "passed" }]));
     writeFileSync(join(root, "report.json"), JSON.stringify({
       scenarioId: "durable-autonomy-v1", disposition: "PASS", fixture: { startingSha: "c".repeat(40) },

@@ -6,7 +6,8 @@ import type { DurableMission, MorrowApi } from "../client/api.js";
 import type { Mission, MissionCriterion, MissionEvidence, MissionResult } from "@morrow/contracts";
 import { ensureRunning } from "../service/lifecycle.js";
 import { resolveProject, shortId } from "./common.js";
-import { flagBool } from "../cli/args.js";
+import { flagBool, flagString } from "../cli/args.js";
+import type { CreateMissionInput } from "@morrow/contracts";
 import { EXIT, usageError, notFound } from "../cli/errors.js";
 import { renderImpact, renderRevisions } from "./cortex.js";
 
@@ -85,7 +86,17 @@ async function runMission(ctx: Context, api: MorrowApi, objective: string): Prom
   ctx.out.diag(ctx.out.gray(`  ${projectName}  ${project.workspacePath}  ·  Mission${autonomous ? " · autonomous" : ""}`));
 
   // 1. Create the mission and generate measurable criteria before execution.
-  const created = await api.createMission(project.id, { objective, autoApprove: autonomous });
+  const preset = flagString(ctx.flags, "preset") as CreateMissionInput["preset"];
+  const providerId = flagString(ctx.flags, "provider") as CreateMissionInput["providerId"];
+  const model = flagString(ctx.flags, "model");
+  const created = await api.createMission(project.id, {
+    objective,
+    autoApprove: autonomous,
+    ...(preset ? { preset } : {}),
+    ...(providerId ? { providerId } : {}),
+    ...(model ? { model } : {}),
+    reasoning: { mode: "auto" },
+  });
   ctx.out.info(ctx.out.gray("Understanding the objective and drafting success criteria…"));
   const withCriteria = await api.generateMissionCriteria(created.id, summarizeRepo(project.workspacePath));
 

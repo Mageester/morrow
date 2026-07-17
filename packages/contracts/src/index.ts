@@ -861,6 +861,14 @@ export const MissionResultSchema=z.object({
 }).strict();
 export type MissionResult=z.infer<typeof MissionResultSchema>;
 
+export const MissionExecutionSchema=z.object({
+  preset:PresetIdSchema.default("balanced"),
+  providerId:ProviderIdSchema.nullable().default(null),
+  model:z.string().trim().min(1).max(200).nullable().default(null),
+  reasoning:ReasoningConfigurationSchema.default({mode:"auto"}),
+}).strict();
+export type MissionExecution=z.infer<typeof MissionExecutionSchema>;
+
 export const MissionSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
@@ -869,6 +877,7 @@ export const MissionSchema=z.object({
   objective:z.string().min(1).max(8000),
   status:MissionStatusSchema,
   autoApprove:z.boolean().default(false),
+  execution:MissionExecutionSchema.default({preset:"balanced",providerId:null,model:null,reasoning:{mode:"auto"}}),
   criteria:z.array(MissionCriterionSchema).default([]),
   taskTreeRootId:z.string().nullable().default(null),
   budget:MissionBudgetSchema,
@@ -1108,6 +1117,10 @@ export const CreateMissionSchema=z.object({
   objective:z.string().trim().min(1).max(8000),
   conversationId:z.string().optional(),
   autoApprove:z.boolean().optional(),
+  preset:PresetIdSchema.optional(),
+  providerId:ProviderIdSchema.optional(),
+  model:z.string().trim().min(1).max(200).optional(),
+  reasoning:ReasoningConfigurationSchema.optional(),
   maxUsd:z.number().nonnegative().optional(),
   maxAttempts:z.number().int().positive().optional(),
   // Optional structured contract. When provided, its explicit values populate

@@ -15,13 +15,15 @@ import {
 } from "../repositories/mission-runtime.js";
 import { dispatchAgentTask } from "./task-dispatcher.js";
 import { MissionService } from "./service.js";
-import { MissionController, type ControllerTickResult } from "./controller.js";
+import { MissionController, type ControllerRecovery, type ControllerTickResult } from "./controller.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { memoryRepository } from "../repositories/memory.js";
 import { learnedSkillsRepository } from "../repositories/learned-skills.js";
 import { CortexService } from "../cortex/service.js";
 import { AutomaticMemoryService } from "../cortex/automatic-memory.js";
 import { AutomaticSkillService } from "../cortex/automatic-skills.js";
+import { listProviderStatuses } from "../provider/registry.js";
+import { decideWorkerRecovery, type ProviderFailureDetails } from "./worker-recovery.js";
 
 type MissionRuntimeRepository = ReturnType<typeof missionRuntimeRepository>;
 
@@ -196,20 +198,63 @@ export function createDefaultMissionControllerRunner(
   const controller = new MissionController({
     runtime,
     loadSnapshot: (missionId) => {
+      const mission = missionService.get(missionId);
       const guardianDependencies = missions.guardianDependencies(missionId);
-      const latestRecovery = runtime.listRecoveryDecisions(missionId).at(-1) ?? null;
+      const priorRecoveries = runtime.listRecoveryDecisions(missionId);
+      const latestRecovery = priorRecoveries.at(-1) ?? null;
+      const activeTaskId = runtime.get(missionId)?.activeTaskId ?? null;
+      const activeTask = activeTaskId
+        ? guardianDependencies.tasks.find((task) => task.id === activeTaskId)
+        : undefined;
+      let recovery: ControllerRecovery | null = latestRecovery ? {
+        category: latestRecovery.category,
+        diagnosis: latestRecovery.diagnosis,
+        failedStrategyFingerprint: latestRecovery.failedStrategyFingerprint,
+        nextStrategyFingerprint: latestRecovery.nextStrategyFingerprint,
+        action: latestRecovery.action,
+        retryCondition: latestRecovery.retryCondition,
+        exhausted: latestRecovery.exhausted,
+      } : null;
+      if (activeTask && (activeTask.status === "failed" || activeTask.status === "interrupted")) {
+        const terminal = dependencies.db.prepare(`SELECT payload_json AS payloadJson
+          FROM task_events
+          WHERE task_id=? AND type IN ('task.failed','task.interrupted')
+          ORDER BY sequence DESC LIMIT 1`).get(activeTask.id) as { payloadJson: string } | undefined;
+        const payload = terminal ? JSON.parse(terminal.payloadJson) as Record<string, unknown> : {};
+        const route = dependencies.db.prepare("SELECT provider_id AS providerId FROM task_routing WHERE task_id=?")
+          .get(activeTask.id) as { providerId: string } | undefined;
+        const allowProviderSwitch = mission.execution.providerId === null;
+        const alternateProviders = allowProviderSwitch
+          ? listProviderStatuses(env)
+            .filter((provider) => provider.configured && provider.id !== route?.providerId && provider.id !== "mock")
+            .length
+          : 0;
+        recovery = decideWorkerRecovery({
+          taskId: activeTask.id,
+          status: activeTask.status,
+          reason: typeof payload.reason === "string" ? payload.reason : null,
+          message: typeof payload.message === "string" ? payload.message : `Worker ended ${activeTask.status}.`,
+          provider: payload.provider && typeof payload.provider === "object"
+            ? payload.provider as ProviderFailureDetails
+            : null,
+          priorDecisions: priorRecoveries,
+          alternateProviders,
+          allowProviderSwitch,
+          allowModelSwitch: mission.execution.model === null,
+        });
+      }
       return {
         tasks: guardianDependencies.tasks,
         approvals: guardianDependencies.approvals.map((approval) => ({ ...approval, autoResolvable: false })),
         guardianDecision: missionService.assessGuardian(missionId),
-        recovery: latestRecovery ? {
-          category: latestRecovery.category,
-          diagnosis: latestRecovery.diagnosis,
-          failedStrategyFingerprint: latestRecovery.failedStrategyFingerprint,
-          nextStrategyFingerprint: latestRecovery.nextStrategyFingerprint,
-          action: latestRecovery.action,
-          retryCondition: latestRecovery.retryCondition,
-          exhausted: latestRecovery.exhausted,
+        recovery: recovery ? {
+          category: recovery.category,
+          diagnosis: recovery.diagnosis,
+          failedStrategyFingerprint: recovery.failedStrategyFingerprint,
+          nextStrategyFingerprint: recovery.nextStrategyFingerprint,
+          action: recovery.action,
+          retryCondition: recovery.retryCondition,
+          exhausted: recovery.exhausted,
         } : null,
       };
     },
@@ -225,6 +270,24 @@ export function createDefaultMissionControllerRunner(
           updatedAt: now(),
         });
       }
+      let providerId = mission.execution.providerId;
+      let model = mission.execution.model;
+      const latestRecovery = runtime.listRecoveryDecisions(missionId).at(-1) ?? null;
+      if (latestRecovery?.action === "switch_provider" && mission.execution.providerId === null) {
+        const failedRoute = dependencies.db.prepare(`SELECT routing.provider_id AS providerId
+          FROM task_routing AS routing
+          JOIN tasks AS task ON task.id=routing.task_id
+          WHERE task.mission_id=?
+          ORDER BY task.created_at DESC,task.id DESC LIMIT 1`).get(missionId) as { providerId: string } | undefined;
+        const alternate = listProviderStatuses(env)
+          .find((provider) => provider.configured && provider.id !== failedRoute?.providerId && provider.id !== "mock");
+        if (alternate) {
+          providerId = alternate.id;
+          model = null;
+        }
+      } else if (latestRecovery?.action === "switch_model" && mission.execution.model === null) {
+        model = null;
+      }
       const result = dispatchAgentTask({ db: dependencies.db, runner: dependencies.taskRunner, env }, {
         conversationId,
         missionId,
@@ -236,6 +299,10 @@ export function createDefaultMissionControllerRunner(
         ].join("\n\n"),
         mode: "agent",
         autoApprove: mission.autoApprove,
+        preset: mission.execution.preset,
+        ...(providerId ? { providerId } : {}),
+        ...(model ? { model } : {}),
+        reasoning: mission.execution.reasoning,
       });
       return { taskId: result.task.id };
     },

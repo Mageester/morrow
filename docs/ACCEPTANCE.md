@@ -24,33 +24,57 @@ Successful disposable workspaces are removed after their reports are durable;
 failed/inconclusive workspaces are retained for diagnosis.
 
 The versioned `durable-autonomy-v1` scenario retains the foundation proof and
-then drives the production durable mission controller and SQLite operation
-ledger through five deterministic injected faults: premature completion,
-context rollover, provider failure, legitimate no-progress investigation, and
-an abrupt controller restart. PASS additionally requires one stable mission ID
-per continuation, unique durable operation keys, the expected recovery ledger,
-Guardian rejection before validation where applicable, and terminal
-Guardian-gated completion.
+then exercises the packaged write-capable agent, production browser boundary,
+automatic Cortex services, model catalog, and production durable mission
+controller. PASS requires all of the following:
 
-Both deterministic scenarios are local and unmetered. They do not replace the
-separate real-model coding, browser/vision, Cortex memory, automatic skill
-creation, or long-run release gates.
+- reproduce two fixture defects, recover from malformed tool arguments and a
+  failing command, patch exactly three expected files, pass the tests, and
+  inspect the final Git diff;
+- render and interact with a responsive Morrow company site in a real browser,
+  inspect the DOM and console, and attach valid vision evidence at desktop,
+  tablet, and mobile viewports;
+- capture an evidence-backed memory in Mission A and recall it automatically in
+  Mission B, then promote a repeated safe workflow from candidate to validated
+  skill and apply it automatically in Mission C;
+- compare packaged model list/detail output before and after a service restart,
+  with limits either sourced positive integers or explicitly unknown;
+- complete 96 productive work units across context rollovers, checkpoints, a
+  database close/reopen, and recoverable provider/tool failures without a
+  deadline, fake sleep, or user continuation; and
+- drive five deterministic controller faults: premature completion, context
+  rollover, provider failure, legitimate no-progress investigation, and an
+  abrupt controller restart, while retaining one mission ID, unique durable
+  operation keys, expected recovery decisions, and Guardian-gated completion.
+
+The deterministic browser provider and coding provider are local, scripted, and
+unmetered, but they cross the real agent/tool/persistence boundaries. They do
+not replace the separate release gate that runs a capable external model from
+the packaged product on a fresh coding fixture.
 
 ## Package proof
 
 After building the portable package:
 
 ```powershell
-node scripts/package-release.mjs 0.1.0-beta.30 --skip-build
+node scripts/package-release.mjs 0.1.0-beta.31 --skip-build
 pnpm smoke:acceptance-foundation
 pnpm smoke:acceptance-durable
 ```
 
 The package smoke copies the portable product to a temporary install root,
 invokes its bundled launcher/runtime, verifies the reports and leak scan, stops
-the packaged service, removes the disposable install, and retains only redacted
-evidence under `.artifacts/acceptance-foundation/<run-id>` or
-`.artifacts/acceptance-durable-autonomy/<run-id>`.
+the packaged service, removes the disposable install, and retains redacted
+reports/ledgers plus the deterministic browser screenshots and generated test
+fixtures needed for visual diagnosis under
+`.artifacts/acceptance-foundation/<run-id>` or
+`.artifacts/acceptance-durable-autonomy/<run-id>`. These fixtures contain only
+scenario-authored synthetic data; the smoke child receives no provider keys.
+
+On packaged Windows builds, browser acceptance uses the installed Microsoft
+Edge channel unless an explicit Playwright browser selection is configured.
+This keeps the consumer package self-contained without downloading an undeclared
+browser at runtime.
 
 ## Security boundary
 

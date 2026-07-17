@@ -1,13 +1,15 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { createFoundationFixture, verifyFixtureUnchanged } from "./fixture.js";
+import { createFoundationFixture, createWriteFixFixture, verifyFixtureUnchanged } from "./fixture.js";
 import { classifyAcceptanceRun, writeAcceptanceReports } from "./report.js";
 import { AcceptanceStore, assertContainedPath } from "./storage.js";
 import type { AcceptanceCheck, AcceptanceRunState, AcceptanceScenarioId, SourceFingerprint } from "./types.js";
 import { runDurableAutonomyScenarios } from "./scenarios/durable-autonomy.js";
+import { runExtendedProductiveMission } from "./scenarios/extended-run.js";
+import { runBrowserSiteAcceptance, runCortexLearningAcceptance, type BrowserSiteAcceptanceResult, type CortexLearningAcceptanceResult } from "@morrow/orchestrator";
 
 export interface InvocationResult { exitCode: number; stdout: string; stderr: string }
 export interface InvocationOptions { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }
@@ -26,6 +28,8 @@ export interface AcceptanceRunnerOptions {
   invoke?: AcceptanceInvocation;
   simulateAbruptInterruption?: boolean;
   scenarioId?: AcceptanceScenarioId;
+  browserSiteScenario?: (input: { root: string }) => Promise<BrowserSiteAcceptanceResult>;
+  cortexLearningScenario?: (input: { root: string }) => Promise<CortexLearningAcceptanceResult>;
 }
 
 export interface AcceptanceRunResult { state: AcceptanceRunState; reportJson: string; reportMarkdown: string }
@@ -37,6 +41,7 @@ export function buildAcceptanceChildEnvironment(parent: NodeJS.ProcessEnv, produ
   for (const key of SAFE_ENV_KEYS) if (parent[key] !== undefined) child[key] = parent[key];
   child.MORROW_HOME = productHome;
   child.MOCK_PROVIDER = "true";
+  child.MORROW_ACCEPTANCE_MODE = "beta31";
   child.PORT = String(port);
   child.NODE_ENV = "production";
   return child;
@@ -200,6 +205,34 @@ export async function resumeAcceptance(runId: string, options: AcceptanceRunnerO
     state.activeStep = null;
     store.save(state);
   }
+  if (state.activeStep === "write-capable-fix") {
+    const fixtureRoot = assertContainedPath(store.runRoot(state.runId), join(store.runRoot(state.runId), "write-fix-fixture"));
+    rmSync(fixtureRoot, { recursive: true, force: true });
+    state.recoveryCount += 1;
+    store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Reset the contained disposable write-fix fixture before resuming acceptance" });
+    state.activeStep = null;
+    store.save(state);
+  }
+  if (state.activeStep === "browser-company-site" || state.activeStep === "cortex-learning") {
+    const interruptedStep = state.activeStep;
+    const scenarioRoot = assertContainedPath(store.runRoot(state.runId), join(store.runRoot(state.runId), interruptedStep));
+    rmSync(scenarioRoot, { recursive: true, force: true });
+    state.recoveryCount += 1;
+    store.appendEvidence(state.runId, {
+      step: "recovery",
+      kind: "resume",
+      status: "passed",
+      summary: `Reset the contained disposable ${interruptedStep} runtime before resuming acceptance`,
+    });
+    state.activeStep = null;
+    store.save(state);
+  }
+  if (state.activeStep === "model-truth") {
+    state.recoveryCount += 1;
+    store.appendEvidence(state.runId, { step: "recovery", kind: "resume", status: "passed", summary: "Reran the idempotent model-truth probes after interruption" });
+    state.activeStep = null;
+    store.save(state);
+  }
   return execute(store, state, options, secrets);
 }
 
@@ -260,11 +293,177 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
       completeStep(store, state, "product-persistence");
     }
 
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("write-capable-fix")) {
+      beginStep(store, state, "write-capable-fix");
+      const fixture = createWriteFixFixture(runRoot);
+      const before = spawnSync(process.execPath, ["--test"], { cwd: fixture.path, encoding: "utf8", shell: false, windowsHide: true, timeout: 30_000 });
+      const beforeArtifact = writeArtifact(store, state, "write-fix-before.txt", `${before.stdout ?? ""}${before.stderr ?? ""}`);
+      const initialized = await invoke(["init", fixture.path, "--json", "--no-color", "--quiet"], { cwd: fixture.path, env: childEnv, timeoutMs: 60_000 });
+      if (initialized.exitCode !== 0) throw new Error(`Packaged Morrow write-fix init exited ${initialized.exitCode}`);
+      const executed = await invoke([
+        "yolo",
+        "BETA31-WRITE-FIX: reproduce both defects, repair all affected files, add regression coverage, run the full tests, and inspect the final diff.",
+        "--json", "--no-color", "--quiet",
+      ], { cwd: fixture.path, env: childEnv, timeoutMs: 120_000 });
+      const taskArtifact = writeArtifact(store, state, "write-fix-task.json", executed.stdout);
+      if (executed.stderr) writeArtifact(store, state, "write-fix-task.stderr.txt", executed.stderr);
+      const taskPayload = parseJsonOutput(executed.stdout);
+      const taskId = typeof taskPayload?.task?.id === "string" ? taskPayload.task.id : null;
+      if (!taskId) throw new Error("Packaged write-fix task did not return a task id");
+      const audit = await invoke(["audit", "show", taskId, "--json", "--no-color", "--quiet"], { cwd: fixture.path, env: childEnv, timeoutMs: 30_000 });
+      const auditArtifact = writeArtifact(store, state, "write-fix-audit.json", audit.stdout);
+      const auditPayload = parseJsonOutput(audit.stdout);
+      const after = spawnSync(process.execPath, ["--test"], { cwd: fixture.path, encoding: "utf8", shell: false, windowsHide: true, timeout: 30_000 });
+      const afterArtifact = writeArtifact(store, state, "write-fix-after.txt", `${after.stdout ?? ""}${after.stderr ?? ""}`);
+      const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: fixture.path, encoding: "utf8", shell: false, windowsHide: true, timeout: 15_000 });
+      const diff = execFileSync("git", ["diff", "--", "src/cart.mjs", "src/receipt.mjs", "test/cart.test.mjs"], { cwd: fixture.path, encoding: "utf8", shell: false, windowsHide: true, timeout: 15_000 });
+      const diffArtifact = writeArtifact(store, state, "write-fix.diff", diff);
+      const toolCalls = Array.isArray(auditPayload?.toolCalls) ? auditPayload.toolCalls : [];
+      const named = (name: string) => toolCalls.filter((call: any) => call?.toolName === name);
+      const changedFiles = status.split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).replace(/\\/g, "/")).sort();
+      const expectedFiles = ["src/cart.mjs", "src/receipt.mjs", "test/cart.test.mjs"].sort();
+      const reproduced = before.status !== 0;
+      const commandRecovered = named("run_command").some((call: any) => call.status === "failed")
+        && named("run_command").some((call: any) => call.status === "completed");
+      const malformedRecovered = named("run_command").some((call: any) => call.status === "failed" && /argument|json|parse/i.test(String(call.resultJson ?? call.errorMessage ?? "")));
+      const patched = named("propose_patch").some((call: any) => call.status === "completed");
+      const diffInspected = named("git_diff").some((call: any) => call.status === "completed");
+      const passed = reproduced
+        && initialized.exitCode === 0
+        && executed.exitCode === 0
+        && taskPayload?.task?.status === "completed"
+        && audit.exitCode === 0
+        && after.status === 0
+        && JSON.stringify(changedFiles) === JSON.stringify(expectedFiles)
+        && patched
+        && diffInspected
+        && commandRecovered
+        && malformedRecovered;
+      const entry = store.appendEvidence(state.runId, {
+        step: "write-capable-fix",
+        kind: "packaged-write-mission",
+        status: passed ? "passed" : "failed",
+        summary: passed
+          ? "Packaged Morrow reproduced two defects, recovered from malformed and failing commands, patched three files, passed three tests, and inspected the diff"
+          : `Packaged write fix failed: before=${before.status}; task=${taskPayload?.task?.status ?? "unknown"}; after=${after.status}; files=${changedFiles.join(",")}`,
+        artifact: auditArtifact,
+        details: { taskId, changedFiles, reproduced, patched, diffInspected, commandRecovered, malformedRecovered, artifacts: [beforeArtifact, taskArtifact, afterArtifact, diffArtifact] },
+      });
+      state.checks.write_capable_bug_fix = makeCheck(entry.status, entry.summary, [entry.id]);
+      state.checks.malformed_tool_recovery = makeCheck(malformedRecovered ? "passed" : "failed", malformedRecovered ? "Malformed tool arguments were recorded and the task continued" : "Malformed tool recovery was not proven", [entry.id]);
+      state.checks.command_failure_recovery = makeCheck(commandRecovered ? "passed" : "failed", commandRecovered ? "A failing test command was followed by a successful verification command" : "Command failure recovery was not proven", [entry.id]);
+      state.checks.diff_inspected = makeCheck(diffInspected ? "passed" : "failed", diffInspected ? "The packaged task inspected its final Git diff" : "Final diff inspection was not proven", [entry.id]);
+      completeStep(store, state, "write-capable-fix");
+    }
+
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("browser-company-site")) {
+      beginStep(store, state, "browser-company-site");
+      const browserRoot = assertContainedPath(runRoot, join(runRoot, "browser-company-site"));
+      const browserResult = await (options.browserSiteScenario ?? runBrowserSiteAcceptance)({ root: browserRoot });
+      const artifact = writeArtifact(store, state, "browser-company-site.json", `${JSON.stringify(browserResult, null, 2)}\n`);
+      const entry = store.appendEvidence(state.runId, {
+        step: "browser-company-site",
+        kind: "packaged-browser-vision",
+        status: browserResult.passed ? "passed" : "failed",
+        summary: browserResult.passed
+          ? `Built and validated the responsive company site through ${browserResult.toolCalls} agent tool calls and ${browserResult.screenshots.length} vision-attached screenshots`
+          : `Company-site browser validation failed: ${browserResult.message ?? "unknown failure"}`,
+        artifact,
+        details: {
+          taskId: browserResult.taskId,
+          taskStatus: browserResult.taskStatus,
+          screenshots: browserResult.screenshots.map(({ label, sha256, bytes, viewport, vision }) => ({ label, sha256, bytes, viewport, vision })),
+          consoleHealthy: browserResult.consoleHealthy,
+          interactionProven: browserResult.interactionProven,
+          testsPassed: browserResult.testsPassed,
+          userInterventions: browserResult.userInterventions,
+          wallClockMs: browserResult.wallClockMs,
+        },
+      });
+      state.checks.browser_company_site = makeCheck(entry.status, entry.summary, [entry.id]);
+      const visualPassed = browserResult.screenshots.length === 3 && browserResult.screenshots.every((item) => item.vision === "attached");
+      state.checks.browser_vision = makeCheck(visualPassed ? "passed" : "failed", visualPassed ? "Desktop, tablet, and mobile PNGs traversed the verified vision attachment path" : "Responsive vision evidence was incomplete", [entry.id]);
+      state.checks.frontend_visual_validation = makeCheck(browserResult.consoleHealthy && browserResult.interactionProven ? "passed" : "failed", browserResult.consoleHealthy && browserResult.interactionProven ? "Rendered DOM, console, and interaction validation passed" : "Rendered frontend interaction or console validation failed", [entry.id]);
+      completeStep(store, state, "browser-company-site");
+    }
+
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("cortex-learning")) {
+      beginStep(store, state, "cortex-learning");
+      const cortexRoot = assertContainedPath(runRoot, join(runRoot, "cortex-learning"));
+      const cortexResult = await (options.cortexLearningScenario ?? runCortexLearningAcceptance)({ root: cortexRoot });
+      const artifact = writeArtifact(store, state, "cortex-learning.json", `${JSON.stringify(cortexResult, null, 2)}\n`);
+      const entry = store.appendEvidence(state.runId, {
+        step: "cortex-learning",
+        kind: "automatic-memory-and-skills",
+        status: cortexResult.passed ? "passed" : "failed",
+        summary: cortexResult.passed
+          ? `Mission B automatically recalled Mission A memory; validated skill ${cortexResult.skillId} v${cortexResult.skillVersion} was automatically applied in Mission C`
+          : `Automatic Cortex learning failed: ${cortexResult.message ?? "unknown failure"}`,
+        artifact,
+        details: {
+          memoryCreatedAutomatically: cortexResult.memoryCreatedAutomatically,
+          memoryRetrievedInMissionB: cortexResult.memoryRetrievedInMissionB,
+          skillCandidateAfterMissionA: cortexResult.skillCandidateAfterMissionA,
+          skillActiveAfterMissionB: cortexResult.skillActiveAfterMissionB,
+          skillAppliedInMissionC: cortexResult.skillAppliedInMissionC,
+          validationRequirements: cortexResult.validationRequirements,
+          permissions: cortexResult.permissions,
+          userMemoryCommands: cortexResult.userMemoryCommands,
+          userSkillCommands: cortexResult.userSkillCommands,
+        },
+      });
+      state.checks.automatic_memory = makeCheck(cortexResult.memoryCreatedAutomatically && cortexResult.memoryRetrievedInMissionB ? "passed" : "failed", cortexResult.memoryCreatedAutomatically && cortexResult.memoryRetrievedInMissionB ? "Mission A memory was captured with evidence and injected into Mission B without a memory command" : "Automatic memory capture or recall was not proven", [entry.id]);
+      state.checks.automatic_skills = makeCheck(cortexResult.skillCandidateAfterMissionA && cortexResult.skillActiveAfterMissionB && cortexResult.skillAppliedInMissionC ? "passed" : "failed", cortexResult.skillCandidateAfterMissionA && cortexResult.skillActiveAfterMissionB && cortexResult.skillAppliedInMissionC ? "A repeated workflow progressed from candidate to validated active skill and was applied to Mission C" : "Automatic skill promotion or later application was not proven", [entry.id]);
+      completeStep(store, state, "cortex-learning");
+    }
+
+    if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("model-truth")) {
+      beginStep(store, state, "model-truth");
+      const listArgs = ["models", "list", "--all", "--json", "--no-color", "--quiet"];
+      const before = await invoke(listArgs, { cwd: state.fixture.path, env: childEnv, timeoutMs: 30_000 });
+      const beforeModels = parseJsonOutput(before.stdout);
+      if (before.exitCode !== 0 || !Array.isArray(beforeModels) || beforeModels.length === 0) throw new Error("Packaged model catalog returned no diagnostic entries");
+      const selected = beforeModels.find((item: any) => item?.model?.lifecycle === "current") ?? beforeModels[0];
+      const selectedId = selected?.model?.id;
+      if (typeof selectedId !== "string") throw new Error("Packaged model catalog entry lacked a model id");
+      const info = await invoke(["models", "info", selectedId, "--json", "--no-color", "--quiet"], { cwd: state.fixture.path, env: childEnv, timeoutMs: 30_000 });
+      const infoModel = parseJsonOutput(info.stdout);
+      const restarted = await invoke(["restart", "--no-color", "--quiet"], { cwd: state.fixture.path, env: childEnv, timeoutMs: 30_000 });
+      const after = await invoke(listArgs, { cwd: state.fixture.path, env: childEnv, timeoutMs: 30_000 });
+      const afterModels = parseJsonOutput(after.stdout);
+      const truthfulMetadata = beforeModels.every((item: any) => {
+        const context = item?.model?.contextWindow;
+        const output = item?.model?.maxOutputTokens;
+        const validLimit = (value: unknown) => value === null || value === undefined || (Number.isInteger(value) && Number(value) > 0);
+        return typeof item?.model?.id === "string"
+          && typeof item?.model?.providerId === "string"
+          && validLimit(context)
+          && validLimit(output)
+          && typeof (item?.model?.metadataSource ?? "unknown") === "string";
+      });
+      const detailConsistent = info.exitCode === 0 && JSON.stringify(infoModel) === JSON.stringify(selected);
+      const restartPersistent = restarted.exitCode === 0 && after.exitCode === 0 && JSON.stringify(afterModels) === JSON.stringify(beforeModels);
+      const passed = truthfulMetadata && detailConsistent && restartPersistent;
+      const artifact = writeArtifact(store, state, "model-truth.json", `${JSON.stringify({ selectedId, beforeModels, infoModel, afterModels, truthfulMetadata, detailConsistent, restartPersistent }, null, 2)}\n`);
+      const entry = store.appendEvidence(state.runId, {
+        step: "model-truth",
+        kind: "packaged-model-catalog",
+        status: passed ? "passed" : "failed",
+        summary: passed ? `Packaged model list and ${selectedId} detail agreed across service restart with sourced or explicitly unknown limits` : `Model truth failed: metadata=${truthfulMetadata}; detail=${detailConsistent}; restart=${restartPersistent}`,
+        artifact,
+        details: { selectedId, entries: beforeModels.length, truthfulMetadata, detailConsistent, restartPersistent },
+      });
+      state.checks.model_truth = makeCheck(entry.status, entry.summary, [entry.id]);
+      completeStep(store, state, "model-truth");
+    }
+
     if (state.scenarioId === "durable-autonomy-v1" && !state.completedSteps.includes("durable-autonomy")) {
       beginStep(store, state, "durable-autonomy");
       const scenarioRoot = assertContainedPath(runRoot, join(runRoot, "durable-autonomy"));
       const result = await runDurableAutonomyScenarios({ root: scenarioRoot });
+      const extendedRun = await runExtendedProductiveMission({ root: join(scenarioRoot, "extended-productive-run") });
       const artifact = writeArtifact(store, state, "durable-autonomy.json", `${JSON.stringify(result, null, 2)}\n`);
+      const extendedArtifact = writeArtifact(store, state, "extended-productive-run.json", `${JSON.stringify(extendedRun, null, 2)}\n`);
       state.product.missionId = result.scenarios[0]?.missionId ?? null;
       for (const scenario of result.scenarios) {
         const entry = store.appendEvidence(state.runId, {
@@ -296,6 +495,26 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
         const entry = store.appendEvidence(state.runId, { step: "durable-autonomy", kind: "ledger-invariant", status: passed ? "passed" : "failed", summary });
         state.checks[key] = makeCheck(entry.status, entry.summary, [entry.id]);
       }
+      const extendedEntry = store.appendEvidence(state.runId, {
+        step: "durable-autonomy",
+        kind: "extended-productive-run",
+        status: extendedRun.passed ? "passed" : "failed",
+        summary: extendedRun.passed
+          ? `Completed ${extendedRun.workUnits} productive work units across ${extendedRun.contextSegments} context segments with ${extendedRun.checkpoints} checkpoints and ${extendedRun.databaseRestarts} database restart(s)`
+          : `Extended productive run failed: ${extendedRun.message ?? "unknown failure"}`,
+        artifact: extendedArtifact,
+        details: {
+          missionId: extendedRun.missionId,
+          progressObservations: extendedRun.progressObservations,
+          recoveryCategories: extendedRun.recoveryCategories,
+          contextBoundaryReasons: extendedRun.contextBoundaryReasons,
+          deadlineMs: extendedRun.deadlineMs,
+          userContinuations: extendedRun.userContinuations,
+          processHealth: extendedRun.processHealth,
+          wallClockMs: extendedRun.wallClockMs,
+        },
+      });
+      state.checks.extended_productive_run = makeCheck(extendedEntry.status, extendedEntry.summary, [extendedEntry.id]);
       completeStep(store, state, "durable-autonomy");
     }
 
@@ -318,7 +537,19 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
     if (failureDisposition === "BLOCKED") state.disposition = "BLOCKED";
     const evidenceStatus = failureDisposition === "BLOCKED" ? "inconclusive" : "failed";
     const entry = store.appendEvidence(state.runId, { step: state.activeStep ?? "runner", kind: "failure", status: evidenceStatus, summary: message });
-    const key = state.activeStep === "product" || state.activeStep === "product-init" ? "product_exit" : "product_persistence";
+    const key = state.activeStep === "product" || state.activeStep === "product-init"
+      ? "product_exit"
+      : state.activeStep === "write-capable-fix"
+        ? "write_capable_bug_fix"
+        : state.activeStep === "browser-company-site"
+          ? "browser_company_site"
+          : state.activeStep === "cortex-learning"
+            ? "automatic_memory"
+            : state.activeStep === "model-truth"
+              ? "model_truth"
+              : state.activeStep === "durable-autonomy"
+                ? "terminal_completion"
+                : "product_persistence";
     state.checks[key] = makeCheck(evidenceStatus, message, [entry.id]);
     state.message = message;
   } finally {
@@ -351,6 +582,7 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
     if (cleanupPaths.productHome) rmSync(cleanupPaths.productHome, { recursive: true, force: true });
     if (state.scenarioId === "durable-autonomy-v1") {
       rmSync(assertContainedPath(runRoot, join(runRoot, "durable-autonomy")), { recursive: true, force: true });
+      rmSync(assertContainedPath(runRoot, join(runRoot, "write-fix-fixture")), { recursive: true, force: true });
     }
   }
   return { state, reportJson: paths.json, reportMarkdown: paths.markdown };

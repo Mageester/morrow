@@ -228,12 +228,15 @@ export function missionsRepository(db: Database.Database) {
     create(input: {
       id: string; projectId: string; conversationId?: string | null;
       objective: string; autoApprove?: boolean; budget: MissionBudget;
+      execution?: Mission["execution"];
     }, now = new Date().toISOString()): Mission {
       db.prepare(
-        `INSERT INTO missions (id, schema_version, project_id, conversation_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, created_at, updated_at, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, NULL, ?, ?, NULL, NULL)`,
+        `INSERT INTO missions (id, schema_version, project_id, conversation_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, execution_json, created_at, updated_at, started_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, NULL, ?, ?, ?, NULL, NULL)`,
       ).run(input.id, SCHEMA_VERSION, input.projectId, input.conversationId ?? null, input.objective,
-        input.autoApprove ? 1 : 0, JSON.stringify(input.budget), now, now);
+        input.autoApprove ? 1 : 0, JSON.stringify(input.budget), JSON.stringify(input.execution ?? {
+          preset: "balanced", providerId: null, model: null, reasoning: { mode: "auto" },
+        }), now, now);
       return repo.get(input.id)!;
     },
 
@@ -265,6 +268,7 @@ export function missionsRepository(db: Database.Database) {
         objective: row.objective,
         status: row.status as MissionStatus,
         autoApprove: row.auto_approve === 1,
+        execution: JSON.parse(row.execution_json ?? '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}'),
         criteria,
         taskTreeRootId: row.task_tree_root_id ?? null,
         budget: JSON.parse(row.budget_json) as MissionBudget,

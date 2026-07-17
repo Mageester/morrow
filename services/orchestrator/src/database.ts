@@ -1120,6 +1120,10 @@ export const migrations:Migration[]=[
     );
     CREATE INDEX learned_skills_project_state_idx ON learned_skills(project_id, state, updated_at DESC);
   `}
+  ,{id:36,name:"durable_mission_execution_route",sql:`
+    ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
+      DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

@@ -19,12 +19,22 @@ const chromiumAvailable = (() => {
   }
 })();
 import { scanForInjection, sanitizeForModel } from "../src/browser/injection-guard.js";
-import { assertBrowserContainedPath, assertBrowserUrlAllowed, playwrightController } from "../src/browser/playwright.js";
+import { assertBrowserContainedPath, assertBrowserUrlAllowed, playwrightController, resolvePlaywrightChannel } from "../src/browser/playwright.js";
 import { browserAuditSink } from "../src/browser/audit.js";
 import { openDatabase } from "../src/database.js";
 import { auditLogRepository } from "../src/repositories/audit-log.js";
 
 const servers: Server[] = [];
+
+describe("packaged browser selection", () => {
+  it("uses installed Edge for the packaged Windows launcher value", () => {
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "1" }, "win32")).toBe("msedge");
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "true" }, "win32")).toBe("msedge");
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "1" }, "linux")).toBeUndefined();
+    expect(resolvePlaywrightChannel("chromium", { MORROW_PACKAGED: "1" }, "win32")).toBeUndefined();
+    expect(resolvePlaywrightChannel("chrome", {}, "win32")).toBe("chrome");
+  });
+});
 
 async function controlledBrowserServer(): Promise<string> {
   const server = createServer((request, response) => {

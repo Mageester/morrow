@@ -26,6 +26,9 @@ export interface ChatImage {
   data: string;
   /** Optional integrity identity for local evidence. Never serialized. */
   sha256?: string;
+  /** Decoded pixel dimensions for conservative provider input accounting. */
+  width?: number;
+  height?: number;
 }
 
 export const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -45,6 +48,8 @@ export function validateChatImages(messages: ChatMessage[]): string | undefined 
       if (bytes.toString("base64") !== image.data) return "Image data must be canonical base64";
       if (bytes.length > MAX_CHAT_IMAGE_BYTES) return `Image input exceeds the ${MAX_CHAT_IMAGE_BYTES} byte limit`;
       if (image.sha256 !== undefined && !/^[a-f0-9]{64}$/i.test(image.sha256)) return "Image SHA-256 identity is invalid";
+      if ((image.width === undefined) !== (image.height === undefined)) return "Image width and height must be provided together";
+      if (image.width !== undefined && (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width <= 0 || image.height! <= 0 || image.width > 16_384 || image.height! > 16_384)) return "Image dimensions are invalid";
     }
   }
   return undefined;

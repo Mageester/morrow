@@ -122,10 +122,13 @@ pnpm install
 - `pnpm --filter @morrow/orchestrator smoke:agent-alpha`: agent chat E2E via the mock provider.
 - `pnpm --filter @morrow/orchestrator smoke:providers`: provider registry + routing checks (offline).
 - `pnpm smoke:acceptance-foundation`: run the deterministic packaged-product acceptance smoke after building the portable package.
+- `pnpm smoke:acceptance-durable`: run the expanded Beta.31 packaged autonomy, browser/vision, Cortex, model-truth, write-fix, restart, and extended-workload gates.
 
 The consumer CLI also exposes `morrow acceptance run|resume|report`. Foundation
 runs are isolated, resumable, local-only, and produce redacted JSON/Markdown
-evidence. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
+evidence. The durable scenario uses deterministic providers but real packaged
+agent, browser, persistence, and tool boundaries; external-model proof remains
+a separate release gate. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 
 ### Running Individual Services
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`

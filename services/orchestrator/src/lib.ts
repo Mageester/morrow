@@ -18,6 +18,11 @@ export { recoverRunningTasks, reconcileTasksOnStartup, reconcileMissionsOnStartu
 export { MissionControllerRunner, createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
 export { MissionController, type ControllerSnapshot } from "./mission/controller.js";
 export { missionRuntimeRepository } from "./repositories/mission-runtime.js";
+export {
+  executionContinuityRepository,
+  type ExecutionCheckpointSnapshot,
+  type ExecutionSegment,
+} from "./repositories/execution-continuity.js";
 export { projectRepository } from "./repositories/projects.js";
 export { taskRepository } from "./repositories/tasks.js";
 
@@ -25,6 +30,8 @@ export { taskRepository } from "./repositories/tasks.js";
 // tests exercising the real CLI client path) can stand up a deterministic
 // backend with an injected provider, exactly as the server does at runtime.
 export { executeAgentChatTask } from "./execution/agent.js";
+export { runBrowserSiteAcceptance, MORROW_COMPANY_SITE_PROMPT, type BrowserSiteAcceptanceResult } from "./acceptance/browser-site.js";
+export { runCortexLearningAcceptance, type CortexLearningAcceptanceResult } from "./acceptance/cortex-learning.js";
 export { MockProvider } from "./provider/mock.js";
 
 export { listProviderStatuses, getProviderStatus, isProviderConfigured, createProvider, PROVIDER_IDS } from "./provider/registry.js";

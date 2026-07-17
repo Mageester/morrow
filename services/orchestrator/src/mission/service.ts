@@ -108,6 +108,12 @@ export class MissionService {
       this.repo.create({
         id, projectId, conversationId: input.conversationId ?? null,
         objective: input.objective, autoApprove: input.autoApprove ?? false, budget,
+        execution: {
+          preset: input.preset ?? "balanced",
+          providerId: input.providerId ?? null,
+          model: input.model ?? null,
+          reasoning: input.reasoning ?? { mode: "auto" },
+        },
       }, this.now());
       this.repo.appendEvent(id, "mission.created", `Mission created: ${input.objective.slice(0, 80)}`, {}, this.now());
       if (cortexReadiness) {

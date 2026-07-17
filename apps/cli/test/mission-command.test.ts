@@ -220,6 +220,31 @@ describe("morrow mission command", () => {
     expect(chatCommand).not.toHaveBeenCalled();
   });
 
+  it("persists the selected preset, provider, and model on a durable mission", async () => {
+    const active = mission({ status: "running", result: null, runtime: { state: "completed", blocker: null } });
+    const api = {
+      listProjects: vi.fn(async () => [{ id: "p1", name: "P1", workspacePath: "C:/repo" }]),
+      createMission: vi.fn(async () => active),
+      generateMissionCriteria: vi.fn(async () => active),
+      intelligenceStaleness: vi.fn(async () => ({ changedScopes: [], itemsMarked: 0, architectureStale: false })),
+      analyzeMissionImpact: vi.fn(async () => { throw new Error("no intelligence"); }),
+      startMission: vi.fn(async () => active),
+    };
+
+    await missionCommand(ctx(api, {
+      yes: true,
+      preset: "coding",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    }), "Repair receipts", []);
+
+    expect(api.createMission).toHaveBeenCalledWith("p1", expect.objectContaining({
+      preset: "coding",
+      providerId: "deepseek",
+      model: "deepseek-v4-pro",
+    }));
+  });
+
   it("returns a nonzero exit code for a required non-success terminal disposition", async () => {
     const active = mission({ status: "running", result: null, finalReview: null, criteria: [] });
     const blocked = mission({

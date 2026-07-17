@@ -28,6 +28,17 @@ export interface PlaywrightControllerOptions {
   audit?: BrowserAuditSink;
 }
 
+export function resolvePlaywrightChannel(
+  browser: PlaywrightControllerOptions["browser"],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): "chrome" | "msedge" | undefined {
+  if (browser === "chromium") return undefined;
+  if (browser) return browser;
+  const packaged = env.MORROW_PACKAGED === "1" || env.MORROW_PACKAGED === "true";
+  return platform === "win32" && packaged ? "msedge" : undefined;
+}
+
 export function hostnameOf(url: string): string | null {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -193,7 +204,10 @@ class PlaywrightBrowserController implements BrowserController {
     if (this.closed) throw new Error("Browser controller is closed");
     if (this.page) return;
     const { chromium } = await import("playwright");
-    const channel = this.options.browser === "chromium" || !this.options.browser ? undefined : this.options.browser;
+    // Release packages intentionally omit Playwright's large browser download.
+    // Windows includes Edge, so packaged consumers use its supported Playwright
+    // channel unless the caller explicitly selects another browser.
+    const channel = resolvePlaywrightChannel(this.options.browser);
     if (this.options.cdpEndpoint) {
       this.browser = await chromium.connectOverCDP(this.options.cdpEndpoint, { timeout: this.timeoutMs });
       this.context = this.browser.contexts()[0] ?? await this.browser.newContext({ acceptDownloads: true });

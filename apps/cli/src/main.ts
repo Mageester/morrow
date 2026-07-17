@@ -129,7 +129,7 @@ export async function run(argv: string[]): Promise<number> {
     switch (root) {
       case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
-      case "yolo": { const p = promptOf(); return await chatWith({ yolo: true, ...(p ? { message: p } : {}) }); }
+      case "yolo": { const p = promptOf(); return await chatWith({ build: true, yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
       case "cortex": return await cortexCommand(ctx, sub, args);

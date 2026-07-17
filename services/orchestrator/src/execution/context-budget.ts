@@ -180,6 +180,16 @@ function conservativeSerializedTokens(value: unknown): number {
   return Math.max(estimateTextTokens(serialized), Buffer.byteLength(serialized, "utf8"));
 }
 
+function conservativeImageTokens(image: NonNullable<ChatMessage["images"]>[number]): number {
+  if (image.width !== undefined && image.height !== undefined) {
+    // Vision providers charge by decoded pixels/tiles, not base64 wire bytes.
+    // One token per 500 pixels deliberately overestimates the supported
+    // provider formulas while keeping ordinary screenshots admissible.
+    return Math.max(256, Math.ceil((image.width * image.height) / 500));
+  }
+  return Math.max(512, Math.ceil(Buffer.from(image.data, "base64").length / 64));
+}
+
 /** Count the complete normalized request envelope. Provider adapters serialize
  * this same information onto the wire; private continuation data is counted but
  * is never returned in diagnostics. */
@@ -190,7 +200,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
   });
   const imageBase = envelope.messages.reduce((sum, message) => {
     if (!message.images?.length) return sum;
-    return sum + conservativeSerializedTokens(message.images.map((image) => ({ mimeType: image.mimeType, data: image.data })));
+    return sum + message.images.reduce((imageSum, image) => imageSum + conservativeImageTokens(image), 0);
   }, 0);
   const continuationBase = envelope.messages.reduce((sum, message) => {
     if (!message.providerContinuation) return sum;

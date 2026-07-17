@@ -4,6 +4,7 @@ import type { MorrowApi } from "../client/api.js";
 import { ensureRunning } from "../service/lifecycle.js";
 import { select, isInteractive } from "./common.js";
 import { usageError, notFound, EXIT } from "../cli/errors.js";
+import { flagBool } from "../cli/args.js";
 
 export function visibleModelsForAccount(models: ModelStatus[], currentModelId?: string, showAll = false): ModelStatus[] {
   if (showAll) return models;
@@ -39,7 +40,7 @@ export async function modelsCommand(ctx: Context, sub: string, args: string[]): 
 async function list(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
   const unknownFlag = args.find((arg) => arg !== "--all" && arg !== "--advanced");
   if (unknownFlag) throw usageError(`Unknown models list option: ${unknownFlag}`, "Try: morrow models list [--all]");
-  const showAll = args.includes("--all") || args.includes("--advanced");
+  const showAll = args.includes("--all") || args.includes("--advanced") || flagBool(ctx.flags, "all") || flagBool(ctx.flags, "advanced");
   const currentModelId = ctx.config.get("defaults.model") as string | undefined;
   const models = visibleModelsForAccount(await api.listModels(), currentModelId, showAll);
   if (ctx.out.json) {

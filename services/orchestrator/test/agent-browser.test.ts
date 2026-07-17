@@ -77,7 +77,7 @@ class FakeBrowser implements BrowserController {
     return { url: this.url, title: "Morrow app", viewport: this.viewport, refs: [{ ref: "e1", role: "button", name: this.elementName }], text: "Rendered UI", injectionFindings: 0 };
   }
   async setViewport(viewport: BrowserViewport) { this.viewport = { width: viewport.width, height: viewport.height }; }
-  async click() { this.clicks += 1; }
+  async click() { this.clicks += 1; this.events.push({ kind: "console", message: "clicked", detail: { level: "log" }, createdAt: new Date().toISOString() }); }
   async type() {}
   async key() {}
   async select() {}
@@ -195,6 +195,27 @@ describe("agent browser and vision bridge", () => {
       { width: 390, height: 844 },
     ]);
     expect(screenshots.every((item) => item.metadata.vision === "attached")).toBe(true);
+  });
+
+  it("captures a fresh console observation after a state-changing interaction", async () => {
+    const browser = new FakeBrowser();
+    const calls = [
+      tool("open-fresh", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!,
+      tool("console-before", "browser_console", {}).toolCalls[0]!,
+      tool("click-fresh", "browser_click", { ref: "e1" }).toolCalls[0]!,
+      tool("console-after", "browser_console", {}).toolCalls[0]!,
+    ].map((call, index) => ({ ...call, index }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", toolCalls: calls }, done],
+      [{ type: "text", text: "Interaction and fresh console evidence were inspected." }, done],
+    ]);
+
+    await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => browser, maxTurns: 4 });
+
+    const after = conversationsRepository(db).listToolCallsForTask("t").find((item) => item.id === "console-after");
+    expect(after?.status).toBe("completed");
+    expect(after?.resultJson).toContain("clicked");
+    expect(after?.resultJson).not.toContain('"duplicate":true');
   });
 
   it("does not let auto-approval authorize a purchase-like browser action", async () => {
