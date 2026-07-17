@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -48,6 +49,16 @@ export function inspectAcceptanceArtifacts(runRoot, forbiddenSecrets = [], expec
       if (report.checks?.[check]?.status !== "passed") throw new Error(`Durable autonomy report lacks ${check} proof`);
     }
     if (!report.product?.missionId) throw new Error("Durable autonomy report lacks a mission id");
+    const browserEvidence = report.evidence?.find((entry) => entry.kind === "packaged-browser-vision");
+    const screenshots = browserEvidence?.details?.screenshots;
+    if (!Array.isArray(screenshots) || screenshots.length !== 3) throw new Error("Durable autonomy report lacks retained browser screenshots");
+    for (const screenshot of screenshots) {
+      const path = join(runRoot, screenshot.artifact ?? "");
+      if (!screenshot.artifact?.startsWith("artifacts/") || !existsSync(path)) throw new Error(`Retained browser screenshot is missing: ${screenshot.label ?? "unknown"}`);
+      const bytes = readFileSync(path);
+      if (bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Error(`Retained browser artifact is not a PNG: ${screenshot.label ?? "unknown"}`);
+      if (createHash("sha256").update(bytes).digest("hex") !== screenshot.sha256) throw new Error(`Retained browser screenshot hash mismatch: ${screenshot.label ?? "unknown"}`);
+    }
   }
   const ledger = readFileSync(ledgerPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   if (!ledger.some((entry) => entry.step === "product-persistence" && entry.status === "passed")) throw new Error("Evidence ledger lacks product persistence proof");

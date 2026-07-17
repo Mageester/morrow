@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { createFoundationFixture, createWriteFixFixture, verifyFixtureUnchanged } from "./fixture.js";
@@ -149,6 +149,25 @@ function writeArtifact(store: AcceptanceStore, state: AcceptanceRunState, name: 
   let localized = content.split(runRoot).join("<run-root>");
   localized = localized.split(runRoot.replace(/\\/g, "/")).join("<run-root>");
   writeFileSync(path, store.redact(localized).slice(0, 1_048_576), "utf8");
+  if (!state.artifacts.includes(artifact)) state.artifacts.push(artifact);
+  return artifact;
+}
+
+function copyBinaryArtifact(
+  store: AcceptanceStore,
+  state: AcceptanceRunState,
+  sourceRoot: string,
+  sourcePath: string,
+  name: string,
+  expectedSha256: string,
+): string {
+  const source = assertContainedPath(sourceRoot, sourcePath);
+  const artifact = `artifacts/${name}`;
+  const runRoot = store.runRoot(state.runId);
+  const destination = assertContainedPath(runRoot, join(runRoot, artifact));
+  copyFileSync(source, destination);
+  const actualSha256 = createHash("sha256").update(readFileSync(destination)).digest("hex");
+  if (actualSha256 !== expectedSha256) throw new Error(`Copied acceptance artifact hash mismatch: ${name}`);
   if (!state.artifacts.includes(artifact)) state.artifacts.push(artifact);
   return artifact;
 }
@@ -360,6 +379,10 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
       beginStep(store, state, "browser-company-site");
       const browserRoot = assertContainedPath(runRoot, join(runRoot, "browser-company-site"));
       const browserResult = await (options.browserSiteScenario ?? runBrowserSiteAcceptance)({ root: browserRoot });
+      const retainedScreenshots = browserResult.screenshots.map((item) => ({
+        ...item,
+        artifact: copyBinaryArtifact(store, state, browserRoot, item.path, `${item.label}.png`, item.sha256),
+      }));
       const artifact = writeArtifact(store, state, "browser-company-site.json", `${JSON.stringify(browserResult, null, 2)}\n`);
       const entry = store.appendEvidence(state.runId, {
         step: "browser-company-site",
@@ -372,7 +395,7 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
         details: {
           taskId: browserResult.taskId,
           taskStatus: browserResult.taskStatus,
-          screenshots: browserResult.screenshots.map(({ label, sha256, bytes, viewport, vision }) => ({ label, sha256, bytes, viewport, vision })),
+          screenshots: retainedScreenshots.map(({ label, sha256, bytes, viewport, vision, artifact: screenshotArtifact }) => ({ label, sha256, bytes, viewport, vision, artifact: screenshotArtifact })),
           consoleHealthy: browserResult.consoleHealthy,
           interactionProven: browserResult.interactionProven,
           testsPassed: browserResult.testsPassed,
@@ -381,7 +404,7 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
         },
       });
       state.checks.browser_company_site = makeCheck(entry.status, entry.summary, [entry.id]);
-      const visualPassed = browserResult.screenshots.length === 3 && browserResult.screenshots.every((item) => item.vision === "attached");
+      const visualPassed = retainedScreenshots.length === 3 && retainedScreenshots.every((item) => item.vision === "attached");
       state.checks.browser_vision = makeCheck(visualPassed ? "passed" : "failed", visualPassed ? "Desktop, tablet, and mobile PNGs traversed the verified vision attachment path" : "Responsive vision evidence was incomplete", [entry.id]);
       state.checks.frontend_visual_validation = makeCheck(browserResult.consoleHealthy && browserResult.interactionProven ? "passed" : "failed", browserResult.consoleHealthy && browserResult.interactionProven ? "Rendered DOM, console, and interaction validation passed" : "Rendered frontend interaction or console validation failed", [entry.id]);
       completeStep(store, state, "browser-company-site");

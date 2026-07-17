@@ -25,7 +25,9 @@ Concise, append-only record of verified changes. Newest first.
   a semantic interaction, and records vision-attached PNG evidence at three
   responsive viewports. Packaged Windows builds use installed Edge; image
   context accounting is viewport-aware and repeated dynamic observations are
-  not semantically discarded.
+  not semantically discarded. Retained screenshots are copied to short
+  run-level paths and revalidated by PNG signature and SHA-256 so they remain
+  inspectable with standard Windows tools after the disposable install closes.
 - **Automatic Cortex and model truth:** Mission A evidence automatically creates
   memory and a skill candidate, Mission B receives the memory and supplies the
   second validation, and Mission C automatically loads the active scoped skill.

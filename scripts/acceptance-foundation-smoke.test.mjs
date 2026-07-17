@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +62,14 @@ test("acceptance artifact inspection rejects non-pass and leaked secret evidence
 test("durable acceptance inspection requires all fault and ledger proofs", () => {
   const root = mkdtempSync(join(tmpdir(), "morrow-acceptance-artifact-test-"));
   try {
+    mkdirSync(join(root, "artifacts"), { recursive: true });
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    const pngSha256 = createHash("sha256").update(png).digest("hex");
+    const screenshots = ["desktop", "tablet", "mobile"].map((label) => {
+      const artifact = `artifacts/company-site-${label}.png`;
+      writeFileSync(join(root, artifact), png);
+      return { label, artifact, sha256: pngSha256 };
+    });
     const passed = Object.fromEntries([
       "product_persistence", "secrets_absent", "premature_completion", "context_rollover",
       "provider_failure", "false_no_progress", "abrupt_process_restart", "stable_mission_identity",
@@ -80,6 +89,7 @@ test("durable acceptance inspection requires all fault and ledger proofs", () =>
     writeFileSync(join(root, "report.json"), JSON.stringify({
       scenarioId: "durable-autonomy-v1", disposition: "PASS", fixture: { startingSha: "c".repeat(40) },
       product: { packaged: true, taskId: "task-3", missionId: "mission-3", exitCode: 0 }, checks: passed,
+      evidence: [{ kind: "packaged-browser-vision", details: { screenshots } }],
     }));
     writeFileSync(join(root, "report.md"), "# PASS\n");
     writeFileSync(join(root, "evidence.jsonl"), `${JSON.stringify({ step: "product-persistence", status: "passed" })}\n`);

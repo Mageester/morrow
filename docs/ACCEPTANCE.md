@@ -70,6 +70,9 @@ fixtures needed for visual diagnosis under
 `.artifacts/acceptance-foundation/<run-id>` or
 `.artifacts/acceptance-durable-autonomy/<run-id>`. These fixtures contain only
 scenario-authored synthetic data; the smoke child receives no provider keys.
+Responsive PNGs are copied to short run-level artifact paths, and the smoke
+revalidates their PNG signatures and SHA-256 values after retaining them so
+Windows path-length behavior cannot make nominal evidence inaccessible.
 
 On packaged Windows builds, browser acceptance uses the installed Microsoft
 Edge channel unless an explicit Playwright browser selection is configured.

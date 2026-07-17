@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -142,24 +143,33 @@ describe("durable autonomy packaged acceptance scenarios", () => {
       sourceCwd: source.path,
       port: 45131,
       invoke,
-      browserSiteScenario: async () => ({
-        scenarioId: "browser-company-site-v1",
-        passed: true,
-        message: null,
-        taskId: "task-browser-site",
-        taskStatus: "completed",
-        toolCalls: 15,
-        screenshots: [
-          { label: "desktop", path: "desktop.png", sha256: "a".repeat(64), bytes: 100, viewport: { width: 1440, height: 900 }, vision: "attached" },
-          { label: "tablet", path: "tablet.png", sha256: "b".repeat(64), bytes: 100, viewport: { width: 768, height: 1024 }, vision: "attached" },
-          { label: "mobile", path: "mobile.png", sha256: "c".repeat(64), bytes: 100, viewport: { width: 390, height: 844 }, vision: "attached" },
-        ],
-        consoleHealthy: true,
-        interactionProven: true,
-        testsPassed: true,
-        userInterventions: 0,
-        wallClockMs: 100,
-      }),
+      browserSiteScenario: async ({ root }) => {
+        mkdirSync(root, { recursive: true });
+        const screenshots = [
+          { label: "company-site-desktop", viewport: { width: 1440, height: 900 } },
+          { label: "company-site-tablet", viewport: { width: 768, height: 1024 } },
+          { label: "company-site-mobile", viewport: { width: 390, height: 844 } },
+        ].map((item) => {
+          const path = join(root, `${item.label}.png`);
+          const content = Buffer.from("89504e470d0a1a0a", "hex");
+          writeFileSync(path, content);
+          return { ...item, path, sha256: createHash("sha256").update(content).digest("hex"), bytes: content.length, vision: "attached" };
+        });
+        return {
+          scenarioId: "browser-company-site-v1",
+          passed: true,
+          message: null,
+          taskId: "task-browser-site",
+          taskStatus: "completed",
+          toolCalls: 15,
+          screenshots,
+          consoleHealthy: true,
+          interactionProven: true,
+          testsPassed: true,
+          userInterventions: 0,
+          wallClockMs: 100,
+        };
+      },
       cortexLearningScenario: async () => ({
         scenarioId: "cortex-learning-v1",
         passed: true,
