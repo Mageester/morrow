@@ -39,9 +39,13 @@ controller. PASS requires all of the following:
   skill and apply it automatically in Mission C;
 - compare packaged model list/detail output before and after a service restart,
   with limits either sourced positive integers or explicitly unknown;
-- complete 96 productive work units across context rollovers, checkpoints, a
-  database close/reopen, and recoverable provider/tool failures without a
-  deadline, fake sleep, or user continuation; and
+- exercise the durable mission ledger across a database close/reopen. NOTE
+  (Beta.31, unresolved): this scenario writes its own progress, recovery,
+  rollover, checkpoint, and Guardian records rather than driving the controller,
+  so it proves durable-ledger integrity only. It is NOT evidence of an extended
+  productive run, and its work-unit, rollover, recovery, deadline, and
+  user-continuation figures must not be cited as such until the scenario is
+  rebuilt on the real controller; and
 - drive five deterministic controller faults: premature completion, context
   rollover, provider failure, legitimate no-progress investigation, and an
   abrupt controller restart, while retaining one mission ID, unique durable

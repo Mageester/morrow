@@ -523,8 +523,12 @@ async function execute(store: AcceptanceStore, state: AcceptanceRunState, option
         kind: "extended-productive-run",
         status: extendedRun.passed ? "passed" : "failed",
         summary: extendedRun.passed
-          ? `Completed ${extendedRun.workUnits} productive work units across ${extendedRun.contextSegments} context segments with ${extendedRun.checkpoints} checkpoints and ${extendedRun.databaseRestarts} database restart(s)`
-          : `Extended productive run failed: ${extendedRun.message ?? "unknown failure"}`,
+          // This scenario writes the records it then reads back, so its figures
+          // demonstrate durable-ledger integrity across a database restart and
+          // nothing about autonomous execution. Do not restore productive-run
+          // wording until the scenario drives the real controller.
+          ? `Durable ledger survived ${extendedRun.databaseRestarts} database restart(s) with ${extendedRun.checkpoints} checkpoints intact (scenario-authored records; NOT evidence of a productive run)`
+          : `Durable ledger integrity scenario failed: ${extendedRun.message ?? "unknown failure"}`,
         artifact: extendedArtifact,
         details: {
           missionId: extendedRun.missionId,

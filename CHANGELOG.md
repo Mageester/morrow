@@ -21,9 +21,15 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
   turns at desktop, tablet, and mobile viewports.
 - The packaged durable acceptance scenario now proves a multi-file repair,
   malformed-tool and failed-command recovery, browser/vision validation,
-  automatic memory/skills, model metadata consistency across restart, five
-  controller fault classes, and a 96-unit productive run with checkpoints and a
-  database restart.
+  automatic memory/skills, model metadata consistency across restart, and five
+  controller fault classes driven through the real mission controller.
+- Progress is now evidence-backed in production. Agent turns derive progress
+  from observed execution deltas — content-addressed artifact fingerprints,
+  tool effects, verification outcomes, resolved failures, and checkpoints — and
+  persist them to the durable mission ledger. Narration, response length, and
+  repeated identical tool results no longer count. A stalled task escalates
+  through a focused diagnosis and a controller-owned strategy change, and stops
+  only on a precise blocker, replacing the previous three-strike interrupt.
 
 ### Fixed - bounded recovery and truthful release behavior
 
