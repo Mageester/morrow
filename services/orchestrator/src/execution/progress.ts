@@ -20,7 +20,7 @@ export interface MissionProgressSnapshot {
 
 export interface ExhaustionAssessment {
   exhausted: boolean;
-  next: "continue" | "focused_diagnosis" | "change_strategy" | "block_precisely";
+  next: "continue" | "focused_diagnosis" | "change_strategy" | "retry_with_changed_conditions" | "block_precisely";
   reason: string;
   untriedStrategyFingerprints: string[];
 }
@@ -28,7 +28,22 @@ export interface ExhaustionAssessment {
 export interface ExhaustionOptions {
   diagnosisCompleted?: boolean;
   availableStrategyFingerprints?: string[];
+  /**
+   * Turns observed without meaningful progress since the last observation.
+   * Callers that omit it keep the pre-stagnation behavior, where only the most
+   * recent observation decides. Supplying it is what lets a caller express
+   * "real progress happened, and then work stalled" — a state the observation
+   * history alone cannot represent, because a stalled turn records nothing.
+   */
+  stagnantTurns?: number;
+  stagnationThreshold?: number;
+  /** External conditions that could change and make a retry worthwhile. */
+  retriableConditions?: string[];
+  /** The precise external dependency blocking progress, when one is known. */
+  blocker?: string | null;
 }
+
+const DEFAULT_STAGNATION_THRESHOLD = 3;
 
 const MEANINGFUL_PROGRESS = new Set<MissionProgressKind>([
   "artifact_changed",
@@ -39,6 +54,11 @@ const MEANINGFUL_PROGRESS = new Set<MissionProgressKind>([
   "checkpoint_created",
   "criterion_validated",
 ]);
+
+/** True when an observation represents a measurable change, not just activity. */
+export function isMeaningfulProgress(kind: MissionProgressKind): boolean {
+  return MEANINGFUL_PROGRESS.has(kind);
+}
 
 function additions(previous: string[], current: string[]): string[] {
   const old = new Set(previous);
@@ -101,37 +121,59 @@ export function assessExhaustion(
   history: MissionProgressObservation[],
   options: ExhaustionOptions = {},
 ): ExhaustionAssessment {
+  const available = options.availableStrategyFingerprints ?? [];
+  const threshold = options.stagnationThreshold ?? DEFAULT_STAGNATION_THRESHOLD;
+  const stagnantTurns = options.stagnantTurns ?? 0;
+  const stagnant = stagnantTurns >= threshold;
   const latest = history.at(-1);
-  if (!latest || MEANINGFUL_PROGRESS.has(latest.kind)) {
+
+  // A meaningful last observation only justifies continuing while the caller
+  // has not yet watched the work stall for a full threshold of turns. Without
+  // this the assessment could never escalate after any real progress.
+  if (!stagnant && (!latest || MEANINGFUL_PROGRESS.has(latest.kind))) {
     return {
       exhausted: false,
       next: "continue",
       reason: latest ? `Latest observation ${latest.kind} is measurable progress.` : "No failed strategy history exists.",
-      untriedStrategyFingerprints: options.availableStrategyFingerprints ?? [],
+      untriedStrategyFingerprints: available,
     };
   }
+  const stalled = stagnant
+    ? `Work stalled for ${stagnantTurns} turn(s) without measurable progress.`
+    : "Repeated work produced no measurable progress.";
   if (!options.diagnosisCompleted) {
     return {
       exhausted: false,
       next: "focused_diagnosis",
-      reason: "Repeated work has not yet been followed by a focused diagnosis.",
-      untriedStrategyFingerprints: options.availableStrategyFingerprints ?? [],
+      reason: `${stalled} A focused diagnosis has not run yet.`,
+      untriedStrategyFingerprints: available,
     };
   }
   const tried = new Set(history.map((item) => item.strategyFingerprint).filter((item): item is string => item !== null));
-  const untried = (options.availableStrategyFingerprints ?? []).filter((strategy) => !tried.has(strategy));
+  const untried = available.filter((strategy) => !tried.has(strategy));
   if (untried.length > 0) {
     return {
       exhausted: false,
       next: "change_strategy",
-      reason: "A distinct safe strategy remains untried.",
+      reason: `${stalled} A distinct safe strategy remains untried.`,
       untriedStrategyFingerprints: untried,
+    };
+  }
+  const retriable = options.retriableConditions ?? [];
+  if (retriable.length > 0) {
+    return {
+      exhausted: false,
+      next: "retry_with_changed_conditions",
+      reason: `${stalled} Every strategy was tried, but these conditions can still change: ${retriable.join("; ")}.`,
+      untriedStrategyFingerprints: [],
     };
   }
   return {
     exhausted: true,
     next: "block_precisely",
-    reason: "Focused diagnosis completed and every supplied safe strategy was tried without measurable progress.",
+    reason: options.blocker
+      ? `${stalled} Focused diagnosis completed and every supplied safe strategy was tried. Blocked by: ${options.blocker}.`
+      : `${stalled} Focused diagnosis completed and every supplied safe strategy was tried without measurable progress.`,
     untriedStrategyFingerprints: [],
   };
 }
