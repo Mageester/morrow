@@ -2,6 +2,46 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-07-16 - beta.31 packaged durable-autonomy gates
+
+- **Durable routing and recovery:** mission preset/provider/model/reasoning are
+  persisted and reused by replacement workers. Typed terminal provider details
+  feed a bounded recovery classifier: non-retryable authentication/payment
+  failures switch to a configured alternate or block immediately, while
+  retryable provider/process failures stop after three automatic attempts.
+  Explicitly pinned providers and models are never silently replaced; fallback
+  switching is available only when the mission left that route choice open.
+- **Productive continuation proof:** the deterministic release scenario performs
+  96 useful work units, 107 progress observations, eight checkpoints, three
+  context-pressure rollovers, provider/tool recovery, and a real SQLite
+  close/reopen. It has no artificial delay, run deadline, or user continuation.
+- **Packaged write proof:** a fresh Git fixture begins with two failing tests.
+  The packaged `yolo` path recovers from malformed arguments and failed tests,
+  changes exactly two source files plus one regression test, reruns green, and
+  inspects the final diff. The `yolo` alias now always selects write mode even
+  when the saved default mode is read-only.
+- **Browser/vision proof:** the production agent creates a responsive company
+  site, tests it, opens it in a real browser, inspects DOM and console, performs
+  a semantic interaction, and records vision-attached PNG evidence at three
+  responsive viewports. Packaged Windows builds use installed Edge; image
+  context accounting is viewport-aware and repeated dynamic observations are
+  not semantically discarded. Retained screenshots are copied to short
+  run-level paths and revalidated by PNG signature and SHA-256 so they remain
+  inspectable with standard Windows tools after the disposable install closes.
+- **Automatic Cortex and model truth:** Mission A evidence automatically creates
+  memory and a skill candidate, Mission B receives the memory and supplies the
+  second validation, and Mission C automatically loads the active scoped skill.
+  Packaged model list/detail data must also agree across service restart and
+  report positive sourced limits or explicit unknowns.
+- **Privacy/security impact:** acceptance children strip provider credentials,
+  use private product homes and contained disposable roots, retain only redacted
+  reports/evidence, and never authorize push/deploy/purchase. Browser images stay
+  in task artifact roots and skill promotion still requires checksum, project
+  scope, narrow workspace permissions, no network, and no secrets.
+- **External-model status:** the configured DeepSeek endpoint passed connection
+  testing but returned HTTP 402 `Insufficient Balance` for inference. No release
+  success is claimed until a capable packaged external-model mission completes.
+
 ## 2026-07-07 - beta.25 tool-argument recovery
 
 - **Issue:** during acceptance, DeepSeek `deepseek-v4-flash` emitted malformed

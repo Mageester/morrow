@@ -193,6 +193,7 @@ export function runProcessSafe(
       cwd,
       env: filteredEnv,
       shell: false,
+      windowsHide: true, // every agent tool-command runs headless; a console must never flash on screen
       ...(isWindows ? {} : { detached: true }), // process group for POSIX tree-kill
     });
 

@@ -3,8 +3,10 @@ import {
   ChatMessage,
   ProviderChunk,
   StreamOptions,
+  chatImageDataUrl,
   classifyHttpStatus,
   classifyThrownError,
+  validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
@@ -47,13 +49,23 @@ export class OpenAiCompatibleProvider implements AiProvider {
       };
       return;
     }
+    const imageError = validateChatImages(messages);
+    if (imageError) {
+      yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: imageError, retryable: false } };
+      return;
+    }
 
     const model = options.model || this.config.defaultModel;
     const body: Record<string, any> = {
       model,
       messages: messages.map((m) => ({
         role: m.role,
-        content: m.content || "",
+        content: m.images?.length
+          ? [
+              { type: "text", text: m.content || "" },
+              ...m.images.map((image) => ({ type: "image_url", image_url: { url: chatImageDataUrl(image) } })),
+            ]
+          : m.content || "",
         ...(m.toolCalls
           ? {
               tool_calls: m.toolCalls.map((tc) => ({
@@ -166,6 +178,8 @@ export class OpenAiCompatibleProvider implements AiProvider {
       }
       const out: ProviderChunk[] = [];
       if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
+      const wireFinishReason = parsed.choices?.[0]?.finish_reason;
+      if (wireFinishReason) out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
       const delta = parsed.choices?.[0]?.delta;
       if (delta?.reasoning_content) out.push({
         type: "text",
@@ -200,5 +214,15 @@ export class OpenAiCompatibleProvider implements AiProvider {
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
     }
+  }
+}
+
+function normalizeFinishReason(raw: string): "stop" | "length" | "tool_calls" | "content_filter" | "other" {
+  switch (raw) {
+    case "stop": return "stop";
+    case "length": return "length";
+    case "tool_calls": case "function_call": return "tool_calls";
+    case "content_filter": return "content_filter";
+    default: return "other";
   }
 }

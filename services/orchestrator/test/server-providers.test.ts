@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
@@ -14,7 +14,7 @@ describe("Provider / preset / memory API", () => {
     delete process.env.MOCK_PROVIDER;
     db = openDatabase(":memory:");
     // No-op executor: we assert persisted routing without running the agent.
-    app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}), backgroundModelDiscovery: false });
     await app.ready();
   });
 
@@ -40,9 +40,91 @@ describe("Provider / preset / memory API", () => {
       expect(body.length).toBeGreaterThanOrEqual(7);
       expect(JSON.stringify(body)).not.toContain("sk-route-leak-test");
       expect(body.find((p: any) => p.id === "openai").capabilities).toBeTruthy();
+      expect(body.find((p: any) => p.id === "openai").authMode).toBe("openai-api-key");
     } finally {
       if (prev === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = prev;
+    }
+  });
+
+  it("does not claim account model availability from credentials alone and persists provider discovery", async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-model-discovery-test";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: "gpt-5.6-sol" }, { id: "account-fine-tune" }],
+    }), { status: 200 }));
+    try {
+      const before = (await json("GET", "/api/models")).body;
+      const beforeSol = before.find((item: any) => item.model.id === "gpt-5.6-sol");
+      expect(beforeSol).toMatchObject({ available: false, availability: "unknown", authMode: "openai-api-key" });
+
+      const tested = await json("POST", "/api/providers/openai/test");
+      expect(tested.status).toBe(200);
+      expect(tested.body.models.map((model: any) => model.providerModelId)).toEqual(["gpt-5.6-sol", "account-fine-tune"]);
+
+      const after = (await json("GET", "/api/models")).body;
+      expect(after.find((item: any) => item.model.id === "gpt-5.6-sol")).toMatchObject({
+        available: true,
+        availability: "available",
+        availabilitySource: "provider-reported",
+      });
+      expect(after.find((item: any) => item.model.id === "account-fine-tune")).toMatchObject({
+        available: true,
+        model: { builtIn: false, contextWindow: null, metadataSource: "provider-reported" },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
+    }
+  });
+
+  it("refreshes configured account models in the background without blocking startup", async () => {
+    const previousKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-background-discovery-test";
+    const backgroundDb = openDatabase(":memory:");
+    const connectivity = vi.fn(async (id: any) => ({
+      id,
+      ok: true,
+      configured: true,
+      status: 200,
+      latencyMs: 1,
+      checkedEndpoint: "api.example.test",
+      detail: "connected",
+      errorKind: null,
+      modelsSample: ["account-background-model"],
+      models: [{
+        providerModelId: "account-background-model",
+        displayName: "Account Background Model",
+        contextWindow: null,
+        maxOutputTokens: null,
+        capabilities: { streaming: null, toolCalls: null, vision: null },
+        metadataSource: "provider-reported" as const,
+      }],
+    }));
+    const backgroundApp = buildServer({
+      db: backgroundDb,
+      runner: new TaskRunner(backgroundDb, async () => {}),
+      providerConnectivityTest: connectivity,
+      backgroundModelDiscovery: true,
+    });
+    try {
+      await backgroundApp.ready();
+      expect((await backgroundApp.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
+      await vi.waitFor(async () => {
+        const response = await backgroundApp.inject({ method: "GET", url: "/api/models" });
+        const models = JSON.parse(response.body);
+        expect(models.find((item: any) => item.model.id === "account-background-model")).toMatchObject({
+          available: true,
+          availability: "available",
+          authMode: "openai-api-key",
+        });
+      });
+      expect(connectivity).toHaveBeenCalledWith("openai", process.env);
+    } finally {
+      await backgroundApp.close();
+      backgroundDb.close();
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
     }
   });
 
@@ -83,7 +165,7 @@ describe("Provider / preset / memory API", () => {
       const models = (await json("GET", "/api/models")).body;
       const hy3 = models.find((m: any) => m.model.providerId === "openai-compatible" && m.model.id === "hy3-free");
       expect(hy3).toBeTruthy();
-      expect(hy3.available).toBe(true);
+      expect(hy3).toMatchObject({ available: false, availability: "unknown", authMode: "opencode-zen" });
 
       const budgets = (await json("GET", "/api/models/budgets")).body;
       const hy3Budget = budgets.find((b: any) => b.providerId === "openai-compatible" && b.selectedModelId === "hy3-free");

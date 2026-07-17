@@ -20,7 +20,7 @@ import {
   PatchConventionSchema,
   type PresetId,
   type ProviderId,
-  type RoutingDecision,
+  type ProviderAuthMode,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -34,6 +34,10 @@ import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
+import { learnedSkillsRepository } from "./repositories/learned-skills.js";
+import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
+import { AutomaticSkillService } from "./cortex/automatic-skills.js";
+import { verifySkillDirectory } from "./skills/registry.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -101,6 +105,8 @@ import { changeSetsRepository } from "./repositories/change-sets.js";
 import { checkpointsRepository } from "./repositories/checkpoints.js";
 import { snapshotFiles, restoreSnapshot, isValidCheckpointName } from "./workspace/checkpoints.js";
 import { missionsRepository } from "./repositories/missions.js";
+import { missionRuntimeRepository } from "./repositories/mission-runtime.js";
+import { providerModelDiscoveryRepository } from "./repositories/provider-model-discovery.js";
 import { MissionService, MissionError } from "./mission/service.js";
 import { ensureCortexSpecialistAgents } from "./mission/specialists.js";
 import { buildMissionCompletion } from "./mission/completion.js";
@@ -125,12 +131,13 @@ import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-polic
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createProvider, listProviderStatuses } from "./provider/registry.js";
+import { createProvider, installProviderModelDiscoveries, listProviderStatuses } from "./provider/registry.js";
 import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { listModels, listConfiguredCustomModels, resolveReasoningCapability } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
@@ -140,7 +147,7 @@ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guar
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
-import { translateReasoning } from "./provider/reasoning.js";
+import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -176,9 +183,21 @@ function parseEventCursor(value: string): number {
 export type ServerDependencies = {
   db: Database.Database;
   runner: TaskRunner;
+  /** Wake durable mission ownership after task or approval state changes. */
+  missionControllerRunner?: {
+    run?(missionId: string): void;
+    wake(missionId: string): void;
+    cancel?(missionId: string): void;
+    isActive?(missionId: string): boolean;
+  };
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
+  modelCatalog?: ModelCatalog;
+  /** Injectable account-model discovery transport for deterministic tests. */
+  providerConnectivityTest?: typeof testProviderConnectivity;
+  /** Defaults on outside tests; discovery failures never block server startup. */
+  backgroundModelDiscovery?: boolean;
   /** Injectable so the diagnostics route is fast and deterministic in tests. */
   diagnosticsRunner?: DiagnosticsRunner;
   /** Injectable messaging adapters; defaults to env-configured ones. */
@@ -223,15 +242,54 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const memory = memoryRepository(deps.db);
   const search = searchRepository(deps.db);
   const skillUsage = skillUsageRepository(deps.db);
+  const learnedSkills = learnedSkillsRepository(deps.db);
   const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
   const checkpoints = checkpointsRepository(deps.db);
   const missions = missionsRepository(deps.db);
+  const missionRuntime = missionRuntimeRepository(deps.db);
+  const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
+  installProviderModelDiscoveries(providerModelDiscovery.list());
+  const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
+  const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
+    const result = await providerConnectivityTest(providerId, process.env);
+    const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
+    if (authMode) {
+      providerModelDiscovery.upsert({
+        providerId,
+        authMode,
+        status: result.ok ? "available" : "unavailable",
+        models: result.models,
+        errorKind: result.errorKind,
+        fetchedAt: new Date().toISOString(),
+      });
+      installProviderModelDiscoveries(providerModelDiscovery.list());
+    }
+    return result;
+  };
+  if (deps.backgroundModelDiscovery ?? process.env.NODE_ENV !== "test") {
+    const configured = listProviderStatuses().filter((status) => status.configured && status.authMode && status.id !== "mock");
+    queueMicrotask(() => {
+      void Promise.allSettled(configured.map((status) => refreshProviderModelDiscovery(status.id, status.authMode)));
+    });
+  }
+  const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
+    cacheDir: join(resolveMorrowHome(process.env), "catalog"),
+    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+    bundledModels: BUILT_IN_MODELS,
+  });
+  installModelCatalog(modelCatalog.current().models);
+  void modelCatalog.refresh().then((snapshot) => installModelCatalog(snapshot.models)).catch(() => undefined);
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
     getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+    memory: new AutomaticMemoryService(memory),
+    skills: new AutomaticSkillService({
+      repo: learnedSkills,
+      rootForProject: (projectId) => join(resolveMorrowHome(process.env), "projects", projectId, "skills"),
+    }),
   });
   const missionService = new MissionService({
     repo: missions,
@@ -240,6 +298,42 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
     cortex: cortexService,
   });
+  const missionProjection = (missionId: string) => {
+    const mission = missionService.get(missionId);
+    const runtime = missionRuntime.get(missionId);
+    if (!runtime) return { ...mission, runtime: null };
+    const operations = missionRuntime.listOperations(missionId);
+    const guardian = missionService.assessGuardian(missionId);
+    const providerModelHistory = deps.db.prepare(`SELECT segment.provider_id AS providerId,segment.model,
+        segment.sequence,segment.status,segment.boundary_reason AS boundaryReason
+      FROM agent_execution_segments segment
+      JOIN tasks task ON task.id=segment.task_id
+      WHERE task.mission_id=? ORDER BY segment.started_at,segment.id`)
+      .all(missionId);
+    return {
+      ...mission,
+      runtime: {
+        ...runtime,
+        currentOperation: runtime.activeOperationId
+          ? operations.find((operation) => operation.id === runtime.activeOperationId) ?? null
+          : null,
+        operations,
+        transitions: missionRuntime.listTransitions(missionId),
+        progress: missionRuntime.listProgress(missionId),
+        recoveryDecisions: missionRuntime.listRecoveryDecisions(missionId),
+        guardian,
+        blocker: guardian.passed
+          ? null
+          : [...guardian.blocked, ...guardian.failed, ...guardian.missing].at(0)?.detail ?? null,
+        providerModelHistory,
+        evidenceCounts: {
+          passed: mission.evidence.filter((item) => item.status === "passed").length,
+          failed: mission.evidence.filter((item) => item.status === "failed").length,
+          inconclusive: mission.evidence.filter((item) => item.status === "inconclusive").length,
+        },
+      },
+    };
+  };
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   // A `running` row from a previous orchestrator run is unobservable — mark it
@@ -749,195 +843,24 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   app.post("/api/conversations/:conversationId/messages", async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
-    const conversation = convs.getConversation(conversationId);
-    if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
-    
     const body = SendMessageSchema.parse(request.body);
-
-    // Idempotent replay: a repeated send with the same key returns the original
-    // task and messages (200) instead of dispatching the agent a second time.
     const idempotencyKey = readIdempotencyKey(request);
-    if (idempotencyKey) {
-      const existing = tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey);
-      if (existing) {
-        const msgs = convs.listMessages(conversationId);
-        const assistantIndex = msgs.findIndex((m) => m.taskId === existing.id && m.role === "assistant");
-        const assistantMessage = assistantIndex >= 0 ? msgs[assistantIndex] : null;
-        const userMessage = assistantIndex >= 0 ? [...msgs.slice(0, assistantIndex)].reverse().find((m) => m.role === "user") ?? null : null;
-        reply.status(200);
-        return {
-          task: existing,
-          userMessage,
-          assistantMessage,
-          routing: routingRepo.get(existing.id)?.decision ?? null,
-          aggregateUrl: `/api/tasks/${existing.id}`,
-          sseUrl: `/api/tasks/${existing.id}/events/stream`,
-          replayed: true,
-        };
-      }
-    }
-
-    if (body.worktreeId) {
-      const wt = worktreesRepo.get(body.worktreeId);
-      if (!wt || wt.projectId !== conversation.projectId) throw new ApiError(404, "Worktree not found in this project", "NOT_FOUND");
-      if (wt.status !== "active") throw new ApiError(409, `Worktree is ${wt.status}; create a fresh one`, "CONFLICT");
-    }
-
-    // A mission-linked task routes agent tool failures into that mission's
-    // failure ledger. Reject cross-project links so a mission can never
-    // accumulate failures from another project's execution.
-    if (body.missionId) {
-      const mission = missions.get(body.missionId);
-      if (!mission || mission.projectId !== conversation.projectId) throw new ApiError(404, "Mission not found in this project", "NOT_FOUND");
-    }
-
-    const presetId: PresetId = body.preset && isPresetId(body.preset) ? body.preset : DEFAULT_PRESET_ID;
-    const mode = body.mode ?? "agent";
-    const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
-    // YOLO / auto-approve only has meaning when execution tools are exposed.
-    // Inspect (read-only) and plan-only never request approvals, so we refuse to
-    // record an auto-approve flag for them rather than imply it does something.
-    const autoApprove = mode === "agent" && body.autoApprove === true;
-
-    // Resolve the provider+model the agent will actually use, and report it.
-    let decision: RoutingDecision;
-    if (process.env.MOCK_PROVIDER === "true" && !body.providerId) {
-      const preset = getPreset(presetId)!;
-      decision = {
-        version: 1,
-        presetId,
-        providerId: "mock",
-        model: "mock-model",
-        reason: "Routed to mock provider (MOCK_PROVIDER=true).",
-        fallbackUsed: false,
-        overridden: false,
-        privacy: preset.privacy,
-        candidates: [{ providerId: "mock", configured: true, reason: "mock enabled" }],
-        mode,
-        toolProfile,
-        autoApprove,
-      };
-    } else {
-      const override = body.providerId
-        ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) }
-        : undefined;
-      const result = routePreset(presetId, process.env, override);
-      if (!result.ok) {
-        throw new ApiError(400, result.reason, "PRESET_UNAVAILABLE");
-      }
-      decision = result.decision;
-      // Model-only override (keep routed provider, force the model id).
-      if (body.model && !body.providerId) {
-        decision = { ...decision, model: body.model, overridden: true };
-      }
-      decision = { ...decision, mode, toolProfile, autoApprove };
-    }
-
-    // Validate the requested reasoning against the resolved route's real
-    // capability BEFORE any task is created — an unsupported combination must
-    // never reach a provider request, and the caller must find out about it
-    // as a normal 400, not a mid-task failure. translateReasoning is the same
-    // function the adapters use to build the wire params, so "accepted here"
-    // and "will actually be sent" can never disagree. Auto never needs
-    // validation — it always defers to the route's own default.
-    if (body.reasoning && body.reasoning.mode !== "auto") {
-      let reasoningRoute: ProviderRouteMetadata;
-      if (decision.providerId === "mock") {
-        reasoningRoute = { providerId: "mock", protocol: "mock", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
-      } else {
-        try {
-          reasoningRoute = createProvider(decision.providerId, process.env, decision.model).route ?? {
-            providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null,
-            endpointLimitTokens: null, endpointLimitSource: "unknown",
-          };
-        } catch {
-          reasoningRoute = { providerId: decision.providerId, protocol: "openai-chat", endpointKind: "injected", endpointHost: null, endpointLimitTokens: null, endpointLimitSource: "unknown" };
-        }
-      }
-      const capability = resolveReasoningCapability(decision.providerId, decision.model);
-      const translated = translateReasoning(body.reasoning, reasoningRoute.protocol, capability);
-      if (!translated.ok) throw new ApiError(400, translated.reason, "REASONING_UNSUPPORTED");
-    }
-    // Frozen into the durable routing decision, exactly like provider/model —
-    // retry/resume replay this value rather than re-reading current settings.
-    decision = { ...decision, ...(body.reasoning ? { reasoning: body.reasoning } : {}) };
-
-    const timestamp = new Date().toISOString();
-
-    // Create the task before appending any messages so a lost race on the
-    // idempotency unique index can't leave a duplicate user message behind.
-    let task;
     try {
-      task = tasks.createTask({
-        id: crypto.randomUUID(),
-        projectId: conversation.projectId,
-        kind: "agent_chat",
-        status: "queued",
+      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId,
+        ...body,
         ...(idempotencyKey ? { idempotencyKey } : {}),
-        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
-        ...(body.missionId ? { missionId: body.missionId } : {}),
-        createdAt: timestamp,
       });
-    } catch (e) {
-      // Concurrent duplicate with the same key: replay the winner.
-      const winner = idempotencyKey ? tasks.findByIdempotencyKey(conversation.projectId, idempotencyKey) : undefined;
-      if (!winner) throw e;
-      reply.status(200);
-      return {
-        task: winner,
-        userMessage: null,
-        assistantMessage: null,
-        routing: routingRepo.get(winner.id)?.decision ?? null,
-        aggregateUrl: `/api/tasks/${winner.id}`,
-        sseUrl: `/api/tasks/${winner.id}/events/stream`,
-        replayed: true,
-      };
+      reply.status(result.replayed ? 200 : 202);
+      if (result.replayed) return result;
+      const { replayed: _replayed, ...response } = result;
+      return response;
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) {
+        throw new ApiError(error.statusCode, error.message, error.code);
+      }
+      throw error;
     }
-
-    const userMsg = convs.appendMessage({
-      id: crypto.randomUUID(),
-      conversationId,
-      role: "user",
-      content: body.content,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-    records.transitionAgentState(task.id, { id: crypto.randomUUID(), state: "idle", details: {}, createdAt: timestamp });
-
-    const assistantMsg = convs.appendMessage({
-      id: crypto.randomUUID(),
-      conversationId,
-      role: "assistant",
-      content: "",
-      taskId: task.id,
-      streamingState: "queued",
-      provider: decision.providerId,
-      model: decision.model,
-      createdAt: new Date(Date.now() + 50).toISOString(),
-      updatedAt: new Date(Date.now() + 50).toISOString(),
-    });
-
-    routingRepo.upsert({
-      taskId: task.id,
-      presetId,
-      providerId: decision.providerId,
-      model: decision.model,
-      useMemory: body.useMemory ?? true,
-      decision,
-      createdAt: timestamp,
-    });
-
-    deps.runner.run(task.id);
-
-    reply.status(202);
-    return {
-      task,
-      userMessage: userMsg,
-      assistantMessage: assistantMsg,
-      routing: decision,
-      aggregateUrl: `/api/tasks/${task.id}`,
-      sseUrl: `/api/tasks/${task.id}/events/stream`,
-    };
   });
 
   // Subagent delegation: a subagent is a child task with its own scope, linked
@@ -1373,19 +1296,27 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
     const parsed = CreateMissionSchema.safeParse(request.body ?? {});
     if (!parsed.success) throw new ApiError(400, "Invalid mission request", "VALIDATION_ERROR");
-    const mission = missionService.create(projectId, parsed.data);
+    let mission!: ReturnType<typeof missionService.create>;
+    deps.db.transaction(() => {
+      mission = missionService.create(projectId, parsed.data);
+      missionRuntime.create({ missionId: mission.id, now: mission.createdAt });
+    })();
     ensureCortexSpecialistAgents(projectId, agents);
     reply.status(201);
-    return mission;
+    return missionProjection(mission.id);
   });
 
   app.get("/api/projects/:projectId/missions", async (request) => {
     const { projectId } = request.params as { projectId: string };
     if (!projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
-    return missionService.listByProject(projectId);
+    return missionService.listByProject(projectId).map((mission) => missionProjection(mission.id));
   });
 
-  app.get("/api/missions/:missionId", async (request) => requireMission((request.params as { missionId: string }).missionId));
+  app.get("/api/missions/:missionId", async (request) => {
+    const missionId = (request.params as { missionId: string }).missionId;
+    requireMission(missionId);
+    return missionProjection(missionId);
+  });
 
   app.get("/api/missions/:missionId/criteria", async (request) => requireMission((request.params as { missionId: string }).missionId).criteria);
   app.get("/api/missions/:missionId/evidence", async (request) => requireMission((request.params as { missionId: string }).missionId).evidence);
@@ -1393,7 +1324,22 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/missions/:missionId/checkpoints", async (request) => requireMission((request.params as { missionId: string }).missionId).checkpoints);
   app.get("/api/missions/:missionId/result", async (request) => {
     const m = requireMission((request.params as { missionId: string }).missionId);
-    return { status: m.status, result: m.result, finalReview: m.finalReview };
+    return { status: m.status, result: m.result, finalReview: m.finalReview, runtime: missionProjection(m.id).runtime };
+  });
+
+  app.post("/api/missions/:missionId/start", async (request, reply) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = requireMission(missionId);
+    if (mission.status !== "running" && mission.status !== "reviewing") {
+      throw new ApiError(409, `Mission must be approved before start; current status is ${mission.status}`, "MISSION_NOT_STARTABLE");
+    }
+    if (!missionRuntime.get(missionId)) missionRuntime.create({ missionId, now: new Date().toISOString() });
+    if (!deps.missionControllerRunner?.run || !deps.missionControllerRunner.isActive) {
+      throw new ApiError(503, "Durable mission controller is unavailable", "MISSION_CONTROLLER_UNAVAILABLE");
+    }
+    if (!deps.missionControllerRunner.isActive(missionId)) deps.missionControllerRunner.run(missionId);
+    reply.status(202);
+    return missionProjection(missionId);
   });
   app.get("/api/missions/:missionId/events", async (request) => {
     requireMission((request.params as { missionId: string }).missionId);
@@ -1509,13 +1455,29 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.post("/api/missions/:missionId/cancel", async (request) => {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
-    return runMission(() => missionService.cancel(missionId));
+    deps.missionControllerRunner?.cancel?.(missionId);
+    const cancelled = runMission(() => missionService.cancel(missionId));
+    const runtime = missionRuntime.get(missionId);
+    if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
+      missionRuntime.transition({
+        missionId,
+        from: runtime.state,
+        to: "cancelled",
+        cause: "user_cancelled",
+        actor: "user",
+        details: {},
+        now: new Date().toISOString(),
+      });
+    }
+    return { ...cancelled, runtime: missionProjection(missionId).runtime };
   });
 
   app.post("/api/missions/:missionId/resume", async (request) => {
     const { missionId } = request.params as { missionId: string };
     requireMission(missionId);
-    return runMission(() => missionService.resume(missionId));
+    const resumed = runMission(() => missionService.resume(missionId));
+    deps.missionControllerRunner?.wake(missionId);
+    return { ...resumed, runtime: missionProjection(missionId).runtime };
   });
 
   // ── Morrow Cortex: persistent project intelligence ─────────────────────────
@@ -1973,6 +1935,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       // recorded, but a dead task is never revived; drop any latched wakeup.
       ApprovalContinuationRegistry.clear(approvalId);
     }
+    if (t?.missionId) deps.missionControllerRunner?.wake(t.missionId);
 
     return resolved;
   });
@@ -2073,7 +2036,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { providerId } = request.params as { providerId: string };
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
-    return testProviderConnectivity(parsed.data, process.env);
+    return refreshProviderModelDiscovery(parsed.data);
   });
 
   // Save provider credentials from the app (no PowerShell / env vars / restart).
@@ -2187,9 +2150,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   // Built-in model registry with availability derived from configured providers.
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
-    const configured = new Set(statuses.filter((s) => s.configured).map((s) => s.id));
-    const models = [...listModels(), ...listConfiguredCustomModels(statuses)];
-    return models.map((model) => ({ model, available: configured.has(model.providerId) }));
+    return resolveModelStatuses(statuses, providerModelDiscovery.list());
   });
 
   /**
@@ -2438,6 +2399,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         const mdPath = join(sdir, "SKILL.md");
         if (seen.has(entry)) continue;
         if (!existsSync(mdPath) || !lstatSync(sdir).isDirectory()) continue;
+        const manifestPath = join(sdir, "manifest.json");
+        if (!existsSync(manifestPath) && (!process.env.MORROW_SKILLS_DIR || resolve(dir) !== resolve(process.env.MORROW_SKILLS_DIR))) continue;
+        if (existsSync(manifestPath) && !verifySkillDirectory(sdir).ok) continue;
         seen.add(entry);
         let manifest: any = {};
         try { manifest = JSON.parse(readFileSync(join(sdir, "manifest.json"), "utf8")); } catch {}
@@ -2472,6 +2436,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return skillUsage.listByProject(projectId);
+  });
+
+  app.get("/api/projects/:projectId/skills/learned", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return learnedSkills.listByProject(projectId);
   });
 
   app.post("/api/projects/:projectId/skills/:skillId/use", async (request, reply) => {

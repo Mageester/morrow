@@ -7,17 +7,17 @@ describe("canonical model budget (single source of truth)", () => {
   it("resolves verified model capacity and derives one usable-input number", () => {
     const budget = resolveModelBudget({
       providerId: "anthropic",
-      selectedModel: "claude-3-5-sonnet-20241022",
+      selectedModel: "claude-sonnet-5",
       endpoint: { kind: "default", host: null, protocol: "anthropic-messages", limitTokens: null, limitSource: "unknown" },
       presetContextBudgetBytes: 786432,
       outputBudgetTokens: 4096,
       toolCount: 3,
     });
-    expect(budget.contextWindowTokens).toBe(200000);
+    expect(budget.contextWindowTokens).toBe(1_000_000);
     expect(budget.contextWindowSource).toBe("model-metadata");
     expect(budget.contextWindowConfidence).toBe("verified");
     expect(budget.totalReserveTokens).toBeGreaterThan(4096);
-    expect(budget.usableInputTokens).toBeLessThan(200000);
+    expect(budget.usableInputTokens).toBeLessThan(1_000_000);
     expect(budget.usableInputTokens).toBeGreaterThan(0);
   });
 
@@ -83,6 +83,20 @@ describe("canonical model budget (single source of truth)", () => {
     );
     expect(measurement.inputTokens).toBeLessThanOrEqual(forAdmission.usableInputTokens);
     expect(admission.ok).toBe(true);
+  });
+
+  it("does not reserve tool schemas twice before exact envelope admission", () => {
+    const route = {
+      providerId: "openai-compatible",
+      selectedModel: "small-test-model",
+      endpoint: { kind: "injected" as const, host: null, protocol: "openai-chat" as const, limitTokens: 16_000, limitSource: "provider-metadata" as const },
+      outputBudgetTokens: 2_048,
+    };
+    const withoutTools = resolveModelBudget({ ...route, toolCount: 0 });
+    const withCatalog = resolveModelBudget({ ...route, toolCount: 27 });
+
+    expect(withCatalog.toolReserveTokens).toBe(0);
+    expect(withCatalog.usableInputTokens).toBe(withoutTools.usableInputTokens);
   });
 
   it("caps the endpoint-configured ceiling for the exact custom route only, never inherited across routes", () => {

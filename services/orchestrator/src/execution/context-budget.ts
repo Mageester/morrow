@@ -43,6 +43,7 @@ export interface ProviderRequestMeasurement {
   confidence: "exact" | "conservative";
   components: {
     messages: number;
+    imageInputs: number;
     toolSchemas: number;
     providerContinuation: number;
     protocolOverhead: number;
@@ -179,14 +180,28 @@ function conservativeSerializedTokens(value: unknown): number {
   return Math.max(estimateTextTokens(serialized), Buffer.byteLength(serialized, "utf8"));
 }
 
+function conservativeImageTokens(image: NonNullable<ChatMessage["images"]>[number]): number {
+  if (image.width !== undefined && image.height !== undefined) {
+    // Vision providers charge by decoded pixels/tiles, not base64 wire bytes.
+    // One token per 500 pixels deliberately overestimates the supported
+    // provider formulas while keeping ordinary screenshots admissible.
+    return Math.max(256, Math.ceil((image.width * image.height) / 500));
+  }
+  return Math.max(512, Math.ceil(Buffer.from(image.data, "base64").length / 64));
+}
+
 /** Count the complete normalized request envelope. Provider adapters serialize
  * this same information onto the wire; private continuation data is counted but
  * is never returned in diagnostics. */
 export function measureProviderRequest(envelope: ProviderRequestEnvelope): ProviderRequestMeasurement {
-  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, ...message }) => message), {
+  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, images: _images, ...message }) => message), {
     providerId: envelope.providerId,
     model: envelope.model,
   });
+  const imageBase = envelope.messages.reduce((sum, message) => {
+    if (!message.images?.length) return sum;
+    return sum + message.images.reduce((imageSum, image) => imageSum + conservativeImageTokens(image), 0);
+  }, 0);
   const continuationBase = envelope.messages.reduce((sum, message) => {
     if (!message.providerContinuation) return sum;
     return sum + conservativeSerializedTokens(message.providerContinuation);
@@ -197,10 +212,11 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
   })));
   const protocolBase = PROTOCOL_OVERHEAD[envelope.protocol];
   const toolSchemas = toolBase + Math.ceil(toolBase * 0.15);
+  const imageInputs = imageBase + Math.ceil(imageBase * 0.15);
   const providerContinuation = continuationBase + Math.ceil(continuationBase * 0.15);
   const protocolOverhead = protocolBase + Math.ceil(protocolBase * 0.15);
-  const hasEstimatedExtras = toolBase > 0 || continuationBase > 0 || protocolBase > 0;
-  const inputTokens = messageCount.tokens + toolSchemas + providerContinuation + protocolOverhead;
+  const hasEstimatedExtras = imageBase > 0 || toolBase > 0 || continuationBase > 0 || protocolBase > 0;
+  const inputTokens = messageCount.tokens + imageInputs + toolSchemas + providerContinuation + protocolOverhead;
   return {
     inputTokens,
     outputReserveTokens: envelope.outputReserveTokens,
@@ -208,7 +224,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     method: hasEstimatedExtras ? "estimate" : messageCount.method,
     exact: messageCount.exact && !hasEstimatedExtras,
     confidence: hasEstimatedExtras ? "conservative" : messageCount.confidence,
-    components: { messages: messageCount.tokens, toolSchemas, providerContinuation, protocolOverhead },
+    components: { messages: messageCount.tokens, imageInputs, toolSchemas, providerContinuation, protocolOverhead },
   };
 }
 

@@ -30,8 +30,9 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertArtifactLayout } from "./lib/package-layout.mjs";
+import { buildProvenance, computePackageManifestHash, writeProvenance } from "./lib/package-provenance.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -54,6 +55,24 @@ function sh(cmd, opts = {}) { console.log(`  $ ${cmd}`); return execSync(cmd, { 
 function ensure(dir) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
 function sha256(file) { return createHash("sha256").update(readFileSync(file)).digest("hex"); }
 function ps(script) { return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "inherit" }); }
+
+// ── 0. Capture build provenance from the current worktree ────────────────
+// Captured before the build runs, so it reflects the exact commit and dirty
+// state this invocation started from, independent of anything the build
+// itself might touch (dist/ output is not part of the provenance surface).
+console.log("\n[0/8] Capturing build provenance...");
+let sourceCommit = null;
+let dirty = true;
+try {
+  sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit)) sourceCommit = null;
+  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: ROOT, encoding: "utf8" });
+  dirty = status.trim().length > 0;
+} catch {
+  sourceCommit = null;
+  dirty = true;
+}
+console.log(`  commit=${sourceCommit ?? "unknown"} dirty=${dirty}`);
 
 // ── 1. Validate + build ──────────────────────────────────────────────────
 if (!SKIP_BUILD) {
@@ -294,6 +313,24 @@ writeFileSync(join(PKG_DIR, "VERSION"), VERSION);
 writeFileSync(join(PKG_DIR, "CHANNEL"), "beta");
 const notices = join(ROOT, "THIRD_PARTY_NOTICES.txt");
 writeFileSync(join(PKG_DIR, "THIRD_PARTY_NOTICES.txt"), existsSync(notices) ? readFileSync(notices, "utf8") : "Morrow bundles Node.js and third-party npm dependencies under their respective licenses.\n");
+
+// ── 6b. Build provenance ──────────────────────────────────────────────────
+// Written last, after every other package file is in place, so its manifest
+// hash covers the complete, final package contents. Baked into the archive:
+// re-running acceptance against this exact zip always reads back the same
+// sourceCommit/dirty/manifestHash, regardless of what HEAD does afterward.
+console.log("\n[6b/8] Writing build provenance...");
+let schemaCatalogVersion = null;
+try {
+  const dbModule = await import(pathToFileURL(join(orchSrc, "dist", "src", "database.js")).href);
+  schemaCatalogVersion = Array.isArray(dbModule.migrations) ? dbModule.migrations.length : null;
+} catch {
+  schemaCatalogVersion = null;
+}
+const manifestHash = computePackageManifestHash(PKG_DIR);
+const provenance = buildProvenance({ version: VERSION, sourceCommit, dirty, schemaCatalogVersion, manifestHash });
+writeProvenance(PKG_DIR, provenance);
+console.log(`  sourceCommit=${provenance.sourceCommit ?? "unknown"} dirty=${provenance.dirty} manifestHash=${provenance.manifestHash.slice(0, 12)}…`);
 
 // ── 7. Archive ───────────────────────────────────────────────────────────
 // Zip via .NET ZipFile from a temp stage OUTSIDE the project tree. Compress-Archive

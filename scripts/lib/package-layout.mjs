@@ -29,6 +29,7 @@ export const REQUIRED_PACKAGE_FILES = [
   "orchestrator/cli/src/main.js",
   "skills/coding/SKILL.md",
   "VERSION",
+  "PROVENANCE.json",
 ];
 
 /**

@@ -161,13 +161,28 @@ describe("morrow mission command", () => {
     expect(parsed.id).toBe("mission-abc12345");
   });
 
+  it("reconnects to an existing durable mission without creating duplicate work", async () => {
+    const active = mission({ status: "running", runtime: { state: "executing", blocker: null }, result: null });
+    const completed = mission({ status: "completed", runtime: { state: "completed", blocker: null } });
+    const api = {
+      listProjects: vi.fn(async () => [{ id: "p1", name: "P1", workspacePath: "C:/repo" }]),
+      listMissions: vi.fn(async () => [active]),
+      resumeMission: vi.fn(async () => completed),
+      createMission: vi.fn(),
+    };
+
+    await expect(missionCommand(ctx(api), "resume", ["abc12345"])).resolves.toBe(0);
+    expect(api.resumeMission).toHaveBeenCalledWith("mission-abc12345");
+    expect(api.createMission).not.toHaveBeenCalled();
+  });
+
   it("shows a usage hint when no objective or subcommand is given", async () => {
     const api = { listProjects: vi.fn(async () => []) };
     await expect(missionCommand(ctx(api), undefined, [])).resolves.toBe(2);
     expect(printed.join("")).toMatch(/Usage: morrow mission/);
   });
 
-  it("runs one bounded repair cycle when the reviewer requests revisions", async () => {
+  it("starts one durable controller without manually sequencing chat, verification, review, or finalization", async () => {
     const active = mission({
       status: "running",
       result: null,
@@ -179,15 +194,9 @@ describe("morrow mission command", () => {
       ],
       evidence: [],
     });
-    const verified = mission({
-      ...active,
-      criteria: (active.criteria as any[]).map((c) => c.id === "c1" ? { ...c, state: "verified", evidenceIds: ["e1"] } : c),
-      evidence: [
-        { id: "e1", missionId: "mission-abc12345", criterionIds: ["c1"], type: "command", summary: "npm test exited 0", command: "npm test", exitCode: 0, outputRef: null, artifactPath: null, status: "passed", recordedAt: "t" },
-      ],
-    });
     const finished = mission({
       status: "completed",
+      runtime: { state: "completed", blocker: null },
       result: {
         status: "completed", objective: active.objective,
         criteriaVerified: 2, criteriaFailed: 0, criteriaUnverified: 0, criteriaWaived: 0, criteriaTotal: 2,
@@ -202,21 +211,57 @@ describe("morrow mission command", () => {
       generateMissionCriteria: vi.fn(async () => active),
       intelligenceStaleness: vi.fn(async () => ({ changedScopes: [], itemsMarked: 0, architectureStale: false })),
       analyzeMissionImpact: vi.fn(async () => { throw new Error("no intelligence"); }),
-      createMissionCheckpoint: vi.fn(async () => ({ id: "ckpt-1", missionId: active.id, label: "pre-execution", reason: "before", gitRef: null, checkpointName: "ckpt-1", affectedFiles: [], rollbackAvailable: true, createdAt: "t" })),
-      verifyMission: vi.fn(async () => verified),
-      reviewMission: vi.fn()
-        .mockResolvedValueOnce({ verdict: "revisions_required", criterionJudgments: [{ criterionId: "c2", judgment: "not_satisfied", note: "Tests were not updated for RX-BANDAGE." }], regressionRisks: [], suspiciousChanges: [], missingVerification: ["RX-BANDAGE test is missing."], concerns: ["Objective required a test update."], recommendedStatus: "partially_completed", summary: "Tests missing." })
-        .mockResolvedValueOnce({ verdict: "approved", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], recommendedStatus: "completed", summary: "ok" }),
-      finalizeMission: vi.fn(async () => finished),
+      startMission: vi.fn(async () => finished),
     };
 
     await expect(missionCommand(ctx(api, { yes: true }), "Add RX-BANDAGE", [])).resolves.toBe(0);
-    expect(chatCommand).toHaveBeenCalledTimes(2);
-    expect(api.verifyMission).toHaveBeenCalledTimes(2);
-    expect(api.reviewMission).toHaveBeenCalledTimes(2);
-    expect(api.finalizeMission).toHaveBeenCalledWith("mission-abc12345", { tasksCompleted: 2 });
-    const repairPrompt = vi.mocked(chatCommand).mock.calls[1]![0].flags.message as string;
-    expect(repairPrompt).toContain("independent reviewer requested revisions");
-    expect(repairPrompt).toContain("RX-BANDAGE test is missing");
+    expect(api.startMission).toHaveBeenCalledTimes(1);
+    expect(api.startMission).toHaveBeenCalledWith("mission-abc12345");
+    expect(chatCommand).not.toHaveBeenCalled();
+  });
+
+  it("persists the selected preset, provider, and model on a durable mission", async () => {
+    const active = mission({ status: "running", result: null, runtime: { state: "completed", blocker: null } });
+    const api = {
+      listProjects: vi.fn(async () => [{ id: "p1", name: "P1", workspacePath: "C:/repo" }]),
+      createMission: vi.fn(async () => active),
+      generateMissionCriteria: vi.fn(async () => active),
+      intelligenceStaleness: vi.fn(async () => ({ changedScopes: [], itemsMarked: 0, architectureStale: false })),
+      analyzeMissionImpact: vi.fn(async () => { throw new Error("no intelligence"); }),
+      startMission: vi.fn(async () => active),
+    };
+
+    await missionCommand(ctx(api, {
+      yes: true,
+      preset: "coding",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    }), "Repair receipts", []);
+
+    expect(api.createMission).toHaveBeenCalledWith("p1", expect.objectContaining({
+      preset: "coding",
+      providerId: "deepseek",
+      model: "deepseek-v4-pro",
+    }));
+  });
+
+  it("returns a nonzero exit code for a required non-success terminal disposition", async () => {
+    const active = mission({ status: "running", result: null, finalReview: null, criteria: [] });
+    const blocked = mission({
+      ...active,
+      status: "partially_completed",
+      runtime: { state: "blocked", blocker: "Provider credentials are required." },
+    });
+    const api = {
+      listProjects: vi.fn(async () => [{ id: "p1", name: "P1", workspacePath: "C:/repo" }]),
+      createMission: vi.fn(async () => active),
+      generateMissionCriteria: vi.fn(async () => active),
+      intelligenceStaleness: vi.fn(async () => ({ changedScopes: [], itemsMarked: 0, architectureStale: false })),
+      analyzeMissionImpact: vi.fn(async () => { throw new Error("no intelligence"); }),
+      startMission: vi.fn(async () => blocked),
+    };
+
+    await expect(missionCommand(ctx(api, { yes: true }), "Repair blocked app", [])).resolves.toBe(1);
+    expect(printed.join("")).toContain("Provider credentials are required");
   });
 });

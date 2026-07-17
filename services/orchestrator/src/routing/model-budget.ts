@@ -106,7 +106,12 @@ export function resolveModelBudget(input: {
 
   const outputReserveTokens = input.outputBudgetTokens ?? 2048;
   const safetyMarginTokens = input.safetyMarginTokens ?? Math.max(512, Math.ceil(contextWindowTokens * 0.02));
-  const toolReserveTokens = (input.toolCount ?? 0) * 256;
+  // Tool schemas are measured from their exact serialized definitions by
+  // measureProviderRequest before every provider invocation. Reserving another
+  // synthetic amount per tool here double-counts the same bytes and can reject
+  // a request solely because the truthful catalog grew. Keep the field for the
+  // stable disclosure shape; the exact-envelope gate is authoritative.
+  const toolReserveTokens = 0;
   const framingReserveTokens = 512;
   const totalReserveTokens = outputReserveTokens + safetyMarginTokens + toolReserveTokens + framingReserveTokens;
 

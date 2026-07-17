@@ -4,6 +4,9 @@ import { redactSecrets } from "./credentials.js";
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  /** Ephemeral, bounded image input for a user turn. The bytes are transported
+   * to the selected provider but are never part of durable conversation text. */
+  images?: ChatImage[];
   name?: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
@@ -13,6 +16,47 @@ export interface ChatMessage {
   /** Internal binding for providerContinuation. Adapters must not serialize it;
    * the execution preflight uses it only to exclude stale state on route changes. */
   providerContinuationRouteFingerprint?: string;
+}
+
+export const CHAT_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+export type ChatImageMimeType = typeof CHAT_IMAGE_MIME_TYPES[number];
+export interface ChatImage {
+  mimeType: ChatImageMimeType;
+  /** Canonical base64 without a data-URL prefix. */
+  data: string;
+  /** Optional integrity identity for local evidence. Never serialized. */
+  sha256?: string;
+  /** Decoded pixel dimensions for conservative provider input accounting. */
+  width?: number;
+  height?: number;
+}
+
+export const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_CHAT_IMAGES_PER_MESSAGE = 4;
+
+/** Validate image inputs once, before any provider request can leave Morrow. */
+export function validateChatImages(messages: ChatMessage[]): string | undefined {
+  for (const message of messages) {
+    const images = message.images ?? [];
+    if (images.length === 0) continue;
+    if (message.role !== "user") return "Image input is only allowed on user messages";
+    if (images.length > MAX_CHAT_IMAGES_PER_MESSAGE) return `A message may contain at most ${MAX_CHAT_IMAGES_PER_MESSAGE} images`;
+    for (const image of images) {
+      if (!(CHAT_IMAGE_MIME_TYPES as readonly string[]).includes(image.mimeType)) return "Unsupported image MIME type";
+      if (typeof image.data !== "string" || image.data.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return "Image data must be canonical base64";
+      const bytes = Buffer.from(image.data, "base64");
+      if (bytes.toString("base64") !== image.data) return "Image data must be canonical base64";
+      if (bytes.length > MAX_CHAT_IMAGE_BYTES) return `Image input exceeds the ${MAX_CHAT_IMAGE_BYTES} byte limit`;
+      if (image.sha256 !== undefined && !/^[a-f0-9]{64}$/i.test(image.sha256)) return "Image SHA-256 identity is invalid";
+      if ((image.width === undefined) !== (image.height === undefined)) return "Image width and height must be provided together";
+      if (image.width !== undefined && (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width <= 0 || image.height! <= 0 || image.width > 16_384 || image.height! > 16_384)) return "Image dimensions are invalid";
+    }
+  }
+  return undefined;
+}
+
+export function chatImageDataUrl(image: ChatImage): string {
+  return `data:${image.mimeType};base64,${image.data}`;
 }
 
 export type ProviderProtocol =
@@ -103,6 +147,12 @@ export interface ProviderChunk {
     completionTokens: number;
     cachedPromptTokens?: number;
   };
+  /** The wire protocol's own reason the response ended, when the adapter can
+   * observe it (e.g. OpenAI-style `finish_reason`). "length" means the
+   * provider was cut off by the output-token budget — including mid
+   * chain-of-thought for a reasoning model, before it ever wrote its answer.
+   * Absent when the protocol does not expose this. */
+  finishReason?: "stop" | "length" | "tool_calls" | "content_filter" | "other";
   /** Private provider protocol state; callers must persist it only in the
    * restricted continuation store and must never emit it as a task event. */
   providerContinuation?: ProviderContinuationState;

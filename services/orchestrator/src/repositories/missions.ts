@@ -5,7 +5,7 @@ import type {
   MissionEvent, MissionEventType, MissionVerificationStrategy,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
   RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
-  InvalidationEntry,
+  InvalidationEntry, MissionOperationStatus, TaskStatus, ApprovalStatus,
 } from "@morrow/contracts";
 
 /** A requirement node as supplied at contract-build time (before persistence). */
@@ -228,12 +228,15 @@ export function missionsRepository(db: Database.Database) {
     create(input: {
       id: string; projectId: string; conversationId?: string | null;
       objective: string; autoApprove?: boolean; budget: MissionBudget;
+      execution?: Mission["execution"];
     }, now = new Date().toISOString()): Mission {
       db.prepare(
-        `INSERT INTO missions (id, schema_version, project_id, conversation_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, created_at, updated_at, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, NULL, ?, ?, NULL, NULL)`,
+        `INSERT INTO missions (id, schema_version, project_id, conversation_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, execution_json, created_at, updated_at, started_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, NULL, ?, ?, ?, NULL, NULL)`,
       ).run(input.id, SCHEMA_VERSION, input.projectId, input.conversationId ?? null, input.objective,
-        input.autoApprove ? 1 : 0, JSON.stringify(input.budget), now, now);
+        input.autoApprove ? 1 : 0, JSON.stringify(input.budget), JSON.stringify(input.execution ?? {
+          preset: "balanced", providerId: null, model: null, reasoning: { mode: "auto" },
+        }), now, now);
       return repo.get(input.id)!;
     },
 
@@ -265,6 +268,7 @@ export function missionsRepository(db: Database.Database) {
         objective: row.objective,
         status: row.status as MissionStatus,
         autoApprove: row.auto_approve === 1,
+        execution: JSON.parse(row.execution_json ?? '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}'),
         criteria,
         taskTreeRootId: row.task_tree_root_id ?? null,
         budget: JSON.parse(row.budget_json) as MissionBudget,
@@ -755,6 +759,47 @@ export function missionsRepository(db: Database.Database) {
     getCursor(missionId: string): MissionCursor | undefined {
       const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(missionId) as any;
       return row ? mapCursor(row) : undefined;
+    },
+
+    guardianDependencies(missionId: string) {
+      // `guardian_review` is the Guardian's own completion bookkeeping, not
+      // mission work it waits on. The controller marks it `running` before
+      // calling finalize, and finalize re-assesses the Guardian — counting it
+      // here would make the act of finalizing block finalization, and the
+      // resulting failed row would poison every later evaluation.
+      const operations = (db.prepare(`SELECT id,status,effect_evidence_ids_json
+        FROM mission_operations WHERE mission_id=? AND kind<>'guardian_review'
+        ORDER BY sequence`).all(missionId) as Array<{
+          id: string; status: string; effect_evidence_ids_json: string;
+        }>).map((row) => ({
+        id: row.id,
+        status: row.status as MissionOperationStatus,
+        effectEvidenceIds: JSON.parse(row.effect_evidence_ids_json) as string[],
+      }));
+      // A worker the controller recovered from is superseded: production leaves
+      // the old row `interrupted` and dispatches a replacement rather than
+      // mutating it. Counting it as a live dependency would block authorization
+      // forever for any mission that survived a single worker interruption. The
+      // recovery transition is the durable record of that supersession, so an
+      // interrupted worker with no such transition still blocks.
+      const tasks = (db.prepare(`SELECT id,status FROM tasks
+        WHERE mission_id=?
+          AND id NOT IN (
+            SELECT json_extract(details_json,'$.taskId')
+            FROM mission_runtime_transitions
+            WHERE mission_id=? AND cause='worker_recovery_required'
+              AND json_extract(details_json,'$.taskId') IS NOT NULL
+          )
+        ORDER BY created_at,id`)
+        .all(missionId, missionId) as Array<{ id: string; status: string }>)
+        .map((row) => ({ id: row.id, status: row.status as TaskStatus }));
+      const approvals = (db.prepare(`SELECT approval.id,approval.status
+        FROM approvals approval
+        JOIN tasks task ON task.id=approval.task_id
+        WHERE task.mission_id=? ORDER BY approval.created_at,approval.id`).all(missionId) as Array<{
+          id: string; status: string;
+        }>).map((row) => ({ id: row.id, status: row.status as ApprovalStatus }));
+      return { operations, tasks, approvals };
     },
 
     // ── project active mission pointer (separate per project) ──────────────

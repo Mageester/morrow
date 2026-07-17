@@ -60,11 +60,21 @@ Each category requires an explicit scope and retention rule.
 - No cross-project memory retrieval
 - No external provider fallback without disclosure
 - No plugin or skill access beyond declared capabilities
+- Automatic memory stores concise normalized conclusions and evidence references,
+  never raw chain-of-thought; secret-like and prompt-poisoned candidates are
+  rejected before admission.
+- Automatically learned skills are project-scoped under local Morrow data, need
+  two distinct successful mission observations, and cannot request network access
+  or secrets. Invalid or modified bundles are quarantined before reuse.
 - Complete deletion for user-requested local data removal
 - Provider continuation fields needed for protocol correctness are locally
   access-restricted with task state, excluded from public events, logs,
   summaries, full-text search, exports, and API responses, and never presented
-  as model reasoning.
+as model reasoning.
+
+Automatic memory retrieval increments a local usage counter so influence remains
+auditable. Retrieval is limited to the current project/conversation scope and
+excludes expired, stale, invalidated, retired, disabled, and candidate records.
 
 ## Mission continuity retention
 

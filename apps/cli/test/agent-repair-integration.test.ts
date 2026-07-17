@@ -51,7 +51,9 @@ function copyFixture(dest: string): void {
 describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
   let app: any;
   let db: any;
+  let runner: TaskRunner;
   let api: MorrowApi;
+  let activeTaskId: string | undefined;
   let tempWorkspace: string;
   let tempHome: string;
   let originalEnv: NodeJS.ProcessEnv;
@@ -77,7 +79,7 @@ describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
     } as any);
 
     db = openDatabase(":memory:");
-    const runner = new TaskRunner(db, async (deps) => {
+    runner = new TaskRunner(db, async (deps) => {
       await executeAgentChatTask({
         db: deps.db,
         taskId: deps.taskId,
@@ -94,10 +96,21 @@ describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
 
   afterEach(async () => {
     process.env = originalEnv;
+    if (activeTaskId && runner.isActive(activeTaskId)) {
+      const settled = new Promise<void>((resolve) => {
+        const unsubscribe = runner.onSettled((taskId) => {
+          if (taskId !== activeTaskId) return;
+          unsubscribe();
+          resolve();
+        });
+      });
+      runner.cancel(activeTaskId);
+      await settled;
+    }
     if (app) { try { await app.close(); } catch { /* ignore */ } }
     if (db) { try { db.close(); } catch { /* ignore */ } }
-    rmSync(tempWorkspace, { recursive: true, force: true });
-    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempWorkspace, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    rmSync(tempHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function nextPendingApproval(projectId: string): Promise<string> {
@@ -116,6 +129,7 @@ describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
 
     const sent = await api.sendMessage(conversation.id, "Fix the failing test", { preset: "best-quality" });
     const taskId = sent.task.id;
+    activeTaskId = taskId;
 
     // 1. Command approval surfaces through the client.
     const cmd1 = await nextPendingApproval(project.id);
@@ -162,7 +176,8 @@ describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
   it("leaves files untouched when the patch approval is denied via the client", async () => {
     const project = await api.createProject("CLI E2E Deny", tempWorkspace);
     const conversation = await api.createConversation(project.id, "Deny");
-    await api.sendMessage(conversation.id, "Fix the failing test", { preset: "best-quality" });
+    const sent = await api.sendMessage(conversation.id, "Fix the failing test", { preset: "best-quality" });
+    activeTaskId = sent.task.id;
 
     const cmd1 = await nextPendingApproval(project.id);
     await api.resolveApproval(cmd1, { projectId: project.id, decision: "allow_once" });

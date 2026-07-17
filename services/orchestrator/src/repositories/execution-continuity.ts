@@ -25,6 +25,15 @@ export interface ExecutionLeaseFence {
   generation: number;
 }
 
+export const MISSION_WORKER_OUTCOMES = [
+  "context_rollover_required",
+  "provider_recovery_required",
+  "strategy_change_required",
+  "validation_required",
+  "candidate_answer_ready",
+] as const;
+export type MissionWorkerOutcome = typeof MISSION_WORKER_OUTCOMES[number];
+
 export type ExecutionLeaseOwnerStatus = "alive" | "dead" | "unknown";
 
 export class ExecutionLeaseFenceError extends Error {
@@ -219,11 +228,16 @@ export function executionContinuityRepository(db: Database.Database) {
     listSegments(taskId: string): ExecutionSegment[] {
       return (db.prepare("SELECT * FROM agent_execution_segments WHERE task_id=? ORDER BY sequence").all(taskId) as SegmentRow[]).map(segment);
     },
-    completeSegment(segmentId: string, now: string, fence: ExecutionLeaseFence): boolean {
+    completeSegment(
+      segmentId: string,
+      now: string,
+      fence: ExecutionLeaseFence,
+      boundaryReason = "task_complete",
+    ): boolean {
       return db.prepare(`UPDATE agent_execution_segments
-        SET status='completed', boundary_reason='mission_complete', closed_at=?, owner_id=NULL, lease_expires_at=NULL
+        SET status='completed', boundary_reason=?, closed_at=?, owner_id=NULL, lease_expires_at=NULL
         WHERE id=? AND status='running' AND owner_id=? AND lease_generation=?`)
-        .run(now, segmentId, fence.ownerId, fence.generation).changes === 1;
+        .run(boundaryReason, now, segmentId, fence.ownerId, fence.generation).changes === 1;
     },
     failSegment(segmentId: string, reason: string, now: string, fence: ExecutionLeaseFence): boolean {
       return db.prepare(`UPDATE agent_execution_segments

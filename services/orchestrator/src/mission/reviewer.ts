@@ -1,8 +1,9 @@
-import type {
-  Mission, MissionCriterion, MissionEvidence, MissionFailure, MissionReview,
-  MissionReviewVerdict, MissionStatus,
-} from "@morrow/contracts";
+import type { MissionCriterion, MissionEvidence, MissionFailure } from "@morrow/contracts";
 import type { ChatMessage } from "../provider/base.js";
+import { parseReviewVerdictRobust, isReviewParseFailure as isReviewParseFailureRobust, hashRawReview, fallbackParsed, type ParsedReview, type ReviewParseDiagnostics } from "./review-normalize.js";
+
+export type { ParsedReview, ReviewParseDiagnostics };
+export { hashRawReview, fallbackParsed };
 
 /**
  * Independent final review. The reviewer is a SEPARATE execution with isolated
@@ -25,19 +26,29 @@ export interface ReviewContext {
  * an adversarial independent auditor and forbids trusting claims. No implementer
  * commentary is included.
  */
+/** Evidence entries are bounded so the request stays small and the schema
+ * stays the easiest possible target for a weaker or reasoning-heavy model:
+ * the most recent entries are the ones a reviewer needs. */
+const MAX_EVIDENCE_ENTRIES = 30;
+
 export function buildReviewMessages(ctx: ReviewContext): ChatMessage[] {
   const criteriaBlock = ctx.criteria.map((c, i) =>
     `${i + 1}. [${c.state}] ${c.description}\n   verification: ${c.verification.kind}${c.verification.command ? ` (\`${c.verification.command}\`)` : ""}\n   evidence: ${c.evidenceIds.length} record(s)`,
   ).join("\n");
 
-  const evidenceBlock = ctx.evidence.map((e) =>
+  const boundedEvidence = ctx.evidence.slice(-MAX_EVIDENCE_ENTRIES);
+  const evidenceBlock = boundedEvidence.map((e) =>
     `- [${e.status}] ${e.type}: ${e.summary}${e.exitCode !== null ? ` (exit ${e.exitCode})` : ""}`,
   ).join("\n") || "(no evidence recorded)";
+  const evidenceOmittedNote = ctx.evidence.length > boundedEvidence.length
+    ? `\n(${ctx.evidence.length - boundedEvidence.length} earlier evidence record(s) omitted for brevity)` : "";
 
   const failuresBlock = ctx.failures.length
     ? ctx.failures.map((f) => `- [${f.category}] ${f.operation}: ${f.recovered ? "recovered" : "UNRESOLVED"}`).join("\n")
     : "(no failures recorded)";
 
+  // One compact schema, one explicit verdict enum, no unnecessary prose
+  // requirement: this is the entire contract, stated once, unambiguously.
   const system = [
     "You are an INDEPENDENT reviewer auditing whether a coding mission actually met its success criteria.",
     "You did NOT do the work and you must not assume it was done correctly.",
@@ -45,14 +56,16 @@ export function buildReviewMessages(ctx: ReviewContext): ChatMessage[] {
     "Do not accept any claim of success that is not backed by evidence in this message.",
     "A criterion with no passing evidence is NOT satisfied. Flag suspicious or unrelated changes.",
     "",
-    "Return ONLY a JSON object with this exact shape:",
-    '{"verdict": "approved"|"approved_with_risks"|"revisions_required"|"insufficient_evidence",',
-    ' "criterionJudgments": [{"index": number, "judgment": "satisfied"|"not_satisfied"|"unclear", "note": string}],',
-    ' "regressionRisks": string[], "suspiciousChanges": string[], "missingVerification": string[],',
-    ' "concerns": string[], "recommendedStatus": "completed"|"completed_with_reservations"|"partially_completed"|"blocked"|"failed",',
-    ' "summary": string}',
+    "Respond with ONLY this JSON object. No markdown, no code fences, no text before or after it, no explanation of your reasoning:",
+    '{"verdict":"approved|approved_with_risks|revisions_required|insufficient_evidence",',
+    '"criterionJudgments":[{"index":1,"judgment":"satisfied|not_satisfied|unclear","note":"..."}],',
+    '"regressionRisks":[],"suspiciousChanges":[],"missingVerification":[],"concerns":[],',
+    '"recommendedStatus":"completed|completed_with_reservations|partially_completed|blocked|failed",',
+    '"summary":"..."}',
+    "verdict must be exactly one of: approved, approved_with_risks, revisions_required, insufficient_evidence.",
     "Use 'approved' only when every criterion is satisfied by evidence with no material risk.",
     "Use 'insufficient_evidence' when criteria are claimed done but evidence is missing.",
+    "The JSON object is your entire response. Do not write anything before or after it.",
   ].join("\n");
 
   const user = [
@@ -60,7 +73,7 @@ export function buildReviewMessages(ctx: ReviewContext): ChatMessage[] {
     "",
     `SUCCESS CRITERIA:\n${criteriaBlock || "(none)"}`,
     "",
-    `EVIDENCE LEDGER:\n${evidenceBlock}`,
+    `EVIDENCE LEDGER:\n${evidenceBlock}${evidenceOmittedNote}`,
     "",
     `UNRESOLVED / RECORDED FAILURES:\n${failuresBlock}`,
     "",
@@ -75,6 +88,12 @@ export function buildReviewMessages(ctx: ReviewContext): ChatMessage[] {
   ];
 }
 
+/**
+ * The dedicated repair round-trip: it asks the model to reformat its OWN
+ * prior answer, never to re-decide. The original semantic judgment (whatever
+ * verdict it already reached) must survive this call unchanged — only the
+ * packaging is being fixed.
+ */
 export function buildReviewRepairMessages(original: ChatMessage[], rawText: string): ChatMessage[] {
   return [
     ...original,
@@ -83,88 +102,43 @@ export function buildReviewRepairMessages(original: ChatMessage[], rawText: stri
       role: "user",
       content: [
         "Your previous answer was not valid machine-readable JSON.",
-        "Convert your review into ONLY the JSON object requested in the system message.",
-        "Do not add markdown, prose, code fences, headings, or commentary.",
-        "If the evidence is insufficient, return verdict \"insufficient_evidence\" in that JSON shape.",
+        "Do NOT reconsider or change your verdict. Re-express the SAME judgment you already gave, as ONLY the JSON object below.",
+        '{"verdict":"approved|approved_with_risks|revisions_required|insufficient_evidence",',
+        '"criterionJudgments":[{"index":1,"judgment":"satisfied|not_satisfied|unclear","note":"..."}],',
+        '"regressionRisks":[],"suspiciousChanges":[],"missingVerification":[],"concerns":[],',
+        '"recommendedStatus":"completed|completed_with_reservations|partially_completed|blocked|failed",',
+        '"summary":"..."}',
+        "No markdown, no code fences, no headings, no commentary, no text before or after the JSON object.",
+        "If your prior answer was itself unclear about the verdict, use \"insufficient_evidence\" here — never invent an approval.",
       ].join("\n"),
     },
   ];
 }
 
-const VERDICTS: MissionReviewVerdict[] = ["approved", "approved_with_risks", "revisions_required", "insufficient_evidence"];
-const STATUSES: MissionStatus[] = ["completed", "completed_with_reservations", "partially_completed", "blocked", "failed"];
-
 /**
- * Parse the reviewer's JSON verdict into a MissionReview payload. Tolerant of
- * fences/prose. Falls back to a conservative `insufficient_evidence` when the
- * output cannot be parsed — the reviewer refusing to be understood must never
- * become an approval.
+ * Parse the reviewer's JSON verdict into a MissionReview payload, using the
+ * bounded deterministic normalization pipeline (fences, prose, aliases,
+ * minor syntax repair, structured-prose fallback). Falls back to a
+ * conservative `insufficient_evidence` when no real verdict can be recovered
+ * — the reviewer being hard to understand must never become an approval.
  */
-export function parseReviewVerdict(
+export function parseReviewVerdict(text: string, criteria: MissionCriterion[]): ParsedReview {
+  return parseReviewVerdictRobust(text, criteria).parsed;
+}
+
+/** Same as {@link parseReviewVerdict} but also returns bounded diagnostics
+ * (candidate/repair attempts, a hash of the raw text, finish reason) so the
+ * caller can log a redacted trail without ever persisting raw provider text. */
+export function parseReviewVerdictWithDiagnostics(
   text: string,
   criteria: MissionCriterion[],
-): Omit<MissionReview, "id" | "missionId" | "createdAt" | "reviewerProvider" | "reviewerModel"> {
-  const json = extractJsonObject(text);
-  let raw: any = null;
-  if (json) { try { raw = JSON.parse(json); } catch { raw = null; } }
-  if (!raw || typeof raw !== "object") {
-    return {
-      verdict: "insufficient_evidence",
-      criterionJudgments: [],
-      regressionRisks: [],
-      suspiciousChanges: [],
-      missingVerification: ["Reviewer output could not be parsed into a structured verdict"],
-      concerns: ["Reviewer did not return a usable verdict"],
-      recommendedStatus: "partially_completed",
-      summary: "Reviewer output was not machine-readable; treated as insufficient evidence.",
-    };
-  }
-  const verdict: MissionReviewVerdict = VERDICTS.includes(raw.verdict) ? raw.verdict : "insufficient_evidence";
-  const recommendedStatus: MissionStatus = STATUSES.includes(raw.recommendedStatus) ? raw.recommendedStatus : "partially_completed";
-  const criterionJudgments = Array.isArray(raw.criterionJudgments)
-    ? raw.criterionJudgments.map((j: any) => {
-        const idx = typeof j.index === "number" ? j.index - 1 : -1;
-        const criterionId = criteria[idx]?.id ?? (typeof j.criterionId === "string" ? j.criterionId : "");
-        return {
-          criterionId,
-          judgment: (["satisfied", "not_satisfied", "unclear"].includes(j.judgment) ? j.judgment : "unclear") as "satisfied" | "not_satisfied" | "unclear",
-          note: typeof j.note === "string" ? j.note.slice(0, 1000) : "",
-        };
-      }).filter((j: any) => j.criterionId)
-    : [];
-  const strArr = (v: unknown): string[] => Array.isArray(v)
-    ? v.filter((x) => typeof x === "string")
-        .map((x) => (x as string).trim().slice(0, 500))
-        .filter((x) => x && !isNoopReviewListItem(x))
-        .slice(0, 20)
-    : [];
-  return {
-    verdict,
-    criterionJudgments,
-    regressionRisks: strArr(raw.regressionRisks),
-    suspiciousChanges: strArr(raw.suspiciousChanges),
-    missingVerification: strArr(raw.missingVerification),
-    concerns: strArr(raw.concerns),
-    recommendedStatus,
-    summary: typeof raw.summary === "string" ? raw.summary.slice(0, 4000) : "",
-  };
+  opts: { finishReason?: string | null } = {},
+): { parsed: ParsedReview; diagnostics: ReviewParseDiagnostics } {
+  return parseReviewVerdictRobust(text, criteria, opts);
 }
 
-export function isReviewParseFailure(
-  parsed: Omit<MissionReview, "id" | "missionId" | "createdAt" | "reviewerProvider" | "reviewerModel">,
-): boolean {
-  return parsed.verdict === "insufficient_evidence"
-    && parsed.summary === "Reviewer output was not machine-readable; treated as insufficient evidence."
-    && parsed.missingVerification.includes("Reviewer output could not be parsed into a structured verdict");
-}
-
-function extractJsonObject(text: string): string | null {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const body = fenced ? fenced[1]! : text;
-  const start = body.indexOf("{");
-  const end = body.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return body.slice(start, end + 1);
+export function isReviewParseFailure(parsed: ParsedReview): boolean {
+  return isReviewParseFailureRobust(parsed);
 }
 
 function isNoopReviewListItem(value: string): boolean {

@@ -6,6 +6,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 
 describe("REST API and Task Runner Vertical Slice", () => {
   let db: any;
@@ -159,8 +160,16 @@ describe("REST API and Task Runner Vertical Slice", () => {
     const skillsDir = join(tempDir, "skills");
     // Old format: manifest.json + "# Heading"
     mkdirSync(join(skillsDir, "coding"), { recursive: true });
-    writeFileSync(join(skillsDir, "coding", "SKILL.md"), "# Coding\n\nScoped implementation workflow.");
-    writeFileSync(join(skillsDir, "coding", "manifest.json"), JSON.stringify({ id: "coding", name: "Coding", description: "Scoped implementation.", riskClass: "medium", requestedTools: ["filesystem-write"] }));
+    const codingMd = "# Coding\n\nScoped implementation workflow.";
+    writeFileSync(join(skillsDir, "coding", "SKILL.md"), codingMd);
+    mkdirSync(join(skillsDir, "coding", "src"));
+    writeFileSync(join(skillsDir, "coding", "src", "index.ts"), "export {};\n");
+    writeFileSync(join(skillsDir, "coding", "permissions.json"), JSON.stringify({ tools: ["filesystem-write"] }));
+    writeFileSync(join(skillsDir, "coding", "manifest.json"), JSON.stringify({
+      id: "coding", name: "Coding", description: "Scoped implementation.", riskClass: "medium",
+      requestedTools: ["filesystem-write"], entrypoint: "src/index.ts",
+      checksum: createHash("sha256").update(codingMd).digest("hex"), publisher: "test",
+    }));
     // New format: YAML frontmatter, no manifest
     mkdirSync(join(skillsDir, "debug-loop"), { recursive: true });
     writeFileSync(join(skillsDir, "debug-loop", "SKILL.md"), "---\nname: debug-loop\ndescription: Disciplined debugging methodology\nriskClass: low\npublisher: Axiom\n---\n\n# Debug Loop\n");

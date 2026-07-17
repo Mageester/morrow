@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { missionsRepository } from "../src/repositories/missions.js";
@@ -22,13 +23,22 @@ import type { MissionReview } from "@morrow/contracts";
 // ════════════════════════════════════════════════════════════════════════════
 
 const roots: string[] = [];
+const openDatabases: Database.Database[] = [];
 function tmp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   roots.push(dir);
   return dir;
 }
+function openTestDatabase(path: string): Database.Database {
+  const db = openDatabase(path);
+  openDatabases.push(db);
+  return db;
+}
 afterEach(() => {
   vi.useRealTimers();
+  openDatabases.splice(0).forEach((db) => {
+    if (db.open) db.close();
+  });
   roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
 });
 
@@ -71,7 +81,7 @@ function setupWithBarrierProvider() {
   const home = tmp("ek-race-home-");
   const workspace = tmp("ek-race-ws-");
   const dbPath = join(tmp("ek-race-db-"), "m.db");
-  const db = openDatabase(dbPath);
+  const db = openTestDatabase(dbPath);
   const projects = projectRepository(db);
   const now = new Date().toISOString();
   const project = projects.createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
@@ -410,7 +420,7 @@ describe("BLOCKER 1 — durable review-cycle ownership", () => {
     // Simulate a full process restart: open a brand-new connection/repo/service
     // against the SAME database file, with no knowledge of the in-flight
     // promise above (a genuine restart would lose it entirely).
-    const restartedDb = openDatabase(dbPath);
+    const restartedDb = openTestDatabase(dbPath);
     try {
       const restartedRepo = missionsRepository(restartedDb);
       const restartedService = new MissionService({
@@ -435,7 +445,7 @@ describe("BLOCKER 1 — durable review-cycle ownership", () => {
     const home = tmp("ek-lease-home-");
     const workspace = tmp("ek-lease-ws-");
     const dbPath = join(tmp("ek-lease-db-"), "m.db");
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const projects = projectRepository(db);
     projects.createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: "2026-04-01T00:00:00.000Z" });
     const repo = missionsRepository(db);
@@ -467,7 +477,7 @@ describe("BLOCKER 1 — durable review-cycle ownership", () => {
     expect(lostCycle.ownerId).toBe("instance-a");
     expect(lostCycle.leaseExpiresAt).toBe("2026-04-01T00:01:00.000Z");
 
-    const restartedDb = openDatabase(dbPath);
+    const restartedDb = openTestDatabase(dbPath);
     const restartedRepo = missionsRepository(restartedDb);
     const restartedService = new MissionService({
       repo: restartedRepo,
@@ -527,7 +537,7 @@ describe("MAJOR — active review leases stay live", () => {
   function setupHeartbeatReview(completion: MissionServiceDeps["completion"]) {
     const workspace = tmp("ek-heartbeat-ws-");
     const dbPath = join(tmp("ek-heartbeat-db-"), "m.db");
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: new Date().toISOString() });
     const repo = missionsRepository(db);
     const service = new MissionService({
@@ -563,7 +573,7 @@ describe("MAJOR — active review leases stay live", () => {
     expect(renewed.status).toBe("reserved");
     expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(Date.parse("2026-06-01T00:01:10.000Z"));
 
-    const secondDb = openDatabase(dbPath);
+    const secondDb = openTestDatabase(dbPath);
     const secondRepo = missionsRepository(secondDb);
     const secondService = new MissionService({
       repo: secondRepo, getWorkspacePath: () => undefined, backupDir: tmp("ek-heartbeat-second-"),
@@ -674,7 +684,7 @@ describe("MAJOR — finalization uses one fresh transactional snapshot", () => {
       createdAt: "2026-05-01T00:00:00.000Z",
     });
 
-    const secondDb = openDatabase(dbPath);
+    const secondDb = openTestDatabase(dbPath);
     const secondRepo = missionsRepository(secondDb);
     const secondService = new MissionService({ repo: secondRepo, getWorkspacePath: () => undefined, backupDir: tmp("ek-race-second-") });
     const originalTransaction = repo.transaction.bind(repo);
@@ -754,7 +764,7 @@ describe("MAJOR 2 — review-cycle cost accounting is atomic with acceptance", (
     const home = tmp("ek-repair-home-");
     const workspace = tmp("ek-repair-ws-");
     const dbPath = join(tmp("ek-repair-db-"), "m.db");
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const projects = projectRepository(db);
     const now = new Date().toISOString();
     const project = projects.createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });

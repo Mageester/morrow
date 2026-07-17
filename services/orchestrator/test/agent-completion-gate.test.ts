@@ -10,6 +10,7 @@ import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -128,6 +129,10 @@ describe("agent completion gate", () => {
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+    expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.currentPhase)
+      .toBe("validation_required");
+    expect(executionContinuityRepository(db).listSegments("t").at(-1)?.boundaryReason)
+      .toBe("validation_required");
   });
 
   it("still reports completed for an ordinary successful run", async () => {

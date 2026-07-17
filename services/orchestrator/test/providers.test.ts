@@ -255,6 +255,55 @@ describe("mission completion routing", () => {
     sentBody = JSON.parse(ref.captured!.init.body);
     expect(sentBody.response_format).toBeUndefined();
   });
+
+  it("retries once with a larger output budget when a review call is truncated with no content (reasoning-model overrun)", async () => {
+    const bodies: any[] = [];
+    let call = 0;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      call += 1;
+      if (call === 1) {
+        // Real production shape: finish_reason "length", empty content — the
+        // model spent its whole output budget on hidden reasoning.
+        return sseResponse([`data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n`, `data: [DONE]\n\n`]);
+      }
+      return sseResponse([
+        `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"approved\\"}"}}]}\n\n`,
+        `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ]);
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    const result = await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 });
+
+    expect(call).toBe(2);
+    expect(bodies[1].max_tokens).toBeGreaterThan(bodies[0].max_tokens);
+    expect(result.text).toContain("approved");
+  });
+
+  it("does not retry a review call that legitimately finished with content", async () => {
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call += 1;
+      return sseResponse([
+        `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"insufficient_evidence\\"}"}}]}\n\n`,
+        `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ]);
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 });
+
+    expect(call).toBe(1); // a real (non-empty) insufficient_evidence verdict is not a truncation — never retried here
+  });
 });
 
 describe("Anthropic provider normalization", () => {

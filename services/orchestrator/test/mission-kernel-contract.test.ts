@@ -10,18 +10,23 @@ import { MissionService } from "../src/mission/service.js";
 import type { ReopenCondition, MissionReview } from "@morrow/contracts";
 
 const roots: string[] = [];
+const databases: ReturnType<typeof openDatabase>[] = [];
 function tmp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   roots.push(dir);
   return dir;
 }
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(() => {
+  for (const db of databases.splice(0)) if (db.open) db.close();
+  roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
+});
 
 function setup(file?: string) {
   const home = tmp("ek-home-");
   const workspace = tmp("ek-ws-");
   const dbPath = file ?? join(tmp("ek-db-"), "m.db");
   const db = openDatabase(dbPath);
+  databases.push(db);
   const projects = projectRepository(db);
   const now = new Date().toISOString();
   const project = projects.createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
@@ -36,6 +41,7 @@ function setup(file?: string) {
 
 function reload(dbPath: string) {
   const db = openDatabase(dbPath);
+  databases.push(db);
   const repo = missionsRepository(db);
   const service = new MissionService({ repo, getWorkspacePath: () => undefined, backupDir: tmp("ek-b-") });
   return { db, repo, service };

@@ -1009,7 +1009,11 @@ export class InteractiveSession {
       // be rejected too, never silently applied (it would otherwise set
       // `settings.provider` to a provider the next request can't reach).
       if (!exact.available) {
-        this.pushNotice("warn", `${exact.model.id} is not available — provider "${exact.model.providerId}" is not configured. Run \`morrow auth login ${exact.model.providerId}\` first.`);
+        const reason = exact.availabilityReason
+          ?? (exact.availability === "unknown"
+            ? `availability has not been discovered for ${exact.authMode ?? "the active auth surface"}`
+            : `provider "${exact.model.providerId}" is not configured`);
+        this.pushNotice("warn", `${exact.model.id} is not available — ${reason}`);
         return;
       }
       const budget = (this.deps.backend.getModelBudgets ? await this.deps.backend.getModelBudgets().catch(() => []) : [])
@@ -1021,7 +1025,7 @@ export class InteractiveSession {
       this.deps.backend.getModelBudgets ? this.deps.backend.getModelBudgets().catch(() => []) : Promise.resolve([]),
       this.deps.backend.listProviders ? this.deps.backend.listProviders().catch(() => []) : Promise.resolve([]),
     ]);
-    const items = buildModelPickerItems(models, budgets ?? [], providers ?? []);
+    const items = buildModelPickerItems(models, budgets ?? [], providers ?? [], this.settings.model);
     // Anything that plausibly matches a real known model opens the picker,
     // pre-filtered, so the user picks from real candidates instead of
     // guessing an id. Nothing in the registry resembles it at all — a
@@ -1093,7 +1097,7 @@ export class InteractiveSession {
       this.pushNotice("warn", "Could not load models — is the orchestrator reachable?");
       return null;
     }
-    return buildModelPickerItems(models, budgets ?? [], providers ?? []);
+    return buildModelPickerItems(models, budgets ?? [], providers ?? [], this.settings.model);
   }
 
   private async openModelPicker(prefillQuery = ""): Promise<void> {

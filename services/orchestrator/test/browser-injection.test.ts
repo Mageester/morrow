@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +19,22 @@ const chromiumAvailable = (() => {
   }
 })();
 import { scanForInjection, sanitizeForModel } from "../src/browser/injection-guard.js";
-import { assertBrowserUrlAllowed, playwrightController } from "../src/browser/playwright.js";
+import { assertBrowserContainedPath, assertBrowserUrlAllowed, playwrightController, resolvePlaywrightChannel } from "../src/browser/playwright.js";
 import { browserAuditSink } from "../src/browser/audit.js";
 import { openDatabase } from "../src/database.js";
 import { auditLogRepository } from "../src/repositories/audit-log.js";
 
 const servers: Server[] = [];
+
+describe("packaged browser selection", () => {
+  it("uses installed Edge for the packaged Windows launcher value", () => {
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "1" }, "win32")).toBe("msedge");
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "true" }, "win32")).toBe("msedge");
+    expect(resolvePlaywrightChannel(undefined, { MORROW_PACKAGED: "1" }, "linux")).toBeUndefined();
+    expect(resolvePlaywrightChannel("chromium", { MORROW_PACKAGED: "1" }, "win32")).toBeUndefined();
+    expect(resolvePlaywrightChannel("chrome", {}, "win32")).toBe("chrome");
+  });
+});
 
 async function controlledBrowserServer(): Promise<string> {
   const server = createServer((request, response) => {
@@ -108,6 +118,19 @@ describe("browser URL policy", () => {
     await expect(assertBrowserUrlAllowed("file:///C:/secrets.txt")).rejects.toThrow(/scheme/i);
     await expect(assertBrowserUrlAllowed("http://localhost:3000")).rejects.toThrow(/private/i);
   });
+
+  it("rejects upload/download paths that escape through a symlinked directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "morrow-browser-root-"));
+    const outside = await mkdtemp(join(tmpdir(), "morrow-browser-outside-"));
+    try {
+      mkdirSync(join(outside, "nested"));
+      symlinkSync(outside, join(root, "escape"), "junction");
+      expect(() => assertBrowserContainedPath(root, join(root, "escape", "nested", "secret.txt"), "Upload")).toThrow(/symlink escape/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("browser audit evidence", () => {
@@ -161,7 +184,9 @@ describe.skipIf(!chromiumAvailable)("Playwright browser controller", () => {
     try {
       const first = await controller.open(baseUrl);
       expect(first.title).toBe("Controlled page");
+      await controller.setViewport({ width: 390, height: 844, label: "mobile" });
       const stable = await controller.snapshot();
+      expect(stable.viewport).toEqual({ width: 390, height: 844 });
       expect(stable.refs).toEqual(first.refs);
       const refFor = (name: string) => stable.refs.find((ref) => ref.name === name)!.ref;
       await controller.type(refFor("Name"), "Ada");

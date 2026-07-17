@@ -6,6 +6,66 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Release status - 0.1.0-beta.31 is conditionally ready
+
+Deterministic and packaged acceptance gates (foundation, durable-autonomy,
+sustained-autonomy) pass. The remaining certification gate — a completed,
+funded, real-external-model Guardian mission run from the packaged product —
+has not yet been run. See `docs/ACCEPTANCE.md#release-status-01.0-beta31`.
+This release is not stable, final, or fully verified until that gate runs.
+
+### Fixed - the packaged long-run acceptance gate was fabricating its own evidence
+
+- Replaced the packaged `extended-run` scenario, which wrote its own progress,
+  recovery, rollover, checkpoint, and Guardian records and then verified them,
+  with a genuine `sustained-autonomy` scenario that drives the real
+  `MissionControllerRunner`, `TaskRunner`, `executeAgentChatTask`, context
+  accountant, recovery planner, startup reconciliation, and Guardian. The only
+  scripted boundary is the external model turn. See
+  `services/orchestrator/src/acceptance/sustained-autonomy.ts`.
+
+## [0.1.0-beta.31] - 2026-07-16
+
+### Added - durable autonomy and evidence gates
+
+- Durable missions persist their preset, provider, model, and reasoning route;
+  replacement workers retain that choice through context rollover and process
+  recovery.
+- Automatic Cortex memory captures evidence-backed mission learning and recalls
+  it on later matching work. Repeated safe workflows can progress from candidate
+  to checksum-validated, project-scoped skills and load automatically later.
+- Controlled browser tasks can inspect DOM and console state, interact through
+  semantic references, and attach verified screenshots to vision-capable model
+  turns at desktop, tablet, and mobile viewports.
+- The packaged durable acceptance scenario now proves a multi-file repair,
+  malformed-tool and failed-command recovery, browser/vision validation,
+  automatic memory/skills, model metadata consistency across restart, and five
+  controller fault classes driven through the real mission controller.
+- Progress is now evidence-backed in production. Agent turns derive progress
+  from observed execution deltas — content-addressed artifact fingerprints,
+  tool effects, verification outcomes, resolved failures, and checkpoints — and
+  persist them to the durable mission ledger. Narration, response length, and
+  repeated identical tool results no longer count. A stalled task escalates
+  through a focused diagnosis and a controller-owned strategy change, and stops
+  only on a precise blocker, replacing the previous three-strike interrupt.
+
+### Fixed - bounded recovery and truthful release behavior
+
+- Non-retryable provider authentication/payment failures no longer create an
+  unbounded worker storm. Morrow switches only when the route was left open and
+  a configured alternate exists; explicitly pinned providers/models block with
+  the precise retry condition.
+- `morrow yolo` now reliably selects write mode even when the saved default is
+  read-only.
+- Model `--all`/`--advanced` flags reach the model-list command after global
+  parsing, so diagnostic catalogs are complete and list/detail output remains
+  consistent across service restart.
+- Packaged Windows browser sessions use installed Microsoft Edge when no browser
+  is explicitly selected, avoiding an undeclared runtime download.
+- Vision context accounting uses viewport-aware image estimates rather than
+  counting base64 bytes as text, and repeated dynamic browser observations are
+  preserved as fresh evidence.
+
 ## [0.1.0-beta.30] - 2026-07-16
 
 ### Added - model and reasoning routing

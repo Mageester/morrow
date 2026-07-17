@@ -68,6 +68,10 @@ export const ProviderCapabilitiesSchema=z.object({
   local:z.boolean(),
 }).strict();
 export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applicable","unavailable"]);
+export const ProviderAuthModeSchema=z.enum([
+  "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
+  "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+]);
 export const ProviderStatusSchema=z.object({
   version:SchemaVersionSchema,
   id:ProviderIdSchema,
@@ -78,6 +82,7 @@ export const ProviderStatusSchema=z.object({
   endpointType:z.enum(["default","custom"]),
   endpointHost:z.string().nullable(),
   authStatus:ProviderAuthStatusSchema,
+  authMode:ProviderAuthModeSchema.optional(),
   capabilities:ProviderCapabilitiesSchema,
   models:z.array(z.string()),
   defaultModel:z.string().nullable(),
@@ -102,7 +107,7 @@ export const ModelCapabilitiesSchema=z.object({
 // it into that provider's real request format (see the orchestrator's
 // translateReasoning). `RouteReasoningCapability` describes what a specific
 // route actually exposes, with explicit provenance — never a guess.
-export const ReasoningEffortSchema=z.enum(["low","medium","high"]);
+export const ReasoningEffortSchema=z.enum(["low","medium","high","xhigh","max"]);
 /**
  * How a route exposes reasoning control:
  *   "none"   — the route has no reasoning controls (Not configurable);
@@ -143,20 +148,29 @@ export const ModelPricingSchema=z.object({
 export const ModelInfoSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
+  providerModelId:z.string().optional(),
   canonicalId:z.string(),
   aliases:z.array(z.string()),
   providerId:ProviderIdSchema,
   label:z.string(),
+  family:z.string().nullable().optional(),
+  generation:z.string().nullable().optional(),
+  lifecycle:z.enum(["current","preview","legacy","deprecated","custom","unknown"]).optional(),
   contextWindow:z.number().int().positive().nullable(),
   maxOutputTokens:z.number().int().positive().nullable(),
   pricing:ModelPricingSchema.nullable(),
   tokenUsage:z.boolean(),
   streamingUsage:z.boolean(),
   capabilities:ModelCapabilitiesSchema,
+  capabilitySource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
   speedClass:ModelSpeedClassSchema,
   costClass:ModelCostClassSchema,
   privacy:ModelPrivacyClassSchema,
   builtIn:z.boolean(),
+  metadataSource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
+  metadataVersion:z.string().optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
+  confidence:z.enum(["verified","reported","configured","unknown"]).optional(),
   /** What reasoning control this model exposes, with provenance. Optional so
    * existing construction sites and older cached rows stay valid; consumers
    * fall back to an explicit "unknown"/"none" capability when absent, never a
@@ -166,6 +180,11 @@ export const ModelInfoSchema=z.object({
 export const ModelStatusSchema=z.object({
   model:ModelInfoSchema,
   available:z.boolean(),
+  availability:z.enum(["available","unavailable","unknown"]).optional(),
+  availabilitySource:z.enum(["provider-reported","configured","catalog","unknown"]).optional(),
+  availabilityReason:z.string().nullable().optional(),
+  authMode:ProviderAuthModeSchema.optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
 }).strict();
 
 /**
@@ -283,21 +302,55 @@ export const SendMessageSchema=z.object({
 // working tiers; episodic (time-stamped events), procedural (how-to/workflow),
 // and knowledge (durable facts) are project-wide recall tiers. Every tier except
 // conversation applies to all conversations in the project.
-export const MemoryScopeSchema=z.enum(["project","conversation","user","episodic","procedural","knowledge"]);
-export const MemorySourceSchema=z.enum(["user","summary"]);
+export const MemoryScopeSchema=z.enum([
+  "project","conversation","user","episodic","procedural","knowledge",
+  "user_global","machine_environment","workspace","repository","subtree",
+  "branch_worktree","mission","provider_model","temporary_context",
+]);
+export const MemorySourceSchema=z.enum(["user","summary","cortex"]);
+export const MemoryTypeSchema=z.enum([
+  "user_preference","project_architecture","repository_convention","build_command",
+  "test_command","release_process","protected_file","safety_rule",
+  "architectural_decision","recurring_risk","environment_problem","provider_quirk",
+  "successful_approach","failed_approach","validation_expectation","communication_preference",
+]);
+export const MemoryLifecycleSchema=z.enum([
+  "candidate","evidence_collected","validated","active","superseded","stale","retired",
+]);
+export const MemorySensitivitySchema=z.enum(["public","internal","sensitive","secret"]);
+export const MemoryEvidenceReferenceSchema=z.object({
+  kind:z.enum(["file","mission","user","command"]),
+  reference:z.string().min(1).max(1024),
+  note:z.string().max(500).optional(),
+}).strict();
 export const MemoryEntrySchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
   projectId:z.string(),
   conversationId:z.string().nullable(),
   scope:MemoryScopeSchema,
+  type:MemoryTypeSchema.default("project_architecture"),
   content:z.string().min(1),
+  normalizedContent:z.string().min(1),
   source:MemorySourceSchema,
+  evidenceReferences:z.array(MemoryEvidenceReferenceSchema).default([]),
+  lifecycle:MemoryLifecycleSchema.default("active"),
   // Provenance: the task that produced this entry, when known. user-authored
   // entries have a null origin. Lets the user trace why a memory exists.
   originTaskId:z.string().nullable(),
   pinned:z.boolean(),
   enabled:z.boolean(),
+  lastVerifiedAt:z.string().datetime().nullable().default(null),
+  confidence:z.number().min(0).max(1).default(0.5),
+  usageCount:z.number().int().nonnegative().default(0),
+  successContribution:z.number().int().nonnegative().default(0),
+  failureContribution:z.number().int().nonnegative().default(0),
+  staleness:z.enum(["current","possibly_stale","stale","invalidated"]).default("current"),
+  supersedesId:z.string().nullable().default(null),
+  conflictsWithIds:z.array(z.string()).default([]),
+  sensitivity:MemorySensitivitySchema.default("internal"),
+  expirationPolicy:z.string().min(1).max(200).default("never"),
+  expiresAt:z.string().datetime().nullable().default(null),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
 }).strict();
@@ -493,6 +546,7 @@ export type DiagnosticsReport=z.infer<typeof DiagnosticsReportSchema>;
 
 export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
+export type ProviderAuthMode=z.infer<typeof ProviderAuthModeSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;
 export type ProviderStatus=z.infer<typeof ProviderStatusSchema>;
 export type ModelInfo=z.infer<typeof ModelInfoSchema>;
@@ -515,6 +569,10 @@ export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
 export type SendMessageInput=z.infer<typeof SendMessageSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
+export type MemoryType=z.infer<typeof MemoryTypeSchema>;
+export type MemoryLifecycle=z.infer<typeof MemoryLifecycleSchema>;
+export type MemorySensitivity=z.infer<typeof MemorySensitivitySchema>;
+export type MemoryEvidenceReference=z.infer<typeof MemoryEvidenceReferenceSchema>;
 
 // ── Honest OAuth integration findings ────────────────────────────────────────
 // Morrow only labels a flow "OAuth" when it is an officially supported, documented
@@ -565,7 +623,7 @@ export const PermissionProfileSchema=z.object({
   version:SchemaVersionSchema,
   toolProfileOptions:z.array(ToolProfileSchema),
   defaultToolProfile:ToolProfileSchema,
-  filesystemAccess:z.enum(["read-only","none"]),
+  filesystemAccess:z.enum(["workspace-write","read-only","none"]),
   shellExecution:z.boolean(),
   networkAccess:z.enum(["provider-only","disabled","enabled"]),
   writeAccess:z.boolean(),
@@ -593,6 +651,19 @@ export const AuditEntrySchema=z.object({
 }).strict();
 export type AuditEntry=z.infer<typeof AuditEntrySchema>;
 
+export const DiscoveredModelSchema=z.object({
+  providerModelId:z.string().min(1).max(300),
+  displayName:z.string().min(1).max(500),
+  contextWindow:z.number().int().positive().nullable(),
+  maxOutputTokens:z.number().int().positive().nullable(),
+  capabilities:z.object({
+    streaming:z.boolean().nullable(),
+    toolCalls:z.boolean().nullable(),
+    vision:z.boolean().nullable(),
+  }).strict(),
+  metadataSource:z.literal("provider-reported"),
+}).strict();
+export type DiscoveredModel=z.infer<typeof DiscoveredModelSchema>;
 export const ProviderTestResultSchema=z.object({
   id:ProviderIdSchema,
   ok:z.boolean(),
@@ -603,6 +674,7 @@ export const ProviderTestResultSchema=z.object({
   detail:z.string(),
   errorKind:z.string().nullable(),
   modelsSample:z.array(z.string()),
+  models:z.array(DiscoveredModelSchema),
 }).strict();
 export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
 
@@ -704,7 +776,10 @@ export type MissionEvidence=z.infer<typeof MissionEvidenceSchema>;
 
 export const MissionFailureCategorySchema=z.enum([
   "tool_error","patch_context_mismatch","test_failure","build_failure","provider_failure",
-  "permission_denied","timeout","invalid_output","loop_detected","unknown",
+  "model_unavailable","rate_limit","network_failure","context_exhaustion",
+  "invalid_tool_arguments","verification_failure","approval_required","repeated_strategy",
+  "unknown_effect","process_interruption","permission_denied","timeout","invalid_output",
+  "loop_detected","unknown",
 ]);
 export type MissionFailureCategory=z.infer<typeof MissionFailureCategorySchema>;
 export const MissionFailureSchema=z.object({
@@ -799,6 +874,14 @@ export const MissionResultSchema=z.object({
 }).strict();
 export type MissionResult=z.infer<typeof MissionResultSchema>;
 
+export const MissionExecutionSchema=z.object({
+  preset:PresetIdSchema.default("balanced"),
+  providerId:ProviderIdSchema.nullable().default(null),
+  model:z.string().trim().min(1).max(200).nullable().default(null),
+  reasoning:ReasoningConfigurationSchema.default({mode:"auto"}),
+}).strict();
+export type MissionExecution=z.infer<typeof MissionExecutionSchema>;
+
 export const MissionSchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
@@ -807,6 +890,7 @@ export const MissionSchema=z.object({
   objective:z.string().min(1).max(8000),
   status:MissionStatusSchema,
   autoApprove:z.boolean().default(false),
+  execution:MissionExecutionSchema.default({preset:"balanced",providerId:null,model:null,reasoning:{mode:"auto"}}),
   criteria:z.array(MissionCriterionSchema).default([]),
   taskTreeRootId:z.string().nullable().default(null),
   budget:MissionBudgetSchema,
@@ -829,7 +913,7 @@ export const MissionEventTypeSchema=z.enum([
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
   "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
   "mission.review_started",  "mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
-  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned",
+  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned","mission.cortex_ready",
   "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
@@ -1046,6 +1130,10 @@ export const CreateMissionSchema=z.object({
   objective:z.string().trim().min(1).max(8000),
   conversationId:z.string().optional(),
   autoApprove:z.boolean().optional(),
+  preset:PresetIdSchema.optional(),
+  providerId:ProviderIdSchema.optional(),
+  model:z.string().trim().min(1).max(200).optional(),
+  reasoning:ReasoningConfigurationSchema.optional(),
   maxUsd:z.number().nonnegative().optional(),
   maxAttempts:z.number().int().positive().optional(),
   // Optional structured contract. When provided, its explicit values populate
@@ -1081,5 +1169,7 @@ export {
 } from "./mission-state.js";
 
 export * from "./cortex.js";
+
+export * from "./mission-runtime.js";
 
 export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { LearnedSkillSchema } from "@morrow/contracts";
 
 export interface SkillManifest {
   id: string; name: string; version: string; description: string; publisher: string; license: string;
@@ -77,6 +78,17 @@ export function verifySkill(directory: string): { ok: boolean; issues: string[] 
   else {
     const hash = createHash("sha256").update(readFileSync(join(directory, "SKILL.md"))).digest("hex");
     if (hash !== manifest.checksum) issues.push("SKILL.md checksum does not match manifest");
+  }
+  if (manifest && (manifest.publisher === "auto" || manifest.publisher === "morrow-cortex")) {
+    try {
+      const lifecycle = LearnedSkillSchema.parse(JSON.parse(readFileSync(join(directory, "lifecycle.json"), "utf8")));
+      if (manifest.publisher !== "morrow-cortex") issues.push("model-generated skill has no trusted Cortex publisher");
+      if (lifecycle.state !== "active") issues.push("learned skill is not active");
+      if (new Set(lifecycle.provenance.map((item) => item.missionId)).size < 2 || lifecycle.successCount < 2) issues.push("learned skill lacks repeated successful evidence");
+      if (lifecycle.permissions.networkDomains.length > 0 || lifecycle.permissions.requiredSecrets.length > 0) issues.push("automatically learned skills cannot request network or secrets");
+      if (JSON.stringify(lifecycle.permissions.tools) !== JSON.stringify(["command-exec"])) issues.push("automatically learned skills may only request command-exec");
+      if (JSON.stringify(lifecycle.permissions.filesystemScopes) !== JSON.stringify(["workspace"])) issues.push("automatically learned skills must remain workspace-scoped");
+    } catch { issues.push("lifecycle.json is invalid"); }
   }
   return { ok: issues.length === 0, issues };
 }

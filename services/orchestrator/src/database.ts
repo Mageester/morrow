@@ -972,5 +972,180 @@ export const migrations:Migration[]=[
     CREATE INDEX canonical_task_answers_mission_idx
       ON canonical_task_answers(mission_id, created_at) WHERE mission_id IS NOT NULL;
   `}
+  // Durable mission control is additive to the existing mission and segmented
+  // task ledgers. A rollback may ignore these tables; mission content, task
+  // history, and working-tree effects remain in their original stores.
+  ,{id:33,name:"durable_mission_runtime",sql:`
+    CREATE TABLE mission_runtime (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      state TEXT NOT NULL CHECK(state IN (
+        'created','orienting','planning','executing','validating',
+        'waiting_for_tool','waiting_for_approval','recovering','replanning',
+        'blocked','completed','cancelled','abandoned','superseded'
+      )),
+      final_disposition TEXT CHECK(final_disposition IS NULL OR final_disposition IN (
+        'blocked','completed','cancelled','abandoned','superseded'
+      )),
+      active_operation_id TEXT,
+      active_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      wake_reason TEXT,
+      transition_sequence INTEGER NOT NULL DEFAULT 0 CHECK(transition_sequence >= 0),
+      operation_sequence INTEGER NOT NULL DEFAULT 0 CHECK(operation_sequence >= 0),
+      lease_owner TEXT,
+      lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation >= 0),
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE mission_runtime_transitions (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES mission_runtime(mission_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL CHECK(sequence > 0),
+      from_state TEXT NOT NULL,
+      to_state TEXT NOT NULL,
+      cause TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      details_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX mission_runtime_transitions_sequence_uq
+      ON mission_runtime_transitions(mission_id, sequence);
+
+    CREATE TABLE mission_operations (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES mission_runtime(mission_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL CHECK(sequence > 0),
+      idempotency_key TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN (
+        'pending','running','completed','failed','unknown_effect','cancelled'
+      )),
+      strategy_fingerprint TEXT,
+      input_json TEXT NOT NULL,
+      result_json TEXT,
+      effect_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+      started_at TEXT,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX mission_operations_sequence_uq
+      ON mission_operations(mission_id, sequence);
+    CREATE UNIQUE INDEX mission_operations_idempotency_uq
+      ON mission_operations(mission_id, idempotency_key);
+
+    CREATE TABLE mission_progress (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES mission_runtime(mission_id) ON DELETE CASCADE,
+      operation_id TEXT REFERENCES mission_operations(id) ON DELETE SET NULL,
+      kind TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      strategy_fingerprint TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_progress_mission_idx
+      ON mission_progress(mission_id, created_at, id);
+
+    CREATE TABLE mission_recovery_decisions (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL REFERENCES mission_runtime(mission_id) ON DELETE CASCADE,
+      operation_id TEXT REFERENCES mission_operations(id) ON DELETE SET NULL,
+      category TEXT NOT NULL,
+      diagnosis TEXT NOT NULL,
+      failed_strategy_fingerprint TEXT,
+      next_strategy_fingerprint TEXT,
+      action TEXT NOT NULL,
+      retry_condition TEXT,
+      exhausted INTEGER NOT NULL CHECK(exhausted IN (0,1)),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX mission_recovery_decisions_mission_idx
+      ON mission_recovery_decisions(mission_id, created_at, id);
+  `}
+  ,{id:34,name:"provider_model_discovery",sql:`
+    CREATE TABLE provider_model_discovery (
+      provider_id TEXT NOT NULL,
+      auth_mode TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('available','unavailable')),
+      models_json TEXT NOT NULL,
+      error_kind TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY(provider_id, auth_mode)
+    );
+  `}
+  ,{id:35,name:"automatic_cortex_memory_and_skills",sql:`
+    ALTER TABLE memory_entries ADD COLUMN normalized_content TEXT NOT NULL DEFAULT '';
+    ALTER TABLE memory_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'project_architecture';
+    ALTER TABLE memory_entries ADD COLUMN evidence_references_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE memory_entries ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active';
+    ALTER TABLE memory_entries ADD COLUMN last_verified_at TEXT;
+    ALTER TABLE memory_entries ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5;
+    ALTER TABLE memory_entries ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN success_contribution INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN failure_contribution INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN staleness TEXT NOT NULL DEFAULT 'current';
+    ALTER TABLE memory_entries ADD COLUMN supersedes_id TEXT;
+    ALTER TABLE memory_entries ADD COLUMN conflicts_with_ids_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE memory_entries ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'internal';
+    ALTER TABLE memory_entries ADD COLUMN expiration_policy TEXT NOT NULL DEFAULT 'never';
+    ALTER TABLE memory_entries ADD COLUMN expires_at TEXT;
+    UPDATE memory_entries SET normalized_content = lower(trim(content)) WHERE normalized_content = '';
+    CREATE INDEX memory_entries_lifecycle_idx ON memory_entries(project_id, lifecycle, staleness, enabled);
+
+    CREATE TABLE learned_skills (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,
+      trigger_conditions_json TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      steps_json TEXT NOT NULL,
+      permissions_json TEXT NOT NULL,
+      validation_requirements_json TEXT NOT NULL,
+      provenance_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      confidence REAL NOT NULL,
+      last_verified_at TEXT,
+      rollback_history_json TEXT NOT NULL DEFAULT '[]',
+      workflow_fingerprint TEXT NOT NULL,
+      directory TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, workflow_fingerprint)
+    );
+    CREATE INDEX learned_skills_project_state_idx ON learned_skills(project_id, state, updated_at DESC);
+  `}
+  ,{id:36,name:"durable_mission_execution_route",sql:`
+    ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
+      DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
+  `}
 ];
-export function openDatabase(file:string){if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});const db=new Database(file);db.pragma("foreign_keys = ON");db.pragma("busy_timeout = 5000");db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));for(const m of migrations){if(applied.has(m.id))continue;db.transaction(()=>{if(m.sql)db.exec(m.sql);if(m.up)m.up(db);db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString())})()}const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");return db}
+export function openDatabase(file:string){
+  if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
+  const db=new Database(file);
+  try{
+    db.pragma("foreign_keys = ON");
+    db.pragma("busy_timeout = 5000");
+    db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+    const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
+    for(const m of migrations){
+      if(applied.has(m.id))continue;
+      db.transaction(()=>{
+        if(m.sql)db.exec(m.sql);
+        if(m.up)m.up(db);
+        db.prepare("INSERT INTO schema_migrations VALUES(?,?,?)").run(m.id,m.name,new Date().toISOString());
+      })();
+    }
+    const newest=(db.prepare("SELECT MAX(id) id FROM schema_migrations").get()as{id:number|null}).id;
+    if(newest!==null&&newest>migrations.at(-1)!.id)throw new Error("Database schema is newer than this application");
+    return db;
+  }catch(error){
+    db.close();
+    throw error;
+  }
+}

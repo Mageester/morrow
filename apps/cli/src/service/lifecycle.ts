@@ -39,7 +39,13 @@ export async function isRunning(ctx: Context): Promise<boolean> {
  * server stops (so the calling process stays alive while listening).
  */
 export async function serveForeground(ctx: Context): Promise<number> {
-  const { openDatabase, buildServer, TaskRunner, recoverRunningTasks } = await import("@morrow/orchestrator");
+  const {
+    openDatabase,
+    buildServer,
+    TaskRunner,
+    createDefaultMissionControllerRunner,
+    reconcileMissionsOnStartup,
+  } = await import("@morrow/orchestrator");
   const { loadSecretsIntoEnv } = await import("../config/env.js");
 
   const { applied, shadowed } = loadSecretsIntoEnv({
@@ -49,9 +55,10 @@ export async function serveForeground(ctx: Context): Promise<number> {
   const migration = migrateLegacyDatabase(ctx.service.dbPath, ctx.paths.legacyDbPaths);
   mkdirSync(dirname(ctx.service.dbPath), { recursive: true });
   const db = openDatabase(ctx.service.dbPath);
-  const recovered = recoverRunningTasks(db);
   const runner = new TaskRunner(db);
-  const app = buildServer({ db, runner, secretsFile: ctx.paths.secretsFile });
+  const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
+  const reconciliation = reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
+  const app = buildServer({ db, runner, missionControllerRunner, secretsFile: ctx.paths.secretsFile });
 
   await app.listen({ host: ctx.service.host, port: ctx.service.port });
 
@@ -63,7 +70,12 @@ export async function serveForeground(ctx: Context): Promise<number> {
   if (migration.migratedFrom) {
     ctx.out.info(`Migrated legacy database from ${migration.migratedFrom}.`);
   }
-  if (recovered > 0) ctx.out.warn(`Recovered ${recovered} interrupted task(s) from a prior run.`);
+  if (reconciliation.missionsResumed > 0) {
+    ctx.out.info(`Resumed ${reconciliation.missionsResumed} durable mission controller(s) from a prior run.`);
+  }
+  if (reconciliation.interrupted > 0) {
+    ctx.out.warn(`Recovered ${reconciliation.interrupted} interrupted task(s) from a prior run.`);
+  }
   if (applied.length > 0) ctx.out.info(`Loaded credentials from secrets/.env: ${applied.join(", ")}`);
   if (shadowed.length > 0) {
     ctx.out.warn(

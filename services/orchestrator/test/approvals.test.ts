@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { approvalsRepository } from "../src/repositories/approvals.js";
@@ -79,11 +79,17 @@ describe("approvals", () => {
   describe("approval API", () => {
     let db: Database.Database;
     let app: ReturnType<typeof buildServer>;
+    const wakeMission = vi.fn<(missionId: string) => void>();
 
     beforeEach(async () => {
       db = openDatabase(":memory:");
       seed(db);
-      app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
+      wakeMission.mockReset();
+      app = buildServer({
+        db,
+        runner: new TaskRunner(db, async () => {}),
+        missionControllerRunner: { wake: wakeMission },
+      });
       await app.ready();
     });
 
@@ -143,6 +149,32 @@ describe("approvals", () => {
         payload: { projectId: "project", decision: "trust_project", trustPattern: "anything" },
       });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("wakes the owning durable mission after an approval is resolved", async () => {
+      db.prepare(`INSERT INTO missions
+        (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run("mission-1", 1, "project", "Continue after approval", "running", 0, "{}", createdAt, createdAt);
+      db.prepare("UPDATE tasks SET mission_id=? WHERE id=?").run("mission-1", "task");
+      approvalsRepository(db).create({
+        id: "mission-approval",
+        taskId: "task",
+        projectId: "project",
+        kind: "change_set",
+        summary: "Apply the prepared patch",
+        details: { diffHash: "abc", files: ["a.ts"] },
+        createdAt,
+      });
+
+      const resolved = await app.inject({
+        method: "POST",
+        url: "/api/approvals/mission-approval/resolve",
+        payload: { projectId: "project", decision: "allow_once" },
+      });
+
+      expect(resolved.statusCode).toBe(200);
+      expect(wakeMission).toHaveBeenCalledWith("mission-1");
     });
   });
 });

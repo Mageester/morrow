@@ -56,15 +56,21 @@ See `CONTINUATION.md` for the exact next step.
   `scripts/package-release.test.mjs`, `pnpm check`, `pnpm test`, and package
   contract validation.
 
-- **Local browser control (B15, partial)** — `browser/playwright.ts` launches a
+- **Agent-controlled local browser and vision (B15, partial)** — `browser/playwright.ts` launches a
   real Playwright Chromium session (visible unless explicitly headless), attaches
   to Chrome/Chromium/Edge CDP endpoints, and supports isolated or persistent
   sessions, semantic refs, navigation/click/fill/key/select, dialogs, bounded
   screenshots, scoped uploads/downloads, console/page-error evidence, timeout,
   cancellation, pause/resume/panic and owned-process cleanup. `browser/audit.ts`
   persists sanitized task-scoped records through the append-only audit log.
-  `browser-injection.test.ts` launches a local controlled page and proves the
-  full safety path; managed/cloud browsers remain unsupported.
+  The durable agent exposes origin-approved navigation, DOM/console inspection,
+  interactions, responsive viewports, screenshots and controlled downloads.
+  Screenshot bytes reach only catalog-verified vision routes and never durable
+  chat/tool rows. Frontend completion is blocked without post-change DOM,
+  console, interaction, desktop/tablet/mobile screenshot and vision evidence.
+  `browser-injection.test.ts` and `agent-browser.test.ts` launch local controlled
+  pages through real Chromium; managed/cloud browsers and general desktop UIA
+  remain unsupported. See `BETA31_BROWSER_VISION.md`.
 
 - **Tamper-evident audit store (B22b)** — `audit/log.ts` hash-chains each entry
   (`hash = sha256(prevHash + canonical(entry))`); `repositories/audit-log.ts` is

@@ -66,4 +66,10 @@ describe("skill usage API", () => {
     expect((await app.inject({ method: "POST", url: "/api/projects/nope/skills/coding/use" })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/projects/p1/skills/has%20space/use" })).statusCode).toBe(400);
   });
+
+  it("exposes the inspectable project-scoped learned-skill lifecycle", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/projects/p1/skills/learned" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([]);
+  });
 });

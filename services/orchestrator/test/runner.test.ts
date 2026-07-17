@@ -77,6 +77,22 @@ describe("TaskRunner", () => {
     expect(taskRecordsRepository(db).listEvents("t1").at(-1)?.type).toBe("task.failed");
   });
 
+  it("notifies durable schedulers whenever task execution settles", async () => {
+    const settled: string[] = [];
+    const runner = new TaskRunner(db, async () => undefined);
+    const unsubscribe = runner.onSettled((taskId) => settled.push(taskId));
+
+    runner.run("t1");
+    await runner.waitFor("t1");
+    expect(settled).toEqual(["t1"]);
+
+    unsubscribe();
+    taskRepository(db).createTask({ id: "t2", projectId: "p1", kind: "inspect_workspace", status: "queued", createdAt: new Date().toISOString() });
+    runner.run("t2");
+    await runner.waitFor("t2");
+    expect(settled).toEqual(["t1"]);
+  });
+
   it("records failed agent state when an executor fails unexpectedly", async () => {
     const createdAt = new Date().toISOString();
     taskRepository(db).createTask({ id: "agent", projectId: "p1", kind: "agent_chat", status: "queued", createdAt });

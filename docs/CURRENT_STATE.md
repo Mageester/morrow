@@ -4,6 +4,34 @@
 > This document records what was **actually observed**, not what prior status
 > docs claim. Where a prior doc disagreed with the code, the code wins.
 
+## Beta.31 incremental verification (2026-07-16)
+
+- Mission execution routes (preset, provider, model, reasoning) are persisted
+  with the durable mission and reused for every worker. Non-retryable 401/402/403
+  provider failures now switch to a configured alternate or block after the
+  first worker; retryable failures are bounded to three automatic attempts.
+- The packaged durable acceptance gate now includes a real multi-file write
+  repair, a 96-unit productive workload with checkpoints/context rollover and a
+  SQLite close/reopen, browser DOM/console/interaction plus responsive PNG and
+  vision evidence, automatic memory/skill reuse across missions, and model
+  list/detail consistency across restart.
+- Browser screenshot messages use viewport-aware image token accounting and
+  dynamic browser observations are preserved even when consecutive console or
+  screenshot results have similar text.
+- Automatic Cortex memory now builds/refreshes at mission creation, captures only
+  deterministic repository facts and evidence-backed mission learnings, and
+  injects ranked active memory into later matching work without save, refresh, or
+  index commands.
+- Repeated safe validation workflows now follow candidate → repeated evidence →
+  isolated validation → active. Learned bundles are private and project-scoped;
+  two distinct missions, checksum/lifecycle validation, narrow permissions, and
+  no network/secrets are required. Tampering causes quarantine and a persisted
+  rollback record.
+- The final Beta.31 package/release decision remains gated on full repository
+  validation and one successful capable external-model mission from the fresh
+  packaged candidate. A configured DeepSeek account returned HTTP 402
+  `Insufficient Balance`; that is recorded as an external blocker, not a pass.
+
 ## Baseline
 
 - **Date:** 2026-07-02 (previous snapshot: 2026-06-29)

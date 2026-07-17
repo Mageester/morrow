@@ -2,13 +2,12 @@ import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "../cli/context.js";
 import type { Output } from "../cli/output.js";
-import type { MorrowApi } from "../client/api.js";
-import type { Mission, MissionCriterion, MissionEvidence, MissionResult, MissionReview } from "@morrow/contracts";
+import type { DurableMission, MorrowApi } from "../client/api.js";
+import type { Mission, MissionCriterion, MissionEvidence, MissionResult } from "@morrow/contracts";
 import { ensureRunning } from "../service/lifecycle.js";
 import { resolveProject, shortId } from "./common.js";
-import { chatCommand } from "./chat.js";
-import { Context as CliContext } from "../cli/context.js";
 import { flagBool, flagString } from "../cli/args.js";
+import type { CreateMissionInput } from "@morrow/contracts";
 import { EXIT, usageError, notFound } from "../cli/errors.js";
 import { renderImpact, renderRevisions } from "./cortex.js";
 
@@ -37,6 +36,8 @@ export function printMissionHelp(out: Output): number {
     "  morrow mission plan [id]",
     "  morrow mission revisions [id]",
     "  morrow mission result [id]",
+    "  morrow mission resume [id]",
+    "  morrow mission cancel [id]",
     "",
     "A bare `morrow mission` opens Mission Control in the terminal.",
   ].join("\n");
@@ -62,6 +63,8 @@ export async function missionCommand(ctx: Context, sub: string | undefined, args
     case "impact":
     case "plan": return showPlan(ctx, api, args[0]);
     case "revisions": return showRevisions(ctx, api, args[0]);
+    case "resume": return resumeDurableMission(ctx, api, args[0]);
+    case "cancel": return cancelDurableMission(ctx, api, args[0]);
     default: break;
   }
 
@@ -83,7 +86,17 @@ async function runMission(ctx: Context, api: MorrowApi, objective: string): Prom
   ctx.out.diag(ctx.out.gray(`  ${projectName}  ${project.workspacePath}  ·  Mission${autonomous ? " · autonomous" : ""}`));
 
   // 1. Create the mission and generate measurable criteria before execution.
-  const created = await api.createMission(project.id, { objective, autoApprove: autonomous });
+  const preset = flagString(ctx.flags, "preset") as CreateMissionInput["preset"];
+  const providerId = flagString(ctx.flags, "provider") as CreateMissionInput["providerId"];
+  const model = flagString(ctx.flags, "model");
+  const created = await api.createMission(project.id, {
+    objective,
+    autoApprove: autonomous,
+    ...(preset ? { preset } : {}),
+    ...(providerId ? { providerId } : {}),
+    ...(model ? { model } : {}),
+    reasoning: { mode: "auto" },
+  });
   ctx.out.info(ctx.out.gray("Understanding the objective and drafting success criteria…"));
   const withCriteria = await api.generateMissionCriteria(created.id, summarizeRepo(project.workspacePath));
 
@@ -124,102 +137,57 @@ async function runMission(ctx: Context, api: MorrowApi, objective: string): Prom
     // auto-approved already
   }
 
-  // 4. Checkpoint before the agent makes multi-file changes, so a bad run is
-  //    reversible without touching unrelated work.
-  try {
-    const ckpt = await api.createMissionCheckpoint(mission.id, "pre-execution", "before autonomous mission execution");
-    ctx.out.info(ctx.out.gray(`Checkpoint captured: ${ckpt.label} (${ckpt.affectedFiles.length} files)`));
-  } catch { /* nothing to checkpoint yet is fine */ }
-
-  // 5. Execute the work with the existing agent (proven coding capability),
-  //    passing the objective and criteria as explicit acceptance targets.
+  // Start exactly once. From this point the orchestrator owns continuation;
+  // this CLI only observes persisted state and may disconnect safely.
   ctx.out.info("");
-  ctx.out.info(ctx.out.magenta("Executing…"));
-  await runAgentExecution(ctx, mission);
-
-  // 6. Verify every executable criterion with concrete evidence.
-  ctx.out.info("");
-  ctx.out.info(ctx.out.gray("Verifying success criteria against the workspace…"));
-  mission = await api.verifyMission(mission.id);
-  renderCriteria(ctx, mission.criteria, true);
-
-  // 7. Independent review (a separate execution with isolated instructions).
-  ctx.out.info("");
-  ctx.out.info(ctx.out.gray("Requesting independent review…"));
-  let review = await api.reviewMission(mission.id);
-  let reviewCycles = 1;
-  ctx.out.info(`  Review verdict: ${verdictLabel(ctx, review.verdict)}`);
-
-  const maxReviewCycles = Math.max(1, mission.budget.maxReviewCycles ?? 1);
-  let tasksCompleted = 1;
-  while (review.verdict === "revisions_required" && reviewCycles < maxReviewCycles) {
-    const findings = reviewFindings(review);
-    ctx.out.info("");
-    ctx.out.info(ctx.out.yellow("Reviewer requested revisions; running a bounded repair cycle before grading."));
-    await runAgentExecution(ctx, mission, findings);
-    tasksCompleted += 1;
-
-    ctx.out.info("");
-    ctx.out.info(ctx.out.gray("Re-verifying success criteria after reviewer revisions..."));
-    mission = await api.verifyMission(mission.id);
-    renderCriteria(ctx, mission.criteria, true);
-
-    ctx.out.info("");
-    ctx.out.info(ctx.out.gray("Requesting independent re-review..."));
-    review = await api.reviewMission(mission.id);
-    reviewCycles += 1;
-    ctx.out.info(`  Review verdict: ${verdictLabel(ctx, review.verdict)}`);
-  }
-
-  // 8. Grade honestly and show the result.
-  mission = await api.finalizeMission(mission.id, { tasksCompleted });
-  renderResult(ctx, mission);
-
-  // A partial/blocked/failed grade is not a CLI error, but signal non-full.
-  return mission.status === "completed" ? EXIT.OK : EXIT.OK;
+  ctx.out.info(ctx.out.magenta("Durable controller started. You may close this terminal without stopping the mission."));
+  const observed = await api.startMission(mission.id);
+  return observeDurableMission(ctx, api, observed);
 }
 
-async function runAgentExecution(ctx: Context, mission: Mission, reviewerFindings: string[] = []): Promise<void> {
-  const criteriaText = mission.criteria.map((c, i) => `${i + 1}. ${c.description}`).join("\n");
-  const prompt = [
-    `Mission objective: ${mission.objective}`,
-    "",
-    "You must satisfy ALL of these measurable success criteria:",
-    criteriaText,
-    ...(reviewerFindings.length > 0 ? [
-      "",
-      "The independent reviewer requested revisions. Address these findings before stopping:",
-      ...reviewerFindings.map((finding, i) => `${i + 1}. ${finding}`),
-    ] : []),
-    "",
-    "Make the minimal correct changes to satisfy them. Preserve intended behaviour.",
-    "Do not change unrelated files. When done, ensure the project runs.",
-  ].join("\n");
-  // Reuse the existing one-shot agent path in autonomous (yolo) mode. The
-  // mission flag links the agent task to this mission so tool failures land
-  // in the mission failure ledger (loop detection, /failures, honest grading).
-  const flags: Record<string, string | boolean> = { message: prompt, yolo: true, mission: mission.id };
-  const child = new CliContext({ out: ctx.out, config: ctx.config, paths: ctx.paths, flags: { ...ctx.flags, ...flags } });
-  try {
-    await chatCommand(child);
-  } catch (err) {
-    ctx.out.diag(ctx.out.yellow(`  Execution step reported an error; continuing to verification. (${err instanceof Error ? err.message : String(err)})`));
+async function resumeDurableMission(ctx: Context, api: MorrowApi, ref?: string): Promise<number> {
+  const mission = await resolveMission(ctx, api, ref);
+  ctx.out.info(ctx.out.magenta(`Reconnecting to ${shortId(mission.id.replace(/^mission-/, ""))}…`));
+  const observed = await api.resumeMission(mission.id);
+  return observeDurableMission(ctx, api, observed);
+}
+
+async function cancelDurableMission(ctx: Context, api: MorrowApi, ref?: string): Promise<number> {
+  const mission = await resolveMission(ctx, api, ref);
+  const cancelled = await api.cancelMission(mission.id);
+  if (ctx.out.json) ctx.out.data(cancelled);
+  else ctx.out.info(`Mission ${shortId(mission.id.replace(/^mission-/, ""))} cancelled.`);
+  return EXIT.OK;
+}
+
+async function observeDurableMission(ctx: Context, api: MorrowApi, initial: DurableMission): Promise<number> {
+  let observed = initial;
+  const missionId = initial.id;
+  if (flagBool(ctx.flags, "detach")) return EXIT.OK;
+
+  let lastState: string | null = null;
+  while (observed.runtime && !isRuntimeTerminal(observed.runtime.state)) {
+    if (observed.runtime.state !== lastState) {
+      ctx.out.info(ctx.out.gray(`  ${observed.runtime.state}${observed.runtime.blocker ? ` · ${observed.runtime.blocker}` : ""}`));
+      lastState = observed.runtime.state;
+    }
+    await delay(500);
+    observed = await api.getMission(missionId);
   }
+  if (observed.result) renderResult(ctx, observed);
+  else if (observed.runtime?.blocker) ctx.out.warn(observed.runtime.blocker);
+  return observed.runtime?.state === "completed" ? EXIT.OK : EXIT.ERROR;
+}
+
+function isRuntimeTerminal(state: string): boolean {
+  return ["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(state);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── subcommands ────────────────────────────────────────────────────────────
-function reviewFindings(review: MissionReview): string[] {
-  const items = [
-    ...review.concerns,
-    ...review.missingVerification,
-    ...review.suspiciousChanges,
-    ...review.criterionJudgments
-      .filter((j) => j.judgment !== "satisfied")
-      .map((j) => j.note),
-    review.summary,
-  ];
-  return [...new Set(items.map((v) => v.trim()).filter(Boolean))].slice(0, 8);
-}
 
 /**
  * Resolve the mission a detail subcommand should act on. With no reference we

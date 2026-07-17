@@ -26,4 +26,4 @@ jobs:
       # exercises the negative cases so the guards can't silently rot.
       # installer-cli-only proves no browser, no localhost, no web/index.html.
       # install-activation drives the real atomic activation/rollback code paths.
-      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs
+      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs scripts/lib/package-provenance.test.mjs scripts/acceptance-foundation-smoke.test.mjs

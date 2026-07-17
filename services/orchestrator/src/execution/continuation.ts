@@ -12,17 +12,32 @@ export class ApprovalContinuationRegistry {
   private static emitter = new EventEmitter();
   private static latched = new Map<string, string>();
 
-  static awaitApproval(approvalId: string): Promise<string> {
+  static awaitApproval(approvalId: string, signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) return Promise.reject(new Error("AbortError"));
     const alreadyResolved = this.latched.get(approvalId);
     if (alreadyResolved !== undefined) {
       this.latched.delete(approvalId);
       return Promise.resolve(alreadyResolved);
     }
-    return new Promise((resolve) => {
-      this.emitter.once(`resolved:${approvalId}`, (decision: string) => {
+    return new Promise((resolve, reject) => {
+      const eventName = `resolved:${approvalId}`;
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        this.emitter.off(eventName, onResolved);
+        reject(new Error("AbortError"));
+      };
+      const onResolved = (decision: string) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
         this.latched.delete(approvalId);
         resolve(decision);
-      });
+      };
+      this.emitter.once(eventName, onResolved);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 

@@ -24,18 +24,18 @@ export interface CheckpointSnapshot {
 }
 
 export function isGitRepo(workspace: string): boolean {
-  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspace, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   return r.status === 0 && r.stdout.trim() === "true";
 }
 
 export function gitHeadRef(workspace: string): string | null {
-  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
 /** Files git considers modified or untracked (bounded), workspace-relative. */
 export function candidateFiles(workspace: string, limit = 500): string[] {
-  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: workspace, encoding: "utf8" });
+  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   if (r.status !== 0) return [];
   return r.stdout.split("\n")
     .map((l) => l.slice(3).trim())

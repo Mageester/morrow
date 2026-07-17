@@ -10,6 +10,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { MockProvider } from "../src/provider/mock.js";
 import type { ProviderChunk } from "../src/provider/base.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 
 describe("agent loop detection", () => {
   let db: Database.Database;
@@ -26,13 +27,19 @@ describe("agent loop detection", () => {
     } catch {}
   });
 
-  function seed() {
+  function seed(missionLinked = false) {
     const ts = new Date().toISOString();
     projectRepository(db).createProject({ id: "p1", name: "Loop", workspacePath: tempDir, createdAt: ts });
+    if (missionLinked) {
+      db.prepare(`INSERT INTO missions
+        (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run("mission-1", 1, "p1", "Escape the repeated strategy", "running", 1, "{}", ts, ts);
+    }
     writeFileSync(join(tempDir, "readme.md"), "Morrow");
     conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "Loop", createdAt: ts, updatedAt: ts });
     conversationsRepository(db).appendMessage({ id: "msg-user", conversationId: "c1", role: "user", content: "go", createdAt: ts, updatedAt: ts });
-    taskRepository(db).createTask({ id: "task-1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: ts });
+    taskRepository(db).createTask({ id: "task-1", projectId: "p1", ...(missionLinked ? { missionId: "mission-1" } : {}), kind: "agent_chat", status: "queued", createdAt: ts });
     conversationsRepository(db).appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: ts, updatedAt: ts });
   }
 
@@ -91,8 +98,23 @@ describe("agent loop detection", () => {
     expect(finalTask?.status).toBe("completed");
   });
 
+  it("returns a mission loop to the controller as a strategy change", async () => {
+    seed(true);
+    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(executionContinuityRepository(db).latestCheckpoint("task-1")?.snapshot.currentPhase)
+      .toBe("strategy_change_required");
+    expect(executionContinuityRepository(db).listSegments("task-1").at(-1)?.boundaryReason)
+      .toBe("strategy_change_required");
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "loop_detected"))
+      .toBe(false);
+  });
+
   it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
-    seed();
+    seed(true);
     const turns: ProviderChunk[][] = [];
     for (let index = 0; index < 19; index++) {
       const path = `evidence-${index}.md`;
@@ -115,5 +137,7 @@ describe("agent loop detection", () => {
     const events = taskRecordsRepository(db).listEvents("task-1") as Array<{ type: string; payload: any }>;
     expect(events.filter((event) => event.type === "assistant.turn_started")).toHaveLength(20);
     expect(events.some((event) => event.payload?.reason === "turn_budget_reached")).toBe(false);
+    expect(executionContinuityRepository(db).listSegments("task-1").at(-1)?.boundaryReason)
+      .toBe("candidate_answer_ready");
   });
 });

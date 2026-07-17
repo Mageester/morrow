@@ -26,12 +26,23 @@ import { projectRepository } from "../src/repositories/projects.js";
 // ════════════════════════════════════════════════════════════════════════════
 
 const roots: string[] = [];
+const openDatabases: Database.Database[] = [];
 function tmp(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   roots.push(dir);
   return dir;
 }
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+function openTestDatabase(path: string): Database.Database {
+  const db = openDatabase(path);
+  openDatabases.push(db);
+  return db;
+}
+afterEach(() => {
+  openDatabases.splice(0).forEach((db) => {
+    if (db.open) db.close();
+  });
+  roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
 
 /** The EXACT migration-28 SQL as it existed at commit 29d036471bc0aaf7ce7687a
  *  d3-09fc422c1, BEFORE it was edited. Captured via:
@@ -303,10 +314,10 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
     seedRepresentativeData(dbPath, { nodeHasSourceLocator: false });
 
     // Open with the CURRENT application code: migration 29 must apply cleanly.
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(32);
+    expect(Math.max(...appliedIds)).toBe(36);
 
     // source_locator now exists and is queryable/writable.
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
@@ -349,10 +360,10 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
     buildHistoricalDb(dbPath, EDITED_F812872_MIGRATION_28_SQL);
     seedRepresentativeData(dbPath, { nodeHasSourceLocator: true });
 
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(32);
+    expect(Math.max(...appliedIds)).toBe(36);
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -378,10 +389,10 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
 describe("BLOCKER 3 — fresh database migrations in order", () => {
   it("applies all migrations and produces the correct final schema and triggers", () => {
     const dbPath = join(tmp("ek-mig-c-"), "m.db");
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-    expect(appliedIds).toEqual(Array.from({ length: 32 }, (_, i) => i + 1));
-    expect(migrations.at(-1)!.id).toBe(32);
+    expect(appliedIds).toEqual(Array.from({ length: 36 }, (_, i) => i + 1));
+    expect(migrations.at(-1)!.id).toBe(36);
     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
     expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
 
@@ -421,7 +432,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
     ] });
     seed.close();
 
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const repo = missionsRepository(db);
     expect(repo.get("m1")!.finalReview).toMatchObject({ id: "r1", verdict: "approved", summary: "r1" });
     expect(repo.get("m1")!.budget.reviewCyclesUsed).toBe(1);
@@ -439,7 +450,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
     ] });
     seed.close();
 
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const rows = db.prepare(`SELECT r.id, c.sequence FROM mission_reviews r JOIN mission_review_cycles c ON c.id = r.review_cycle_id WHERE r.mission_id = 'm1' ORDER BY c.sequence`).all() as any[];
     expect(rows).toEqual([{ id: "earlier", sequence: 1 }, { id: "later", sequence: 2 }]);
     expect(missionsRepository(db).get("m1")!.finalReview?.id).toBe("later");
@@ -453,7 +464,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
       { id: "r1", verdict: "approved", createdAt: "2026-01-02T00:00:00.000Z" },
     ] });
     seed.close();
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     const mission = missionsRepository(db).get("m1")!;
     expect(mission.status).toBe("completed");
     expect(mission.finalReview?.verdict).toBe("approved");
@@ -468,7 +479,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
       { id: "r2", verdict: "approved_with_risks", createdAt: "2026-01-02T00:00:00.000Z" },
     ] });
     seed.close();
-    expect(() => openDatabase(dbPath)).toThrow(/tied latest.*m1/i);
+    expect(() => openTestDatabase(dbPath)).toThrow(/tied latest.*m1/i);
     const raw = new Database(dbPath);
     expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
     expect((raw.prepare("SELECT COUNT(*) n FROM mission_review_cycles").get() as any).n).toBe(0);
@@ -484,7 +495,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
       { id: "r1", verdict: "revisions_required", createdAt: "2026-01-02T00:00:00.000Z" },
     ] });
     seed.close();
-    expect(() => openDatabase(dbPath)).toThrow(/result.*contradict.*review/i);
+    expect(() => openTestDatabase(dbPath)).toThrow(/result.*contradict.*review/i);
     const raw = new Database(dbPath);
     expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
     expect((raw.prepare("SELECT review_cycle_id FROM mission_reviews WHERE id = 'r1'").get() as any).review_cycle_id).toBeNull();
@@ -499,7 +510,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
     seed.prepare("INSERT INTO mission_reviews (id, mission_id, verdict, payload_json, created_at, review_cycle_id) VALUES ('r1','m1','approved','{}','2026-01-02','cycle-1')").run();
     seed.prepare("UPDATE missions SET current_review_cycle_id = 'cycle-1' WHERE id = 'm1'").run();
     seed.close();
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     expect(db.prepare("SELECT id, mission_id, sequence, status, reserved_at, resolved_at FROM mission_review_cycles").all()).toEqual([
       { id: "cycle-1", mission_id: "m1", sequence: 7, status: "applied", reserved_at: "2026-01-02", resolved_at: "2026-01-03" },
     ]);
@@ -516,7 +527,7 @@ describe("MAJOR — migration 31 preserves legacy review authority", () => {
     seed.prepare("INSERT INTO mission_review_cycles (id, mission_id, sequence, status, reserved_at, resolved_at) VALUES ('legacy-review-cycle-r1','existing',1,'applied','2026-01-01','2026-01-01')").run();
     seed.close();
 
-    expect(() => openDatabase(dbPath)).toThrow(/unique|constraint/i);
+    expect(() => openTestDatabase(dbPath)).toThrow(/unique|constraint/i);
     const raw = new Database(dbPath);
     expect((raw.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id = 31").get() as any).n).toBe(0);
     expect((raw.prepare("PRAGMA table_info(mission_review_cycles)").all() as any[]).map((c) => c.name)).not.toContain("owner_id");
@@ -560,7 +571,7 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
     ).run("proj-2", "mission-1", now);
     seed.close();
 
-    expect(() => openDatabase(dbPath)).toThrow(/ownership-corrupt/i);
+    expect(() => openTestDatabase(dbPath)).toThrow(/ownership-corrupt/i);
 
     // Inspect the ON-DISK state directly (not via openDatabase, which would
     // attempt to re-run migrations) to prove nothing partially applied.
@@ -591,10 +602,10 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
       fix.close();
     }
 
-    const db = openDatabase(dbPath);
+    const db = openTestDatabase(dbPath);
     try {
       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-      expect(Math.max(...appliedAfterFix)).toBe(32);
+      expect(Math.max(...appliedAfterFix)).toBe(36);
       const repo = missionsRepository(db);
       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();
@@ -620,7 +631,7 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
     ).run("proj-1", "mission-ghost", now);
     seed.close();
 
-    expect(() => openDatabase(dbPath)).toThrow(/ownership-corrupt/i);
+    expect(() => openTestDatabase(dbPath)).toThrow(/ownership-corrupt/i);
     const raw = new Database(dbPath);
     try {
       const appliedIds = (raw.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);

@@ -101,6 +101,8 @@
 | Slash commands from skills | `skill_commands.py` | VERIFIED | `skillsAsSlashCommands` (verified skills → `/skill:<id>`), wired into the interactive session command list + `onSlash` `skill:` handler that records use and runs the skill. `apps/cli/test/skills.test.ts` | — |
 | Usage tracking | Hermes | VERIFIED | `skill_usage` table (migration 13), `skillUsageRepository`, `GET .../skills/usage` + `POST .../skills/:id/use`, CLI `MorrowApi.recordSkillUse`. `test/skill-usage.test.ts` + CLI `api-search.test.ts` | — |
 
+| Automatic evidence-backed skill lifecycle | Hermes self-improve | VERIFIED | migration 35 `learned_skills`; `AutomaticSkillService`; two-distinct-mission threshold; safe-command, checksum, permission and lifecycle gates; private project scope; automatic matching/use accounting; tamper quarantine + rollback. `cortex-automatic-learning.test.ts`, `agent-cortex-learning.test.ts` | Only safe routine validation procedures auto-activate |
+
 ## 6. Skill Creator & Curator
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
@@ -122,6 +124,7 @@
 | Provenance | Hermes | VERIFIED | `originTaskId` FK to tasks (migration 11), `test/memory.test.ts` "stores task provenance" | — |
 | Explain / edit / delete | Hermes | VERIFIED | `/api/memory/:id` PATCH/DELETE | — |
 | Pin | Hermes | VERIFIED | `pinned` column + pin-first ordering, `setPinned`, PATCH `{pinned}`, CLI `memory pin/unpin`, `test/memory.test.ts` + CLI `api-search.test.ts` | — |
+| Automatic lifecycle capture + ranked recall | Hermes memory manager | VERIFIED | migration 35 rich lifecycle metadata; `AutomaticMemoryService`; mission-start `CortexService.ensureReady`; evidence-only capture, secret/poison rejection, scoped staleness, relevance ranking and use counters. `cortex-automatic-learning.test.ts`, `agent-cortex-learning.test.ts` | — |
 | Identity file / project instructions | `system_prompt.py`, AGENTS.md | PARTIAL | prompt builder reads project | Editable identity + personality overlay |
 
 ## 8. Coding intelligence
@@ -140,9 +143,10 @@
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
 |---|---|---|---|---|
-| Playwright/CDP browser | `agent/browser_provider.py`, `agent-browser` | VERIFIED | `browser/playwright.ts`: real Playwright Chromium lifecycle, CDP attach, semantic DOM refs, navigation, click/fill/key/select, dialogs, bounded evidence, timeout/cancellation, explicit pause/resume/panic and owned-process cleanup. `test/browser-injection.test.ts` launches Chromium and attaches over CDP. Chrome/Edge channels are supported where installed. | Managed/cloud browser backends remain missing. |
-| Sessions/screenshots/uploads | Hermes | VERIFIED | Isolated and profile-backed persistent sessions; bounded PNG screenshots; explicit download/upload roots with containment; console/page-error evidence; `browser/audit.ts` writes sanitized task-scoped records into the append-only audit log. Browser E2E test covers upload/download, screenshot, console, dialog, persistence and cleanup. | Cloud-session import/export is missing. |
-| Prompt-injection protection | Hermes | VERIFIED | `browser/injection-guard.ts` neutralizes instruction/role/system-prompt/exfiltration payloads; URL policy rejects unsupported schemes, metadata and private-network targets unless explicitly allowed; audit output redacts secrets. `test/browser-injection.test.ts` (9). | — |
+| Playwright/CDP browser | `agent/browser_provider.py`, `agent-browser` | VERIFIED | `browser/playwright.ts`: real Playwright Chromium lifecycle, CDP attach, semantic DOM refs, navigation, click/fill/key/select, responsive viewport control, dialogs, bounded evidence, timeout/cancellation, explicit pause/resume/panic and owned-process cleanup. `execution/agent.ts` exposes these controls progressively behind an exact-origin approval. `agent-browser.test.ts` drives real Chromium through the agent boundary. | Managed/cloud browser backends remain missing. |
+| Sessions/screenshots/uploads | Hermes | VERIFIED | Isolated and profile-backed persistent sessions; bounded PNG screenshots; explicit download/upload roots with real-path/symlink containment; console/page-error evidence; `browser/audit.ts` writes sanitized task-scoped records into the append-only audit log. Screenshots are durable task artifacts while pixels are ephemeral model input only on verified vision routes. | Cloud-session import/export is missing. |
+| Prompt-injection and material-action protection | Hermes | VERIFIED | `browser/injection-guard.ts` neutralizes instruction/role/system-prompt/exfiltration payloads; URL policy rejects unsupported schemes, credentials, metadata and private-network targets unless explicitly allowed; audit output redacts secrets. Credential/payment fields and purchase/destructive-account/release/deploy/push actions are blocked in the agent bridge. | — |
+| Frontend validation loop | Hermes | VERIFIED | Frontend changes cannot complete without post-change navigation, DOM, console, interaction, exact desktop/tablet/mobile screenshots, and verified vision attachment. Failure and full-pass paths are covered in `agent-browser.test.ts`; legacy styling recovery fixtures also satisfy the gate. | Packaged browser acceptance remains a release gate. |
 | Desktop control (UIA/AX/AT-SPI) | Hermes computer-use | MISSING | — | Desktop layer |
 
 ## 10. MCP & plugins
