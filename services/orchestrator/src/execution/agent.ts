@@ -4173,8 +4173,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   records.updatePlanStepStatus(activeStepId, "completed", now());
   event("step.completed", { stepId: activeStepId });
 
-  // Make sure all steps are complete
-  for (const step of steps) {
+  // Make sure all steps are complete â€” from a FRESH read, never the snapshot
+  // loaded at task start. On a durable resume the stale snapshot could claim a
+  // step was already "completed" while this run had re-marked it "running",
+  // leaving a completed task with a permanently running plan step (beta.31:
+  // "Read Workspace: running" while "Generate Answer: completed" and the
+  // terminal reported the task as passed).
+  for (const step of records.listPlanSteps(taskId)) {
     if (step.status !== "completed") {
       records.updatePlanStepStatus(step.id, "completed", now());
     }
