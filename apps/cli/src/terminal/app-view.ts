@@ -175,10 +175,31 @@ export function composeApp(
   // dropping the start of the content.
   const clippedMiddle = overlay ? headClip(middle, available, out) : middle.length > available ? middle.slice(middle.length - available) : middle;
 
-  const lines = [...top, "", ...clippedMiddle, "", ...bottom, ...footer];
-  const bottomStart = top.length + 1 + clippedMiddle.length + 1;
+  // ── Viewport clamp: a frame may NEVER exceed the terminal height ──────────
+  // A taller frame scrolls the terminal on every repaint, leaving ghost copies
+  // of previous frames in scrollback and pushing the overlay/input out of the
+  // visible viewport (beta.31: /model "not visible", stale content persisting
+  // after state transitions). Overflow is resolved by dropping content in
+  // priority order — middle first, then top chrome — and, as a last resort,
+  // keeping only the frame tail so the input/overlay region always wins.
+  const maxRows = Math.max(1, opts.rows);
+  let finalTop = top;
+  let finalMiddle = clippedMiddle;
+  const fixedRows = bottom.length + footer.length + 2; // two blank separators
+  const overBudget = () => finalTop.length + finalMiddle.length + fixedRows - maxRows;
+  if (overBudget() > 0) {
+    finalMiddle = finalMiddle.slice(Math.min(overBudget(), finalMiddle.length));
+  }
+  if (overBudget() > 0) {
+    // Trim the top block from its head: on an oversized startup panel the
+    // informative tail (status, resume note) matters more than the art above.
+    finalTop = finalTop.slice(Math.min(overBudget(), finalTop.length));
+  }
+  let lines = [...finalTop, "", ...finalMiddle, "", ...bottom, ...footer];
+  if (lines.length > maxRows) lines = lines.slice(lines.length - maxRows);
+  const bottomStart = Math.max(0, lines.length - footer.length - bottom.length);
   const cursor = {
-    row: bottomStart + cursorWithinBottom.row,
+    row: Math.min(bottomStart + cursorWithinBottom.row, Math.max(0, lines.length - 1)),
     col: cursorWithinBottom.col,
   };
 

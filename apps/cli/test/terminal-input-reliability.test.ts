@@ -43,6 +43,58 @@ function type(state: InputState, text: string): InputState {
   return s;
 }
 
+// Beta.31 regression: composeApp could emit more lines than the terminal has
+// rows (top chrome + notices + an open overlay + footer). Every repaint then
+// scrolled the terminal — ghost copies of previous frames piled up in
+// scrollback, stale content stayed visible after state transitions, and the
+// /model picker could sit below the visible viewport ("does not appear until
+// an arrow key"). The frame must never exceed the viewport, and the
+// overlay/input region must always win over transcript and chrome.
+describe("viewport clamp: a frame never exceeds terminal rows", () => {
+  const modelItems = [
+    { kind: "auto" as const, id: "auto", providerId: null, label: "Auto — preset routing", available: true, isDefault: false, reasoning: { control: "none" as const, efforts: [], budgets: [], source: "unknown" as const } },
+  ];
+
+  function floodedState(): TerminalState {
+    const base = reduce(initialState(), { type: "session.started", meta });
+    let s = reduce(base, { type: "user.message", text: "start" });
+    for (let i = 0; i < 12; i++) {
+      s = reduce(s, { type: "notice", level: "info", text: `recovery notice number ${i} with a reasonably long body to occupy width` });
+    }
+    return s;
+  }
+
+  it("never exceeds the viewport with the /model overlay open, at any height", () => {
+    const input = { ...initialInputState(), overlay: "model" as const, modelQuery: "", modelSelected: 0 };
+    for (const rows of [10, 12, 16, 24, 40]) {
+      const frame = composeApp(floodedState(), input, plain, false, { commands: [], paletteItems: [], modelItems }, {
+        columns: 80, rows, tick: 0, promptLabel: "› ", promptWidth: 2,
+      });
+      expect(frame.lines.length, `rows ${rows}`).toBeLessThanOrEqual(rows);
+      expect(frame.cursor.row, `rows ${rows}`).toBeLessThan(frame.lines.length);
+    }
+  });
+
+  it("keeps the /model picker visible (title on-screen) on a normal-height terminal", () => {
+    const input = { ...initialInputState(), overlay: "model" as const, modelQuery: "", modelSelected: 0 };
+    for (const rows of [16, 24, 40]) {
+      const frame = composeApp(floodedState(), input, plain, false, { commands: [], paletteItems: [], modelItems }, {
+        columns: 80, rows, tick: 0, promptLabel: "› ", promptWidth: 2,
+      });
+      expect(frame.lines.join("\n"), `rows ${rows}`).toContain("Select model");
+    }
+  });
+
+  it("never exceeds the viewport in plain chat with a notice flood", () => {
+    for (const rows of [10, 16, 24]) {
+      const frame = composeApp(floodedState(), initialInputState(), plain, false, { commands: [], paletteItems: [] }, {
+        columns: 80, rows, tick: 0, promptLabel: "› ", promptWidth: 2,
+      });
+      expect(frame.lines.length, `rows ${rows}`).toBeLessThanOrEqual(rows);
+    }
+  });
+});
+
 describe("input composer reliability (pure reducer proofs)", () => {
   it("inserts plain text and tracks the cursor", () => {
     const s = type(initialInputState(), "hello");
