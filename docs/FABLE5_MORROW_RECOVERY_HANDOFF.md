@@ -6,9 +6,14 @@
 
 ## Status
 
-- **Release verdict: NOT READY** (no publish until the packaged public consumer mission passes)
+- **Release verdict: NOT READY** — all code-level fixes for the beta.31 consumer failures are
+  implemented, tested, and pushed, but the packaged public-installer consumer acceptance (real
+  provider, substantial mission, context rollover, Guardian verification) has NOT been run.
+  That is the remaining release gate and it cannot be faked.
 - Active branch: `recovery/beta32-consumer-recovery` (branched from `main` @ 2604256)
-- Pushed: not yet
+- Pushed: yes (all commits below are on origin)
+- Full test state at last commit: orchestrator 1126 pass / 0 fail; CLI 739 pass / 0 fail;
+  `pnpm -r build` green across the workspace.
 
 ## Original mission (summary)
 
@@ -89,35 +94,68 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 ## Task list
 
 1. [done] Branch + handoff scaffold
-2. [in progress] Single authoritative ResolvedRoute (provider/preset/model/header agreement)
-3. [ ] Context metadata truth (override precedence + models info agreement)
-4. [ ] Automatic context rollover (no manual /continue)
-5. [ ] Persist immutable Mission Contract through continuations
-6. [ ] /model overlay first-render defect + terminal rendering stability
-7. [ ] Tool-call validation/normalization + recovery UX noise
-8. [ ] Transactional task-state agreement
-9. [ ] Truthful logs/doctor/diagnostics + workspace detection
-10. [ ] Tests + packaged consumer acceptance + verdict
+2. [done] Route truth (outside-order candidates, model-only provider resolution, honest fallback text)
+3. [done] Context metadata truth (override visible in models info with provenance)
+4. [done] Automatic context rollover (escalated minimal continuation; no /continue dead-end)
+5. [done] Mission Contract immutability across checkpoints and continuations
+6. [done] Terminal viewport clamp (fixes /model-not-visible + ghost/stale frames)
+7. [done — partial] Recovery-noise collapse (one counted story per problem). Remaining: tool-call
+   idempotency keys, automatic probe-artifact cleanup (e.g. stray src/test.txt), live-provider
+   tool-adapter integration tests. Strict argument validation + bounded repair already existed
+   (beta.25/27, agent-tool-argument-repair.test.ts).
+8. [done — targeted] Stale plan-step snapshot fix (completed task can no longer report a
+   running step). Broader transactional-state work: canonical completion invariants already
+   exist (canonical-completion-invariants.test.ts); no further contradiction reproduced.
+9. [done] Doctor/logs truth (named routes, effective context + source, log existence,
+   precise repository/workspace distinction)
+10. [OPEN — release gate] Packaged consumer acceptance + verdict.
 
-## Next step
+## Commits on this branch (oldest first)
 
-Implement workstream 2: extend routing so (a) `resolveDecision` infers provider from a
-model-only selection via the model registry; (b) `routePreset` treats configured providers not
-in the preset order as explicit last-resort candidates; (c) CLI picker always carries
-providerId; (d) fallback events carry known from/to. Add unit tests in
-services/orchestrator/test/routing.test.ts.
+1. docs(recovery): establish handoff with confirmed root causes
+2. fix(routing): route truth — outside-order candidates + model-only resolution + no "? → x"
+3. fix(models): context-limit override visible in the model catalog view
+4. feat(execution): escalated automatic context rollover (projectMinimalContinuation)
+5. fix(execution): mission contract immutable across checkpoints and continuations
+6. fix(terminal): frames never exceed the viewport (overlay/input always wins)
+7. fix(terminal): collapse repeated recovery cycles into one counted story
+8. fix(cli): truthful doctor and logs
+9. fix(execution): completion sweep closes plan steps from a fresh read (+ contracts:
+   context.rollover_escalated event type)
+
+## Next step (the release gate)
+
+Run the packaged consumer acceptance honestly:
+1. `pnpm -r build`, produce the Windows artifact via the release packaging flow
+   (see docs/RELEASE.md and memory notes from beta.19/25/30 — kill node.exe before
+   activation; install site is a separate repo; test the real `irm | iex` path).
+2. Fresh Git repo + isolated MORROW_HOME + a real provider key (user must supply).
+3. Substantial coding mission (>24 tool calls) that triggers context pressure; verify
+   automatic rollover (`context.rollover_escalated` / `context.compaction_completed` events,
+   fresh segments), zero manual /continue, contract preserved in checkpoints, Guardian verdict.
+4. Only then flip the verdict to READY.
 
 ## Exact command to resume
 
 ```
 cd C:\Users\aidan\OneDrive\Documents\Morrow\Morrow
 git checkout recovery/beta32-consumer-recovery
-# read this file, then: pnpm install; pnpm -r test (expect baseline green before changes)
+git log --oneline -10   # confirm the 9 commits above are present
+pnpm install && pnpm -r build
+# then execute "Next step (the release gate)" above
 ```
 
-## Risks
+## Risks / known limitations
 
-- Local `pnpm test` has a confirmed machine-only EPERM flake (see docs/KNOWN_ISSUES + memory);
-  trust real CI for final green.
+- Local `pnpm test` has a confirmed machine-only EPERM flake (docs/KNOWN_ISSUES + memory);
+  trust real CI for final green. This session's runs were all green locally.
 - Packaged consumer acceptance requires a real provider key + public installer run; cannot be
   faked — release verdict stays NOT READY until it passes.
+- The full ResolvedRoute object (one struct carried through header/snapshot/diagnostics) was
+  not introduced as a type; the behavioral disagreements it was meant to prevent are fixed at
+  the routing layer, but the consolidation refactor remains open.
+- Competitor review was applied as principles (single compositor ownership, viewport clamping,
+  overlay priority, collapsed recovery noise, contract-anchored continuation) rather than a
+  fresh web survey.
+- PTY/golden tests on a real Windows Terminal were not added; deterministic compositor-level
+  regressions cover the same defects (viewport clamp, /model first-frame visibility).
