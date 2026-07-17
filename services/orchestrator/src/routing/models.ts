@@ -1,5 +1,6 @@
 import type { ModelInfo, ModelStatus, ProviderId, ProviderStatus, RouteReasoningCapability, ReasoningEffort } from "@morrow/contracts";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
+import { providerEnvMapping } from "../provider/secrets.js";
 
 type Pricing = NonNullable<ModelInfo["pricing"]>;
 export const BUNDLED_MODEL_CATALOG_VERSION = "2026-07-16";
@@ -238,6 +239,34 @@ export function listConfiguredCustomModels(providers: ProviderStatus[]): ModelIn
 }
 
 /**
+ * The user's explicit per-provider context-limit override (e.g.
+ * OPENAI_COMPAT_CONTEXT_LIMIT). This is the same env var the runtime's route
+ * metadata consumes for request admission — surfacing it here is what keeps
+ * `models info` and the actual preflight from disagreeing (beta.31 shipped a
+ * split-brain where the task report said 215k while models info said unknown).
+ * Invalid values are ignored here (listing endpoints must not 500); the
+ * provider build path still rejects them loudly.
+ */
+function envContextOverride(providerId: ProviderId, env: NodeJS.ProcessEnv): number | null {
+  const name = providerEnvMapping(providerId)?.contextLimitEnv;
+  const raw = name ? env[name] : undefined;
+  if (!raw?.trim()) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/** Deterministic context precedence for the catalog view: an explicit user
+ * override caps (or supplies) the window; otherwise provider-reported, then
+ * catalog values stand. The winning source is stamped so every consumer can
+ * display where the number came from. */
+function withContextOverride(model: ModelInfo, override: number | null): ModelInfo {
+  if (override === null) return model;
+  const effective = model.contextWindow === null ? override : Math.min(model.contextWindow, override);
+  if (model.contextWindow !== null && effective === model.contextWindow && model.contextWindow < override) return model;
+  return { ...model, contextWindow: effective, metadataSource: "user-supplied", confidence: "configured" };
+}
+
+/**
  * Merge the bundled catalog with the current authentication surface's durable
  * provider discovery. Credentials prove configuration only; only a successful
  * provider model-list response proves account availability.
@@ -245,6 +274,7 @@ export function listConfiguredCustomModels(providers: ProviderStatus[]): ModelIn
 export function resolveModelStatuses(
   providers: ProviderStatus[],
   discoveries: ProviderModelDiscovery[],
+  env: NodeJS.ProcessEnv = process.env,
 ): ModelStatus[] {
   const all = [...listModels(), ...listConfiguredCustomModels(providers)];
   const output: ModelStatus[] = [];
@@ -296,7 +326,7 @@ export function resolveModelStatuses(
             ? "unavailable" as const
             : "unknown" as const;
       output.push({
-        model: resolved,
+        model: withContextOverride(resolved, envContextOverride(provider.id, env)),
         available: availability === "available",
         availability,
         availabilitySource: report ? "provider-reported" : provider.configured ? "unknown" : "configured",

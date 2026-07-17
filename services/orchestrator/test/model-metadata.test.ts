@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderStatus } from "@morrow/contracts";
-import { calculateUsageCost, getModel, listConfiguredCustomModels, resolveModelMetadata } from "../src/routing/models.js";
+import { calculateUsageCost, getModel, listConfiguredCustomModels, resolveModelMetadata, resolveModelStatuses } from "../src/routing/models.js";
 
 function providerStatus(overrides: Partial<ProviderStatus>): ProviderStatus {
   return {
@@ -126,5 +126,54 @@ describe("listConfiguredCustomModels", () => {
       providerStatus({ id: "deepseek", configured: true, defaultModel: "deepseek-v4-flash" }),
     ]);
     expect(models).toHaveLength(0);
+  });
+});
+
+// Regression coverage for the beta.31 context split-brain: the consumer set
+// OPENAI_COMPAT_CONTEXT_LIMIT=215000, the runtime preflight used it (task
+// report said "46k / 215k"), yet `morrow models info` still reported context
+// window unknown. The catalog view must consume the SAME override the route
+// metadata does, and must say where the number came from.
+describe("context-limit override visibility in model statuses", () => {
+  const compatProvider = providerStatus({
+    id: "openai-compatible",
+    configured: true,
+    defaultModel: "hy3-free",
+    models: ["hy3-free"],
+    endpointHost: "opencode.ai",
+    authMode: "opencode-zen",
+  });
+
+  it("surfaces an explicit env override as the context window with user-supplied provenance", () => {
+    const statuses = resolveModelStatuses([compatProvider], [], { OPENAI_COMPAT_CONTEXT_LIMIT: "215000" } as NodeJS.ProcessEnv);
+    const model = statuses.find((s) => s.model.id === "hy3-free");
+    expect(model?.model.contextWindow).toBe(215_000);
+    expect(model?.model.metadataSource).toBe("user-supplied");
+    expect(model?.model.confidence).toBe("configured");
+  });
+
+  it("keeps context unknown without an override", () => {
+    const statuses = resolveModelStatuses([compatProvider], [], {} as NodeJS.ProcessEnv);
+    const model = statuses.find((s) => s.model.id === "hy3-free");
+    expect(model?.model.contextWindow).toBeNull();
+    expect(model?.model.metadataSource).toBe("unknown");
+  });
+
+  it("caps a known catalog window with a lower override but never raises it", () => {
+    const deepseek = providerStatus({ id: "deepseek", configured: true, defaultModel: "deepseek-v4-flash", models: ["deepseek-v4-flash"] });
+    const capped = resolveModelStatuses([deepseek], [], { DEEPSEEK_CONTEXT_LIMIT: "64000" } as NodeJS.ProcessEnv)
+      .find((s) => s.model.id === "deepseek-v4-flash");
+    expect(capped?.model.contextWindow).toBe(64_000);
+    expect(capped?.model.metadataSource).toBe("user-supplied");
+    const notRaised = resolveModelStatuses([deepseek], [], { DEEPSEEK_CONTEXT_LIMIT: "9000000" } as NodeJS.ProcessEnv)
+      .find((s) => s.model.id === "deepseek-v4-flash");
+    expect(notRaised?.model.contextWindow).toBe(1_000_000);
+    expect(notRaised?.model.metadataSource).toBe("bundled-catalog");
+  });
+
+  it("ignores an invalid override instead of failing the listing", () => {
+    const statuses = resolveModelStatuses([compatProvider], [], { OPENAI_COMPAT_CONTEXT_LIMIT: "not-a-number" } as NodeJS.ProcessEnv);
+    const model = statuses.find((s) => s.model.id === "hy3-free");
+    expect(model?.model.contextWindow).toBeNull();
   });
 });
