@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
@@ -26,6 +27,7 @@ export interface AnthropicConfig {
 
 type AnthropicBlock =
   | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string } }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string };
 
@@ -88,7 +90,13 @@ export class AnthropicProvider implements AiProvider {
         continue;
       }
       // user
-      pushCoalesced("user", [{ type: "text", text: m.content ?? "" }]);
+      pushCoalesced("user", [
+        { type: "text", text: m.content ?? "" },
+        ...(m.images ?? []).map((image) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: image.mimeType, data: image.data },
+        })),
+      ]);
     }
 
     return { system: systemParts.length ? systemParts.join("\n\n") : undefined, messages: out };
@@ -98,6 +106,11 @@ export class AnthropicProvider implements AiProvider {
     const baseUrl = this.config.baseUrl;
     if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
       yield { type: "error", error: { type: "security_error", kind: "invalid_request", message: "Invalid endpoint protocol", retryable: false } };
+      return;
+    }
+    const imageError = validateChatImages(messages);
+    if (imageError) {
+      yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: imageError, retryable: false } };
       return;
     }
 

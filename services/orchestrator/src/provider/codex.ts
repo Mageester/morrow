@@ -3,8 +3,10 @@ import {
   ChatMessage,
   ProviderChunk,
   StreamOptions,
+  chatImageDataUrl,
   classifyHttpStatus,
   classifyThrownError,
+  validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
@@ -66,7 +68,10 @@ export function codexHeaders(accessToken: string): Record<string, string> {
 }
 
 type ResponsesItem =
-  | { type: "message"; role: "user" | "assistant"; content: Array<{ type: "input_text" | "output_text"; text: string }> }
+  | { type: "message"; role: "user" | "assistant"; content: Array<
+      | { type: "input_text" | "output_text"; text: string }
+      | { type: "input_image"; image_url: string }
+    > }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string };
 
@@ -97,13 +102,25 @@ export class CodexProvider implements AiProvider {
         continue;
       }
       // user
-      input.push({ type: "message", role: "user", content: [{ type: "input_text", text: m.content ?? "" }] });
+      input.push({
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: m.content ?? "" },
+          ...(m.images ?? []).map((image) => ({ type: "input_image" as const, image_url: chatImageDataUrl(image) })),
+        ],
+      });
     }
     return { instructions: instructionParts.length ? instructionParts.join("\n\n") : undefined, input };
   }
 
   async *streamChat(messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
     const baseUrl = this.config.baseUrl || CODEX_BASE_URL;
+    const imageError = validateChatImages(messages);
+    if (imageError) {
+      yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: imageError, retryable: false } };
+      return;
+    }
     const { instructions, input } = this.buildRequest(messages);
     // The Codex backend only accepts its own model slugs (gpt-5.x / *codex*).
     // Routing can hand us a standard api.openai.com id (e.g. gpt-5.4-mini) as both

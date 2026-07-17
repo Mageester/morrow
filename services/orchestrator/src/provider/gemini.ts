@@ -5,6 +5,7 @@ import {
   StreamOptions,
   classifyHttpStatus,
   classifyThrownError,
+  validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
@@ -26,6 +27,7 @@ function tryParseJson(value: string): unknown {
 
 interface GeminiPart {
   text?: string;
+  inlineData?: { mimeType: "image/png" | "image/jpeg" | "image/webp"; data: string };
   functionCall?: { name: string; args: unknown };
   functionResponse?: { name: string; response: unknown };
 }
@@ -76,7 +78,10 @@ export class GeminiProvider implements AiProvider {
         pushCoalesced("model", parts);
         continue;
       }
-      pushCoalesced("user", [{ text: m.content ?? "" }]);
+      pushCoalesced("user", [
+        { text: m.content ?? "" },
+        ...(m.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+      ]);
     }
 
     return {
@@ -89,6 +94,11 @@ export class GeminiProvider implements AiProvider {
     const baseUrl = this.config.baseUrl;
     if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
       yield { type: "error", error: { type: "security_error", kind: "invalid_request", message: "Invalid endpoint protocol", retryable: false } };
+      return;
+    }
+    const imageError = validateChatImages(messages);
+    if (imageError) {
+      yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: imageError, retryable: false } };
       return;
     }
 

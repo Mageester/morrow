@@ -3,8 +3,10 @@ import {
   ChatMessage,
   ProviderChunk,
   StreamOptions,
+  chatImageDataUrl,
   classifyHttpStatus,
   classifyThrownError,
+  validateChatImages,
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
@@ -47,13 +49,23 @@ export class OpenAiCompatibleProvider implements AiProvider {
       };
       return;
     }
+    const imageError = validateChatImages(messages);
+    if (imageError) {
+      yield { type: "error", error: { type: "invalid_request", kind: "invalid_request", message: imageError, retryable: false } };
+      return;
+    }
 
     const model = options.model || this.config.defaultModel;
     const body: Record<string, any> = {
       model,
       messages: messages.map((m) => ({
         role: m.role,
-        content: m.content || "",
+        content: m.images?.length
+          ? [
+              { type: "text", text: m.content || "" },
+              ...m.images.map((image) => ({ type: "image_url", image_url: { url: chatImageDataUrl(image) } })),
+            ]
+          : m.content || "",
         ...(m.toolCalls
           ? {
               tool_calls: m.toolCalls.map((tc) => ({

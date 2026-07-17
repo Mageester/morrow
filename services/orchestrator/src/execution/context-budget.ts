@@ -43,6 +43,7 @@ export interface ProviderRequestMeasurement {
   confidence: "exact" | "conservative";
   components: {
     messages: number;
+    imageInputs: number;
     toolSchemas: number;
     providerContinuation: number;
     protocolOverhead: number;
@@ -183,10 +184,14 @@ function conservativeSerializedTokens(value: unknown): number {
  * this same information onto the wire; private continuation data is counted but
  * is never returned in diagnostics. */
 export function measureProviderRequest(envelope: ProviderRequestEnvelope): ProviderRequestMeasurement {
-  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, ...message }) => message), {
+  const messageCount = countChatTokens(envelope.messages.map(({ providerContinuation: _private, providerContinuationRouteFingerprint: _binding, images: _images, ...message }) => message), {
     providerId: envelope.providerId,
     model: envelope.model,
   });
+  const imageBase = envelope.messages.reduce((sum, message) => {
+    if (!message.images?.length) return sum;
+    return sum + conservativeSerializedTokens(message.images.map((image) => ({ mimeType: image.mimeType, data: image.data })));
+  }, 0);
   const continuationBase = envelope.messages.reduce((sum, message) => {
     if (!message.providerContinuation) return sum;
     return sum + conservativeSerializedTokens(message.providerContinuation);
@@ -197,10 +202,11 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
   })));
   const protocolBase = PROTOCOL_OVERHEAD[envelope.protocol];
   const toolSchemas = toolBase + Math.ceil(toolBase * 0.15);
+  const imageInputs = imageBase + Math.ceil(imageBase * 0.15);
   const providerContinuation = continuationBase + Math.ceil(continuationBase * 0.15);
   const protocolOverhead = protocolBase + Math.ceil(protocolBase * 0.15);
-  const hasEstimatedExtras = toolBase > 0 || continuationBase > 0 || protocolBase > 0;
-  const inputTokens = messageCount.tokens + toolSchemas + providerContinuation + protocolOverhead;
+  const hasEstimatedExtras = imageBase > 0 || toolBase > 0 || continuationBase > 0 || protocolBase > 0;
+  const inputTokens = messageCount.tokens + imageInputs + toolSchemas + providerContinuation + protocolOverhead;
   return {
     inputTokens,
     outputReserveTokens: envelope.outputReserveTokens,
@@ -208,7 +214,7 @@ export function measureProviderRequest(envelope: ProviderRequestEnvelope): Provi
     method: hasEstimatedExtras ? "estimate" : messageCount.method,
     exact: messageCount.exact && !hasEstimatedExtras,
     confidence: hasEstimatedExtras ? "conservative" : messageCount.confidence,
-    components: { messages: messageCount.tokens, toolSchemas, providerContinuation, protocolOverhead },
+    components: { messages: messageCount.tokens, imageInputs, toolSchemas, providerContinuation, protocolOverhead },
   };
 }
 

@@ -9,6 +9,7 @@ export interface DomRef {
 export interface PageSnapshot {
   url: string;
   title: string;
+  viewport: { width: number; height: number };
   refs: DomRef[];
   /** Visible text with suspected prompt injections neutralized. */
   text: string;
@@ -16,7 +17,7 @@ export interface PageSnapshot {
 }
 
 export interface BrowserEvidence {
-  kind: "lifecycle" | "navigation" | "snapshot" | "click" | "type" | "key" | "select" | "upload" | "download" | "screenshot" | "dialog" | "console" | "page-error" | "cancelled";
+  kind: "lifecycle" | "navigation" | "snapshot" | "viewport" | "click" | "type" | "key" | "select" | "upload" | "download" | "screenshot" | "dialog" | "console" | "page-error" | "cancelled";
   message: string;
   detail: Record<string, unknown>;
   createdAt: string;
@@ -43,11 +44,18 @@ export interface BrowserDialogResponse {
   promptText?: string;
 }
 
+export interface BrowserViewport {
+  width: number;
+  height: number;
+  label?: string;
+}
+
 export interface BrowserController {
   id: string;
   start(): Promise<void>;
   open(url: string, options?: BrowserActionOptions): Promise<PageSnapshot>;
   snapshot(options?: BrowserActionOptions): Promise<PageSnapshot>;
+  setViewport(viewport: BrowserViewport, options?: BrowserActionOptions): Promise<void>;
   click(ref: string, options?: BrowserActionOptions): Promise<void>;
   type(ref: string, text: string, options?: BrowserActionOptions): Promise<void>;
   key(key: string, options?: BrowserActionOptions): Promise<void>;

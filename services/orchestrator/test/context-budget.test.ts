@@ -151,6 +151,21 @@ describe("context budget", () => {
     expect(result.actionableMessage).toContain("Recovery options");
   });
 
+  it("counts ephemeral image payload bytes instead of treating vision as free context", () => {
+    const textOnly = measureProviderRequest({
+      providerId: "openai", model: "gpt-5.6-sol", protocol: "openai-chat",
+      messages: [{ role: "user", content: "inspect" }], tools: [], outputReserveTokens: 100,
+    });
+    const withImage = measureProviderRequest({
+      providerId: "openai", model: "gpt-5.6-sol", protocol: "openai-chat",
+      messages: [{ role: "user", content: "inspect", images: [{ mimeType: "image/png", data: Buffer.alloc(4096).toString("base64") }] }],
+      tools: [], outputReserveTokens: 100,
+    });
+
+    expect(withImage.inputTokens).toBeGreaterThan(textOnly.inputTokens + 1000);
+    expect(withImage.exact).toBe(false);
+  });
+
   it("accounts for tool schemas, provider reasoning continuation, protocol overhead, and output reserve", () => {
     const measured = measureProviderRequest({
       providerId: "deepseek",
@@ -272,7 +287,7 @@ describe("context budget", () => {
       method: "estimate" as const,
       exact: false,
       confidence: "conservative" as const,
-      components: { messages: 132_000, toolSchemas: 0, providerContinuation: 0, protocolOverhead: 19 },
+      components: { messages: 132_000, imageInputs: 0, toolSchemas: 0, providerContinuation: 0, protocolOverhead: 19 },
     };
     const admission = admitMeasuredProviderRequest(measurement, resolution);
     expect(admission.ok).toBe(false);

@@ -572,7 +572,7 @@ export const PermissionProfileSchema=z.object({
   version:SchemaVersionSchema,
   toolProfileOptions:z.array(ToolProfileSchema),
   defaultToolProfile:ToolProfileSchema,
-  filesystemAccess:z.enum(["read-only","none"]),
+  filesystemAccess:z.enum(["workspace-write","read-only","none"]),
   shellExecution:z.boolean(),
   networkAccess:z.enum(["provider-only","disabled","enabled"]),
   writeAccess:z.boolean(),

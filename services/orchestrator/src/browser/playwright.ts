@@ -1,8 +1,10 @@
 import { basename, relative, resolve } from "node:path";
+import { dirname } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import type { Browser, BrowserContext, Locator, Page } from "playwright";
 import { sanitizeForModel } from "./injection-guard.js";
-import type { BrowserActionOptions, BrowserAuditSink, BrowserController, BrowserDialogResponse, BrowserDownload, BrowserEvidence, DomRef, PageSnapshot } from "./types.js";
+import type { BrowserActionOptions, BrowserAuditSink, BrowserController, BrowserDialogResponse, BrowserDownload, BrowserEvidence, BrowserViewport, DomRef, PageSnapshot } from "./types.js";
 
 const MAX_PAGE_TEXT_BYTES = 32 * 1024;
 const MAX_EVIDENCE = 200;
@@ -64,12 +66,20 @@ function safeUrlForEvidence(url: string): string {
   return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
 }
 
-function containedPath(root: string, candidate: string, purpose: string): string {
+export function assertBrowserContainedPath(root: string, candidate: string, purpose: string): string {
   const absoluteRoot = resolve(root);
   const absoluteCandidate = resolve(candidate);
   const outside = relative(absoluteRoot, absoluteCandidate);
-  if (outside === "" || (!outside.startsWith("..") && !outside.includes(":\\"))) return absoluteCandidate;
-  throw new Error(`${purpose} path must stay inside the configured directory`);
+  if (!(outside === "" || (!outside.startsWith("..") && !outside.includes(":\\")))) {
+    throw new Error(`${purpose} path must stay inside the configured directory`);
+  }
+  const realRoot = realpathSync(absoluteRoot);
+  const realCandidate = existsSync(absoluteCandidate)
+    ? realpathSync(absoluteCandidate)
+    : resolve(realpathSync(dirname(absoluteCandidate)), basename(absoluteCandidate));
+  const realOutside = relative(realRoot, realCandidate);
+  if (realOutside === "" || (!realOutside.startsWith("..") && !realOutside.includes(":\\"))) return realCandidate;
+  throw new Error(`${purpose} path must stay inside the configured directory (symlink escape rejected)`);
 }
 
 /**
@@ -215,9 +225,10 @@ class PlaywrightBrowserController implements BrowserController {
   async snapshot(options?: BrowserActionOptions): Promise<PageSnapshot> {
     const page = this.requirePage();
     return this.abortable(async () => {
-      const [url, title, text, elements] = await Promise.all([
+      const [url, title, viewport, text, elements] = await Promise.all([
         Promise.resolve(page.url()),
         page.title(),
+        Promise.resolve(page.viewportSize()).then((size) => size ?? page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))),
         page.locator("body").innerText().then((value) => value.slice(0, MAX_PAGE_TEXT_BYTES)),
         page.locator(INTERACTIVE_SELECTOR).evaluateAll((nodes) => nodes.slice(0, 100).map((node) => {
           const element = node as HTMLElement;
@@ -236,8 +247,23 @@ class PlaywrightBrowserController implements BrowserController {
       });
       const sanitized = sanitizeForModel(text);
       this.record("snapshot", "Captured browser snapshot", { url: safeUrlForEvidence(url), refs: refs.length, injectionFindings: sanitized.findings.length });
-      return { url, title, refs, text: sanitized.text, injectionFindings: sanitized.findings.length };
+      return { url, title, viewport, refs, text: sanitized.text, injectionFindings: sanitized.findings.length };
     }, options);
+  }
+
+  async setViewport(viewport: BrowserViewport, options?: BrowserActionOptions): Promise<void> {
+    const width = Math.trunc(viewport.width);
+    const height = Math.trunc(viewport.height);
+    if (width < 320 || width > 2560 || height < 320 || height > 2560) {
+      throw new Error("Browser viewport must be between 320 and 2560 pixels in each dimension");
+    }
+    if (viewport.label !== undefined && (viewport.label.length === 0 || viewport.label.length > 40)) {
+      throw new Error("Browser viewport label must be between 1 and 40 characters");
+    }
+    await this.start();
+    await this.abortable(() => this.requirePage().setViewportSize({ width, height }), options);
+    this.refs.clear();
+    this.record("viewport", "Changed browser viewport", { width, height, ...(viewport.label ? { label: viewport.label } : {}) });
   }
 
   async click(ref: string, options?: BrowserActionOptions): Promise<void> {
@@ -263,7 +289,7 @@ class PlaywrightBrowserController implements BrowserController {
 
   async upload(ref: string, sourcePath: string, options?: BrowserActionOptions): Promise<void> {
     if (!this.options.uploadRoot) throw new Error("Browser uploads require an explicit uploadRoot");
-    const path = containedPath(this.options.uploadRoot, sourcePath, "Upload");
+    const path = assertBrowserContainedPath(this.options.uploadRoot, sourcePath, "Upload");
     await this.abortable(() => this.requireRef(ref).setInputFiles(path, { timeout: this.timeoutMs }), options);
     this.record("upload", "Uploaded approved file", { ref, filename: basename(path) });
   }
@@ -277,7 +303,7 @@ class PlaywrightBrowserController implements BrowserController {
       return pending;
     }, options);
     const filename = basename(download.suggestedFilename()).replace(/[^a-zA-Z0-9._-]/g, "_") || "download";
-    const path = containedPath(this.options.downloadRoot, resolve(this.options.downloadRoot, filename), "Download");
+    const path = assertBrowserContainedPath(this.options.downloadRoot, resolve(this.options.downloadRoot, filename), "Download");
     await this.abortable(() => download.saveAs(path), options);
     this.record("download", "Saved browser download", { ref, filename });
     return { path, filename };

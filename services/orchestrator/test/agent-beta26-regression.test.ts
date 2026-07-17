@@ -8,6 +8,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import type { BrowserController, BrowserEvidence, BrowserViewport, PageSnapshot } from "../src/browser/types.js";
 import { mkdtempSync, rmSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -33,8 +34,8 @@ function seed(db: any, workspacePath: string, prompt: string) {
   taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
-    taskId: "t", presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
-    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode: "agent", autoApprove: true },
+    taskId: "t", presetId: "best-quality", providerId: "openai", model: "gpt-5.6-sol", useMemory: false,
+    decision: { version: 1, presetId: "best-quality", providerId: "openai", model: "gpt-5.6-sol", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode: "agent", autoApprove: true },
     createdAt: new Date().toISOString(),
   });
   taskRecordsRepository(db).transitionAgentState("t", { id: "s0", state: "idle", details: {}, createdAt: new Date().toISOString() });
@@ -43,6 +44,45 @@ function seed(db: any, workspacePath: string, prompt: string) {
 const tool = (id: string, name: string, args: unknown) => ({ type: "tool_call" as const, toolCalls: [{ id, index: 0, type: "function" as const, function: { name, arguments: JSON.stringify(args) } }] });
 const done = { type: "done" as const };
 const text = (t: string) => ({ type: "text" as const, text: t });
+
+class FrontendBrowser implements BrowserController {
+  readonly id = "frontend-test";
+  private viewport = { width: 1280, height: 720 };
+  private url = "about:blank";
+  async start() {}
+  async open(url: string): Promise<PageSnapshot> { this.url = url; return this.snapshot(); }
+  async snapshot(): Promise<PageSnapshot> { return { url: this.url, title: "Site", viewport: this.viewport, refs: [{ ref: "e1", role: "button", name: "Inspect" }], text: "Site", injectionFindings: 0 }; }
+  async setViewport(value: BrowserViewport) { this.viewport = { width: value.width, height: value.height }; }
+  async click() {}
+  async type() {}
+  async key() {}
+  async select() {}
+  async upload() {}
+  async download() { return { path: "download", filename: "download" }; }
+  async setDialogHandler() {}
+  async screenshot() { return Buffer.from("frontend screenshot"); }
+  evidence(): BrowserEvidence[] { return []; }
+  async pause() {}
+  async resume() {}
+  async panic() {}
+  async close() {}
+}
+
+function frontendValidationTurn() {
+  const calls = [
+    tool("bo", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!,
+    tool("bs", "browser_snapshot", {}).toolCalls[0]!,
+    tool("bc", "browser_console", {}).toolCalls[0]!,
+    tool("bi", "browser_click", { ref: "e1" }).toolCalls[0]!,
+    tool("bd", "browser_viewport", { preset: "desktop" }).toolCalls[0]!,
+    tool("bds", "browser_screenshot", { label: "desktop" }).toolCalls[0]!,
+    tool("bt", "browser_viewport", { preset: "tablet" }).toolCalls[0]!,
+    tool("bts", "browser_screenshot", { label: "tablet" }).toolCalls[0]!,
+    tool("bm", "browser_viewport", { preset: "mobile" }).toolCalls[0]!,
+    tool("bms", "browser_screenshot", { label: "mobile" }).toolCalls[0]!,
+  ].map((call, index) => ({ ...call, index }));
+  return [{ type: "tool_call" as const, toolCalls: calls }, done];
+}
 
 const INDEX = "<!doctype html>\n<html>\n<head><link rel=\"stylesheet\" href=\"style.css\"></head>\n<body><h1>Site</h1><script src=\"script.js\"></script></body>\n</html>\n";
 const SCRIPT = "console.log('ready');\n";
@@ -93,11 +133,13 @@ describe("beta.26 public failure — deterministic regression", () => {
         [tool("c4", "create_file", { path: "style.css", content: STYLE_V2, purpose: "apply improved styling" }), done],
         // 8. Re-verify, then finish.
         [tool("v2", "run_command", { executable: "node", args: ["--check", "script.js"], purpose: "re-verify" }), done],
+        frontendValidationTurn(),
         [text("Styling improved and verified."), done],
       ],
       delayMs: 1,
     });
-    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 20 }));
+    (provider as any).id = "openai";
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 24 }));
     runner.run("t");
     await runner.waitFor("t");
 
@@ -149,11 +191,13 @@ describe("beta.26 public failure — deterministic regression", () => {
         [tool("p2", "propose_patch", { patch: bad2, explanation: "restyle again", files: ["style.css"] }), done],
         // The model follows the escalation: full-content create_file.
         [tool("c2", "create_file", { path: "style.css", content: STYLE_V2, purpose: "apply styling" }), done],
+        frontendValidationTurn(),
         [text("done"), done],
       ],
       delayMs: 1,
     });
-    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 16 }));
+    (provider as any).id = "openai";
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 20 }));
     runner.run("t");
     await runner.waitFor("t");
 

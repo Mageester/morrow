@@ -85,6 +85,20 @@ describe("canonical model budget (single source of truth)", () => {
     expect(admission.ok).toBe(true);
   });
 
+  it("does not reserve tool schemas twice before exact envelope admission", () => {
+    const route = {
+      providerId: "openai-compatible",
+      selectedModel: "small-test-model",
+      endpoint: { kind: "injected" as const, host: null, protocol: "openai-chat" as const, limitTokens: 16_000, limitSource: "provider-metadata" as const },
+      outputBudgetTokens: 2_048,
+    };
+    const withoutTools = resolveModelBudget({ ...route, toolCount: 0 });
+    const withCatalog = resolveModelBudget({ ...route, toolCount: 27 });
+
+    expect(withCatalog.toolReserveTokens).toBe(0);
+    expect(withCatalog.usableInputTokens).toBe(withoutTools.usableInputTokens);
+  });
+
   it("caps the endpoint-configured ceiling for the exact custom route only, never inherited across routes", () => {
     const overridden = resolveModelBudget({
       providerId: "openai-compatible",
