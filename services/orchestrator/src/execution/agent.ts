@@ -23,6 +23,9 @@ import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinu
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
+import { assessExhaustion, assessProgress, type MissionProgressSnapshot } from "./progress.js";
+import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
+import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
@@ -47,7 +50,7 @@ import { buildProviderProjection, projectProviderRequest, type DurableProviderTu
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
-import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill } from "@morrow/contracts";
+import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
@@ -1793,6 +1796,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   }
 
   let noProgressTurns = 0;
+  // Evidence-backed progress state. A standalone task reuses the same
+  // assessment under a task-scoped identity; only a mission-linked task
+  // persists observations to the durable mission ledger.
+  const progressIdentity = taskMissionId ?? `task:${taskId}`;
+  const missionRuntime = taskMissionId ? missionRuntimeRepository(db) : null;
+  const progressHistory: MissionProgressObservation[] = [];
+  const executionCheckpointIds: string[] = [];
+  // Paths a tool reported writing this turn. Preferred over a workspace scan.
+  const touchedPaths = new Set<string>();
+  // Cumulative path -> content fingerprint for everything measured so far,
+  // seeded with the workspace's pre-existing state so work the agent did not do
+  // is never credited to it.
+  const knownArtifacts = new Map<string, string>();
+  let unattributedWorkspaceWrite = false;
+  let previousProgressSnapshot: MissionProgressSnapshot | null = null;
+  let progressWindowStart = 0;
+  let diagnosisCompleted = false;
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
@@ -2189,7 +2209,96 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       ...currentFence(),
       now: now(),
     });
+    executionCheckpointIds.push(checkpointId);
     return checkpointId;
+  };
+
+  /**
+   * Resolves the workspace paths worth fingerprinting this turn. Tool-reported
+   * paths are authoritative and free. A bounded Git read only happens when a
+   * write or command could have changed paths we cannot attribute, so ordinary
+   * read-only turns never spawn a subprocess.
+   */
+  const dirtyWorkspacePaths = async (): Promise<string[]> => {
+    const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) })
+      .catch(() => null);
+    // A failed or timed-out Git read yields no candidates, which reads as "not
+    // measured" rather than "unchanged".
+    return (status?.lines ?? [])
+      .filter((line) => !line.startsWith("## "))
+      .map((line) => line.slice(3).trim())
+      .filter((line) => line.length > 0);
+  };
+
+  const fingerprintPaths = (paths: string[]) => fingerprintWorkspacePaths({
+    workspacePath,
+    paths,
+    ...(typeof maxFileBytes === "number" ? { maxFileBytes } : {}),
+  });
+
+  /**
+   * Re-measures the paths this turn could have changed and folds them into the
+   * cumulative artifact map. Tool-reported paths are authoritative and free; a
+   * bounded Git read only happens when a write or command could have touched
+   * paths we cannot attribute, so read-only turns spawn no subprocess.
+   */
+  const refreshKnownArtifacts = async (): Promise<void> => {
+    const paths = new Set(touchedPaths);
+    if (unattributedWorkspaceWrite) for (const path of await dirtyWorkspacePaths()) paths.add(path);
+    if (paths.size === 0) return;
+    for (const artifact of fingerprintPaths([...paths])) knownArtifacts.set(artifact.path, artifact.contentHash);
+  };
+
+  /**
+   * Derives this turn's progress from durable execution state and appends the
+   * observations to the mission ledger. Returns them so the caller can decide
+   * whether the turn was measurably productive.
+   */
+  const observeTurnProgress = async (strategyFingerprint: string | null): Promise<MissionProgressObservation[]> => {
+    await refreshKnownArtifacts();
+    const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const current = buildExecutionProgressSnapshot({
+      missionId: progressIdentity,
+      operationId: null,
+      strategyFingerprint,
+      // Cumulative, so a path measured on one turn and untouched on the next
+      // does not read as newly added.
+      changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
+      completedToolSignatures: [...seenProgressFingerprints],
+      verifications: calls
+        .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName))
+        .map((call) => ({ id: call.id, passed: call.status === "completed" })),
+      unresolvedFailures: calls
+        .filter((call) => call.status === "failed")
+        .map((call) => `${call.toolName}: ${call.errorMessage ?? call.status}`),
+      checkpointIds: executionCheckpointIds,
+      validatedCriterionIds: [],
+      observedAt: now(),
+    });
+    // The first snapshot establishes the baseline; it cannot be a delta.
+    const observations = previousProgressSnapshot ? assessProgress(previousProgressSnapshot, current) : [];
+    previousProgressSnapshot = current;
+    progressHistory.push(...observations);
+    // The ledger is keyed on a durable mission runtime record. A mission-linked
+    // task can start before the controller creates one, so only persist once it
+    // exists; the in-memory history still governs this worker either way.
+    if (missionRuntime && taskMissionId && missionRuntime.get(taskMissionId)) {
+      for (const observation of observations) {
+        missionRuntime.appendProgress({
+          id: observation.id,
+          missionId: taskMissionId,
+          operationId: observation.operationId,
+          kind: observation.kind,
+          summary: observation.summary,
+          evidenceIds: observation.evidenceIds,
+          strategyFingerprint: observation.strategyFingerprint,
+          now: observation.createdAt,
+        });
+      }
+    }
+    touchedPaths.clear();
+    unattributedWorkspaceWrite = false;
+    return observations;
   };
 
   const interruptAtSegmentLimit = (checkpointId: string): boolean => {
@@ -2345,6 +2454,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const usage = normalizePersistedUsagePayload(ev.payload as Record<string, unknown>);
       return usage ? accumulateUsage(acc, usage) : acc;
     }, EMPTY_CUMULATIVE_USAGE);
+
+  // Seed the artifact baseline once, before any turn runs, so a workspace that
+  // was already dirty is not mistaken for progress this task made. A worktree
+  // or non-repository workspace simply yields no baseline.
+  for (const artifact of fingerprintPaths(await dirtyWorkspacePaths())) knownArtifacts.set(artifact.path, artifact.contentHash);
+  previousProgressSnapshot = buildExecutionProgressSnapshot({
+    missionId: progressIdentity,
+    operationId: null,
+    // Same fingerprint the first turn will report, so the baseline itself is
+    // not mistaken for a strategy change.
+    strategyFingerprint: `worker:${providerType}:${contextModel}`,
+    changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
+    completedToolSignatures: [],
+    verifications: [],
+    unresolvedFailures: [],
+    checkpointIds: [],
+    validatedCriterionIds: [],
+    observedAt: now(),
+  });
 
   while (true) {
     if (checkCancelled()) {
@@ -3725,6 +3853,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
           else seenProgressFingerprints.add(progressFingerprint);
           completedToolSignatures.push(progressFingerprint);
+          // Attribute workspace effects for progress fingerprinting. A patch can
+          // span files and a command can write anything, so those fall back to a
+          // bounded Git read instead of guessing.
+          if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
+          else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
         }
         let summary = isSuccess ? "completed" : "failed";
         try {
@@ -3815,11 +3948,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return;
     }
 
-    const madeProgress = turnMadeProgress({
-      responseChars: currentToolCalls.length > 0 ? 0 : responseContent.length - responseLengthAtTurnStart,
-      completedToolSignatures,
-      repeatedToolSignatures,
-    });
+    // Progress is decided by observable execution deltas â€” changed artifacts,
+    // gained evidence, resolved failures, checkpoints â€” never by how much the
+    // model said. A repeated tool result or a narration-only turn advances
+    // stagnation instead of resetting it.
+    const strategyFingerprint = `worker:${providerType}:${contextModel}`;
+    const progressObservations = await observeTurnProgress(strategyFingerprint);
+    // Any observation is a real delta: assessProgress only emits when something
+    // new appeared, so a novel tool result counts while a repeated one, an
+    // unchanged file, and pure narration all produce nothing. Whether that
+    // delta is *meaningful* decides escalation, not whether the turn stalled.
+    const madeProgress = progressObservations.length > 0;
     noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
     if (noProgressTurns === 2) {
       event("task.progress_warning", {
@@ -3829,14 +3968,39 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
     }
     if (noProgressTurns >= 3) {
-      const message = "Task stalled after three turns without new observable progress.";
-      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
-      failCurrentSegment("stalled");
-      transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      const exhaustion = assessExhaustion(progressHistory.slice(progressWindowStart), {
+        diagnosisCompleted,
+        stagnantTurns: noProgressTurns,
+        availableStrategyFingerprints: [
+          strategyFingerprint,
+          ...(fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : [])),
+        ],
+        blocker: lastVerificationFailure ? `${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : null,
+      });
+      event("task.progress_warning", {
+        reason: exhaustion.next,
+        message: exhaustion.reason,
+        turns: turn,
+        untriedStrategyFingerprints: exhaustion.untriedStrategyFingerprints,
+      });
+      if (!exhaustion.exhausted) {
+        // Bounded ladder: diagnose once, then hand a strategy change to the
+        // durable controller when one is available. Standalone tasks keep
+        // working locally because no controller can replan for them.
+        if (exhaustion.next === "focused_diagnosis") diagnosisCompleted = true;
+        else if (await returnMissionWorkerOutcome("strategy_change_required", exhaustion.reason)) return;
+        noProgressTurns = 0;
+        progressWindowStart = progressHistory.length;
+      } else {
+        const message = exhaustion.reason;
+        if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
+        failCurrentSegment("stalled");
+        transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
+        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
+        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
+        if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+        return;
+      }
     }
 
     if (turn >= turnCeiling) {
