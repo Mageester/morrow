@@ -272,8 +272,17 @@ export function mapTaskEvent(event: RawTaskEvent): MappedTerminalEvent[] {
       }]);
     }
 
-    case "provider.fallback":
-      return withSource([{ type: "notice", level: "info", text: `Provider fallback: ${str(p.from) ?? "?"} → ${str(p.servedBy) ?? "?"}` }]);
+    case "provider.fallback": {
+      // `from` is a list of route ids that failed before `servedBy` began
+      // streaming. Both sides must be known — a fallback line with "?" in it
+      // erodes trust more than it informs, so an incomplete payload renders
+      // nothing rather than a mystery arrow.
+      const servedBy = str(p.servedBy);
+      const from = Array.isArray(p.from) ? p.from.filter((v): v is string => typeof v === "string") : str(p.from) ? [str(p.from)!] : [];
+      if (!servedBy || from.length === 0) return [];
+      const model = str(p.model);
+      return withSource([{ type: "notice", level: "info", text: `Provider fallback: ${from.join(", ")} → ${servedBy}${model ? ` (${model})` : ""}` }]);
+    }
 
     case "provider.rate_limited":
       return withSource([{ type: "notice", level: "warn", text: `Rate-limited provider deprioritized: ${Array.isArray(p.deprioritized) ? p.deprioritized.join(", ") : "?"}` }]);

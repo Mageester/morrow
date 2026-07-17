@@ -93,6 +93,49 @@ describe("mission agent-task dispatcher", () => {
     expect(run).toHaveBeenCalledWith(result.task.id);
   });
 
+  it("resolves the serving provider for a model-only selection instead of stamping it on preset routing", () => {
+    const env = {
+      ...process.env,
+      MOCK_PROVIDER: undefined,
+      OPENAI_COMPAT_BASE_URL: "https://opencode.ai/v1",
+      OPENAI_COMPAT_MODEL: "deepseek-v4-flash-free",
+    } as NodeJS.ProcessEnv;
+    const result = dispatchAgentTask({ db, runner: { run }, env }, {
+      conversationId: "conversation-1",
+      content: "Build the thing",
+      model: "deepseek-v4-flash-free",
+      mode: "agent",
+    });
+    expect(result.routing).toMatchObject({
+      providerId: "openai-compatible",
+      model: "deepseek-v4-flash-free",
+    });
+    expect(result.assistantMessage).toMatchObject({ provider: "openai-compatible", model: "deepseek-v4-flash-free" });
+  });
+
+  it("rejects a model-only selection that no configured provider serves, before any execution", () => {
+    const env = { ...process.env, MOCK_PROVIDER: undefined, OPENAI_API_KEY: "k" } as NodeJS.ProcessEnv;
+    expect(() => dispatchAgentTask({ db, runner: { run }, env }, {
+      conversationId: "conversation-1",
+      content: "Build the thing",
+      model: "model-nobody-serves",
+      mode: "agent",
+    })).toThrow(AgentTaskDispatchError);
+    try {
+      dispatchAgentTask({ db, runner: { run }, env }, {
+        conversationId: "conversation-1",
+        content: "Build the thing",
+        model: "model-nobody-serves",
+        mode: "agent",
+      });
+    } catch (error) {
+      expect((error as AgentTaskDispatchError).code).toBe("MODEL_UNROUTABLE");
+      expect((error as AgentTaskDispatchError).statusCode).toBe(400);
+    }
+    expect(run).not.toHaveBeenCalled();
+    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(0);
+  });
+
   it("rejects an idempotency key reused for different content", () => {
     const base = {
       conversationId: "conversation-1",

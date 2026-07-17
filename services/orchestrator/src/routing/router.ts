@@ -1,6 +1,6 @@
 import type { PresetId, Preset, PresetStatus, RoutingDecision, RoutingCandidate, ProviderId } from "@morrow/contracts";
 import type { ProviderEnv } from "../provider/credentials.js";
-import { getProviderStatus, isProviderConfigured, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
+import { getProviderStatus, isProviderConfigured, getProviderDefaultModel, providerCapabilities, PROVIDER_IDS } from "../provider/registry.js";
 import { getPreset, listPresets } from "./presets.js";
 
 export interface RouteOverride {
@@ -80,6 +80,25 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
     }
   }
 
+  // No provider in the preset's own preference order is usable. Before failing,
+  // consider every other configured provider (e.g. a consumer whose only
+  // configured route is an OpenAI-compatible gateway that no preset lists).
+  // This is an explicit, recorded last-resort candidate — never silent: the
+  // decision reason and candidate list both say the preset order was exhausted.
+  let outsideOrder = false;
+  if (!chosen && preset.privacy !== "local-only") {
+    for (const pid of PROVIDER_IDS) {
+      if (order.includes(pid)) continue;
+      if (!isProviderConfigured(pid, env)) continue;
+      const model = getProviderDefaultModel(pid, env);
+      candidates.push({ providerId: pid, configured: true, reason: model ? "configured (outside preset order)" : "configured but no default model" });
+      if (model && !chosen) {
+        chosen = { providerId: pid, model };
+        outsideOrder = true;
+      }
+    }
+  }
+
   if (!chosen) {
     const reason = preset.requiresLocal
       ? `Preset "${preset.label}" requires a local provider. Enable Ollama (set OLLAMA_BASE_URL to a running server).`
@@ -95,15 +114,36 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
       presetId,
       providerId: chosen.providerId,
       model: chosen.model,
-      reason: fallbackUsed
-        ? `Preferred provider unavailable; routed to first configured provider "${chosen.providerId}".`
-        : `Routed to preferred provider "${chosen.providerId}".`,
+      reason: outsideOrder
+        ? `No provider in the "${preset.label}" preset order is configured; routed to configured provider "${chosen.providerId}" (outside preset order).`
+        : fallbackUsed
+          ? `Preferred provider unavailable; routed to first configured provider "${chosen.providerId}".`
+          : `Routed to preferred provider "${chosen.providerId}".`,
       fallbackUsed,
       overridden: false,
       privacy: preset.privacy,
       candidates,
     },
   };
+}
+
+/**
+ * Resolve which configured provider serves a model id the user selected without
+ * naming a provider. This is the single place a model-only selection becomes a
+ * full route — the dispatcher must never stamp a model onto a provider that
+ * does not serve it. Match order: exact model-list membership, then provider
+ * default model. Only configured providers are eligible.
+ */
+export function resolveProviderForModel(model: string, env: ProviderEnv = process.env): ProviderId | null {
+  const wanted = model.trim();
+  let defaultMatch: ProviderId | null = null;
+  for (const pid of PROVIDER_IDS) {
+    const status = getProviderStatus(pid, env);
+    if (!status?.configured) continue;
+    if (status.models.includes(wanted)) return pid;
+    if (!defaultMatch && status.defaultModel === wanted) defaultMatch = pid;
+  }
+  return defaultMatch;
 }
 
 export function listPresetStatuses(env: ProviderEnv = process.env): PresetStatus[] {

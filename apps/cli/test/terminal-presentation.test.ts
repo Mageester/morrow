@@ -190,13 +190,23 @@ describe("task-event-adapter: extended mapping", () => {
     expect(events[0]!.type).toBe("context.usage");
   });
 
-  it("maps provider.fallback to notice", () => {
+  it("maps provider.fallback to notice with both routes named", () => {
     const events = mapTaskEvent({
       type: "provider.fallback",
-      payload: { from: ["openai"], servedBy: "anthropic" },
+      payload: { from: ["openai"], servedBy: "anthropic", model: "claude-opus-4-8" },
     });
     expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe("notice");
+    const text = (events[0] as { text: string }).text;
+    expect(text).toContain("openai → anthropic");
+    expect(text).toContain("claude-opus-4-8");
+    expect(text).not.toContain("?");
+  });
+
+  it("renders nothing for a provider.fallback with an unknown source route (never '? → x')", () => {
+    expect(mapTaskEvent({ type: "provider.fallback", payload: { servedBy: "openai-compatible" } })).toHaveLength(0);
+    expect(mapTaskEvent({ type: "provider.fallback", payload: { from: [], servedBy: "openai-compatible" } })).toHaveLength(0);
+    expect(mapTaskEvent({ type: "provider.fallback", payload: { from: ["a"] } })).toHaveLength(0);
   });
 
   it("maps provider.rate_limited to warning notice", () => {

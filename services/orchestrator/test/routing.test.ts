@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
-import { routePreset, listPresetStatuses } from "../src/routing/router.js";
+import { routePreset, listPresetStatuses, resolveProviderForModel } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
 import { listModels } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
@@ -162,6 +162,40 @@ describe("Preset router", () => {
     } finally {
       installProviderModelDiscoveries([]);
     }
+  });
+
+  it("routes to a configured provider outside the preset order when nothing in-order is configured (beta.31 OpenCode Zen regression)", () => {
+    // Consumer reality: the ONLY configured provider is an OpenAI-compatible
+    // gateway, which no preset's providerOrder lists. Beta.31 failed this with
+    // `Preset "Balanced" has no configured provider` while the header showed a
+    // selected model.
+    const env = { OPENAI_COMPAT_BASE_URL: "https://opencode.ai/v1", OPENAI_COMPAT_MODEL: "deepseek-v4-flash-free" };
+    const res = routePreset("balanced", env);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.decision.providerId).toBe("openai-compatible");
+      expect(res.decision.model).toBe("deepseek-v4-flash-free");
+      expect(res.decision.fallbackUsed).toBe(true);
+      expect(res.decision.reason).toContain("outside preset order");
+      const candidate = res.decision.candidates.find((c) => c.providerId === "openai-compatible");
+      expect(candidate?.configured).toBe(true);
+      expect(candidate?.reason).toContain("outside preset order");
+    }
+  });
+
+  it("never routes a local-only preset to an outside-order cloud provider", () => {
+    const env = { OPENAI_COMPAT_BASE_URL: "https://opencode.ai/v1", OPENAI_COMPAT_MODEL: "deepseek-v4-flash-free" };
+    expect(routePreset("private-local", env).ok).toBe(false);
+  });
+
+  it("resolves the serving provider for a model-only selection", () => {
+    const env = { OPENAI_COMPAT_BASE_URL: "https://opencode.ai/v1", OPENAI_COMPAT_MODEL: "deepseek-v4-flash-free" };
+    expect(resolveProviderForModel("deepseek-v4-flash-free", env)).toBe("openai-compatible");
+    // A model from a provider that is NOT configured must not resolve.
+    expect(resolveProviderForModel("claude-opus-4-8", env)).toBe(null);
+    expect(resolveProviderForModel("no-such-model", env)).toBe(null);
+    // With the real provider configured, its catalog models resolve.
+    expect(resolveProviderForModel("claude-opus-4-8", { ANTHROPIC_API_KEY: "k" })).toBe("anthropic");
   });
 
   it("only routes private-local to a local provider", () => {

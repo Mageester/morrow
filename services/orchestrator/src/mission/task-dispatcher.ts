@@ -17,7 +17,7 @@ import { taskRepository } from "../repositories/tasks.js";
 import { worktreesRepository } from "../repositories/worktrees.js";
 import { resolveReasoningCapability } from "../routing/models.js";
 import { DEFAULT_PRESET_ID, getPreset } from "../routing/presets.js";
-import { routePreset } from "../routing/router.js";
+import { resolveProviderForModel, routePreset } from "../routing/router.js";
 
 export class AgentTaskDispatchError extends Error {
   constructor(
@@ -118,15 +118,29 @@ function resolveDecision(
       autoApprove,
     };
   } else {
-    const override = body.providerId
-      ? { providerId: body.providerId, ...(body.model ? { model: body.model } : {}) }
+    // A model selected without a provider must resolve to the provider that
+    // actually serves it — never get stamped onto whatever provider preset
+    // routing happened to choose (that produced header/runtime disagreement in
+    // beta.31). If no configured provider serves it, fail here, before any
+    // execution starts, with an actionable message.
+    let providerId = body.providerId;
+    if (body.model && !providerId) {
+      const serving = resolveProviderForModel(body.model, env);
+      if (!serving) {
+        throw new AgentTaskDispatchError(
+          400,
+          `Model "${body.model}" is not served by any configured provider. Configure its provider or pick a model from \`morrow models list\`.`,
+          "MODEL_UNROUTABLE",
+        );
+      }
+      providerId = serving;
+    }
+    const override = providerId
+      ? { providerId, ...(body.model ? { model: body.model } : {}) }
       : undefined;
     const result = routePreset(presetId, env, override);
     if (!result.ok) throw new AgentTaskDispatchError(400, result.reason, "PRESET_UNAVAILABLE");
     decision = result.decision;
-    if (body.model && !body.providerId) {
-      decision = { ...decision, model: body.model, overridden: true };
-    }
     decision = { ...decision, mode, toolProfile, autoApprove };
   }
 
