@@ -14,7 +14,7 @@ import {
   type MissionRuntimeLeaseFence,
 } from "../repositories/mission-runtime.js";
 import { dispatchAgentTask } from "./task-dispatcher.js";
-import { MissionService } from "./service.js";
+import { MissionService, type MissionCompletionFn } from "./service.js";
 import { MissionController, type ControllerRecovery, type ControllerTickResult } from "./controller.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { memoryRepository } from "../repositories/memory.js";
@@ -54,6 +54,13 @@ export interface DefaultMissionControllerRunnerDependencies {
   ownerId?: string;
   now?: () => string;
   leaseMs?: number;
+  /**
+   * Model boundary for mission planning and review. Production omits it and
+   * resolves a configured provider; deterministic gates inject a scripted
+   * completion so the controller, Guardian, and review paths stay real while
+   * the external model call does not.
+   */
+  completion?: MissionCompletionFn;
 }
 
 /**
@@ -190,7 +197,7 @@ export function createDefaultMissionControllerRunner(
   const missionService = new MissionService({
     repo: missions,
     getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
-    completion: buildMissionCompletion({ env }),
+    completion: dependencies.completion ?? buildMissionCompletion({ env }),
     backupDir: join(resolveMorrowHome(env), "mission-checkpoints"),
     now,
     cortex,

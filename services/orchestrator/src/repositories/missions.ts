@@ -762,16 +762,36 @@ export function missionsRepository(db: Database.Database) {
     },
 
     guardianDependencies(missionId: string) {
+      // `guardian_review` is the Guardian's own completion bookkeeping, not
+      // mission work it waits on. The controller marks it `running` before
+      // calling finalize, and finalize re-assesses the Guardian — counting it
+      // here would make the act of finalizing block finalization, and the
+      // resulting failed row would poison every later evaluation.
       const operations = (db.prepare(`SELECT id,status,effect_evidence_ids_json
-        FROM mission_operations WHERE mission_id=? ORDER BY sequence`).all(missionId) as Array<{
+        FROM mission_operations WHERE mission_id=? AND kind<>'guardian_review'
+        ORDER BY sequence`).all(missionId) as Array<{
           id: string; status: string; effect_evidence_ids_json: string;
         }>).map((row) => ({
         id: row.id,
         status: row.status as MissionOperationStatus,
         effectEvidenceIds: JSON.parse(row.effect_evidence_ids_json) as string[],
       }));
-      const tasks = (db.prepare("SELECT id,status FROM tasks WHERE mission_id=? ORDER BY created_at,id")
-        .all(missionId) as Array<{ id: string; status: string }>)
+      // A worker the controller recovered from is superseded: production leaves
+      // the old row `interrupted` and dispatches a replacement rather than
+      // mutating it. Counting it as a live dependency would block authorization
+      // forever for any mission that survived a single worker interruption. The
+      // recovery transition is the durable record of that supersession, so an
+      // interrupted worker with no such transition still blocks.
+      const tasks = (db.prepare(`SELECT id,status FROM tasks
+        WHERE mission_id=?
+          AND id NOT IN (
+            SELECT json_extract(details_json,'$.taskId')
+            FROM mission_runtime_transitions
+            WHERE mission_id=? AND cause='worker_recovery_required'
+              AND json_extract(details_json,'$.taskId') IS NOT NULL
+          )
+        ORDER BY created_at,id`)
+        .all(missionId, missionId) as Array<{ id: string; status: string }>)
         .map((row) => ({ id: row.id, status: row.status as TaskStatus }));
       const approvals = (db.prepare(`SELECT approval.id,approval.status
         FROM approvals approval
