@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { nodeTermIO } from "../terminal/runtime.js";
 import { shouldUseInteractive } from "../terminal/capabilities.js";
+import { oauthLogin, OAUTH_ELIGIBLE } from "./providers.js";
 import { streamTaskEvents } from "../client/sse.js";
 import type { SessionMeta } from "../terminal/events.js";
 import type { PaletteItem } from "../terminal/palette.js";
@@ -1094,6 +1095,10 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
       const match = providers.find(p => p.id === arg);
       if (!match) { out.warn(`Provider "${arg}" not found. Use /provider to list available.`); return {}; }
       if (match.configured) { out.info(`Provider "${arg}" is already configured.`); return {}; }
+      if (OAUTH_ELIGIBLE.has(match.id)) {
+        await oauthLogin(ctx, api, match.id as "openai" | "anthropic");
+        return {};
+      }
       out.info(`To configure ${match.label || arg}, set the ${match.id.toUpperCase()}_API_KEY environment variable and restart.`);
       return {};
     }

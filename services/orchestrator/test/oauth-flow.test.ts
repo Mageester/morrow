@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   tokenErrorMessage,
   startAuthorization,
@@ -9,6 +9,8 @@ import {
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("tokenErrorMessage", () => {
   it("never returns '[object Object]' when the provider sends a structured error", () => {
@@ -62,6 +64,29 @@ describe("OAuth PKCE authorization", () => {
     startAuthorization("anthropic"); // sets a server-side state
     // Paste a code carrying a forged state → must fail locally, no network call.
     await expect(exchangeCode("anthropic", "thecode#forged-state", env)).rejects.toThrow(/state mismatch/i);
+  });
+
+  it("never sends the callback `state` to the token endpoint — it is not a token-exchange parameter", async () => {
+    const env = { ...process.env, MORROW_HOME: mkdtempSync(join(tmpdir(), "morrow-oauth-")) };
+    const { authorizeUrl, redirectUri } = startAuthorization("openai");
+    const state = new URL(authorizeUrl).searchParams.get("state")!;
+
+    let sentBody = "";
+    const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
+      sentBody = String(init.body);
+      return new Response(JSON.stringify({ access_token: "tok_123" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    // Simulate pasting the full OpenAI callback URL, which always carries `state`.
+    const pastedUrl = `${redirectUri}?code=ac_realcode&scope=openid&state=${state}`;
+    await exchangeCode("openai", pastedUrl, env);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const params = new URLSearchParams(sentBody);
+    expect(params.has("state")).toBe(false);
+    expect(params.get("code")).toBe("ac_realcode");
+    expect(params.get("grant_type")).toBe("authorization_code");
   });
 
   it("reports all providers as disconnected with no stored tokens", () => {
