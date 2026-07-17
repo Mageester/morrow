@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionCheckpointSnapshot } from "../src/repositories/execution-continuity.js";
-import { projectProviderRequest } from "../src/execution/provider-projection.js";
+import { projectMinimalContinuation, projectProviderRequest } from "../src/execution/provider-projection.js";
 import * as providerProjectionModule from "../src/execution/provider-projection.js";
 import { resolveModelBudget } from "../src/routing/model-budget.js";
 
@@ -135,6 +135,69 @@ describe("durable provider projection", () => {
     const second = projectProviderRequest(input);
     expect(JSON.stringify(second.envelope)).toBe(JSON.stringify(first.envelope));
     expect(second.contentHash).toBe(first.contentHash);
+  });
+
+  it("escalates to a truncated last group when a giant tool result blocks admission", () => {
+    // Standard compaction keeps the last raw group verbatim; a single enormous
+    // tool observation there made beta.31 throw "cannot fit the verified
+    // endpoint limit after automatic compaction" and demand /continue.
+    const result = projectMinimalContinuation({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "Execution kernel rules" },
+          { role: "user", content: "old context ".repeat(35_000) },
+          { role: "assistant", content: "recent work", toolCalls: [{ id: "call-1", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+          { role: "tool", toolCallId: "call-1", content: "giant observation ".repeat(60_000) },
+        ],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+    });
+    expect(result.admission.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(result.truncatedToolResults).toBe(1);
+    expect(result.droppedRawHistory).toBe(false);
+    const text = result.envelope.messages.map((m) => m.content).join("\n");
+    expect(text).toContain("Implement durable segmented execution");
+    expect(text).toContain("truncated for context rollover");
+  });
+
+  it("escalates to checkpoint-only continuation when even the truncated group cannot fit", () => {
+    const tiny = resolveModelBudget({
+      providerId: "openai-compatible",
+      selectedModel: "hy3-free",
+      endpoint: { kind: "custom", host: "opencode.ai", protocol: "openai-chat", limitTokens: 3_000, limitSource: "endpoint-override" },
+      outputBudgetTokens: 512,
+    });
+    const result = projectMinimalContinuation({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "openai-compatible",
+        model: "hy3-free",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "rules" },
+          { role: "user", content: "history ".repeat(30_000) },
+          { role: "assistant", content: "recent narration ".repeat(500), toolCalls: [{ id: "call-1", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+          { role: "tool", toolCallId: "call-1", content: "observation ".repeat(2_000) },
+        ],
+        tools: [],
+        outputReserveTokens: 512,
+      },
+      resolution: tiny,
+    });
+    expect(result.admission.ok).toBe(true);
+    expect(result.droppedRawHistory).toBe(true);
+    const text = result.envelope.messages.map((m) => m.content).join("\n");
+    // The mission contract survives the hard rollover.
+    expect(text).toContain("Implement durable segmented execution");
+    expect(text).toContain("Do not repeat operations already recorded as completed");
+    expect(text).not.toContain("recent narration recent narration");
   });
 
   it("counts tool schemas before deciding whether compaction is required", () => {

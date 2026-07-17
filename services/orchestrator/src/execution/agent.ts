@@ -46,7 +46,7 @@ import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
-import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
+import { buildProviderProjection, projectMinimalContinuation, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
@@ -2742,8 +2742,42 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           ? [{ ...candidate, request: { messages: projection.envelope.messages, options: candidateOptions, routeFingerprint } }]
           : [];
       });
+      // Escalated rollover: the standard compacted projection (checkpoint +
+      // recent raw group) still cannot be admitted on any route. Beta.31 died
+      // here and told the user to /continue â€” which rebuilt the same oversized
+      // request. Instead, build a bounded continuation packet from durable
+      // state (truncated tool results, then checkpoint-only) and continue
+      // automatically. The mission contract survives inside the checkpoint.
+      const escalatedProjections = new Map<string, ReturnType<typeof projectMinimalContinuation>>();
       if (admittedCandidates.length === 0) {
-        throw new Error("Provider request cannot fit the verified endpoint limit after automatic compaction; no provider call was made.");
+        if (!projectionCheckpoint) {
+          projectionCheckpointId = await persistExecutionCheckpoint("context_compaction");
+          projectionCheckpoint = continuity.latestCheckpoint(taskId)?.snapshot ?? null;
+        }
+        if (projectionCheckpoint) {
+          for (const item of projectedCandidates) {
+            const minimal = projectMinimalContinuation({ checkpoint: projectionCheckpoint, envelope: item.envelope, resolution: item.resolution });
+            if (!minimal.admission.ok) continue;
+            escalatedProjections.set(item.candidate.id, minimal);
+            admittedCandidates.push({ ...item.candidate, request: { messages: minimal.envelope.messages, options: item.candidateOptions, routeFingerprint: item.routeFingerprint } });
+            event("context.rollover_escalated", {
+              provider: item.candidate.id,
+              model: item.candidateModel,
+              droppedRawHistory: minimal.droppedRawHistory,
+              truncatedToolResults: minimal.truncatedToolResults,
+              inputTokens: minimal.admission.measurement.inputTokens,
+              usableInputTokens: item.resolution.usableInputTokens,
+              automaticContinuation: true,
+            });
+          }
+        }
+      }
+      if (admittedCandidates.length === 0) {
+        throw new Error(
+          "Provider request cannot fit the verified endpoint limit even after escalated compaction " +
+          "(durable checkpoint with raw history dropped). The route's usable input is smaller than the " +
+          "mission's system context â€” switch to a larger-context model/route or raise the endpoint context limit.",
+        );
       }
       const opened = await openStreamWithFallback(
         admittedCandidates,
@@ -2767,7 +2801,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       );
       const selectedCandidate = projectedCandidates.find(({ candidate }) => candidate.id === opened.servedBy);
       if (!selectedCandidate) throw new Error(`Selected provider route ${opened.servedBy} was not preflighted`);
-      const selectedProjection = selectedCandidate.projection;
+      const selectedProjection = escalatedProjections.get(opened.servedBy) ?? selectedCandidate.projection;
       let openedFreshSegment = false;
       if (selectedProjection?.compacted) {
         if (!projectionCheckpointId) throw new Error("Durable context checkpoint was not persisted");

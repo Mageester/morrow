@@ -134,6 +134,104 @@ function hashEnvelope(envelope: ProviderRequestEnvelope): string {
   return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
 }
 
+export interface MinimalProjectionResult extends ProviderProjectionResult {
+  /** True when even the most recent raw turn group had to be dropped and the
+   * request is checkpoint + continuation instruction only. */
+  droppedRawHistory: boolean;
+  /** Count of tool results truncated to fit (stage 1). */
+  truncatedToolResults: number;
+}
+
+const MAX_ESCALATED_TOOL_RESULT_CHARS = 2_000;
+
+/**
+ * Escalated bounded continuation for when even the standard compacted
+ * projection (checkpoint + recent raw groups) cannot be admitted — beta.31
+ * died here with "cannot fit the verified endpoint limit after automatic
+ * compaction" and told the user to /continue, which reconstructed the same
+ * oversized state. Two stages, both preserving the mission contract via the
+ * checkpoint message:
+ *   1. keep only the last raw turn group with oversized tool results truncated
+ *      (full content remains in durable evidence);
+ *   2. drop raw history entirely — system prefix + checkpoint + an explicit
+ *      continuation instruction. This always fits unless the system prefix
+ *      itself exceeds the route's usable input.
+ */
+export function projectMinimalContinuation(input: {
+  checkpoint: ExecutionCheckpointSnapshot;
+  envelope: ProviderRequestEnvelope;
+  resolution: ModelBudget;
+}): MinimalProjectionResult {
+  const originalMeasurement = measureProviderRequest(input.envelope);
+  const thresholdTokens = Math.floor(input.resolution.usableInputTokens * 0.8);
+  const { system, groups } = groupDurableMessages(input.envelope.messages);
+  const checkpoint = checkpointMessage(input.checkpoint);
+
+  // Stage 1: last group only, oversized tool results truncated.
+  let truncatedToolResults = 0;
+  const lastGroup = (groups.at(-1) ?? []).map((message) => {
+    if (message.role !== "tool" || typeof message.content !== "string" || message.content.length <= MAX_ESCALATED_TOOL_RESULT_CHARS) {
+      return message;
+    }
+    truncatedToolResults += 1;
+    const omitted = message.content.length - MAX_ESCALATED_TOOL_RESULT_CHARS;
+    return {
+      ...message,
+      content: `${message.content.slice(0, MAX_ESCALATED_TOOL_RESULT_CHARS)}\n…[${omitted} characters truncated for context rollover; full result is preserved in durable evidence]`,
+    };
+  });
+  const stageOneMessages = [...system, checkpoint, ...lastGroup];
+  const stageOneOrdering = validateProviderMessageOrdering(stageOneMessages);
+  if (stageOneOrdering.ok) {
+    const envelope = { ...input.envelope, messages: stageOneMessages };
+    const admission = admitProviderRequest(envelope, input.resolution);
+    if (admission.ok) {
+      return {
+        envelope,
+        admission,
+        originalMeasurement,
+        compacted: true,
+        thresholdTokens,
+        contentHash: hashEnvelope(envelope),
+        droppedRawHistory: false,
+        truncatedToolResults,
+      };
+    }
+  }
+
+  // Stage 2: durable state only. The checkpoint carries the mission contract,
+  // completed work, pending work, and next action — the model must not repeat
+  // completed side effects.
+  const messages: ChatMessage[] = [
+    ...system,
+    checkpoint,
+    {
+      role: "user",
+      content:
+        "Continue the mission from the durable execution checkpoint above. " +
+        "The prior raw transcript could not be included in this request. " +
+        "Rely on the checkpoint's completed work, files changed, pending work, and next action. " +
+        "Do not repeat operations already recorded as completed.",
+    },
+  ];
+  const ordering = validateProviderMessageOrdering(messages);
+  if (!ordering.ok) {
+    throw new Error(`Escalated continuation projection is invalid: ${ordering.reason} (${ordering.detail})`);
+  }
+  const envelope = { ...input.envelope, messages };
+  const admission = admitProviderRequest(envelope, input.resolution);
+  return {
+    envelope,
+    admission,
+    originalMeasurement,
+    compacted: true,
+    thresholdTokens,
+    contentHash: hashEnvelope(envelope),
+    droppedRawHistory: true,
+    truncatedToolResults,
+  };
+}
+
 /**
  * Apply the one route-aware admission rule to a complete provider envelope.
  * Once the configurable pressure threshold is reached, replace old raw history
