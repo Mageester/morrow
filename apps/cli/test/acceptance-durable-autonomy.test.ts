@@ -7,6 +7,7 @@ import {
   runDurableAutonomyScenarios,
 } from "../src/acceptance/scenarios/durable-autonomy.js";
 import { runAcceptance, type AcceptanceInvocation } from "../src/acceptance/runner.js";
+import { createFoundationFixture } from "../src/acceptance/fixture.js";
 
 const roots: string[] = [];
 
@@ -54,6 +55,9 @@ describe("durable autonomy packaged acceptance scenarios", () => {
   it("registers durable-autonomy-v1 without weakening foundation checks", { timeout: 20_000 }, async () => {
     const acceptanceRoot = mkdtempSync(join(tmpdir(), "morrow-durable-runner-"));
     roots.push(acceptanceRoot);
+    // Use a dedicated immutable Git source so concurrent repository-fixture
+    // tests cannot transiently change the integrity fingerprint for this run.
+    const source = createFoundationFixture(join(acceptanceRoot, "source"));
     const invoke: AcceptanceInvocation = async (args) => {
       if (args[0] === "init") return { exitCode: 0, stdout: JSON.stringify({ id: "project-1" }), stderr: "" };
       if (args[0] === "ask") return { exitCode: 0, stdout: JSON.stringify({ status: "completed", task: { id: "task-1", status: "completed" }, evidence: [{ path: "evidence.txt" }] }), stderr: "" };
@@ -70,7 +74,7 @@ describe("durable autonomy packaged acceptance scenarios", () => {
       entrypoint: "compiled-morrow.mjs",
       packaged: true,
       version: "0.1.0-test",
-      sourceCwd: process.cwd(),
+      sourceCwd: source.path,
       port: 45131,
       invoke,
     });

@@ -118,11 +118,11 @@ describe("cortex REST API", () => {
     expect(revisions.json()).toEqual([]);
   });
 
-  it("impact analysis without intelligence explains what to do instead of guessing", async () => {
+  it("mission creation maps Cortex automatically so impact analysis needs no refresh command", async () => {
     const mission = (await app.inject({ method: "POST", url: "/api/projects/p1/missions", payload: { objective: "x y z", autoApprove: true } })).json();
     const impact = await app.inject({ method: "POST", url: `/api/missions/${mission.id}/impact` });
-    expect(impact.statusCode).toBe(404);
-    expect(JSON.stringify(impact.json())).toMatch(/refresh Cortex/i);
+    expect(impact.statusCode).toBe(201);
+    expect(impact.json()).toMatchObject({ missionId: mission.id, objective: "x y z" });
   });
 
   it("forget removes intelligence but keeps rules unless includeDurable", async () => {

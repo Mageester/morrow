@@ -13,7 +13,7 @@ describe("database", () => {
 
   it("installs the durable mission runtime ledger and provider discovery schema", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)?.id).toBe(34);
+    expect(migrations.at(-1)?.id).toBe(35);
     const tables = (db.prepare(`SELECT name FROM sqlite_master
       WHERE type='table' AND name LIKE 'mission_runtime%' OR name IN ('mission_operations','mission_progress','mission_recovery_decisions')
       ORDER BY name`).all() as Array<{ name: string }>).map((row) => row.name);
@@ -24,6 +24,9 @@ describe("database", () => {
       "mission_runtime",
       "mission_runtime_transitions",
     ]);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='learned_skills'").get()).toEqual({ name: "learned_skills" });
+    const memoryColumns = (db.prepare("PRAGMA table_info(memory_entries)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(memoryColumns).toEqual(expect.arrayContaining(["normalized_content", "type", "lifecycle", "evidence_references_json", "sensitivity", "expires_at"]));
     db.close();
   });
 

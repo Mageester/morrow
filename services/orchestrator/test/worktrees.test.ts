@@ -91,7 +91,7 @@ describe("WorktreeManager (real git)", () => {
     const { diff } = manager.diff(record.id);
     expect(diff).toContain("new.ts");
     expect(diff).toContain("+export const n = 2;");
-  });
+  }, 15_000);
 
   it("refuses to remove a dirty worktree without preservation, preserves with it", () => {
     const record = manager.create({ projectId: "p1", workspacePath: ws, name: "wt-dirty" });

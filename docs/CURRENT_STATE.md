@@ -4,6 +4,22 @@
 > This document records what was **actually observed**, not what prior status
 > docs claim. Where a prior doc disagreed with the code, the code wins.
 
+## Beta.31 incremental verification (2026-07-16)
+
+- Automatic Cortex memory now builds/refreshes at mission creation, captures only
+  deterministic repository facts and evidence-backed mission learnings, and
+  injects ranked active memory into later matching work without save, refresh, or
+  index commands.
+- Repeated safe validation workflows now follow candidate → repeated evidence →
+  isolated validation → active. Learned bundles are private and project-scoped;
+  two distinct missions, checksum/lifecycle validation, narrow permissions, and
+  no network/secrets are required. Tampering causes quarantine and a persisted
+  rollback record.
+- Verification at landing: `pnpm test` passes all seven package tasks (1,048
+  orchestrator, 721 CLI, 36 contracts, and 4 Hermes-compat assertions),
+  `pnpm check` passes all five package checks plus repository validation, and
+  `pnpm build` passes every buildable package.
+
 ## Baseline
 
 - **Date:** 2026-07-02 (previous snapshot: 2026-06-29)

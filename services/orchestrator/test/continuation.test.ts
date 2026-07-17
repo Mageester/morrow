@@ -26,4 +26,16 @@ describe("ApprovalContinuationRegistry", () => {
     ApprovalContinuationRegistry.resolveApproval(id, "deny");
     expect(await pending).toBe("deny");
   });
+
+  it("rejects and removes a pending waiter when its task is aborted", async () => {
+    const id = "approval-cancelled-task";
+    const controller = new AbortController();
+    const pending = ApprovalContinuationRegistry.awaitApproval(id, controller.signal);
+
+    controller.abort();
+
+    await expect(pending).rejects.toThrow("AbortError");
+    ApprovalContinuationRegistry.resolveApproval(id, "allow_once");
+    ApprovalContinuationRegistry.clear(id);
+  });
 });

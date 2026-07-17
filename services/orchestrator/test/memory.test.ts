@@ -97,4 +97,52 @@ describe("Memory repository", () => {
     const active = mem.listActiveForConversation("p1", "c1").map((e) => e.id);
     expect(active).toEqual(expect.arrayContaining(["ep", "proc", "know"]));
   });
+
+  it("persists the complete Cortex lifecycle metadata and ranks relevant active memory", () => {
+    const mem = memoryRepository(db);
+    const ts = "2026-01-02T00:00:00.000Z";
+    mem.create({
+      id: "cortex-pnpm-check",
+      projectId: "p1",
+      scope: "repository",
+      type: "validation_expectation",
+      content: "Use pnpm check before reporting repository work complete.",
+      normalizedContent: "use pnpm check before reporting repository work complete",
+      source: "cortex",
+      evidenceReferences: [{ kind: "command", reference: "pnpm check", note: "mission evidence: exit 0" }],
+      lifecycle: "active",
+      lastVerifiedAt: ts,
+      confidence: 0.91,
+      successContribution: 2,
+      failureContribution: 0,
+      staleness: "current",
+      sensitivity: "internal",
+      expirationPolicy: "until_repository_changes",
+      createdAt: ts,
+    });
+    mem.create({
+      id: "expired",
+      projectId: "p1",
+      scope: "temporary_context",
+      type: "environment_problem",
+      content: "Old temporary outage",
+      source: "cortex",
+      lifecycle: "active",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      createdAt: ts,
+    });
+
+    const relevant = mem.retrieveRelevant("p1", "c1", "please run the pnpm repository checks", "2026-01-03T00:00:00.000Z");
+    expect(relevant.map((entry) => entry.id)).toEqual(["cortex-pnpm-check"]);
+    expect(relevant[0]).toMatchObject({
+      scope: "repository",
+      type: "validation_expectation",
+      lifecycle: "active",
+      confidence: 0.91,
+      usageCount: 1,
+      successContribution: 2,
+      sensitivity: "internal",
+      evidenceReferences: [{ kind: "command", reference: "pnpm check" }],
+    });
+  });
 });

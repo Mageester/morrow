@@ -8,6 +8,8 @@ import { PROJECT_INTELLIGENCE_SCHEMA_VERSION, MAX_PLAN_REVISIONS } from "@morrow
 import type { IntelligenceRepository } from "../repositories/intelligence.js";
 import { generateArchitectureMap } from "./mapper.js";
 import { computeScopeFingerprints, computeRepositoryFingerprint, diffScopes } from "./fingerprint.js";
+import type { AutomaticMemoryService } from "./automatic-memory.js";
+import type { AutomaticSkillService } from "./automatic-skills.js";
 
 export class CortexError extends Error {
   constructor(message: string, public readonly code: "not_found" | "conflict" | "no_workspace" | "validation" | "limit" = "validation") {
@@ -20,6 +22,8 @@ export interface CortexServiceDeps {
   repo: IntelligenceRepository;
   getWorkspacePath: (projectId: string) => string | undefined;
   now?: () => string;
+  memory?: AutomaticMemoryService;
+  skills?: AutomaticSkillService;
 }
 
 /** Knowledge scopes → which intelligence kinds a change there can invalidate. */
@@ -85,6 +89,10 @@ export class CortexService {
     this.deps.repo.replaceItems(projectId, "convention", merged);
     this.deps.repo.replaceItems(projectId, "command", generated.architecture.commands);
     this.deps.repo.replaceItems(projectId, "uncertainty", generated.uncertainties);
+    // Mapping itself is automatic memory capture: deterministic commands and
+    // protected paths become ranked, inspectable records without a save/index
+    // command. Unsupported inferences are deliberately excluded.
+    this.deps.memory?.captureArchitecture(projectId, generated.architecture);
 
     return this.get(projectId);
   }
@@ -113,6 +121,25 @@ export class CortexService {
 
   has(projectId: string): boolean {
     return this.deps.repo.getHeader(projectId) !== undefined;
+  }
+
+  /** Automatic mission-start maintenance. Callers never need a map, refresh,
+   * index, or memory command: missing intelligence is built, changed critical
+   * scopes are refreshed, and current deterministic facts are admitted to the
+   * memory lifecycle. */
+  ensureReady(projectId: string): { built: boolean; refreshed: boolean; changedScopes: string[] } {
+    this.deps.skills?.revalidateProject(projectId);
+    if (!this.has(projectId)) {
+      this.build(projectId);
+      return { built: true, refreshed: false, changedScopes: [] };
+    }
+    const stale = this.detectStaleness(projectId);
+    if (stale.changedScopes.length > 0) {
+      this.refresh(projectId);
+      return { built: false, refreshed: true, changedScopes: stale.changedScopes };
+    }
+    this.deps.memory?.captureArchitecture(projectId, this.get(projectId).architecture);
+    return { built: false, refreshed: false, changedScopes: [] };
   }
 
   /**
@@ -233,6 +260,8 @@ export class CortexService {
         throw new CortexError("A learning without supporting evidence cannot become project memory", "validation");
       }
       this.deps.repo.addItem(projectId, "learning", learning);
+      this.deps.memory?.captureLearning(projectId, learning);
+      this.deps.skills?.observe(projectId, learning);
     }
     return learnings;
   }

@@ -205,6 +205,45 @@ export const MissionLearningSchema = z.object({
 }).strict();
 export type MissionLearning = z.infer<typeof MissionLearningSchema>;
 
+// ── automatically learned skills ────────────────────────────────────────────
+
+export const LearnedSkillStateSchema = z.enum(["candidate", "validating", "active", "rejected", "superseded", "rolled_back"]);
+export const LearnedSkillProvenanceSchema = z.object({
+  missionId: z.string().min(1),
+  learningId: z.string().min(1),
+  evidenceReferences: z.array(IntelligenceSourceSchema).min(1),
+  observedAt: z.string().datetime(),
+}).strict();
+export type LearnedSkillProvenance = z.infer<typeof LearnedSkillProvenanceSchema>;
+export const LearnedSkillPermissionsSchema = z.object({
+  tools: z.array(z.string()).default([]),
+  filesystemScopes: z.array(z.string()).default([]),
+  networkDomains: z.array(z.string()).default([]),
+  requiredSecrets: z.array(z.string()).default([]),
+}).strict();
+export const LearnedSkillSchema = z.object({
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  triggerConditions: z.array(z.string().min(1)).min(1),
+  scope: z.string().min(1),
+  steps: z.array(z.string().min(1)).min(1),
+  permissions: LearnedSkillPermissionsSchema,
+  validationRequirements: z.array(z.string().min(1)).min(1),
+  provenance: z.array(LearnedSkillProvenanceSchema).min(1),
+  state: LearnedSkillStateSchema,
+  successCount: z.number().int().nonnegative(),
+  failureCount: z.number().int().nonnegative(),
+  confidence: ConfidenceSchema,
+  lastVerifiedAt: z.string().datetime().nullable(),
+  rollbackHistory: z.array(z.object({ version: z.string(), reason: z.string(), at: z.string().datetime() }).strict()),
+  workflowFingerprint: z.string().min(16),
+  directory: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+export type LearnedSkill = z.infer<typeof LearnedSkillSchema>;
+
 // ── uncertainties ────────────────────────────────────────────────────────────
 
 export const IntelligenceUncertaintySchema = z.object({

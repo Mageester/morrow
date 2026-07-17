@@ -111,6 +111,7 @@ describe("Contract schemas", () => {
       conversationId: null,
       scope: "project",
       content: "fact",
+      normalizedContent: "fact",
       source: "user",
       originTaskId: null,
       pinned: false,

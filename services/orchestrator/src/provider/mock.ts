@@ -2,6 +2,7 @@ import { AiProvider, ChatMessage, ProviderChunk, StreamOptions } from "./base.js
 
 export class MockProvider implements AiProvider {
   private turnIndex = 0;
+  readonly requests: ChatMessage[][] = [];
 
   constructor(
     private scenario: {
@@ -12,6 +13,10 @@ export class MockProvider implements AiProvider {
   ) {}
 
   async *streamChat(messages: ChatMessage[], options: StreamOptions): AsyncIterable<ProviderChunk> {
+    this.requests.push(messages.map((message) => ({
+      ...message,
+      ...(message.images ? { images: message.images.map((image) => ({ ...image })) } : {}),
+    })));
     if (this.scenario.throwError) {
       throw this.scenario.throwError;
     }

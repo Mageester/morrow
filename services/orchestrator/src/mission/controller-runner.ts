@@ -16,6 +16,12 @@ import {
 import { dispatchAgentTask } from "./task-dispatcher.js";
 import { MissionService } from "./service.js";
 import { MissionController, type ControllerTickResult } from "./controller.js";
+import { intelligenceRepository } from "../repositories/intelligence.js";
+import { memoryRepository } from "../repositories/memory.js";
+import { learnedSkillsRepository } from "../repositories/learned-skills.js";
+import { CortexService } from "../cortex/service.js";
+import { AutomaticMemoryService } from "../cortex/automatic-memory.js";
+import { AutomaticSkillService } from "../cortex/automatic-skills.js";
 
 type MissionRuntimeRepository = ReturnType<typeof missionRuntimeRepository>;
 
@@ -167,12 +173,25 @@ export function createDefaultMissionControllerRunner(
   const projects = projectRepository(dependencies.db);
   const conversations = conversationsRepository(dependencies.db);
   const approvals = approvalsRepository(dependencies.db);
+  const memory = memoryRepository(dependencies.db);
+  const cortex = new CortexService({
+    repo: intelligenceRepository(dependencies.db),
+    getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+    now,
+    memory: new AutomaticMemoryService(memory, now),
+    skills: new AutomaticSkillService({
+      repo: learnedSkillsRepository(dependencies.db),
+      rootForProject: (projectId) => join(resolveMorrowHome(env), "projects", projectId, "skills"),
+      now,
+    }),
+  });
   const missionService = new MissionService({
     repo: missions,
     getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
     completion: buildMissionCompletion({ env }),
     backupDir: join(resolveMorrowHome(env), "mission-checkpoints"),
     now,
+    cortex,
   });
   const controller = new MissionController({
     runtime,

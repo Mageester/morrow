@@ -101,6 +101,8 @@
 | Slash commands from skills | `skill_commands.py` | VERIFIED | `skillsAsSlashCommands` (verified skills → `/skill:<id>`), wired into the interactive session command list + `onSlash` `skill:` handler that records use and runs the skill. `apps/cli/test/skills.test.ts` | — |
 | Usage tracking | Hermes | VERIFIED | `skill_usage` table (migration 13), `skillUsageRepository`, `GET .../skills/usage` + `POST .../skills/:id/use`, CLI `MorrowApi.recordSkillUse`. `test/skill-usage.test.ts` + CLI `api-search.test.ts` | — |
 
+| Automatic evidence-backed skill lifecycle | Hermes self-improve | VERIFIED | migration 35 `learned_skills`; `AutomaticSkillService`; two-distinct-mission threshold; safe-command, checksum, permission and lifecycle gates; private project scope; automatic matching/use accounting; tamper quarantine + rollback. `cortex-automatic-learning.test.ts`, `agent-cortex-learning.test.ts` | Only safe routine validation procedures auto-activate |
+
 ## 6. Skill Creator & Curator
 
 | Capability | Hermes evidence | Morrow status | Morrow evidence | Gap |
@@ -122,6 +124,7 @@
 | Provenance | Hermes | VERIFIED | `originTaskId` FK to tasks (migration 11), `test/memory.test.ts` "stores task provenance" | — |
 | Explain / edit / delete | Hermes | VERIFIED | `/api/memory/:id` PATCH/DELETE | — |
 | Pin | Hermes | VERIFIED | `pinned` column + pin-first ordering, `setPinned`, PATCH `{pinned}`, CLI `memory pin/unpin`, `test/memory.test.ts` + CLI `api-search.test.ts` | — |
+| Automatic lifecycle capture + ranked recall | Hermes memory manager | VERIFIED | migration 35 rich lifecycle metadata; `AutomaticMemoryService`; mission-start `CortexService.ensureReady`; evidence-only capture, secret/poison rejection, scoped staleness, relevance ranking and use counters. `cortex-automatic-learning.test.ts`, `agent-cortex-learning.test.ts` | — |
 | Identity file / project instructions | `system_prompt.py`, AGENTS.md | PARTIAL | prompt builder reads project | Editable identity + personality overlay |
 
 ## 8. Coding intelligence

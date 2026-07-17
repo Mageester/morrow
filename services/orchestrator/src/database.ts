@@ -1077,6 +1077,49 @@ export const migrations:Migration[]=[
       PRIMARY KEY(provider_id, auth_mode)
     );
   `}
+  ,{id:35,name:"automatic_cortex_memory_and_skills",sql:`
+    ALTER TABLE memory_entries ADD COLUMN normalized_content TEXT NOT NULL DEFAULT '';
+    ALTER TABLE memory_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'project_architecture';
+    ALTER TABLE memory_entries ADD COLUMN evidence_references_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE memory_entries ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active';
+    ALTER TABLE memory_entries ADD COLUMN last_verified_at TEXT;
+    ALTER TABLE memory_entries ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5;
+    ALTER TABLE memory_entries ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN success_contribution INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN failure_contribution INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE memory_entries ADD COLUMN staleness TEXT NOT NULL DEFAULT 'current';
+    ALTER TABLE memory_entries ADD COLUMN supersedes_id TEXT;
+    ALTER TABLE memory_entries ADD COLUMN conflicts_with_ids_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE memory_entries ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'internal';
+    ALTER TABLE memory_entries ADD COLUMN expiration_policy TEXT NOT NULL DEFAULT 'never';
+    ALTER TABLE memory_entries ADD COLUMN expires_at TEXT;
+    UPDATE memory_entries SET normalized_content = lower(trim(content)) WHERE normalized_content = '';
+    CREATE INDEX memory_entries_lifecycle_idx ON memory_entries(project_id, lifecycle, staleness, enabled);
+
+    CREATE TABLE learned_skills (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,
+      trigger_conditions_json TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      steps_json TEXT NOT NULL,
+      permissions_json TEXT NOT NULL,
+      validation_requirements_json TEXT NOT NULL,
+      provenance_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      confidence REAL NOT NULL,
+      last_verified_at TEXT,
+      rollback_history_json TEXT NOT NULL DEFAULT '[]',
+      workflow_fingerprint TEXT NOT NULL,
+      directory TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, workflow_fingerprint)
+    );
+    CREATE INDEX learned_skills_project_state_idx ON learned_skills(project_id, state, updated_at DESC);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

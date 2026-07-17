@@ -82,6 +82,11 @@ export class MissionService {
   // ── lifecycle ────────────────────────────────────────────────────────────
   create(projectId: string, input: CreateMissionInput): Mission {
     const id = `mission-${randomUUID()}`;
+    let cortexReadiness: { built: boolean; refreshed: boolean; changedScopes: string[] } | null = null;
+    if (this.deps.cortex) {
+      try { cortexReadiness = this.deps.cortex.ensureReady(projectId); }
+      catch { /* Missing/unreadable workspaces are surfaced by normal mission execution. */ }
+    }
     const budget: MissionBudget = {
       maxUsd: input.maxUsd ?? null,
       maxAttempts: input.maxAttempts ?? null,
@@ -105,6 +110,9 @@ export class MissionService {
         objective: input.objective, autoApprove: input.autoApprove ?? false, budget,
       }, this.now());
       this.repo.appendEvent(id, "mission.created", `Mission created: ${input.objective.slice(0, 80)}`, {}, this.now());
+      if (cortexReadiness) {
+        this.repo.appendEvent(id, "mission.cortex_ready", "Cortex memory mapped and retrieved automatically", cortexReadiness, this.now());
+      }
 
       const contract = buildContractFromInput({ objective: input.objective, contract: input.contract });
       this.repo.createContract({

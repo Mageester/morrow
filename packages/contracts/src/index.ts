@@ -302,21 +302,55 @@ export const SendMessageSchema=z.object({
 // working tiers; episodic (time-stamped events), procedural (how-to/workflow),
 // and knowledge (durable facts) are project-wide recall tiers. Every tier except
 // conversation applies to all conversations in the project.
-export const MemoryScopeSchema=z.enum(["project","conversation","user","episodic","procedural","knowledge"]);
-export const MemorySourceSchema=z.enum(["user","summary"]);
+export const MemoryScopeSchema=z.enum([
+  "project","conversation","user","episodic","procedural","knowledge",
+  "user_global","machine_environment","workspace","repository","subtree",
+  "branch_worktree","mission","provider_model","temporary_context",
+]);
+export const MemorySourceSchema=z.enum(["user","summary","cortex"]);
+export const MemoryTypeSchema=z.enum([
+  "user_preference","project_architecture","repository_convention","build_command",
+  "test_command","release_process","protected_file","safety_rule",
+  "architectural_decision","recurring_risk","environment_problem","provider_quirk",
+  "successful_approach","failed_approach","validation_expectation","communication_preference",
+]);
+export const MemoryLifecycleSchema=z.enum([
+  "candidate","evidence_collected","validated","active","superseded","stale","retired",
+]);
+export const MemorySensitivitySchema=z.enum(["public","internal","sensitive","secret"]);
+export const MemoryEvidenceReferenceSchema=z.object({
+  kind:z.enum(["file","mission","user","command"]),
+  reference:z.string().min(1).max(1024),
+  note:z.string().max(500).optional(),
+}).strict();
 export const MemoryEntrySchema=z.object({
   version:SchemaVersionSchema,
   id:z.string(),
   projectId:z.string(),
   conversationId:z.string().nullable(),
   scope:MemoryScopeSchema,
+  type:MemoryTypeSchema.default("project_architecture"),
   content:z.string().min(1),
+  normalizedContent:z.string().min(1),
   source:MemorySourceSchema,
+  evidenceReferences:z.array(MemoryEvidenceReferenceSchema).default([]),
+  lifecycle:MemoryLifecycleSchema.default("active"),
   // Provenance: the task that produced this entry, when known. user-authored
   // entries have a null origin. Lets the user trace why a memory exists.
   originTaskId:z.string().nullable(),
   pinned:z.boolean(),
   enabled:z.boolean(),
+  lastVerifiedAt:z.string().datetime().nullable().default(null),
+  confidence:z.number().min(0).max(1).default(0.5),
+  usageCount:z.number().int().nonnegative().default(0),
+  successContribution:z.number().int().nonnegative().default(0),
+  failureContribution:z.number().int().nonnegative().default(0),
+  staleness:z.enum(["current","possibly_stale","stale","invalidated"]).default("current"),
+  supersedesId:z.string().nullable().default(null),
+  conflictsWithIds:z.array(z.string()).default([]),
+  sensitivity:MemorySensitivitySchema.default("internal"),
+  expirationPolicy:z.string().min(1).max(200).default("never"),
+  expiresAt:z.string().datetime().nullable().default(null),
   createdAt:z.string().datetime(),
   updatedAt:z.string().datetime(),
 }).strict();
@@ -535,6 +569,10 @@ export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
 export type SendMessageInput=z.infer<typeof SendMessageSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
+export type MemoryType=z.infer<typeof MemoryTypeSchema>;
+export type MemoryLifecycle=z.infer<typeof MemoryLifecycleSchema>;
+export type MemorySensitivity=z.infer<typeof MemorySensitivitySchema>;
+export type MemoryEvidenceReference=z.infer<typeof MemoryEvidenceReferenceSchema>;
 
 // ── Honest OAuth integration findings ────────────────────────────────────────
 // Morrow only labels a flow "OAuth" when it is an officially supported, documented
@@ -853,7 +891,7 @@ export const MissionEventTypeSchema=z.enum([
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
   "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
   "mission.review_started",  "mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
-  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned",
+  "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned","mission.cortex_ready",
   "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;

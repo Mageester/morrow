@@ -34,6 +34,10 @@ import { taskRoutingRepository } from "./repositories/task-routing.js";
 import { memoryRepository } from "./repositories/memory.js";
 import { searchRepository } from "./repositories/search.js";
 import { skillUsageRepository } from "./repositories/skill-usage.js";
+import { learnedSkillsRepository } from "./repositories/learned-skills.js";
+import { AutomaticMemoryService } from "./cortex/automatic-memory.js";
+import { AutomaticSkillService } from "./cortex/automatic-skills.js";
+import { verifySkillDirectory } from "./skills/registry.js";
 import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
@@ -238,6 +242,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const memory = memoryRepository(deps.db);
   const search = searchRepository(deps.db);
   const skillUsage = skillUsageRepository(deps.db);
+  const learnedSkills = learnedSkillsRepository(deps.db);
   const schedules = schedulesRepository(deps.db);
   const approvals = approvalsRepository(deps.db);
   const changeSets = changeSetsRepository(deps.db);
@@ -280,6 +285,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const cortexService = new CortexService({
     repo: intelligenceRepo,
     getWorkspacePath: (projectId) => projects.getProjectById(projectId)?.workspacePath,
+    memory: new AutomaticMemoryService(memory),
+    skills: new AutomaticSkillService({
+      repo: learnedSkills,
+      rootForProject: (projectId) => join(resolveMorrowHome(process.env), "projects", projectId, "skills"),
+    }),
   });
   const missionService = new MissionService({
     repo: missions,
@@ -2389,6 +2399,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         const mdPath = join(sdir, "SKILL.md");
         if (seen.has(entry)) continue;
         if (!existsSync(mdPath) || !lstatSync(sdir).isDirectory()) continue;
+        const manifestPath = join(sdir, "manifest.json");
+        if (!existsSync(manifestPath) && (!process.env.MORROW_SKILLS_DIR || resolve(dir) !== resolve(process.env.MORROW_SKILLS_DIR))) continue;
+        if (existsSync(manifestPath) && !verifySkillDirectory(sdir).ok) continue;
         seen.add(entry);
         let manifest: any = {};
         try { manifest = JSON.parse(readFileSync(join(sdir, "manifest.json"), "utf8")); } catch {}
@@ -2423,6 +2436,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return skillUsage.listByProject(projectId);
+  });
+
+  app.get("/api/projects/:projectId/skills/learned", async (request) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+    return learnedSkills.listByProject(projectId);
   });
 
   app.post("/api/projects/:projectId/skills/:skillId/use", async (request, reply) => {

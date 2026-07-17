@@ -7,6 +7,11 @@ stored in Morrow's local SQLite database, scoped to the project, and derived fro
 repository evidence, mission evidence, explicit user rules, and approved
 decisions.
 
+For ordinary missions this lifecycle is automatic. Mission creation builds a
+missing map, checks scoped fingerprints, refreshes changed critical scopes, and
+retrieves relevant active memory. The `cortex` and `memory` commands remain
+inspection and manual-control surfaces; they are not prerequisites for recall.
+
 ## What Morrow Remembers
 
 Cortex stores concise, inspectable records:
@@ -88,6 +93,31 @@ Mission learnings are extracted only from evidence-backed mission outcomes such
 as verified commands, reviewer findings, recorded failures, and recovery results.
 Unsupported claims are rejected. Learnings include staleness conditions and can
 affect later planning when they remain current.
+
+Each automatically captured memory has a stable content-derived ID, scope, type,
+normalized content, evidence references, lifecycle state, confidence, verification
+time, use and outcome counters, freshness, conflict/supersession fields,
+sensitivity, and expiration policy. Retrieval is project-isolated and ranked
+against the next mission request. Expired, stale, invalidated, disabled, or
+non-active records cannot affect execution. Repository changes stale superseded
+deterministic memory before replacement facts become active.
+
+## Automatic Skills
+
+Cortex observes only evidence-backed successful procedures. A safe routine
+workflow is a candidate after its first successful mission and is eligible for
+activation only after the same fingerprint succeeds in two distinct missions.
+Activation stages a project-scoped bundle under Morrow's private data directory,
+then validates its checksum, lifecycle evidence, permissions, and command safety.
+Automatically learned skills cannot request network access or secrets.
+
+Active learned skills carry stable ID, semantic version, trigger conditions,
+scope, steps, permissions, validation requirements, provenance, success/failure
+counts, confidence, last verification, and rollback history. A later matching
+agent request retrieves the verified skill automatically and records the use.
+Any checksum, lifecycle, or permission drift makes the bundle undiscoverable;
+mission-start monitoring quarantines it and records a rollback. A model-created
+bundle without this Cortex lifecycle never becomes implicitly active.
 
 ## Impact Analysis
 
@@ -187,8 +217,9 @@ provider and disclosed routing.
 
 ## Two-Mission Demonstration
 
-1. Register a repository and run `morrow cortex refresh`.
-2. Inspect `morrow cortex status`, `morrow cortex map`, and
+1. Register a repository and create a mission; no map, refresh, save, or index
+   command is required.
+2. Optionally inspect `morrow cortex status`, `morrow cortex map`, and
    `morrow cortex conventions`.
 3. Approve one true convention and add a rule protecting generated output.
 4. Run a mission that touches a component with dependents.
@@ -200,7 +231,8 @@ provider and disclosed routing.
    learnings.
 8. Change an architecture-critical file such as `pnpm-workspace.yaml`.
 9. Run `morrow cortex status` and confirm the affected scope is labelled stale.
-10. Run `morrow cortex refresh` and confirm the stale scope returns to current.
+10. Create the next mission and confirm automatic refresh returns the affected
+    scope to current.
 
 ## Known Limitations
 
@@ -210,3 +242,6 @@ provider and disclosed routing.
   configured runtime.
 - Installed three-journey acceptance and live public manifest publication remain
   release tasks, not unit-test substitutes.
+- Automatic skill generation intentionally covers repeated, safe validation
+  commands first; arbitrary self-modifying code and high-risk procedures are not
+  eligible for automatic activation.
