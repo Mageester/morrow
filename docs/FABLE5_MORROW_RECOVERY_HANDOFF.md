@@ -155,6 +155,26 @@ Two more real defects found by HALOFORM mission runs r3/r4 and fixed (fix-and-re
 
 r5 package: commit 239a0865, SHA-256 3d02c54a83bb1be24a65a4333696be22bb59dcab7c82a9602624e9fe4cb004de.
 
+Runs r5/r6 exposed two final defects, both fixed (fix-and-repeat cycles 6–7):
+
+6. **Ref-ambiguous browser signatures** — element refs regenerate per snapshot (e1, e2, …), so
+   identical args on different pages/viewports are different actions. Duplicate-work
+   suppression served a CACHED result for a cross-page nav click (the real click never ran)
+   and the loop detector interrupted systematic nav clicking (r5) and 3-viewport screenshots.
+   Fix: browser tool signatures scoped to page URL + viewport. Regression:
+   agent-browser-loop.test.ts.
+7. **Vision gate impossible on non-vision routes** — the frontend completion gate demanded a
+   "verified vision analysis attachment" even when the route's model has no vision
+   (deepseek-v4-flash-free), making frontend missions PERMANENTLY uncompletable (r6
+   interrupted after capturing all three viewport screenshots). Fix: vision evidence required
+   only when routeSupportsVision; screenshots/DOM/console/interaction always required.
+   Regression: non-vision route completes with full non-vision evidence.
+
+r7 package: commit 7e2181df, SHA-256 567482e88612eba1654e96d86d441502e71e4fc47ea98f62f265f5548eefd344.
+Also proven in r5/r6 packaged runs: context.budget_calculated shows 215000/endpoint-override/
+configured in the live runtime; background servers + browser navigation + responsive
+screenshots all worked end-to-end.
+
 HALOFORM consumer mission definition recorded at
 `C:\Users\aidan\Desktop\morrow-beta32-final-acceptance\HALOFORM_MISSION.md` (premium
 multipage product website; 8 routes; configurator+cart; typecheck/lint/build; responsive +
