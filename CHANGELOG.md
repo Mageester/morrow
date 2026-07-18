@@ -6,6 +6,37 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.32] - 2026-07-18
+
+### Fixed - beta.31 public-consumer recovery
+
+Recovery of the eleven consumer-observed failure areas from the beta.31 public
+install test. Highlights (full detail in `docs/FABLE5_MORROW_RECOVERY_HANDOFF.md`):
+
+- Routing truth: configured providers outside a preset's order (e.g. an
+  OpenAI-compatible gateway such as OpenCode Zen) are real, recorded routing
+  candidates; a model-only selection resolves to the provider that serves it or
+  fails with `MODEL_UNROUTABLE` before execution; no more
+  `Preset "Balanced" has no configured provider` with a selected model in the
+  header, and no more `Provider fallback: ? → x`.
+- Context truth: per-provider context-limit overrides (e.g.
+  `OPENAI_COMPAT_CONTEXT_LIMIT`) are visible in `morrow models info`, the
+  `/model` picker, and diagnostics with user-supplied/configured provenance —
+  the same number the runtime preflight admits against.
+- Automatic rollover: when even compacted history cannot fit the route, the
+  runtime escalates to a bounded continuation packet (truncated tool results,
+  then checkpoint-only) and continues in a fresh segment — no manual
+  `/continue` dead-end.
+- Mission contract immutability: the durable checkpoint contract is owned by
+  the earliest checkpoint and survives continuation prompts ("continue")
+  instead of being re-derived from them.
+- Terminal: frames are clamped to the viewport (no ghost/stale frames; the
+  `/model` picker is visible on its first render); repeated recovery cycles of
+  one problem collapse into a single counted story.
+- Honest state: a completed task can no longer report a permanently running
+  plan step; doctor names each configured route with effective context and
+  source; `morrow logs` and doctor agree about log existence.
+
 ### Release status - 0.1.0-beta.31 is conditionally ready
 
 Deterministic and packaged acceptance gates (foundation, durable-autonomy,

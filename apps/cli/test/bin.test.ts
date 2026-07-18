@@ -9,6 +9,6 @@ describe("morrow executable", () => {
   it("launches on Windows-compatible absolute paths", async () => {
     const bin = resolve(process.cwd(), "bin", "morrow.mjs");
     const result = await runFile(process.execPath, [bin, "--version"]);
-    expect(result.stdout.trim()).toBe("0.1.0-beta.31");
+    expect(result.stdout.trim()).toBe("0.1.0-beta.32");
   });
 });
