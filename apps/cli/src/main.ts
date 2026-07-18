@@ -316,7 +316,7 @@ async function doctor(ctx: Context): Promise<number> {
       name: "route",
       ok: true,
       detail: `preset ${activePreset}; selected ${selectedProvider ?? "auto"}/${selectedModel ?? "auto"}`
-        + (budget ? `; context ${budget.contextWindowTokens.toLocaleString()} (${budget.contextWindowSource}, ${budget.contextWindowConfidence}); usable input ${budget.usableInputTokens.toLocaleString()}` : ""),
+        + (budget ? `; context ${budget.contextWindowTokens.toLocaleString()} (${budget.contextWindowConfidence}${budget.endpointHost ? ` @ ${budget.endpointHost}` : ""}); usable input ${budget.usableInputTokens.toLocaleString()}` : ""),
       critical: false,
     });
     const projects = await ctx.api().listProjects();
