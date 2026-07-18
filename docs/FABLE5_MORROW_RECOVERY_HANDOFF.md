@@ -138,6 +138,23 @@ opencode-zen / availability provider-reported; doctor route check shows the same
 (usable input 208,140); repository check passes from the registered workspace; the real
 installer path (manifest → download → SHA-256 verify → activate) succeeded three times.
 
+Two more real defects found by HALOFORM mission runs r3/r4 and fixed (fix-and-repeat):
+
+4. **Dead browser sessions wedged navigation** — the product opens a HEADED Edge window by
+   design; when it died/was closed, every browser_open failed with "Target page, context or
+   browser has been closed" until manual close+open, and the loop detector interrupted the
+   mission (98 tools, site build complete, typecheck/lint/build green). Fix: the Playwright
+   controller self-heals (start() disposes dead sessions; open() retries once with a fresh
+   session on a closed-target error). Regression: browser-self-heal.test.ts.
+5. **No supported way to keep a dev server alive** — run_command children die with the call,
+   so browser validation had nothing to navigate to; the model burned turns on racy detached
+   spawns (r4 interrupted at the same leg). Fix: run_command background:true (+readyPort)
+   starts the command under the existing ProcessSupervisor — same policy/approvals, alive
+   across tool calls, port-readiness reporting, force-stopped at task end. Regression:
+   agent-background-process.test.ts (real node http server across tool calls + cleanup).
+
+r5 package: commit 239a0865, SHA-256 3d02c54a83bb1be24a65a4333696be22bb59dcab7c82a9602624e9fe4cb004de.
+
 HALOFORM consumer mission definition recorded at
 `C:\Users\aidan\Desktop\morrow-beta32-final-acceptance\HALOFORM_MISSION.md` (premium
 multipage product website; 8 routes; configurator+cart; typecheck/lint/build; responsive +
