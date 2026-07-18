@@ -1553,6 +1553,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // Supervised background process: outlives this call, dies with the task.
         // Same policy/approval surface as a foreground run_command (already
         // asserted by the caller); the only difference is process lifetime.
+        if (!project) throw new Error("Background processes require a resolved project workspace");
         const supervisor = getProcessSupervisor();
         const record = await supervisor.start({
           projectId: project.id,
