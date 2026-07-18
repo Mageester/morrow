@@ -6,18 +6,28 @@
 
 ## Status
 
-- **Release verdict: NOT READY** — all code-level fixes for the beta.31 consumer failures are
-  implemented, tested, and pushed, but the packaged public-installer consumer acceptance (real
-  provider, substantial mission, context rollover, Guardian verification) has NOT been run.
-  That is the remaining release gate and it cannot be faked.
+- **HALOFORM packaged consumer mission: PASSED** (2026-07-18, Windows host, run r7).
+  Task dfcf1b62 completed on the real packaged install (r7 artifact, commit 7e2181df):
+  97 tool calls (91 completed / 6 failed, 6.2% — beta.31 wasted ~50%), 5 automatic execution
+  segments with 4 durable-checkpoint rollovers (`automaticContinuation:true`), zero /continue,
+  zero /new, zero human interventions (63 approvals YOLO-auto-resolved), same route
+  (openai-compatible/deepseek-v4-flash-free) across every segment (no silent fallback), the
+  ORIGINAL mission contract verbatim in the final checkpoint, one canonical answer.
+  Independent verification: all 9 routes render, `tsc --noEmit` clean, eslint 0 errors,
+  production build green, 15 configurator controls, ZERO browser console errors across
+  desktop/tablet/mobile, no horizontal overflow, screenshots captured
+  (verify-desktop/tablet/mobile.png in the acceptance root), no junk/probe files, git diff
+  is exactly `haloform/`.
+- Published: GitHub prerelease
+  https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.32 (zip SHA-256
+  567482e88612eba1654e96d86d441502e71e4fc47ea98f62f265f5548eefd344, target commit 7e2181df,
+  clean tree) + site manifest pushed to morrow-website main (Cloudflare deploy) — public
+  installer verification is the last step before READY.
 - Active branch: `recovery/beta32-consumer-recovery` (branched from `main` @ 2604256)
-- Pushed: yes (all commits below are on origin)
-- Full test state at last commit: orchestrator 1126 pass / 0 fail; CLI 739 pass / 0 fail;
-  `pnpm -r build` green across the workspace.
-- (2026-07-17, remote Linux session @ 5d616e3) Checkout re-validated: build green, all
-  focused smoke suites green (details under "Tests run"), packaging-flow unit tests
-  27/27 non-skipped pass. Release gate NOT executable in that environment — see
-  "Why the release gate could not run" below. Verdict unchanged: **NOT READY**.
+- Test state: orchestrator 1140 pass / 0 fail; CLI 741 pass / 0 fail; `pnpm check` +
+  `pnpm build` green.
+- (2026-07-17, remote Linux session @ 5d616e3) Checkout re-validated; gate not executable
+  there (Windows packaging + credential required) — see below.
 
 ## Original mission (summary)
 
