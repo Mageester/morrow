@@ -112,6 +112,37 @@ problem; the wrapper is. Full text of the mission is in the session that opened 
 
 - All 11 consumer failure areas remain open until their fixes land (see task list below).
 
+## Beta.32 final gate session (2026-07-18, Windows host)
+
+Packaged consumer acceptance in progress at
+`C:\Users\aidan\Desktop\morrow-beta32-final-acceptance` (isolated MORROW_HOME + fresh Git
+workspace; real OpenCode Zen route opencode.ai / deepseek-v4-flash-free;
+OPENAI_COMPAT_CONTEXT_LIMIT=215000). Three genuinely NEW consumer defects found by the gate
+and fixed via fix-and-repeat (each with regressions, all pushed):
+
+1. **Service never loaded secrets.env at startup** (orchestrator index.ts only passed the
+   path for writes) — credentials saved via `morrow providers configure` vanished on every
+   service restart in packaged installs. Masked for DeepSeek on this machine by a stray
+   User-scope DEEPSEEK_API_KEY. Fix: loadSecretsFileIntoEnv at startup (env wins, file fills
+   gaps). Regression: secrets-startup-load.test.ts (4 tests).
+2. **Packaged launcher pinned MORROW_HOME to <install>\data** for both the delegated CLI and
+   the spawned service — the documented MORROW_HOME override was silently ignored, isolated
+   homes impossible. Fix in installer/templates/morrow.mjs + launcher-dispatch regression.
+3. **findRepoRoot only recognised pnpm-workspace.yaml** — no consumer Git repo was ever
+   detected; doctor warned "not inside a Morrow workspace" from valid repos (beta.31 failure
+   #10 root cause). Fix: .git marks a repo root. Regression in paths.test.ts.
+
+Verified in the packaged product after r3 reinstall (SHA-256 924519d5…, commit 7dd91dc8):
+`models info deepseek-v4-flash-free` → context 215,000 / user-supplied / configured /
+opencode-zen / availability provider-reported; doctor route check shows the same numbers
+(usable input 208,140); repository check passes from the registered workspace; the real
+installer path (manifest → download → SHA-256 verify → activate) succeeded three times.
+
+HALOFORM consumer mission definition recorded at
+`C:\Users\aidan\Desktop\morrow-beta32-final-acceptance\HALOFORM_MISSION.md` (premium
+multipage product website; 8 routes; configurator+cart; typecheck/lint/build; responsive +
+browser validation; matches the prior benchmark output structure on this machine).
+
 ## Task list
 
 1. [done] Branch + handoff scaffold
