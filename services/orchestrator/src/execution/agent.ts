@@ -52,6 +52,9 @@ import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
+import { ProcessSupervisor } from "../processes/supervisor.js";
+import { processesRepository } from "../repositories/processes.js";
+import { connect as netConnect } from "node:net";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
 import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "../skills/registry.js";
@@ -1006,14 +1009,16 @@ export async function executeAgentChatTask({
     },
     {
       name: "run_command",
-      description: "Run a verification, build, test, or mutation command safely. Denies metacharacters and privilege escalation. Scoped to the project workspace.",
+      description: "Run a verification, build, test, or mutation command safely. Denies metacharacters and privilege escalation. Scoped to the project workspace. For a dev/preview server or watcher that must KEEP RUNNING across tool calls (e.g. 'vite preview', 'node server.js'), set background:true with readyPort — the process is supervised, stays alive until the task ends, and the call returns once the port accepts connections. Never try to keep a server alive with detached spawn tricks.",
       parameters: {
         type: "object",
         properties: {
           executable: { type: "string", description: "Executable name (e.g. 'pnpm' or 'git')" },
           args: { type: "array", items: { type: "string" }, description: "Command arguments" },
           cwd: { type: "string", description: "Optional working directory relative to project root" },
-          purpose: { type: "string", description: "Reason for running this command" }
+          purpose: { type: "string", description: "Reason for running this command" },
+          background: { type: "boolean", description: "Run as a supervised background process that outlives this call (for servers/watchers). Stopped automatically when the task ends." },
+          readyPort: { type: "number", description: "With background:true — TCP port to wait on; the call returns ready:true once 127.0.0.1:<port> accepts connections (up to ~30s)." }
         },
         required: ["executable", "args", "purpose"]
       }
@@ -1306,6 +1311,51 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   let browserController: BrowserController | undefined;
   let browserSnapshot: PageSnapshot | undefined;
 
+  // ── Supervised background processes (dev/preview servers, watchers) ────────
+  // Beta.32 acceptance: web missions need a server that SURVIVES its run_command
+  // call so the browser can validate against it. Without this the model resorts
+  // to racy detached-spawn tricks that die or leak orphans. Task-scoped: every
+  // process started here is force-stopped when the task ends.
+  let agentSupervisor: ProcessSupervisor | undefined;
+  let agentProcessesRepo: ReturnType<typeof processesRepository> | undefined;
+  const taskProcessIds = new Set<string>();
+  const getProcessSupervisor = (): ProcessSupervisor => {
+    if (!agentSupervisor) {
+      agentProcessesRepo = processesRepository(db);
+      agentSupervisor = new ProcessSupervisor(agentProcessesRepo, join(resolveMorrowHome(process.env), "process-logs"));
+    }
+    return agentSupervisor;
+  };
+  const stopTaskProcesses = async (): Promise<void> => {
+    if (!agentSupervisor) return;
+    for (const id of taskProcessIds) {
+      await agentSupervisor.terminate(id, { force: true }).catch(() => undefined);
+    }
+    taskProcessIds.clear();
+  };
+  const waitForPort = async (port: number, timeoutMs: number, abandoned?: () => boolean): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (abortSignal?.aborted || abandoned?.()) return false;
+      const accepted = await new Promise<boolean>((resolvePort) => {
+        const socket = netConnect({ host: "127.0.0.1", port, family: 4 });
+        let settled = false;
+        const done = (value: boolean) => {
+          if (settled) return;
+          settled = true;
+          socket.destroy();
+          resolvePort(value);
+        };
+        socket.once("connect", () => done(true));
+        socket.once("error", () => done(false));
+        socket.setTimeout(1_000, () => done(false));
+      });
+      if (accepted) return true;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    }
+    return false;
+  };
+
   const parseBrowserTarget = (rawUrl: unknown): { url: string; origin: string; hostname: string; safeUrl: string } => {
     if (typeof rawUrl !== "string" || rawUrl.length === 0 || rawUrl.length > 4096) throw new Error("browser_open requires a bounded absolute URL");
     let parsed: URL;
@@ -1498,6 +1548,60 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
 
       transitionAgentState("executing_tool", { tool: "run_command" });
+
+      if (args.background === true) {
+        // Supervised background process: outlives this call, dies with the task.
+        // Same policy/approval surface as a foreground run_command (already
+        // asserted by the caller); the only difference is process lifetime.
+        const supervisor = getProcessSupervisor();
+        const record = await supervisor.start({
+          projectId: project.id,
+          taskId,
+          command: exec,
+          args: cmdArgs,
+          cwd: resolvedCwd,
+          mode: "pipe",
+        });
+        taskProcessIds.add(record.id);
+        const readyPort = typeof args.readyPort === "number" && Number.isInteger(args.readyPort) && args.readyPort > 0 && args.readyPort < 65536
+          ? args.readyPort
+          : null;
+        // Stop waiting the moment the process leaves "running" — a dead server
+        // will never open its port and the model should learn that immediately.
+        const ready = readyPort
+          ? await waitForPort(readyPort, 30_000, () => agentProcessesRepo?.get(record.id)?.status !== "running")
+          : true;
+        const stdoutSlice = supervisor.readOutput(record.id, "stdout", 0, 64 * 1024);
+        const stderrSlice = supervisor.readOutput(record.id, "stderr", 0, 64 * 1024);
+        const liveRecord = agentProcessesRepo?.get(record.id);
+        const status = liveRecord?.status ?? "running";
+        const backgroundResult = JSON.stringify({
+          background: true,
+          processId: record.id,
+          pid: record.pid,
+          status,
+          ...(readyPort !== null ? { readyPort, ready } : {}),
+          stdout: stdoutSlice.data.slice(-2_000),
+          stderr: stderrSlice.data.slice(-2_000),
+          note: status !== "running"
+            ? `The background process already ended (${status}${liveRecord?.exitCode !== null && liveRecord?.exitCode !== undefined ? `, exit ${liveRecord.exitCode}` : ""}) — inspect stderr and fix the command.`
+            : readyPort !== null && !ready
+              ? "The process is running but the port never accepted connections within 30s — inspect stdout/stderr before retrying."
+              : "Background process is running. It stays alive across tool calls and is stopped automatically when the task ends.",
+        });
+        records.appendEvidence({
+          id: randomUUID(),
+          taskId,
+          type: "file",
+          path: `${exec} ${cmdArgs.join(" ")} (background)`,
+          metadata: { processId: record.id, pid: record.pid, status, ...(readyPort !== null ? { readyPort, ready } : {}) },
+          createdAt: now(),
+        });
+        if (status !== "running" && liveRecord?.status === "failed") {
+          throw new AgentToolFailure(`Background process failed to start (exit ${liveRecord.exitCode ?? "unknown"})`, JSON.parse(backgroundResult));
+        }
+        return backgroundResult;
+      }
       // Dependency installs, builds, and test runs legitimately take minutes;
       // the default 30s ceiling was too tight for `npm install` / `npm run build`
       // and made ordinary project setup time out. Give those a generous ceiling
@@ -4188,5 +4292,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   completeWithCanonicalAnswer(canonicalFinalText, finalTurn.turnKey);
   } finally {
     await closeBrowserSession();
+    await stopTaskProcesses();
   }
 }
