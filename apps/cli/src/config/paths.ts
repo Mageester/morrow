@@ -21,9 +21,14 @@ export interface MorrowPaths {
 
 export function findRepoRoot(start: string = process.cwd()): string | null {
   let dir = resolve(start);
-  // Walk up looking for the pnpm workspace marker.
+  // Walk up looking for a repository marker. `.git` is the marker every real
+  // consumer project has (beta.32 fix: the previous pnpm-workspace.yaml-only
+  // check meant NO consumer repo was ever detected, so doctor always warned
+  // "not inside a Morrow workspace" from inside a perfectly good Git repo —
+  // beta.31 consumer failure #10). The pnpm workspace marker is kept for the
+  // Morrow development monorepo itself and other workspace-rooted setups.
   for (let i = 0; i < 40; i++) {
-    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
+    if (existsSync(join(dir, ".git")) || existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
