@@ -4,6 +4,7 @@ import { legacyDatabaseCandidatesForRepo, migrateLegacyDatabase, resolveDefaultD
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { TaskRunner } from "./runner.js";
+import { loadSecretsFileIntoEnv } from "./provider/secrets.js";
 import { reconcileMissionsOnStartup } from "./recovery.js";
 import { createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
@@ -16,6 +17,19 @@ if (!process.env.MORROW_SKILLS_DIR) {
   const devRoot = resolveMorrowDevelopmentRoot();
   const devSkills = devRoot ? join(devRoot, "skills") : null;
   if (devSkills && existsSync(devSkills)) process.env.MORROW_SKILLS_DIR = devSkills;
+}
+
+// Restore persisted provider credentials before anything reads provider state.
+// The shell environment wins; the file fills gaps. Without this, credentials
+// saved via `morrow providers configure` were lost on every service restart in
+// packaged installs (the launcher spawns this process with a plain shell env).
+const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
+const secretsLoad = loadSecretsFileIntoEnv(secretsFile, process.env);
+if (secretsLoad.applied.length > 0) {
+  console.log(`Loaded ${secretsLoad.applied.length} saved credential value(s) from secrets.env: ${secretsLoad.applied.join(", ")}`);
+}
+if (secretsLoad.shadowed.length > 0) {
+  console.log(`Environment overrides saved credentials (env wins): ${secretsLoad.shadowed.join(", ")}`);
 }
 
 const dbPath = resolveDefaultDatabasePath(process.env);

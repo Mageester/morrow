@@ -109,6 +109,34 @@ function assertPersistableSecretValue(envName: string, value: string): void {
   }
 }
 
+/**
+ * Load persisted provider credentials into the service environment at startup.
+ *
+ * Without this, credentials saved through `morrow providers configure` (which
+ * hot-applies to the RUNNING service and persists to the secrets file) silently
+ * stop working on the next service restart — the packaged launcher spawns the
+ * orchestrator with a plain shell environment and nothing ever read the file
+ * back. The real environment always wins; the file only fills gaps, mirroring
+ * the CLI's own loadSecretsIntoEnv semantics. Returns key NAMES only.
+ */
+export function loadSecretsFileIntoEnv(
+  secretsFile: string,
+  env: NodeJS.ProcessEnv = process.env
+): { applied: string[]; shadowed: string[] } {
+  const parsed = readSecretsFileSafe(secretsFile);
+  const applied: string[] = [];
+  const shadowed: string[] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (env[key] === undefined) {
+      env[key] = value;
+      applied.push(key);
+    } else if (env[key] !== value) {
+      shadowed.push(key);
+    }
+  }
+  return { applied, shadowed };
+}
+
 export interface ConfigureProviderInput {
   apiKey?: string | undefined;
   baseUrl?: string | undefined;

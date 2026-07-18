@@ -68,3 +68,13 @@ test("pid recovery requires both Morrow health identity and process ownership", 
   assert.equal(canAdoptServicePid(health, false), 0);
   assert.equal(canAdoptServicePid({ ...health, service: "other" }, true), 0);
 });
+
+test("launcher template honours a user MORROW_HOME override for data/service/CLI", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../installer/templates/morrow.mjs", import.meta.url), "utf8");
+  // Beta.32 packaged-acceptance regression: the launcher pinned MORROW_HOME to
+  // join(install, "data") for both the delegated CLI and the spawned service,
+  // silently ignoring the documented user override (RELEASE.md).
+  assert.ok(source.includes('const data = process.env.MORROW_HOME ? process.env.MORROW_HOME : join(install, "data")'));
+  assert.ok(!source.includes('const data = join(install, "data")'));
+});

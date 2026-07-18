@@ -7,7 +7,10 @@ import { canAdoptServicePid, classify, isMorrowHealth, needsService } from "./di
 
 const app = dirname(fileURLToPath(import.meta.url));
 const install = dirname(app);
-const data = join(install, "data");
+// MORROW_HOME is the documented user-data override (RELEASE.md). The launcher
+// must honour it — pinning data to the install root silently ignored isolated
+// homes for both the delegated CLI and the spawned service.
+const data = process.env.MORROW_HOME ? process.env.MORROW_HOME : join(install, "data");
 const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
@@ -23,6 +26,7 @@ const host = "127.0.0.1";
 const port = 4317;
 const url = `http://${host}:${port}`;
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
+mkdirSync(data, { recursive: true }); // may live outside the install root when MORROW_HOME is set
 
 /** Environment that points the delegated CLI at THIS packaged install/service. */
 function cliEnv() {
