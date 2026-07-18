@@ -4,6 +4,30 @@
 > authoritative state. The next session must read this file, inspect git history, validate
 > state, and continue from "Next step" — do not restart the project.
 
+## FINAL VERDICT (2026-07-18): READY — Beta.32 published and publicly verified
+
+- GitHub prerelease: https://github.com/Mageester/morrow/releases/tag/v0.1.0-beta.32
+  (Morrow-v0.1.0-beta.32-windows-x64.zip, SHA-256
+  567482e88612eba1654e96d86d441502e71e4fc47ea98f62f265f5548eefd344, 65,421,047 bytes,
+  target commit 7e2181dff225b6a4df432f41228a86e3c3403d95, clean tree, + checksums file).
+- Live site manifest (morrowproject.getaxiom.ca/releases/latest.json) serves that exact
+  version/URL/SHA (morrow-website commit "release: publish 0.1.0-beta.32 manifest").
+- The REAL public one-liner (`irm https://morrowproject.getaxiom.ca/install.ps1 | iex`)
+  downloaded from the GitHub release, verified the SHA-256 itself, activated, and the
+  installed provenance matches the tested commit exactly (7e2181df, dirty:false).
+- Post-public-install smoke under the acceptance home: doctor route
+  `openai-compatible/deepseek-v4-flash-free; context 215,000 (configured @ opencode.ai);
+  usable input 208,140`; repository registered; models info 215,000 / user-supplied /
+  configured. The default-home service (no override configured there) truthfully reports the
+  conservative fallback — correct behavior, not drift.
+- HALOFORM consumer mission passed on the packaged product with zero ordinary intervention
+  (details under Status), independently re-verified.
+- Branch `recovery/beta32-consumer-recovery` is NOT yet merged to main — the prerelease tag
+  targets the tested commit on the branch. Open a PR to main as ordinary follow-up.
+- Known limitation carried forward: /model first-frame visibility is proven by deterministic
+  compositor/harness regressions (viewport clamp + interactive picker tests), not by a live
+  PTY capture of Windows Terminal — automation shells here have no real TTY (ConPTY limit).
+
 ## Status
 
 - **HALOFORM packaged consumer mission: PASSED** (2026-07-18, Windows host, run r7).
