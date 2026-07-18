@@ -2122,7 +2122,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     for (const viewport of ["1440x900", "768x1024", "390x844"]) {
       if (!screenshotViewports.has(viewport)) gaps.push(`${viewport} screenshot`);
     }
-    if (!routeSupportsVision || !allScreenshotsVisionAttached || screenshotViewports.size === 0) gaps.push("verified vision analysis attachment");
+    // Vision analysis is required evidence only when the active route can
+    // actually see images. Beta.32 acceptance: a non-vision route (OpenCode Zen
+    // deepseek-v4-flash-free) made every frontend mission PERMANENTLY
+    // uncompletable â€” the gate demanded an attachment the route can never
+    // produce. Screenshots at all three viewports, the DOM snapshot, console
+    // inspection, and real interactions remain required either way.
+    if (routeSupportsVision && (!allScreenshotsVisionAttached || screenshotViewports.size === 0)) gaps.push("verified vision analysis attachment");
     return gaps;
   };
   const completionStateFromCalls = (calls: ToolCallRecord[]): {
@@ -3257,7 +3263,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // cached result for a cross-page nav click (the real click never ran)
         // and the loop detector interrupted the mission. Scope every browser
         // tool's signature to the page it acts on.
-        const browserPageScope = tc.name.startsWith("browser_") ? `@${browserSnapshot?.url ?? "none"}` : "";
+        // Scope = page URL + viewport: a screenshot of the same page at three
+        // responsive viewports is three different observations, not a loop.
+        const browserPageScope = tc.name.startsWith("browser_")
+          ? `@${browserSnapshot?.url ?? "none"}@${browserSnapshot?.viewport?.width ?? 0}x${browserSnapshot?.viewport?.height ?? 0}`
+          : "";
         const toolSignature = `${tc.name}:${tc.arguments}${browserPageScope}`;
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
