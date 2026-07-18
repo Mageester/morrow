@@ -3251,13 +3251,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           createdAt: now(),
           startedAt: now()
         });
-        const toolSignature = `${tc.name}:${tc.arguments}`;
+        // Browser element refs (e1, e2, â€¦) are regenerated per snapshot in DOM
+        // order, so identical arguments on two DIFFERENT pages are two different
+        // actions. Beta.32 acceptance: duplicate-work suppression served a
+        // cached result for a cross-page nav click (the real click never ran)
+        // and the loop detector interrupted the mission. Scope every browser
+        // tool's signature to the page it acts on.
+        const browserPageScope = tc.name.startsWith("browser_") ? `@${browserSnapshot?.url ?? "none"}` : "";
+        const toolSignature = `${tc.name}:${tc.arguments}${browserPageScope}`;
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
         const dynamicBrowserObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
-        const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
+        // The loop detector gets the same page-scoped view: the same ref
+        // clicked three times on the SAME page still loops; systematic nav
+        // clicking across pages does not.
+        const loop = loopDetector.record(`${toolCallSignature(tc.name, tc.arguments)}${browserPageScope}`);
         if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name, ...displayTarget(tc.name, tc.arguments) });
