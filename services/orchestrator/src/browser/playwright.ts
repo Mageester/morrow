@@ -130,6 +130,20 @@ class BrowserCancelledError extends Error {
   }
 }
 
+/**
+ * True when an error means the underlying browser/page died out from under us
+ * (window closed by the user, browser crash, target detached) — the session is
+ * unrecoverable in place and must be restarted, not retried verbatim. A headed
+ * consumer browser window being closed by the user is an ordinary event, not an
+ * exceptional one; beta.32 acceptance showed it wedging every subsequent
+ * navigation until the model manually closed and reopened the session.
+ */
+export function isClosedTargetError(error: unknown): boolean {
+  if (error instanceof BrowserCancelledError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /Target page, context or browser has been closed|browser has been closed|Target closed|Session closed|context or browser has been destroyed/i.test(message);
+}
+
 class PlaywrightBrowserController implements BrowserController {
   readonly id = "playwright";
   private browser: Browser | undefined;
@@ -200,8 +214,32 @@ class PlaywrightBrowserController implements BrowserController {
     });
   }
 
+  /** The session objects exist but the real browser/page is gone (window
+   * closed by the user, crash, detach). Distinct from `closed`, which is an
+   * intentional, permanent controller shutdown. */
+  private sessionDead(): boolean {
+    if (!this.page) return false;
+    if (this.page.isClosed()) return true;
+    if (this.browser && !this.browser.isConnected()) return true;
+    return false;
+  }
+
+  /** Dispose dead session objects so start() can build a fresh session. */
+  private async resetDeadSession(): Promise<void> {
+    this.refs.clear();
+    try {
+      if (this.ownsBrowser) await this.browser?.close();
+    } catch { /* the browser is already gone */ }
+    this.page = undefined;
+    this.context = undefined;
+    this.browser = undefined;
+    this.ownsBrowser = false;
+    this.record("lifecycle", "Browser session reset after unexpected close");
+  }
+
   async start(): Promise<void> {
     if (this.closed) throw new Error("Browser controller is closed");
+    if (this.sessionDead()) await this.resetDeadSession();
     if (this.page) return;
     const { chromium } = await import("playwright");
     // Release packages intentionally omit Playwright's large browser download.
@@ -229,8 +267,17 @@ class PlaywrightBrowserController implements BrowserController {
   async open(url: string, options?: BrowserActionOptions): Promise<PageSnapshot> {
     await assertBrowserUrlAllowed(url, this.options);
     await this.start();
-    const page = this.requirePage();
-    await this.abortable(() => page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs }), options);
+    try {
+      await this.abortable(() => this.requirePage().goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs }), options);
+    } catch (error) {
+      // The browser died mid-navigation (window closed, crash). One automatic
+      // fresh-session retry — never a verbatim retry against the dead session.
+      if (this.closed || !isClosedTargetError(error)) throw error;
+      this.record("lifecycle", "Browser died during navigation; restarting the session once");
+      await this.resetDeadSession();
+      await this.start();
+      await this.abortable(() => this.requirePage().goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs }), options);
+    }
     this.refs.clear();
     this.record("navigation", "Browser navigated", { url: safeUrlForEvidence(url) });
     return this.snapshot(options);
