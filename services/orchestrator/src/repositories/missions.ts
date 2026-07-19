@@ -604,6 +604,12 @@ export function missionsRepository(db: Database.Database) {
       return db.prepare("SELECT * FROM mission_events WHERE mission_id = ? ORDER BY sequence ASC").all(missionId).map(mapEvent);
     },
 
+    listEventsAfter(missionId: string, afterSequence: number): MissionEvent[] {
+      return db.prepare(
+        "SELECT * FROM mission_events WHERE mission_id = ? AND sequence > ? ORDER BY sequence ASC",
+      ).all(missionId, afterSequence).map(mapEvent);
+    },
+
     // ── Advanced Execution Kernel: contract + requirement ledger ──────────
     createContract(input: {
       missionId: string;

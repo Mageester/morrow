@@ -81,9 +81,10 @@ export function encodeSse(envelope: WebMissionStreamEnvelope): string {
 }
 
 /**
- * Build the web envelope for a persisted mission event. The payload is
- * deliberately small — an event identity, its raw type, and its human summary —
- * so no provider/model internals or secrets are ever pushed to the browser.
+ * Build the web envelope for a persisted mission event. The payload deliberately
+ * carries only an opaque event identity: summaries and event data can contain
+ * commands, credential-bearing URLs, or provider internals and must not cross
+ * the browser boundary.
  */
 function toEnvelope(missionId: string, event: MissionEvent): WebMissionStreamEnvelope {
   return {
@@ -92,7 +93,7 @@ function toEnvelope(missionId: string, event: MissionEvent): WebMissionStreamEnv
     missionId,
     eventType: classifyWebStreamEventType(event.type),
     emittedAt: event.createdAt,
-    payload: { eventId: event.id, eventType: event.type, summary: event.summary },
+    payload: { eventId: event.id },
   };
 }
 
@@ -120,16 +121,13 @@ export function registerWebMissionStreamRoutes(app: FastifyInstance, deps: WebMi
     const startCursor = resolveResumeCursor(afterQuery, lastEventId);
     if (!deps.missions.get(missionId)) throw new ApiError(404, "Mission not found", "NOT_FOUND");
 
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-
+    reply.hijack();
     let closed = false;
     let lastSent = startCursor;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+    let waitingForDrain = false;
+    let drainHandler: (() => void) | undefined;
 
     const clearTimers = () => {
       if (pollTimer) clearTimeout(pollTimer);
@@ -138,32 +136,108 @@ export function registerWebMissionStreamRoutes(app: FastifyInstance, deps: WebMi
       heartbeatTimer = undefined;
     };
 
-    request.raw.on("close", () => {
+    const stop = (destroyResponse = false) => {
+      if (closed) return;
       closed = true;
       clearTimers();
-    });
+      if (drainHandler) {
+        reply.raw.off("drain", drainHandler);
+        drainHandler = undefined;
+      }
+      if (destroyResponse && !reply.raw.destroyed) {
+        try {
+          reply.raw.destroy();
+        } catch {
+          if (!reply.raw.writableEnded) {
+            try { reply.raw.end(); } catch { /* socket is already unusable */ }
+          }
+        }
+      }
+    };
+
+    request.raw.on("close", stop);
+    reply.raw.on("close", stop);
+    reply.raw.on("error", () => stop(true));
+
+    try {
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+    } catch {
+      stop(true);
+      return;
+    }
+
+    const resumeAfterDrain = () => {
+      drainHandler = undefined;
+      if (closed) return;
+      waitingForDrain = false;
+      scheduleHeartbeat();
+      poll();
+    };
+
+    const waitForDrain = () => {
+      if (closed || waitingForDrain) return;
+      waitingForDrain = true;
+      clearTimers();
+      drainHandler = resumeAfterDrain;
+      reply.raw.once("drain", drainHandler);
+    };
 
     const scheduleHeartbeat = () => {
+      if (closed || waitingForDrain || heartbeatTimer) return;
       heartbeatTimer = setTimeout(() => {
-        if (closed) return;
-        reply.raw.write(": heartbeat\n\n");
-        scheduleHeartbeat();
+        heartbeatTimer = undefined;
+        if (closed || waitingForDrain) return;
+        try {
+          if (!reply.raw.write(": heartbeat\n\n")) {
+            waitForDrain();
+            return;
+          }
+          scheduleHeartbeat();
+        } catch {
+          stop(true);
+        }
       }, heartbeatIntervalMs);
     };
 
+    const schedulePoll = () => {
+      if (closed || waitingForDrain || pollTimer) return;
+      pollTimer = setTimeout(() => {
+        pollTimer = undefined;
+        poll();
+      }, pollIntervalMs);
+    };
+
     const poll = () => {
-      if (closed) return;
-      const pending = deps.missions.listEvents(missionId).filter((event) => event.sequence > lastSent);
-      if (pending.length > 0) {
-        for (const event of pending) {
-          reply.raw.write(encodeSse(toEnvelope(missionId, event)));
-          lastSent = event.sequence;
+      if (closed || waitingForDrain) return;
+      try {
+        const pending = deps.missions.listEventsAfter(missionId, lastSent);
+        if (pending.length > 0) {
+          for (const event of pending) {
+            const accepted = reply.raw.write(encodeSse(toEnvelope(missionId, event)));
+            // Node accepts the chunk into its output buffer even when `write`
+            // returns false. Advance only after a non-throwing write, then wait
+            // for drain before querying or writing the next event.
+            lastSent = event.sequence;
+            if (!accepted) {
+              waitForDrain();
+              return;
+            }
+          }
+          // Real traffic resets the idle clock: a heartbeat is only for silence.
+          if (heartbeatTimer) {
+            clearTimeout(heartbeatTimer);
+            heartbeatTimer = undefined;
+          }
+          scheduleHeartbeat();
         }
-        // Real traffic resets the idle clock: a heartbeat is only for silence.
-        if (heartbeatTimer) clearTimeout(heartbeatTimer);
-        scheduleHeartbeat();
+        schedulePoll();
+      } catch {
+        stop(true);
       }
-      pollTimer = setTimeout(poll, pollIntervalMs);
     };
 
     scheduleHeartbeat();
