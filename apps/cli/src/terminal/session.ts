@@ -206,6 +206,10 @@ export class InteractiveSession {
     this._outputViewer = v;
     this.viewerScroll = 0;
   }
+  /** Final answers already copied into native terminal scrollback, keyed by
+   * task and turn. A resumed task may produce another final turn, but replayed
+   * SSE events must never write the same answer twice. */
+  private readonly scrollbackAnswerKeys = new Set<string>();
   private pendingApproval: ApprovalView | null = null;
   /** True only for the brief, atomic window where a one-time out-of-band
    *  scrollback write is in flight (see `emitScrollbackReport`). The normal
@@ -1349,6 +1353,36 @@ export class InteractiveSession {
   }
 
   /**
+   * Copy final answers that will not fit in the live frame into real terminal
+   * scrollback. The bounded viewport remains readable while Morrow is open;
+   * this durable copy makes a completed long answer readable after later
+   * frames have replaced it. Short answers stay in the live transcript only,
+   * avoiding redundant terminal noise.
+   */
+  private maybeEmitLongFinalAnswer(): void {
+    const answer = [...this.term.conversation]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && entry.final && !entry.aborted && entry.text.trim());
+    if (!answer) return;
+
+    const taskId = this.currentTaskId ?? this.lastTaskId ?? "session";
+    const key = `${taskId}:${answer.turnId ?? "legacy"}`;
+    if (this.scrollbackAnswerKeys.has(key)) return;
+
+    const { io } = this.deps;
+    const wrappedRows = answer.text
+      .split(/\r?\n/)
+      .reduce((count, line) => count + hardWrapLine(line, io.columns).length, 0);
+    // Terminal chrome, input, status, and completion details consume roughly
+    // half a normal 24-row viewport. Use a conservative floor for small TTYs.
+    const liveRowBudget = Math.max(4, (io.rows ?? 24) - 12);
+    if (wrappedRows <= liveRowBudget) return;
+
+    this.scrollbackAnswerKeys.add(key);
+    this.emitScrollbackText(`# Morrow Final Answer\n\n${answer.text.trim()}`);
+  }
+
+  /**
    * Leave a one-time, permanent copy of the report in real terminal
    * scrollback (so it survives after the overlay is closed, and stays
    * selectable/copyable — this never uses the alternate screen buffer).
@@ -1365,6 +1399,12 @@ export class InteractiveSession {
    * painted line — instead of an implicit, possibly stale cursor position.
    */
   private emitScrollbackReport(report: string): void {
+    this.emitScrollbackText(report);
+  }
+
+  /** Claim the terminal briefly and append durable, width-stable text below
+   * the live frame. Used for explicit reports and automatic long answers. */
+  private emitScrollbackText(text: string): void {
     const { io } = this.deps;
     if (!io.isTTY) return;
     this.reportWriteInProgress = true;
@@ -1376,7 +1416,7 @@ export class InteractiveSession {
     // its native auto-wrap: a resize between now and whenever this
     // scrollback is read back can otherwise reflow it unpredictably, and
     // auto-wrap can interact badly with the following cursor position write.
-    const wrapped = report.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
+    const wrapped = text.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
     const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + wrapped + "\r\n";
     io.write(body);
     this.reportWriteInProgress = false;
@@ -1900,6 +1940,9 @@ export class InteractiveSession {
 
   private applyEvent(event: TerminalEvent): void {
     this.term = reduce(this.term, event, this.now);
+    if ((event.type === "assistant.turn_end" && event.final) || event.type === "assistant.end") {
+      this.maybeEmitLongFinalAnswer();
+    }
     this.requestPaint(false);
   }
 
