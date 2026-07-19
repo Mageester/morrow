@@ -188,6 +188,24 @@ describe("Preset router", () => {
     expect(routePreset("private-local", env).ok).toBe(false);
   });
 
+  it("routes to a spectrum provider (Groq) outside the preset order and resolves its models", () => {
+    // The new key providers are not in any preset's providerOrder; when one of
+    // them is the ONLY configured provider it must still route as an explicit
+    // outside-order candidate, and a model-only selection must resolve to it.
+    const env = { GROQ_API_KEY: "gsk-test" };
+    const res = routePreset("balanced", env);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.decision.providerId).toBe("groq");
+      expect(res.decision.model).toBe("llama-3.3-70b-versatile");
+      expect(res.decision.fallbackUsed).toBe(true);
+      expect(res.decision.reason).toContain("outside preset order");
+    }
+    expect(resolveProviderForModel("llama-3.1-8b-instant", env)).toBe("groq");
+    expect(resolveProviderForModel("grok-4", env)).toBe(null);
+    expect(resolveProviderForModel("grok-4", { XAI_API_KEY: "xk" })).toBe("xai");
+  });
+
   it("resolves the serving provider for a model-only selection", () => {
     const env = { OPENAI_COMPAT_BASE_URL: "https://opencode.ai/v1", OPENAI_COMPAT_MODEL: "deepseek-v4-flash-free" };
     expect(resolveProviderForModel("deepseek-v4-flash-free", env)).toBe("openai-compatible");

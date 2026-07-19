@@ -11,6 +11,7 @@ import {
   safeHost,
 } from "./credentials.js";
 import { providerEnvMapping } from "./secrets.js";
+import { OPENAI_CHAT_KEY_SPECS, type OpenAiChatKeySpec } from "./openai-chat-specs.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
@@ -48,6 +49,16 @@ function apiKeyAuthMode(id: ProviderId): ProviderAuthMode {
     gemini: "gemini-api-key",
     openrouter: "openrouter-api-key",
     deepseek: "deepseek-api-key",
+    xai: "xai-api-key",
+    groq: "groq-api-key",
+    mistral: "mistral-api-key",
+    together: "together-api-key",
+    fireworks: "fireworks-api-key",
+    cerebras: "cerebras-api-key",
+    moonshot: "moonshot-api-key",
+    zhipu: "zhipu-api-key",
+    qwen: "qwen-api-key",
+    perplexity: "perplexity-api-key",
   } as Partial<Record<ProviderId, ProviderAuthMode>>)[id] ?? "unknown";
 }
 
@@ -154,6 +165,55 @@ function apiKeyStatus(
   };
 }
 
+/**
+ * Descriptor for a key-authenticated OpenAI-chat provider, built from its
+ * spec (openai-chat-specs.ts) and the canonical env mapping (secrets.ts).
+ * One spec entry is the complete registry wiring for such a provider.
+ */
+function openAiChatKeyDescriptor(spec: OpenAiChatKeySpec): ProviderDescriptor {
+  const envNames = providerEnvMapping(spec.id);
+  if (!envNames?.apiKeyEnv || !envNames.baseUrlEnv) throw new Error(`Provider ${spec.id} is missing its PROVIDER_ENV mapping`);
+  const cred = (env: ProviderEnv) => resolveApiKeyCredential(env, {
+    apiKeyEnv: envNames.apiKeyEnv!,
+    ...(spec.fallbackApiKeyEnv ? { fallbackApiKeyEnv: spec.fallbackApiKeyEnv } : {}),
+    baseUrlEnv: envNames.baseUrlEnv!,
+    defaultBaseUrl: spec.defaultBaseUrl,
+  });
+  return {
+    id: spec.id,
+    label: spec.label,
+    kind: "api-key",
+    capabilities: caps({ customEndpoint: true, vision: spec.vision ?? false, toolCalls: spec.toolCalls ?? true }),
+    defaultModel: spec.defaultModel,
+    models: spec.models,
+    setupHint: spec.setupHint,
+    note: spec.note,
+    status(env) {
+      return apiKeyStatus(this, cred(env), env);
+    },
+    build(env, model) {
+      const c = cred(env);
+      if (!c.configured) throw new ProviderError("not_configured", `${spec.label} is not configured (${envNames.apiKeyEnv} missing)`, { kind: "auth" });
+      return new OpenAiCompatibleProvider({
+        id: spec.id,
+        apiKey: c.apiKey!,
+        baseUrl: c.baseUrl,
+        defaultModel: resolveModel(env, spec.id, model, spec.defaultModel),
+        includeUsage: true,
+        ...(spec.extraHeaders ? { extraHeaders: spec.extraHeaders } : {}),
+        route: routeMetadata({
+          env,
+          id: spec.id,
+          protocol: "openai-chat",
+          endpointKind: c.endpointType,
+          endpointHost: c.host,
+          ...(spec.defaultEndpointLimitTokens !== undefined ? { defaultEndpointLimitTokens: spec.defaultEndpointLimitTokens } : {}),
+        }),
+      });
+    },
+  };
+}
+
 const DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "openai",
@@ -236,66 +296,10 @@ const DESCRIPTORS: ProviderDescriptor[] = [
       return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), route: routeMetadata({ env, id: this.id, protocol: "gemini-generate-content", endpointKind: c.endpointType, endpointHost: c.host }) });
     },
   },
-  {
-    id: "openrouter",
-    label: "OpenRouter",
-    kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
-    defaultModel: "openrouter/auto",
-    models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
-    setupHint: "Set OPENROUTER_API_KEY.",
-    note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
-    status(env) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      return apiKeyStatus(this, c, env);
-    },
-    build(env, model) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({
-        id: "openrouter",
-        apiKey: c.apiKey!,
-        baseUrl: c.baseUrl,
-        defaultModel: resolveModel(env, this.id, model, this.defaultModel),
-        includeUsage: true,
-        extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
-        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
-      });
-    },
-  },
-  {
-    id: "deepseek",
-    label: "DeepSeek",
-    kind: "api-key",
-    capabilities: caps({ customEndpoint: true }),
-    defaultModel: "deepseek-v4-flash",
-    models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
-    setupHint: "Set DEEPSEEK_API_KEY.",
-    note: null,
-    status(env) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" });
-      return apiKeyStatus(this, c, env);
-    },
-    build(env, model) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "DeepSeek is not configured (DEEPSEEK_API_KEY missing)", { kind: "auth" });
-      return new OpenAiCompatibleProvider({
-        id: "deepseek",
-        apiKey: c.apiKey!,
-        baseUrl: c.baseUrl,
-        defaultModel: resolveModel(env, this.id, model, this.defaultModel),
-        includeUsage: true,
-        route: routeMetadata({
-          env,
-          id: this.id,
-          protocol: "openai-chat",
-          endpointKind: c.endpointType,
-          endpointHost: c.host,
-          defaultEndpointLimitTokens: 131_072,
-        }),
-      });
-    },
-  },
+  // Every key-authenticated OpenAI-chat provider (OpenRouter, DeepSeek, xAI,
+  // Groq, Mistral, Together, Fireworks, Cerebras, Moonshot, Z.ai, Qwen,
+  // Perplexity, …) is generated from its spec entry.
+  ...OPENAI_CHAT_KEY_SPECS.map(openAiChatKeyDescriptor),
   {
     id: "openai-compatible",
     label: "OpenAI-compatible endpoint",
@@ -373,6 +377,46 @@ const DESCRIPTORS: ProviderDescriptor[] = [
       const c = resolveLocalCredential(env, { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" });
       if (!c.configured) throw new ProviderError("not_configured", "Ollama is not enabled (set OLLAMA_BASE_URL to a running server)", { kind: "invalid_request" });
       return new OpenAiCompatibleProvider({ id: "ollama", baseUrl: c.baseUrl, defaultModel: model || env.OLLAMA_MODEL || this.defaultModel, includeUsage: false, route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }) });
+    },
+  },
+  {
+    id: "lmstudio",
+    label: "LM Studio (local)",
+    kind: "local",
+    capabilities: caps({ local: true, customEndpoint: true }),
+    defaultModel: "",
+    models: [],
+    setupHint: "Run LM Studio's local server and set LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1 to enable. Optionally LMSTUDIO_MODEL.",
+    note: "Fully local inference through LM Studio's OpenAI-compatible server. No data leaves the machine; no API key required.",
+    status(env) {
+      const c = resolveLocalCredential(env, { baseUrlEnv: "LMSTUDIO_BASE_URL", defaultBaseUrl: "http://127.0.0.1:1234/v1" });
+      const model = env.LMSTUDIO_MODEL || "";
+      return {
+        version: 1,
+        id: this.id,
+        label: this.label,
+        kind: this.kind,
+        configured: c.configured,
+        available: c.configured,
+        endpointType: c.endpointType,
+        endpointHost: c.host,
+        authStatus: "not-applicable",
+        authMode: "lmstudio",
+        capabilities: this.capabilities,
+        // Loaded models are discovered live from the running server; the env
+        // override only pins a default before discovery has run.
+        models: model ? [model] : [],
+        defaultModel: model || null,
+        note: this.note,
+        setupHint: this.setupHint,
+      };
+    },
+    build(env, model) {
+      const c = resolveLocalCredential(env, { baseUrlEnv: "LMSTUDIO_BASE_URL", defaultBaseUrl: "http://127.0.0.1:1234/v1" });
+      if (!c.configured) throw new ProviderError("not_configured", "LM Studio is not enabled (set LMSTUDIO_BASE_URL to a running server)", { kind: "invalid_request" });
+      const resolvedModel = model || env.LMSTUDIO_MODEL || "";
+      if (!resolvedModel) throw new ProviderError("not_configured", "LM Studio requires a model (set LMSTUDIO_MODEL or pass an override)", { kind: "invalid_request" });
+      return new OpenAiCompatibleProvider({ id: "lmstudio", baseUrl: c.baseUrl, defaultModel: resolvedModel, includeUsage: false, route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }) });
     },
   },
 ];

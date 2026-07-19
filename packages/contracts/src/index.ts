@@ -1,6 +1,6 @@
 import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
-export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama"]);
+export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama","xai","groq","mistral","together","fireworks","cerebras","moonshot","zhipu","qwen","perplexity","lmstudio"]);
 export const TaskStatusSchema=z.enum(["queued","running","completed","verified","failed","cancelled","interrupted"]);
 export const AgentExecutionStateSchema=z.enum(["idle","understanding","planning","waiting_for_approval","executing_tool","observing","proposing_changes","applying_changes","verifying","completed","failed","cancelled","interrupted"]);
 export const ApprovalKindSchema=z.enum(["command","change_set"]);
@@ -71,6 +71,8 @@ export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applic
 export const ProviderAuthModeSchema=z.enum([
   "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
   "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+  "xai-api-key","groq-api-key","mistral-api-key","together-api-key","fireworks-api-key",
+  "cerebras-api-key","moonshot-api-key","zhipu-api-key","qwen-api-key","perplexity-api-key","lmstudio",
 ]);
 export const ProviderStatusSchema=z.object({
   version:SchemaVersionSchema,

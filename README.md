@@ -147,8 +147,10 @@ The "Inspect workspace" task is a safe, deterministic execution workflow:
 
 Morrow runs a conversation-first agent through a provider-neutral runtime:
 
-- **Providers:** OpenAI, Anthropic, Google Gemini, OpenRouter, DeepSeek, a
-  generic OpenAI-compatible endpoint, and local Ollama — all normalized to one
+- **Providers:** OpenAI, Anthropic, Google Gemini, OpenRouter, DeepSeek, xAI
+  Grok, Groq, Mistral, Together AI, Fireworks AI, Cerebras, Moonshot Kimi,
+  Z.ai GLM, Alibaba Qwen, Perplexity, a generic OpenAI-compatible endpoint,
+  and local Ollama or LM Studio — all normalized to one
   streaming/tool-call/typed-error contract.
 - **Presets & routing:** seven real presets (Best Quality, Balanced, Fast,
   Cheap, Coding, Research, Private Local) resolve to a configured provider+model

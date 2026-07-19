@@ -122,8 +122,8 @@ describe("CLI Onboarding Command", () => {
     vi.mocked(ask).mockResolvedValueOnce("Alex");
     // use case: select development (index 0)
     vi.mocked(select).mockResolvedValueOnce(0);
-    // provider setup: select skip (index 4)
-    vi.mocked(select).mockResolvedValueOnce(4);
+    // provider setup: select skip (the last entry, after the 15 key-billed providers)
+    vi.mocked(select).mockResolvedValueOnce(15);
     // agent mode: select Agent (index 2)
     vi.mocked(select).mockResolvedValueOnce(2);
     // skills selection: select enable all (index 0)

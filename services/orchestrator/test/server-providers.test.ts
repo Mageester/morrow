@@ -3,6 +3,8 @@ import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
+import { OPENAI_CHAT_KEY_SPECS } from "../src/provider/openai-chat-specs.js";
+import { providerEnvMapping } from "../src/provider/secrets.js";
 import type { FastifyInstance } from "fastify";
 
 describe("Provider / preset / memory API", () => {
@@ -229,6 +231,70 @@ describe("Provider / preset / memory API", () => {
     } finally {
       if (prevKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = prevKey;
       if (prevLimit === undefined) delete process.env.DEEPSEEK_CONTEXT_LIMIT; else process.env.DEEPSEEK_CONTEXT_LIMIT = prevLimit;
+    }
+  });
+
+  // The provider spectrum: every key-authenticated OpenAI-chat provider in the
+  // spec table is fully wired — listed unconfigured by default, configured by
+  // its canonical env var, exposed in the model picker's budgets view, and
+  // reporting a provider-specific auth mode (the /connect surface).
+  it("wires every openai-chat key provider end to end (list, configure, budgets, auth mode)", async () => {
+    const before = (await json("GET", "/api/providers")).body;
+    for (const spec of OPENAI_CHAT_KEY_SPECS) {
+      const listed = before.find((p: any) => p.id === spec.id);
+      expect(listed, `${spec.id} must be listed`).toBeTruthy();
+      expect(listed.kind).toBe("api-key");
+
+      const keyEnv = providerEnvMapping(spec.id)!.apiKeyEnv!;
+      const prev = process.env[keyEnv];
+      process.env[keyEnv] = `sk-test-${spec.id}`;
+      try {
+        const status = (await json("GET", "/api/providers")).body.find((p: any) => p.id === spec.id);
+        expect(status.configured, `${spec.id} must configure via ${keyEnv}`).toBe(true);
+        expect(status.authMode).toBe(`${spec.id}-api-key`);
+        expect(status.defaultModel).toBe(spec.defaultModel);
+
+        const budgets = (await json("GET", "/api/models/budgets")).body;
+        const row = budgets.find((b: any) => b.providerId === spec.id && b.selectedModelId === spec.defaultModel);
+        expect(row, `${spec.id} default model must appear in budgets`).toBeTruthy();
+        expect(row.configured).toBe(true);
+        expect(row.protocol).toBe("openai-chat");
+      } finally {
+        if (prev === undefined) delete process.env[keyEnv]; else process.env[keyEnv] = prev;
+      }
+    }
+  });
+
+  it("lists LM Studio as a local provider configured by base URL", async () => {
+    const prev = process.env.LMSTUDIO_BASE_URL;
+    try {
+      delete process.env.LMSTUDIO_BASE_URL;
+      const off = (await json("GET", "/api/providers")).body.find((p: any) => p.id === "lmstudio");
+      expect(off).toBeTruthy();
+      expect(off.kind).toBe("local");
+      expect(off.configured).toBe(false);
+
+      process.env.LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1";
+      const on = (await json("GET", "/api/providers")).body.find((p: any) => p.id === "lmstudio");
+      expect(on.configured).toBe(true);
+      expect(on.authMode).toBe("lmstudio");
+      expect(on.authStatus).toBe("not-applicable");
+    } finally {
+      if (prev === undefined) delete process.env.LMSTUDIO_BASE_URL; else process.env.LMSTUDIO_BASE_URL = prev;
+    }
+  });
+
+  it("reports Perplexity as unable to drive tools, at both provider and model level", async () => {
+    const prev = process.env.PERPLEXITY_API_KEY;
+    process.env.PERPLEXITY_API_KEY = "pplx-test";
+    try {
+      const status = (await json("GET", "/api/providers")).body.find((p: any) => p.id === "perplexity");
+      expect(status.capabilities.toolCalls).toBe(false);
+      const budgets = (await json("GET", "/api/models/budgets")).body;
+      const sonarPro = budgets.find((b: any) => b.providerId === "perplexity" && b.selectedModelId === "sonar-pro");
+      expect(sonarPro.capabilities.toolCalls).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.PERPLEXITY_API_KEY; else process.env.PERPLEXITY_API_KEY = prev;
     }
   });
 

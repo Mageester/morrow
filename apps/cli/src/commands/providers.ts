@@ -15,6 +15,22 @@ const KEY_ENV: Record<string, string> = {
   openrouter: "OPENROUTER_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   "openai-compatible": "OPENAI_COMPAT_API_KEY",
+  xai: "XAI_API_KEY",
+  groq: "GROQ_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  together: "TOGETHER_API_KEY",
+  fireworks: "FIREWORKS_API_KEY",
+  cerebras: "CEREBRAS_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zhipu: "ZHIPU_API_KEY",
+  qwen: "QWEN_API_KEY",
+  perplexity: "PERPLEXITY_API_KEY",
+};
+
+/** Local, URL-configured providers (no API key) and their default servers. */
+const LOCAL_URL_PROVIDERS: Record<string, string> = {
+  ollama: "http://127.0.0.1:11434/v1",
+  lmstudio: "http://127.0.0.1:1234/v1",
 };
 
 /** Providers that support "sign in with your subscription" OAuth. */
@@ -88,7 +104,7 @@ async function status(ctx: Context, api: MorrowApi): Promise<number> {
 
 async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<number> {
   const id = args[0];
-  const ALL = [...Object.keys(KEY_ENV), "ollama"];
+  const ALL = [...Object.keys(KEY_ENV), ...Object.keys(LOCAL_URL_PROVIDERS)];
   if (!id) throw usageError("Usage: morrow providers configure <provider> [--key <key>] [--url <url>] [--model <id>]", `Providers: ${ALL.join(", ")}`);
 
   // openai/anthropic support "sign in with your subscription" OAuth. Use it by
@@ -99,9 +115,9 @@ async function configure(ctx: Context, api: MorrowApi, args: string[]): Promise<
 
   const input: { apiKey?: string; baseUrl?: string; model?: string } = {};
 
-  if (id === "ollama" || id === "openai-compatible") {
-    // URL-configured providers (Ollama is local; the compat endpoint is generic).
-    const def = id === "ollama" ? "http://127.0.0.1:11434/v1" : "";
+  if (id in LOCAL_URL_PROVIDERS || id === "openai-compatible") {
+    // URL-configured providers (Ollama/LM Studio are local; the compat endpoint is generic).
+    const def = LOCAL_URL_PROVIDERS[id] ?? "";
     let url = flagString(ctx.flags, "url");
     if (!url && isInteractive(ctx)) {
       url = await ask(`Base URL${def ? ` [${def}]` : ""}: `);

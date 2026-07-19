@@ -27,7 +27,36 @@ const KEY_ENV: Record<string, string> = {
   gemini: "GEMINI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
+  xai: "XAI_API_KEY",
+  groq: "GROQ_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  together: "TOGETHER_API_KEY",
+  fireworks: "FIREWORKS_API_KEY",
+  cerebras: "CEREBRAS_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zhipu: "ZHIPU_API_KEY",
+  qwen: "QWEN_API_KEY",
+  perplexity: "PERPLEXITY_API_KEY",
 };
+
+/** The key-billed providers offered by the onboarding picker, in menu order. */
+const ONBOARD_PROVIDERS: { id: string; label: string }[] = [
+  { id: "openai", label: "OpenAI (API-key Billing)" },
+  { id: "anthropic", label: "Anthropic (API-key Billing)" },
+  { id: "gemini", label: "Google Gemini (API-key Billing)" },
+  { id: "deepseek", label: "DeepSeek (API-key Billing)" },
+  { id: "openrouter", label: "OpenRouter (API-key Billing)" },
+  { id: "xai", label: "xAI Grok (API-key Billing)" },
+  { id: "groq", label: "Groq (API-key Billing)" },
+  { id: "mistral", label: "Mistral (API-key Billing)" },
+  { id: "together", label: "Together AI (API-key Billing)" },
+  { id: "fireworks", label: "Fireworks AI (API-key Billing)" },
+  { id: "cerebras", label: "Cerebras (API-key Billing)" },
+  { id: "moonshot", label: "Moonshot Kimi (API-key Billing)" },
+  { id: "zhipu", label: "Z.ai GLM (API-key Billing)" },
+  { id: "qwen", label: "Alibaba Qwen (API-key Billing)" },
+  { id: "perplexity", label: "Perplexity (API-key Billing)" },
+];
 
 export async function onboardCommand(ctx: Context, sub: string, args: string[]): Promise<number> {
   if (sub === "reset") {
@@ -232,10 +261,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       const api = ctx.api();
 
       const options = [
-        { id: "openai", label: "OpenAI (API-key Billing)" },
-        { id: "anthropic", label: "Anthropic (API-key Billing)" },
-        { id: "deepseek", label: "DeepSeek (API-key Billing)" },
-        { id: "openrouter", label: "OpenRouter (API-key Billing)" },
+        ...ONBOARD_PROVIDERS,
         { id: "skip", label: "Skip / Continue with current providers" },
       ];
 
@@ -253,7 +279,7 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
         ctx.out.print(ctx.out.bold("Current Provider Setup:"));
         for (const p of statuses) {
           const mark = p.configured ? ctx.out.green("● configured") : ctx.out.gray("○ not configured");
-          if (["openai", "anthropic", "deepseek", "openrouter"].includes(p.id)) {
+          if (ONBOARD_PROVIDERS.some((option) => option.id === p.id)) {
             ctx.out.print(`  ${mark}  ${ctx.out.bold(p.label)}`);
           }
         }

@@ -3,6 +3,8 @@ import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
+import { openAiChatKeySpec } from "./openai-chat-specs.js";
+import { providerEnvMapping } from "./secrets.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -104,26 +106,32 @@ interface PlannedRequest {
 }
 
 function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
+  // Key-authenticated OpenAI-chat providers share one probe shape, planned
+  // from the same spec the registry builds descriptors from.
+  const chatSpec = openAiChatKeySpec(id);
+  if (chatSpec) {
+    const envNames = providerEnvMapping(id);
+    const c = resolveApiKeyCredential(env, {
+      apiKeyEnv: envNames!.apiKeyEnv!,
+      ...(chatSpec.fallbackApiKeyEnv ? { fallbackApiKeyEnv: chatSpec.fallbackApiKeyEnv } : {}),
+      baseUrlEnv: envNames!.baseUrlEnv!,
+      defaultBaseUrl: chatSpec.defaultBaseUrl,
+    });
+    if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${envNames!.apiKeyEnv} missing).` };
+    return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(chatSpec.extraHeaders ?? {}) }, host: c.host } };
+  }
   switch (id) {
-    case "openai":
-    case "openrouter":
-    case "deepseek": {
-      const cfgByProvider: Record<string, { apiKeyEnv: string; baseUrlEnv: string; defaultBaseUrl: string; extra?: Record<string, string> }> = {
-        openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" },
-        openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1", extra: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" } },
-        deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" },
-      };
-      const spec = cfgByProvider[id]!;
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: spec.apiKeyEnv, baseUrlEnv: spec.baseUrlEnv, defaultBaseUrl: spec.defaultBaseUrl });
-      // A ChatGPT/Codex subscription OAuth token (OpenAI only) must be checked
-      // against the Codex backend with its Cloudflare-safe headers — probing
+    case "openai": {
+      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
+      // A ChatGPT/Codex subscription OAuth token must be checked against the
+      // Codex backend with its Cloudflare-safe headers — probing
       // api.openai.com with it returns 403/401.
-      const oauthToken = id === "openai" ? getStoredAccessTokenSync("openai", env) : null;
+      const oauthToken = getStoredAccessTokenSync("openai", env);
       if (oauthToken) {
         return { configured: true, request: { url: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers: codexHeaders(oauthToken), host: "chatgpt.com" } };
       }
-      if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
-      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+      if (!c.apiKey) return { configured: false, reason: "openai is not configured (OPENAI_API_KEY missing)." };
+      return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}` }, host: c.host } };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
@@ -148,9 +156,13 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       if (env.OPENAI_COMPAT_API_KEY) headers.Authorization = `Bearer ${env.OPENAI_COMPAT_API_KEY}`;
       return { configured: true, request: { url: `${baseUrl.replace(/\/$/, "")}/models`, headers, host: safeHostOf(baseUrl) } };
     }
-    case "ollama": {
-      const c = resolveLocalCredential(env, { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" });
-      if (!c.configured) return { configured: false, reason: "ollama is not enabled (set OLLAMA_BASE_URL to a running server)." };
+    case "ollama":
+    case "lmstudio": {
+      const local = id === "ollama"
+        ? { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" }
+        : { baseUrlEnv: "LMSTUDIO_BASE_URL", defaultBaseUrl: "http://127.0.0.1:1234/v1" };
+      const c = resolveLocalCredential(env, local);
+      if (!c.configured) return { configured: false, reason: `${id} is not enabled (set ${local.baseUrlEnv} to a running server).` };
       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: {}, host: c.host } };
     }
     case "mock":

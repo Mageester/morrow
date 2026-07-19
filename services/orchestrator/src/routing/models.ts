@@ -144,6 +144,57 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   model("ollama", "qwen2.5", "Qwen 2.5 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
   model("ollama", "mistral", "Mistral (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
   model("ollama", "phi3", "Phi-3 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
+
+  // xAI Grok
+  model("xai", "grok-4", "Grok 4", { contextWindow: 256_000, vision: true, speed: "powerful", cost: "high", reasoning: fixedReasoning() }),
+  model("xai", "grok-4-fast", "Grok 4 Fast", { contextWindow: 2_000_000, speed: "fast", cost: "low" }),
+  model("xai", "grok-code-fast-1", "Grok Code Fast 1", { contextWindow: 256_000, speed: "fast", cost: "low" }),
+
+  // Groq (LPU-hosted open models)
+  model("groq", "llama-3.3-70b-versatile", "Llama 3.3 70B (Groq)", { contextWindow: 131_072, speed: "fast", cost: "low" }),
+  model("groq", "llama-3.1-8b-instant", "Llama 3.1 8B Instant (Groq)", { contextWindow: 131_072, speed: "fast", cost: "low" }),
+  model("groq", "openai/gpt-oss-120b", "GPT-OSS 120B (Groq)", { contextWindow: 131_072, speed: "fast", cost: "low", reasoning: fixedReasoning() }),
+
+  // Mistral
+  model("mistral", "mistral-large-latest", "Mistral Large", { contextWindow: 131_072, vision: true, speed: "powerful", cost: "medium" }),
+  model("mistral", "mistral-medium-latest", "Mistral Medium", { contextWindow: 131_072, vision: true, speed: "balanced", cost: "medium" }),
+  model("mistral", "codestral-latest", "Codestral", { contextWindow: 256_000, speed: "fast", cost: "low" }),
+  model("mistral", "mistral-small-latest", "Mistral Small", { speed: "fast", cost: "low" }),
+
+  // Together AI (open-weights hosting)
+  model("together", "meta-llama/Llama-3.3-70B-Instruct-Turbo", "Llama 3.3 70B Turbo (Together)", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+  model("together", "deepseek-ai/DeepSeek-V3", "DeepSeek V3 (Together)", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+  model("together", "Qwen/Qwen2.5-Coder-32B-Instruct", "Qwen 2.5 Coder 32B (Together)", { speed: "fast", cost: "low" }),
+
+  // Fireworks AI (open-weights hosting)
+  model("fireworks", "accounts/fireworks/models/llama-v3p3-70b-instruct", "Llama 3.3 70B (Fireworks)", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+  model("fireworks", "accounts/fireworks/models/deepseek-v3", "DeepSeek V3 (Fireworks)", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+  model("fireworks", "accounts/fireworks/models/qwen2p5-coder-32b-instruct", "Qwen 2.5 Coder 32B (Fireworks)", { speed: "fast", cost: "low" }),
+
+  // Cerebras (wafer-scale inference)
+  model("cerebras", "llama-3.3-70b", "Llama 3.3 70B (Cerebras)", { speed: "fast", cost: "low" }),
+  model("cerebras", "qwen-3-32b", "Qwen 3 32B (Cerebras)", { speed: "fast", cost: "low" }),
+  model("cerebras", "gpt-oss-120b", "GPT-OSS 120B (Cerebras)", { speed: "fast", cost: "low", reasoning: fixedReasoning() }),
+
+  // Moonshot Kimi
+  model("moonshot", "kimi-k2-0905-preview", "Kimi K2 (0905)", { contextWindow: 262_144, speed: "balanced", cost: "low" }),
+  model("moonshot", "kimi-k2-0711-preview", "Kimi K2 (0711)", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+
+  // Z.ai GLM
+  model("zhipu", "glm-4.6", "GLM-4.6", { contextWindow: 200_000, speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
+  model("zhipu", "glm-4.5", "GLM-4.5", { contextWindow: 131_072, speed: "balanced", cost: "low", reasoning: fixedReasoning() }),
+  model("zhipu", "glm-4.5-air", "GLM-4.5 Air", { contextWindow: 131_072, speed: "fast", cost: "low" }),
+
+  // Alibaba Qwen (DashScope)
+  model("qwen", "qwen3-coder-plus", "Qwen3 Coder Plus", { speed: "balanced", cost: "low" }),
+  model("qwen", "qwen3-max", "Qwen3 Max", { speed: "powerful", cost: "medium" }),
+  model("qwen", "qwen-plus", "Qwen Plus", { contextWindow: 131_072, speed: "balanced", cost: "low" }),
+
+  // Perplexity — search-grounded chat; the API exposes no tool-calling, so
+  // these routes cannot drive agent missions and the catalog must say so.
+  model("perplexity", "sonar-pro", "Sonar Pro", { contextWindow: 200_000, toolCalls: false, speed: "balanced", cost: "medium" }),
+  model("perplexity", "sonar", "Sonar", { contextWindow: 128_000, toolCalls: false, speed: "fast", cost: "low" }),
+  model("perplexity", "sonar-reasoning-pro", "Sonar Reasoning Pro", { contextWindow: 128_000, toolCalls: false, speed: "balanced", cost: "medium", reasoning: fixedReasoning() }),
 ];
 
 let activeCatalogModels: ModelInfo[] = BUILT_IN_MODELS;
@@ -179,7 +230,7 @@ export function unknownModel(providerId: string, id: string): ModelInfo {
     capabilitySource: "unknown",
     speedClass: "unknown",
     costClass: "unknown",
-    privacy: providerId === "ollama" ? "local" : "remote",
+    privacy: providerId === "ollama" || providerId === "lmstudio" ? "local" : "remote",
     builtIn: false,
     metadataSource: "unknown",
     metadataVersion: BUNDLED_MODEL_CATALOG_VERSION,

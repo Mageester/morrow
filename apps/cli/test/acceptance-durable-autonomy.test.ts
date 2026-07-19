@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DURABLE_AUTONOMY_FAULTS,
   runDurableAutonomyScenarios,
@@ -13,7 +13,18 @@ import { runSustainedAutonomyAcceptance } from "@morrow/orchestrator";
 
 const roots: string[] = [];
 
+// Agent file-write side effects (MORROW_HOME/backups) must land in an
+// isolated home, never the real user home.
+let prevHome: string | undefined;
+beforeEach(() => {
+  prevHome = process.env.MORROW_HOME;
+  const home = mkdtempSync(join(tmpdir(), "morrow-acceptance-home-"));
+  roots.push(home);
+  process.env.MORROW_HOME = home;
+});
+
 afterEach(() => {
+  if (prevHome === undefined) delete process.env.MORROW_HOME; else process.env.MORROW_HOME = prevHome;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

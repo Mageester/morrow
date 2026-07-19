@@ -57,6 +57,9 @@ describe("Journey G — /output full consistency with durable repositories", () 
     originalEnv = { ...process.env };
     process.env.MOCK_PROVIDER = "true";
     ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-journey-g-output-")));
+    // Agent file-write side effects (MORROW_HOME/backups) must land in an
+    // isolated home, never the real user home.
+    process.env.MORROW_HOME = join(ws, ".morrow-home");
     writeFileSync(join(ws, "big.js"), largeSourceFixture());
     writeFileSync(
       join(ws, "big.test.js"),

@@ -40,6 +40,17 @@ export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
   deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
   "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
   ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },
+  xai: { apiKeyEnv: "XAI_API_KEY", baseUrlEnv: "XAI_BASE_URL", modelEnv: "XAI_MODEL", contextLimitEnv: "XAI_CONTEXT_LIMIT" },
+  groq: { apiKeyEnv: "GROQ_API_KEY", baseUrlEnv: "GROQ_BASE_URL", modelEnv: "GROQ_MODEL", contextLimitEnv: "GROQ_CONTEXT_LIMIT" },
+  mistral: { apiKeyEnv: "MISTRAL_API_KEY", baseUrlEnv: "MISTRAL_BASE_URL", modelEnv: "MISTRAL_MODEL", contextLimitEnv: "MISTRAL_CONTEXT_LIMIT" },
+  together: { apiKeyEnv: "TOGETHER_API_KEY", baseUrlEnv: "TOGETHER_BASE_URL", modelEnv: "TOGETHER_MODEL", contextLimitEnv: "TOGETHER_CONTEXT_LIMIT" },
+  fireworks: { apiKeyEnv: "FIREWORKS_API_KEY", baseUrlEnv: "FIREWORKS_BASE_URL", modelEnv: "FIREWORKS_MODEL", contextLimitEnv: "FIREWORKS_CONTEXT_LIMIT" },
+  cerebras: { apiKeyEnv: "CEREBRAS_API_KEY", baseUrlEnv: "CEREBRAS_BASE_URL", modelEnv: "CEREBRAS_MODEL", contextLimitEnv: "CEREBRAS_CONTEXT_LIMIT" },
+  moonshot: { apiKeyEnv: "MOONSHOT_API_KEY", baseUrlEnv: "MOONSHOT_BASE_URL", modelEnv: "MOONSHOT_MODEL", contextLimitEnv: "MOONSHOT_CONTEXT_LIMIT" },
+  zhipu: { apiKeyEnv: "ZHIPU_API_KEY", baseUrlEnv: "ZHIPU_BASE_URL", modelEnv: "ZHIPU_MODEL", contextLimitEnv: "ZHIPU_CONTEXT_LIMIT" },
+  qwen: { apiKeyEnv: "QWEN_API_KEY", baseUrlEnv: "QWEN_BASE_URL", modelEnv: "QWEN_MODEL", contextLimitEnv: "QWEN_CONTEXT_LIMIT" },
+  perplexity: { apiKeyEnv: "PERPLEXITY_API_KEY", baseUrlEnv: "PERPLEXITY_BASE_URL", modelEnv: "PERPLEXITY_MODEL", contextLimitEnv: "PERPLEXITY_CONTEXT_LIMIT" },
+  lmstudio: { baseUrlEnv: "LMSTUDIO_BASE_URL", modelEnv: "LMSTUDIO_MODEL", contextLimitEnv: "LMSTUDIO_CONTEXT_LIMIT", local: true },
 };
 
 export function providerEnvMapping(id: ProviderId): ProviderEnvMapping | null {

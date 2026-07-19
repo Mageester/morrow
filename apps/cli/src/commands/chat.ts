@@ -1099,7 +1099,10 @@ async function handleSlash(ctx: Context, api: MorrowApi, projectId: string, conv
         await oauthLogin(ctx, api, match.id as "openai" | "anthropic");
         return {};
       }
-      out.info(`To configure ${match.label || arg}, set the ${match.id.toUpperCase()}_API_KEY environment variable and restart.`);
+      // The server's setupHint names the real env var(s) — never fabricate one
+      // from the id (e.g. "OPENAI-COMPATIBLE_API_KEY" was wrong).
+      out.info(`To configure ${match.label || arg}: ${match.setupHint || `run \`morrow providers configure ${match.id}\`.`}`);
+      out.info(`Or run \`morrow providers configure ${match.id}\` — it applies immediately, no restart needed.`);
       return {};
     }
     case "share": {

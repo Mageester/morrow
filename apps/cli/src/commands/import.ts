@@ -33,6 +33,25 @@ const PROVIDER_ALIASES: Record<string, string> = {
   local: "ollama",
   "openai-compatible": "openai-compatible",
   "openai_compatible": "openai-compatible",
+  xai: "xai",
+  grok: "xai",
+  groq: "groq",
+  mistral: "mistral",
+  together: "together",
+  togetherai: "together",
+  fireworks: "fireworks",
+  cerebras: "cerebras",
+  moonshot: "moonshot",
+  kimi: "moonshot",
+  zhipu: "zhipu",
+  glm: "zhipu",
+  zai: "zhipu",
+  qwen: "qwen",
+  dashscope: "qwen",
+  perplexity: "perplexity",
+  lmstudio: "lmstudio",
+  "lm-studio": "lmstudio",
+  "lm_studio": "lmstudio",
 };
 
 /** Morrow provider id → the env var Hermes stores its key under. */
@@ -43,6 +62,16 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
   openrouter: "OPENROUTER_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   "openai-compatible": "OPENAI_COMPAT_API_KEY",
+  xai: "XAI_API_KEY",
+  groq: "GROQ_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  together: "TOGETHER_API_KEY",
+  fireworks: "FIREWORKS_API_KEY",
+  cerebras: "CEREBRAS_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zhipu: "ZHIPU_API_KEY",
+  qwen: "QWEN_API_KEY",
+  perplexity: "PERPLEXITY_API_KEY",
 };
 
 export function resolveProviderId(hermesProvider: string | null): string | null {
