@@ -149,6 +149,7 @@ import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
+import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -194,6 +195,8 @@ export type ServerDependencies = {
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
+  /** Idle heartbeat cadence for the web mission stream; injectable for tests. */
+  webStreamHeartbeatMs?: number;
   modelCatalog?: ModelCatalog;
   /** Injectable account-model discovery transport for deterministic tests. */
   providerConnectivityTest?: typeof testProviderConnectivity;
@@ -348,6 +351,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     missionService,
     ...(deps.missionControllerRunner ? { missionControllerRunner: deps.missionControllerRunner } : {}),
     readIdempotencyKey,
+  });
+  // Resumable, ordered mission event stream (SSE) for the web client. Polls
+  // persisted mission events so it is correct across restarts and never leaks
+  // provider internals into the wire payload.
+  registerWebMissionStreamRoutes(app, {
+    missions,
+    ...(deps.sseIntervalMs !== undefined ? { pollIntervalMs: deps.sseIntervalMs } : {}),
+    ...(deps.webStreamHeartbeatMs !== undefined ? { heartbeatIntervalMs: deps.webStreamHeartbeatMs } : {}),
   });
 
   const processesRepo = processesRepository(deps.db);
