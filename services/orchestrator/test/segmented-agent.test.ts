@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,6 +20,21 @@ import { MissionService } from "../src/mission/service.js";
 import { buildServer } from "../src/server.js";
 
 describe("durable agent segments", () => {
+  // Agent file-write/checkpoint side effects (MORROW_HOME/backups,
+  // MORROW_HOME/mission-checkpoints) must land in an isolated home, never the
+  // real user home.
+  let prevHome: string | undefined;
+  let home: string;
+  beforeEach(() => {
+    prevHome = process.env.MORROW_HOME;
+    home = mkdtempSync(join(tmpdir(), "morrow-segment-home-"));
+    process.env.MORROW_HOME = home;
+  });
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.MORROW_HOME; else process.env.MORROW_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it("enforces the unattended segment cap before a context-pressure rollover", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-segment-cap-"));
     const db = openDatabase(":memory:");
