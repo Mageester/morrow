@@ -52,7 +52,12 @@ export interface MissionWebProjectionInput {
 // ── Status → UI state ────────────────────────────────────────────────────────
 // This switch is the ONLY conversion from a raw mission status to a UI state.
 // It is exhaustive over `MissionStatus`; there is no numeric progress anywhere.
-function uiState(status: Mission["status"], guardianPassed: boolean): WebMissionUiState {
+//
+// `verified` guards the completed headline against inconsistent Guardian input:
+// a completed mission only reads as "completed_verified" when Guardian passed
+// AND no non-waived criterion remains failed, so the summary headline can never
+// contradict a "failed" verification state.
+function uiState(status: Mission["status"], verified: boolean): WebMissionUiState {
   switch (status) {
     case "draft":
       return "draft";
@@ -69,7 +74,7 @@ function uiState(status: Mission["status"], guardianPassed: boolean): WebMission
     case "cancelled":
       return "cancelled";
     case "completed":
-      return guardianPassed ? "completed_verified" : "completed_with_caveats";
+      return verified ? "completed_verified" : "completed_with_caveats";
     case "completed_with_reservations":
     case "partially_completed":
       return "completed_with_caveats";
@@ -129,11 +134,14 @@ function humanizeEventType(type: MissionEventType): string {
   return type.replace(/^mission\./, "").replace(/_/g, " ");
 }
 
-function deriveTitle(objective: string): string {
-  const firstLine = objective.split("\n")[0]?.trim() ?? objective.trim();
+function deriveTitle(objective: string, missionId: string): string {
+  const firstLine = objective.split("\n")[0]?.trim() ?? "";
+  // A whitespace-only objective would yield an empty title and violate the
+  // schema's `title.min(1)`; fall back to a mission-identified label instead.
   const base = firstLine.length > 0 ? firstLine : objective.trim();
-  if (base.length <= 160) return base;
-  return `${base.slice(0, 159).trimEnd()}…`;
+  const safe = base.length > 0 ? base : `Mission ${missionId}`;
+  if (safe.length <= 160) return safe;
+  return `${safe.slice(0, 159).trimEnd()}…`;
 }
 
 // Phase labels never imply a percentage; they name what is happening now.
@@ -370,6 +378,10 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
   const criteria = input.criteria ?? mission.criteria;
   const events = input.events ?? [];
   const guardianPassed = input.guardian?.passed ?? false;
+  const hasFailedCriterion = criteria.some((criterion) => criterion.state === "failed");
+  // A completed mission is only "verified" when Guardian passed AND no failed
+  // criterion survives — otherwise the headline would contradict verification.
+  const verified = guardianPassed && !hasFailedCriterion;
 
   const completedMilestones = criteria.filter((criterion) => milestoneState(criterion.state) === "completed").length;
   const attention = buildAttention(mission, input.guardian, input.pendingApprovals ?? []);
@@ -385,9 +397,9 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
     id: mission.id,
     projectId: mission.projectId,
     workspaceId: input.workspaceId,
-    title: clamp(input.title ?? deriveTitle(mission.objective), 160),
+    title: clamp(input.title ?? deriveTitle(mission.objective, mission.id), 160),
     objective: mission.objective,
-    state: uiState(mission.status, guardianPassed),
+    state: uiState(mission.status, verified),
     currentPhase: clamp(currentPhase(mission, input.runtime), 160),
     latestActivity,
     attentionCount: attention.length,

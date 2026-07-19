@@ -236,6 +236,39 @@ describe("projectMissionForWeb", () => {
     }
   });
 
+  it("keeps a completed headline coherent when a failed criterion survives despite a passing guardian", () => {
+    const incoherentFixture: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({
+        status: "completed",
+        completedAt: T2,
+        criteria: [
+          criterion({ id: "c1", order: 0, state: "verified", evidenceIds: ["ev1"] }),
+          criterion({ id: "c2", order: 1, state: "failed", failureReason: "Regression left a test red" }),
+        ],
+        evidence: [evidence({ id: "ev1", criterionIds: ["c1"], status: "passed" })],
+      }),
+      events: [event(1, "mission.completed", "Mission completed")],
+      guardian: passingGuardian,
+    };
+    const snapshot = projectMissionForWeb(incoherentFixture);
+    expect(snapshot.summary.state).toBe("completed_with_caveats");
+    expect(snapshot.verification.state).toBe("failed");
+    expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
+  });
+
+  it("falls back to a non-empty title when the objective is whitespace-only", () => {
+    const blankTitleFixture: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ objective: "   \n  ", criteria: [] }),
+      events: [],
+    };
+    const snapshot = projectMissionForWeb(blankTitleFixture);
+    expect(snapshot.summary.title.length).toBeGreaterThan(0);
+    expect(snapshot.summary.title).toBe("Mission mission-1");
+    expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
+  });
+
   it("never serializes a progressPercent or numeric percent field", () => {
     for (const fixture of [runningFixture, blockedFixture, completedFixture]) {
       const serialized = JSON.stringify(projectMissionForWeb(fixture));
