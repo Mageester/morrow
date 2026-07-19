@@ -2012,11 +2012,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(400, `Provider "${providerId}" does not support subscription OAuth.`, "OAUTH_UNSUPPORTED");
     }
     const body = z.object({ code: z.string().min(1).max(8192) }).strict().parse((request.body ?? {}) as unknown);
+    let result;
     try {
-      return await exchangeCode(providerId, body.code, process.env);
+      result = await exchangeCode(providerId, body.code, process.env);
     } catch (e: any) {
       throw new ApiError(400, e?.message || "Failed to complete sign-in.", "OAUTH_EXCHANGE_FAILED");
     }
+    const authMode = listProviderStatuses().find((item) => item.id === providerId)?.authMode;
+    void refreshProviderModelDiscovery(providerId as ProviderId, authMode);
+    return result;
   });
 
   // Sign out: remove stored tokens for a provider.
