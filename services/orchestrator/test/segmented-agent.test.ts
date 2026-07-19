@@ -210,13 +210,17 @@ describe("durable agent segments", () => {
         .run("mission-1", 1, "p", "Preserve an oversized requirement", "running", 1, "{}", at, at);
       const convs = conversationsRepository(db);
       convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
-      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: `Keep this requirement intact: ${"X".repeat(700_000)}`, createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Preserve this requirement.", createdAt: at, updatedAt: at });
       taskRepository(db).createTask({ id: "t", projectId: "p", missionId: "mission-1", kind: "agent_chat", status: "queued", createdAt: at });
       convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
       let providerCalls = 0;
       const provider: AiProvider = {
         id: "deepseek",
-        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com", endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" },
+        // A genuinely tiny route ceiling: even the mandatory system context
+        // (which cannot be compacted below itself) exceeds the usable input, so
+        // the preflight legitimately fails and a MISSION task must checkpoint +
+        // interrupt for controller rollover rather than call the provider.
+        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "custom", endpointHost: "api.deepseek.com", endpointLimitTokens: 256, endpointLimitSource: "endpoint-override" },
         async *streamChat(): AsyncIterable<ProviderChunk> {
           providerCalls += 1;
           yield { type: "done" };

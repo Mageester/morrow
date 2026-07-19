@@ -151,6 +151,58 @@ describe("context budget", () => {
     expect(result.actionableMessage).toContain("Recovery options");
   });
 
+  it("admits a request over the soft target but within the real route ceiling (beta.32 preset-clamp false failure)", () => {
+    // Recreates the AXION build failure: a large-context route (215k override →
+    // ~208k usable) under the balanced preset's 512KB soft budget (131072
+    // tokens). A request bigger than the soft budget but smaller than the real
+    // ceiling must be ADMITTED (compacted toward the soft target), never
+    // hard-failed with "Context is too large".
+    const messages: ChatMessage[] = [
+      { role: "system", content: "System rules stay." },
+      { role: "user", content: "Old goal " + "alpha ".repeat(4000) },
+      { role: "assistant", content: "Decision " + "beta ".repeat(4000) },
+      { role: "user", content: "Current request must remain raw." },
+    ];
+    const softTarget = 131_072;
+    const routeCeiling = 208_140;
+    // Sanity: the whole conversation is above the soft target so compaction runs.
+    expect(estimateChatTokens(messages)).toBeLessThan(routeCeiling);
+
+    const result = prepareContextForProvider(messages, {
+      providerId: "openai-compatible",
+      model: "deepseek-v4-flash-free",
+      maxInputTokens: softTarget,
+      hardLimitTokens: routeCeiling,
+      compact: true,
+      recentRawGroups: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.messages.map((m) => m.content).join("\n")).toContain("Current request must remain raw.");
+  });
+
+  it("still rejects only when the real route ceiling is genuinely exceeded, and reports that ceiling", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "Mandatory system instructions " + "rules ".repeat(400) },
+      { role: "user", content: "Current request must not be removed. " + "payload ".repeat(400) },
+    ];
+    const result = prepareContextForProvider(messages, {
+      providerId: "openai-compatible",
+      model: "deepseek-v4-flash-free",
+      maxInputTokens: 20,        // soft target far below content
+      hardLimitTokens: 50,       // real ceiling also below content → genuine failure
+      compact: true,
+      recentRawGroups: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("minimum_context_too_large");
+    // The truthful "available" number is the real ceiling (50), not the soft target (20).
+    expect(result.actionableMessage).toContain("50 available");
+    expect(result.actionableMessage).not.toContain("20 available");
+  });
+
   it("counts vision pixels conservatively without treating base64 as text context", () => {
     const textOnly = measureProviderRequest({
       providerId: "openai", model: "gpt-5.6-sol", protocol: "openai-chat",

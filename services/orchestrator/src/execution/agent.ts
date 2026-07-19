@@ -2641,11 +2641,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const preparedContext = prepareContextForProvider(chatMessages, {
         providerId: providerType,
         model: contextModel,
-        // This first pass enforces the preset/user safety budget and performs
-        // deterministic history compaction. The route-aware complete-envelope
-        // gate below remains authoritative for the actual provider request,
-        // including tools, continuation fields, overhead, and output reserve.
+        // This first pass performs deterministic history compaction toward the
+        // preset/user SOFT budget, but must never REJECT a request the real
+        // route can accept. maxInputTokens is the soft compaction target;
+        // hardLimitTokens is the route's real usable input â€” a request is only
+        // failed as "too large" when it exceeds the latter. The route-aware
+        // complete-envelope gate below remains authoritative for the actual
+        // provider request (tools, continuation fields, overhead, output reserve).
         maxInputTokens: modelBudget.compactionTargetTokens,
+        hardLimitTokens: modelBudget.usableInputTokens,
         compact: true,
         recentRawGroups: 1,
       });

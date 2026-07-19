@@ -372,12 +372,26 @@ export function prepareContextForProvider(
   input: {
     providerId: string;
     model: string;
+    /** Soft compaction TARGET — deterministic history trimming aims to get the
+     * request under this (typically a preset/dev efficiency budget). It must
+     * NEVER be used to reject a request outright (see model-budget.ts:
+     * compactionTargetTokens). */
     maxInputTokens: number;
+    /** Hard rejection CEILING — the real route capacity (usableInputTokens). A
+     * request is only failed as "too large" when it exceeds THIS, not the soft
+     * target. Defaults to maxInputTokens for callers that don't distinguish
+     * them, preserving prior behavior. Beta.32: the balanced preset's 512KB
+     * soft budget (131072 tokens) was clamping the ceiling below a 215k-override
+     * route's real 208140 usable input, hard-failing requests that fit fine. */
+    hardLimitTokens?: number;
     compact?: boolean;
     recentRawGroups?: number;
   }
 ): ContextPrepareResult {
   const operations: ContextOperation[] = [];
+  // Never reject below the real route ceiling; the soft target only guides how
+  // aggressively deterministic compaction trims history.
+  const rejectCeiling = Math.max(input.maxInputTokens, input.hardLimitTokens ?? input.maxInputTokens);
   const count = (candidate: ChatMessage[]) => countChatTokens(candidate, { providerId: input.providerId, model: input.model });
   const firstCount = count(messages);
   operations.push({
@@ -423,18 +437,23 @@ export function prepareContextForProvider(
     candidateCount = count(candidate);
   }
 
-  if (candidateCount.tokens > input.maxInputTokens) {
+  // Reject only when the compacted candidate exceeds the REAL route ceiling.
+  // A candidate over the soft target but within the route capacity (the common
+  // case for a large-context route under a smaller preset budget) falls through
+  // to the normal success return below — this is the beta.32 fix for the false
+  // "Context is too large (131738 needed, 131072 available)" failure.
+  if (candidateCount.tokens > rejectCeiling) {
     operations.push(
       {
         type: "context.minimum_viable_context_exceeded",
-        payload: { finalTokens: candidateCount.tokens, maxInputTokens: input.maxInputTokens, provider: input.providerId, model: input.model },
+        payload: { finalTokens: candidateCount.tokens, maxInputTokens: rejectCeiling, provider: input.providerId, model: input.model },
       },
     );
     return {
       ok: false,
       reason: "minimum_context_too_large",
       actionableMessage:
-        `Context is too large for ${input.providerId}/${input.model} (${candidateCount.tokens} tokens needed, ${input.maxInputTokens} available).\n` +
+        `Context is too large for ${input.providerId}/${input.model} (${candidateCount.tokens} tokens needed, ${rejectCeiling} available).\n` +
         "Recovery options:\n" +
         "1. Start a new session to reset conversation history.\n" +
         "2. Use /context to inspect and trim large messages.\n" +

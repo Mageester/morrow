@@ -739,7 +739,12 @@ describe("Agent Alpha", () => {
         id: "msg-user",
         conversationId: "c1",
         role: "user",
-        content: "Current request must remain raw.",
+        // The current request cannot be trimmed. To force a GENUINE
+        // minimum-viable-context failure it must exceed the REAL route ceiling
+        // (the mock route's conservative 32768-token fallback), not merely a
+        // small soft preset budget — beta.32: the soft budget must never reject
+        // a request the route could actually accept.
+        content: "Current request must remain raw. " + "overflow ".repeat(40_000),
         createdAt: "2026-07-02T02:00:01.000Z",
         updatedAt: "2026-07-02T02:00:01.000Z"
       });
