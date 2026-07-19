@@ -122,3 +122,14 @@ not include hidden reasoning, raw API keys, uncontrolled ANSI control
 sequences, or unbounded file dumps. Exports are written under Morrow's contained
 reports directory unless the caller supplies a safe basename, and the YOLO
 workspace boundary remains unchanged.
+
+## Transcript viewer update
+
+Long interactive transcripts use a clamped visual-row viewport. `Page Up`
+enters reader mode; arrow keys and `Home` move within it; `End` or `Escape`
+returns to the live edge. While reading older content, incoming streamed text
+does not move the viewport. A compact above/below marker appears only when the
+body overflows. Resize re-clamps the existing position, while a new task and
+`/clear` return to live output. Mouse-wheel events are not intercepted because
+Node's keypress layer does not expose them reliably; terminal-native scrollback
+and selection remain available.

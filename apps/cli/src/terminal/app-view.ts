@@ -24,6 +24,7 @@ import {
   completionCard,
   glyphs,
   headerLines,
+  hardWrapLine,
   recoveryEntryLines,
   runningActionLine,
   statusBar,
@@ -78,6 +79,13 @@ export interface AppFrameContext {
    *  to the real content/viewport bounds during composition and returned as
    *  `AppFrame.overlayScroll`. Defaults to 0 (top). */
   overlayScroll?: number;
+  /** Requested top visual row for the live transcript. Callers pass a very
+   * large value while following live output; composition settles it to the
+   * real trailing row range. */
+  transcriptScroll?: number;
+  /** True while new streamed content should keep the transcript at its live
+   * edge. False only after the reader deliberately scrolls backward. */
+  transcriptFollowing?: boolean;
   /** The /model picker's real item list — see input-state.ts's KeyContext,
    *  which the same array is mutated into (never a second, independently
    *  built list). Empty unless the model overlay is open. */
@@ -102,6 +110,10 @@ export interface AppFrame {
    *  bottom and the next "Up" moves immediately (no dead keypresses). Null
    *  when no scrollable overlay is open. */
   overlayScroll: number | null;
+  /** Settled top visual row for the ordinary transcript, null under an overlay. */
+  transcriptScroll: number | null;
+  /** Whether the transcript viewport currently includes its live edge. */
+  transcriptAtLive: boolean | null;
 }
 
 export function composeApp(
@@ -128,7 +140,7 @@ export function composeApp(
   }
 
   // ── Fixed bottom: notices + input/overlay + footer ─────────────────────────
-  const footer = footerLine(term, input, out, unicode, opts, overlay?.footerHint);
+  const footer = footerLine(term, input, out, unicode, opts, overlay?.footerHint, !overlay && ctx.transcriptFollowing === false);
   const noticeLines = [...recentNotices(term, out, unicode), ...queuedRedirectLines(term, out, unicode)];
 
   let bottom: string[];
@@ -176,23 +188,41 @@ export function composeApp(
   // exactly the frame that was showing before it opened.
   const middle = overlay ? overlay.lines.map((l) => `  ${l}`) : isStartup ? [] : buildMiddle(term, out, unicode, opts, workspace);
   const reserved = top.length + 1 /*blank*/ + bottom.length + footer.length + 1 /*blank*/;
-  const available = Math.max(1, opts.rows - reserved);
+  const available = Math.max(0, opts.rows - reserved);
   // The live mission body is a recency feed — keep the tail (most recent
   // activity) when it overflows. An overlay (a report/status viewer) is the
   // opposite: its lead lines are the title/summary a user opened it to see,
   // so it keeps the head and marks how much was cut instead of silently
   // dropping the start of the content.
   const overlayWindow = overlay ? scrollClip(middle, available, ctx.overlayScroll ?? 0, out, unicode) : null;
-  const clippedMiddle = overlayWindow ? overlayWindow.shown : middle.length > available ? middle.slice(middle.length - available) : middle;
+  const transcriptWindow = overlay ? null : scrollClip(middle, available, ctx.transcriptScroll ?? Number.MAX_SAFE_INTEGER, out, unicode);
+  const clippedMiddle = overlayWindow?.shown ?? transcriptWindow?.shown ?? [];
 
-  const lines = [...top, "", ...clippedMiddle, "", ...bottom, ...footer];
-  const bottomStart = top.length + 1 + clippedMiddle.length + 1;
+  // Frames taller than the viewport scroll on every repaint, leaving ghost
+  // frames and stale fragments. Recover beta.31's clamp: content yields
+  // first, then chrome, and the input/footer tail is always retained.
+  const maxRows = Math.max(1, opts.rows);
+  let finalTop = top;
+  let finalMiddle = clippedMiddle;
+  const fixedRows = bottom.length + footer.length + 2;
+  const overBudget = () => finalTop.length + finalMiddle.length + fixedRows - maxRows;
+  if (overBudget() > 0) finalMiddle = finalMiddle.slice(Math.min(overBudget(), finalMiddle.length));
+  if (overBudget() > 0) finalTop = finalTop.slice(Math.min(overBudget(), finalTop.length));
+  let lines = [...finalTop, "", ...finalMiddle, "", ...bottom, ...footer];
+  if (lines.length > maxRows) lines = lines.slice(lines.length - maxRows);
+  const bottomStart = Math.max(0, lines.length - footer.length - bottom.length);
   const cursor = {
-    row: bottomStart + cursorWithinBottom.row,
+    row: Math.min(bottomStart + cursorWithinBottom.row, Math.max(0, lines.length - 1)),
     col: cursorWithinBottom.col,
   };
 
-  return { lines: lines.map((l) => clipToWidth(l, opts.columns)), cursor, overlayScroll: overlayWindow ? overlayWindow.scroll : null };
+  return {
+    lines: lines.map((l) => clipToWidth(l, opts.columns)),
+    cursor,
+    overlayScroll: overlayWindow ? overlayWindow.scroll : null,
+    transcriptScroll: transcriptWindow ? transcriptWindow.scroll : null,
+    transcriptAtLive: transcriptWindow ? transcriptWindow.atLive : null,
+  };
 }
 
 /**
@@ -209,8 +239,9 @@ export function scrollClip(
   scroll: number,
   out: Output,
   unicode: boolean
-): { shown: string[]; scroll: number } {
-  if (lines.length <= available) return { shown: lines, scroll: 0 };
+): { shown: string[]; scroll: number; atLive: boolean } {
+  if (available <= 0) return { shown: [], scroll: 0, atLive: lines.length === 0 };
+  if (lines.length <= available) return { shown: lines, scroll: 0, atLive: true };
   const bodyRows = Math.max(1, available - 1); // one row reserved for the indicator
   const maxScroll = Math.max(0, lines.length - bodyRows);
   const s = Math.min(Math.max(0, Math.floor(scroll)), maxScroll);
@@ -219,8 +250,9 @@ export function scrollClip(
   const below = lines.length - (s + shown.length);
   const up = unicode ? "▲" : "^";
   const down = unicode ? "▼" : "v";
-  const indicator = out.gray(`  ${up} ${above} above · ${down} ${below} below — ↑/↓ PgUp/PgDn Home/End scroll`);
-  return { shown: [...shown, indicator], scroll: s };
+  const position = `${up} ${above} above · ${down} ${below} below${below === 0 ? " · live" : ""}`;
+  const indicator = out.gray(`  ${position} — ↑/↓ PgUp/PgDn Home/End scroll`);
+  return { shown: [...shown, indicator], scroll: s, atLive: below === 0 };
 }
 
 /** Build the chrome at the top: MORROW brand, project, and live status. */
@@ -309,6 +341,23 @@ function showsAssistantEntry(term: TerminalState, entry: TerminalState["conversa
   return false;
 }
 
+/** Render transcript text into visual rows without destroying Markdown's
+ * meaningful whitespace. Prose wraps at words; fenced code and table-like
+ * rows hard-wrap so indentation, columns, and every character survive. */
+function transcriptRows(text: string, width: number): string[] {
+  const rows: string[] = [];
+  let inCodeFence = false;
+  for (const raw of text.split("\n")) {
+    const fence = /^\s*```/.test(raw);
+    const preserve = inCodeFence || fence || /^\s*\|/.test(raw) || /^\s{2,}/.test(raw);
+    const wrapped = preserve ? hardWrapLine(raw, width) : wrapText(raw, width);
+    if (wrapped.length === 0) rows.push("");
+    else rows.push(...wrapped);
+    if (fence) inCodeFence = !inCodeFence;
+  }
+  return rows;
+}
+
 function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: AppFrameOptions, workspace?: string): string[] {
   const lines: string[] = [];
 
@@ -326,8 +375,8 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     const label = entry.role === "user" ? out.green("you › ") : out.magenta("morrow › ");
     const body = entry.text.length ? entry.text : entry.streaming ? out.gray("…") : "";
     if (!body) return;
-    const segments = body.split("\n");
-    for (const [index, segment] of segments.entries()) lines.push((index === 0 ? label : "        ") + segment);
+    const bodyRows = transcriptRows(body, Math.max(10, opts.columns - 12));
+    for (const [index, row] of bodyRows.entries()) lines.push((index === 0 ? label : "        ") + row);
   };
 
   // The current turn's answer is rendered after its structured activity and
@@ -416,10 +465,7 @@ function buildMiddle(term: TerminalState, out: Output, unicode: boolean, opts: A
     if (finalBody) {
       lines.push("");
       const width = Math.max(20, opts.columns - 4);
-      for (const raw of finalBody.split("\n")) {
-        if (!raw.trim()) { lines.push(""); continue; }
-        for (const l of wrapText(raw, width)) lines.push("  " + l);
-      }
+      for (const row of transcriptRows(finalBody, width)) lines.push(row ? "  " + row : "");
     }
   }
   return lines;
@@ -558,11 +604,20 @@ function queuedRedirectLines(term: TerminalState, out: Output, unicode: boolean)
  * for one — an open overlay, a slash command in progress, or the very first
  * session. The permanent shortcut wall is gone; `?` and /help still exist.
  */
-function footerLine(term: TerminalState, input: InputState, out: Output, unicode: boolean, opts: AppFrameOptions, overlayHintOverride?: string): string[] {
+function footerLine(
+  term: TerminalState,
+  input: InputState,
+  out: Output,
+  unicode: boolean,
+  opts: AppFrameOptions,
+  overlayHintOverride?: string,
+  transcriptReading = false
+): string[] {
   const statusOpts = opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs };
   const status = statusBar(term, out, unicode, opts.columns, statusOpts);
   if (input.confirmExit) return [status, out.yellow("  Press Ctrl+C again to exit.")];
   if (overlayHintOverride) return [status, out.gray("  " + overlayHintOverride)];
+  if (transcriptReading) return [status, out.gray("  PgUp/PgDn scroll · End return to live · Esc leave viewer")];
   const overlayHint =
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"

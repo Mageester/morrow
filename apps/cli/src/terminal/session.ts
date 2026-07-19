@@ -206,6 +206,11 @@ export class InteractiveSession {
     this._outputViewer = v;
     this.viewerScroll = 0;
   }
+  /** One authoritative viewport for ordinary transcript visual rows. The
+   * settled offset comes back from composeApp; `transcriptFollowing` keeps
+   * streamed output pinned only while the reader remains at the live edge. */
+  private transcriptScroll = Number.MAX_SAFE_INTEGER;
+  private transcriptFollowing = true;
   /** Final answers already copied into native terminal scrollback, keyed by
    * task and turn. A resumed task may produce another final turn, but replayed
    * SSE events must never write the same answer twice. */
@@ -335,6 +340,7 @@ export class InteractiveSession {
     if (k.ctrl && k.name === "o" && !k.meta && !k.shift) {
       if (this.input.overlay === "output") {
         this.input = { ...this.input, overlay: "none" };
+        this.viewerScroll = 0;
         return void this.requestPaint(true);
       }
       void this.showTaskReport("summary");
@@ -374,6 +380,8 @@ export class InteractiveSession {
       }
     }
 
+    if (this.input.overlay === "none" && this.handleTranscriptScrollKey(k)) return;
+
     // `?` on empty buffer shows help
     if (k.str === "?" && !k.ctrl && !k.meta && this.input.buffer.length === 0) {
       this.pushNotice("info", "Commands: " + this.commands.map((c) => "/" + c.name).join(" "));
@@ -381,8 +389,12 @@ export class InteractiveSession {
     }
 
     const wasReasoningOverlay = this.input.overlay === "reasoning";
+    const wasScrollableOverlay = this.input.overlay === "output" || this.input.overlay === "tasktree";
     const { state, action } = reduceKey(this.input, k, this.keyCtx);
     this.input = state;
+    if (wasScrollableOverlay && this.input.overlay !== "output" && this.input.overlay !== "tasktree") {
+      this.viewerScroll = 0;
+    }
     // Leaving the reasoning overlay without applying (Esc/back) must discard the
     // route it staged — otherwise a later typed `/reasoning` would wrongly bind
     // to a model the user never picked. A submit clears it in the handler.
@@ -469,6 +481,7 @@ export class InteractiveSession {
         return this.exit();
       case "clear":
         this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [] };
+        this.resetTranscriptToLive();
         this.pushNotice("info", "Screen cleared only. Saved conversation and provider context are unchanged; /compact saves a continuation summary, and provider preflight compacts request history when needed.");
         return void this.fullRepaint();
       case "help":
@@ -748,7 +761,7 @@ export class InteractiveSession {
         return void this.requestPaint(false);
       }
       case "shortcuts":
-        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
+        this.pushNotice("info", "PgUp reader · ↑↓/Home scroll · End live · Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete");
         return void this.requestPaint(false);
       case "skill-search":
         this.pushNotice("info", `Search local skills: morrow skills search ${arg || ""}`);
@@ -1796,6 +1809,7 @@ export class InteractiveSession {
   }
 
   private async runTask(text: string): Promise<void> {
+    this.resetTranscriptToLive();
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
     this.streamStart = this.now();
@@ -1855,6 +1869,7 @@ export class InteractiveSession {
       this.pushNotice("warn", "No paused task is available to continue.");
       return;
     }
+    this.resetTranscriptToLive();
     this.busy = true;
     this.streamStart = this.now();
     this.input = { ...this.input, confirmExit: false };
@@ -2091,6 +2106,53 @@ export class InteractiveSession {
     this.paint();
   }
 
+  /** Route navigation keys to transcript only after PageUp/Home has entered
+   * reader mode. Ordinary arrow/home/end editing keeps its normal meaning at
+   * the live edge, so the composer never loses keyboard usability. */
+  private handleTranscriptScrollKey(k: { name?: string | undefined; ctrl?: boolean | undefined }): boolean {
+    const page = Math.max(1, (this.deps.io.rows ?? 24) - 8);
+    const scrollBy = (delta: number): void => {
+      this.transcriptFollowing = false;
+      this.transcriptScroll = Math.max(0, this.transcriptScroll + delta);
+      this.requestPaint(true);
+    };
+
+    if (k.name === "pageup" || (k.ctrl && k.name === "b")) {
+      scrollBy(-page);
+      return true;
+    }
+    if (!this.transcriptFollowing) {
+      if (k.name === "up") {
+        scrollBy(-1);
+        return true;
+      }
+      if (k.name === "down") {
+        scrollBy(1);
+        return true;
+      }
+      if (k.name === "pagedown" || (k.ctrl && k.name === "f")) {
+        scrollBy(page);
+        return true;
+      }
+      if (k.name === "home") {
+        this.transcriptScroll = 0;
+        this.requestPaint(true);
+        return true;
+      }
+      if (k.name === "end" || k.name === "escape") {
+        this.resetTranscriptToLive();
+        this.requestPaint(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private resetTranscriptToLive(): void {
+    this.transcriptFollowing = true;
+    this.transcriptScroll = Number.MAX_SAFE_INTEGER;
+  }
+
   /** Compose and write the frame, position the caret, manage cursor visibility. */
   private paint(): void {
     const mode = this.renderMode();
@@ -2102,7 +2164,17 @@ export class InteractiveSession {
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const overlayPanel = this.currentOverlayPanel();
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, overlayScroll: this.viewerScroll, currentModelId: this.settings.model ?? "auto", currentReasoning: this.settings.reasoning, reasoningRouteLabel: this.reasoningRoute?.label }, {
+    const frame = composeApp(this.term, this.input, out, unicode, {
+      ...this.keyCtx,
+      recentActivity: this.recentActivity,
+      overlayPanel,
+      overlayScroll: this.viewerScroll,
+      transcriptScroll: this.transcriptFollowing ? Number.MAX_SAFE_INTEGER : this.transcriptScroll,
+      transcriptFollowing: this.transcriptFollowing,
+      currentModelId: this.settings.model ?? "auto",
+      currentReasoning: this.settings.reasoning,
+      reasoningRouteLabel: this.reasoningRoute?.label,
+    }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
@@ -2122,6 +2194,10 @@ export class InteractiveSession {
     // an "End"/large offset lands exactly at the bottom and the next "Up" moves
     // immediately instead of burning keypresses against a stale out-of-range value.
     if (frame.overlayScroll !== null) this.viewerScroll = frame.overlayScroll;
+    if (frame.transcriptScroll !== null) {
+      this.transcriptScroll = frame.transcriptScroll;
+      if (frame.transcriptAtLive) this.transcriptFollowing = true;
+    }
     const lines = frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
