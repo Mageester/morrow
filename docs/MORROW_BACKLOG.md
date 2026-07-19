@@ -20,6 +20,25 @@ roadmap for its gate. Terminal/mission-reliability sequencing (Terminal Event
 Integrity, Control Contract, Mission Guardian, durable mission execution)
 remains owned by `docs/BETA30_PRODUCT_GOAL.md` §12, unchanged by this note.
 
+## Capability roadmap (local autonomy + verification)
+
+Adopted from [`docs/CAPABILITY_RECOMMENDATIONS.md`](CAPABILITY_RECOMMENDATIONS.md).
+Theme: reliable **observation and verification** inside the workspace, with hard
+boundaries around secrets, remotes, network, and destructive actions.
+
+- [x] Playwright browser automation — screenshots, console/DOM/a11y inspection,
+  semantic-ref interaction, desktop/tablet/mobile viewports (shipped beta.31).
+- [ ] Persistent dev-server lifecycle: durable handle, PID/port/URL, health
+  check before "ready", tailable logs, stop/restart, port discovery.
+- [ ] Structured file-editing primitives: line-range replace, insert
+  before/after, patch validation, larger payloads, compact diff + content hash.
+- [ ] Visual regression loop: baseline → change → revised → diff, with
+  overflow/contrast/above-the-fold checks.
+- [ ] Accessibility tooling: axe-core audit, keyboard traversal, focus-visible,
+  accessible-name, landmark outline, modal focus-trap.
+- [ ] Project intelligence: symbol index, dependency graph, test/coverage
+  inventory, user-edit detection before applying modifications.
+
 ## Beta.30 (proposed — from beta.29 acceptance findings)
 
 Not yet scoped or started (`[ ]` throughout). Sourced from the structured

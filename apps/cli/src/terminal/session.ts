@@ -192,7 +192,29 @@ export class InteractiveSession {
   private lastTaskId: string | null = null;
   /** Duration of the most recently finished task, for the completion card. */
   private lastTaskElapsedMs: number | null = null;
-  private outputViewer: { title: string; lines: string[] } | null = null;
+  private _outputViewer: { title: string; lines: string[] } | null = null;
+  /** Scroll offset (top line index) for the current /output-family overlay.
+   *  Reset to 0 whenever a viewer opens; clamped to the real content bounds
+   *  by `composeApp`, which returns the settled value we store back here. */
+  private viewerScroll = 0;
+  /** Assigning a new viewer always re-anchors the scroll to the top — a fresh
+   *  report opens at its title/summary, not wherever the last one was left. */
+  private get outputViewer(): { title: string; lines: string[] } | null {
+    return this._outputViewer;
+  }
+  private set outputViewer(v: { title: string; lines: string[] } | null) {
+    this._outputViewer = v;
+    this.viewerScroll = 0;
+  }
+  /** One authoritative viewport for ordinary transcript visual rows. The
+   * settled offset comes back from composeApp; `transcriptFollowing` keeps
+   * streamed output pinned only while the reader remains at the live edge. */
+  private transcriptScroll = Number.MAX_SAFE_INTEGER;
+  private transcriptFollowing = true;
+  /** Final answers already copied into native terminal scrollback, keyed by
+   * task and turn. A resumed task may produce another final turn, but replayed
+   * SSE events must never write the same answer twice. */
+  private readonly scrollbackAnswerKeys = new Set<string>();
   private pendingApproval: ApprovalView | null = null;
   /** True only for the brief, atomic window where a one-time out-of-band
    *  scrollback write is in flight (see `emitScrollbackReport`). The normal
@@ -318,11 +340,47 @@ export class InteractiveSession {
     if (k.ctrl && k.name === "o" && !k.meta && !k.shift) {
       if (this.input.overlay === "output") {
         this.input = { ...this.input, overlay: "none" };
+        this.viewerScroll = 0;
         return void this.requestPaint(true);
       }
       void this.showTaskReport("summary");
       return;
     }
+
+    // Scroll the /output-family overlay (long reports, /output, /status, …).
+    // Esc / Ctrl+O still close it (handled above and via reduceKey). Only the
+    // dedicated navigation keys are consumed — never letters or space — so the
+    // input buffer stays fully editable while a viewer is open.
+    if (this.input.overlay === "output" || this.input.overlay === "tasktree") {
+      const page = Math.max(1, (this.deps.io.rows ?? 24) - 8);
+      if (k.name === "up") {
+        this.viewerScroll = Math.max(0, this.viewerScroll - 1);
+        return void this.requestPaint(true);
+      }
+      if (k.name === "down") {
+        this.viewerScroll += 1;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "pageup" || (k.ctrl && k.name === "b")) {
+        this.viewerScroll = Math.max(0, this.viewerScroll - page);
+        return void this.requestPaint(true);
+      }
+      if (k.name === "pagedown" || (k.ctrl && k.name === "f")) {
+        this.viewerScroll += page;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "home") {
+        this.viewerScroll = 0;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "end") {
+        // Overshoot; composeApp clamps to the true bottom and stores it back.
+        this.viewerScroll = Number.MAX_SAFE_INTEGER;
+        return void this.requestPaint(true);
+      }
+    }
+
+    if (this.input.overlay === "none" && this.handleTranscriptScrollKey(k)) return;
 
     // `?` on empty buffer shows help
     if (k.str === "?" && !k.ctrl && !k.meta && this.input.buffer.length === 0) {
@@ -331,8 +389,12 @@ export class InteractiveSession {
     }
 
     const wasReasoningOverlay = this.input.overlay === "reasoning";
+    const wasScrollableOverlay = this.input.overlay === "output" || this.input.overlay === "tasktree";
     const { state, action } = reduceKey(this.input, k, this.keyCtx);
     this.input = state;
+    if (wasScrollableOverlay && this.input.overlay !== "output" && this.input.overlay !== "tasktree") {
+      this.viewerScroll = 0;
+    }
     // Leaving the reasoning overlay without applying (Esc/back) must discard the
     // route it staged — otherwise a later typed `/reasoning` would wrongly bind
     // to a model the user never picked. A submit clears it in the handler.
@@ -419,6 +481,7 @@ export class InteractiveSession {
         return this.exit();
       case "clear":
         this.term = { ...this.term, conversation: [], activity: [], tools: [], patches: [] };
+        this.resetTranscriptToLive();
         this.pushNotice("info", "Screen cleared only. Saved conversation and provider context are unchanged; /compact saves a continuation summary, and provider preflight compacts request history when needed.");
         return void this.fullRepaint();
       case "help":
@@ -698,7 +761,7 @@ export class InteractiveSession {
         return void this.requestPaint(false);
       }
       case "shortcuts":
-        this.pushNotice("info", "Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete · ↑↓ history · Esc dismiss");
+        this.pushNotice("info", "PgUp reader · ↑↓/Home scroll · End live · Ctrl+C cancel · Ctrl+K palette · Ctrl+R history · Ctrl+O output · Ctrl+L clear · Tab complete");
         return void this.requestPaint(false);
       case "skill-search":
         this.pushNotice("info", `Search local skills: morrow skills search ${arg || ""}`);
@@ -1303,6 +1366,36 @@ export class InteractiveSession {
   }
 
   /**
+   * Copy final answers that will not fit in the live frame into real terminal
+   * scrollback. The bounded viewport remains readable while Morrow is open;
+   * this durable copy makes a completed long answer readable after later
+   * frames have replaced it. Short answers stay in the live transcript only,
+   * avoiding redundant terminal noise.
+   */
+  private maybeEmitLongFinalAnswer(): void {
+    const answer = [...this.term.conversation]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && entry.final && !entry.aborted && entry.text.trim());
+    if (!answer) return;
+
+    const taskId = this.currentTaskId ?? this.lastTaskId ?? "session";
+    const key = `${taskId}:${answer.turnId ?? "legacy"}`;
+    if (this.scrollbackAnswerKeys.has(key)) return;
+
+    const { io } = this.deps;
+    const wrappedRows = answer.text
+      .split(/\r?\n/)
+      .reduce((count, line) => count + hardWrapLine(line, io.columns).length, 0);
+    // Terminal chrome, input, status, and completion details consume roughly
+    // half a normal 24-row viewport. Use a conservative floor for small TTYs.
+    const liveRowBudget = Math.max(4, (io.rows ?? 24) - 12);
+    if (wrappedRows <= liveRowBudget) return;
+
+    this.scrollbackAnswerKeys.add(key);
+    this.emitScrollbackText(`# Morrow Final Answer\n\n${answer.text.trim()}`);
+  }
+
+  /**
    * Leave a one-time, permanent copy of the report in real terminal
    * scrollback (so it survives after the overlay is closed, and stays
    * selectable/copyable — this never uses the alternate screen buffer).
@@ -1319,6 +1412,12 @@ export class InteractiveSession {
    * painted line — instead of an implicit, possibly stale cursor position.
    */
   private emitScrollbackReport(report: string): void {
+    this.emitScrollbackText(report);
+  }
+
+  /** Claim the terminal briefly and append durable, width-stable text below
+   * the live frame. Used for explicit reports and automatic long answers. */
+  private emitScrollbackText(text: string): void {
     const { io } = this.deps;
     if (!io.isTTY) return;
     this.reportWriteInProgress = true;
@@ -1330,7 +1429,7 @@ export class InteractiveSession {
     // its native auto-wrap: a resize between now and whenever this
     // scrollback is read back can otherwise reflow it unpredictably, and
     // auto-wrap can interact badly with the following cursor position write.
-    const wrapped = report.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
+    const wrapped = text.split("\n").flatMap((line) => hardWrapLine(line, io.columns)).join("\r\n");
     const body = positionAndClearBelow(this.lastFrameRows + 1) + "\r\n" + wrapped + "\r\n";
     io.write(body);
     this.reportWriteInProgress = false;
@@ -1710,6 +1809,7 @@ export class InteractiveSession {
   }
 
   private async runTask(text: string): Promise<void> {
+    this.resetTranscriptToLive();
     this.applyEvent({ type: "user.message", text });
     this.busy = true;
     this.streamStart = this.now();
@@ -1769,6 +1869,7 @@ export class InteractiveSession {
       this.pushNotice("warn", "No paused task is available to continue.");
       return;
     }
+    this.resetTranscriptToLive();
     this.busy = true;
     this.streamStart = this.now();
     this.input = { ...this.input, confirmExit: false };
@@ -1854,6 +1955,9 @@ export class InteractiveSession {
 
   private applyEvent(event: TerminalEvent): void {
     this.term = reduce(this.term, event, this.now);
+    if ((event.type === "assistant.turn_end" && event.final) || event.type === "assistant.end") {
+      this.maybeEmitLongFinalAnswer();
+    }
     this.requestPaint(false);
   }
 
@@ -2002,6 +2106,53 @@ export class InteractiveSession {
     this.paint();
   }
 
+  /** Route navigation keys to transcript only after PageUp/Home has entered
+   * reader mode. Ordinary arrow/home/end editing keeps its normal meaning at
+   * the live edge, so the composer never loses keyboard usability. */
+  private handleTranscriptScrollKey(k: { name?: string | undefined; ctrl?: boolean | undefined }): boolean {
+    const page = Math.max(1, (this.deps.io.rows ?? 24) - 8);
+    const scrollBy = (delta: number): void => {
+      this.transcriptFollowing = false;
+      this.transcriptScroll = Math.max(0, this.transcriptScroll + delta);
+      this.requestPaint(true);
+    };
+
+    if (k.name === "pageup" || (k.ctrl && k.name === "b")) {
+      scrollBy(-page);
+      return true;
+    }
+    if (!this.transcriptFollowing) {
+      if (k.name === "up") {
+        scrollBy(-1);
+        return true;
+      }
+      if (k.name === "down") {
+        scrollBy(1);
+        return true;
+      }
+      if (k.name === "pagedown" || (k.ctrl && k.name === "f")) {
+        scrollBy(page);
+        return true;
+      }
+      if (k.name === "home") {
+        this.transcriptScroll = 0;
+        this.requestPaint(true);
+        return true;
+      }
+      if (k.name === "end" || k.name === "escape") {
+        this.resetTranscriptToLive();
+        this.requestPaint(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private resetTranscriptToLive(): void {
+    this.transcriptFollowing = true;
+    this.transcriptScroll = Number.MAX_SAFE_INTEGER;
+  }
+
   /** Compose and write the frame, position the caret, manage cursor visibility. */
   private paint(): void {
     const mode = this.renderMode();
@@ -2013,7 +2164,17 @@ export class InteractiveSession {
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const overlayPanel = this.currentOverlayPanel();
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, currentModelId: this.settings.model ?? "auto", currentReasoning: this.settings.reasoning, reasoningRouteLabel: this.reasoningRoute?.label }, {
+    const frame = composeApp(this.term, this.input, out, unicode, {
+      ...this.keyCtx,
+      recentActivity: this.recentActivity,
+      overlayPanel,
+      overlayScroll: this.viewerScroll,
+      transcriptScroll: this.transcriptFollowing ? Number.MAX_SAFE_INTEGER : this.transcriptScroll,
+      transcriptFollowing: this.transcriptFollowing,
+      currentModelId: this.settings.model ?? "auto",
+      currentReasoning: this.settings.reasoning,
+      reasoningRouteLabel: this.reasoningRoute?.label,
+    }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
@@ -2029,6 +2190,14 @@ export class InteractiveSession {
     // input, status footer. No overlay gets its own unclipped, hand-rolled
     // full-screen replacement, so every line is guaranteed width-safe and
     // closing an overlay always restores exactly the frame underneath it.
+    // Settle the overlay scroll to the value the view actually clamped to, so
+    // an "End"/large offset lands exactly at the bottom and the next "Up" moves
+    // immediately instead of burning keypresses against a stale out-of-range value.
+    if (frame.overlayScroll !== null) this.viewerScroll = frame.overlayScroll;
+    if (frame.transcriptScroll !== null) {
+      this.transcriptScroll = frame.transcriptScroll;
+      if (frame.transcriptAtLive) this.transcriptFollowing = true;
+    }
     const lines = frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");

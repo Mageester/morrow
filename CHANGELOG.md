@@ -6,13 +6,42 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
-### Release status - 0.1.0-beta.31 is conditionally ready
+## [0.1.0-beta.33] - 2026-07-18
+
+### Release status - conditionally ready (unchanged from beta.31)
 
 Deterministic and packaged acceptance gates (foundation, durable-autonomy,
 sustained-autonomy) pass. The remaining certification gate — a completed,
 funded, real-external-model Guardian mission run from the packaged product —
 has not yet been run. See `docs/ACCEPTANCE.md#release-status-01.0-beta31`.
 This release is not stable, final, or fully verified until that gate runs.
+
+### Fixed - models available after OAuth sign-in, and scrollable long output
+
+- After signing in to a provider with subscription OAuth (e.g. ChatGPT), account
+  model availability was never discovered until the next service restart, so the
+  models kept reading "Account model availability has not been discovered yet."
+  The OAuth exchange now triggers model discovery immediately, the same way
+  startup does for already-configured providers.
+  (`services/orchestrator/src/server.ts`)
+- The interactive `/model` picker hid any current/preview model whose account
+  availability was still "unknown" — which is every model in the window between
+  sign-in and first discovery — leaving the picker confusingly sparse. Unknown
+  availability is now treated as "not yet proven" rather than "unavailable":
+  modern models stay listed with an explicit tag. (`apps/cli/src/terminal/model-picker.ts`)
+- Long assistant output and `/output`-family viewers were head-clipped to the
+  viewport with no way to read the rest — the terminal's own scrollback was
+  unusable because the frame is a full-repaint. Overlays are now a real
+  scrollable viewport: ↑/↓, PageUp/PageDown, and Home/End move through the
+  content with an "N above · N below" indicator, clamped to the true bounds.
+  (`apps/cli/src/terminal/app-view.ts`, `session.ts`)
+
+### Added - capability roadmap
+
+- Adopted `docs/CAPABILITY_RECOMMENDATIONS.md` (local-autonomy + verification
+  capabilities) as a tracked roadmap, cross-referenced from `MORROW_BACKLOG.md`.
+  Browser automation from beta.31 is marked shipped; dev-server lifecycle,
+  structured file-edit primitives, and the visual/accessibility loops remain open.
 
 ### Fixed - the packaged long-run acceptance gate was fabricating its own evidence
 

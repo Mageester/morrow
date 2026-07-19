@@ -406,6 +406,63 @@ const meta: SessionMeta = longMeta();
 const settings: SessionSettings = { mode: "agent", autoApprove: false, preset: "balanced", useMemory: true };
 
 describe("InteractiveSession: live paint fidelity", () => {
+  it("holds reader position during streaming, then End returns to live output", async () => {
+    const io = new FakeTermIO();
+    io.columns = 80;
+    io.rows = 24;
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    typeText(stdin, "read a long stream");
+    stdin.emit("keypress", undefined, { name: "return" });
+    await tick();
+
+    gate.push({ id: "turn-start", sequence: 1, type: "assistant.turn_started", payload: { turnId: "stream" } });
+    gate.push({
+      id: "early", sequence: 2, type: "evidence.persisted", payload: {
+        turnId: "stream",
+        deltaText: Array.from({ length: 80 }, (_, index) => `early streamed row ${index + 1}`).join("\n"),
+      },
+    });
+    await tick();
+    stdin.emit("keypress", undefined, { name: "pageup" });
+    await tick();
+    stdin.emit("keypress", undefined, { name: "home" });
+    await tick();
+    // Resize while reading history. The next streamed delta must retain this
+    // settled reader position instead of silently jumping back to the tail.
+    io.columns = 70;
+    io.rows = 20;
+    io.emitResize();
+    await tick();
+    const afterResize = io.writes.length;
+    gate.push({ id: "late", sequence: 3, type: "evidence.persisted", payload: { turnId: "stream", deltaText: "\nlatest streamed row" } });
+    await tick();
+
+    const reading = new MiniTerm(io.columns, 60);
+    reading.write(io.writes.slice(afterResize).join(""));
+    const readingRows = Array.from({ length: 60 }, (_, row) => reading.lineText(row)).join("\n");
+    expect(readingRows).toContain("early streamed row 1");
+    expect(readingRows).not.toContain("latest streamed row");
+
+    stdin.emit("keypress", undefined, { name: "end" });
+    await tick();
+    const live = new MiniTerm(io.columns, 60);
+    live.write(io.writes.slice(afterResize).join(""));
+    const liveRows = Array.from({ length: 60 }, (_, row) => live.lineText(row)).join("\n");
+    expect(liveRows).toContain("latest streamed row");
+
+    gate.end();
+    await tick();
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("narrow terminal: the startup panel wraps a long workspace path instead of truncating it", async () => {
     const io = new FakeTermIO();
     io.columns = 45;

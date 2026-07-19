@@ -111,6 +111,20 @@ describe("model picker: real item construction and filtering", () => {
       .toContain("not returned by this account");
   });
 
+  it("keeps a modern model whose availability is not yet discovered (unknown ≠ unavailable)", () => {
+    // Immediately after an OAuth sign-in, discovery has not run and every model
+    // reads availability "unknown". A current/preview model must still appear
+    // (tagged, not dropped) so the picker is never falsely empty.
+    const undiscovered = model("openai", "gpt-5.6-luna", "GPT-5.6 Luna", { lifecycle: "current" }, false);
+    undiscovered.availability = "unknown";
+    const retired = model("openai", "gpt-old", "GPT Old", { lifecycle: "deprecated" }, false);
+    retired.availability = "unknown";
+    const items = buildModelPickerItems([undiscovered, retired], [], [provider("openai", "gpt-5.6-luna")]);
+    expect(items.map((i) => i.id)).toContain("gpt-5.6-luna");
+    // A non-modern (deprecated) undiscovered model stays hidden — only modern ones surface.
+    expect(items.map((i) => i.id)).not.toContain("gpt-old");
+  });
+
   it("orders configured providers first and discloses auth mode and metadata provenance", () => {
     const configured = model("openai", "gpt-live", "GPT Live", { lifecycle: "current", metadataSource: "provider-reported", metadataVersion: "account", confidence: "reported" });
     configured.availability = "available";
