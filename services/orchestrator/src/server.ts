@@ -148,6 +148,7 @@ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+import { registerWebMissionRoutes } from "./web/mission-routes.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -334,6 +335,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       },
     };
   };
+  // Web app surface: honest mission projections for the browser client. Injected
+  // with the same repositories/service the terminal API uses so there is a
+  // single source of truth and zero behavior change to the existing routes.
+  registerWebMissionRoutes(app, {
+    db: deps.db,
+    projects,
+    missions,
+    approvals,
+    agents,
+    missionRuntime,
+    missionService,
+    ...(deps.missionControllerRunner ? { missionControllerRunner: deps.missionControllerRunner } : {}),
+    readIdempotencyKey,
+  });
+
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   // A `running` row from a previous orchestrator run is unobservable — mark it

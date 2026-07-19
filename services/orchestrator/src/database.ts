@@ -1124,6 +1124,10 @@ export const migrations:Migration[]=[
     ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
       DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
   `}
+  ,{id:37,name:"mission_idempotency_keys",sql:`
+    ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
+    CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

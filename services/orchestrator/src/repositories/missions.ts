@@ -289,6 +289,21 @@ export function missionsRepository(db: Database.Database) {
       return rows.map((r) => repo.hydrate(r));
     },
 
+    /** Look up a mission by the idempotency key it was created with (scoped to a
+     *  project). Mirrors the tasks repository so a repeated create request can
+     *  replay the original mission instead of spawning a duplicate. */
+    findByIdempotencyKey(projectId: string, key: string): Mission | undefined {
+      const row = db.prepare("SELECT * FROM missions WHERE project_id = ? AND idempotency_key = ?").get(projectId, key) as any;
+      return row ? repo.hydrate(row) : undefined;
+    },
+
+    /** Bind an idempotency key to an already-created mission. The partial unique
+     *  index (project_id, idempotency_key) is the durable guard against two
+     *  concurrent creates ever sharing a key. */
+    setIdempotencyKey(id: string, key: string): void {
+      db.prepare("UPDATE missions SET idempotency_key = ? WHERE id = ?").run(key, id);
+    },
+
     setStatus(id: string, status: MissionStatus, now = new Date().toISOString()): void {
       const patch: string[] = ["status = ?", "updated_at = ?"];
       const params: any[] = [status, now];
