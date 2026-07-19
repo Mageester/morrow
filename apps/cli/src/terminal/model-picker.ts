@@ -143,7 +143,13 @@ export function buildModelPickerItems(
   const visible = models.filter((status) => {
     if (status.model.id === currentModelId) return true;
     if (status.availability === undefined) return true;
-    return status.availability === "available" && (status.model.lifecycle === "current" || status.model.lifecycle === "preview");
+    const modern = status.model.lifecycle === "current" || status.model.lifecycle === "preview";
+    // "unknown" availability is not "unavailable": before account discovery has
+    // run (e.g. immediately after an OAuth sign-in), every model reads
+    // "unknown". Hiding them left the picker empty/confusing; show the modern
+    // ones with an explicit "availability unknown" tag instead of dropping them.
+    if (status.availability === "unknown") return modern;
+    return status.availability === "available" && modern;
   });
   visible.sort((a, b) => {
     const aCurrent = a.model.id === currentModelId ? 1 : 0;

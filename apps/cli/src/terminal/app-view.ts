@@ -74,6 +74,10 @@ export interface AppFrameContext {
   recentActivity?: RecentActivityItem[];
   /** The active overlay's content, if one is open. */
   overlayPanel?: OverlayPanel | null;
+  /** Requested scroll offset (top line index) for the overlay body. Clamped
+   *  to the real content/viewport bounds during composition and returned as
+   *  `AppFrame.overlayScroll`. Defaults to 0 (top). */
+  overlayScroll?: number;
   /** The /model picker's real item list — see input-state.ts's KeyContext,
    *  which the same array is mutated into (never a second, independently
    *  built list). Empty unless the model overlay is open. */
@@ -93,6 +97,11 @@ export interface AppFrameContext {
 export interface AppFrame {
   lines: string[];
   cursor: { row: number; col: number };
+  /** The clamped overlay scroll offset actually used for this frame. The
+   *  controller stores this back so "End"/large offsets settle at the true
+   *  bottom and the next "Up" moves immediately (no dead keypresses). Null
+   *  when no scrollable overlay is open. */
+  overlayScroll: number | null;
 }
 
 export function composeApp(
@@ -173,7 +182,8 @@ export function composeApp(
   // opposite: its lead lines are the title/summary a user opened it to see,
   // so it keeps the head and marks how much was cut instead of silently
   // dropping the start of the content.
-  const clippedMiddle = overlay ? headClip(middle, available, out) : middle.length > available ? middle.slice(middle.length - available) : middle;
+  const overlayWindow = overlay ? scrollClip(middle, available, ctx.overlayScroll ?? 0, out, unicode) : null;
+  const clippedMiddle = overlayWindow ? overlayWindow.shown : middle.length > available ? middle.slice(middle.length - available) : middle;
 
   const lines = [...top, "", ...clippedMiddle, "", ...bottom, ...footer];
   const bottomStart = top.length + 1 + clippedMiddle.length + 1;
@@ -182,17 +192,35 @@ export function composeApp(
     col: cursorWithinBottom.col,
   };
 
-  return { lines: lines.map((l) => clipToWidth(l, opts.columns)), cursor };
+  return { lines: lines.map((l) => clipToWidth(l, opts.columns)), cursor, overlayScroll: overlayWindow ? overlayWindow.scroll : null };
 }
 
-/** Keep the first `available - 1` lines and note how many were cut, rather
- *  than silently dropping the lead lines (title/summary) an overlay's
- *  content usually opens with. */
-function headClip(lines: string[], available: number, out: Output): string[] {
-  if (lines.length <= available) return lines;
-  const kept = Math.max(0, available - 1);
-  const cut = lines.length - kept;
-  return [...lines.slice(0, kept), out.gray(`  … ${cut} more line${cut === 1 ? "" : "s"} — see /output full`)];
+/**
+ * A scrollable viewport over an overlay's body. When the content fits, it is
+ * returned whole (scroll pinned to 0). When it overflows, one row is reserved
+ * for a position indicator ("▲ N above · ▼ M below") and the requested scroll
+ * offset is clamped to a valid top-line index so the caller can store the
+ * settled value back — this is what makes End/PageDown land exactly at the
+ * bottom and the next Up move immediately.
+ */
+export function scrollClip(
+  lines: string[],
+  available: number,
+  scroll: number,
+  out: Output,
+  unicode: boolean
+): { shown: string[]; scroll: number } {
+  if (lines.length <= available) return { shown: lines, scroll: 0 };
+  const bodyRows = Math.max(1, available - 1); // one row reserved for the indicator
+  const maxScroll = Math.max(0, lines.length - bodyRows);
+  const s = Math.min(Math.max(0, Math.floor(scroll)), maxScroll);
+  const shown = lines.slice(s, s + bodyRows);
+  const above = s;
+  const below = lines.length - (s + shown.length);
+  const up = unicode ? "▲" : "^";
+  const down = unicode ? "▼" : "v";
+  const indicator = out.gray(`  ${up} ${above} above · ${down} ${below} below — ↑/↓ PgUp/PgDn Home/End scroll`);
+  return { shown: [...shown, indicator], scroll: s };
 }
 
 /** Build the chrome at the top: MORROW brand, project, and live status. */
@@ -539,7 +567,7 @@ function footerLine(term: TerminalState, input: InputState, out: Output, unicode
     input.overlay === "palette"
       ? "↑/↓ select · Enter run · Esc close"
       : input.overlay === "output"
-        ? "Esc closes · output retained in task record"
+        ? "↑/↓ PgUp/PgDn Home/End scroll · Esc closes · output retained in task record"
         : input.overlay === "tasktree"
           ? "Esc closes · task tree from last mission"
           : input.overlay === "mission"

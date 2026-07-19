@@ -192,7 +192,20 @@ export class InteractiveSession {
   private lastTaskId: string | null = null;
   /** Duration of the most recently finished task, for the completion card. */
   private lastTaskElapsedMs: number | null = null;
-  private outputViewer: { title: string; lines: string[] } | null = null;
+  private _outputViewer: { title: string; lines: string[] } | null = null;
+  /** Scroll offset (top line index) for the current /output-family overlay.
+   *  Reset to 0 whenever a viewer opens; clamped to the real content bounds
+   *  by `composeApp`, which returns the settled value we store back here. */
+  private viewerScroll = 0;
+  /** Assigning a new viewer always re-anchors the scroll to the top — a fresh
+   *  report opens at its title/summary, not wherever the last one was left. */
+  private get outputViewer(): { title: string; lines: string[] } | null {
+    return this._outputViewer;
+  }
+  private set outputViewer(v: { title: string; lines: string[] } | null) {
+    this._outputViewer = v;
+    this.viewerScroll = 0;
+  }
   private pendingApproval: ApprovalView | null = null;
   /** True only for the brief, atomic window where a one-time out-of-band
    *  scrollback write is in flight (see `emitScrollbackReport`). The normal
@@ -322,6 +335,39 @@ export class InteractiveSession {
       }
       void this.showTaskReport("summary");
       return;
+    }
+
+    // Scroll the /output-family overlay (long reports, /output, /status, …).
+    // Esc / Ctrl+O still close it (handled above and via reduceKey). Only the
+    // dedicated navigation keys are consumed — never letters or space — so the
+    // input buffer stays fully editable while a viewer is open.
+    if (this.input.overlay === "output" || this.input.overlay === "tasktree") {
+      const page = Math.max(1, (this.deps.io.rows ?? 24) - 8);
+      if (k.name === "up") {
+        this.viewerScroll = Math.max(0, this.viewerScroll - 1);
+        return void this.requestPaint(true);
+      }
+      if (k.name === "down") {
+        this.viewerScroll += 1;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "pageup" || (k.ctrl && k.name === "b")) {
+        this.viewerScroll = Math.max(0, this.viewerScroll - page);
+        return void this.requestPaint(true);
+      }
+      if (k.name === "pagedown" || (k.ctrl && k.name === "f")) {
+        this.viewerScroll += page;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "home") {
+        this.viewerScroll = 0;
+        return void this.requestPaint(true);
+      }
+      if (k.name === "end") {
+        // Overshoot; composeApp clamps to the true bottom and stores it back.
+        this.viewerScroll = Number.MAX_SAFE_INTEGER;
+        return void this.requestPaint(true);
+      }
     }
 
     // `?` on empty buffer shows help
@@ -2013,7 +2059,7 @@ export class InteractiveSession {
     // the completion card's "N tools · 18s" line.
     const elapsedMs = this.busy ? this.now() - this.streamStart : this.lastTaskElapsedMs;
     const overlayPanel = this.currentOverlayPanel();
-    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, currentModelId: this.settings.model ?? "auto", currentReasoning: this.settings.reasoning, reasoningRouteLabel: this.reasoningRoute?.label }, {
+    const frame = composeApp(this.term, this.input, out, unicode, { ...this.keyCtx, recentActivity: this.recentActivity, overlayPanel, overlayScroll: this.viewerScroll, currentModelId: this.settings.model ?? "auto", currentReasoning: this.settings.reasoning, reasoningRouteLabel: this.reasoningRoute?.label }, {
       columns: io.columns,
       rows: io.rows,
       tick: this.tick,
@@ -2029,6 +2075,10 @@ export class InteractiveSession {
     // input, status footer. No overlay gets its own unclipped, hand-rolled
     // full-screen replacement, so every line is guaranteed width-safe and
     // closing an overlay always restores exactly the frame underneath it.
+    // Settle the overlay scroll to the value the view actually clamped to, so
+    // an "End"/large offset lands exactly at the bottom and the next "Up" moves
+    // immediately instead of burning keypresses against a stale out-of-range value.
+    if (frame.overlayScroll !== null) this.viewerScroll = frame.overlayScroll;
     const lines = frame.lines;
     if (!io.isTTY) {
       io.write(lines.join("\n") + "\n");
