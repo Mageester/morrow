@@ -185,6 +185,164 @@ a {
   text-transform: uppercase;
 }
 
+.morrow-mission-page {
+  gap: var(--morrow-space-5);
+}
+
+.morrow-mission-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--morrow-space-4);
+}
+
+.morrow-mission-header__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font-size: 0.875rem;
+}
+
+.morrow-mission-state,
+.morrow-mission-sync,
+.morrow-mission-milestone-state {
+  padding: var(--morrow-space-1) var(--morrow-space-2);
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.morrow-mission-state[data-state="completed_verified"],
+.morrow-mission-milestone-state[data-state="completed"],
+.morrow-mission-sync[data-state="synchronized"] {
+  color: var(--morrow-success);
+}
+
+.morrow-mission-state[data-state="blocked"],
+.morrow-mission-state[data-state="needs_input"],
+.morrow-mission-milestone-state[data-state="failed"],
+.morrow-mission-sync[data-state="offline"] {
+  color: var(--morrow-warning);
+}
+
+.morrow-mission-tabs {
+  display: flex;
+  gap: var(--morrow-space-1);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--morrow-border);
+}
+
+.morrow-mission-tabs button {
+  min-width: 88px;
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font: inherit;
+  font-weight: 650;
+}
+
+.morrow-mission-tabs button[aria-selected="true"] {
+  color: var(--morrow-text);
+  border-bottom-color: var(--morrow-accent);
+}
+
+.morrow-mission-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--morrow-space-4);
+}
+
+.morrow-mission-overview__objective,
+.morrow-mission-milestone-count {
+  grid-column: 1 / -1;
+}
+
+.morrow-mission-milestone-count {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.morrow-mission-milestones,
+.morrow-mission-attention-list,
+.morrow-mission-activity,
+.morrow-mission-technical-details ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.morrow-mission-milestones,
+.morrow-mission-attention-list,
+.morrow-mission-activity {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-milestones li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-attention-list li {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding-left: var(--morrow-space-3);
+  border-left: 3px solid var(--morrow-warning);
+}
+
+.morrow-mission-secondary-copy {
+  font-size: 0.875rem;
+}
+
+.morrow-mission-activity details {
+  border-bottom: 1px solid var(--morrow-border);
+}
+
+.morrow-mission-activity summary {
+  min-height: 44px;
+  padding: var(--morrow-space-3) 0;
+  color: var(--morrow-text);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.morrow-mission-technical-details {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: 0 0 var(--morrow-space-4) var(--morrow-space-4);
+  margin: 0;
+}
+
+.morrow-mission-technical-details div {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.3fr) 1fr;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-technical-details dt {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.morrow-mission-technical-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .morrow-app-shell {
     grid-template-columns: 1fr;
@@ -243,5 +401,18 @@ a {
 
   .morrow-main {
     padding: var(--morrow-space-5) var(--morrow-space-4);
+  }
+
+  .morrow-mission-header {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .morrow-mission-header__status {
+    justify-content: flex-start;
+  }
+
+  .morrow-mission-overview {
+    grid-template-columns: 1fr;
   }
 }

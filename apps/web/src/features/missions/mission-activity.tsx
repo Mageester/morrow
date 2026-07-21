@@ -1,0 +1,70 @@
+import type { WebMissionActivity } from "@morrow/contracts";
+import { Surface } from "@morrow/ui";
+
+function formatTimestamp(timestamp: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(timestamp));
+}
+
+function TechnicalDetails({ activity }: { activity: WebMissionActivity }) {
+  return (
+    <dl className="morrow-mission-technical-details">
+      <div>
+        <dt>Actor</dt>
+        <dd>{activity.actor.name}</dd>
+      </div>
+      {activity.artifactIds.length > 0 ? (
+        <div>
+          <dt>Artifact references</dt>
+          <dd>
+            <ul>
+              {activity.artifactIds.map((artifactId) => (
+                <li key={artifactId}>{artifactId}</li>
+              ))}
+            </ul>
+          </dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>Event ID</dt>
+        <dd>{activity.id}</dd>
+      </div>
+      <div>
+        <dt>Cursor</dt>
+        <dd>{activity.cursor}</dd>
+      </div>
+      <div>
+        <dt>Recorded</dt>
+        <dd>
+          <time dateTime={activity.createdAt}>
+            {formatTimestamp(activity.createdAt)}
+          </time>
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+export function MissionActivity({ activity }: { activity: WebMissionActivity[] }) {
+  return (
+    <Surface padding="large">
+      <h2>Activity</h2>
+      {activity.length === 0 ? (
+        <p>No meaningful activity has been recorded yet.</p>
+      ) : (
+        <ol aria-label="Mission activity" className="morrow-mission-activity">
+          {activity.map((item) => (
+            <li key={item.id}>
+              <details>
+                <summary>{item.summary}</summary>
+                <TechnicalDetails activity={item} />
+              </details>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Surface>
+  );
+}
