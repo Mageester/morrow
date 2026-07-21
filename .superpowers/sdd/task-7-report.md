@@ -27,7 +27,7 @@ stable retry keys, key rotation after an explicit failed-draft edit, success
 navigation and cache population, failure preservation, section order/hiding,
 safe project states, and focus/accessibility semantics.
 
-## Final verification
+## Initial verification (before reviewer hardening)
 
 - `pnpm --filter @morrow/web test` — passed, 4 files / 35 tests.
 - `pnpm --filter @morrow/web check` — passed.
@@ -59,10 +59,9 @@ safe project states, and focus/accessibility semantics.
 
 ## Limitations and deviations
 
-- The API supports an optional deadline, which is exposed inside progressive
-  disclosure. Attachment upload and connection selection do not have a truthful
-  API in this slice, so the UI explicitly says they are unavailable rather than
-  presenting non-functional controls.
+- The service does not yet persist a mission deadline. The deadline input is
+  explicitly disabled/unavailable and is not submitted. Attachment upload and
+  connection selection likewise have no truthful API in this slice.
 - Mission workspace activity, attention resolution, and richer mission cards
   remain later tasks; this change does not implement Task 8+ behavior.
 
@@ -115,3 +114,37 @@ composer copy.
 
 Revert commit `fix(web): harden mission composer behavior` to remove only the
 reviewer hardening changes while retaining the original Task 7 feature.
+
+---
+
+## Final composer error-semantics follow-up
+
+### RED
+
+`pnpm --filter @morrow/web test -- home-page.test.tsx`
+
+The focused suite failed two regressions: a recoverable API failure marked a
+valid objective `aria-invalid` and described the textarea with the request
+error, while the objective-validation message did not have its dedicated
+description id.
+
+### GREEN
+
+`pnpm --filter @morrow/web test -- home-page.test.tsx`
+
+Passed: 1 file, 15 tests. API/runtime failures now remain a polite, accessible
+form status without invalidating a valid objective. Objective validation alone
+sets `aria-invalid`, describes the textarea with `mission-objective-error`, and
+clears when the user corrects the draft.
+
+### Current final verification
+
+- `pnpm --filter @morrow/web test` — passed, 4 files / 41 tests.
+- `pnpm --filter @morrow/web check` — passed.
+- `pnpm --filter @morrow/web build` — passed with `apps/web/dist/index.html`.
+- `git diff --check a68f912c3efdf24ae39e1cb8051c832901ff75b1..HEAD` — passed.
+
+### Final rollback
+
+Revert commit `fix(web): separate composer validation errors` to remove only
+the final validation/request-error accessibility separation.

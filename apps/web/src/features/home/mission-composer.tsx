@@ -39,7 +39,8 @@ export function MissionComposer({
   const queryClient = useQueryClient();
   const [autonomy, setAutonomy] = useState<Autonomy>("recommended");
   const [draft, setDraft] = useState("");
-  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [objectiveValidationError, setObjectiveValidationError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const currentIdempotencyKey = useRef(createIdempotencyKey());
   const failedSubmission = useRef(false);
   const isCurrent = useRef(false);
@@ -62,7 +63,7 @@ export function MissionComposer({
       api.post("/api/web/missions", input, WebMissionSnapshotSchema),
     onError: (error) => {
       failedSubmission.current = true;
-      setSubmissionError(errorMessage(error));
+      setRequestError(errorMessage(error));
     },
     onSuccess: (snapshot) => {
       queryClient.setQueryData(
@@ -74,7 +75,8 @@ export function MissionComposer({
       failedSubmission.current = false;
       currentIdempotencyKey.current = createIdempotencyKey();
       setDraft("");
-      setSubmissionError(null);
+      setObjectiveValidationError(null);
+      setRequestError(null);
       void navigate({
         params: { missionId: snapshot.summary.id },
         to: "/missions/$missionId",
@@ -89,14 +91,16 @@ export function MissionComposer({
     if (!failedSubmission.current) return;
     currentIdempotencyKey.current = createIdempotencyKey();
     failedSubmission.current = false;
-    setSubmissionError(null);
+    setRequestError(null);
   }
 
   function submit() {
     const objective = draft.trim();
     if (!objective || !activeProjectId) return;
     if (objective.length > 8_000) {
-      setSubmissionError("Mission objectives must be 8,000 characters or fewer.");
+      setObjectiveValidationError(
+        "Mission objectives must be 8,000 characters or fewer.",
+      );
       return;
     }
 
@@ -107,13 +111,13 @@ export function MissionComposer({
       projectId: activeProjectId,
     });
     if (!parsed.success) {
-      setSubmissionError("Review the mission details and try again.");
+      setRequestError("Review the mission details and try again.");
       return;
     }
     if (submissionInFlight.current) return;
 
     submissionInFlight.current = true;
-    setSubmissionError(null);
+    setRequestError(null);
     createMission.mutate(parsed.data);
   }
 
@@ -138,11 +142,14 @@ export function MissionComposer({
         </div>
         <label htmlFor="mission-objective">Mission objective</label>
         <textarea
-          aria-describedby={submissionError ? "mission-composer-error" : undefined}
-          aria-invalid={submissionError ? true : undefined}
+          aria-describedby={
+            objectiveValidationError ? "mission-objective-error" : undefined
+          }
+          aria-invalid={objectiveValidationError ? true : undefined}
           id="mission-objective"
           onChange={(event) => {
             const nextDraft = event.target.value;
+            if (nextDraft !== draft) setObjectiveValidationError(null);
             if (failedSubmission.current && nextDraft !== draft) {
               resetFailedSubmissionForEdit();
             }
@@ -179,9 +186,14 @@ export function MissionComposer({
             local slice.
           </p>
         </details>
-        {submissionError ? (
-          <p id="mission-composer-error" role="alert">
-            {submissionError}
+        {objectiveValidationError ? (
+          <p id="mission-objective-error" role="alert">
+            {objectiveValidationError}
+          </p>
+        ) : null}
+        {requestError ? (
+          <p aria-live="polite" role="status">
+            {requestError}
           </p>
         ) : null}
         <Button

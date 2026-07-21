@@ -266,10 +266,13 @@ describe("HomePage", () => {
     });
     await user.type(objective, "Review the proposal");
     await user.keyboard("{Enter}");
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The mission needs a decision.",
+    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
+      "role",
+      "status",
     );
     expect(objective).toHaveValue("Review the proposal");
+    expect(objective).not.toHaveAttribute("aria-invalid");
+    expect(objective).not.toHaveAttribute("aria-describedby");
 
     const first = JSON.parse(
       String(
@@ -329,7 +332,10 @@ describe("HomePage", () => {
     });
     await user.type(objective, "Review the proposal");
     await user.keyboard("{Enter}");
-    await screen.findByRole("alert");
+    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
+      "role",
+      "status",
+    );
     const first = JSON.parse(
       String(
         fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
@@ -396,6 +402,10 @@ describe("HomePage", () => {
       "Mission objectives must be 8,000 characters or fewer.",
     );
     expect(objective).toHaveAttribute("aria-invalid", "true");
+    expect(objective).toHaveAttribute(
+      "aria-describedby",
+      "mission-objective-error",
+    );
     expect(objective).toHaveValue("x".repeat(8_001));
     expect(
       fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
@@ -403,6 +413,9 @@ describe("HomePage", () => {
 
     fireEvent.change(objective, { target: { value: "x".repeat(8_000) } });
     await waitFor(() => expect(objective).toHaveValue("x".repeat(8_000)));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(objective).not.toHaveAttribute("aria-invalid");
+    expect(objective).not.toHaveAttribute("aria-describedby");
     fireEvent.keyDown(objective, { key: "Enter" });
     await waitFor(() => {
       expect(
