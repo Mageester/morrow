@@ -47,7 +47,7 @@ No plan-blocking contradictions. Proceed to Task 1.
 | 3. REST endpoints | done | 7dba7ed | 4674fff | 36 focused + migration 12/12, check ok | APPROVED | APPROVED + security APPROVED (0 crit/imp; 1 minor N+1 list, 2 nits) |
 | 4. SSE stream | done | 4674fff | e499d2a | stream + missions 27/27, check ok, diff-check ok | APPROVED | APPROVED + security APPROVED (0 crit/imp; 1 minor backlog pagination) |
 | 5. UI package | done | ea98699 | 7e012a7 | UI 13/13, check ok, build ok, diff-check ok | APPROVED | APPROVED (3 Important fixed; 1 minor test-wiring gap) |
-| 6. App scaffold | pending | — | — | — | — | — |
+| 6. App scaffold | done | 6d8bd9c | 0755cb8 | web 26/26, check ok, build ok, diff-check ok, browser QA ok | APPROVED | APPROVED + accessibility/security APPROVED (4 Important fixed; 2 minor) |
 | 7. Home/composer | pending | — | — | — | — | — |
 | 8. Overview/activity/stream | pending | — | — | — | — | — |
 | 9. Work/Result | pending | — | — | — | — | — |
@@ -61,4 +61,5 @@ Notes:
 - Task 3 added migration 37 (missions.idempotency_key) + updated migration-count assertions in 2 existing test files.
 - Remote branch currently preserves reviewed Tasks 1-4 and durable evidence at `ea98699`; Task 5 is review-clean locally at `7e012a7` and is next to push with this ledger.
 - Task 5 extended the existing `packages/ui` README/package rather than recreating it. Independent review found and fixed three Important accessibility/composition issues in `7e012a7`.
-- Exact next action: push Task 5 and its durable evidence, post PR evidence, then dispatch Task 6 from the reviewed checkpoint.
+- Task 6 added the `/app/` React/Vite shell, typed API client, TanStack routes/query foundation, global theme, and runtime status boundary. Independent review found and fixed four Important quality/accessibility issues in `0755cb8`.
+- Exact next action: push Task 6 and durable evidence, post PR evidence, then dispatch Task 7 from the reviewed checkpoint.

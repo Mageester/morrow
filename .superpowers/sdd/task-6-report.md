@@ -110,7 +110,7 @@ Created under `apps/web`:
 - state: `src/state/theme.tsx`, `src/state/runtime-status.tsx`;
 - route foundations: Home, Missions, Mission workspace, Library, Connections, Settings, and generic coming-soon pages;
 - styling/test setup: `src/styles/app.css`, `src/test-setup.ts`;
-- tests: `src/app/app-shell.test.tsx`, `src/api/client.test.ts`.
+- tests: `src/app/app-shell.test.tsx`, `src/api/client.test.ts`, `src/state/runtime-status.test.tsx`.
 
 Modified:
 
