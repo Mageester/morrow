@@ -51,7 +51,7 @@ No plan-blocking contradictions. Proceed to Task 1.
 | 7. Home/composer | done | a68f912 | 5232218 | web 41/41, check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (8 Important fixed; 1 privacy minor) |
 | 8. Overview/activity/stream | done | 425944e | c76751c | web 56/56, check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (3 Important fixed; 0 open) |
 | 9. Work/Result | done | 22a24b8 | 7fcdacf | web 118/118, UI 14/14, checks/builds ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (5 Important fixed; 0 open) |
-| 10. Attention/errors | pending | — | — | — | — | — |
+| 10. Attention/errors | done | 3bac520 | 3396792 | web 151/151 (attention-card 15/15), check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security/race APPROVED (6 Important fixed over 3 rounds; 0 open; 2 non-blocking minor) |
 | 11. /app serving + packaging | pending | — | — | — | — | — |
 | 12. E2E/a11y/visual gates | pending | — | — | — | — | — |
 | Final review | pending | — | — | — | — | — |
@@ -65,4 +65,11 @@ Notes:
 - Task 7 added the universal objective-first composer, honest progressive controls, project selection, idempotent mission creation, cache/navigation, and ordered Home sections. Three review rounds fixed eight Important behavior/accessibility findings.
 - Task 8 added authoritative mission snapshots, resumable ordered named-event streaming, honest offline/reconnect state, accessible Overview/Activity, and stable four-tab semantics. Review fixed three Important state/accounting/ARIA issues.
 - Task 9 added text-only adaptive artifact views and conservative evidence-backed Result delivery. Three review rounds fixed five Important truth, identity, keyboard, and ARIA issues.
-- Exact next action: push Task 9 and durable evidence, post PR evidence, then dispatch Task 10 from the reviewed checkpoint.
+- Task 9 and its durable evidence `3bac520` are pushed; Tasks 1-9 are review-clean on `origin/feat/morrow-web-app-foundation`.
+- Task 10 added honest attention/error/runtime-reconnect/recovery surfaces on the existing web slice (no orchestrator/contract/shared-UI/packaging change). Three review rounds fixed six Important findings; the final `3396792` closed the last race finding with a durable `QueryClient`-scoped serialization coordinator and compare-and-swap cache reconciliation (`WeakMap` generation + `dataUpdateCount`, `refetchType: "none"`). Independent re-review over `3bac520..3396792`: specification/quality/accessibility/security/race all APPROVED, 0 Critical, 0 Important. Full evidence in `task-10-report.md` and `task-10-review.md`; package `review-3bac520..3396792.diff`.
+
+## Task 10 recovery checkpoint (2026-07-21)
+
+- Recovered the existing worktree after Codex hit its usage limit mid-gate. Local HEAD was `3396792` (3 commits ahead of remote `3bac520`, 0 behind); working tree clean; the final race fix was already committed, not dirty. Only untracked files were SDD evidence.
+- Independently re-ran every Task 10 gate green (web 151/151, attention-card 15/15 incl. remount + stale-response race regressions, check, build, diff-check) and re-reviewed the cumulative range before recording completion.
+- Exact next action: push Task 10 + durable evidence, post PR #64 evidence, then dispatch Task 11 (/app serving + packaging) from `3396792`.
