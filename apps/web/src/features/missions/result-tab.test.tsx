@@ -42,41 +42,66 @@ describe("ResultTab", () => {
       summary: "The brief is drafted, but its final verification failed.",
     });
 
-    expect(screen.getByRole("heading", { level: 2, name: "Verification failed" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Completed; verification failed" })).toBeVisible();
     expect(screen.queryByText("Completed and verified")).not.toBeInTheDocument();
     expect(screen.getByText("The brief is drafted, but its final verification failed.")).toBeVisible();
-    expect(screen.getByRole("heading", { level: 2, name: "Primary deliverables" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 3, name: "Primary deliverables" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Launch brief" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 4, name: "Launch brief" })).toBeVisible();
     expect(screen.getByText("1 piece of verification evidence")).toBeVisible();
     expect(screen.getByText("The publication step still needs owner approval.")).toBeVisible();
     expect(container.querySelector("details")).toBeNull();
   });
 
-  it("labels passed verification as completed only when the mission snapshot supports it", () => {
-    const verification = {
-      caveats: [],
-      evidenceCount: 2,
-      state: "passed" as const,
-      summary: "The brief passed its required checks.",
-    };
-    const { rerender } = renderResult(verification);
+  const verificationStates = [
+    "not_ready",
+    "in_progress",
+    "passed",
+    "passed_with_caveats",
+    "failed",
+  ] as const;
+  const namedStates: ReadonlyArray<[WebMissionUiState, string]> = [
+    ["draft", "Draft"],
+    ["needs_input", "Needs input"],
+    ["working", "Working"],
+    ["reviewing", "Reviewing"],
+    ["blocked", "Blocked"],
+    ["failed_recoverable", "Failed, recoverable"],
+    ["failed", "Failed"],
+    ["cancelled", "Cancelled"],
+    ["superseded", "Superseded"],
+  ];
 
-    expect(screen.getByRole("heading", { level: 2, name: "Completed and verified" })).toBeVisible();
+  it.each(
+    namedStates.flatMap(([missionState, expected]) =>
+      verificationStates.map((verificationState) => [
+        missionState,
+        verificationState,
+        expected,
+      ] as const),
+    ),
+  )("preserves the %s mission outcome when verification is %s", (missionState, state, expected) => {
+    renderResult({ caveats: [], evidenceCount: 0, state, summary: "Result summary." }, missionState);
 
-    rerender(
-      <ResultTab
-        artifacts={[artifact]}
-        missionState="working"
-        verification={verification}
-      />,
-    );
-    expect(
-      screen.getByRole("heading", {
-        level: 2,
-        name: "Verification passed; completion not confirmed",
-      }),
-    ).toBeVisible();
-    expect(screen.queryByText("Completed and verified")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: expected })).toBeVisible();
+    expect(screen.queryByText("Completed and verified")).toBeNull();
+  });
+
+  it.each([
+    ["completed_verified", "passed", "Completed and verified"],
+    ["completed_verified", "passed_with_caveats", "Completed with caveats"],
+    ["completed_verified", "failed", "Completed; verification failed"],
+    ["completed_verified", "in_progress", "Completed; verification in progress"],
+    ["completed_verified", "not_ready", "Completed; verification not ready"],
+    ["completed_with_caveats", "passed", "Completed with caveats"],
+    ["completed_with_caveats", "passed_with_caveats", "Completed with caveats"],
+    ["completed_with_caveats", "failed", "Completed with caveats; verification failed"],
+    ["completed_with_caveats", "in_progress", "Completed with caveats; verification in progress"],
+    ["completed_with_caveats", "not_ready", "Completed with caveats; verification not ready"],
+  ] as const)("maps %s and %s to %s", (missionState, state, expected) => {
+    renderResult({ caveats: [], evidenceCount: 0, state, summary: "Result summary." }, missionState);
+
+    expect(screen.getByRole("heading", { level: 2, name: expected })).toBeVisible();
   });
 
   it("reports caveated and incomplete verification honestly with pluralized evidence", () => {
@@ -89,7 +114,7 @@ describe("ResultTab", () => {
 
     expect(screen.getByRole("heading", { level: 2, name: "Completed with caveats" })).toBeVisible();
     expect(screen.getByText("No verification evidence is available.")).toBeVisible();
-    expect(screen.getByText("No caveats were reported.")).toBeVisible();
+    expect(screen.getByText("Caveat details were not supplied.")).toBeVisible();
 
     rerender(
       <ResultTab
@@ -103,7 +128,20 @@ describe("ResultTab", () => {
         }}
       />,
     );
-    expect(screen.getByRole("heading", { level: 2, name: "Verification in progress" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Reviewing" })).toBeVisible();
     expect(screen.getByText("No primary deliverables are available yet.")).toBeVisible();
+  });
+
+  it("normalizes the summary and caveats without hiding incomplete caveat details", () => {
+    renderResult({
+      caveats: ["  Keep the owner informed.  ", "   "],
+      evidenceCount: 0,
+      state: "passed_with_caveats",
+      summary: "   ",
+    }, "completed_with_caveats");
+
+    expect(screen.getByText("No plain-language result summary was supplied.")).toBeVisible();
+    expect(screen.getByText("Keep the owner informed.")).toBeVisible();
+    expect(screen.queryByText("Caveat details were not supplied.")).toBeNull();
   });
 });

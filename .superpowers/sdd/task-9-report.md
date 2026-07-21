@@ -123,3 +123,93 @@ Revert `feat(web): add adaptive work and verified results`. This restores the
 Task 8 Work/Result placeholders and removes only Task 9 components, tests,
 styles, report, and the artifact-frame heading-level extension. Contracts,
 server projection, streaming, approvals, and permissions remain unchanged.
+
+---
+
+## Review-Fix Pass — Truthful Result and Artifact Semantics
+
+### Scope
+
+This follow-up corrects Task 9 review findings without changing the browser
+contract, controller, stream, attention behavior, permissions, or artifact
+actions:
+
+- Result labels now use an explicit mission-state × verification mapping.
+  Non-completed states retain their known projected outcome, and `Completed
+  and verified` appears only for `completed_verified` plus `passed`.
+- Result summaries and caveats are trimmed. Empty summaries use an explicit
+  fallback, and a caveated verification or completion state without usable
+  caveat details visibly reports that omission.
+- Artifact titles normalize to `Untitled artifact`; artifact list keys include
+  ID, version, and index to avoid duplicate-key identity collisions.
+- Text previews are keyboard-focusable named scroll containers.
+- Result heading hierarchy is `h2` result, `h3` subsections, and `h4`
+  deliverable artifact titles. Work remains `h2` then `h3` artifacts.
+
+### RED Evidence
+
+Before the follow-up implementation:
+
+```powershell
+pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
+```
+
+Expected failures were observed:
+
+- 54 Result cases failed because verification labels replaced known draft,
+  input-needed, working, reviewing, blocked, failure, cancelled, and
+  superseded mission outcomes; completed states also lacked the requested
+  explicit mapping.
+- Result hierarchy rendered sections as `h2` and artifact titles as `h3`.
+- Empty/whitespace summaries and caveats remained blank, including an invalid
+  `Completed with caveats` plus `No caveats were reported` pairing.
+- Work emitted React's duplicate-key warning for equal artifact IDs, retained
+  whitespace-only titles, and exposed no focusable labelled preview.
+
+### GREEN and Final Evidence
+
+```text
+pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
+PASS — 2 files, 62 tests
+
+pnpm --filter @morrow/web test -- mission-page.test.tsx work-tab.test.tsx result-tab.test.tsx
+PASS — 3 files, 72 tests
+
+pnpm --filter @morrow/web test
+PASS — 8 files, 118 tests
+
+pnpm --filter @morrow/ui test
+PASS — 1 file, 14 tests
+
+pnpm --filter @morrow/web check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/ui check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/web build
+PASS — Vite production build
+
+Test-Path apps/web/dist/index.html
+PASS — True
+
+pnpm --filter @morrow/ui build
+PASS — tsc -p tsconfig.build.json
+```
+
+### Security and Accessibility
+
+- Normalization operates on already-projected strings and preserves React text
+  rendering; it introduces no execution, URL, file, or network path.
+- The preview uses a native `pre` with `tabIndex=0` and an accessible label
+  based on the normalized artifact title. Long content remains bounded and
+  scrollable.
+- The complete table-driven result test covers every `WebMissionUiState` with
+  every verification state for non-completed outcomes and every verification
+  state for both completed outcomes.
+
+### Rollback
+
+Revert `fix(web): preserve truthful result and artifact semantics` to remove
+only this corrective pass. The original Task 9 artifact/result slice remains
+available; no data, permission, external-flow, or server rollback is needed.

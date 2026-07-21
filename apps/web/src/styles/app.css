@@ -267,7 +267,8 @@ a {
 }
 
 .morrow-mission-work > h2,
-.morrow-mission-result h2 {
+.morrow-mission-result h2,
+.morrow-mission-result h3 {
   margin: 0;
 }
 

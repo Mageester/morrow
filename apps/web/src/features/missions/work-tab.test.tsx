@@ -73,4 +73,33 @@ describe("WorkTab", () => {
     rerender(<WorkTab artifacts={[artifact({ preview: "   " })]} />);
     expect(screen.getByText("No safe text preview is available.")).toBeVisible();
   });
+
+  it("normalizes titles, offers a keyboard focusable preview, and keeps duplicate artifacts associated on rerender", () => {
+    const duplicateId = "duplicate";
+    const { rerender } = render(
+      <WorkTab
+        artifacts={[
+          artifact({ id: duplicateId, preview: "First preview", title: " First artifact ", version: 1 }),
+          artifact({ id: duplicateId, preview: "Second preview", title: "   ", version: 1 }),
+        ]}
+      />,
+    );
+
+    const firstPreview = screen.getByLabelText("Text preview for First artifact");
+    expect(firstPreview).toHaveAttribute("tabindex", "0");
+    firstPreview.focus();
+    expect(firstPreview).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Untitled artifact" })).toHaveTextContent("Second preview");
+
+    rerender(
+      <WorkTab
+        artifacts={[
+          artifact({ id: duplicateId, preview: "Updated second preview", title: "Second artifact", version: 1 }),
+          artifact({ id: duplicateId, preview: "Updated first preview", title: "First artifact", version: 1 }),
+        ]}
+      />,
+    );
+    expect(screen.getByRole("region", { name: "Second artifact" })).toHaveTextContent("Updated second preview");
+    expect(screen.getByRole("region", { name: "First artifact" })).toHaveTextContent("Updated first preview");
+  });
 });

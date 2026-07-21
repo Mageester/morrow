@@ -2,7 +2,11 @@ import type { WebMissionArtifact } from "@morrow/contracts";
 import { ArtifactFrame } from "@morrow/ui";
 import type { ReactNode } from "react";
 
-type ArtifactRenderer = (artifact: WebMissionArtifact) => ReactNode;
+type ArtifactHeadingLevel = 2 | 3 | 4 | 5 | 6;
+type ArtifactRenderer = (
+  artifact: WebMissionArtifact,
+  headingLevel: ArtifactHeadingLevel,
+) => ReactNode;
 
 const artifactLabels: Record<WebMissionArtifact["kind"], string> = {
   browser_capture: "Browser capture",
@@ -20,6 +24,10 @@ function artifactLabel(kind: string): string {
   return artifactLabels[kind as WebMissionArtifact["kind"]] ?? "Other artifact";
 }
 
+function artifactTitle(title: string): string {
+  return title.trim() || "Untitled artifact";
+}
+
 function ArtifactMetadata({ artifact }: { artifact: WebMissionArtifact }) {
   return (
     <span>
@@ -29,44 +37,63 @@ function ArtifactMetadata({ artifact }: { artifact: WebMissionArtifact }) {
   );
 }
 
-function SafeTextPreview({ preview }: Pick<WebMissionArtifact, "preview">) {
+function SafeTextPreview({
+  preview,
+  title,
+}: Pick<WebMissionArtifact, "preview"> & { title: string }) {
   if (!preview?.trim()) {
     return <p className="morrow-artifact-preview__empty">No safe text preview is available.</p>;
   }
 
-  return <pre className="morrow-artifact-preview">{preview}</pre>;
+  return (
+    <pre
+      aria-label={`Text preview for ${title}`}
+      className="morrow-artifact-preview"
+      tabIndex={0}
+    >
+      {preview}
+    </pre>
+  );
 }
 
-function ArtifactShell({ artifact }: { artifact: WebMissionArtifact }) {
+function ArtifactShell({
+  artifact,
+  headingLevel,
+}: {
+  artifact: WebMissionArtifact;
+  headingLevel: ArtifactHeadingLevel;
+}) {
+  const title = artifactTitle(artifact.title);
+
   return (
     <ArtifactFrame
-      headingLevel={3}
+      headingLevel={headingLevel}
       metadata={<ArtifactMetadata artifact={artifact} />}
-      title={artifact.title}
+      title={title}
     >
-      <SafeTextPreview preview={artifact.preview} />
+      <SafeTextPreview preview={artifact.preview} title={title} />
     </ArtifactFrame>
   );
 }
 
-function FileArtifact(artifact: WebMissionArtifact) {
-  return <ArtifactShell artifact={artifact} />;
+function FileArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
+  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
 }
 
-function TextArtifact(artifact: WebMissionArtifact) {
-  return <ArtifactShell artifact={artifact} />;
+function TextArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
+  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
 }
 
-function SourceArtifact(artifact: WebMissionArtifact) {
-  return <ArtifactShell artifact={artifact} />;
+function SourceArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
+  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
 }
 
-function DiffArtifact(artifact: WebMissionArtifact) {
-  return <ArtifactShell artifact={artifact} />;
+function DiffArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
+  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
 }
 
-function MetadataArtifact(artifact: WebMissionArtifact) {
-  return <ArtifactShell artifact={artifact} />;
+function MetadataArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
+  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
 }
 
 const artifactRenderers: Record<WebMissionArtifact["kind"], ArtifactRenderer> = {
@@ -81,25 +108,40 @@ const artifactRenderers: Record<WebMissionArtifact["kind"], ArtifactRenderer> = 
   source: SourceArtifact,
 };
 
-function ArtifactView({ artifact }: { artifact: WebMissionArtifact }) {
+function ArtifactView({
+  artifact,
+  headingLevel,
+}: {
+  artifact: WebMissionArtifact;
+  headingLevel: ArtifactHeadingLevel;
+}) {
   const renderer = artifactRenderers[artifact.kind] ?? MetadataArtifact;
-  return <>{renderer(artifact)}</>;
+  return <>{renderer(artifact, headingLevel)}</>;
 }
 
 interface ArtifactListProps {
   artifacts: readonly WebMissionArtifact[];
   emptyMessage: string;
+  headingLevel?: ArtifactHeadingLevel;
 }
 
-export function ArtifactList({ artifacts, emptyMessage }: ArtifactListProps) {
+export function ArtifactList({
+  artifacts,
+  emptyMessage,
+  headingLevel = 3,
+}: ArtifactListProps) {
   if (artifacts.length === 0) {
     return <p className="morrow-artifact-list__empty">{emptyMessage}</p>;
   }
 
   return (
     <div className="morrow-artifact-list">
-      {artifacts.map((artifact) => (
-        <ArtifactView artifact={artifact} key={artifact.id} />
+      {artifacts.map((artifact, index) => (
+        <ArtifactView
+          artifact={artifact}
+          headingLevel={headingLevel}
+          key={`${artifact.id}:${artifact.version}:${index}`}
+        />
       ))}
     </div>
   );
@@ -112,6 +154,7 @@ export function WorkTab({ artifacts }: { artifacts: readonly WebMissionArtifact[
       <ArtifactList
         artifacts={artifacts}
         emptyMessage="No mission artifacts are available yet."
+        headingLevel={3}
       />
     </section>
   );

@@ -3,32 +3,67 @@ import { ArtifactList } from "./work-tab.js";
 
 type WebVerificationSummary = WebMissionSnapshot["verification"];
 
+const missionStateLabels: Record<WebMissionUiState, string> = {
+  blocked: "Blocked",
+  cancelled: "Cancelled",
+  completed_verified: "Completed",
+  completed_with_caveats: "Completed with caveats",
+  draft: "Draft",
+  failed: "Failed",
+  failed_recoverable: "Failed, recoverable",
+  needs_input: "Needs input",
+  reviewing: "Reviewing",
+  superseded: "Superseded",
+  working: "Working",
+};
+
 function completionLabel(
   verificationState: WebVerificationSummary["state"],
   missionState: WebMissionUiState,
 ) {
-  if (verificationState === "passed") {
-    if (missionState === "completed_verified") return "Completed and verified";
-    if (missionState === "completed_with_caveats") return "Completed with caveats";
-    return "Verification passed; completion not confirmed";
+  if (missionState === "completed_verified") {
+    if (verificationState === "passed") return "Completed and verified";
+    if (verificationState === "passed_with_caveats") return "Completed with caveats";
+    if (verificationState === "failed") return "Completed; verification failed";
+    if (verificationState === "in_progress") return "Completed; verification in progress";
+    return "Completed; verification not ready";
   }
-  if (verificationState === "passed_with_caveats") {
-    if (
-      missionState === "completed_verified" ||
-      missionState === "completed_with_caveats"
-    ) {
-      return "Completed with caveats";
+  if (missionState === "completed_with_caveats") {
+    if (verificationState === "failed") return "Completed with caveats; verification failed";
+    if (verificationState === "in_progress") {
+      return "Completed with caveats; verification in progress";
     }
-    return "Verification passed with caveats; completion not confirmed";
+    if (verificationState === "not_ready") {
+      return "Completed with caveats; verification not ready";
+    }
+    return "Completed with caveats";
   }
-  if (verificationState === "failed") return "Verification failed";
-  if (verificationState === "in_progress") return "Verification in progress";
-  return "Verification not ready";
+  return missionStateLabels[missionState];
 }
 
 function evidenceLabel(evidenceCount: number) {
   if (evidenceCount === 0) return "No verification evidence is available.";
   return `${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of verification evidence`;
+}
+
+function normalizedSummary(summary: string) {
+  return summary.trim() || "No plain-language result summary was supplied.";
+}
+
+function normalizedCaveats(
+  caveats: readonly string[],
+  verificationState: WebVerificationSummary["state"],
+  missionState: WebMissionUiState,
+) {
+  const values = caveats.map((caveat) => caveat.trim()).filter(Boolean);
+  if (
+    values.length === 0 &&
+    (verificationState === "passed_with_caveats" ||
+      missionState === "completed_with_caveats")
+  ) {
+    return ["Caveat details were not supplied."];
+  }
+  return values;
 }
 
 export function ResultTab({
@@ -40,23 +75,32 @@ export function ResultTab({
   missionState: WebMissionUiState;
   verification: WebVerificationSummary;
 }) {
+  const caveats = normalizedCaveats(
+    verification.caveats,
+    verification.state,
+    missionState,
+  );
+
   return (
     <section aria-labelledby="mission-result-heading" className="morrow-mission-result">
       <h2 id="mission-result-heading">
         {completionLabel(verification.state, missionState)}
       </h2>
-      <p className="morrow-mission-result__summary">{verification.summary}</p>
+      <p className="morrow-mission-result__summary">
+        {normalizedSummary(verification.summary)}
+      </p>
 
       <section aria-labelledby="mission-result-artifacts-heading">
-        <h2 id="mission-result-artifacts-heading">Primary deliverables</h2>
+        <h3 id="mission-result-artifacts-heading">Primary deliverables</h3>
         <ArtifactList
           artifacts={artifacts}
           emptyMessage="No primary deliverables are available yet."
+          headingLevel={4}
         />
       </section>
 
       <section aria-labelledby="mission-verification-heading">
-        <h2 id="mission-verification-heading">Verification</h2>
+        <h3 id="mission-verification-heading">Verification</h3>
         <ul className="morrow-mission-result__checklist">
           <li>Verification state: {verification.state.replaceAll("_", " ")}</li>
           <li>{evidenceLabel(verification.evidenceCount)}</li>
@@ -64,10 +108,10 @@ export function ResultTab({
       </section>
 
       <section aria-labelledby="mission-caveats-heading">
-        <h2 id="mission-caveats-heading">Caveats and unresolved risks</h2>
-        {verification.caveats.length > 0 ? (
+        <h3 id="mission-caveats-heading">Caveats and unresolved risks</h3>
+        {caveats.length > 0 ? (
           <ul className="morrow-mission-result__caveats">
-            {verification.caveats.map((caveat, index) => (
+            {caveats.map((caveat, index) => (
               <li key={`${index}-${caveat}`}>{caveat}</li>
             ))}
           </ul>

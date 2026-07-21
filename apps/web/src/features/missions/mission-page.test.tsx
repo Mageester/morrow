@@ -290,7 +290,7 @@ describe("MissionPage", () => {
     await user.keyboard("{End}");
     expect(result).toHaveFocus();
     expect(
-      screen.getByRole("heading", { level: 2, name: "Verification in progress" }),
+      screen.getByRole("heading", { level: 2, name: "Working" }),
     ).toBeVisible();
 
     await user.keyboard("{Home}");
