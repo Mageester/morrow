@@ -14,6 +14,8 @@ import { useMissionStream } from "../../api/mission-stream.js";
 import { missionQueries } from "../../api/query-keys.js";
 import { MissionActivity } from "./mission-activity.js";
 import { MissionOverview } from "./mission-overview.js";
+import { ResultTab } from "./result-tab.js";
+import { WorkTab } from "./work-tab.js";
 
 const tabs = ["Overview", "Activity", "Work", "Result"] as const;
 type MissionTab = (typeof tabs)[number];
@@ -57,19 +59,6 @@ function MissionLoadError({ error, retry }: { error: unknown; retry: () => void 
         title={notFound ? "Mission not found" : "Mission could not be loaded"}
       />
     </section>
-  );
-}
-
-function MissionPlaceholder({ tab }: { tab: "Work" | "Result" }) {
-  return (
-    <Surface padding="large">
-      <h2>{tab}</h2>
-      <p>
-        {tab === "Work"
-          ? "Mission work inspection arrives in a later product slice."
-          : "A result will appear here only when the mission produces one."}
-      </p>
-    </Surface>
   );
 }
 
@@ -261,8 +250,13 @@ function MissionWorkspace({
             {tab === "Activity" ? (
               <MissionActivity activity={snapshot.recentActivity} />
             ) : null}
-            {tab === "Work" || tab === "Result" ? (
-              <MissionPlaceholder tab={tab} />
+            {tab === "Work" ? <WorkTab artifacts={snapshot.artifacts} /> : null}
+            {tab === "Result" ? (
+              <ResultTab
+                artifacts={snapshot.artifacts}
+                missionState={snapshot.summary.state}
+                verification={snapshot.verification}
+              />
             ) : null}
           </div>
         );

@@ -318,4 +318,16 @@ describe("semantic primitives", () => {
     ).toBeVisible();
     expect(within(artifact).getByText("Report preview")).toBeVisible();
   });
+
+  it("allows artifact titles to preserve the surrounding heading hierarchy", () => {
+    render(
+      <ArtifactFrame headingLevel={3} title="Nested artifact">
+        Preview
+      </ArtifactFrame>,
+    );
+
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Nested artifact" }),
+    ).toBeVisible();
+  });
 });

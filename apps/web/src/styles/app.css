@@ -259,6 +259,52 @@ a {
   display: none;
 }
 
+.morrow-mission-work,
+.morrow-mission-result,
+.morrow-mission-result > section {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-work > h2,
+.morrow-mission-result h2 {
+  margin: 0;
+}
+
+.morrow-artifact-list {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-artifact-list__empty,
+.morrow-artifact-preview__empty,
+.morrow-mission-result__summary,
+.morrow-mission-result__actions {
+  margin: 0;
+  color: var(--morrow-text-muted);
+}
+
+.morrow-artifact-preview {
+  max-block-size: 26rem;
+  padding: var(--morrow-space-3);
+  margin: 0;
+  overflow: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.morrow-mission-result__checklist,
+.morrow-mission-result__caveats {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding-inline-start: var(--morrow-space-5);
+  margin: 0;
+}
+
 .morrow-mission-sync-warning {
   display: flex;
   align-items: center;

@@ -267,7 +267,7 @@ describe("MissionPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("provides four keyboard-operable tabs and honest later-slice placeholders", async () => {
+  it("provides four keyboard-operable tabs with adaptive Work and Result views", async () => {
     installApi();
     const user = userEvent.setup();
     renderMission();
@@ -290,7 +290,7 @@ describe("MissionPage", () => {
     await user.keyboard("{End}");
     expect(result).toHaveFocus();
     expect(
-      screen.getByText("A result will appear here only when the mission produces one."),
+      screen.getByRole("heading", { level: 2, name: "Verification in progress" }),
     ).toBeVisible();
 
     await user.keyboard("{Home}");
@@ -299,9 +299,8 @@ describe("MissionPage", () => {
     expect(result).toHaveFocus();
 
     await user.click(work);
-    expect(
-      screen.getByText("Mission work inspection arrives in a later product slice."),
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Work" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Launch brief" })).toBeVisible();
   });
 
   it("keeps all four controlled tabpanels stable while hiding only inactive panels", async () => {

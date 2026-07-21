@@ -164,7 +164,11 @@ body {
 .morrow-empty-state h2,
 .morrow-error-card h2,
 .morrow-error-card h3,
-.morrow-artifact-frame h2 {
+.morrow-artifact-frame h2,
+.morrow-artifact-frame h3,
+.morrow-artifact-frame h4,
+.morrow-artifact-frame h5,
+.morrow-artifact-frame h6 {
   margin: 0;
   color: var(--morrow-text);
   line-height: 1.25;
