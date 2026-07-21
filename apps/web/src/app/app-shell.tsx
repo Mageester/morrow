@@ -44,12 +44,14 @@ const runtimeLabels = {
   checking: "Checking runtime",
   offline: "Runtime offline",
   online: "Runtime online",
+  reconnecting: "Runtime reconnecting",
 } as const;
 
 const runtimeVariants = {
   checking: "neutral",
   offline: "warning",
   online: "success",
+  reconnecting: "warning",
 } as const;
 
 function getRouteTitle(pathname: string): string {

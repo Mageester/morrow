@@ -12,6 +12,10 @@ import {
 import { ApiClientError } from "../../api/client.js";
 import { useMissionStream } from "../../api/mission-stream.js";
 import { missionQueries } from "../../api/query-keys.js";
+import {
+  ActionableErrorCard,
+  toErrorCard,
+} from "../../app/error-boundary.js";
 import { MissionActivity } from "./mission-activity.js";
 import { MissionOverview } from "./mission-overview.js";
 import { ResultTab } from "./result-tab.js";
@@ -46,18 +50,22 @@ function MissionLoadError({ error, retry }: { error: unknown; retry: () => void 
           {notFound ? "Mission not found" : "Mission could not be loaded"}
         </h1>
       </div>
-      <ErrorCard
-        attempted={[]}
-        continuation="Retry the authoritative mission snapshot when the local service is available."
-        explanation={
-          notFound
-            ? "This mission is unavailable or no longer exists."
-            : (typed?.message ?? "The request could not be completed.")
-        }
-        preservedMessage="Your synchronized mission data remains unchanged."
-        recommendedAction={{ label: "Retry mission", onClick: retry }}
-        title={notFound ? "Mission not found" : "Mission could not be loaded"}
-      />
+      {notFound ? (
+        <ErrorCard
+          attempted={[]}
+          continuation="Retry the authoritative mission snapshot if this mission should still exist."
+          explanation="This mission is unavailable or no longer exists."
+          preservedMessage="Your synchronized mission data remains unchanged."
+          recommendedAction={{ label: "Retry mission", onClick: retry }}
+          title="Mission not found"
+        />
+      ) : (
+        <ActionableErrorCard
+          error={error}
+          onRetry={retry}
+          retryLabel="Retry mission"
+        />
+      )}
     </section>
   );
 }
@@ -69,6 +77,7 @@ function MissionSynchronizationWarning({
   error: unknown;
   retry: () => void;
 }) {
+  const model = toErrorCard(error);
   return (
     <Surface
       aria-atomic="true"
@@ -82,9 +91,7 @@ function MissionSynchronizationWarning({
       <div>
         <h2>Mission updates could not be synchronized.</h2>
         <p>
-          {error instanceof ApiClientError
-            ? error.message
-            : "The latest mission state could not be loaded."}{" "}
+          {model.explanation}{" "}
           Showing the last synchronized state.
         </p>
       </div>

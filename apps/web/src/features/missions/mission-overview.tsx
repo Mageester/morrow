@@ -4,6 +4,8 @@ import type {
   WebMissionSnapshot,
 } from "@morrow/contracts";
 import { Surface } from "@morrow/ui";
+import { MissionStatusSummary } from "../../state/mission-status.js";
+import { AttentionCard } from "./attention-card.js";
 
 const milestoneStateLabels: Record<WebMissionMilestone["state"], string> = {
   pending: "Pending",
@@ -31,7 +33,13 @@ function MilestoneList({ milestones }: { milestones: WebMissionMilestone[] }) {
   );
 }
 
-function AttentionList({ attention }: { attention: WebAttentionRequest[] }) {
+function AttentionList({
+  attention,
+  missionId,
+}: {
+  attention: WebAttentionRequest[];
+  missionId: string;
+}) {
   if (attention.length === 0) {
     return <p>No attention is needed right now.</p>;
   }
@@ -40,14 +48,7 @@ function AttentionList({ attention }: { attention: WebAttentionRequest[] }) {
     <ul className="morrow-mission-attention-list">
       {attention.map((request) => (
         <li key={request.id}>
-          <strong>{request.title}</strong>
-          <p>{request.explanation}</p>
-          {request.recommendation ? (
-            <p>
-              <span className="morrow-sr-only">Recommendation: </span>
-              {request.recommendation}
-            </p>
-          ) : null}
+          <AttentionCard missionId={missionId} request={request} />
         </li>
       ))}
     </ul>
@@ -68,6 +69,8 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
 
   return (
     <div className="morrow-mission-overview">
+      <MissionStatusSummary snapshot={snapshot} />
+
       <Surface className="morrow-mission-overview__objective" padding="large">
         <h2>Objective</h2>
         <p>{snapshot.summary.objective}</p>
@@ -120,7 +123,10 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
 
       <Surface padding="large">
         <h2>Attention needed</h2>
-        <AttentionList attention={snapshot.attention} />
+        <AttentionList
+          attention={snapshot.attention}
+          missionId={snapshot.summary.id}
+        />
       </Surface>
     </div>
   );

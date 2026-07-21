@@ -8,7 +8,9 @@ import {
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "../features/placeholders/connections-page.js";
+import { MissionStatusSummary } from "./mission-status.js";
 import { RuntimeStatusProvider } from "./runtime-status.js";
+import type { WebMissionSnapshot } from "@morrow/contracts";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -169,5 +171,137 @@ describe("RuntimeStatusProvider", () => {
         "The local Morrow runtime is unavailable.",
       );
     });
+  });
+
+  it("reports reconnecting after an offline browser returns online", async () => {
+    const reconnect = deferred<Response>();
+    const fetchMock = vi
+      .fn<(_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(healthResponse())
+      .mockImplementationOnce(() => reconnect.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    renderConnections();
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "The local Morrow runtime is connected.",
+      );
+    });
+
+    act(() => window.dispatchEvent(new Event("offline")));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The local Morrow runtime is unavailable.",
+    );
+    act(() => window.dispatchEvent(new Event("online")));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Reconnecting to the local Morrow runtime.",
+    );
+
+    await act(async () => {
+      reconnect.resolve(healthResponse());
+      await reconnect.promise;
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The local Morrow runtime is connected.",
+    );
+  });
+});
+
+function missionSnapshot(
+  state: WebMissionSnapshot["summary"]["state"],
+  verification: WebMissionSnapshot["verification"]["state"],
+  recoverySummary?: string,
+): WebMissionSnapshot {
+  return {
+    artifacts: [],
+    attention: [],
+    currentWork: null,
+    milestones: [],
+    recentActivity: recoverySummary
+      ? [
+          {
+            actor: { kind: "system", name: "Morrow" },
+            artifactIds: [],
+            createdAt: "2026-07-21T14:00:00.000Z",
+            cursor: 1,
+            detail: "PRIVATE recovery internals",
+            id: "recovery-1",
+            kind: "recovery",
+            missionId: "mission-42",
+            summary: recoverySummary,
+          },
+        ]
+      : [],
+    summary: {
+      attentionCount: 0,
+      completedMilestones: 0,
+      createdAt: "2026-07-21T13:00:00.000Z",
+      currentPhase: "Recorded state",
+      id: "mission-42",
+      latestActivity: recoverySummary ?? null,
+      objective: "Complete the mission.",
+      projectId: "project-1",
+      state,
+      title: "Mission",
+      totalMilestones: 0,
+      updatedAt: "2026-07-21T14:00:00.000Z",
+      version: 1,
+      workspaceId: "workspace-personal-project-1",
+    },
+    verification: {
+      caveats: [],
+      evidenceCount: verification === "passed" ? 2 : 0,
+      state: verification,
+      summary:
+        verification === "passed"
+          ? "Required evidence passed."
+          : "Verification has not passed.",
+    },
+    version: 1,
+  };
+}
+
+describe("MissionStatusSummary", () => {
+  it.each([
+    ["failed_recoverable", "failed", "Failed but recoverable"],
+    ["failed", "failed", "Mission failed permanently"],
+    [
+      "completed_with_caveats",
+      "not_ready",
+      "Completed, verification incomplete",
+    ],
+    ["completed_verified", "passed", "Completed and verified"],
+  ] as const)(
+    "renders %s with %s verification honestly",
+    (state, verification, expected) => {
+      render(
+        <MissionStatusSummary
+          snapshot={missionSnapshot(state, verification)}
+        />,
+      );
+      expect(screen.getByRole("heading", { name: expected })).toBeVisible();
+    },
+  );
+
+  it("renders a browser-safe interrupted/resumed recovery record without private detail or invented checkpoint data", () => {
+    render(
+      <MissionStatusSummary
+        snapshot={missionSnapshot(
+          "working",
+          "in_progress",
+          "Resumed after the local runtime interrupted the mission.",
+        )}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Recovery recorded" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Resumed after the local runtime interrupted the mission.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/PRIVATE recovery internals/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/checkpoint and replay details were not reported/i)).toBeVisible();
   });
 });

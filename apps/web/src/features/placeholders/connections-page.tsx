@@ -5,6 +5,7 @@ const statusCopy = {
   checking: "Checking the local Morrow runtime.",
   offline: "The local Morrow runtime is unavailable.",
   online: "The local Morrow runtime is connected.",
+  reconnecting: "Reconnecting to the local Morrow runtime.",
 } as const;
 
 export function ConnectionsPage() {

@@ -70,7 +70,15 @@ function snapshot(): WebMissionSnapshot {
     attention: [
       {
         canContinueElsewhere: true,
-        choices: [],
+        choices: [
+          {
+            description: "Continue with the reviewed draft.",
+            destructive: false,
+            id: "approve",
+            label: "Approve draft",
+            recommended: true,
+          },
+        ],
         createdAt: "2026-07-21T13:30:00.000Z",
         explanation: "Choose whether the final draft should be published.",
         id: "attention-1",
@@ -225,6 +233,10 @@ describe("MissionPage", () => {
     ).toBeVisible();
     expect(screen.getByRole("heading", { name: "Attention needed" })).toBeVisible();
     expect(screen.getByText("Publication decision")).toBeVisible();
+    expect(screen.getByRole("button", { name: /approve draft/i })).toHaveAttribute(
+      "data-recommended",
+      "true",
+    );
     expect(screen.getByRole("heading", { name: "Remaining milestones" })).toBeVisible();
     expect(screen.getByText("Review the evidence")).toBeVisible();
     expect(screen.getByText("Running")).toBeVisible();
@@ -234,6 +246,20 @@ describe("MissionPage", () => {
       screen.getByText("2 completed · 3 remaining · 0 skipped · 5 total"),
     ).toBeVisible();
     expect(document.body).not.toHaveTextContent(/\d+\s*%|estimated|time remaining/i);
+  });
+
+  it("integrates truthful failure state without inventing a background retry", async () => {
+    const failed = snapshot();
+    failed.summary.state = "failed_recoverable";
+    failed.verification.state = "failed";
+    failed.verification.summary = "The required checks did not pass.";
+    installApi(() => json(failed));
+    renderMission();
+
+    expect(
+      await screen.findByRole("heading", { name: "Failed but recoverable" }),
+    ).toBeVisible();
+    expect(screen.getByText(/no retry is running in the background/i)).toBeVisible();
   });
 
   it("accounts for skipped milestones separately and reconciles every milestone with the total", async () => {
@@ -420,24 +446,28 @@ describe("MissionPage", () => {
     expect(missionRequests).toBe(2);
   });
 
-  it("preserves a structured API failure message without inventing recovery details", async () => {
+  it("converts a runtime API failure without exposing raw details and preserves a safe trace", async () => {
     installApi(() =>
       json(
         {
           error: {
             code: "RUNTIME_UNAVAILABLE",
-            message: "The local runtime is unavailable.",
+            message: "Bearer private-runtime-token at C:\\runtime\\server.ts",
           },
           version: 1,
         },
         503,
+        { "x-trace-id": "trace-runtime-42" },
       ),
     );
     renderMission();
 
     const error = await screen.findByRole("alert");
-    expect(error).toHaveTextContent("Mission could not be loaded");
-    expect(error).toHaveTextContent("The local runtime is unavailable.");
+    expect(error).toHaveTextContent("Morrow is not connected");
+    expect(error).toHaveTextContent("The local Morrow runtime could not be reached.");
+    expect(error).toHaveTextContent("trace-runtime-42");
+    expect(error).not.toHaveTextContent("private-runtime-token");
+    expect(error).not.toHaveTextContent("server.ts");
     expect(error).not.toHaveTextContent("restarted");
   });
 
@@ -450,7 +480,7 @@ describe("MissionPage", () => {
           {
             error: {
               code: "RUNTIME_UNAVAILABLE",
-              message: "The local runtime is unavailable.",
+              message: "Bearer private-background-token",
             },
             version: 1,
           },
@@ -473,7 +503,8 @@ describe("MissionPage", () => {
       name: "Mission synchronization warning",
     });
     expect(warning).toHaveTextContent("Mission updates could not be synchronized.");
-    expect(warning).toHaveTextContent("The local runtime is unavailable.");
+    expect(warning).toHaveTextContent("The local Morrow runtime could not be reached.");
+    expect(warning).not.toHaveTextContent("private-background-token");
     expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(FakeEventSource.instances).toHaveLength(1);

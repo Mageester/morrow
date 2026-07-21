@@ -335,8 +335,14 @@ a {
 }
 
 .morrow-mission-overview__objective,
-.morrow-mission-milestone-count {
+.morrow-mission-milestone-count,
+.morrow-mission-operational-state {
   grid-column: 1 / -1;
+}
+
+.morrow-mission-operational-state {
+  display: grid;
+  gap: var(--morrow-space-4);
 }
 
 .morrow-mission-milestone-count {
@@ -370,10 +376,126 @@ a {
 }
 
 .morrow-mission-attention-list li {
+  min-width: 0;
+}
+
+.morrow-attention-card {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  border: 1px solid var(--morrow-border);
+  border-left: 3px solid var(--morrow-warning);
+  border-radius: var(--morrow-radius-md);
+}
+
+.morrow-attention-card h3,
+.morrow-attention-card h4,
+.morrow-attention-card p,
+.morrow-attention-card dl,
+.morrow-attention-card dd {
+  margin: 0;
+}
+
+.morrow-attention-card__kind {
+  color: var(--morrow-warning);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-attention-card__contract,
+.morrow-attention-card__contract div,
+.morrow-attention-card__choices,
+.morrow-attention-card__note,
+.morrow-attention-choice {
   display: grid;
   gap: var(--morrow-space-2);
-  padding-left: var(--morrow-space-3);
-  border-left: 3px solid var(--morrow-warning);
+}
+
+.morrow-attention-card__contract {
+  gap: var(--morrow-space-3);
+}
+
+.morrow-attention-card__contract dt,
+.morrow-attention-card__note label {
+  font-weight: 700;
+}
+
+.morrow-attention-card__contract dd,
+.morrow-attention-choice p,
+.morrow-attention-card__no-choice {
+  color: var(--morrow-text-muted);
+}
+
+.morrow-attention-card__note textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  resize: vertical;
+}
+
+.morrow-attention-choice {
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  align-items: start;
+}
+
+.morrow-attention-choice .morrow-button {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-attention-choice__recommended {
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.morrow-attention-dialog-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  padding: var(--morrow-space-4);
+  background: rgb(0 0 0 / 0.48);
+  place-items: center;
+}
+
+.morrow-attention-dialog {
+  display: grid;
+  width: min(100%, 32rem);
+  gap: var(--morrow-space-4);
+  padding: var(--morrow-space-5);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border-radius: var(--morrow-radius-md);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-attention-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-error-reference {
+  display: block;
+  margin-top: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.morrow-global-error {
+  width: min(100% - 2 * var(--morrow-space-4), 48rem);
+  padding-block: var(--morrow-space-7);
+  margin-inline: auto;
 }
 
 .morrow-mission-secondary-copy {
@@ -491,6 +613,10 @@ a {
   }
 
   .morrow-mission-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .morrow-attention-choice {
     grid-template-columns: 1fr;
   }
 }

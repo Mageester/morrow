@@ -20,7 +20,11 @@ const RuntimeHealthSchema = z
 
 const RUNTIME_HEALTH_TIMEOUT_MS = 5_000;
 
-export type RuntimeConnectionStatus = "checking" | "online" | "offline";
+export type RuntimeConnectionStatus =
+  | "checking"
+  | "online"
+  | "offline"
+  | "reconnecting";
 
 interface RuntimeStatusContextValue {
   refresh: () => Promise<void>;
@@ -51,7 +55,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     request.controller.abort();
   }, []);
 
-  const refresh = useCallback(async () => {
+  const check = useCallback(async (pendingStatus: "checking" | "reconnecting") => {
     cancelActiveRequest();
 
     const id = ++nextRequestId.current;
@@ -62,7 +66,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
       }
     }, RUNTIME_HEALTH_TIMEOUT_MS);
     activeRequest.current = { controller, id, timeoutId };
-    setStatus("checking");
+    setStatus(pendingStatus);
 
     try {
       await api.get("/api/health", RuntimeHealthSchema, {
@@ -83,6 +87,8 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     }
   }, [cancelActiveRequest]);
 
+  const refresh = useCallback(() => check("checking"), [check]);
+
   useEffect(() => {
     void refresh();
 
@@ -90,7 +96,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
       cancelActiveRequest();
       setStatus("offline");
     };
-    const handleOnline = () => void refresh();
+    const handleOnline = () => void check("reconnecting");
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
 
@@ -99,7 +105,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("online", handleOnline);
       cancelActiveRequest();
     };
-  }, [cancelActiveRequest, refresh]);
+  }, [cancelActiveRequest, check, refresh]);
 
   const value = useMemo(() => ({ refresh, status }), [refresh, status]);
 
