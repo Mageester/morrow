@@ -35,11 +35,17 @@ if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliati
     `${reconciliation.requeued} re-dispatched, ${reconciliation.cancelledOrphans} orphan(s) cancelled`
   );
 }
+// In a packaged install the launcher points MORROW_WEB_ROOT at the bundled web
+// bundle so the orchestrator serves the local app at /app. When unset (source
+// development), Vite serves the app on its own port and no /app surface is
+// registered here.
+const webRoot = process.env.MORROW_WEB_ROOT?.trim();
 const app = buildServer({
   db,
   runner,
   missionControllerRunner,
   secretsFile: join(resolveMorrowHome(process.env), "secrets.env"),
+  ...(webRoot ? { webRoot } : {}),
 });
 
 // Fire due cron schedules unattended. The interval is short; the actual cadence

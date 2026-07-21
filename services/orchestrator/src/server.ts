@@ -150,6 +150,7 @@ import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -213,6 +214,13 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
+  /**
+   * Absolute path to the built web bundle (the directory containing
+   * `index.html`). When provided, the orchestrator serves the local Morrow web
+   * application at `/app`. When absent, the service stays CLI-only and no `/app`
+   * surface exists.
+   */
+  webRoot?: string;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -359,6 +367,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     missions,
     ...(deps.sseIntervalMs !== undefined ? { pollIntervalMs: deps.sseIntervalMs } : {}),
     ...(deps.webStreamHeartbeatMs !== undefined ? { heartbeatIntervalMs: deps.webStreamHeartbeatMs } : {}),
+  });
+  // Local web application surface. Serves the built bundle at /app with SPA
+  // fallback when a web root is present, and otherwise installs only the JSON
+  // not-found envelope so the service stays CLI-only. Never intercepts /api/*
+  // or the JSON root probe.
+  registerWebAppRoutes(app, {
+    ...(deps.webRoot !== undefined ? { webRoot: deps.webRoot } : {}),
   });
 
   const processesRepo = processesRepository(deps.db);
