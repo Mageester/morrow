@@ -1,8 +1,9 @@
+import type { WebMissionSummary } from "@morrow/contracts";
 import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { missionQueries } from "../../api/query-keys.js";
 import { projectQueries } from "../../api/projects.js";
+import { MissionCardList } from "../missions/mission-card.js";
 import { MissionComposer } from "./mission-composer.js";
 
 const activeStates = new Set(["draft", "working", "reviewing"]);
@@ -50,8 +51,10 @@ export function HomePage() {
       {!projects.isPending && !projects.isError && !activeProject ? (
         <Surface padding="large">
           <h2>No project is available yet.</h2>
-          <p aria-live="polite" role="status">No local project is available yet.</p>
-          <p>Create or open a local project before asking Morrow to begin work.</p>
+          <p aria-live="polite" role="status">
+            No local project is available yet. Create or open a local project
+            before asking Morrow to begin work.
+          </p>
         </Surface>
       ) : null}
       {missions.isError ? <p role="alert">Missions could not be loaded.</p> : null}
@@ -96,32 +99,12 @@ function MissionSection({
 }: {
   heading: string;
   headingId: string;
-  missions: Array<{
-    currentPhase: string;
-    id: string;
-    latestActivity: string | null;
-    title: string;
-  }>;
+  missions: WebMissionSummary[];
 }) {
   return (
-    <section aria-labelledby={headingId}>
+    <section aria-labelledby={headingId} className="morrow-mission-section">
       <h2 id={headingId}>{heading}</h2>
-      <div>
-        {missions.map((mission) => (
-          <Surface key={mission.id} padding="medium">
-            <h3>
-              <Link
-                params={{ missionId: mission.id }}
-                to="/missions/$missionId"
-              >
-                {mission.title}
-              </Link>
-            </h3>
-            <p>{mission.currentPhase}</p>
-            {mission.latestActivity ? <p>{mission.latestActivity}</p> : null}
-          </Surface>
-        ))}
-      </div>
+      <MissionCardList missions={missions} />
     </section>
   );
 }

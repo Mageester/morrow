@@ -356,20 +356,19 @@ describe("HomePage", () => {
     expect(changed.idempotencyKey).not.toBe(first.idempotencyKey);
   });
 
-  it("keeps the deadline disabled and never submits it before the service supports deadlines", async () => {
+  it("offers no deadline input and never submits a deadline before the service supports deadlines", async () => {
     const fetchMock = installApi(standardHandler());
     const user = userEvent.setup();
     renderHome();
 
-    const deadline = await screen.findByLabelText("Optional deadline");
-    expect(deadline).toBeDisabled();
+    await screen.findByRole("textbox", { name: "Mission objective" });
+    expect(screen.queryByLabelText("Optional deadline")).not.toBeInTheDocument();
     await user.click(screen.getByText("Advanced mission options"));
     expect(
       screen.getByText(
         "Deadlines, attachments, and connections are not available in this local slice.",
       ),
     ).toBeVisible();
-    fireEvent.change(deadline, { target: { value: "2026-07-22T12:00" } });
     const objective = screen.getByRole("textbox", { name: "Mission objective" });
     await user.type(objective, "Plan the release");
     await user.keyboard("{Enter}");
@@ -527,10 +526,9 @@ describe("HomePage", () => {
     renderHome();
 
     expect(await screen.findByText("No project is available yet.")).toBeVisible();
-    expect(screen.getByText("No local project is available yet.")).toHaveAttribute(
-      "role",
-      "status",
-    );
+    expect(
+      screen.getByText(/No local project is available yet\./),
+    ).toHaveAttribute("role", "status");
     expect(
       screen.queryByText("Select or create a local project before starting a mission."),
     ).not.toBeInTheDocument();
@@ -575,10 +573,9 @@ describe("HomePage", () => {
       screen.queryByText("Select or create a local project before starting a mission."),
     ).not.toBeInTheDocument();
     projects.resolve(json([]));
-    expect(await screen.findByText("No local project is available yet.")).toHaveAttribute(
-      "role",
-      "status",
-    );
+    expect(
+      await screen.findByText(/No local project is available yet\./),
+    ).toHaveAttribute("role", "status");
   });
 
   it("caches a late success without navigating away from the page the user already chose", async () => {

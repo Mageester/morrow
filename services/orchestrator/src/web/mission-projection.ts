@@ -134,6 +134,58 @@ function humanizeEventType(type: MissionEventType): string {
   return type.replace(/^mission\./, "").replace(/_/g, " ");
 }
 
+// ── Consumer-facing activity copy ────────────────────────────────────────────
+// Stored event summaries are engineering audit strings ("Contract built from
+// verbatim objective", "Status: draft → running"). The web surface presents a
+// human reading of the same fact; when a summary is rewritten, the original
+// audit string is preserved verbatim in the activity `detail` field so nothing
+// is hidden from inspection.
+const STATUS_LABEL: Record<string, string> = {
+  draft: "Draft",
+  awaiting_criteria_approval: "Waiting for plan approval",
+  running: "Running",
+  reviewing: "Reviewing",
+  completed: "Completed",
+  completed_with_reservations: "Completed with caveats",
+  partially_completed: "Partly finished",
+  blocked: "Blocked",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+function statusLabel(value: unknown): string | null {
+  return typeof value === "string" ? (STATUS_LABEL[value] ?? null) : null;
+}
+
+function humanizeEventSummary(event: MissionEvent): string | null {
+  switch (event.type) {
+    case "mission.contract_built": {
+      const nodes = event.data["nodes"];
+      return typeof nodes === "number" && nodes > 0
+        ? `Defined ${nodes} success requirement${nodes === 1 ? "" : "s"} from your objective`
+        : "Defined success requirements from your objective";
+    }
+    case "mission.specialists_planned": {
+      const roles = event.data["roles"];
+      const count = Array.isArray(roles) ? roles.length : null;
+      return count !== null && count > 0
+        ? `Planned ${count} specialist role${count === 1 ? "" : "s"} for this mission`
+        : "Planned specialist roles for this mission";
+    }
+    case "mission.status_changed": {
+      const from = statusLabel(event.data["from"]);
+      const to = statusLabel(event.data["to"]);
+      return from && to ? `Status changed from ${from} to ${to}` : null;
+    }
+    case "mission.cortex_ready":
+      return "Loaded saved project memory automatically";
+    case "mission.started":
+      return "Work started";
+    default:
+      return null;
+  }
+}
+
 function deriveTitle(objective: string, missionId: string): string {
   const firstLine = objective.split("\n")[0]?.trim() ?? "";
   // A whitespace-only objective would yield an empty title and violate the
@@ -204,14 +256,15 @@ function buildActivity(missionId: string, events: readonly MissionEvent[]): WebM
   return [...events]
     .sort((a, b) => a.sequence - b.sequence)
     .map((event) => {
-      const summary = event.summary.trim().length > 0 ? event.summary.trim() : humanizeEventType(event.type);
+      const raw = event.summary.trim().length > 0 ? event.summary.trim() : humanizeEventType(event.type);
+      const humanized = humanizeEventSummary(event);
       return {
         id: event.id,
         missionId,
         cursor: event.sequence,
         kind: ACTIVITY_KIND[event.type],
-        summary: clamp(summary, 1000),
-        detail: null,
+        summary: clamp(humanized ?? raw, 1000),
+        detail: humanized !== null && humanized !== raw ? clamp(raw, 4000) : null,
         actor: { kind: "morrow" as const, name: "Morrow" },
         artifactIds: [],
         createdAt: event.createdAt,
@@ -389,7 +442,11 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
   const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
   const latestEvent = sortedEvents.at(-1);
   const latestActivity = latestEvent
-    ? clamp(latestEvent.summary.trim().length > 0 ? latestEvent.summary.trim() : humanizeEventType(latestEvent.type), 1000)
+    ? clamp(
+        humanizeEventSummary(latestEvent) ??
+          (latestEvent.summary.trim().length > 0 ? latestEvent.summary.trim() : humanizeEventType(latestEvent.type)),
+        1000,
+      )
     : null;
 
   return {

@@ -129,7 +129,7 @@ describe("Morrow application shell", () => {
       expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     });
     const themeToggle = await screen.findByRole("button", {
-      name: "Dark theme",
+      name: "Switch to light theme",
     });
     expect(themeToggle).toHaveAttribute("aria-pressed", "true");
     await user.click(themeToggle);
@@ -154,7 +154,7 @@ describe("Morrow application shell", () => {
     renderAt("/app/settings");
 
     const themeToggle = await screen.findByRole("button", {
-      name: "Dark theme",
+      name: "Switch to dark theme",
     });
     expect(themeToggle).toHaveAttribute("aria-pressed", "false");
 
@@ -164,18 +164,20 @@ describe("Morrow application shell", () => {
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
   });
 
-  it("normalizes an invalid stored theme to the light preference", async () => {
+  it("ignores an invalid stored theme and keeps following the system preference", async () => {
     localStorage.setItem("morrow-theme", "sepia");
 
     renderAt("/app/settings");
 
     expect(
-      await screen.findByRole("button", { name: "Dark theme" }),
+      await screen.findByRole("button", { name: "Switch to dark theme" }),
     ).toHaveAttribute("aria-pressed", "false");
     await waitFor(() => {
       expect(document.documentElement).toHaveAttribute("data-theme", "light");
-      expect(localStorage.getItem("morrow-theme")).toBe("light");
     });
+    // The invalid value is ignored, not silently rewritten: nothing is
+    // persisted until the user makes an explicit choice.
+    expect(localStorage.getItem("morrow-theme")).toBe("sepia");
   });
 
   it("reports the local runtime health in the application shell", async () => {

@@ -81,10 +81,12 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
         <p>{snapshot.summary.objective}</p>
       </Surface>
 
-      <p className="morrow-mission-milestone-count">
-        {completed.length} completed · {remaining.length} remaining ·{" "}
-        {skipped.length} skipped · {snapshot.milestones.length} total
-      </p>
+      {snapshot.milestones.length > 0 ? (
+        <p className="morrow-mission-milestone-count">
+          {completed.length} completed · {remaining.length} remaining ·{" "}
+          {skipped.length} skipped · {snapshot.milestones.length} total
+        </p>
+      ) : null}
 
       {snapshot.milestones.length === 0 ? (
         <Surface padding="large">
@@ -94,7 +96,7 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
       ) : (
         <>
           <Surface padding="large">
-            <h2>Completed</h2>
+            <h2>Completed milestones</h2>
             {completed.length > 0 ? (
               <MilestoneList milestones={completed} />
             ) : (
@@ -126,7 +128,7 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
         </p>
       </Surface>
 
-      <Surface padding="large">
+      <Surface className="morrow-mission-overview__attention" padding="large">
         <h2>Attention needed</h2>
         <AttentionList
           attention={snapshot.attention}

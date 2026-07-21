@@ -1,20 +1,15 @@
 import type { WebMissionArtifact, WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
+import { missionStateLabels } from "./mission-state.js";
 import { ArtifactList } from "./work-tab.js";
 
 type WebVerificationSummary = WebMissionSnapshot["verification"];
 
-const missionStateLabels: Record<WebMissionUiState, string> = {
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  completed_verified: "Completed",
-  completed_with_caveats: "Completed with caveats",
-  draft: "Draft",
+const verificationStateLabels: Record<WebVerificationSummary["state"], string> = {
   failed: "Failed",
-  failed_recoverable: "Failed, recoverable",
-  needs_input: "Needs input",
-  reviewing: "Reviewing",
-  superseded: "Superseded",
-  working: "Working",
+  in_progress: "In progress",
+  not_ready: "Not ready yet",
+  passed: "Passed",
+  passed_with_caveats: "Passed with caveats",
 };
 
 function completionLabel(
@@ -102,7 +97,7 @@ export function ResultTab({
       <section aria-labelledby="mission-verification-heading">
         <h3 id="mission-verification-heading">Verification</h3>
         <ul className="morrow-mission-result__checklist">
-          <li>Verification state: {verification.state.replaceAll("_", " ")}</li>
+          <li>Verification: {verificationStateLabels[verification.state]}</li>
           <li>{evidenceLabel(verification.evidenceCount)}</li>
         </ul>
       </section>
@@ -120,9 +115,6 @@ export function ResultTab({
         )}
       </section>
 
-      <p className="morrow-mission-result__actions">
-        No additional verified actions are available.
-      </p>
     </section>
   );
 }

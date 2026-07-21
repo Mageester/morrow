@@ -13,13 +13,16 @@ export function SettingsPage() {
       </div>
       <Surface aria-labelledby="theme-heading" padding="large">
         <h2 id="theme-heading">Theme</h2>
-        <p>The {theme} theme is applied globally.</p>
+        <p>
+          The {theme} theme is applied globally. Morrow follows your system
+          preference until you choose a theme here.
+        </p>
         <Button
           aria-pressed={theme === "dark"}
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           variant="secondary"
         >
-          Dark theme
+          {theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
         </Button>
       </Surface>
     </section>

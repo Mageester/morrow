@@ -58,7 +58,17 @@ export function MissionActivity({ activity }: { activity: WebMissionActivity[] }
           {activity.map((item) => (
             <li key={item.id}>
               <details>
-                <summary>{item.summary}</summary>
+                <summary>
+                  <span className="morrow-mission-activity__summary">
+                    {item.summary}
+                  </span>
+                  <time
+                    className="morrow-mission-activity__time"
+                    dateTime={item.createdAt}
+                  >
+                    {formatTimestamp(item.createdAt)}
+                  </time>
+                </summary>
                 <TechnicalDetails activity={item} />
               </details>
             </li>

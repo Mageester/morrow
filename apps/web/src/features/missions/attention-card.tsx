@@ -470,10 +470,12 @@ export function AttentionCard({
           <dt>What happened</dt>
           <dd>{request.title}</dd>
         </div>
-        <div>
-          <dt>Why this matters</dt>
-          <dd>{request.explanation}</dd>
-        </div>
+        {request.explanation.trim() !== request.title.trim() ? (
+          <div>
+            <dt>Why this matters</dt>
+            <dd>{request.explanation}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Morrow&apos;s recommendation</dt>
           <dd>
@@ -519,7 +521,9 @@ export function AttentionCard({
                   key={`${choice.id}-${index}`}
                 >
                   <Button
-                    aria-describedby={consequenceId}
+                    aria-describedby={
+                      choice.description ? consequenceId : undefined
+                    }
                     data-recommended={choice.recommended ? "true" : "false"}
                     disabled={operationPending}
                     onClick={() => selectChoice(choice)}
@@ -542,10 +546,9 @@ export function AttentionCard({
                       </span>
                     ) : null}
                   </Button>
-                  <p id={consequenceId}>
-                    {choice.description ??
-                      "No additional consequence was provided."}
-                  </p>
+                  {choice.description ? (
+                    <p id={consequenceId}>{choice.description}</p>
+                  ) : null}
                 </div>
               );
             })}

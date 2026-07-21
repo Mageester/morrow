@@ -59,7 +59,7 @@ describe("WorkTab", () => {
     );
 
     const frame = screen.getByRole("region", { name: "Unrecognized artifact" });
-    expect(within(frame).getByText("Other artifact · Unknown format · Version 1")).toBeVisible();
+    expect(within(frame).getByText("Other artifact · Version 1")).toBeVisible();
     expect(within(frame).getByText('<img src=x onerror="alert(1)">')).toBeVisible();
     expect(within(frame).queryByRole("img")).not.toBeInTheDocument();
     expect(within(frame).queryByRole("link")).not.toBeInTheDocument();
@@ -71,7 +71,9 @@ describe("WorkTab", () => {
     expect(screen.getByText("No mission artifacts are available yet.")).toBeVisible();
 
     rerender(<WorkTab artifacts={[artifact({ preview: "   " })]} />);
-    expect(screen.getByText("No safe text preview is available.")).toBeVisible();
+    expect(
+      screen.getByText("No preview is available for this file yet."),
+    ).toBeVisible();
   });
 
   it("normalizes titles, offers a keyboard focusable preview, and keeps duplicate artifacts associated on rerender", () => {

@@ -225,7 +225,7 @@ describe("MissionPage", () => {
       await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
     ).toBeVisible();
     expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Completed" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Completed milestones" })).toBeVisible();
     expect(screen.getByText("Gather requirements")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeVisible();
     expect(
@@ -280,7 +280,7 @@ describe("MissionPage", () => {
     const skippedHeading = screen.getByRole("heading", { name: "Skipped" });
     const skippedSurface = skippedHeading.closest(".morrow-surface");
     const completedSurface = screen
-      .getByRole("heading", { name: "Completed" })
+      .getByRole("heading", { name: "Completed milestones" })
       .closest(".morrow-surface");
     expect(skippedSurface).not.toBeNull();
     const skippedMilestone = within(skippedSurface as HTMLElement)
@@ -383,7 +383,9 @@ describe("MissionPage", () => {
     expect(within(details as HTMLElement).getByText("artifact-1")).toBeVisible();
     expect(within(details as HTMLElement).getByText("activity-4")).toBeVisible();
     expect(within(details as HTMLElement).getByText("4")).toBeVisible();
-    expect(within(details as HTMLElement).getByText(/2026/)).toBeVisible();
+    for (const timestamp of within(details as HTMLElement).getAllByText(/2026/)) {
+      expect(timestamp).toBeVisible();
+    }
     expect(document.body).not.toHaveTextContent("PRIVATE CHAIN OF THOUGHT");
   });
 
@@ -438,8 +440,8 @@ describe("MissionPage", () => {
     const error = await screen.findByRole("alert");
     expect(error).toHaveTextContent("Mission not found");
     expect(error).toHaveTextContent("This mission is unavailable or no longer exists.");
-    expect(error).toHaveTextContent("Your synchronized mission data remains unchanged.");
-    await user.click(screen.getByRole("button", { name: "Retry mission" }));
+    expect(error).toHaveTextContent("Your other missions are unaffected.");
+    await user.click(screen.getByRole("button", { name: "Check again" }));
     expect(
       await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
     ).toBeVisible();

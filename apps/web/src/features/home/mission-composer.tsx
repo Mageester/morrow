@@ -135,17 +135,20 @@ export function MissionComposer({
 
   return (
     <Surface aria-labelledby="mission-composer-heading" padding="large" variant="raised">
-      <form onSubmit={handleSubmit}>
-        <div>
+      <form className="morrow-composer" onSubmit={handleSubmit}>
+        <div className="morrow-composer__intro">
           <h2 id="mission-composer-heading">What should Morrow accomplish?</h2>
           <p>Describe the outcome. Morrow will determine the capabilities needed.</p>
         </div>
-        <label htmlFor="mission-objective">Mission objective</label>
+        <label className="morrow-sr-only" htmlFor="mission-objective">
+          Mission objective
+        </label>
         <textarea
           aria-describedby={
             objectiveValidationError ? "mission-objective-error" : undefined
           }
           aria-invalid={objectiveValidationError ? true : undefined}
+          className="morrow-composer__objective"
           id="mission-objective"
           onChange={(event) => {
             const nextDraft = event.target.value;
@@ -161,30 +164,30 @@ export function MissionComposer({
           rows={5}
           value={draft}
         />
-        <details>
+        <details className="morrow-composer__advanced">
           <summary>Advanced mission options</summary>
-          <label htmlFor="mission-autonomy">Autonomy</label>
-          <select
-            id="mission-autonomy"
-            onChange={(event) => {
-              const nextAutonomy = event.target.value as Autonomy;
-              if (nextAutonomy !== autonomy) resetFailedSubmissionForEdit();
-              setAutonomy(nextAutonomy);
-            }}
-            value={autonomy}
-          >
-            <option value="ask_at_risk">Ask before risky actions</option>
-            <option value="recommended">Use Morrow’s recommendations</option>
-            <option value="autonomous">Proceed autonomously</option>
-          </select>
-          <fieldset disabled>
-            <label htmlFor="mission-deadline">Optional deadline</label>
-            <input id="mission-deadline" type="datetime-local" />
-          </fieldset>
-          <p>
-            Deadlines, attachments, and connections are not available in this
-            local slice.
-          </p>
+          <div className="morrow-composer__advanced-body">
+            <div className="morrow-composer__field">
+              <label htmlFor="mission-autonomy">Autonomy</label>
+              <select
+                id="mission-autonomy"
+                onChange={(event) => {
+                  const nextAutonomy = event.target.value as Autonomy;
+                  if (nextAutonomy !== autonomy) resetFailedSubmissionForEdit();
+                  setAutonomy(nextAutonomy);
+                }}
+                value={autonomy}
+              >
+                <option value="ask_at_risk">Ask before risky actions</option>
+                <option value="recommended">Use Morrow’s recommendations</option>
+                <option value="autonomous">Proceed autonomously</option>
+              </select>
+            </div>
+            <p className="morrow-composer__advanced-note">
+              Deadlines, attachments, and connections are not available in this
+              local slice.
+            </p>
+          </div>
         </details>
         {objectiveValidationError ? (
           <p id="mission-objective-error" role="alert">
@@ -196,12 +199,14 @@ export function MissionComposer({
             {requestError}
           </p>
         ) : null}
-        <Button
-          disabled={!activeProjectId || !draft.trim() || createMission.isPending}
-          type="submit"
-        >
-          Start mission
-        </Button>
+        <div className="morrow-composer__actions">
+          <Button
+            disabled={!activeProjectId || !draft.trim() || createMission.isPending}
+            type="submit"
+          >
+            Start mission
+          </Button>
+        </div>
       </form>
     </Surface>
   );

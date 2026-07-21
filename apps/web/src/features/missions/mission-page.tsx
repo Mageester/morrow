@@ -1,4 +1,4 @@
-import type { WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
+import type { WebMissionSnapshot } from "@morrow/contracts";
 import { Button, ErrorCard, Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -18,25 +18,12 @@ import {
 } from "../../app/error-boundary.js";
 import { MissionActivity } from "./mission-activity.js";
 import { MissionOverview } from "./mission-overview.js";
+import { missionStateLabels } from "./mission-state.js";
 import { ResultTab } from "./result-tab.js";
 import { WorkTab } from "./work-tab.js";
 
 const tabs = ["Overview", "Activity", "Work", "Result"] as const;
 type MissionTab = (typeof tabs)[number];
-
-const missionStateLabels: Record<WebMissionUiState, string> = {
-  draft: "Draft",
-  needs_input: "Needs input",
-  working: "Working",
-  reviewing: "Reviewing",
-  blocked: "Blocked",
-  failed_recoverable: "Failed, recoverable",
-  failed: "Failed",
-  completed_verified: "Completed and verified",
-  completed_with_caveats: "Completed with caveats",
-  cancelled: "Cancelled",
-  superseded: "Superseded",
-};
 
 function MissionLoadError({ error, retry }: { error: unknown; retry: () => void }) {
   const typed = error instanceof ApiClientError ? error : null;
@@ -53,10 +40,10 @@ function MissionLoadError({ error, retry }: { error: unknown; retry: () => void 
       {notFound ? (
         <ErrorCard
           attempted={[]}
-          continuation="Retry the authoritative mission snapshot if this mission should still exist."
+          continuation="Check again in case this mission is still available, or return to Missions to see current work."
           explanation="This mission is unavailable or no longer exists."
-          preservedMessage="Your synchronized mission data remains unchanged."
-          recommendedAction={{ label: "Retry mission", onClick: retry }}
+          preservedMessage="Your other missions are unaffected."
+          recommendedAction={{ label: "Check again", onClick: retry }}
           title="Mission not found"
         />
       ) : (

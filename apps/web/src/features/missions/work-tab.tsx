@@ -29,10 +29,11 @@ function artifactTitle(title: string): string {
 }
 
 function ArtifactMetadata({ artifact }: { artifact: WebMissionArtifact }) {
+  const mimeType = artifact.mimeType?.trim();
   return (
     <span>
-      {artifactLabel(artifact.kind)} · {artifact.mimeType?.trim() || "Unknown format"} · Version{" "}
-      {artifact.version}
+      {artifactLabel(artifact.kind)}
+      {mimeType ? ` · ${mimeType}` : ""} · Version {artifact.version}
     </span>
   );
 }
@@ -42,7 +43,11 @@ function SafeTextPreview({
   title,
 }: Pick<WebMissionArtifact, "preview"> & { title: string }) {
   if (!preview?.trim()) {
-    return <p className="morrow-artifact-preview__empty">No safe text preview is available.</p>;
+    return (
+      <p className="morrow-artifact-preview__empty">
+        No preview is available for this file yet.
+      </p>
+    );
   }
 
   return (
