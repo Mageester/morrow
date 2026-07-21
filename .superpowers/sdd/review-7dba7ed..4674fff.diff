@@ -1,0 +1,697 @@
+# Review package: 7dba7ed..4674fff
+
+## Commits
+4674fff feat(orchestrator): expose web mission endpoints
+
+## Files changed
+ services/orchestrator/src/database.ts              |   4 +
+ services/orchestrator/src/repositories/missions.ts |  15 ++
+ services/orchestrator/src/server.ts                |  16 ++
+ services/orchestrator/src/web/mission-routes.ts    | 232 +++++++++++++++++++++
+ .../test/database-migration-29.test.ts             |  10 +-
+ services/orchestrator/test/database.test.ts        |   3 +-
+ .../orchestrator/test/server-web-missions.test.ts  | 178 ++++++++++++++++
+ 7 files changed, 452 insertions(+), 6 deletions(-)
+
+## Diff
+diff --git a/services/orchestrator/src/database.ts b/services/orchestrator/src/database.ts
+index cbcb32d..1a45b93 100644
+--- a/services/orchestrator/src/database.ts
++++ b/services/orchestrator/src/database.ts
+@@ -1117,20 +1117,24 @@ export const migrations:Migration[]=[
+       created_at TEXT NOT NULL,
+       updated_at TEXT NOT NULL,
+       UNIQUE(project_id, workflow_fingerprint)
+     );
+     CREATE INDEX learned_skills_project_state_idx ON learned_skills(project_id, state, updated_at DESC);
+   `}
+   ,{id:36,name:"durable_mission_execution_route",sql:`
+     ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
+       DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
+   `}
++  ,{id:37,name:"mission_idempotency_keys",sql:`
++    ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
++    CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
++  `}
+ ];
+ export function openDatabase(file:string){
+   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
+   const db=new Database(file);
+   try{
+     db.pragma("foreign_keys = ON");
+     db.pragma("busy_timeout = 5000");
+     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
+     for(const m of migrations){
+diff --git a/services/orchestrator/src/repositories/missions.ts b/services/orchestrator/src/repositories/missions.ts
+index 73ca906..5f82949 100644
+--- a/services/orchestrator/src/repositories/missions.ts
++++ b/services/orchestrator/src/repositories/missions.ts
+@@ -282,20 +282,35 @@ export function missionsRepository(db: Database.Database) {
+         startedAt: row.started_at ?? null,
+         completedAt: row.completed_at ?? null,
+       };
+     },
+ 
+     listByProject(projectId: string, limit = 50): Mission[] {
+       const rows = db.prepare("SELECT * FROM missions WHERE project_id = ? ORDER BY created_at DESC LIMIT ?").all(projectId, limit) as any[];
+       return rows.map((r) => repo.hydrate(r));
+     },
+ 
++    /** Look up a mission by the idempotency key it was created with (scoped to a
++     *  project). Mirrors the tasks repository so a repeated create request can
++     *  replay the original mission instead of spawning a duplicate. */
++    findByIdempotencyKey(projectId: string, key: string): Mission | undefined {
++      const row = db.prepare("SELECT * FROM missions WHERE project_id = ? AND idempotency_key = ?").get(projectId, key) as any;
++      return row ? repo.hydrate(row) : undefined;
++    },
++
++    /** Bind an idempotency key to an already-created mission. The partial unique
++     *  index (project_id, idempotency_key) is the durable guard against two
++     *  concurrent creates ever sharing a key. */
++    setIdempotencyKey(id: string, key: string): void {
++      db.prepare("UPDATE missions SET idempotency_key = ? WHERE id = ?").run(key, id);
++    },
++
+     setStatus(id: string, status: MissionStatus, now = new Date().toISOString()): void {
+       const patch: string[] = ["status = ?", "updated_at = ?"];
+       const params: any[] = [status, now];
+       if (status === "running") { patch.push("started_at = COALESCE(started_at, ?)"); params.push(now); }
+       const terminal = ["completed", "completed_with_reservations", "partially_completed", "blocked", "failed", "cancelled"];
+       if (terminal.includes(status)) { patch.push("completed_at = ?"); params.push(now); }
+       params.push(id);
+       db.prepare(`UPDATE missions SET ${patch.join(", ")} WHERE id = ?`).run(...params);
+     },
+ 
+diff --git a/services/orchestrator/src/server.ts b/services/orchestrator/src/server.ts
+index edb6d45..8951a5a 100644
+--- a/services/orchestrator/src/server.ts
++++ b/services/orchestrator/src/server.ts
+@@ -141,20 +141,21 @@ import { ModelCatalog } from "./routing/model-catalog.js";
+ import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
+ import { routePreset, listPresetStatuses } from "./routing/router.js";
+ import { testProviderConnectivity } from "./provider/connectivity.js";
+ import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+ import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
+ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
+ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
+ import { buildProviderProjection } from "./execution/provider-projection.js";
+ import { resolveModelBudget } from "./routing/model-budget.js";
+ import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
++import { registerWebMissionRoutes } from "./web/mission-routes.js";
+ 
+ export class ApiError extends Error {
+   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
+     super(message);
+     this.name = "ApiError";
+   }
+ }
+ 
+ /**
+  * An idempotency key lets a client safely retry a creation request (e.g. after a
+@@ -327,20 +328,35 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+           : [...guardian.blocked, ...guardian.failed, ...guardian.missing].at(0)?.detail ?? null,
+         providerModelHistory,
+         evidenceCounts: {
+           passed: mission.evidence.filter((item) => item.status === "passed").length,
+           failed: mission.evidence.filter((item) => item.status === "failed").length,
+           inconclusive: mission.evidence.filter((item) => item.status === "inconclusive").length,
+         },
+       },
+     };
+   };
++  // Web app surface: honest mission projections for the browser client. Injected
++  // with the same repositories/service the terminal API uses so there is a
++  // single source of truth and zero behavior change to the existing routes.
++  registerWebMissionRoutes(app, {
++    db: deps.db,
++    projects,
++    missions,
++    approvals,
++    agents,
++    missionRuntime,
++    missionService,
++    ...(deps.missionControllerRunner ? { missionControllerRunner: deps.missionControllerRunner } : {}),
++    readIdempotencyKey,
++  });
++
+   const processesRepo = processesRepository(deps.db);
+   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
+   // A `running` row from a previous orchestrator run is unobservable — mark it
+   // lost before serving any traffic so no stale row masquerades as live.
+   supervisor.reconcileOnStartup();
+   const worktreesRepo = worktreesRepository(deps.db);
+   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
+   const integrationsRepo = integrationsRepository(deps.db);
+   const contextSummariesRepo = contextSummariesRepository(deps.db);
+   const executionContinuityRepo = executionContinuityRepository(deps.db);
+diff --git a/services/orchestrator/src/web/mission-routes.ts b/services/orchestrator/src/web/mission-routes.ts
+new file mode 100644
+index 0000000..4d1197a
+--- /dev/null
++++ b/services/orchestrator/src/web/mission-routes.ts
+@@ -0,0 +1,232 @@
++import type { FastifyInstance, FastifyRequest } from "fastify";
++import type Database from "better-sqlite3";
++import {
++  CreateWebMissionSchema,
++  ResolveWebAttentionSchema,
++  type Approval,
++  type ApprovalDecision,
++  type Mission,
++  type Project,
++  type WebWorkspace,
++} from "@morrow/contracts";
++import { ApiError } from "../server.js";
++import { ensureCortexSpecialistAgents } from "../mission/specialists.js";
++import type { GuardianDecision } from "../mission/guardian.js";
++import type { MissionsRepository } from "../repositories/missions.js";
++import type { projectRepository } from "../repositories/projects.js";
++import type { approvalsRepository } from "../repositories/approvals.js";
++import type { agentsRepository } from "../repositories/agents.js";
++import type { missionRuntimeRepository } from "../repositories/mission-runtime.js";
++import type { MissionService } from "../mission/service.js";
++import {
++  projectMissionForWeb,
++  projectMissionSummaryForWeb,
++  type MissionWebProjectionInput,
++} from "./mission-projection.js";
++
++/**
++ * Everything the web mission routes need, injected so the plugin performs no
++ * global lookups and stays trivially testable. The routes assemble the pure
++ * projection input from these repositories and never leak provider secrets or
++ * fabricate progress — every field comes from persisted mission state.
++ */
++export interface WebMissionRouteDependencies {
++  db: Database.Database;
++  projects: ReturnType<typeof projectRepository>;
++  missions: MissionsRepository;
++  approvals: ReturnType<typeof approvalsRepository>;
++  agents: ReturnType<typeof agentsRepository>;
++  missionRuntime: ReturnType<typeof missionRuntimeRepository>;
++  missionService: MissionService;
++  /** Wake durable mission ownership after a create or an attention resolution. */
++  missionControllerRunner?: { wake(missionId: string): void };
++  /** Header/body idempotency-key reader (shared with the task routes). */
++  readIdempotencyKey(request: { headers?: Record<string, unknown>; body?: unknown }): string | undefined;
++  /** Injectable clock for deterministic tests. */
++  now?: () => string;
++}
++
++/**
++ * The local (single-user) slice models a project as a personal workspace the
++ * signed-in user owns. This is the ONLY place that derivation lives, so the
++ * workspace id embedded in every mission summary always matches the workspace
++ * the bootstrap endpoint reports.
++ */
++function deriveWorkspace(project: Project): WebWorkspace {
++  return {
++    version: 1,
++    id: `workspace-personal-${project.id}`,
++    name: project.name.slice(0, 120),
++    kind: "personal",
++    role: "owner",
++  };
++}
++
++// The projection's approval-backed attention choices (see mission-projection.ts)
++// are "approve"/"deny"; map them onto the durable approval decision vocabulary.
++function choiceToDecision(choiceId: string): ApprovalDecision | null {
++  if (choiceId === "approve") return "allow_once";
++  if (choiceId === "deny") return "deny";
++  return null;
++}
++
++export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionRouteDependencies): void {
++  const now = deps.now ?? (() => new Date().toISOString());
++
++  // Pending, human-awaited approvals for a mission, resolved through the task
++  // that owns them (approvals are task-scoped; a task carries its mission id).
++  const pendingApprovalsForMission = (missionId: string): Approval[] => {
++    const rows = deps.db
++      .prepare(
++        `SELECT approval.id AS id
++           FROM approvals approval
++           JOIN tasks task ON task.id = approval.task_id
++          WHERE task.mission_id = ? AND approval.status = 'pending'
++          ORDER BY approval.created_at ASC, approval.id ASC`,
++      )
++      .all(missionId) as Array<{ id: string }>;
++    return rows.flatMap((row) => {
++      const approval = deps.approvals.get(row.id);
++      return approval ? [approval] : [];
++    });
++  };
++
++  // Assemble the pure projection input from persisted state alone. Throws a
++  // 404 ApiError when the mission (or its project) has gone, so every route can
++  // rely on a fully-formed input.
++  const projectionInput = (missionId: string): MissionWebProjectionInput => {
++    const mission = deps.missions.get(missionId);
++    if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
++    const project = deps.projects.getProjectById(mission.projectId);
++    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
++    // Guardian is the same computed source of truth the internal mission
++    // projection uses; if it cannot be evaluated we pass null rather than
++    // inventing a verdict.
++    let guardian: GuardianDecision | null = null;
++    try {
++      guardian = deps.missionService.assessGuardian(missionId);
++    } catch {
++      guardian = null;
++    }
++    return {
++      mission,
++      workspaceId: deriveWorkspace(project).id,
++      events: deps.missions.listEvents(missionId),
++      guardian,
++      pendingApprovals: pendingApprovalsForMission(missionId),
++      runtime: deps.missionRuntime.get(missionId),
++    };
++  };
++
++  const requireProjectId = (request: FastifyRequest): string => {
++    const { projectId } = request.query as { projectId?: string };
++    if (typeof projectId !== "string" || projectId.length === 0) {
++      throw new ApiError(400, "projectId query parameter is required", "VALIDATION_ERROR");
++    }
++    return projectId;
++  };
++
++  // ── App boot ────────────────────────────────────────────────────────────
++  app.get("/api/web/bootstrap", async (request) => {
++    const projectId = requireProjectId(request);
++    const project = deps.projects.getProjectById(projectId);
++    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
++    return {
++      version: 1,
++      workspace: deriveWorkspace(project),
++      projects: deps.projects.listProjects().map((p) => ({
++        id: p.id,
++        name: p.name,
++        workspaceId: deriveWorkspace(p).id,
++      })),
++      activeProjectId: project.id,
++    };
++  });
++
++  // ── Mission list ──────────────────────────────────────────────────────────
++  app.get("/api/web/missions", async (request) => {
++    const projectId = requireProjectId(request);
++    if (!deps.projects.getProjectById(projectId)) throw new ApiError(404, "Project not found", "NOT_FOUND");
++    return deps.missions
++      .listByProject(projectId)
++      .map((mission) => projectMissionSummaryForWeb(projectionInput(mission.id)));
++  });
++
++  // ── Mission create ──────────────────────────────────────────────────────────
++  app.post("/api/web/missions", async (request, reply) => {
++    const body = CreateWebMissionSchema.parse(request.body);
++    const project = deps.projects.getProjectById(body.projectId);
++    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
++
++    // Idempotent replay: a repeated create with the same key returns the
++    // original mission (200) instead of spawning a duplicate.
++    const idempotencyKey = deps.readIdempotencyKey(request);
++    if (idempotencyKey) {
++      const existing = deps.missions.findByIdempotencyKey(body.projectId, idempotencyKey);
++      if (existing) {
++        reply.status(200);
++        return projectMissionForWeb(projectionInput(existing.id));
++      }
++    }
++
++    let mission!: Mission;
++    deps.db.transaction(() => {
++      mission = deps.missionService.create(body.projectId, {
++        objective: body.objective,
++        // "autonomous" pre-approves the plan; every other autonomy level keeps a
++        // human in the loop. No second mission state machine is created.
++        autoApprove: body.autonomy === "autonomous",
++      });
++      deps.missionRuntime.create({ missionId: mission.id, now: mission.createdAt });
++      if (idempotencyKey) deps.missions.setIdempotencyKey(mission.id, idempotencyKey);
++    })();
++    ensureCortexSpecialistAgents(body.projectId, deps.agents);
++    deps.missionControllerRunner?.wake(mission.id);
++    reply.status(201);
++    return projectMissionForWeb(projectionInput(mission.id));
++  });
++
++  // ── Mission snapshot ────────────────────────────────────────────────────────
++  app.get("/api/web/missions/:missionId", async (request) => {
++    const { missionId } = request.params as { missionId: string };
++    if (!deps.missions.get(missionId)) throw new ApiError(404, "Mission not found", "NOT_FOUND");
++    return projectMissionForWeb(projectionInput(missionId));
++  });
++
++  // ── Attention resolution ────────────────────────────────────────────────────
++  app.post("/api/web/missions/:missionId/attention/:attentionId/resolve", async (request, reply) => {
++    const { missionId, attentionId } = request.params as { missionId: string; attentionId: string };
++    const body = ResolveWebAttentionSchema.parse(request.body);
++
++    const mission = deps.missions.get(missionId);
++    if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
++
++    const approval = deps.approvals.get(attentionId);
++    if (!approval) throw new ApiError(404, "Attention request not found", "NOT_FOUND");
++
++    // Cross-mission / cross-project guard: the approval must belong to a task
++    // owned by THIS mission (and the mission's project). A mismatch is treated
++    // as "not found in mission" so nothing is mutated and no ownership leaks.
++    const taskRow = deps.db.prepare("SELECT mission_id FROM tasks WHERE id = ?").get(approval.taskId) as
++      | { mission_id: string | null }
++      | undefined;
++    if (!taskRow || taskRow.mission_id !== missionId || approval.projectId !== mission.projectId) {
++      throw new ApiError(404, "Attention request not found in mission", "NOT_FOUND");
++    }
++
++    const decision = choiceToDecision(body.choiceId);
++    if (!decision) throw new ApiError(400, `Unknown choice "${body.choiceId}"`, "INVALID_CHOICE");
++
++    const resolved = deps.approvals.resolve(approval.id, {
++      decision,
++      ...(body.note ? { note: body.note } : {}),
++      resolvedAt: now(),
++    });
++    if (!resolved) throw new ApiError(409, "Attention request is no longer pending", "ATTENTION_ALREADY_RESOLVED");
++
++    // The durable mission controller owns execution; waking it lets the mission
++    // react to the now-resolved approval. We never fabricate progress here.
++    deps.missionControllerRunner?.wake(missionId);
++    return projectMissionForWeb(projectionInput(missionId));
++  });
++}
+diff --git a/services/orchestrator/test/database-migration-29.test.ts b/services/orchestrator/test/database-migration-29.test.ts
+index 4484173..0ac4f4a 100644
+--- a/services/orchestrator/test/database-migration-29.test.ts
++++ b/services/orchestrator/test/database-migration-29.test.ts
+@@ -310,21 +310,21 @@ function seedMigration30Mission(db: Database.Database, input: {
+ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", () => {
+   it("migration 29 applies, preserves data, adds source_locator, and rebuilds project_active_mission", () => {
+     const dbPath = join(tmp("ek-mig-a-"), "m.db");
+     buildHistoricalDb(dbPath, ORIGINAL_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: false });
+ 
+     // Open with the CURRENT application code: migration 29 must apply cleanly.
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(36);
++    expect(Math.max(...appliedIds)).toBe(37);
+ 
+     // source_locator now exists and is queryable/writable.
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     // Data survived.
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -356,21 +356,21 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
+ 
+ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () => {
+   it("migration 29 still succeeds when source_locator already exists, and data is preserved", () => {
+     const dbPath = join(tmp("ek-mig-b-"), "m.db");
+     buildHistoricalDb(dbPath, EDITED_F812872_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: true });
+ 
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(36);
++    expect(Math.max(...appliedIds)).toBe(37);
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+     // No duplicate column, no error — ALTER TABLE ADD COLUMN was correctly skipped.
+     expect(cols.filter((c) => c === "source_locator")).toHaveLength(1);
+ 
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -384,22 +384,22 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+   });
+ });
+ 
+ describe("BLOCKER 3 — fresh database migrations in order", () => {
+   it("applies all migrations and produces the correct final schema and triggers", () => {
+     const dbPath = join(tmp("ek-mig-c-"), "m.db");
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-    expect(appliedIds).toEqual(Array.from({ length: 36 }, (_, i) => i + 1));
+-    expect(migrations.at(-1)!.id).toBe(36);
++    expect(appliedIds).toEqual(Array.from({ length: 37 }, (_, i) => i + 1));
++    expect(migrations.at(-1)!.id).toBe(37);
+     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
+     expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     const pamCols = (db.prepare("PRAGMA table_info(project_active_mission)").all() as { name: string; notnull: number }[]);
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+ 
+@@ -598,21 +598,21 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
+     const fix = new Database(dbPath);
+     try {
+       fix.prepare("UPDATE project_active_mission SET project_id = 'proj-1' WHERE mission_id = 'mission-1'").run();
+     } finally {
+       fix.close();
+     }
+ 
+     const db = openTestDatabase(dbPath);
+     try {
+       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-      expect(Math.max(...appliedAfterFix)).toBe(36);
++      expect(Math.max(...appliedAfterFix)).toBe(37);
+       const repo = missionsRepository(db);
+       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
+       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();
+     } finally {
+       db.close();
+     }
+   });
+ 
+   it("a pointer referencing a nonexistent mission is also refused", () => {
+     const dbPath = join(tmp("ek-mig-corrupt-missing-"), "m.db");
+diff --git a/services/orchestrator/test/database.test.ts b/services/orchestrator/test/database.test.ts
+index 15cc933..a7da355 100644
+--- a/services/orchestrator/test/database.test.ts
++++ b/services/orchestrator/test/database.test.ts
+@@ -6,23 +6,24 @@ import { migrations, openDatabase } from "../src/database.js";
+ 
+ describe("database", () => {
+   it("migrates in-memory database idempotently", () => {
+     const db = openDatabase(":memory:");
+     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: migrations.length });
+     db.close();
+   });
+ 
+   it("installs the durable mission runtime ledger and provider discovery schema", () => {
+     const db = openDatabase(":memory:");
+-    expect(migrations.at(-1)?.id).toBe(36);
++    expect(migrations.at(-1)?.id).toBe(37);
+     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
+     expect(missionColumns).toContain("execution_json");
++    expect(missionColumns).toContain("idempotency_key");
+     const tables = (db.prepare(`SELECT name FROM sqlite_master
+       WHERE type='table' AND name LIKE 'mission_runtime%' OR name IN ('mission_operations','mission_progress','mission_recovery_decisions')
+       ORDER BY name`).all() as Array<{ name: string }>).map((row) => row.name);
+     expect(tables).toEqual([
+       "mission_operations",
+       "mission_progress",
+       "mission_recovery_decisions",
+       "mission_runtime",
+       "mission_runtime_transitions",
+     ]);
+diff --git a/services/orchestrator/test/server-web-missions.test.ts b/services/orchestrator/test/server-web-missions.test.ts
+new file mode 100644
+index 0000000..7efe3f7
+--- /dev/null
++++ b/services/orchestrator/test/server-web-missions.test.ts
+@@ -0,0 +1,178 @@
++import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
++import { mkdtempSync, rmSync } from "node:fs";
++import { spawnSync } from "node:child_process";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { openDatabase } from "../src/database.js";
++import { buildServer } from "../src/server.js";
++import { TaskRunner } from "../src/runner.js";
++import { WebMissionSnapshotSchema, WebMissionSummarySchema, WebWorkspaceSchema } from "@morrow/contracts";
++
++describe("Web mission REST API", () => {
++  let db: any;
++  let app: any;
++  let tempDir: string;
++  let workspace: string;
++  let missionControllerRunner: {
++    run: ReturnType<typeof vi.fn<(missionId: string) => void>>;
++    wake: ReturnType<typeof vi.fn<(missionId: string) => void>>;
++    cancel: ReturnType<typeof vi.fn<(missionId: string) => void>>;
++    isActive: ReturnType<typeof vi.fn<(missionId: string) => boolean>>;
++  };
++
++  const PROJECT_ID = "p1";
++  const OTHER_PROJECT_ID = "p2";
++
++  beforeEach(() => {
++    tempDir = mkdtempSync(join(tmpdir(), "morrow-web-"));
++    workspace = mkdtempSync(join(tmpdir(), "morrow-web-ws-"));
++    spawnSync("git", ["init", "-b", "main"], { cwd: workspace });
++    db = openDatabase(join(tempDir, "morrow.db"));
++    missionControllerRunner = {
++      run: vi.fn(),
++      wake: vi.fn(),
++      cancel: vi.fn(),
++      isActive: vi.fn(() => false),
++    };
++    app = buildServer({ db, runner: new TaskRunner(db), missionControllerRunner });
++    const now = "2026-07-19T00:00:00.000Z";
++    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run(PROJECT_ID, 1, "Personal", workspace, now, now);
++    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run(OTHER_PROJECT_ID, 1, "Other", workspace, now, now);
++  });
++
++  afterEach(() => {
++    app.close();
++    db.close();
++    rmSync(tempDir, { recursive: true, force: true });
++    rmSync(workspace, { recursive: true, force: true });
++  });
++
++  async function createMission(projectId = PROJECT_ID, objective = "Research three competitors and create a report.", headers: Record<string, string> = {}) {
++    return app.inject({
++      method: "POST",
++      url: "/api/web/missions",
++      headers,
++      payload: { objective, projectId, autonomy: "recommended" },
++    });
++  }
++
++  it("creates a mission and returns a schema-valid snapshot", async () => {
++    const created = await createMission(PROJECT_ID, "Research three competitors and create a report.", { "idempotency-key": "web-create-1" });
++    expect(created.statusCode).toBe(201);
++    const body = WebMissionSnapshotSchema.parse(created.json());
++    expect(body.summary.objective).toContain("Research three competitors");
++    expect(body.summary.projectId).toBe(PROJECT_ID);
++    expect(body.summary.workspaceId.length).toBeGreaterThan(0);
++  });
++
++  it("replays an idempotent create with the same summary id", async () => {
++    const created = await createMission(PROJECT_ID, "Research three competitors and create a report.", { "idempotency-key": "web-create-1" });
++    expect(created.statusCode).toBe(201);
++    const body = WebMissionSnapshotSchema.parse(created.json());
++
++    const retried = await createMission(PROJECT_ID, "Research three competitors and create a report.", { "idempotency-key": "web-create-1" });
++    expect(retried.statusCode).toBe(200);
++    expect(retried.json().summary.id).toBe(body.summary.id);
++  });
++
++  it("rejects an unknown project on create with 404", async () => {
++    const res = await createMission("nope");
++    expect(res.statusCode).toBe(404);
++  });
++
++  it("rejects a malformed (whitespace-only) objective with 400", async () => {
++    const res = await app.inject({
++      method: "POST",
++      url: "/api/web/missions",
++      payload: { objective: "   ", projectId: PROJECT_ID, autonomy: "recommended" },
++    });
++    expect(res.statusCode).toBe(400);
++  });
++
++  it("returns a mission snapshot by id and 404 for unknown missions", async () => {
++    const created = await createMission();
++    const missionId = created.json().summary.id;
++
++    const fetched = await app.inject({ method: "GET", url: `/api/web/missions/${missionId}` });
++    expect(fetched.statusCode).toBe(200);
++    WebMissionSnapshotSchema.parse(fetched.json());
++
++    const missing = await app.inject({ method: "GET", url: "/api/web/missions/mission-does-not-exist" });
++    expect(missing.statusCode).toBe(404);
++  });
++
++  it("lists created missions for a project", async () => {
++    const created = await createMission();
++    const missionId = created.json().summary.id;
++
++    const list = await app.inject({ method: "GET", url: `/api/web/missions?projectId=${PROJECT_ID}` });
++    expect(list.statusCode).toBe(200);
++    const summaries = list.json();
++    expect(Array.isArray(summaries)).toBe(true);
++    for (const summary of summaries) WebMissionSummarySchema.parse(summary);
++    expect(summaries.map((s: any) => s.id)).toContain(missionId);
++
++    const unknown = await app.inject({ method: "GET", url: "/api/web/missions?projectId=nope" });
++    expect(unknown.statusCode).toBe(404);
++  });
++
++  it("bootstraps a personal workspace for the app boot", async () => {
++    const res = await app.inject({ method: "GET", url: `/api/web/bootstrap?projectId=${PROJECT_ID}` });
++    expect(res.statusCode).toBe(200);
++    const body = res.json();
++    const workspace = WebWorkspaceSchema.parse(body.workspace);
++    expect(workspace.kind).toBe("personal");
++    expect(workspace.role).toBe("owner");
++    expect(Array.isArray(body.projects)).toBe(true);
++
++    const missing = await app.inject({ method: "GET", url: "/api/web/bootstrap?projectId=nope" });
++    expect(missing.statusCode).toBe(404);
++  });
++
++  // Insert a durable pending approval attached to a task owned by `missionId`.
++  function seedPendingApproval(missionId: string, projectId: string, approvalId: string): void {
++    const now = "2026-07-19T00:10:00.000Z";
++    const taskId = `task-${approvalId}`;
++    db.prepare(
++      "INSERT INTO tasks(id,schema_version,project_id,type,status,mission_id,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?)",
++    ).run(taskId, projectId, "agent_chat", "running", missionId, now, now);
++    db.prepare(
++      "INSERT INTO approvals(id,schema_version,task_id,project_id,kind,status,summary,details_json,decision,decision_note,created_at,resolved_at) VALUES(?,1,?,?,?,?,?,?,?,?,?,?)",
++    ).run(approvalId, taskId, projectId, "command", "pending", "Approve running the report command", "{}", null, null, now, null);
++  }
++
++  it("resolves a pending attention request on the owning mission", async () => {
++    const created = await createMission();
++    const missionId = created.json().summary.id;
++    seedPendingApproval(missionId, PROJECT_ID, "approval-1");
++
++    const res = await app.inject({
++      method: "POST",
++      url: `/api/web/missions/${missionId}/attention/approval-1/resolve`,
++      payload: { choiceId: "approve" },
++    });
++    expect(res.statusCode).toBe(200);
++    WebMissionSnapshotSchema.parse(res.json());
++    const row = db.prepare("SELECT status FROM approvals WHERE id=?").get("approval-1") as { status: string };
++    expect(row.status).toBe("approved");
++    expect(missionControllerRunner.wake).toHaveBeenCalledWith(missionId);
++  });
++
++  it("rejects cross-project/cross-mission attention resolution", async () => {
++    const missionA = (await createMission(PROJECT_ID)).json().summary.id;
++    const missionB = (await createMission(OTHER_PROJECT_ID)).json().summary.id;
++    // The approval belongs to mission A (project p1)...
++    seedPendingApproval(missionA, PROJECT_ID, "approval-x");
++
++    // ...so resolving it through mission B (project p2) must be rejected and
++    // must NOT mutate the approval.
++    const res = await app.inject({
++      method: "POST",
++      url: `/api/web/missions/${missionB}/attention/approval-x/resolve`,
++      payload: { choiceId: "approve" },
++    });
++    expect(res.statusCode).toBe(404);
++    const row = db.prepare("SELECT status FROM approvals WHERE id=?").get("approval-x") as { status: string };
++    expect(row.status).toBe("pending");
++  });
++});
