@@ -206,6 +206,7 @@ function MissionWorkspace({
         aria-label="Mission updates"
         aria-live="polite"
         className="morrow-sr-only"
+        role="status"
       >
         {announcement}
       </p>

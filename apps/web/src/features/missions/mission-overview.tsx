@@ -81,7 +81,7 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
         <p>{snapshot.summary.objective}</p>
       </Surface>
 
-      <p className="morrow-mission-milestone-count" aria-label="Milestone progress">
+      <p className="morrow-mission-milestone-count">
         {completed.length} completed · {remaining.length} remaining ·{" "}
         {skipped.length} skipped · {snapshot.milestones.length} total
       </p>
