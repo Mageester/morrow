@@ -49,7 +49,11 @@ blank text instead of `Unknown format`. The implementation now trims MIME
 metadata before applying the safe fallback; the same focused test passed
 afterward.
 
-## Final Verification
+## Historical Final Verification
+
+This evidence records the initial Task 9 delivery. The later review fixes and
+the current accessibility follow-up below supersede its rendered heading and
+preview details.
 
 ```text
 pnpm --filter @morrow/web test -- mission-page.test.tsx work-tab.test.tsx result-tab.test.tsx
@@ -95,12 +99,12 @@ PASS — no whitespace errors
 - No credentials, browser storage, telemetry, network request, permission
   change, or external data flow was added.
 
-## Accessibility Review
+## Historical Accessibility Review
 
 - Task 8's persistent `tablist`, tabs, tabpanels, roving keyboard controls,
   and hidden inactive panels are retained unchanged.
-- Work/Result headings proceed from their section `h2` to artifact-frame `h3`
-  titles; the public frame supports semantic levels 2 through 6.
+- The initial slice used a shared frame heading API; later fixes establish the
+  current Work `h2` → `h3` and Result `h2` → `h3` → `h4` hierarchy below.
 - Artifact frames remain named regions through their title; result sections
   use explicit headings and caveats are always present in the visible DOM,
   never hidden in a disclosure.
@@ -201,9 +205,8 @@ PASS — tsc -p tsconfig.build.json
 
 - Normalization operates on already-projected strings and preserves React text
   rendering; it introduces no execution, URL, file, or network path.
-- The preview uses a native `pre` with `tabIndex=0` and an accessible label
-  based on the normalized artifact title. Long content remains bounded and
-  scrollable.
+- The earlier native `pre` focus treatment is superseded by the current
+  focusable preview region described below.
 - The complete table-driven result test covers every `WebMissionUiState` with
   every verification state for non-completed outcomes and every verification
   state for both completed outcomes.
@@ -213,3 +216,44 @@ PASS — tsc -p tsconfig.build.json
 Revert `fix(web): preserve truthful result and artifact semantics` to remove
 only this corrective pass. The original Task 9 artifact/result slice remains
 available; no data, permission, external-flow, or server rollback is needed.
+
+---
+
+## Accessibility Follow-up — Named Artifact Preview Regions
+
+### RED Evidence
+
+```powershell
+pnpm --filter @morrow/web test -- work-tab.test.tsx
+```
+
+The updated accessibility test failed as expected because the current preview
+was an `aria-label`led `pre`, not the required focusable named `region`.
+
+### GREEN and Final Evidence
+
+The preview now uses a focusable `div role="region"` named `Preview of
+<artifact title>`. Its inner `pre` contains only text and has no accessible
+name or tab stop. Scroll bounds, overflow, and visible focus styling reside on
+the region.
+
+```text
+pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
+PASS — 2 files, 62 tests
+```
+
+### Current Accessibility and Truth Semantics
+
+- Work uses a semantic `h2` followed by `h3` artifact titles. Result uses an
+  `h2` delivery state, `h3` subsections, and `h4` primary artifact titles.
+- The Result component consumes the projected mission state alongside
+  verification state, so a known working, blocked, failed, cancelled, or
+  superseded outcome cannot be upgraded to a generic completion label.
+- Preview strings remain plain React text inside `pre`; the focusable wrapper
+  adds no content execution, URL, or action capability.
+
+### Rollback
+
+Revert `fix(web): expose accessible artifact previews` to restore the prior
+Task 9 preview markup only. The artifact registry, Result truth mapping, and
+all server-side boundaries remain unchanged.

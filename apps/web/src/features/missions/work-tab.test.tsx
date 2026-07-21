@@ -85,10 +85,16 @@ describe("WorkTab", () => {
       />,
     );
 
-    const firstPreview = screen.getByLabelText("Text preview for First artifact");
+    const firstPreview = screen.getByRole("region", {
+      name: "Preview of First artifact",
+    });
     expect(firstPreview).toHaveAttribute("tabindex", "0");
     firstPreview.focus();
     expect(firstPreview).toHaveFocus();
+    const pre = within(firstPreview).getByText("First preview");
+    expect(pre.tagName).toBe("PRE");
+    expect(pre).not.toHaveAttribute("aria-label");
+    expect(pre).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("region", { name: "Untitled artifact" })).toHaveTextContent("Second preview");
 
     rerender(

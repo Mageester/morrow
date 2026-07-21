@@ -293,6 +293,16 @@ a {
   color: var(--morrow-text);
   background: var(--morrow-surface-subtle);
   border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-artifact-preview:focus-visible {
+  outline: 2px solid var(--morrow-accent);
+  outline-offset: 2px;
+}
+
+.morrow-artifact-preview pre {
+  padding: 0;
+  margin: 0;
   font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

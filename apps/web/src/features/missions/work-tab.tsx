@@ -46,13 +46,14 @@ function SafeTextPreview({
   }
 
   return (
-    <pre
-      aria-label={`Text preview for ${title}`}
+    <div
+      aria-label={`Preview of ${title}`}
       className="morrow-artifact-preview"
+      role="region"
       tabIndex={0}
     >
-      {preview}
-    </pre>
+      <pre>{preview}</pre>
+    </div>
   );
 }
 
