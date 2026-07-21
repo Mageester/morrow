@@ -52,7 +52,7 @@ No plan-blocking contradictions. Proceed to Task 1.
 | 8. Overview/activity/stream | done | 425944e | c76751c | web 56/56, check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (3 Important fixed; 0 open) |
 | 9. Work/Result | done | 22a24b8 | 7fcdacf | web 118/118, UI 14/14, checks/builds ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (5 Important fixed; 0 open) |
 | 10. Attention/errors | done | 3bac520 | 3396792 | web 151/151 (attention-card 15/15), check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security/race APPROVED (6 Important fixed over 3 rounds; 0 open; 2 non-blocking minor) |
-| 11. /app serving + packaging | pending | — | — | — | — | — |
+| 11. /app serving + packaging | done | ebc9767 | 3886eaa | static 9/9, orch check/build ok, packaging+installer node tests 13/1skip, cli check ok, diff-check ok | APPROVED | APPROVED + security/backward-compat APPROVED (0 crit/imp; 1 non-blocking minor) |
 | 12. E2E/a11y/visual gates | pending | — | — | — | — | — |
 | Final review | pending | — | — | — | — | — |
 
@@ -72,4 +72,7 @@ Notes:
 
 - Recovered the existing worktree after Codex hit its usage limit mid-gate. Local HEAD was `3396792` (3 commits ahead of remote `3bac520`, 0 behind); working tree clean; the final race fix was already committed, not dirty. Only untracked files were SDD evidence.
 - Independently re-ran every Task 10 gate green (web 151/151, attention-card 15/15 incl. remount + stale-response race regressions, check, build, diff-check) and re-reviewed the cumulative range before recording completion.
-- Exact next action: push Task 10 + durable evidence, post PR #64 evidence, then dispatch Task 11 (/app serving + packaging) from `3396792`.
+- Task 10 pushed at `ebc9767`; PR #64 evidence posted.
+- Task 11 added local `/app` serving from the orchestrator (`@fastify/static` + SPA fallback + `/app`→`/app/`), env-gated `webRoot` wiring (`MORROW_WEB_ROOT`), release-package web bundling, launcher wiring, and ADR 0007 retiring the CLI-only package invariant. `web/index.html` moved from forbidden to required package file. Independent review over `ebc9767..3886eaa`: spec/quality/accessibility/security/backward-compat all APPROVED, 0 Critical, 0 Important. Evidence in `task-11-report.md`, `task-11-review.md`; package `review-ebc9767..3886eaa.diff`.
+- Pre-existing flaky orchestrator/CLI failures re-confirmed at baseline `ebc9767` with Task 11 stashed: orchestrator `sustained-autonomy`, `browser-injection`, `context-management`, `agent-beta26-regression`; CLI `acceptance-durable-autonomy` (2). None overlap Task 11's changed files. Track at final gate.
+- Exact next action: push Task 11 + durable evidence, post PR #64 evidence, then dispatch Task 12 (E2E/a11y/visual/reconnect/recovery/honesty gates) from `3886eaa`.
