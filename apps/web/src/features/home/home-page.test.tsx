@@ -1,7 +1,9 @@
 import {
+  fireEvent,
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -294,6 +296,129 @@ describe("HomePage", () => {
     expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
   });
 
+  it("rotates the idempotency key when autonomy changes after a failed request", async () => {
+    let createCount = 0;
+    const fetchMock = installApi((path) => {
+      if (path === "/api/health") {
+        return json({ ok: true, service: "morrow-orchestrator" });
+      }
+      if (path === "/api/projects") return json([project]);
+      if (path.startsWith("/api/web/missions?")) return json([]);
+      if (path === "/api/web/missions") {
+        createCount += 1;
+        return createCount === 1
+          ? json(
+              {
+                error: {
+                  code: "MISSION_BLOCKED",
+                  message: "The mission needs a decision.",
+                },
+                version: 1,
+              },
+              409,
+            )
+          : json(snapshot("mission-autonomy"), 201);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const user = userEvent.setup();
+    renderHome();
+
+    const objective = await screen.findByRole("textbox", {
+      name: "Mission objective",
+    });
+    await user.type(objective, "Review the proposal");
+    await user.keyboard("{Enter}");
+    await screen.findByRole("alert");
+    const first = JSON.parse(
+      String(
+        fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
+          ?.body,
+      ),
+    );
+
+    await user.selectOptions(
+      screen.getByLabelText("Autonomy"),
+      "autonomous",
+    );
+    await user.click(screen.getByRole("button", { name: "Start mission" }));
+    await waitFor(() => expect(createCount).toBe(2));
+    const changed = JSON.parse(
+      String(fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[1]?.[1]?.body),
+    );
+    expect(changed.autonomy).toBe("autonomous");
+    expect(changed.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
+
+  it("keeps the deadline disabled and never submits it before the service supports deadlines", async () => {
+    const fetchMock = installApi(standardHandler());
+    const user = userEvent.setup();
+    renderHome();
+
+    const deadline = await screen.findByLabelText("Optional deadline");
+    expect(deadline).toBeDisabled();
+    await user.click(screen.getByText("Advanced mission options"));
+    expect(
+      screen.getByText(
+        "Deadlines, attachments, and connections are not available in this local slice.",
+      ),
+    ).toBeVisible();
+    fireEvent.change(deadline, { target: { value: "2026-07-22T12:00" } });
+    const objective = screen.getByRole("textbox", { name: "Mission objective" });
+    await user.type(objective, "Plan the release");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
+      ).toHaveLength(1);
+    });
+    expect(
+      JSON.parse(
+        String(
+          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
+            ?.body,
+        ),
+      ),
+    ).not.toHaveProperty("deadline");
+  });
+
+  it("rejects an oversized objective before locking submission and allows a corrected retry", async () => {
+    const fetchMock = installApi(standardHandler());
+    renderHome();
+
+    const objective = await screen.findByRole("textbox", {
+      name: "Mission objective",
+    });
+    fireEvent.change(objective, { target: { value: "x".repeat(8_001) } });
+    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_001)));
+    fireEvent.keyDown(objective, { key: "Enter" });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Mission objectives must be 8,000 characters or fewer.",
+    );
+    expect(objective).toHaveAttribute("aria-invalid", "true");
+    expect(objective).toHaveValue("x".repeat(8_001));
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
+    ).toHaveLength(0);
+
+    fireEvent.change(objective, { target: { value: "x".repeat(8_000) } });
+    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_000)));
+    fireEvent.keyDown(objective, { key: "Enter" });
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
+      ).toHaveLength(1);
+    });
+    expect(
+      JSON.parse(
+        String(
+          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
+            ?.body,
+        ),
+      ).objective,
+    ).toHaveLength(8_000);
+  });
+
   it("renders non-empty home sections in attention, active, then recent-result order", async () => {
     installApi(
       standardHandler([
@@ -332,6 +457,36 @@ describe("HomePage", () => {
     expect(screen.getByText("Completed research")).toBeVisible();
   });
 
+  it("places a working mission that needs attention only in the attention landmark", async () => {
+    installApi(
+      standardHandler([
+        mission("working-attention", {
+          attentionCount: 1,
+          title: "Choose a deployment window",
+        }),
+        mission("active", { title: "Continue research" }),
+        mission("complete", {
+          state: "completed_verified",
+          title: "Finished review",
+        }),
+      ]),
+    );
+    renderHome();
+
+    const attention = await screen.findByRole("region", {
+      name: "Needs your attention",
+    });
+    const active = screen.getByRole("region", { name: "Active missions" });
+    const results = screen.getByRole("region", { name: "Recent results" });
+    expect(attention).toHaveAttribute("aria-labelledby", "home-attention-heading");
+    expect(active).toHaveAttribute("aria-labelledby", "home-active-heading");
+    expect(results).toHaveAttribute("aria-labelledby", "home-results-heading");
+    expect(
+      screen.getAllByRole("link", { name: "Choose a deployment window" }),
+    ).toHaveLength(1);
+    expect(within(active).queryByText("Choose a deployment window")).not.toBeInTheDocument();
+  });
+
   it("hides empty mission sections and teaches the empty state", async () => {
     installApi(standardHandler());
     renderHome();
@@ -359,6 +514,13 @@ describe("HomePage", () => {
     renderHome();
 
     expect(await screen.findByText("No project is available yet.")).toBeVisible();
+    expect(screen.getByText("No local project is available yet.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(
+      screen.queryByText("Select or create a local project before starting a mission."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(project.workspacePath)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
   });
@@ -376,5 +538,62 @@ describe("HomePage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Projects could not be loaded.",
     );
+    expect(
+      screen.queryByText("Select or create a local project before starting a mission."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("announces project loading before resolving an empty local-project state", async () => {
+    const projects = deferred<Response>();
+    installApi((path) => {
+      if (path === "/api/health") {
+        return json({ ok: true, service: "morrow-orchestrator" });
+      }
+      if (path === "/api/projects") return projects.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderHome();
+
+    expect(await screen.findByText("Loading local projects…")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(
+      screen.queryByText("Select or create a local project before starting a mission."),
+    ).not.toBeInTheDocument();
+    projects.resolve(json([]));
+    expect(await screen.findByText("No local project is available yet.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+  });
+
+  it("caches a late success without navigating away from the page the user already chose", async () => {
+    const created = deferred<Response>();
+    installApi((path) => {
+      if (path === "/api/health") {
+        return json({ ok: true, service: "morrow-orchestrator" });
+      }
+      if (path === "/api/projects") return json([project]);
+      if (path.startsWith("/api/web/missions?")) return json([]);
+      if (path === "/api/web/missions") return created.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { queryClient, router } = renderHome();
+    const user = userEvent.setup();
+    const objective = await screen.findByRole("textbox", {
+      name: "Mission objective",
+    });
+    await user.type(objective, "Prepare the release");
+    await user.keyboard("{Enter}");
+
+    await router.navigate({ to: "/library" });
+    created.resolve(json(snapshot("mission-late"), 201));
+    await waitFor(() => {
+      expect(queryClient.getQueryData(missionKeys.detail("mission-late"))).toEqual(
+        snapshot("mission-late"),
+      );
+    });
+    expect(router.state.location.pathname).toBe("/library");
   });
 });

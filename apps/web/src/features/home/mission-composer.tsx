@@ -38,13 +38,20 @@ export function MissionComposer({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [autonomy, setAutonomy] = useState<Autonomy>("recommended");
-  const [deadline, setDeadline] = useState("");
   const [draft, setDraft] = useState("");
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const currentIdempotencyKey = useRef(createIdempotencyKey());
   const failedSubmission = useRef(false);
+  const isCurrent = useRef(false);
   const submissionInFlight = useRef(false);
   const objectiveInput = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    isCurrent.current = true;
+    return () => {
+      isCurrent.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeProjectId) objectiveInput.current?.focus();
@@ -62,9 +69,10 @@ export function MissionComposer({
         missionKeys.detail(snapshot.summary.id),
         snapshot,
       );
+      if (!isCurrent.current) return;
+
       failedSubmission.current = false;
       currentIdempotencyKey.current = createIdempotencyKey();
-      setDeadline("");
       setDraft("");
       setSubmissionError(null);
       void navigate({
@@ -77,27 +85,36 @@ export function MissionComposer({
     },
   });
 
+  function resetFailedSubmissionForEdit() {
+    if (!failedSubmission.current) return;
+    currentIdempotencyKey.current = createIdempotencyKey();
+    failedSubmission.current = false;
+    setSubmissionError(null);
+  }
+
   function submit() {
     const objective = draft.trim();
-    if (!objective || !activeProjectId || submissionInFlight.current) return;
-
-    const parsedDeadline = deadline ? new Date(deadline) : null;
-    if (parsedDeadline && Number.isNaN(parsedDeadline.getTime())) {
-      setSubmissionError("Choose a valid deadline or clear it.");
+    if (!objective || !activeProjectId) return;
+    if (objective.length > 8_000) {
+      setSubmissionError("Mission objectives must be 8,000 characters or fewer.");
       return;
     }
 
+    const parsed = CreateWebMissionSchema.safeParse({
+      autonomy,
+      idempotencyKey: currentIdempotencyKey.current,
+      objective,
+      projectId: activeProjectId,
+    });
+    if (!parsed.success) {
+      setSubmissionError("Review the mission details and try again.");
+      return;
+    }
+    if (submissionInFlight.current) return;
+
     submissionInFlight.current = true;
     setSubmissionError(null);
-    createMission.mutate(
-      CreateWebMissionSchema.parse({
-        autonomy,
-        ...(parsedDeadline ? { deadline: parsedDeadline.toISOString() } : {}),
-        idempotencyKey: currentIdempotencyKey.current,
-        objective,
-        projectId: activeProjectId,
-      }),
-    );
+    createMission.mutate(parsed.data);
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -122,13 +139,12 @@ export function MissionComposer({
         <label htmlFor="mission-objective">Mission objective</label>
         <textarea
           aria-describedby={submissionError ? "mission-composer-error" : undefined}
+          aria-invalid={submissionError ? true : undefined}
           id="mission-objective"
           onChange={(event) => {
             const nextDraft = event.target.value;
             if (failedSubmission.current && nextDraft !== draft) {
-              currentIdempotencyKey.current = createIdempotencyKey();
-              failedSubmission.current = false;
-              setSubmissionError(null);
+              resetFailedSubmissionForEdit();
             }
             setDraft(nextDraft);
           }}
@@ -143,33 +159,29 @@ export function MissionComposer({
           <label htmlFor="mission-autonomy">Autonomy</label>
           <select
             id="mission-autonomy"
-            onChange={(event) => setAutonomy(event.target.value as Autonomy)}
+            onChange={(event) => {
+              const nextAutonomy = event.target.value as Autonomy;
+              if (nextAutonomy !== autonomy) resetFailedSubmissionForEdit();
+              setAutonomy(nextAutonomy);
+            }}
             value={autonomy}
           >
             <option value="ask_at_risk">Ask before risky actions</option>
             <option value="recommended">Use Morrow’s recommendations</option>
             <option value="autonomous">Proceed autonomously</option>
           </select>
-          <label htmlFor="mission-deadline">Optional deadline</label>
-          <input
-            id="mission-deadline"
-            onChange={(event) => setDeadline(event.target.value)}
-            type="datetime-local"
-            value={deadline}
-          />
+          <fieldset disabled>
+            <label htmlFor="mission-deadline">Optional deadline</label>
+            <input id="mission-deadline" type="datetime-local" />
+          </fieldset>
           <p>
-            Attachments and connections are not available in this local slice;
-            Morrow will ask when they are needed.
+            Deadlines, attachments, and connections are not available in this
+            local slice.
           </p>
         </details>
         {submissionError ? (
           <p id="mission-composer-error" role="alert">
             {submissionError}
-          </p>
-        ) : null}
-        {!activeProjectId ? (
-          <p aria-live="polite" role="status">
-            Select or create a local project before starting a mission.
           </p>
         ) : null}
         <Button

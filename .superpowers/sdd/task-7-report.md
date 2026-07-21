@@ -70,3 +70,48 @@ safe project states, and focus/accessibility semantics.
 
 Revert commit `feat(web): add universal mission composer` to restore the Task 6
 Home placeholder and remove the project-selection query helper.
+
+---
+
+## Reviewer hardening follow-up
+
+### RED
+
+`pnpm --filter @morrow/web test -- home-page.test.tsx`
+
+The reviewer regression suite expanded Home coverage from 9 to 15 tests. Before
+the hardening implementation it failed 8 tests: active deadline submission,
+autonomy edits reusing a failed key, oversized-objective handling, duplicate
+attention/active placement and whitespace-derived landmark ids, contradictory
+project status copy, and a late create success overriding user navigation.
+
+### GREEN
+
+`pnpm --filter @morrow/web test -- home-page.test.tsx`
+
+Passed: 1 file, 15 tests. The resolved tests cover disabled/no-payload deadline
+behavior, objective and autonomy idempotency rotation after failure, stable
+retry keys, 8,000-character rejection and exact-boundary acceptance without a
+stuck submission lock, exclusive attention/active/recent partitions, fixed
+named landmarks, project loading/error/empty announcements, and a late success
+that caches but does not navigate after Home unmounts.
+
+### Privacy and accessibility correction
+
+The raw `/api/projects` response necessarily reaches the browser to be
+schema-validated. `projectQueries.list` immediately maps it to `id` and `name`
+before React Query/application state retains it, so `workspacePath` is neither
+rendered nor stored in client query state. A future browser-safe project
+projection endpoint would remove this raw-response exposure; it is deliberately
+out of scope for Task 7.
+
+Deadline, attachment, and connection controls are now explicitly unavailable
+in this local slice and are not submitted. Validation errors are announced via
+an alert and mark the objective invalid. Project states use distinct polite
+loading/empty announcements and an assertive error without contradictory
+composer copy.
+
+### Follow-up rollback
+
+Revert commit `fix(web): harden mission composer behavior` to remove only the
+reviewer hardening changes while retaining the original Task 7 feature.

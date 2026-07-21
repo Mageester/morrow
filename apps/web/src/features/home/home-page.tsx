@@ -24,11 +24,13 @@ export function HomePage() {
       mission.state === "blocked" ||
       mission.state === "needs_input",
   );
+  const attentionMissionIds = new Set(attention.map((mission) => mission.id));
   const active = (missions.data ?? []).filter(
-    (mission) => activeStates.has(mission.state),
+    (mission) =>
+      !attentionMissionIds.has(mission.id) && activeStates.has(mission.state),
   );
   const results = (missions.data ?? []).filter((mission) =>
-    resultStates.has(mission.state),
+    !attentionMissionIds.has(mission.id) && resultStates.has(mission.state),
   );
 
   return (
@@ -39,25 +41,40 @@ export function HomePage() {
         <p>Start and resume durable work with Morrow.</p>
       </div>
       <MissionComposer activeProjectId={activeProject?.id} />
-      {projects.isPending ? <p role="status">Loading local projects…</p> : null}
+      {projects.isPending ? (
+        <p aria-live="polite" role="status">Loading local projects…</p>
+      ) : null}
       {projects.isError ? (
         <p role="alert">Projects could not be loaded.</p>
       ) : null}
       {!projects.isPending && !projects.isError && !activeProject ? (
         <Surface padding="large">
           <h2>No project is available yet.</h2>
+          <p aria-live="polite" role="status">No local project is available yet.</p>
           <p>Create or open a local project before asking Morrow to begin work.</p>
         </Surface>
       ) : null}
       {missions.isError ? <p role="alert">Missions could not be loaded.</p> : null}
       {attention.length > 0 ? (
-        <MissionSection heading="Needs your attention" missions={attention} />
+        <MissionSection
+          heading="Needs your attention"
+          headingId="home-attention-heading"
+          missions={attention}
+        />
       ) : null}
       {active.length > 0 ? (
-        <MissionSection heading="Active missions" missions={active} />
+        <MissionSection
+          heading="Active missions"
+          headingId="home-active-heading"
+          missions={active}
+        />
       ) : null}
       {results.length > 0 ? (
-        <MissionSection heading="Recent results" missions={results} />
+        <MissionSection
+          heading="Recent results"
+          headingId="home-results-heading"
+          missions={results}
+        />
       ) : null}
       {missions.isSuccess && missions.data.length === 0 ? (
         <Surface padding="large">
@@ -74,9 +91,11 @@ export function HomePage() {
 
 function MissionSection({
   heading,
+  headingId,
   missions,
 }: {
   heading: string;
+  headingId: string;
   missions: Array<{
     currentPhase: string;
     id: string;
@@ -85,8 +104,8 @@ function MissionSection({
   }>;
 }) {
   return (
-    <section aria-labelledby={`${heading}-heading`}>
-      <h2 id={`${heading}-heading`}>{heading}</h2>
+    <section aria-labelledby={headingId}>
+      <h2 id={headingId}>{heading}</h2>
       <div>
         {missions.map((mission) => (
           <Surface key={mission.id} padding="medium">
