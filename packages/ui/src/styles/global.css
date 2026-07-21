@@ -61,7 +61,7 @@ body {
 }
 
 .morrow-button[data-variant="primary"] {
-  color: #ffffff;
+  color: var(--morrow-on-accent);
   background: var(--morrow-accent);
 }
 
@@ -184,6 +184,17 @@ body {
 
 .morrow-error-card__preserved {
   font-weight: 650;
+}
+
+.morrow-error-card__actions,
+.morrow-error-card__alternative-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-error-card__actions {
+  align-items: center;
 }
 
 .morrow-error-card ul {

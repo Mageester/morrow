@@ -1,8 +1,8 @@
 import { clsx } from "clsx";
-import { useId, type HTMLAttributes, type ReactNode } from "react";
+import { useId, type ComponentPropsWithRef, type ReactNode } from "react";
 
 export interface ArtifactFrameProps
-  extends Omit<HTMLAttributes<HTMLElement>, "title"> {
+  extends Omit<ComponentPropsWithRef<"section">, "title"> {
   actions?: ReactNode;
   children: ReactNode;
   metadata?: ReactNode;
@@ -14,6 +14,7 @@ export function ArtifactFrame({
   children,
   className,
   metadata,
+  ref,
   title,
   ...props
 }: ArtifactFrameProps) {
@@ -23,6 +24,7 @@ export function ArtifactFrame({
     <section
       aria-labelledby={titleId}
       className={clsx("morrow-artifact-frame", className)}
+      ref={ref}
       {...props}
     >
       <header className="morrow-artifact-frame__header">

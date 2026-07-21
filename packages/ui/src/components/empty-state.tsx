@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { useId, type HTMLAttributes, type ReactNode } from "react";
+import { useId, type ComponentPropsWithRef, type ReactNode } from "react";
 
 import { Button } from "./button.js";
 
@@ -9,7 +9,7 @@ export interface EmptyStateAction {
 }
 
 export interface EmptyStateProps
-  extends Omit<HTMLAttributes<HTMLElement>, "title"> {
+  extends Omit<ComponentPropsWithRef<"section">, "title"> {
   action?: EmptyStateAction;
   description: ReactNode;
   title: ReactNode;
@@ -19,6 +19,7 @@ export function EmptyState({
   action,
   className,
   description,
+  ref,
   title,
   ...props
 }: EmptyStateProps) {
@@ -28,6 +29,7 @@ export function EmptyState({
     <section
       aria-labelledby={titleId}
       className={clsx("morrow-empty-state", className)}
+      ref={ref}
       {...props}
     >
       <h2 id={titleId}>{title}</h2>

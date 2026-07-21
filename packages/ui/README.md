@@ -19,3 +19,11 @@ product colors. Ordinary React element props are forwarded where appropriate.
 
 Set `data-theme="dark"` on a common application ancestor to enable the optional
 global dark theme. Individual components do not own theme state.
+
+Every exported component accepts a ref to its root element. `Button` also
+forwards refs through `asChild`, so composed links and other focusable controls
+remain directly focusable by consumers.
+
+`ErrorCard` requires explicit `continuation` content describing what happens
+next. Its `recommendedAction` is the primary recovery control, while optional
+`alternativeActions` render as a labelled group of secondary controls.

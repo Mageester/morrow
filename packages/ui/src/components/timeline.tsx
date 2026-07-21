@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import type { HTMLAttributes, ReactNode } from "react";
+import type { ComponentPropsWithRef, ReactNode } from "react";
 
 export interface TimelineItem {
   description?: ReactNode;
@@ -9,7 +9,7 @@ export interface TimelineItem {
   title: ReactNode;
 }
 
-export interface TimelineProps extends HTMLAttributes<HTMLOListElement> {
+export interface TimelineProps extends ComponentPropsWithRef<"ol"> {
   items: readonly TimelineItem[];
   label: string;
 }
@@ -18,12 +18,14 @@ export function Timeline({
   className,
   items,
   label,
+  ref,
   ...props
 }: TimelineProps) {
   return (
     <ol
       aria-label={label}
       className={clsx("morrow-timeline", className)}
+      ref={ref}
       {...props}
     >
       {items.map((item) => (

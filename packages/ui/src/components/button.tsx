@@ -1,30 +1,57 @@
 import { Slot } from "@radix-ui/react-slot";
 import { clsx } from "clsx";
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentPropsWithRef, Ref } from "react";
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  asChild?: boolean;
+interface ButtonOwnProps {
   size?: "default" | "compact";
   variant?: "primary" | "secondary" | "ghost" | "danger";
 }
 
-export function Button({
-  asChild = false,
-  className,
-  size = "default",
-  type,
-  variant = "primary",
-  ...props
-}: ButtonProps) {
-  const Component = asChild ? Slot : "button";
+type NativeButtonProps = Omit<
+  ComponentPropsWithRef<"button">,
+  keyof ButtonOwnProps | "asChild"
+> & {
+  asChild?: false;
+};
+
+type ComposedButtonProps = Omit<
+  ComponentPropsWithRef<"button">,
+  keyof ButtonOwnProps | "asChild" | "ref"
+> & {
+  asChild: true;
+  ref?: Ref<HTMLElement>;
+};
+
+export type ButtonProps = ButtonOwnProps &
+  (NativeButtonProps | ComposedButtonProps);
+
+export function Button(props: ButtonProps) {
+  const {
+    asChild = false,
+    className,
+    ref,
+    size = "default",
+    type,
+    variant = "primary",
+    ...elementProps
+  } = props;
+
+  const sharedProps = {
+    className: clsx("morrow-button", className),
+    "data-size": size,
+    "data-variant": variant,
+    ...elementProps,
+  };
+
+  if (asChild) {
+    return <Slot {...sharedProps} ref={ref as Ref<HTMLElement>} />;
+  }
 
   return (
-    <Component
-      className={clsx("morrow-button", className)}
-      data-size={size}
-      data-variant={variant}
-      type={asChild ? undefined : (type ?? "button")}
-      {...props}
+    <button
+      {...sharedProps}
+      ref={ref as Ref<HTMLButtonElement>}
+      type={type ?? "button"}
     />
   );
 }

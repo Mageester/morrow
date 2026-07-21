@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { useId, type HTMLAttributes, type ReactNode } from "react";
+import { useId, type ComponentPropsWithRef, type ReactNode } from "react";
 
 import { Button } from "./button.js";
 
@@ -9,8 +9,10 @@ export interface ErrorCardAction {
 }
 
 export interface ErrorCardProps
-  extends Omit<HTMLAttributes<HTMLElement>, "title"> {
+  extends Omit<ComponentPropsWithRef<"section">, "title"> {
+  alternativeActions?: readonly ErrorCardAction[];
   attempted: readonly string[];
+  continuation: ReactNode;
   explanation: ReactNode;
   preservedMessage?: ReactNode;
   recommendedAction: ErrorCardAction;
@@ -18,11 +20,14 @@ export interface ErrorCardProps
 }
 
 export function ErrorCard({
+  alternativeActions = [],
   attempted,
   className,
+  continuation,
   explanation,
   preservedMessage = "Your work is preserved.",
   recommendedAction,
+  ref,
   title,
   ...props
 }: ErrorCardProps) {
@@ -32,6 +37,7 @@ export function ErrorCard({
     <section
       aria-labelledby={titleId}
       className={clsx("morrow-error-card", className)}
+      ref={ref}
       role="alert"
       {...props}
     >
@@ -48,9 +54,32 @@ export function ErrorCard({
           </ul>
         </div>
       ) : null}
-      <Button onClick={recommendedAction.onClick} variant="primary">
-        {recommendedAction.label}
-      </Button>
+      <div className="morrow-error-card__continuation">
+        <h3>What happens next</h3>
+        <div>{continuation}</div>
+      </div>
+      <div className="morrow-error-card__actions">
+        <Button onClick={recommendedAction.onClick} variant="primary">
+          {recommendedAction.label}
+        </Button>
+        {alternativeActions.length > 0 ? (
+          <div
+            aria-label="Alternative actions"
+            className="morrow-error-card__alternative-actions"
+            role="group"
+          >
+            {alternativeActions.map((action) => (
+              <Button
+                key={action.label}
+                onClick={action.onClick}
+                variant="secondary"
+              >
+                {action.label}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

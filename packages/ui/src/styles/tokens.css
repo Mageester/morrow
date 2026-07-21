@@ -8,6 +8,7 @@
   --morrow-border: #e7e4de;
   --morrow-accent: #6558d9;
   --morrow-accent-hover: #574ac8;
+  --morrow-on-accent: #ffffff;
   --morrow-success: #247a52;
   --morrow-warning: #9a6514;
   --morrow-danger: #b43a3a;
@@ -36,4 +37,5 @@
   --morrow-border: #373632;
   --morrow-accent: #8b7ff0;
   --morrow-accent-hover: #9b91f5;
+  --morrow-on-accent: #181817;
 }

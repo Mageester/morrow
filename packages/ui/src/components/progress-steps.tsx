@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import type { HTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
 
 export interface ProgressStep {
   id: string;
@@ -7,7 +7,7 @@ export interface ProgressStep {
   status: "complete" | "current" | "upcoming";
 }
 
-export interface ProgressStepsProps extends HTMLAttributes<HTMLOListElement> {
+export interface ProgressStepsProps extends ComponentPropsWithRef<"ol"> {
   label: string;
   steps: readonly ProgressStep[];
 }
@@ -21,6 +21,7 @@ const statusLabels: Record<ProgressStep["status"], string> = {
 export function ProgressSteps({
   className,
   label,
+  ref,
   steps,
   ...props
 }: ProgressStepsProps) {
@@ -28,6 +29,7 @@ export function ProgressSteps({
     <ol
       aria-label={label}
       className={clsx("morrow-progress-steps", className)}
+      ref={ref}
       {...props}
     >
       {steps.map((step) => (

@@ -122,10 +122,9 @@ emitted the ignored JavaScript/declaration build output.
 
 - Task 5 does not provide form inputs, dialogs, navigation, or product-specific
   compositions; those remain future consumers/foundations.
-- The component tests verify semantics and prop behavior in jsdom. Automated
-  browser accessibility scanning, computed contrast checks, responsive visual
-  regression, and focus restoration for future dialogs remain later release
-  gates.
+- The component tests verify semantics, ref behavior, and token contrast in
+  jsdom. Automated browser accessibility scanning, responsive visual regression,
+  and focus restoration for future dialogs remain later release gates.
 - Consumers must import `@morrow/ui/styles.css` once and own the global
   `data-theme` state.
 
@@ -135,3 +134,82 @@ Revert the focused Task 5 commit. That removes `packages/ui` implementation and
 its lockfile importer/dependency resolutions while restoring the original UI
 README. No migration, persisted data, external service, or cleanup action is
 required.
+
+## Review-fix evidence
+
+### RED
+
+Added public-entry tests for the complete error contract, primary-button token
+contrast in both themes, native and `asChild` button refs/focus, and root refs
+for every exported primitive before changing production code.
+
+```powershell
+pnpm --filter @morrow/ui test
+```
+
+Observed exit code `1`: Vitest ran 13 tests, with 10 passing and three expected
+failures. The missing ErrorCard continuation was not rendered, and the light and
+dark theme assertions both reported the missing `--morrow-on-accent` token.
+
+```powershell
+pnpm --filter @morrow/ui check
+```
+
+Observed exit code `2`: TypeScript reported ten expected public-contract errors.
+`continuation` and `alternativeActions` were absent from `ErrorCardProps`, and
+`ref` was absent from each exported component prop type, including both Button
+composition cases.
+
+### GREEN
+
+The minimum implementation introduced a theme-aware `--morrow-on-accent` token,
+made the primary button consume it, expanded ErrorCard with required continuation
+content and optional labelled alternative actions, and made all eight public
+component roots React 19 ref-aware. `Button asChild` accepts and forwards the
+composed element ref through Radix Slot.
+
+The automated WCAG calculation now proves these primary-button contrast ratios:
+
+- light normal `5.31:1`, light hover `6.52:1`;
+- dark normal `5.41:1`, dark hover `6.57:1`.
+
+An intermediate GREEN run completed with exit code `0`: Vitest passed `13/13`
+tests and `tsc -p tsconfig.json` completed without diagnostics.
+
+### Review-fix final verification
+
+Fresh commands after all review fixes and documentation changes:
+
+```powershell
+pnpm --filter @morrow/ui test
+pnpm --filter @morrow/ui check
+pnpm --filter @morrow/ui build
+git diff --check
+```
+
+All four commands completed with exit code `0`. Vitest `4.1.9` passed one test
+file and `13/13` tests; both TypeScript commands completed without diagnostics;
+`git diff --check` produced no output.
+
+### Review-fix accessibility, privacy, and security impact
+
+- Primary actions now use semantic foreground/background tokens that meet WCAG
+  AA for normal text in light and dark themes, including hover state.
+- Error recovery communicates the continuation outcome and exposes alternatives
+  in a named semantic group without weakening the single recommended action.
+- Root refs and composed-button refs enable consumer focus management without
+  DOM queries or private implementation access.
+- No network calls, storage, telemetry, analytics, secrets, personal data, model
+  requests, permissions, or runtime security boundaries were added or changed.
+
+### Review-fix limitations and rollback
+
+Token tests calculate WCAG contrast from the literal six-digit hex theme values;
+browser-level visual and accessibility regression remains a later application
+gate. Error actions intentionally retain the narrow label/callback structure and
+do not add product-specific navigation behavior.
+
+Rollback by reverting commit `fix(ui): meet accessibility and composition
+contracts`. The revert restores the prior tokens and component APIs; consumers
+using the new required ErrorCard continuation prop or public refs must be reverted
+with it. There is no persisted-data or external-service cleanup.

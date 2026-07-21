@@ -1,7 +1,7 @@
 import { clsx } from "clsx";
-import type { HTMLAttributes } from "react";
+import type { ComponentPropsWithRef } from "react";
 
-export interface SurfaceProps extends HTMLAttributes<HTMLDivElement> {
+export interface SurfaceProps extends ComponentPropsWithRef<"div"> {
   padding?: "none" | "small" | "medium" | "large";
   variant?: "default" | "subtle" | "raised";
 }
@@ -11,6 +11,7 @@ export function Surface({
   "aria-labelledby": ariaLabelledBy,
   className,
   padding = "medium",
+  ref,
   role,
   variant = "default",
   ...props
@@ -22,6 +23,7 @@ export function Surface({
       className={clsx("morrow-surface", className)}
       data-padding={padding}
       data-variant={variant}
+      ref={ref}
       role={role ?? (ariaLabel || ariaLabelledBy ? "region" : undefined)}
       {...props}
     />
