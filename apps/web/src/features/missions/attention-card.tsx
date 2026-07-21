@@ -5,7 +5,11 @@ import {
   type WebMissionSnapshot,
 } from "@morrow/contracts";
 import { Button } from "@morrow/ui";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import {
   createContext,
   useCallback,
@@ -15,6 +19,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -34,11 +39,72 @@ const kindLabels: Record<WebAttentionRequest["kind"], string> = {
 
 type WebAttentionChoice = WebAttentionRequest["choices"][number];
 
+interface MissionCacheGeneration {
+  dataUpdateCount: number;
+  query: object | undefined;
+}
+
+interface AttentionResolutionOperation {
+  attentionId: string;
+  cacheGeneration: MissionCacheGeneration;
+  generation: number;
+}
+
+interface MissionResolutionState {
+  active: AttentionResolutionOperation | null;
+  listeners: Set<() => void>;
+  nextGeneration: number;
+}
+
+const resolutionStates = new WeakMap<
+  QueryClient,
+  Map<string, MissionResolutionState>
+>();
+
+function missionResolutionState(
+  queryClient: QueryClient,
+  missionId: string,
+): MissionResolutionState {
+  let missions = resolutionStates.get(queryClient);
+  if (!missions) {
+    missions = new Map();
+    resolutionStates.set(queryClient, missions);
+  }
+  let state = missions.get(missionId);
+  if (!state) {
+    state = { active: null, listeners: new Set(), nextGeneration: 0 };
+    missions.set(missionId, state);
+  }
+  return state;
+}
+
+function missionCacheGeneration(
+  queryClient: QueryClient,
+  missionId: string,
+): MissionCacheGeneration {
+  const query = queryClient.getQueryCache().find({
+    exact: true,
+    queryKey: missionKeys.detail(missionId),
+  });
+  return {
+    dataUpdateCount: query?.state.dataUpdateCount ?? 0,
+    query,
+  };
+}
+
+function notifyResolutionState(state: MissionResolutionState): void {
+  for (const listener of state.listeners) listener();
+}
+
 interface AttentionResolutionContextValue {
-  acquire: (attentionId: string) => boolean;
+  acquire: (attentionId: string) => AttentionResolutionOperation | null;
   activeAttentionId: string | null;
+  commitSnapshot: (
+    operation: AttentionResolutionOperation,
+    snapshot: WebMissionSnapshot,
+  ) => boolean;
   missionId: string;
-  release: (attentionId: string) => void;
+  release: (operation: AttentionResolutionOperation) => void;
 }
 
 const AttentionResolutionContext =
@@ -51,27 +117,78 @@ export function AttentionResolutionCoordinator({
   children: ReactNode;
   missionId: string;
 }) {
-  const activeAttentionRef = useRef<string | null>(null);
-  const [activeAttentionId, setActiveAttentionId] = useState<string | null>(
-    null,
+  const queryClient = useQueryClient();
+  const state = useMemo(
+    () => missionResolutionState(queryClient, missionId),
+    [missionId, queryClient],
+  );
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      state.listeners.add(listener);
+      return () => state.listeners.delete(listener);
+    },
+    [state],
+  );
+  const getSnapshot = useCallback(() => state.active, [state]);
+  const activeOperation = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot,
   );
 
   const acquire = useCallback((attentionId: string) => {
-    if (activeAttentionRef.current !== null) return false;
-    activeAttentionRef.current = attentionId;
-    setActiveAttentionId(attentionId);
-    return true;
-  }, []);
+    if (state.active !== null) return null;
+    state.nextGeneration += 1;
+    const operation = {
+      attentionId,
+      cacheGeneration: missionCacheGeneration(queryClient, missionId),
+      generation: state.nextGeneration,
+    };
+    state.active = operation;
+    notifyResolutionState(state);
+    return operation;
+  }, [missionId, queryClient, state]);
 
-  const release = useCallback((attentionId: string) => {
-    if (activeAttentionRef.current !== attentionId) return;
-    activeAttentionRef.current = null;
-    setActiveAttentionId(null);
-  }, []);
+  const commitSnapshot = useCallback(
+    (
+      operation: AttentionResolutionOperation,
+      snapshot: WebMissionSnapshot,
+    ) => {
+      if (state.active?.generation !== operation.generation) return false;
+      const current = missionCacheGeneration(queryClient, missionId);
+      if (
+        current.query !== operation.cacheGeneration.query ||
+        current.dataUpdateCount !== operation.cacheGeneration.dataUpdateCount
+      ) {
+        return false;
+      }
+      queryClient.setQueryData<WebMissionSnapshot>(
+        missionKeys.detail(missionId),
+        snapshot,
+      );
+      return true;
+    },
+    [missionId, queryClient, state],
+  );
+
+  const release = useCallback(
+    (operation: AttentionResolutionOperation) => {
+      if (state.active?.generation !== operation.generation) return;
+      state.active = null;
+      notifyResolutionState(state);
+    },
+    [state],
+  );
 
   const value = useMemo(
-    () => ({ acquire, activeAttentionId, missionId, release }),
-    [acquire, activeAttentionId, missionId, release],
+    () => ({
+      acquire,
+      activeAttentionId: activeOperation?.attentionId ?? null,
+      commitSnapshot,
+      missionId,
+      release,
+    }),
+    [acquire, activeOperation, commitSnapshot, missionId, release],
   );
 
   return (
@@ -89,25 +206,6 @@ function useAttentionResolution(missionId: string) {
     );
   }
   return coordinator;
-}
-
-function isNewerSnapshot(
-  current: WebMissionSnapshot | undefined,
-  incoming: WebMissionSnapshot,
-): boolean {
-  if (!current) return false;
-  const currentCursor = Math.max(
-    0,
-    ...current.recentActivity.map((activity) => activity.cursor),
-  );
-  const incomingCursor = Math.max(
-    0,
-    ...incoming.recentActivity.map((activity) => activity.cursor),
-  );
-  if (currentCursor !== incomingCursor) return currentCursor > incomingCursor;
-  return (
-    Date.parse(current.summary.updatedAt) > Date.parse(incoming.summary.updatedAt)
-  );
 }
 
 interface ConfirmationDialogProps {
@@ -200,24 +298,26 @@ export function AttentionCard({
   const noteId = useId();
 
   const mutation = useMutation({
-    mutationFn: (input: ResolveWebAttentionInput) =>
-      resolveMissionAttention(missionId, request.id, input),
-    onError: (_error, input) => {
-      setFailedInput(input);
+    mutationFn: ({ input }: {
+      input: ResolveWebAttentionInput;
+      operation: AttentionResolutionOperation;
+    }) => resolveMissionAttention(missionId, request.id, input),
+    onError: (_error, submission) => {
+      setFailedInput(submission.input);
     },
-    onSuccess: (resolved) => {
+    onSuccess: (resolved, submission) => {
       setFailedInput(null);
       setRefreshError(null);
-      queryClient.setQueryData<WebMissionSnapshot>(
-        missionKeys.detail(missionId),
-        (current) => (isNewerSnapshot(current, resolved) ? current : resolved),
-      );
-      void queryClient.invalidateQueries({ queryKey: missionKeys.all });
+      resolution.commitSnapshot(submission.operation, resolved);
+      void queryClient.invalidateQueries({
+        queryKey: missionKeys.all,
+        refetchType: "none",
+      });
     },
-    onSettled: () => {
+    onSettled: (_resolved, _error, submission) => {
       submissionPending.current = false;
       confirmationSubmitting.current = false;
-      resolution.release(request.id);
+      resolution.release(submission.operation);
     },
   });
 
@@ -238,11 +338,12 @@ export function AttentionCard({
         ...(trimmedNote ? { note: trimmedNote } : {}),
       },
     );
-    if (!resolution.acquire(request.id)) return;
+    const operation = resolution.acquire(request.id);
+    if (!operation) return;
     submissionPending.current = true;
     mutation.reset();
     setRefreshError(null);
-    mutation.mutate(input);
+    mutation.mutate({ input, operation });
   };
 
   const selectChoice = (choice: WebAttentionChoice) => {
@@ -275,27 +376,34 @@ export function AttentionCard({
     if (
       submissionPending.current ||
       refreshPending ||
-      resolution.activeAttentionId !== null ||
-      !resolution.acquire(request.id)
+      resolution.activeAttentionId !== null
     ) {
       return;
     }
+    const operation = resolution.acquire(request.id);
+    if (!operation) return;
     submissionPending.current = true;
     setRefreshPending(true);
     setRefreshError(null);
 
     try {
       const authoritative = await readAuthoritativeMission(missionId);
-      queryClient.setQueryData(
-        missionKeys.detail(missionId),
-        authoritative,
-      );
+      const committed = resolution.commitSnapshot(operation, authoritative);
       await queryClient.invalidateQueries({
         queryKey: missionKeys.all,
         refetchType: "none",
       });
 
-      const pendingRequest = authoritative.attention.find(
+      const effectiveSnapshot = committed
+        ? authoritative
+        : queryClient.getQueryData<WebMissionSnapshot>(
+            missionKeys.detail(missionId),
+          );
+      if (!effectiveSnapshot) {
+        throw new Error("Authoritative mission state changed during refresh.");
+      }
+
+      const pendingRequest = effectiveSnapshot.attention.find(
         (candidate) => candidate.id === request.id,
       );
       mutation.reset();
@@ -317,7 +425,7 @@ export function AttentionCard({
     } finally {
       submissionPending.current = false;
       setRefreshPending(false);
-      resolution.release(request.id);
+      resolution.release(operation);
     }
   };
 

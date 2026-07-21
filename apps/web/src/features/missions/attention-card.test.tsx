@@ -236,7 +236,10 @@ describe("AttentionCard", () => {
         queryClient.getQueryData(missionKeys.detail("mission/42 ?")),
       ).toEqual(resolved);
     });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: missionKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: missionKeys.all,
+      refetchType: "none",
+    });
     view.unmount();
   });
 
@@ -329,6 +332,120 @@ describe("AttentionCard", () => {
       expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
         afterSecond,
       ),
+    );
+  });
+
+  it("keeps an in-flight mission lock across unmount and rejects its late snapshot", async () => {
+    const originalRequest = attention({
+      id: "attention-original",
+      title: "Original approval",
+    });
+    const currentRequest = attention({
+      id: "attention-current",
+      title: "Current approval",
+    });
+    const lateResponse = deferred<Response>();
+    const fetchMock = vi.fn<
+      (_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>
+    >(() => lateResponse.promise);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    queryClient.setQueryData(
+      missionKeys.detail("mission-42"),
+      snapshot(originalRequest),
+    );
+    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+
+    const firstView = render(
+      <QueryClientProvider client={queryClient}>
+        <AttentionResolutionCoordinator missionId="mission-42">
+          <AttentionCard missionId="mission-42" request={originalRequest} />
+        </AttentionResolutionCoordinator>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    firstView.unmount();
+
+    const current = snapshot(currentRequest);
+    current.summary.updatedAt = "2026-07-21T12:00:00.000Z";
+    queryClient.setQueryData(missionKeys.detail("mission-42"), current);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AttentionResolutionCoordinator missionId="mission-42">
+          <AttentionCard missionId="mission-42" request={currentRequest} />
+        </AttentionResolutionCoordinator>
+      </QueryClientProvider>,
+    );
+
+    const currentApprove = screen.getByRole("button", { name: /approve/i });
+    expect(currentApprove).toBeDisabled();
+    fireEvent.click(currentApprove);
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const late = snapshot(null);
+    late.summary.updatedAt = "2026-07-21T14:00:00.000Z";
+    await act(async () => {
+      lateResponse.resolve(Response.json(late));
+      await lateResponse.promise;
+    });
+
+    await waitFor(() => expect(currentApprove).toBeEnabled());
+    expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
+      current,
+    );
+  });
+
+  it("does not let a stale recovery refresh overwrite an intervening mission update", async () => {
+    const originalRequest = attention({ id: "attention-original" });
+    const currentRequest = attention({
+      id: "attention-current",
+      title: "Current approval",
+    });
+    const refreshResponse = deferred<Response>();
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return structuredError(
+            503,
+            "SERVICE_UNAVAILABLE",
+            "The outcome was not confirmed.",
+          );
+        }
+        return refreshResponse.promise;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { queryClient } = renderCard(originalRequest);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /approve/i }));
+    await screen.findByRole("alert");
+    await user.click(
+      screen.getByRole("button", { name: "Refresh mission state" }),
+    );
+    await screen.findByText(/refreshing authoritative mission state/i);
+
+    const current = snapshot(currentRequest);
+    current.summary.updatedAt = "2026-07-21T12:00:00.000Z";
+    queryClient.setQueryData(missionKeys.detail("mission-42"), current);
+    const stale = snapshot(originalRequest);
+    stale.summary.updatedAt = "2026-07-21T14:00:00.000Z";
+    await act(async () => {
+      refreshResponse.resolve(Response.json(stale));
+      await refreshResponse.promise;
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/refreshing authoritative mission state/i),
+      ).not.toBeInTheDocument(),
+    );
+    expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
+      current,
     );
   });
 

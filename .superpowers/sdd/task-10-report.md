@@ -250,3 +250,64 @@ Rollback the review hardening with
 `git revert <fix(web): harden attention and recovery safety commit>`. This
 restores the original Task 10 client behavior without changing server data,
 contracts, or durable attention decisions.
+
+### Review Race Follow-up
+
+The component-local serialization lock still allowed a navigation remount to
+start a second decision while the first request was in flight. Task 10 cache
+writes also relied on server timestamps/activity cursors, which are not a
+client-side ordering guarantee, and the recovery refresh wrote its response
+unconditionally.
+
+The coordinator now stores per-mission state in a `WeakMap` keyed by the
+TanStack `QueryClient`. A monotonic operation generation therefore survives
+provider unmount/remount without leaking beyond that cache lifetime. Each
+operation captures the exact detail-query identity and `dataUpdateCount` at
+start. Its mutation or recovery snapshot is committed only when both still
+match and its generation still owns the mission. Any intervening stream,
+detail, or background cache update wins; Task 10 does not intercept or block
+those writers. Task 10 invalidation uses `refetchType: none`, marking affected
+queries stale without launching another unguarded response race.
+
+TDD RED reproduced both paths:
+
+```text
+pnpm --filter @morrow/web test -- attention-card.test.tsx
+FAIL — 1 file, 2 failed / 13 passed
+       remounted card was enabled during the old POST
+       stale refresh replaced attention-current with attention-original
+```
+
+Focused GREEN after the durable generation/CAS implementation:
+
+```text
+pnpm --filter @morrow/web test -- attention-card.test.tsx
+PASS — 1 file, 15 tests
+```
+
+Fresh full verification for this follow-up:
+
+```text
+pnpm --filter @morrow/web test
+PASS — 11 files, 151 tests
+
+pnpm --filter @morrow/web check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/web build
+PASS — Vite 8.1.3, 2018 modules transformed
+       dist/index.html: 0.50 kB (0.31 kB gzip)
+       JS: 453.35 kB (135.05 kB gzip)
+       CSS: 17.13 kB (3.55 kB gzip)
+```
+
+Security and privacy impact: no new network request, storage, logging, or data
+flow was added. The ordering state contains only mission/attention identifiers
+and in-memory counters scoped to the existing QueryClient. Accessibility
+behavior is unchanged except that a remounted card correctly remains disabled
+while the prior mission decision is unresolved.
+
+Limitation: ordering is local to one QueryClient/browser runtime. Server-side
+idempotency remains the correct future boundary for decisions submitted by
+multiple clients. Roll back this follow-up by reverting its focused commit;
+durable server state and prior Task 10 hardening are unaffected.
