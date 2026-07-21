@@ -54,7 +54,7 @@ No plan-blocking contradictions. Proceed to Task 1.
 | 10. Attention/errors | done | 3bac520 | 3396792 | web 151/151 (attention-card 15/15), check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security/race APPROVED (6 Important fixed over 3 rounds; 0 open; 2 non-blocking minor) |
 | 11. /app serving + packaging | done | ebc9767 | 3886eaa | static 9/9, orch check/build ok, packaging+installer node tests 13/1skip, cli check ok, diff-check ok | APPROVED | APPROVED + security/backward-compat APPROVED (0 crit/imp; 1 non-blocking minor) |
 | 12. E2E/a11y/visual gates | done | 50c5ddf | 48822b9 | web 151/151, check/build ok, Playwright e2e 17/17 twice (fresh re-seed compares baselines) | APPROVED | APPROVED + accessibility/security/honesty APPROVED (0 crit/imp; 1 serious a11y finding fixed; 2 non-blocking minor) |
-| Final review | pending | — | — | — | — | — |
+| Final review | done | 2604256 | 401b844 | contracts 39, ui 14, web 151, repo check 7/7, repo build 6/6, e2e 17/17 (×3), pkg contracts 13/0/1, bundle secret-scan clean; orch 1156/1157 + cli 732/734 = pre-existing flakes only | APPROVED | 0 release blockers; PR left draft, not merged |
 
 Notes:
 - 3 pre-existing orchestrator test failures on base branch (context-management.test.ts, sustained-autonomy.test.ts) — unrelated to web work, verified pre-existing via stash on 7dba7ed. Track at final gate.
