@@ -62,6 +62,9 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
     (milestone) =>
       milestone.state !== "completed" && milestone.state !== "skipped",
   );
+  const skipped = snapshot.milestones.filter(
+    (milestone) => milestone.state === "skipped",
+  );
 
   return (
     <div className="morrow-mission-overview">
@@ -72,7 +75,7 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
 
       <p className="morrow-mission-milestone-count" aria-label="Milestone progress">
         {completed.length} completed · {remaining.length} remaining ·{" "}
-        {snapshot.milestones.length} total
+        {skipped.length} skipped · {snapshot.milestones.length} total
       </p>
 
       {snapshot.milestones.length === 0 ? (
@@ -98,6 +101,12 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) 
               <p>No milestones remain.</p>
             )}
           </Surface>
+          {skipped.length > 0 ? (
+            <Surface padding="large">
+              <h2>Skipped</h2>
+              <MilestoneList milestones={skipped} />
+            </Surface>
+          ) : null}
         </>
       )}
 

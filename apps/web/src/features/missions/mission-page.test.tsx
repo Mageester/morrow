@@ -230,8 +230,41 @@ describe("MissionPage", () => {
     expect(screen.getByText("Running")).toBeVisible();
     expect(screen.getByText("Pending")).toBeVisible();
     expect(screen.getByText("Failed")).toBeVisible();
-    expect(screen.getByText("2 completed · 3 remaining · 5 total")).toBeVisible();
+    expect(
+      screen.getByText("2 completed · 3 remaining · 0 skipped · 5 total"),
+    ).toBeVisible();
     expect(document.body).not.toHaveTextContent(/\d+\s*%|estimated|time remaining/i);
+  });
+
+  it("accounts for skipped milestones separately and reconciles every milestone with the total", async () => {
+    const withSkipped = snapshot();
+    withSkipped.milestones.push({
+      evidenceIds: [],
+      id: "m6",
+      state: "skipped",
+      title: "Publish an obsolete draft",
+    });
+    withSkipped.summary.totalMilestones = 6;
+    installApi(() => json(withSkipped));
+    renderMission();
+
+    expect(
+      await screen.findByText("2 completed · 3 remaining · 1 skipped · 6 total"),
+    ).toBeVisible();
+    const skippedHeading = screen.getByRole("heading", { name: "Skipped" });
+    const skippedSurface = skippedHeading.closest(".morrow-surface");
+    const completedSurface = screen
+      .getByRole("heading", { name: "Completed" })
+      .closest(".morrow-surface");
+    expect(skippedSurface).not.toBeNull();
+    const skippedMilestone = within(skippedSurface as HTMLElement)
+      .getByText("Publish an obsolete draft")
+      .closest("li");
+    expect(skippedMilestone).not.toBeNull();
+    expect(within(skippedMilestone as HTMLElement).getByText("Skipped")).toBeVisible();
+    expect(
+      within(completedSurface as HTMLElement).queryByText("Publish an obsolete draft"),
+    ).not.toBeInTheDocument();
   });
 
   it("provides four keyboard-operable tabs and honest later-slice placeholders", async () => {
@@ -269,6 +302,41 @@ describe("MissionPage", () => {
     expect(
       screen.getByText("Mission work inspection arrives in a later product slice."),
     ).toBeVisible();
+  });
+
+  it("keeps all four controlled tabpanels stable while hiding only inactive panels", async () => {
+    installApi();
+    const user = userEvent.setup();
+    renderMission();
+
+    const tabElements = await screen.findAllByRole("tab");
+    expect(tabElements).toHaveLength(4);
+    for (const tab of tabElements) {
+      const controlledId = tab.getAttribute("aria-controls");
+      expect(controlledId).toBeTruthy();
+      const panel = document.getElementById(controlledId as string);
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveAttribute("role", "tabpanel");
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+      if (tab.getAttribute("aria-selected") === "true") {
+        expect(panel).not.toHaveAttribute("hidden");
+        expect(panel).toBeVisible();
+      } else {
+        expect(panel).toHaveAttribute("hidden");
+        expect(panel).not.toBeVisible();
+      }
+    }
+
+    const overviewPanel = document.getElementById(
+      tabElements[0]?.getAttribute("aria-controls") ?? "",
+    );
+    const activityPanel = document.getElementById(
+      tabElements[1]?.getAttribute("aria-controls") ?? "",
+    );
+    await user.click(tabElements[1] as HTMLElement);
+    expect(overviewPanel).toHaveAttribute("hidden");
+    expect(activityPanel).not.toHaveAttribute("hidden");
+    expect(activityPanel).toBeVisible();
   });
 
   it("keeps activity collapsed and exposes only allowed technical metadata", async () => {
@@ -372,6 +440,56 @@ describe("MissionPage", () => {
     expect(error).toHaveTextContent("Mission could not be loaded");
     expect(error).toHaveTextContent("The local runtime is unavailable.");
     expect(error).not.toHaveTextContent("restarted");
+  });
+
+  it("retains synchronized mission data and the live stream when a background refetch fails", async () => {
+    let missionRequests = 0;
+    installApi(() => {
+      missionRequests += 1;
+      if (missionRequests === 2) {
+        return json(
+          {
+            error: {
+              code: "RUNTIME_UNAVAILABLE",
+              message: "The local runtime is unavailable.",
+            },
+            version: 1,
+          },
+          503,
+        );
+      }
+      return json(snapshot());
+    });
+    const user = userEvent.setup();
+    renderMission();
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
+    ).toBeVisible();
+    const source = FakeEventSource.instances[0];
+    act(() => source?.emit("open"));
+    act(() => source?.emit("mission.updated", streamEnvelope(1)));
+
+    const warning = await screen.findByRole("status", {
+      name: "Mission synchronization warning",
+    });
+    expect(warning).toHaveTextContent("Mission updates could not be synchronized.");
+    expect(warning).toHaveTextContent("The local runtime is unavailable.");
+    expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(source?.closed).toBe(false);
+    expect(screen.getByText("Synchronized")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Retry synchronization" }));
+    await waitFor(() => expect(missionRequests).toBe(3));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("status", { name: "Mission synchronization warning" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(source?.closed).toBe(false);
   });
 
   it("announces only meaningful synchronized state and activity changes, not heartbeat/default messages", async () => {

@@ -1,5 +1,5 @@
 import type { WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
-import { ErrorCard, Surface } from "@morrow/ui";
+import { Button, ErrorCard, Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import {
@@ -73,7 +73,50 @@ function MissionPlaceholder({ tab }: { tab: "Work" | "Result" }) {
   );
 }
 
-function MissionWorkspace({ snapshot }: { snapshot: WebMissionSnapshot }) {
+function MissionSynchronizationWarning({
+  error,
+  retry,
+}: {
+  error: unknown;
+  retry: () => void;
+}) {
+  return (
+    <Surface
+      aria-atomic="true"
+      aria-label="Mission synchronization warning"
+      aria-live="polite"
+      className="morrow-mission-sync-warning"
+      padding="medium"
+      role="status"
+      variant="subtle"
+    >
+      <div>
+        <h2>Mission updates could not be synchronized.</h2>
+        <p>
+          {error instanceof ApiClientError
+            ? error.message
+            : "The latest mission state could not be loaded."}{" "}
+          Showing the last synchronized state.
+        </p>
+      </div>
+      <Button onClick={retry} variant="secondary">
+        Retry synchronization
+      </Button>
+    </Surface>
+  );
+}
+
+interface MissionWorkspaceProps {
+  retrySynchronization: () => void;
+  snapshot: WebMissionSnapshot;
+  synchronizationError: unknown | null;
+}
+
+function MissionWorkspace({
+  retrySynchronization,
+  snapshot,
+  synchronizationError,
+}: MissionWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<MissionTab>("Overview");
   const [announcement, setAnnouncement] = useState("");
   const tabIdPrefix = useId();
@@ -171,6 +214,13 @@ function MissionWorkspace({ snapshot }: { snapshot: WebMissionSnapshot }) {
         {announcement}
       </p>
 
+      {synchronizationError ? (
+        <MissionSynchronizationWarning
+          error={synchronizationError}
+          retry={retrySynchronization}
+        />
+      ) : null}
+
       <div aria-label="Mission views" className="morrow-mission-tabs" role="tablist">
         {tabs.map((tab, index) => {
           const selected = tab === activeTab;
@@ -195,20 +245,28 @@ function MissionWorkspace({ snapshot }: { snapshot: WebMissionSnapshot }) {
         })}
       </div>
 
-      <div
-        aria-labelledby={`${tabIdPrefix}-tab-${activeTab.toLowerCase()}`}
-        id={`${tabIdPrefix}-panel-${activeTab.toLowerCase()}`}
-        role="tabpanel"
-        tabIndex={0}
-      >
-        {activeTab === "Overview" ? <MissionOverview snapshot={snapshot} /> : null}
-        {activeTab === "Activity" ? (
-          <MissionActivity activity={snapshot.recentActivity} />
-        ) : null}
-        {activeTab === "Work" || activeTab === "Result" ? (
-          <MissionPlaceholder tab={activeTab} />
-        ) : null}
-      </div>
+      {tabs.map((tab) => {
+        const selected = tab === activeTab;
+        return (
+          <div
+            aria-labelledby={`${tabIdPrefix}-tab-${tab.toLowerCase()}`}
+            className="morrow-mission-panel"
+            hidden={!selected}
+            id={`${tabIdPrefix}-panel-${tab.toLowerCase()}`}
+            key={tab}
+            role="tabpanel"
+            tabIndex={selected ? 0 : -1}
+          >
+            {tab === "Overview" ? <MissionOverview snapshot={snapshot} /> : null}
+            {tab === "Activity" ? (
+              <MissionActivity activity={snapshot.recentActivity} />
+            ) : null}
+            {tab === "Work" || tab === "Result" ? (
+              <MissionPlaceholder tab={tab} />
+            ) : null}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -236,7 +294,7 @@ export function MissionPage() {
     );
   }
 
-  if (mission.isError) {
+  if (mission.isError && !mission.data) {
     return (
       <MissionLoadError
         error={mission.error}
@@ -247,5 +305,13 @@ export function MissionPage() {
     );
   }
 
-  return <MissionWorkspace snapshot={mission.data} />;
+  return (
+    <MissionWorkspace
+      retrySynchronization={() => {
+        void mission.refetch();
+      }}
+      snapshot={mission.data}
+      synchronizationError={mission.isError ? mission.error : null}
+    />
+  );
 }

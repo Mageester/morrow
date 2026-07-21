@@ -255,6 +255,22 @@ a {
   border-bottom-color: var(--morrow-accent);
 }
 
+.morrow-mission-panel[hidden] {
+  display: none;
+}
+
+.morrow-mission-sync-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-4);
+  border-color: var(--morrow-warning);
+}
+
+.morrow-mission-sync-warning h2 {
+  font-size: 1rem;
+}
+
 .morrow-mission-overview {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -410,6 +426,11 @@ a {
 
   .morrow-mission-header__status {
     justify-content: flex-start;
+  }
+
+  .morrow-mission-sync-warning {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .morrow-mission-overview {

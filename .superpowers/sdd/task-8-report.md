@@ -189,3 +189,121 @@ Task 6 mission placeholder and removes only the browser stream hook, Task 8
 mission components/tests/styles, and this report. The server stream, contracts,
 shared UI package, orchestrator state, persisted mission data, and lockfile are
 unchanged.
+
+---
+
+## Important Review Fix Pass
+
+Date: 2026-07-21
+
+### Review-Fix Scope
+
+- A failed background snapshot refetch no longer replaces a cached mission with
+  the blocking initial-load error. The last synchronized workspace remains
+  rendered, its existing EventSource remains mounted, and a non-blocking polite
+  synchronization warning exposes a retry.
+- Skipped milestones are now neither hidden nor counted as completed. They have
+  a separate visible bucket and state label, and the displayed completed,
+  remaining, skipped, and total counts reconcile.
+- All four tabpanels now remain in the DOM with stable IDs matching each tab's
+  `aria-controls`. Only the selected panel is visible; inactive panels use the
+  native `hidden` state while preserving `aria-labelledby` relationships.
+
+### Review-Fix RED Evidence
+
+Tests for all three Important findings were added before production changes.
+
+```powershell
+pnpm --filter @morrow/web test -- mission-page.test.tsx mission-stream.test.ts
+```
+
+Observed result:
+
+- exit code `1`;
+- 1 test file failed and 1 passed;
+- 3 tests failed and 12 passed;
+- skipped-milestone count/bucket was absent;
+- three inactive tabs controlled IDs with no corresponding panel;
+- a failed invalidation refetch replaced the cached workspace with the blocking
+  ErrorCard and unmounted the live stream.
+
+These were the intended behavior failures from the review findings.
+
+### Review-Fix GREEN Evidence
+
+```text
+pnpm --filter @morrow/web test -- mission-page.test.tsx mission-stream.test.ts
+PASS — 2 files, 15 tests
+```
+
+The new regressions prove that:
+
+- initial success followed by SSE invalidation and a typed 503 retains the
+  mission objective, shows no blocking alert, preserves the same open
+  EventSource instance, provides `Retry synchronization`, and clears the
+  warning after a successful authoritative retry;
+- a skipped milestone appears only in the Skipped bucket with a Skipped state,
+  and `2 completed + 3 remaining + 1 skipped` reconciles to `6 total`;
+- every tab's `aria-controls` resolves to a stable `tabpanel`, every panel points
+  back through `aria-labelledby`, the selected panel is visible, and all
+  inactive panels are hidden;
+- the original arrow, Home/End, click, overview, activity, stream, privacy, and
+  error tests remain green.
+
+### Review-Fix Accessibility Impact
+
+- Background synchronization failure uses `role="status"`,
+  `aria-live="polite"`, and `aria-atomic="true"` rather than an assertive
+  blocking alert. Its visible text explains that the last synchronized state is
+  shown, and its retry is a native keyboard-operable button.
+- Cached content and the user's selected tab do not disappear during a
+  background transport/API failure.
+- Tabs now satisfy the complete `tab -> aria-controls -> tabpanel ->
+  aria-labelledby -> tab` relationship for all four views at all times.
+  Inactive content is excluded from interaction and the accessibility tree by
+  the native `hidden` attribute.
+- Skipped is conveyed in visible text and a dedicated list, not by color or by
+  omission, and is never announced or presented as completed work.
+
+### Review-Fix Privacy and Security Impact
+
+- The warning renders only the existing typed safe API message; it does not
+  expose a response body, stream payload, trace internals, or cached private
+  detail.
+- Preserving the stream does not create an additional source or timer. The same
+  mission-scoped source and cursor continue while the authoritative query retry
+  is user-controlled.
+- No storage, authentication, permissions, external data flow, telemetry,
+  contracts, orchestrator, or shared UI boundary changed.
+
+### Review-Fix Final Verification
+
+```text
+pnpm --filter @morrow/web test -- mission-page.test.tsx mission-stream.test.ts
+PASS — 2 files, 15 tests
+
+pnpm --filter @morrow/web test
+PASS — 6 files, 56 tests
+
+pnpm --filter @morrow/web check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/web build
+PASS — Vite 8.1.3, 2012 modules transformed, built in 2.14s
+       dist/index.html: 0.50 kB (0.31 kB gzip)
+       JS: 433.83 kB (129.79 kB gzip)
+       CSS: 13.73 kB (3.01 kB gzip)
+
+Test-Path apps/web/dist/index.html
+PASS — True
+
+git diff --cached --check 425944e2f324da305031888e68b71bfef507f84e
+PASS — no whitespace errors across the complete staged Task 8 range
+```
+
+### Review-Fix Limitations and Rollback
+
+- The warning remains visible during an explicit retry until a successful
+  snapshot replaces the query error; React Query still deduplicates the request.
+- Revert `fix(web): preserve mission state and tab semantics` to remove only
+  this review-fix pass while retaining the original Task 8 implementation.
