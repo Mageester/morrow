@@ -1,5 +1,5 @@
 import { StatusPill } from "@morrow/ui";
-import { Link, Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
   BookOpen,
   Bot,
@@ -11,6 +11,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 
 interface NavigationItem {
@@ -51,6 +52,29 @@ const runtimeVariants = {
   online: "success",
 } as const;
 
+function getRouteTitle(pathname: string): string {
+  const normalizedPath = pathname.replace(/\/+$/, "") || "/";
+  const routePath = normalizedPath.startsWith("/app")
+    ? normalizedPath.slice("/app".length) || "/"
+    : normalizedPath;
+
+  if (/^\/missions\/[^/]+$/.test(routePath)) {
+    return "Mission workspace";
+  }
+
+  const routeTitles: Record<string, string> = {
+    "/": "Home",
+    "/automations": "Automations",
+    "/connections": "Connections",
+    "/library": "Library",
+    "/missions": "Missions",
+    "/settings": "Settings",
+    "/workspace": "Workspace",
+  };
+
+  return routeTitles[routePath] ?? "Morrow";
+}
+
 function NavigationLink({ icon: Icon, label, to }: NavigationItem) {
   return (
     <Link
@@ -67,6 +91,20 @@ function NavigationLink({ icon: Icon, label, to }: NavigationItem) {
 
 export function AppShell() {
   const { status } = useRuntimeStatus();
+  const pathname = useRouterState({
+    select: (routerState) => routerState.location.pathname,
+  });
+  const mainRef = useRef<HTMLElement>(null);
+  const previousPathname = useRef(pathname);
+
+  useEffect(() => {
+    document.title = `${getRouteTitle(pathname)} · Morrow`;
+
+    if (previousPathname.current !== pathname) {
+      mainRef.current?.focus();
+    }
+    previousPathname.current = pathname;
+  }, [pathname]);
 
   return (
     <div className="morrow-app-shell">
@@ -109,7 +147,12 @@ export function AppShell() {
         </div>
       </aside>
 
-      <main className="morrow-main" id="main-content" tabIndex={-1}>
+      <main
+        className="morrow-main"
+        id="main-content"
+        ref={mainRef}
+        tabIndex={-1}
+      >
         <Outlet />
       </main>
     </div>

@@ -5,7 +5,7 @@ import {
   createMemoryHistory,
   type AnyRouter,
 } from "@tanstack/react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "./providers.js";
 import { createAppRouter } from "./router.js";
 
@@ -47,7 +47,12 @@ describe("Morrow application shell", () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.theme;
+    document.title = "Morrow";
     vi.stubGlobal("fetch", vi.fn(async () => healthyResponse()));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("renders all seven approved navigation labels in order", async () => {
@@ -72,6 +77,26 @@ describe("Morrow application shell", () => {
     expect(screen.getByRole("link", { name: "Home" })).not.toHaveAttribute(
       "aria-current",
     );
+  });
+
+  it("updates the title and focuses main content after client navigation", async () => {
+    const user = userEvent.setup();
+    renderAt("/app/");
+
+    expect(await screen.findByRole("heading", { name: "Home" })).toBeVisible();
+    const main = screen.getByRole("main");
+    expect(document.title).toBe("Home · Morrow");
+    expect(main).not.toHaveFocus();
+
+    await user.click(screen.getByRole("link", { name: "Missions" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Missions", level: 1 }),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(document.title).toBe("Missions · Morrow");
+      expect(main).toHaveFocus();
+    });
   });
 
   it.each([
@@ -103,14 +128,17 @@ describe("Morrow application shell", () => {
     await waitFor(() => {
       expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     });
-    await user.click(
-      await screen.findByRole("button", { name: "Use light theme" }),
-    );
+    const themeToggle = await screen.findByRole("button", {
+      name: "Dark theme",
+    });
+    expect(themeToggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(themeToggle);
 
     await waitFor(() => {
       expect(document.documentElement).toHaveAttribute("data-theme", "light");
     });
     expect(localStorage.getItem("morrow-theme")).toBe("light");
+    expect(themeToggle).toHaveAttribute("aria-pressed", "false");
     expect(setItem.mock.calls.every(([key]) => key === "morrow-theme")).toBe(
       true,
     );
@@ -119,6 +147,35 @@ describe("Morrow application shell", () => {
         localStorage.key(index),
       ),
     ).toEqual(["morrow-theme"]);
+  });
+
+  it("uses stable pressed semantics for the dark theme preference", async () => {
+    const user = userEvent.setup();
+    renderAt("/app/settings");
+
+    const themeToggle = await screen.findByRole("button", {
+      name: "Dark theme",
+    });
+    expect(themeToggle).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(themeToggle);
+
+    expect(themeToggle).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  });
+
+  it("normalizes an invalid stored theme to the light preference", async () => {
+    localStorage.setItem("morrow-theme", "sepia");
+
+    renderAt("/app/settings");
+
+    expect(
+      await screen.findByRole("button", { name: "Dark theme" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => {
+      expect(document.documentElement).toHaveAttribute("data-theme", "light");
+      expect(localStorage.getItem("morrow-theme")).toBe("light");
+    });
   });
 
   it("reports the local runtime health in the application shell", async () => {

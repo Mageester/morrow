@@ -79,6 +79,41 @@ describe("typed API client", () => {
     });
   });
 
+  it("maps a non-JSON failure to the safe fallback error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("Service unavailable", {
+          headers: { "x-trace-id": "trace-fallback" },
+          status: 503,
+        }),
+      ),
+    );
+
+    const error = await api
+      .get("/api/example", resultSchema)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiClientError);
+    expect(error).toMatchObject({
+      code: "HTTP_ERROR",
+      message: "The request could not be completed.",
+      status: 503,
+      traceId: "trace-fallback",
+    });
+  });
+
+  it("rejects successful responses that do not match the caller schema", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ value: 42 }, { status: 200 })),
+    );
+
+    await expect(api.get("/api/example", resultSchema)).rejects.toBeInstanceOf(
+      z.ZodError,
+    );
+  });
+
   it("provides stable mission query keys for lists and workspaces", () => {
     expect(missionQueries.list("project/one").queryKey).toEqual([
       "missions",

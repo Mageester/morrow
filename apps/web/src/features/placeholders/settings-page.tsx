@@ -3,7 +3,6 @@ import { useTheme } from "../../state/theme.js";
 
 export function SettingsPage() {
   const { setTheme, theme } = useTheme();
-  const nextTheme = theme === "dark" ? "light" : "dark";
 
   return (
     <section aria-labelledby="settings-heading" className="morrow-page">
@@ -17,10 +16,10 @@ export function SettingsPage() {
         <p>The {theme} theme is applied globally.</p>
         <Button
           aria-pressed={theme === "dark"}
-          onClick={() => setTheme(nextTheme)}
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           variant="secondary"
         >
-          Use {nextTheme} theme
+          Dark theme
         </Button>
       </Surface>
     </section>

@@ -94,7 +94,7 @@ The live flow was `/app/` -> Settings -> global dark-theme switch.
 
 - URL/title: `http://127.0.0.1:4318/app/`, `Morrow`.
 - Desktop: meaningful Home content, all seven navigation links, active Home state, runtime status, and no framework overlay.
-- Interaction: Settings navigation changed the URL to `/app/settings`; the theme button changed `data-theme` from `light` to `dark` and changed its accessible name to `Use light theme`.
+- Interaction: Settings navigation changed the URL to `/app/settings`; the theme button changed `data-theme` from `light` to `dark` and exposed the selected state through `aria-pressed`.
 - Mobile: 390x844 rendered without content overlap; all seven navigation links remained in the accessibility tree and the bottom navigation was horizontally reachable with mobile-safe targets.
 - Console: no warnings or errors before or after the interaction.
 - The runtime showed `offline` because the orchestrator was intentionally not started for this isolated web QA; this is the expected honest failure state.
@@ -160,3 +160,103 @@ Modified:
 ## Rollback
 
 Revert the focused Task 6 commit (`feat(web): scaffold Morrow application shell`). This removes `apps/web`, its lockfile importer/dependencies, and this report without changing existing contracts, orchestrator behavior, or the shared UI package.
+
+## Important Review Fix Pass
+
+Date: 2026-07-21
+
+### Finding Disposition
+
+- Runtime health checks now have a 5-second abort timeout, abort the active request when superseded/offline/unmounted, and accept results only from the latest request ID. Manual checks remain enabled while checking so a user can replace a hung request.
+- StrictMode cleanup, browser `online` events, and manual refresh all use the same cancellation/latest-request boundary; stale completions cannot overwrite a newer status.
+- Client-side navigation now sets a route-aware document title and moves focus to the main content only when the pathname actually changes. Initial load does not steal focus, including under StrictMode effect replay.
+- The theme toggle has the stable accessible name `Dark theme`; `aria-pressed` alone communicates whether it is active.
+- The Connections page exposes checking/online/offline text in an atomic polite status region, so the result remains announced when the mobile sidebar status is visually hidden.
+- The runtime health schema now accepts only the known `morrow-orchestrator` service identifier.
+- Minor API cases are covered: malformed/non-JSON failures map to the safe `HTTP_ERROR` fallback, and invalid successful payloads reject with `ZodError`.
+- Invalid stored theme values are covered and normalize to the light preference without creating another storage key.
+
+### Review-Fix RED Evidence
+
+Command:
+
+```powershell
+pnpm --filter @morrow/web test -- src/state/runtime-status.test.tsx src/app/app-shell.test.tsx src/api/client.test.ts
+```
+
+Observed result at 01:24:02:
+
+- exit code `1`;
+- 2 test files failed and 1 passed;
+- 9 tests failed and 17 passed;
+- all 5 runtime-status regressions failed: no timeout/signal, no StrictMode cleanup abort, no overlapping manual request, no visible status region, and an unexpected service was incorrectly accepted;
+- 4 shell regressions failed: no route title/focus handling and no stable `Dark theme` pressed control in light, dark, or invalid-storage states;
+- both new API minor-case tests passed immediately, confirming the safe fallback and successful-response Zod validation already existed but lacked explicit coverage.
+
+After correcting one async router-test setup, the focused title test failed for the intended reason:
+
+```text
+Expected: Home · Morrow
+Received: Morrow
+```
+
+### Review-Fix GREEN Evidence
+
+Focused command:
+
+```powershell
+pnpm --filter @morrow/web test -- src/state/runtime-status.test.tsx src/app/app-shell.test.tsx src/api/client.test.ts
+```
+
+Observed result at 01:27:07:
+
+- exit code `0`;
+- 3 test files passed;
+- 26 tests passed;
+- no warnings or errors.
+
+### Review-Fix Final Verification
+
+```text
+pnpm --filter @morrow/web test
+PASS — 3 files, 26 tests (01:27:58; duration 5.62s)
+
+pnpm --filter @morrow/web check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/web build
+PASS — Vite 8.1.3, 2006 modules transformed, built in 1.17s
+       dist/index.html: 0.50 kB (0.31 kB gzip)
+       JS: 405.33 kB (122.10 kB gzip)
+       CSS: 10.25 kB (2.48 kB gzip)
+
+Test-Path apps/web/dist/index.html
+PASS — True
+
+git diff --check 6d8bd9c..HEAD
+PASS — no whitespace errors across the full Task 6 range
+```
+
+### Review-Fix Accessibility Impact
+
+- Route changes provide both a distinct document title and deterministic focus placement at main content, meeting the reviewed WCAG 2.4.2 and 2.4.3 expectations without changing initial focus.
+- Theme state now uses one unchanging control name with conventional toggle-button state.
+- Runtime status changes are available in the Connections page through `role="status"`, `aria-live="polite"`, and `aria-atomic="true"` even at mobile breakpoints.
+- A retry remains keyboard-operable while an earlier health check is pending.
+
+### Review-Fix Privacy and Security Impact
+
+- Health requests are bounded to 5 seconds, abort on lifecycle cleanup or replacement, and cannot write stale state after a newer request.
+- The health payload must identify the local Morrow orchestrator before the UI reports it online.
+- Abort support is passed through the existing same-origin API client; credentials remain fixed to `same-origin`, and response Zod validation remains mandatory.
+- Browser storage remains limited to the normalized `morrow-theme` string. No credentials, provider configuration, runtime payloads, or new persisted data were added.
+
+### Review-Fix Limitations
+
+- The health timeout is intentionally fixed at 5 seconds in this foundation; polling, exponential reconnect, and richer runtime diagnostics remain later-slice work.
+- Runtime state remains the coarse `checking`, `online`, or `offline` contract; abort/timeout causes are not shown separately.
+- Route focus moves to the existing focusable main landmark rather than adding focusability to every route heading.
+
+### Review-Fix Rollback
+
+Revert `fix(web): harden shell accessibility and runtime status` to remove only this review-fix pass. Revert the earlier `feat(web): scaffold Morrow application shell` commit as well to remove Task 6 completely. Neither rollback changes the orchestrator, shared contracts, or shared UI package.

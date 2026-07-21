@@ -46,8 +46,12 @@ async function request<T>(
 }
 
 export const api = {
-  get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-    return request(path, { method: "GET" }, schema);
+  get<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    init: Omit<RequestInit, "body" | "method"> = {},
+  ): Promise<T> {
+    return request(path, { ...init, method: "GET" }, schema);
   },
 
   post<TInput, TOutput>(

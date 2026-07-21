@@ -19,9 +19,10 @@ export function ConnectionsPage() {
       </div>
       <Surface aria-labelledby="runtime-heading" padding="large">
         <h2 id="runtime-heading">Morrow runtime</h2>
-        <p>{statusCopy[status]}</p>
+        <p aria-atomic="true" aria-live="polite" role="status">
+          {statusCopy[status]}
+        </p>
         <Button
-          disabled={status === "checking"}
           onClick={() => void refresh()}
           variant="secondary"
         >
