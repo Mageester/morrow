@@ -50,7 +50,7 @@ No plan-blocking contradictions. Proceed to Task 1.
 | 6. App scaffold | done | 6d8bd9c | 0755cb8 | web 26/26, check ok, build ok, diff-check ok, browser QA ok | APPROVED | APPROVED + accessibility/security APPROVED (4 Important fixed; 2 minor) |
 | 7. Home/composer | done | a68f912 | 5232218 | web 41/41, check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (8 Important fixed; 1 privacy minor) |
 | 8. Overview/activity/stream | done | 425944e | c76751c | web 56/56, check ok, build ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (3 Important fixed; 0 open) |
-| 9. Work/Result | pending | — | — | — | — | — |
+| 9. Work/Result | done | 22a24b8 | 7fcdacf | web 118/118, UI 14/14, checks/builds ok, diff-check ok | APPROVED | APPROVED + accessibility/security APPROVED (5 Important fixed; 0 open) |
 | 10. Attention/errors | pending | — | — | — | — | — |
 | 11. /app serving + packaging | pending | — | — | — | — | — |
 | 12. E2E/a11y/visual gates | pending | — | — | — | — | — |
@@ -64,4 +64,5 @@ Notes:
 - Task 6 added the `/app/` React/Vite shell, typed API client, TanStack routes/query foundation, global theme, and runtime status boundary. Independent review found and fixed four Important quality/accessibility issues in `0755cb8`.
 - Task 7 added the universal objective-first composer, honest progressive controls, project selection, idempotent mission creation, cache/navigation, and ordered Home sections. Three review rounds fixed eight Important behavior/accessibility findings.
 - Task 8 added authoritative mission snapshots, resumable ordered named-event streaming, honest offline/reconnect state, accessible Overview/Activity, and stable four-tab semantics. Review fixed three Important state/accounting/ARIA issues.
-- Exact next action: push Task 8 and durable evidence, post PR evidence, then dispatch Task 9 from the reviewed checkpoint.
+- Task 9 added text-only adaptive artifact views and conservative evidence-backed Result delivery. Three review rounds fixed five Important truth, identity, keyboard, and ARIA issues.
+- Exact next action: push Task 9 and durable evidence, post PR evidence, then dispatch Task 10 from the reviewed checkpoint.

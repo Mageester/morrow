@@ -118,8 +118,11 @@ PASS — no whitespace errors
   criteria. The UI correctly does not fabricate them.
 - Artifact previews are limited to the projected text field. Rich file,
   browser, office, or binary previews remain outside this safe slice.
-- The Result view can only report the supplied verification state, summary,
-  evidence count, and caveats; it does not infer success from mission status.
+- The Result view conservatively combines supplied mission state with
+  verification state, summary, evidence count, and caveats. Mission state
+  preserves known draft, active, blocked, failed, cancelled, superseded, and
+  completion outcomes; verified completion still requires both
+  `completed_verified` and `passed`.
 
 ## Rollback
 
