@@ -17,7 +17,11 @@ class ThrowingChild extends Component<{ shouldThrow: () => boolean }> {
       );
     }
     return (
-      <main id="main-content" tabIndex={-1}>
+      <main
+        data-error-boundary-focus-target="true"
+        id="main-content"
+        tabIndex={-1}
+      >
         Mission state restored
       </main>
     );
@@ -84,6 +88,8 @@ describe("error card conversion", () => {
   );
 
   it("renders the complete shared error-card contract and a safe trace reference", () => {
+    const refresh = vi.fn();
+    const retry = vi.fn();
     render(
       <ActionableErrorCard
         error={
@@ -94,17 +100,32 @@ describe("error card conversion", () => {
             "trace-safe-42",
           )
         }
-        onDiagnostics={vi.fn()}
-        onRetry={vi.fn()}
+        onRefresh={refresh}
+        onRetry={retry}
       />,
     );
 
     expect(screen.getByRole("alert")).toBeVisible();
-    expect(screen.getByText(/work is preserved/i)).toBeVisible();
+    expect(screen.getByText(/synchronized work remains available/i)).toBeVisible();
     expect(screen.getByText(/what happens next/i)).toBeVisible();
     expect(screen.getByText(/trace-safe-42/i)).toBeVisible();
-    expect(screen.getByRole("button", { name: /retry/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /diagnostics/i })).toBeEnabled();
+    const action = screen.getByRole("button", {
+      name: "Refresh mission state",
+    });
+    expect(action).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: /diagnostics/i }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(action);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(screen.getByText(/reload authoritative state/i)).toBeVisible();
+  });
+
+  it("never promises a diagnostics action in generic fallback copy", () => {
+    expect(JSON.stringify(toErrorCard(new Error("private")))).not.toMatch(
+      /diagnostics/i,
+    );
   });
 });
 
@@ -132,6 +153,32 @@ describe("GlobalErrorBoundary", () => {
       expect(document.getElementById("main-content")).toHaveFocus();
     });
 
+    view.unmount();
+  });
+
+  it("keeps focus on the replacement error card when retry rethrows", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation(() => 42);
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
+    const view = render(
+      <GlobalErrorBoundary>
+        <ThrowingChild shouldThrow={() => true} />
+      </GlobalErrorBoundary>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Morrow" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveFocus();
+    });
+    expect(requestFrame).toHaveBeenCalled();
+    expect(cancelFrame).toHaveBeenCalledWith(42);
+    expect(
+      document.querySelector('[data-error-boundary-focus-target="true"]'),
+    ).not.toBeInTheDocument();
     view.unmount();
   });
 });

@@ -174,3 +174,79 @@ the Task 10 web API helper, attention/error/state components and tests,
 provider/Overview wiring, runtime reconnecting copy, styles, and this report.
 Persisted approvals, mission/controller state, contracts, shared UI,
 orchestrator behavior, and package output remain unchanged.
+
+## Review Hardening
+
+The review follow-up closes six failure and honesty gaps without changing the
+server contract, shared UI package, or persistence model:
+
+- An unknown destructive POST outcome now requires an authoritative mission
+  refresh. If the request has disappeared, the refreshed snapshot is cached
+  and the decision is never posted again. If it remains pending, destructive
+  confirmation is shown again before any new POST.
+- Attention resolution and recovery refreshes use one synchronous,
+  mission-scoped coordinator. While one card owns it, every choice and note in
+  that mission is disabled, preventing concurrent responses from arriving out
+  of order or resurrecting older attention state.
+- React 19 caught and uncaught root errors emit only a fixed message, error
+  kind, and local correlation ID. Raw errors, component stacks, secrets, and
+  paths are neither rendered nor logged by Morrow handlers.
+- Error cards no longer offer a placeholder diagnostics action. Failed
+  decisions offer the real `Refresh mission state` operation and never retry a
+  state-changing request automatically.
+- Recovery copy reports only the current snapshot verification enum and states
+  explicitly that post-recovery verification trust was not reported.
+- Error-boundary focus returns to healthy application content only after a
+  successful retry. A replacement fallback cancels stale animation-frame work
+  and keeps focus on the new error card; unmount also cancels pending work.
+
+### Review TDD Evidence
+
+The first focused RED run failed 10 new assertions across the four review
+suites. The persistent-boundary test was then strengthened separately and
+failed because `cancelAnimationFrame(42)` had not occurred. After implementing
+the first five fixes, the focused run reached 31 passing tests with three stale
+assertions; correcting those assertions produced 34/34 passing tests.
+
+The mission serialization test was added before its coordinator. Its RED run
+failed because the provider export was absent. After adding the shared lock and
+wiring the mission attention list, the focused attention suite passed 13/13.
+The combined review suite then passed 35/35.
+
+### Review Verification
+
+Fresh checks after all hardening changes:
+
+```text
+pnpm --filter @morrow/web test
+PASS — 11 files, 149 tests
+
+pnpm --filter @morrow/web check
+PASS — tsc -p tsconfig.json
+
+pnpm --filter @morrow/web build
+PASS — Vite 8.1.3, 2018 modules transformed
+       dist/index.html: 0.50 kB (0.31 kB gzip)
+       JS: 452.48 kB (134.74 kB gzip)
+       CSS: 17.13 kB (3.55 kB gzip)
+```
+
+Security impact is limited to safer client-side handling: no new data leaves
+the browser, no permission boundary changes, and no raw exception data is
+persisted or emitted by the new handlers. The authoritative refresh uses the
+existing mission-owned read endpoint and validates all nested mission IDs.
+
+Accessibility impact: mission-wide busy state is reflected by disabled native
+controls; destructive confirmation remains explicit; successful retry focus
+targets only healthy main content; persistent errors retain alert focus.
+
+Known limitation: the current response contract has no idempotency key or
+operation-status endpoint. A lost mutation response therefore requires an
+explicit authoritative refresh before the user can decide whether to act
+again. Post-recovery verification provenance is also not projected, so the UI
+reports that limitation instead of inferring trust.
+
+Rollback the review hardening with
+`git revert <fix(web): harden attention and recovery safety commit>`. This
+restores the original Task 10 client behavior without changing server data,
+contracts, or durable attention decisions.

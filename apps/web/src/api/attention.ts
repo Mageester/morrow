@@ -41,3 +41,21 @@ export async function resolveMissionAttention(
 
   return snapshot;
 }
+
+export async function readAuthoritativeMission(
+  missionId: string,
+): Promise<WebMissionSnapshot> {
+  const snapshot = await api.get(
+    `/api/web/missions/${encodeURIComponent(missionId)}`,
+    WebMissionSnapshotSchema,
+  );
+  if (!belongsToMission(snapshot, missionId)) {
+    throw new ApiClientError(
+      409,
+      "MISSION_RESPONSE_MISMATCH",
+      "The response did not match the mission being refreshed.",
+      null,
+    );
+  }
+  return snapshot;
+}

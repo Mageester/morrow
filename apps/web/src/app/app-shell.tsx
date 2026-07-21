@@ -151,6 +151,7 @@ export function AppShell() {
 
       <main
         className="morrow-main"
+        data-error-boundary-focus-target="true"
         id="main-content"
         ref={mainRef}
         tabIndex={-1}

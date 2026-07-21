@@ -7,13 +7,21 @@ import {
 import { Button } from "@morrow/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
-import { resolveMissionAttention } from "../../api/attention.js";
+import {
+  readAuthoritativeMission,
+  resolveMissionAttention,
+} from "../../api/attention.js";
 import { missionKeys } from "../../api/query-keys.js";
 import { ActionableErrorCard } from "../../app/error-boundary.js";
 
@@ -25,6 +33,63 @@ const kindLabels: Record<WebAttentionRequest["kind"], string> = {
 };
 
 type WebAttentionChoice = WebAttentionRequest["choices"][number];
+
+interface AttentionResolutionContextValue {
+  acquire: (attentionId: string) => boolean;
+  activeAttentionId: string | null;
+  missionId: string;
+  release: (attentionId: string) => void;
+}
+
+const AttentionResolutionContext =
+  createContext<AttentionResolutionContextValue | null>(null);
+
+export function AttentionResolutionCoordinator({
+  children,
+  missionId,
+}: {
+  children: ReactNode;
+  missionId: string;
+}) {
+  const activeAttentionRef = useRef<string | null>(null);
+  const [activeAttentionId, setActiveAttentionId] = useState<string | null>(
+    null,
+  );
+
+  const acquire = useCallback((attentionId: string) => {
+    if (activeAttentionRef.current !== null) return false;
+    activeAttentionRef.current = attentionId;
+    setActiveAttentionId(attentionId);
+    return true;
+  }, []);
+
+  const release = useCallback((attentionId: string) => {
+    if (activeAttentionRef.current !== attentionId) return;
+    activeAttentionRef.current = null;
+    setActiveAttentionId(null);
+  }, []);
+
+  const value = useMemo(
+    () => ({ acquire, activeAttentionId, missionId, release }),
+    [acquire, activeAttentionId, missionId, release],
+  );
+
+  return (
+    <AttentionResolutionContext.Provider value={value}>
+      {children}
+    </AttentionResolutionContext.Provider>
+  );
+}
+
+function useAttentionResolution(missionId: string) {
+  const coordinator = useContext(AttentionResolutionContext);
+  if (!coordinator || coordinator.missionId !== missionId) {
+    throw new Error(
+      "AttentionCard must be rendered inside its mission attention coordinator.",
+    );
+  }
+  return coordinator;
+}
 
 function isNewerSnapshot(
   current: WebMissionSnapshot | undefined,
@@ -119,11 +184,15 @@ export function AttentionCard({
   request: WebAttentionRequest;
 }) {
   const queryClient = useQueryClient();
+  const resolution = useAttentionResolution(missionId);
   const [note, setNote] = useState("");
   const [confirmation, setConfirmation] =
     useState<WebAttentionChoice | null>(null);
   const [failedInput, setFailedInput] =
     useState<ResolveWebAttentionInput | null>(null);
+  const [refreshError, setRefreshError] = useState<unknown | null>(null);
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [resolutionConfirmed, setResolutionConfirmed] = useState(false);
   const choiceRefs = useRef(new Map<string, HTMLButtonElement>());
   const confirmationSubmitting = useRef(false);
   const submissionPending = useRef(false);
@@ -138,6 +207,7 @@ export function AttentionCard({
     },
     onSuccess: (resolved) => {
       setFailedInput(null);
+      setRefreshError(null);
       queryClient.setQueryData<WebMissionSnapshot>(
         missionKeys.detail(missionId),
         (current) => (isNewerSnapshot(current, resolved) ? current : resolved),
@@ -147,6 +217,7 @@ export function AttentionCard({
     onSettled: () => {
       submissionPending.current = false;
       confirmationSubmitting.current = false;
+      resolution.release(request.id);
     },
   });
 
@@ -156,23 +227,28 @@ export function AttentionCard({
     if (restoreFocus && choiceId) choiceRefs.current.get(choiceId)?.focus();
   };
 
-  const submit = (choice: WebAttentionChoice, retryInput?: ResolveWebAttentionInput) => {
-    if (submissionPending.current) return;
-    submissionPending.current = true;
-    mutation.reset();
-
+  const submit = (choice: WebAttentionChoice) => {
+    if (submissionPending.current || resolution.activeAttentionId !== null) {
+      return;
+    }
     const trimmedNote = note.trim();
     const input = ResolveWebAttentionSchema.parse(
-      retryInput ?? {
+      {
         choiceId: choice.id,
         ...(trimmedNote ? { note: trimmedNote } : {}),
       },
     );
+    if (!resolution.acquire(request.id)) return;
+    submissionPending.current = true;
+    mutation.reset();
+    setRefreshError(null);
     mutation.mutate(input);
   };
 
   const selectChoice = (choice: WebAttentionChoice) => {
-    if (submissionPending.current) return;
+    if (submissionPending.current || resolution.activeAttentionId !== null) {
+      return;
+    }
     if (choice.destructive) {
       confirmationSubmitting.current = false;
       setConfirmation(choice);
@@ -182,11 +258,67 @@ export function AttentionCard({
   };
 
   const confirmChoice = () => {
-    if (!confirmation || confirmationSubmitting.current) return;
+    if (
+      !confirmation ||
+      confirmationSubmitting.current ||
+      resolution.activeAttentionId !== null
+    ) {
+      return;
+    }
     confirmationSubmitting.current = true;
     const choice = confirmation;
     closeConfirmation();
     submit(choice);
+  };
+
+  const refreshAfterFailure = async () => {
+    if (
+      submissionPending.current ||
+      refreshPending ||
+      resolution.activeAttentionId !== null ||
+      !resolution.acquire(request.id)
+    ) {
+      return;
+    }
+    submissionPending.current = true;
+    setRefreshPending(true);
+    setRefreshError(null);
+
+    try {
+      const authoritative = await readAuthoritativeMission(missionId);
+      queryClient.setQueryData(
+        missionKeys.detail(missionId),
+        authoritative,
+      );
+      await queryClient.invalidateQueries({
+        queryKey: missionKeys.all,
+        refetchType: "none",
+      });
+
+      const pendingRequest = authoritative.attention.find(
+        (candidate) => candidate.id === request.id,
+      );
+      mutation.reset();
+      setFailedInput(null);
+      if (!pendingRequest) {
+        closeConfirmation(false);
+        setResolutionConfirmed(true);
+        return;
+      }
+
+      const failedChoice = pendingRequest.choices.find(
+        (candidate) => candidate.id === failedInput?.choiceId,
+      );
+      if (failedChoice?.destructive) {
+        setConfirmation(failedChoice);
+      }
+    } catch (error: unknown) {
+      setRefreshError(error);
+    } finally {
+      submissionPending.current = false;
+      setRefreshPending(false);
+      resolution.release(request.id);
+    }
   };
 
   if (request.missionId !== missionId) {
@@ -200,6 +332,25 @@ export function AttentionCard({
       </article>
     );
   }
+
+  if (resolutionConfirmed) {
+    return (
+      <article className="morrow-attention-card" data-kind={request.kind}>
+        <h3>Attention request refreshed</h3>
+        <p aria-live="polite" role="status">
+          This attention request is no longer pending. Authoritative mission
+          state was refreshed, and the decision was not posted again.
+        </p>
+      </article>
+    );
+  }
+
+  const operationPending =
+    mutation.isPending ||
+    refreshPending ||
+    resolution.activeAttentionId !== null;
+  const displayedError =
+    refreshError ?? (mutation.isError ? mutation.error : null);
 
   return (
     <article className="morrow-attention-card" data-kind={request.kind}>
@@ -237,7 +388,7 @@ export function AttentionCard({
           <div className="morrow-attention-card__note">
             <label htmlFor={noteId}>Decision note (optional)</label>
             <textarea
-              disabled={mutation.isPending}
+              disabled={operationPending}
               id={noteId}
               maxLength={1000}
               onChange={(event) => setNote(event.target.value)}
@@ -262,7 +413,7 @@ export function AttentionCard({
                   <Button
                     aria-describedby={consequenceId}
                     data-recommended={choice.recommended ? "true" : "false"}
-                    disabled={mutation.isPending}
+                    disabled={operationPending}
                     onClick={() => selectChoice(choice)}
                     ref={(node) => {
                       if (node) choiceRefs.current.set(choice.id, node);
@@ -305,21 +456,16 @@ export function AttentionCard({
         </p>
       ) : null}
 
-      {mutation.isError ? (
+      {refreshPending ? (
+        <p aria-live="polite" role="status">
+          Refreshing authoritative mission state…
+        </p>
+      ) : null}
+
+      {displayedError ? (
         <ActionableErrorCard
-          error={mutation.error}
-          onDiagnostics={() => {
-            void queryClient.invalidateQueries({
-              queryKey: missionKeys.detail(missionId),
-            });
-          }}
-          onRetry={() => {
-            const choice = request.choices.find(
-              (candidate) => candidate.id === failedInput?.choiceId,
-            );
-            if (choice && failedInput) submit(choice, failedInput);
-          }}
-          retryLabel="Retry decision"
+          error={displayedError}
+          onRefresh={() => void refreshAfterFailure()}
         />
       ) : null}
 

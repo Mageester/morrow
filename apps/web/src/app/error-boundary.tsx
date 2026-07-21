@@ -1,4 +1,4 @@
-import { ErrorCard, type ErrorCardProps } from "@morrow/ui";
+import { ErrorCard } from "@morrow/ui";
 import {
   Component,
   createRef,
@@ -43,7 +43,7 @@ function safeApiExplanation(error: ApiClientError): string {
   };
   return (
     knownClientMessages[error.code] ??
-    "The request was rejected. Review the action or open diagnostics before trying different work."
+    "The request was rejected. Refresh mission state before trying different work."
   );
 }
 
@@ -51,13 +51,16 @@ export function toErrorCard(error: unknown): ErrorCardModel {
   if (error instanceof ApiClientError) {
     const runtimeUnavailable = error.code === "RUNTIME_UNAVAILABLE";
     const retryable = error.status >= 500 || runtimeUnavailable;
+    const outcomeUnknown = error.status >= 500;
     return {
       attempted: [],
       continuation: retryable
-        ? "Retry explicitly when the required service is available. Morrow will reload authoritative state before continuing."
-        : "Review the request or open diagnostics. Morrow will not repeat this action automatically.",
+        ? "Reload authoritative state before choosing whether to try the action again."
+        : "Refresh authoritative state and review the request. Morrow will not repeat this action automatically.",
       explanation: safeApiExplanation(error),
-      preservedMessage: "Your work is preserved and no decision was applied by this failed request.",
+      preservedMessage: outcomeUnknown
+        ? "Your synchronized work remains available, but the decision outcome is not confirmed."
+        : "Your work is preserved and the rejected request did not apply a decision.",
       retryable,
       title: runtimeUnavailable
         ? "Morrow is not connected"
@@ -69,10 +72,11 @@ export function toErrorCard(error: unknown): ErrorCardModel {
   return {
     attempted: [],
     continuation:
-      "Retry explicitly or open diagnostics. Morrow will reload authoritative state before continuing.",
+      "Reload authoritative state before choosing whether to try the action again.",
     explanation:
-      "Your mission state is still safe. Retry the request or open diagnostics.",
-    preservedMessage: "Your work is preserved.",
+      "Your mission state is still safe, but the action outcome could not be confirmed.",
+    preservedMessage:
+      "Your synchronized work remains available. No automatic retry was started.",
     retryable: true,
     title: "Morrow could not complete that action",
     traceId: null,
@@ -82,31 +86,25 @@ export function toErrorCard(error: unknown): ErrorCardModel {
 interface ActionableErrorCardProps {
   cardRef?: Ref<HTMLElement>;
   error: unknown;
-  onDiagnostics?: () => void;
-  onRetry: () => void;
+  onRefresh?: () => void;
+  onRetry?: () => void;
   retryLabel?: string;
 }
 
 export function ActionableErrorCard({
   cardRef,
   error,
-  onDiagnostics,
+  onRefresh,
   onRetry,
   retryLabel = "Retry request",
 }: ActionableErrorCardProps) {
   const model = toErrorCard(error);
-  const diagnostics = onDiagnostics ?? onRetry;
-  const recommendedAction = model.retryable
-    ? { label: retryLabel, onClick: onRetry }
-    : { label: "Open diagnostics", onClick: diagnostics };
-  const alternativeActions: ErrorCardProps["alternativeActions"] =
-    model.retryable && onDiagnostics
-      ? [{ label: "Open diagnostics", onClick: onDiagnostics }]
-      : [];
+  const recommendedAction = onRefresh
+    ? { label: "Refresh mission state", onClick: onRefresh }
+    : { label: retryLabel, onClick: onRetry ?? (() => undefined) };
 
   return (
     <ErrorCard
-      alternativeActions={alternativeActions}
       attempted={model.attempted}
       continuation={
         <>
@@ -142,6 +140,8 @@ export class GlobalErrorBoundary extends Component<
 > {
   override state: GlobalErrorBoundaryState = { failed: false };
   private readonly fallbackRef = createRef<HTMLElement>();
+  private errorGeneration = 0;
+  private restorationFrame: number | null = null;
 
   static getDerivedStateFromError(): GlobalErrorBoundaryState {
     return { failed: true };
@@ -150,14 +150,50 @@ export class GlobalErrorBoundary extends Component<
   override componentDidCatch(_error: unknown, _errorInfo: ErrorInfo): void {
     // React owns developer diagnostics. The browser fallback intentionally
     // neither stores nor renders the raw exception, stack, or component trace.
-    queueMicrotask(() => this.fallbackRef.current?.focus());
+    this.errorGeneration += 1;
+    this.cancelRestorationFrame();
+    const generation = this.errorGeneration;
+    queueMicrotask(() => {
+      if (this.state.failed && this.errorGeneration === generation) {
+        this.fallbackRef.current?.focus();
+      }
+    });
   }
 
+  override componentWillUnmount(): void {
+    this.cancelRestorationFrame();
+  }
+
+  private readonly cancelRestorationFrame = () => {
+    if (this.restorationFrame === null) return;
+    window.cancelAnimationFrame(this.restorationFrame);
+    this.restorationFrame = null;
+  };
+
   private readonly retry = () => {
+    this.cancelRestorationFrame();
+    const retryGeneration = this.errorGeneration;
     this.setState({ failed: false }, () => {
-      window.requestAnimationFrame(() => {
-        document.getElementById("main-content")?.focus();
+      this.restorationFrame = window.requestAnimationFrame(() => {
+        this.restorationFrame = null;
+        if (this.state.failed || this.errorGeneration !== retryGeneration) {
+          this.fallbackRef.current?.focus();
+          return;
+        }
+        document
+          .querySelector<HTMLElement>(
+            '[data-error-boundary-focus-target="true"]',
+          )
+          ?.focus();
       });
+      if (
+        this.state.failed ||
+        this.errorGeneration !== retryGeneration ||
+        this.fallbackRef.current
+      ) {
+        this.cancelRestorationFrame();
+        this.fallbackRef.current?.focus();
+      }
     });
   };
 

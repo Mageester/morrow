@@ -304,4 +304,35 @@ describe("MissionStatusSummary", () => {
     expect(screen.queryByText(/PRIVATE recovery internals/i)).not.toBeInTheDocument();
     expect(screen.getByText(/checkpoint and replay details were not reported/i)).toBeVisible();
   });
+
+  it.each([
+    ["passed", "Passed"],
+    ["passed_with_caveats", "Passed with caveats"],
+  ] as const)(
+    "reports only current %s snapshot verification after recovery",
+    (verification, label) => {
+      render(
+        <MissionStatusSummary
+          snapshot={missionSnapshot(
+            "working",
+            verification,
+            "Resumed from a recorded interruption.",
+          )}
+        />,
+      );
+
+      const recoverySurface = screen.getByRole("heading", {
+        name: "Recovery recorded",
+      }).parentElement;
+      expect(recoverySurface).toHaveTextContent(
+        `Current snapshot verification: ${label}.`,
+      );
+      expect(recoverySurface).toHaveTextContent(
+        /post-recovery verification trust was not reported/i,
+      );
+      expect(document.body).not.toHaveTextContent(
+        /remains passed|retains recorded/i,
+      );
+    },
+  );
 });

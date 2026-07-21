@@ -50,13 +50,14 @@ function stateCopy(snapshot: WebMissionSnapshot): StateCopy | null {
 }
 
 function verificationTrust(snapshot: WebMissionSnapshot): string {
-  if (snapshot.verification.state === "passed") {
-    return "Verification remains passed after the recorded recovery.";
-  }
-  if (snapshot.verification.state === "passed_with_caveats") {
-    return "Verification retains recorded caveats after recovery.";
-  }
-  return "Verification has not passed after the recorded recovery.";
+  const labels: Record<WebMissionSnapshot["verification"]["state"], string> = {
+    failed: "Failed",
+    in_progress: "In progress",
+    not_ready: "Not ready",
+    passed: "Passed",
+    passed_with_caveats: "Passed with caveats",
+  };
+  return `Current snapshot verification: ${labels[snapshot.verification.state]}. Post-recovery verification trust was not reported.`;
 }
 
 export function MissionStatusSummary({
