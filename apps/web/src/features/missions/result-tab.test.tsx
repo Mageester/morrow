@@ -1,7 +1,7 @@
 import type { WebMissionArtifact, WebMissionUiState } from "@morrow/contracts";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ResultTab } from "./result-tab.js";
+import { ResultPanel } from "./result-tab.js";
 
 const artifact: WebMissionArtifact = {
   createdAt: "2026-07-21T13:20:00.000Z",
@@ -25,7 +25,7 @@ function renderResult(
   missionState: WebMissionUiState = "completed_verified",
 ) {
   return render(
-    <ResultTab
+    <ResultPanel
       artifacts={[artifact]}
       missionState={missionState}
       verification={verification}
@@ -61,11 +61,11 @@ describe("ResultTab", () => {
     "failed",
   ] as const;
   const namedStates: ReadonlyArray<[WebMissionUiState, string]> = [
-    ["draft", "Draft"],
-    ["needs_input", "Needs input"],
+    ["draft", "Preparing"],
+    ["needs_input", "Needs your input"],
     ["working", "Working"],
     ["reviewing", "Reviewing"],
-    ["blocked", "Blocked"],
+    ["blocked", "Action needed"],
     ["failed_recoverable", "Failed, recoverable"],
     ["failed", "Failed"],
     ["cancelled", "Cancelled"],
@@ -117,7 +117,7 @@ describe("ResultTab", () => {
     expect(screen.getByText("Caveat details were not supplied.")).toBeVisible();
 
     rerender(
-      <ResultTab
+      <ResultPanel
         artifacts={[]}
         missionState="reviewing"
         verification={{

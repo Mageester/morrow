@@ -32,7 +32,8 @@ test("Mission workspace with an attention request has no serious or critical vio
 
 test("Result mission page has no serious or critical violations", async ({ page }) => {
   await page.goto(`/app/missions/${state.seed.resultMissionId}`);
-  await page.getByRole("tab", { name: "Result" }).click();
+  // The result panel is inline for a completed mission — no tab to activate.
+  await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
   const violations = await seriousViolations(page);
   expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
 });

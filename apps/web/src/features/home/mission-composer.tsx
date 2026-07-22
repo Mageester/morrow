@@ -4,7 +4,7 @@ import {
   type CreateWebMissionInput,
 } from "@morrow/contracts";
 import { Button, Surface } from "@morrow/ui";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   useEffect,
@@ -13,8 +13,10 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { Link } from "@tanstack/react-router";
 import { api, ApiClientError } from "../../api/client.js";
 import { missionKeys } from "../../api/query-keys.js";
+import { providerQueries } from "../../api/providers.js";
 
 type Autonomy = CreateWebMissionInput["autonomy"];
 
@@ -41,6 +43,10 @@ export function MissionComposer({
   const [draft, setDraft] = useState("");
   const [objectiveValidationError, setObjectiveValidationError] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const providers = useQuery(providerQueries.list());
+  const noProviderConnected =
+    providers.isSuccess &&
+    !providers.data.some((provider) => provider.configured);
   const currentIdempotencyKey = useRef(createIdempotencyKey());
   const failedSubmission = useRef(false);
   const isCurrent = useRef(false);
@@ -140,6 +146,12 @@ export function MissionComposer({
           <h2 id="mission-composer-heading">What should Morrow accomplish?</h2>
           <p>Describe the outcome. Morrow will determine the capabilities needed.</p>
         </div>
+        {noProviderConnected ? (
+          <p className="morrow-composer__provider-note" role="status">
+            No AI model is connected yet, so missions will wait until one is
+            added. <Link to="/connections">Connect a model</Link>
+          </p>
+        ) : null}
         <label className="morrow-sr-only" htmlFor="mission-objective">
           Mission objective
         </label>

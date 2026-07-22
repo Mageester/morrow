@@ -238,6 +238,7 @@ function missionSnapshot(
       currentPhase: "Recorded state",
       id: "mission-42",
       latestActivity: recoverySummary ?? null,
+      modelLabel: "claude-sonnet-5",
       objective: "Complete the mission.",
       projectId: "project-1",
       state,

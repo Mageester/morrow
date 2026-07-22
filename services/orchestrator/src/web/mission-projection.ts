@@ -47,41 +47,123 @@ export interface MissionWebProjectionInput {
   pendingApprovals?: readonly Approval[];
   /** Durable runtime state, used to describe the current phase. */
   runtime?: MissionRuntime | null;
+  /** The most recent failed worker dispatch, when one exists. */
+  dispatchFailure?: { message: string; at: string } | null;
+  /** Whether at least one model provider is currently configured. */
+  providersConfigured?: boolean;
 }
 
-// ── Status → UI state ────────────────────────────────────────────────────────
-// This switch is the ONLY conversion from a raw mission status to a UI state.
-// It is exhaustive over `MissionStatus`; there is no numeric progress anywhere.
+/** Attention id for the mission-level plan approval (not an approvals row). */
+export function planApprovalAttentionId(missionId: string): string {
+  return `${missionId}:plan-approval`;
+}
+
+/** Attention id for the "worker could not start" recovery surface. */
+export function dispatchBlockerAttentionId(missionId: string): string {
+  return `${missionId}:dispatch-blocker`;
+}
+
+// ── Status + runtime → ONE UI state and ONE phase ───────────────────────────
+// This is the ONLY conversion from persisted mission state to what the user
+// sees. The mission aggregate and the runtime machine are reconciled HERE, in
+// one place, so the projected state and the projected phase can never
+// contradict each other (the old code derived them independently, which is
+// how a mission once showed "Draft" beside "Doing the work").
 //
-// `verified` guards the completed headline against inconsistent Guardian input:
-// a completed mission only reads as "completed_verified" when Guardian passed
-// AND no non-waived criterion remains failed, so the summary headline can never
-// contradict a "failed" verification state.
-function uiState(status: Mission["status"], verified: boolean): WebMissionUiState {
-  switch (status) {
-    case "draft":
-      return "draft";
-    case "awaiting_criteria_approval":
-      return "needs_input";
-    case "running":
-      return "working";
-    case "reviewing":
-      return "reviewing";
-    case "blocked":
-      return "blocked";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
+// Precedence:
+//   1. A terminal mission status is final — the runtime cannot override it.
+//   2. A blocked runtime (worker could not start / strategies exhausted) wins
+//      over any non-terminal status: the user must act.
+//   3. Approval waits surface as needs_input.
+//   4. Otherwise the runtime describes live work; a mission whose runtime is
+//      actively working is presented as working even while the aggregate is
+//      still formally in draft.
+//
+// `verified` guards the completed headline against inconsistent Guardian
+// input, exactly as before.
+interface DerivedPresentation {
+  state: WebMissionUiState;
+  phase: string;
+}
+
+function derivePresentation(
+  mission: Mission,
+  runtime: MissionRuntime | null | undefined,
+  verified: boolean,
+): DerivedPresentation {
+  switch (mission.status) {
     case "completed":
-      return verified ? "completed_verified" : "completed_with_caveats";
+      return verified
+        ? { state: "completed_verified", phase: "Finished" }
+        : { state: "completed_with_caveats", phase: "Finished with caveats" };
     case "completed_with_reservations":
+      return { state: "completed_with_caveats", phase: "Finished with caveats" };
     case "partially_completed":
-      return "completed_with_caveats";
-    default: {
-      const exhaustive: never = status;
-      return exhaustive;
+      return { state: "completed_with_caveats", phase: "Partly finished" };
+    case "failed":
+      return { state: "failed", phase: "Ran into a problem" };
+    case "cancelled":
+      return { state: "cancelled", phase: "Cancelled" };
+    case "blocked":
+      return { state: "blocked", phase: "Paused — needs your attention" };
+    default:
+      break;
+  }
+
+  // The plan approval wait is mission-level state and reads the same whether
+  // or not the runtime machine has parked yet.
+  if (mission.status === "awaiting_criteria_approval" && runtime?.state !== "blocked") {
+    return { state: "needs_input", phase: "Waiting for you to approve the plan" };
+  }
+
+  // Non-terminal mission: the runtime machine describes what is really
+  // happening right now.
+  if (runtime) {
+    switch (runtime.state) {
+      case "blocked":
+        return { state: "blocked", phase: "Paused — needs your attention" };
+      case "waiting_for_approval":
+        return { state: "needs_input", phase: "Waiting for your approval" };
+      case "cancelled":
+      case "abandoned":
+        return { state: "cancelled", phase: "Stopped" };
+      case "superseded":
+        return { state: "superseded", phase: "Replaced by a newer run" };
+      case "created":
+        return { state: mission.status === "draft" ? "draft" : "working", phase: "Preparing the mission" };
+      case "orienting":
+        return { state: "working", phase: "Understanding the request" };
+      case "planning":
+        return { state: "working", phase: "Planning the work" };
+      case "executing":
+        return { state: "working", phase: "Doing the work" };
+      case "validating":
+        return { state: mission.status === "reviewing" ? "reviewing" : "working", phase: "Checking the results" };
+      case "waiting_for_tool":
+        return { state: "working", phase: "Waiting on a tool" };
+      case "recovering":
+        return { state: "working", phase: "Recovering from a problem" };
+      case "replanning":
+        return { state: "working", phase: "Adjusting the plan" };
+      case "completed":
+        // Runtime finished but the aggregate has not been graded terminal yet:
+        // present the review-in-flight truthfully rather than claiming success.
+        return { state: "reviewing", phase: "Finalizing the result" };
+      default:
+        break;
     }
+  }
+
+  // No runtime row (legacy missions) — fall back to the mission status alone.
+  switch (mission.status) {
+    case "awaiting_criteria_approval":
+      return { state: "needs_input", phase: "Waiting for you to approve the plan" };
+    case "running":
+      return { state: "working", phase: "Doing the work" };
+    case "reviewing":
+      return { state: "reviewing", phase: "Reviewing the results" };
+    default:
+      return { state: "draft", phase: "Preparing the mission" };
   }
 }
 
@@ -196,42 +278,6 @@ function deriveTitle(objective: string, missionId: string): string {
   return `${safe.slice(0, 159).trimEnd()}…`;
 }
 
-// Phase labels never imply a percentage; they name what is happening now.
-const RUNTIME_PHASE: Record<MissionRuntime["state"], string> = {
-  created: "Getting started",
-  orienting: "Understanding the request",
-  planning: "Planning the work",
-  executing: "Doing the work",
-  validating: "Checking the results",
-  waiting_for_tool: "Waiting on a tool",
-  waiting_for_approval: "Waiting for your approval",
-  recovering: "Recovering from a problem",
-  replanning: "Adjusting the plan",
-  blocked: "Blocked — needs your input",
-  completed: "Finished",
-  cancelled: "Cancelled",
-  abandoned: "Stopped",
-  superseded: "Replaced by a newer run",
-};
-
-const STATUS_PHASE: Record<Mission["status"], string> = {
-  draft: "Drafting the mission",
-  awaiting_criteria_approval: "Waiting for you to approve the plan",
-  running: "Doing the work",
-  reviewing: "Reviewing the results",
-  completed: "Finished",
-  completed_with_reservations: "Finished with caveats",
-  partially_completed: "Partly finished",
-  blocked: "Blocked — needs your input",
-  failed: "Ran into a problem",
-  cancelled: "Cancelled",
-};
-
-function currentPhase(mission: Mission, runtime: MissionRuntime | null | undefined): string {
-  if (runtime) return RUNTIME_PHASE[runtime.state];
-  return STATUS_PHASE[mission.status];
-}
-
 function basename(path: string): string {
   const parts = path.split(/[\\/]/).filter((part) => part.length > 0);
   return parts.length > 0 ? parts[parts.length - 1]! : path;
@@ -319,15 +365,42 @@ function buildArtifacts(
   return artifacts;
 }
 
-function buildAttention(
-  mission: Mission,
-  guardian: GuardianDecision | null | undefined,
-  pendingApprovals: readonly Approval[],
-): WebAttentionRequest[] {
+function buildAttention(input: MissionWebProjectionInput): WebAttentionRequest[] {
+  const { mission, guardian, runtime } = input;
+  const pendingApprovals = input.pendingApprovals ?? [];
   const attention: WebAttentionRequest[] = [];
 
-  // A blocked mission always leads with a blocker so the UI foregrounds it.
-  if (mission.status === "blocked") {
+  // The worker could not start (typically: no configured model provider).
+  // This is the mission's single most important surface while it lasts, and
+  // it is fully actionable: connect a provider (when that is the cause), then
+  // retry. The raw technical message rides along for the details disclosure.
+  if (runtime?.state === "blocked" && input.dispatchFailure) {
+    const providersConfigured = input.providersConfigured ?? true;
+    attention.push({
+      id: dispatchBlockerAttentionId(mission.id),
+      missionId: mission.id,
+      kind: providersConfigured ? "blocker" : "connection",
+      title: providersConfigured
+        ? "Morrow couldn't start this mission"
+        : "Connect an AI model to continue",
+      explanation: clamp(
+        providersConfigured
+          ? `The work could not be started. Your mission and everything entered so far are saved. Technical reason: ${input.dispatchFailure.message}`
+          : `Morrow needs an AI model before it can work on this mission. Your mission is saved — nothing is lost. Open Connections, add a model provider, then retry. Technical reason: ${input.dispatchFailure.message}`,
+        2000,
+      ),
+      recommendation: providersConfigured
+        ? "Retry the mission. If it fails again, check the provider's status on the Connections page."
+        : "Add a provider on the Connections page (an API key or a local Ollama server), then retry the mission.",
+      choices: [
+        { id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false },
+      ],
+      canContinueElsewhere: false,
+      createdAt: input.dispatchFailure.at,
+    });
+  } else if (mission.status === "blocked" || runtime?.state === "blocked") {
+    // Any other blocked mission still leads with a blocker so the UI
+    // foregrounds it.
     const blockedDetails = guardian?.blocked.map((item) => item.detail).filter((d) => d.length > 0) ?? [];
     const explanation = blockedDetails.length > 0
       ? blockedDetails.join(" ")
@@ -339,7 +412,34 @@ function buildAttention(
       title: "Mission is blocked",
       explanation: clamp(explanation, 2000),
       recommendation: null,
-      choices: [],
+      choices: runtime?.state === "blocked"
+        ? [{ id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false }]
+        : [],
+      canContinueElsewhere: false,
+      createdAt: mission.updatedAt,
+    });
+  }
+
+  // The plan approval gate: proposed success criteria await a human decision.
+  if (mission.status === "awaiting_criteria_approval") {
+    const proposed = mission.criteria.filter((criterion) => criterion.state === "proposed" || criterion.state === "approved");
+    const preview = proposed.slice(0, 3).map((criterion) => criterion.description).join(" · ");
+    attention.push({
+      id: planApprovalAttentionId(mission.id),
+      missionId: mission.id,
+      kind: "approval",
+      title: "Review and approve the plan",
+      explanation: clamp(
+        proposed.length > 0
+          ? `Morrow proposes ${proposed.length} success requirement${proposed.length === 1 ? "" : "s"} for this mission: ${preview}`
+          : "Morrow prepared a plan for this mission and is waiting for your approval before starting.",
+        2000,
+      ),
+      recommendation: "Approve to start the work, or decline to cancel the mission.",
+      choices: [
+        { id: "approve", label: "Approve and start", description: "Morrow begins working immediately.", recommended: true, destructive: false },
+        { id: "deny", label: "Cancel mission", description: "Stops this mission. Your objective stays saved in the timeline.", recommended: false, destructive: true },
+      ],
       canContinueElsewhere: false,
       createdAt: mission.updatedAt,
     });
@@ -397,8 +497,19 @@ function buildVerification(
   const caveats: string[] = [];
   if (state !== "passed") {
     for (const risk of result?.unresolvedRisks ?? []) caveats.push(clamp(risk, 1000));
-    for (const item of guardian?.failed ?? []) caveats.push(clamp(item.detail, 1000));
-    for (const item of guardian?.blocked ?? []) caveats.push(clamp(item.detail, 1000));
+    // Guardian operation entries are engineering audit strings ("Operation
+    // ended failed."). When the mission has not started real work yet they
+    // explain nothing on their own; the attention surface carries the real,
+    // actionable cause, so only criterion/task-level guardian details remain
+    // here as caveats.
+    for (const item of guardian?.failed ?? []) {
+      if (item.kind === "operation") continue;
+      caveats.push(clamp(item.detail, 1000));
+    }
+    for (const item of guardian?.blocked ?? []) {
+      if (item.kind === "operation") continue;
+      caveats.push(clamp(item.detail, 1000));
+    }
   }
 
   const summary = result?.summary ?? "";
@@ -412,14 +523,21 @@ function buildVerification(
   };
 }
 
+const ACTIVE_RUNTIME_STATES: ReadonlySet<MissionRuntime["state"]> = new Set([
+  "orienting", "planning", "executing", "validating", "waiting_for_tool", "recovering", "replanning",
+]);
+
 function buildCurrentWork(
   mission: Mission,
+  runtime: MissionRuntime | null | undefined,
   criteria: readonly MissionCriterion[],
   events: readonly MissionEvent[],
 ): string | null {
   const active = criteria.find((criterion) => criterion.state === "in_progress");
   if (active) return clamp(active.description, 2000);
-  if (mission.status === "running" && events.length > 0) {
+  const working = mission.status === "running"
+    || (runtime !== null && runtime !== undefined && ACTIVE_RUNTIME_STATES.has(runtime.state));
+  if (working && events.length > 0) {
     const last = [...events].sort((a, b) => a.sequence - b.sequence).at(-1);
     if (last && last.summary.trim().length > 0) return clamp(last.summary.trim(), 2000);
   }
@@ -437,7 +555,7 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
   const verified = guardianPassed && !hasFailedCriterion;
 
   const completedMilestones = criteria.filter((criterion) => milestoneState(criterion.state) === "completed").length;
-  const attention = buildAttention(mission, input.guardian, input.pendingApprovals ?? []);
+  const attention = buildAttention(input);
 
   const sortedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
   const latestEvent = sortedEvents.at(-1);
@@ -449,6 +567,11 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
       )
     : null;
 
+  const presentation = derivePresentation(mission, input.runtime, verified);
+  const execution = mission.execution;
+  const modelLabel = execution.model
+    ?? (execution.providerId ? execution.providerId : `${execution.preset} preset`);
+
   return {
     version: 1,
     id: mission.id,
@@ -456,8 +579,9 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
     workspaceId: input.workspaceId,
     title: clamp(input.title ?? deriveTitle(mission.objective, mission.id), 160),
     objective: mission.objective,
-    state: uiState(mission.status, verified),
-    currentPhase: clamp(currentPhase(mission, input.runtime), 160),
+    state: presentation.state,
+    currentPhase: clamp(presentation.phase, 160),
+    modelLabel: clamp(modelLabel, 160),
     latestActivity,
     attentionCount: attention.length,
     completedMilestones,
@@ -478,9 +602,9 @@ export function projectMissionForWeb(input: MissionWebProjectionInput): WebMissi
     version: 1,
     summary: projectMissionSummaryForWeb(input),
     milestones: buildMilestones(criteria),
-    currentWork: buildCurrentWork(mission, criteria, events),
+    currentWork: buildCurrentWork(mission, input.runtime, criteria, events),
     recentActivity: buildActivity(mission.id, events),
-    attention: buildAttention(mission, input.guardian, input.pendingApprovals ?? []),
+    attention: buildAttention(input),
     artifacts: buildArtifacts(mission, evidence, result),
     verification: buildVerification(mission, criteria, evidence, input.guardian, result),
   };

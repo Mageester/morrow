@@ -17,6 +17,8 @@ import { useRuntimeStatus } from "../state/runtime-status.js";
 interface NavigationItem {
   icon: LucideIcon;
   label: string;
+  /** Marks sections that are visibly incomplete so they never masquerade as finished product areas. */
+  preview?: boolean;
   to:
     | "/"
     | "/missions"
@@ -30,14 +32,14 @@ interface NavigationItem {
 const primaryNavigation: NavigationItem[] = [
   { icon: Home, label: "Home", to: "/" },
   { icon: Workflow, label: "Missions", to: "/missions" },
-  { icon: Library, label: "Library", to: "/library" },
-  { icon: CalendarClock, label: "Automations", to: "/automations" },
+  { icon: Cable, label: "Connections", to: "/connections" },
+  { icon: Settings, label: "Settings", to: "/settings" },
 ];
 
 const secondaryNavigation: NavigationItem[] = [
-  { icon: BookOpen, label: "Workspace", to: "/workspace" },
-  { icon: Cable, label: "Connections", to: "/connections" },
-  { icon: Settings, label: "Settings", to: "/settings" },
+  { icon: Library, label: "Library", preview: true, to: "/library" },
+  { icon: CalendarClock, label: "Automations", preview: true, to: "/automations" },
+  { icon: BookOpen, label: "Workspace", preview: true, to: "/workspace" },
 ];
 
 const runtimeLabels = {
@@ -77,16 +79,18 @@ function getRouteTitle(pathname: string): string {
   return routeTitles[routePath] ?? "Morrow";
 }
 
-function NavigationLink({ icon: Icon, label, to }: NavigationItem) {
+function NavigationLink({ icon: Icon, label, preview, to }: NavigationItem) {
   return (
     <Link
       activeOptions={{ exact: to === "/" }}
       activeProps={{ "aria-current": "page" }}
       className="morrow-nav__link"
+      data-preview={preview ? "true" : undefined}
       to={to}
     >
-      <Icon aria-hidden="true" size={19} strokeWidth={1.8} />
+      <Icon aria-hidden="true" size={17} strokeWidth={1.8} />
       <span>{label}</span>
+      {preview ? <span className="morrow-nav__soon">Soon</span> : null}
     </Link>
   );
 }
@@ -116,16 +120,12 @@ export function AppShell() {
       <aside className="morrow-sidebar">
         <div className="morrow-brand">
           <span aria-hidden="true" className="morrow-brand__mark">
-            <Bot size={22} strokeWidth={1.8} />
+            <Bot size={18} strokeWidth={1.8} />
           </span>
           <div>
             <strong>Morrow</strong>
-            <span>Private intelligence</span>
+            <span>Personal workspace</span>
           </div>
-        </div>
-
-        <div className="morrow-workspace-switcher">
-          <span>Personal workspace</span>
         </div>
 
         <nav aria-label="Primary" className="morrow-nav">

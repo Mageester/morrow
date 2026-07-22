@@ -10,7 +10,7 @@ import { HomePage } from "../features/home/home-page.js";
 import { MissionPage } from "../features/missions/mission-page.js";
 import { MissionsPage } from "../features/missions/missions-page.js";
 import { ComingSoonPage } from "../features/placeholders/coming-soon-page.js";
-import { ConnectionsPage } from "../features/placeholders/connections-page.js";
+import { ConnectionsPage } from "../features/connections/connections-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
 import { AppShell } from "./app-shell.js";
 

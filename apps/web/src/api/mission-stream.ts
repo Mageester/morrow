@@ -18,9 +18,9 @@ export type MissionStreamStatus =
 
 const statusMessages: Record<MissionStreamStatus, string> = {
   connecting: "Connecting…",
-  synchronized: "Synchronized",
+  synchronized: "Live",
   reconnecting: "Reconnecting…",
-  offline: "Offline — showing last synchronized state",
+  offline: "Offline — showing last saved state",
 };
 
 export function useMissionStream(missionId: string) {

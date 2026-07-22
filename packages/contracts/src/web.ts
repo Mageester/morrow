@@ -31,6 +31,8 @@ export const WebMissionSummarySchema = z.object({
   objective: z.string().min(1).max(8000),
   state: WebMissionUiStateSchema,
   currentPhase: z.string().min(1).max(160),
+  /** Human-readable model/preset the mission executes with (e.g. "claude-sonnet-5" or "balanced preset"). */
+  modelLabel: z.string().min(1).max(160),
   latestActivity: z.string().max(1000).nullable(),
   attentionCount: z.number().int().nonnegative(),
   completedMilestones: z.number().int().nonnegative(),

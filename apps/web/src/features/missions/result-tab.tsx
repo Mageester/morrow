@@ -1,4 +1,5 @@
 import type { WebMissionArtifact, WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
+import { Surface } from "@morrow/ui";
 import { missionStateLabels } from "./mission-state.js";
 import { ArtifactList } from "./work-tab.js";
 
@@ -61,7 +62,7 @@ function normalizedCaveats(
   return values;
 }
 
-export function ResultTab({
+export function ResultPanel({
   artifacts,
   missionState,
   verification,
@@ -77,7 +78,12 @@ export function ResultTab({
   );
 
   return (
-    <section aria-labelledby="mission-result-heading" className="morrow-mission-result">
+    <Surface
+      aria-labelledby="mission-result-heading"
+      className="morrow-mission-result"
+      padding="large"
+      role="region"
+    >
       <h2 id="mission-result-heading">
         {completionLabel(verification.state, missionState)}
       </h2>
@@ -102,19 +108,16 @@ export function ResultTab({
         </ul>
       </section>
 
-      <section aria-labelledby="mission-caveats-heading">
-        <h3 id="mission-caveats-heading">Caveats and unresolved risks</h3>
-        {caveats.length > 0 ? (
+      {caveats.length > 0 ? (
+        <section aria-labelledby="mission-caveats-heading">
+          <h3 id="mission-caveats-heading">Caveats and unresolved risks</h3>
           <ul className="morrow-mission-result__caveats">
             {caveats.map((caveat, index) => (
               <li key={`${index}-${caveat}`}>{caveat}</li>
             ))}
           </ul>
-        ) : (
-          <p>No caveats were reported.</p>
-        )}
-      </section>
-
-    </section>
+        </section>
+      ) : null}
+    </Surface>
   );
 }

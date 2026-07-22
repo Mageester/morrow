@@ -185,7 +185,7 @@ describe("useMissionStream", () => {
     );
 
     act(() => FakeEventSource.instances[1]?.emit("open"));
-    expect(screen.getByText("Synchronized")).toHaveAttribute(
+    expect(screen.getByText("Live")).toHaveAttribute(
       "data-status",
       "synchronized",
     );
@@ -217,7 +217,7 @@ describe("useMissionStream", () => {
 
     expect(FakeEventSource.instances).toHaveLength(0);
     expect(
-      screen.getByText("Offline — showing last synchronized state"),
+      screen.getByText("Offline — showing last saved state"),
     ).toHaveAttribute("data-status", "offline");
 
     setOnline(true);
@@ -231,7 +231,7 @@ describe("useMissionStream", () => {
     expect(source?.closed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
     expect(
-      screen.getByText("Offline — showing last synchronized state"),
+      screen.getByText("Offline — showing last saved state"),
     ).toBeVisible();
   });
 

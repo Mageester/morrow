@@ -6,13 +6,15 @@ const state = loadState();
 test.describe.configure({ mode: "serial" });
 
 test.describe("Morrow web vertical slice", () => {
-  test("Home renders the universal objective-first composer and approved navigation", async ({ page }) => {
+  test("Home renders the objective-first composer and the reordered navigation", async ({ page }) => {
     await page.goto("/app/");
     await expect(page.getByRole("heading", { name: "What should Morrow accomplish?" })).toBeVisible();
     const nav = page.getByRole("navigation", { name: "Primary" });
-    for (const label of ["Home", "Missions", "Library", "Automations", "Workspace", "Connections", "Settings"]) {
-      await expect(nav.getByRole("link", { name: label })).toBeVisible();
+    // Ready areas lead; unfinished areas follow and are honestly marked "Soon".
+    for (const label of ["Home", "Missions", "Connections", "Settings", "Library", "Automations", "Workspace"]) {
+      await expect(nav.getByRole("link", { name: new RegExp(`^${label}`) })).toBeVisible();
     }
+    await expect(nav.getByRole("link", { name: /^Library/ })).toHaveAttribute("data-preview", "true");
     // No task-type selector — Morrow is a general agent, not a coding-only tool.
     await expect(page.getByText(/Coding|Research|Documents/)).toHaveCount(0);
   });
@@ -25,11 +27,13 @@ test.describe("Morrow web vertical slice", () => {
     await start.click();
 
     await expect(page).toHaveURL(/\/app\/missions\/mission-/);
-    await expect(page.getByRole("heading", { name: "Compare three note-taking apps and recommend one." })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Compare three note-taking apps and recommend one." }),
+    ).toBeVisible();
 
-    // At least one durable, human-readable activity item exists.
-    await page.getByRole("tab", { name: "Activity" }).click();
-    await expect(page.getByRole("list", { name: "Mission activity" }).getByRole("listitem").first()).toBeVisible();
+    // The live progress stream carries a durable, human-readable activity item
+    // inline — there is no tab to hunt through.
+    await expect(page.getByRole("heading", { name: "Live progress" })).toBeVisible();
     await expect(page.getByText(/Mission created:/)).toBeVisible();
   });
 
@@ -50,48 +54,39 @@ test.describe("Morrow web vertical slice", () => {
     await expect(page.getByText("Runtime online")).toBeVisible();
   });
 
-  test("resolves a seeded attention request without auto-selecting the recommendation", async ({ page }) => {
+  test("surfaces a seeded decision in the Waiting-on-you region without auto-selecting it", async ({ page }) => {
     await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
-    const card = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Waiting for your approval" }) });
+    const region = page.getByRole("region", { name: "Waiting on you" });
+    const card = region
+      .getByRole("article")
+      .filter({ has: page.getByRole("heading", { name: "Waiting for your approval" }) });
     await expect(card).toBeVisible();
     // The recommendation is shown but never auto-selected/submitted.
     await expect(card.getByRole("button", { name: /Approve/ })).toBeEnabled();
     await expect(card.getByRole("button", { name: "Deny" })).toBeEnabled();
 
     await card.getByRole("button", { name: /Approve/ }).click();
-    // After a durable resolution the request is no longer pending.
-    await expect(page.getByText("No attention is needed right now.")).toBeVisible();
+    // After a durable resolution the decision no longer waits on the user.
+    await expect(page.getByRole("heading", { name: "Waiting for your approval" })).toHaveCount(0);
   });
 
-  test("inspects the seeded result artifact through the Work tab", async ({ page }) => {
+  test("surfaces the seeded result artifact as a deliverable", async ({ page }) => {
     await page.goto(`/app/missions/${state.seed.resultMissionId}`);
-    await page.getByRole("tab", { name: "Work" }).click();
-    // The artifact title is an <h3> in the Work tab (an <h4> in Result); target
-    // the Work-tab heading level to disambiguate.
-    await expect(page.getByRole("heading", { name: state.seed.artifactTitle, level: 3 })).toBeVisible();
+    // The completed mission leads with its result panel; the artifact is a
+    // heading there, and also listed in the context rail's Deliverables.
+    await expect(
+      page.getByRole("heading", { name: state.seed.artifactTitle, level: 4 }),
+    ).toBeVisible();
+    const rail = page.getByRole("complementary", { name: "Mission context" });
+    await expect(rail.getByText(state.seed.artifactTitle)).toBeVisible();
   });
 
   test("Result honestly reports completion with caveats and shows evidence", async ({ page }) => {
     await page.goto(`/app/missions/${state.seed.resultMissionId}`);
     await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
-    await page.getByRole("tab", { name: "Result" }).click();
-    const resultPanel = page.getByRole("tabpanel").filter({ has: page.getByRole("heading", { name: "Verification" }) });
-    await expect(resultPanel.getByRole("heading", { name: "Verification" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Verification" })).toBeVisible();
     // Honest: never claims a plain "Completed and verified" headline for a caveated mission.
     await expect(page.getByRole("heading", { name: "Completed and verified", exact: true })).toHaveCount(0);
-  });
-
-  test("supports keyboard-only navigation across the mission tabs", async ({ page }) => {
-    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
-    const overview = page.getByRole("tab", { name: "Overview" });
-    await overview.focus();
-    await expect(overview).toBeFocused();
-    await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab", { name: "Activity" })).toBeFocused();
-    await page.keyboard.press("End");
-    await expect(page.getByRole("tab", { name: "Result" })).toBeFocused();
-    await page.keyboard.press("Home");
-    await expect(page.getByRole("tab", { name: "Overview" })).toBeFocused();
   });
 
   test("never fabricates a numeric progress percentage", async ({ page }) => {

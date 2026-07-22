@@ -42,6 +42,7 @@ function mission(
     currentPhase: "Planning",
     id,
     latestActivity: "Morrow is getting started.",
+    modelLabel: "claude-sonnet-5",
     objective: `Objective for ${id}`,
     projectId: project.id,
     state: "working",

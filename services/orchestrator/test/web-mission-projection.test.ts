@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { z } from "zod";
 import {
+  MissionRuntimeSchema,
   MissionSchema,
   WebMissionSnapshotSchema,
   WebMissionSummarySchema,
@@ -9,6 +10,7 @@ import {
   type MissionCriterion,
   type MissionEvent,
   type MissionEvidence,
+  type MissionRuntime,
 } from "@morrow/contracts";
 import type { GuardianDecision } from "../src/mission/guardian.js";
 import {
@@ -285,5 +287,136 @@ describe("projectMissionSummaryForWeb", () => {
     expect(summary).toEqual(projectMissionForWeb(runningFixture).summary);
     expect(summary.projectId).toBe(PROJECT_ID);
     expect(summary.workspaceId).toBe(WORKSPACE_ID);
+  });
+});
+
+// ── Unified state derivation ────────────────────────────────────────────────
+// The mission aggregate status and the runtime machine are reconciled into ONE
+// UI state and ONE phase. These tests pin the exact contradictions the redesign
+// set out to eliminate (the "Draft" + "Doing the work" bug) and the actionable
+// provider-missing / recoverable surfaces that replaced "Operation ended failed".
+
+function runtime(
+  state: MissionRuntime["state"],
+  overrides: Partial<MissionRuntime> = {},
+): MissionRuntime {
+  return MissionRuntimeSchema.parse({
+    version: 1,
+    missionId: "mission-1",
+    state,
+    finalDisposition: null,
+    activeOperationId: null,
+    activeTaskId: null,
+    wakeReason: null,
+    transitionSequence: 1,
+    operationSequence: 1,
+    leaseOwner: null,
+    leaseGeneration: 1,
+    leaseExpiresAt: null,
+    createdAt: T0,
+    updatedAt: T1,
+    ...overrides,
+  });
+}
+
+describe("unified mission state derivation", () => {
+  it("never contradicts itself: a draft mission whose runtime is executing reads as working", () => {
+    const input: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "draft", criteria: [] }),
+      events: [event(1, "mission.created", "Mission created")],
+      guardian: null,
+      runtime: runtime("executing"),
+    };
+    const snapshot = projectMissionForWeb(input);
+    expect(snapshot.summary.state).toBe("working");
+    expect(snapshot.summary.currentPhase).toBe("Doing the work");
+    // The forbidden combination must never co-occur.
+    expect(
+      snapshot.summary.state === "draft" && snapshot.summary.currentPhase === "Doing the work",
+    ).toBe(false);
+    expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
+  });
+
+  it("a blocked runtime overrides a still-running mission status", () => {
+    const input: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [event(1, "mission.started", "Mission started")],
+      guardian: null,
+      runtime: runtime("blocked"),
+    };
+    const snapshot = projectMissionForWeb(input);
+    expect(snapshot.summary.state).toBe("blocked");
+  });
+
+  it("presents an actionable connection setup state when no provider is configured", () => {
+    const input: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [event(1, "mission.started", "Mission started")],
+      guardian: null,
+      runtime: runtime("blocked"),
+      dispatchFailure: {
+        message: "OpenAI is not configured (OPENAI_API_KEY missing)",
+        at: T2,
+      },
+      providersConfigured: false,
+    };
+    const snapshot = projectMissionForWeb(input);
+    expect(snapshot.summary.state).toBe("blocked");
+    const lead = snapshot.attention[0];
+    expect(lead?.kind).toBe("connection");
+    expect(lead?.title).toMatch(/connect an ai model/i);
+    expect(lead?.explanation.toLowerCase()).toContain("open connections");
+    expect(lead?.choices.some((c) => c.id === "retry")).toBe(true);
+    // The raw technical reason rides along for the details disclosure, but the
+    // headline is human, not an engineering audit string.
+    expect(lead?.explanation).toContain("OPENAI_API_KEY missing");
+    expect(lead?.title.toLowerCase()).not.toContain("operation ended failed");
+    expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
+  });
+
+  it("presents a recoverable blocker when a provider is configured but dispatch still failed", () => {
+    const input: MissionWebProjectionInput = {
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [event(1, "mission.started", "Mission started")],
+      guardian: null,
+      runtime: runtime("blocked"),
+      dispatchFailure: { message: "connect ECONNREFUSED 127.0.0.1:11434", at: T2 },
+      providersConfigured: true,
+    };
+    const snapshot = projectMissionForWeb(input);
+    const lead = snapshot.attention[0];
+    expect(lead?.kind).toBe("blocker");
+    expect(lead?.choices.some((c) => c.id === "retry")).toBe(true);
+    expect(lead?.canContinueElsewhere).toBe(false);
+  });
+
+  it("carries a human-readable model label for the active execution", () => {
+    const withModel = projectMissionSummaryForWeb({
+      workspaceId: WORKSPACE_ID,
+      mission: mission({
+        status: "running",
+        criteria: [],
+        execution: { model: "claude-sonnet-5", providerId: "anthropic" },
+      }),
+      events: [],
+      guardian: null,
+      runtime: runtime("executing"),
+    });
+    expect(withModel.modelLabel).toBe("claude-sonnet-5");
+
+    const withoutModel = projectMissionSummaryForWeb({
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [],
+      guardian: null,
+    });
+    // Falls back to the preset name — never empty — so the header always names
+    // something truthful.
+    expect(withoutModel.modelLabel.length).toBeGreaterThan(0);
+    expect(withoutModel.modelLabel).toBe("balanced preset");
   });
 });

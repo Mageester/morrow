@@ -41,6 +41,11 @@ describe("Provider / preset / memory API", () => {
       expect(JSON.stringify(body)).not.toContain("sk-route-leak-test");
       expect(body.find((p: any) => p.id === "openai").capabilities).toBeTruthy();
       expect(body.find((p: any) => p.id === "openai").authMode).toBe("openai-api-key");
+      // Readiness is reported as a plain boolean — the exact signal the composer
+      // and the mission projection consume to decide whether a mission can run.
+      // It must be accurate (openai has a key here) but must never carry the key.
+      for (const provider of body) expect(typeof provider.configured).toBe("boolean");
+      expect(body.find((p: any) => p.id === "openai").configured).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = prev;

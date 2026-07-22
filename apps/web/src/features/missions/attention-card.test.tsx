@@ -64,6 +64,7 @@ function snapshot(
       currentPhase: request ? "Waiting for approval" : "Continuing",
       id: "mission-42",
       latestActivity: null,
+      modelLabel: "claude-sonnet-5",
       objective: "Prepare an evidence-backed report.",
       projectId: "project-1",
       state: request ? "needs_input" : "working",

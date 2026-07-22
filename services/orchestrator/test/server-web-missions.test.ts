@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
+import { missionRuntimeRepository } from "../src/repositories/mission-runtime.js";
 import { WebMissionSnapshotSchema, WebMissionSummarySchema, WebWorkspaceSchema } from "@morrow/contracts";
 
 describe("Web mission REST API", () => {
@@ -174,5 +175,45 @@ describe("Web mission REST API", () => {
     expect(res.statusCode).toBe(404);
     const row = db.prepare("SELECT status FROM approvals WHERE id=?").get("approval-x") as { status: string };
     expect(row.status).toBe("pending");
+  });
+
+  it("refuses to retry a mission that is not blocked", async () => {
+    const missionId = (await createMission()).json().summary.id;
+    // A freshly created mission has no blocked runtime, so retry is a no-op the
+    // API must reject rather than silently resurrecting anything.
+    const res = await app.inject({ method: "POST", url: `/api/web/missions/${missionId}/retry` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("MISSION_NOT_RETRYABLE");
+  });
+
+  it("revives a blocked mission through the supported retry transition and wakes the controller", async () => {
+    const missionId = (await createMission()).json().summary.id;
+    // Seed the exact runtime state a failed worker dispatch leaves behind. The
+    // mission already owns a runtime row from creation, so move it to blocked
+    // directly rather than inserting a duplicate.
+    db.prepare("UPDATE mission_runtime SET state='blocked', transition_sequence=1 WHERE mission_id=?").run(missionId);
+
+    const res = await app.inject({ method: "POST", url: `/api/web/missions/${missionId}/retry` });
+    expect(res.statusCode).toBe(200);
+    WebMissionSnapshotSchema.parse(res.json());
+
+    // The runtime advanced along the one sanctioned path, and the durable owner
+    // was woken to pick the work back up.
+    const runtime = missionRuntimeRepository(db).get(missionId);
+    expect(runtime?.state).toBe("replanning");
+    expect(missionControllerRunner.wake).toHaveBeenCalledWith(missionId);
+  });
+
+  it("stops an in-flight mission and refuses to stop it again once terminal", async () => {
+    const missionId = (await createMission()).json().summary.id;
+
+    const stopped = await app.inject({ method: "POST", url: `/api/web/missions/${missionId}/stop` });
+    expect(stopped.statusCode).toBe(200);
+    expect(WebMissionSnapshotSchema.parse(stopped.json()).summary.state).toBe("cancelled");
+    expect(missionControllerRunner.cancel).toHaveBeenCalledWith(missionId);
+
+    const again = await app.inject({ method: "POST", url: `/api/web/missions/${missionId}/stop` });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.code).toBe("MISSION_ALREADY_FINISHED");
   });
 });

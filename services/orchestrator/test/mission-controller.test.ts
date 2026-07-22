@@ -179,6 +179,42 @@ describe("durable mission controller", () => {
     expect(original.dispatchWorker).not.toHaveBeenCalled();
   });
 
+  it("parks the mission in blocked with a durable recovery when the worker cannot be dispatched", async () => {
+    // The root cause of the original "Draft" + "Doing the work" + "Operation
+    // ended failed" bug: a dispatch that throws (typically no configured model
+    // provider) must NOT bubble up and leave the runtime mid-execution. It has
+    // to land in `blocked` with a durable, user-visible recovery.
+    const original = harness("executing");
+    const recordDispatchFailure = vi.fn();
+    const controller = new MissionController({
+      runtime: original.runtime,
+      loadSnapshot: () => original.current,
+      dispatchWorker: () => {
+        throw new Error("OpenAI is not configured (OPENAI_API_KEY missing)");
+      },
+      finalizeMission: original.finalizeMission,
+      resolveApproval: original.resolveApproval,
+      recordDispatchFailure,
+      now: () => now,
+    });
+
+    const result = await controller.tick("mission-1", original.fence);
+
+    expect(result.runtime.state).toBe("blocked");
+    expect(recordDispatchFailure).toHaveBeenCalledWith(
+      "mission-1",
+      expect.stringContaining("OPENAI_API_KEY"),
+    );
+    const operations = original.runtime.listOperations("mission-1");
+    expect(
+      operations.some(
+        (operation) =>
+          operation.kind === "dispatch_worker" &&
+          (operation.status === "failed" || operation.status === "unknown_effect"),
+      ),
+    ).toBe(true);
+  });
+
   it("moves a completed worker candidate into validation", async () => {
     const { controller, fence } = harness("executing", {
       tasks: [{ id: "task-1", status: "completed" }],

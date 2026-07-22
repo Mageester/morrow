@@ -2,11 +2,11 @@ import type { WebMissionUiState } from "@morrow/contracts";
 
 /** Consumer-facing labels for every mission UI state. */
 export const missionStateLabels: Record<WebMissionUiState, string> = {
-  draft: "Draft",
-  needs_input: "Needs input",
+  draft: "Preparing",
+  needs_input: "Needs your input",
   working: "Working",
   reviewing: "Reviewing",
-  blocked: "Blocked",
+  blocked: "Action needed",
   failed_recoverable: "Failed, recoverable",
   failed: "Failed",
   completed_verified: "Completed and verified",

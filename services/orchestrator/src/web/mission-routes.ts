@@ -11,6 +11,7 @@ import {
 } from "@morrow/contracts";
 import { ApiError } from "../server.js";
 import { ensureCortexSpecialistAgents } from "../mission/specialists.js";
+import { MISSION_RUNTIME_USER_RETRY_CAUSE } from "../mission/runtime-state.js";
 import type { GuardianDecision } from "../mission/guardian.js";
 import type { MissionsRepository } from "../repositories/missions.js";
 import type { projectRepository } from "../repositories/projects.js";
@@ -18,9 +19,12 @@ import type { approvalsRepository } from "../repositories/approvals.js";
 import type { agentsRepository } from "../repositories/agents.js";
 import type { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import type { MissionService } from "../mission/service.js";
+import { listProviderStatuses } from "../provider/registry.js";
 import {
   projectMissionForWeb,
   projectMissionSummaryForWeb,
+  planApprovalAttentionId,
+  dispatchBlockerAttentionId,
   type MissionWebProjectionInput,
 } from "./mission-projection.js";
 
@@ -39,7 +43,9 @@ export interface WebMissionRouteDependencies {
   missionRuntime: ReturnType<typeof missionRuntimeRepository>;
   missionService: MissionService;
   /** Wake durable mission ownership after a create or an attention resolution. */
-  missionControllerRunner?: { wake(missionId: string): void };
+  missionControllerRunner?: { wake(missionId: string): void; cancel?(missionId: string): void };
+  /** Provider environment; injectable for tests. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
   /** Header/body idempotency-key reader (shared with the task routes). */
   readIdempotencyKey(request: { headers?: Record<string, unknown>; body?: unknown }): string | undefined;
   /** Injectable clock for deterministic tests. */
@@ -94,6 +100,9 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
   // Assemble the pure projection input from persisted state alone. Throws a
   // 404 ApiError when the mission (or its project) has gone, so every route can
   // rely on a fully-formed input.
+  const providersConfigured = (): boolean =>
+    listProviderStatuses(deps.env ?? process.env).some((status) => status.configured);
+
   const projectionInput = (missionId: string): MissionWebProjectionInput => {
     const mission = deps.missions.get(missionId);
     if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
@@ -108,6 +117,16 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
     } catch {
       guardian = null;
     }
+    // The most recent failed dispatch operation, if any: the projection turns
+    // it into an actionable recovery surface instead of a buried caveat.
+    const failedDispatch = deps.missionRuntime
+      .listOperations(missionId)
+      .filter((operation) => operation.kind === "dispatch_worker"
+        && (operation.status === "failed" || operation.status === "unknown_effect"))
+      .at(-1);
+    const dispatchMessage = typeof failedDispatch?.result?.["message"] === "string"
+      ? (failedDispatch.result["message"] as string)
+      : null;
     return {
       mission,
       workspaceId: deriveWorkspace(project).id,
@@ -115,6 +134,13 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
       guardian,
       pendingApprovals: pendingApprovalsForMission(missionId),
       runtime: deps.missionRuntime.get(missionId),
+      dispatchFailure: failedDispatch
+        ? {
+            message: dispatchMessage ?? "The mission worker could not be started.",
+            at: failedDispatch.completedAt ?? failedDispatch.updatedAt,
+          }
+        : null,
+      providersConfigured: providersConfigured(),
     };
   };
 
@@ -193,6 +219,52 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
     return projectMissionForWeb(projectionInput(missionId));
   });
 
+  // ── Mission retry ───────────────────────────────────────────────────────────
+  // Explicit, user-driven revival of a mission whose runtime is blocked (for
+  // example: the worker could not start because no model provider was
+  // configured). The runtime machine only permits this exact transition with
+  // the user-retry cause, so nothing can silently resurrect a blocked mission.
+  const retryBlockedMission = (missionId: string) => {
+    const mission = deps.missions.get(missionId);
+    if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
+    const runtime = deps.missionRuntime.get(missionId);
+    if (!runtime || runtime.state !== "blocked") {
+      throw new ApiError(409, "This mission is not waiting for a retry.", "MISSION_NOT_RETRYABLE");
+    }
+    deps.missionRuntime.transition({
+      missionId,
+      from: "blocked",
+      to: "replanning",
+      cause: MISSION_RUNTIME_USER_RETRY_CAUSE,
+      actor: "user",
+      details: {},
+      now: now(),
+    });
+    deps.missions.appendEvent(missionId, "mission.recovery_applied", "You asked Morrow to try again", { action: "user_retry" }, now());
+    deps.missionControllerRunner?.wake(missionId);
+    return projectMissionForWeb(projectionInput(missionId));
+  };
+
+  app.post("/api/web/missions/:missionId/retry", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    return retryBlockedMission(missionId);
+  });
+
+  // ── Mission stop ────────────────────────────────────────────────────────────
+  app.post("/api/web/missions/:missionId/stop", async (request) => {
+    const { missionId } = request.params as { missionId: string };
+    const mission = deps.missions.get(missionId);
+    if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
+    if (["completed", "completed_with_reservations", "partially_completed", "cancelled", "failed"].includes(mission.status)) {
+      throw new ApiError(409, "This mission has already finished.", "MISSION_ALREADY_FINISHED");
+    }
+    deps.missionService.cancel(missionId);
+    deps.missionControllerRunner?.cancel?.(missionId);
+    // Wake once so the controller can park the runtime machine in `cancelled`.
+    deps.missionControllerRunner?.wake(missionId);
+    return projectMissionForWeb(projectionInput(missionId));
+  });
+
   // ── Attention resolution ────────────────────────────────────────────────────
   app.post("/api/web/missions/:missionId/attention/:attentionId/resolve", async (request, reply) => {
     const { missionId, attentionId } = request.params as { missionId: string; attentionId: string };
@@ -200,6 +272,34 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
 
     const mission = deps.missions.get(missionId);
     if (!mission) throw new ApiError(404, "Mission not found", "NOT_FOUND");
+
+    // The dispatch blocker is a projection-synthesized attention request; its
+    // only choice is the same explicit user retry the /retry endpoint offers.
+    if (attentionId === dispatchBlockerAttentionId(missionId) || attentionId === `${missionId}:blocker`) {
+      if (body.choiceId !== "retry") throw new ApiError(400, `Unknown choice "${body.choiceId}"`, "INVALID_CHOICE");
+      return retryBlockedMission(missionId);
+    }
+
+    // The mission-level plan approval is a projection-synthesized attention
+    // request (not an approvals-table row): approving it approves the criteria
+    // contract and starts execution.
+    if (attentionId === planApprovalAttentionId(missionId)) {
+      if (mission.status !== "awaiting_criteria_approval") {
+        throw new ApiError(409, "The plan is no longer waiting for approval.", "ATTENTION_ALREADY_RESOLVED");
+      }
+      if (body.choiceId === "approve") {
+        deps.missionService.approveCriteria(missionId);
+        deps.missionControllerRunner?.wake(missionId);
+        return projectMissionForWeb(projectionInput(missionId));
+      }
+      if (body.choiceId === "deny") {
+        deps.missionService.cancel(missionId);
+        deps.missionControllerRunner?.cancel?.(missionId);
+        deps.missionControllerRunner?.wake(missionId);
+        return projectMissionForWeb(projectionInput(missionId));
+      }
+      throw new ApiError(400, `Unknown choice "${body.choiceId}"`, "INVALID_CHOICE");
+    }
 
     const approval = deps.approvals.get(attentionId);
     if (!approval) throw new ApiError(404, "Attention request not found", "NOT_FOUND");

@@ -1,4 +1,4 @@
-import type { WebMissionSnapshot } from "@morrow/contracts";
+import type { WebAttentionRequest, WebMissionSnapshot } from "@morrow/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -7,7 +7,6 @@ import {
 } from "@tanstack/react-router";
 import {
   act,
-  fireEvent,
   render,
   screen,
   waitFor,
@@ -116,6 +115,7 @@ function snapshot(): WebMissionSnapshot {
       currentPhase: "Reviewing evidence",
       id: "mission-42",
       latestActivity: "Reviewed the launch evidence.",
+      modelLabel: "claude-sonnet-5",
       objective: "Prepare an evidence-backed launch brief.",
       projectId: "project-1",
       state: "working",
@@ -132,6 +132,31 @@ function snapshot(): WebMissionSnapshot {
       summary: "Evidence review is in progress.",
     },
     version: 1,
+  };
+}
+
+/** A connection-recovery attention request, exactly as the projection emits it. */
+function connectionRecovery(): WebAttentionRequest {
+  return {
+    canContinueElsewhere: false,
+    choices: [
+      {
+        description: "Restart the mission from its saved state.",
+        destructive: false,
+        id: "retry",
+        label: "Try again",
+        recommended: true,
+      },
+    ],
+    createdAt: "2026-07-21T13:32:00.000Z",
+    explanation:
+      "Morrow needs an AI model before it can work on this mission. Your mission is saved — nothing is lost. Open Connections, add a model provider, then retry. Technical reason: OpenAI is not configured (OPENAI_API_KEY missing)",
+    id: "mission-42:dispatch-blocker",
+    kind: "connection",
+    missionId: "mission-42",
+    recommendation:
+      "Add a provider on the Connections page (an API key or a local Ollama server), then retry the mission.",
+    title: "Connect an AI model to continue",
   };
 }
 
@@ -152,9 +177,14 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-function installApi(
-  missionHandler: () => Response | Promise<Response> = () => json(snapshot()),
-) {
+interface ApiHandlers {
+  mission?: () => Response | Promise<Response>;
+  stop?: () => Response | Promise<Response>;
+  retry?: () => Response | Promise<Response>;
+}
+
+function installApi(handlers: ApiHandlers = {}) {
+  const missionHandler = handlers.mission ?? (() => json(snapshot()));
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const path = String(input);
     if (path === "/api/health") {
@@ -163,10 +193,32 @@ function installApi(
     if (path === "/api/web/missions/mission-42") {
       return Promise.resolve(missionHandler());
     }
+    if (path === "/api/web/missions/mission-42/stop") {
+      return Promise.resolve((handlers.stop ?? (() => json(stoppedSnapshot())))());
+    }
+    if (path === "/api/web/missions/mission-42/retry") {
+      return Promise.resolve((handlers.retry ?? (() => json(retriedSnapshot())))());
+    }
     throw new Error(`Unexpected request: ${path}`);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function stoppedSnapshot(): WebMissionSnapshot {
+  const stopped = snapshot();
+  stopped.summary.state = "cancelled";
+  stopped.summary.currentPhase = "Stopped";
+  stopped.attention = [];
+  return stopped;
+}
+
+function retriedSnapshot(): WebMissionSnapshot {
+  const retried = snapshot();
+  retried.summary.state = "working";
+  retried.summary.currentPhase = "Doing the work";
+  retried.attention = [];
+  return retried;
 }
 
 function renderMission() {
@@ -217,159 +269,156 @@ afterEach(() => {
 });
 
 describe("MissionPage", () => {
-  it("answers the five overview questions with milestone counts and states but no fabricated percentage or estimate", async () => {
+  it("leads with one compact, authoritative header: state, phase, model — no fabricated percentage or estimate", async () => {
     installApi();
     renderMission();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
-    ).toBeVisible();
-    expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Completed milestones" })).toBeVisible();
-    expect(screen.getByText("Gather requirements")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Current work" })).toBeVisible();
-    expect(
-      screen.getByText("Comparing the draft against the launch checklist."),
-    ).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Attention needed" })).toBeVisible();
-    expect(screen.getByText("Publication decision")).toBeVisible();
-    expect(screen.getByRole("button", { name: /approve draft/i })).toHaveAttribute(
-      "data-recommended",
-      "true",
-    );
-    expect(screen.getByRole("heading", { name: "Remaining milestones" })).toBeVisible();
-    expect(screen.getByText("Review the evidence")).toBeVisible();
-    expect(screen.getByText("Running")).toBeVisible();
-    expect(screen.getByText("Pending")).toBeVisible();
-    expect(screen.getByText("Failed")).toBeVisible();
-    expect(
-      screen.getByText("2 completed · 3 remaining · 0 skipped · 5 total"),
-    ).toBeVisible();
+    const header = (
+      await screen.findByRole("heading", { level: 1, name: "Prepare the launch" })
+    ).closest("header") as HTMLElement;
+    expect(header).not.toBeNull();
+    // Breadcrumb back to the mission list.
+    expect(within(header).getByRole("link", { name: "Missions" })).toBeVisible();
+    // Exactly one mission-state label, the phase, and the active model.
+    expect(within(header).getByText("Working")).toBeVisible();
+    expect(within(header).getByText("Reviewing evidence")).toBeVisible();
+    expect(within(header).getByText("claude-sonnet-5")).toBeVisible();
+    // A running mission can be stopped from the header.
+    expect(within(header).getByRole("button", { name: "Stop" })).toBeVisible();
+    // No contradictory second state and no invented progress metrics anywhere.
+    expect(document.body).not.toHaveTextContent(/doing the work/i);
     expect(document.body).not.toHaveTextContent(/\d+\s*%|estimated|time remaining/i);
   });
 
-  it("integrates truthful failure state without inventing a background retry", async () => {
-    const failed = snapshot();
-    failed.summary.state = "failed_recoverable";
-    failed.verification.state = "failed";
-    failed.verification.summary = "The required checks did not pass.";
-    installApi(() => json(failed));
-    renderMission();
-
-    expect(
-      await screen.findByRole("heading", { name: "Failed but recoverable" }),
-    ).toBeVisible();
-    expect(screen.getByText(/no retry is running in the background/i)).toBeVisible();
-  });
-
-  it("accounts for skipped milestones separately and reconciles every milestone with the total", async () => {
-    const withSkipped = snapshot();
-    withSkipped.milestones.push({
-      evidenceIds: [],
-      id: "m6",
-      state: "skipped",
-      title: "Publish an obsolete draft",
-    });
-    withSkipped.summary.totalMilestones = 6;
-    installApi(() => json(withSkipped));
-    renderMission();
-
-    expect(
-      await screen.findByText("2 completed · 3 remaining · 1 skipped · 6 total"),
-    ).toBeVisible();
-    const skippedHeading = screen.getByRole("heading", { name: "Skipped" });
-    const skippedSurface = skippedHeading.closest(".morrow-surface");
-    const completedSurface = screen
-      .getByRole("heading", { name: "Completed milestones" })
-      .closest(".morrow-surface");
-    expect(skippedSurface).not.toBeNull();
-    const skippedMilestone = within(skippedSurface as HTMLElement)
-      .getByText("Publish an obsolete draft")
-      .closest("li");
-    expect(skippedMilestone).not.toBeNull();
-    expect(within(skippedMilestone as HTMLElement).getByText("Skipped")).toBeVisible();
-    expect(
-      within(completedSurface as HTMLElement).queryByText("Publish an obsolete draft"),
-    ).not.toBeInTheDocument();
-  });
-
-  it("provides four keyboard-operable tabs with adaptive Work and Result views", async () => {
+  it("presents a context rail with objective, plan checklist, deliverables and model", async () => {
     installApi();
+    renderMission();
+
+    const rail = (await screen.findByRole("complementary", {
+      name: "Mission context",
+    })) as HTMLElement;
+    expect(within(rail).getByRole("heading", { name: "Objective" })).toBeVisible();
+    expect(
+      within(rail).getByText("Prepare an evidence-backed launch brief."),
+    ).toBeVisible();
+
+    // The plan reconciles completed against total and lists every milestone.
+    expect(within(rail).getByRole("heading", { name: /Plan/ })).toBeVisible();
+    expect(within(rail).getByText("2/5")).toBeVisible();
+    expect(within(rail).getByText("Gather requirements")).toBeVisible();
+    expect(within(rail).getByText("Review the evidence")).toBeVisible();
+    expect(within(rail).getByText("Confirm publication")).toBeVisible();
+
+    // Deliverables and the active model are surfaced in the rail.
+    expect(within(rail).getByRole("heading", { name: /Deliverables/ })).toBeVisible();
+    expect(within(rail).getByText("Launch brief")).toBeVisible();
+    expect(within(rail).getByText("claude-sonnet-5")).toBeVisible();
+  });
+
+  it("surfaces a waiting-on-you decision with its recommended choice", async () => {
+    installApi();
+    renderMission();
+
+    const region = await screen.findByRole("region", { name: "Waiting on you" });
+    expect(within(region).getByText("Publication decision")).toBeVisible();
+    expect(
+      within(region).getByRole("button", { name: /approve draft/i }),
+    ).toHaveAttribute("data-recommended", "true");
+  });
+
+  it("leads a blocked mission with an actionable recovery card, never a buried failure", async () => {
+    const blocked = snapshot();
+    blocked.summary.state = "blocked";
+    blocked.summary.currentPhase = "Paused — needs your attention";
+    blocked.attention = [connectionRecovery()];
+    installApi({ mission: () => json(blocked) });
+    renderMission();
+
+    const recovery = (await screen.findByRole("region", {
+      name: "Connect an AI model to continue",
+    })) as HTMLElement;
+    // Setup framing, not an engineering audit string.
+    expect(within(recovery).getByText("Setup needed")).toBeVisible();
+    expect(
+      within(recovery).getByText(/Morrow needs an AI model before it can work/),
+    ).toBeVisible();
+    // Direct, actionable routes: connect a provider, then retry.
+    expect(
+      within(recovery).getByRole("link", { name: "Connect a model" }),
+    ).toHaveAttribute("href", "/app/connections");
+    expect(within(recovery).getByRole("button", { name: "Try again" })).toBeVisible();
+    // The raw technical reason is available but tucked behind a disclosure.
+    const technical = within(recovery).getByText("Technical details").closest("details");
+    expect(technical).not.toBeNull();
+    expect(
+      within(technical as HTMLElement).getByText(/OPENAI_API_KEY missing/),
+    ).toBeInTheDocument();
+
+    // One authoritative state; no contradiction and no "Operation ended failed".
+    expect(screen.getByText("Action needed")).toBeVisible();
+    expect(document.body).not.toHaveTextContent(/operation ended failed/i);
+    expect(document.body).not.toHaveTextContent(/doing the work/i);
+  });
+
+  it("retries a blocked mission through the recovery card's explicit action", async () => {
+    const blocked = snapshot();
+    blocked.summary.state = "blocked";
+    blocked.attention = [connectionRecovery()];
+    const fetchMock = installApi({ mission: () => json(blocked) });
     const user = userEvent.setup();
     renderMission();
 
-    const overview = await screen.findByRole("tab", { name: "Overview" });
-    const activity = screen.getByRole("tab", { name: "Activity" });
-    const work = screen.getByRole("tab", { name: "Work" });
-    const result = screen.getByRole("tab", { name: "Result" });
-    expect(screen.getByRole("tablist", { name: "Mission views" })).toBeVisible();
-    expect(overview).toHaveAttribute("aria-selected", "true");
-    expect(overview).toHaveAttribute("tabindex", "0");
-    expect(activity).toHaveAttribute("tabindex", "-1");
+    await screen.findByRole("region", { name: "Connect an AI model to continue" });
+    await user.click(screen.getByRole("button", { name: "Try again" }));
 
-    overview.focus();
-    await user.keyboard("{ArrowRight}");
-    expect(activity).toHaveFocus();
-    expect(activity).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tabpanel", { name: "Activity" })).toBeVisible();
-
-    await user.keyboard("{End}");
-    expect(result).toHaveFocus();
-    expect(
-      screen.getByRole("heading", { level: 2, name: "Working" }),
-    ).toBeVisible();
-
-    await user.keyboard("{Home}");
-    expect(overview).toHaveFocus();
-    await user.keyboard("{ArrowLeft}");
-    expect(result).toHaveFocus();
-
-    await user.click(work);
-    expect(screen.getByRole("heading", { level: 2, name: "Work" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "Launch brief" })).toBeVisible();
-  });
-
-  it("keeps all four controlled tabpanels stable while hiding only inactive panels", async () => {
-    installApi();
-    const user = userEvent.setup();
-    renderMission();
-
-    const tabElements = await screen.findAllByRole("tab");
-    expect(tabElements).toHaveLength(4);
-    for (const tab of tabElements) {
-      const controlledId = tab.getAttribute("aria-controls");
-      expect(controlledId).toBeTruthy();
-      const panel = document.getElementById(controlledId as string);
-      expect(panel).not.toBeNull();
-      expect(panel).toHaveAttribute("role", "tabpanel");
-      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
-      if (tab.getAttribute("aria-selected") === "true") {
-        expect(panel).not.toHaveAttribute("hidden");
-        expect(panel).toBeVisible();
-      } else {
-        expect(panel).toHaveAttribute("hidden");
-        expect(panel).not.toBeVisible();
-      }
-    }
-
-    const overviewPanel = document.getElementById(
-      tabElements[0]?.getAttribute("aria-controls") ?? "",
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => String(input) === "/api/web/missions/mission-42/retry",
+        ),
+      ).toBe(true),
     );
-    const activityPanel = document.getElementById(
-      tabElements[1]?.getAttribute("aria-controls") ?? "",
-    );
-    await user.click(tabElements[1] as HTMLElement);
-    expect(overviewPanel).toHaveAttribute("hidden");
-    expect(activityPanel).not.toHaveAttribute("hidden");
-    expect(activityPanel).toBeVisible();
   });
 
-  it("keeps activity collapsed and exposes only allowed technical metadata", async () => {
+  it("stops a running mission only after an explicit confirmation step", async () => {
+    const fetchMock = installApi();
+    const user = userEvent.setup();
+    renderMission();
+
+    await screen.findByRole("heading", { level: 1, name: "Prepare the launch" });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    // A confirm step guards the irreversible stop; nothing is sent yet.
+    const confirm = await screen.findByRole("button", { name: "Confirm stop" });
+    expect(screen.getByRole("button", { name: "Keep going" })).toBeVisible();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input]) => String(input) === "/api/web/missions/mission-42/stop",
+      ),
+    ).toBe(false);
+
+    await user.click(confirm);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => String(input) === "/api/web/missions/mission-42/stop",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("keeps the live activity stream collapsed and hides private reasoning until expanded", async () => {
     installApi();
     const user = userEvent.setup();
     renderMission();
 
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    expect(
+      await screen.findByRole("heading", { name: "Live progress" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Comparing the draft against the launch checklist."),
+    ).toBeVisible();
+
     const summary = screen.getByText("Reviewed the launch evidence.");
     const details = summary.closest("details");
     expect(details).not.toHaveAttribute("open");
@@ -382,42 +431,44 @@ describe("MissionPage", () => {
     expect(within(details as HTMLElement).getByText("Researcher")).toBeVisible();
     expect(within(details as HTMLElement).getByText("artifact-1")).toBeVisible();
     expect(within(details as HTMLElement).getByText("activity-4")).toBeVisible();
-    expect(within(details as HTMLElement).getByText("4")).toBeVisible();
-    for (const timestamp of within(details as HTMLElement).getAllByText(/2026/)) {
-      expect(timestamp).toBeVisible();
-    }
     expect(document.body).not.toHaveTextContent("PRIVATE CHAIN OF THOUGHT");
   });
 
-  it("renders explicit empty milestone and activity states", async () => {
+  it("renders explicit empty plan, deliverable and activity states", async () => {
     const empty = snapshot();
     empty.milestones = [];
     empty.recentActivity = [];
     empty.attention = [];
+    empty.artifacts = [];
     empty.currentWork = null;
     empty.summary.completedMilestones = 0;
     empty.summary.totalMilestones = 0;
     empty.summary.attentionCount = 0;
     empty.summary.latestActivity = null;
-    installApi(() => json(empty));
-    const user = userEvent.setup();
+    installApi({ mission: () => json(empty) });
     renderMission();
 
-    expect(await screen.findByText("No milestones have been defined yet.")).toBeVisible();
-    expect(screen.getByText("No attention is needed right now.")).toBeVisible();
-    expect(screen.getByText("No current work is reported.")).toBeVisible();
-    await user.click(screen.getByRole("tab", { name: "Activity" }));
-    expect(screen.getByText("No meaningful activity has been recorded yet.")).toBeVisible();
+    expect(
+      await screen.findByText("Morrow defines the success checklist as planning completes."),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Files and reports appear here as Morrow produces them."),
+    ).toBeVisible();
+    expect(screen.getByText("Steps appear here as Morrow works.")).toBeVisible();
+    // No "waiting on you" region when there is no attention.
+    expect(
+      screen.queryByRole("region", { name: "Waiting on you" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows loading, maps a typed unknown-mission error, and retries the authoritative query", async () => {
     const first = deferred<Response>();
     let missionRequests = 0;
-    installApi(() => {
-      missionRequests += 1;
-      return missionRequests === 1
-        ? first.promise
-        : json(snapshot());
+    installApi({
+      mission: () => {
+        missionRequests += 1;
+        return missionRequests === 1 ? first.promise : json(snapshot());
+      },
     });
     const user = userEvent.setup();
     renderMission();
@@ -449,19 +500,20 @@ describe("MissionPage", () => {
   });
 
   it("converts a runtime API failure without exposing raw details and preserves a safe trace", async () => {
-    installApi(() =>
-      json(
-        {
-          error: {
-            code: "RUNTIME_UNAVAILABLE",
-            message: "Bearer private-runtime-token at C:\\runtime\\server.ts",
+    installApi({
+      mission: () =>
+        json(
+          {
+            error: {
+              code: "RUNTIME_UNAVAILABLE",
+              message: "Bearer private-runtime-token at C:\\runtime\\server.ts",
+            },
+            version: 1,
           },
-          version: 1,
-        },
-        503,
-        { "x-trace-id": "trace-runtime-42" },
-      ),
-    );
+          503,
+          { "x-trace-id": "trace-runtime-42" },
+        ),
+    });
     renderMission();
 
     const error = await screen.findByRole("alert");
@@ -475,21 +527,23 @@ describe("MissionPage", () => {
 
   it("retains synchronized mission data and the live stream when a background refetch fails", async () => {
     let missionRequests = 0;
-    installApi(() => {
-      missionRequests += 1;
-      if (missionRequests === 2) {
-        return json(
-          {
-            error: {
-              code: "RUNTIME_UNAVAILABLE",
-              message: "Bearer private-background-token",
+    installApi({
+      mission: () => {
+        missionRequests += 1;
+        if (missionRequests === 2) {
+          return json(
+            {
+              error: {
+                code: "RUNTIME_UNAVAILABLE",
+                message: "Bearer private-background-token",
+              },
+              version: 1,
             },
-            version: 1,
-          },
-          503,
-        );
-      }
-      return json(snapshot());
+            503,
+          );
+        }
+        return json(snapshot());
+      },
     });
     const user = userEvent.setup();
     renderMission();
@@ -511,7 +565,7 @@ describe("MissionPage", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(source?.closed).toBe(false);
-    expect(screen.getByText("Synchronized")).toBeVisible();
+    expect(screen.getByText("Live")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Retry synchronization" }));
     await waitFor(() => expect(missionRequests).toBe(3));
@@ -545,9 +599,11 @@ describe("MissionPage", () => {
         summary: "Requested independent verification.",
       },
     ];
-    installApi(() => {
-      missionRequests += 1;
-      return json(missionRequests === 1 ? snapshot() : updated);
+    installApi({
+      mission: () => {
+        missionRequests += 1;
+        return json(missionRequests === 1 ? snapshot() : updated);
+      },
     });
     renderMission();
 
@@ -557,11 +613,11 @@ describe("MissionPage", () => {
     expect(announcements).toBeEmptyDOMElement();
 
     act(() => source?.emit("open"));
-    expect(screen.getByText("Synchronized")).toBeVisible();
+    expect(screen.getByText("Live")).toBeVisible();
     act(() => source?.emit("message", streamEnvelope(1)));
     expect(missionRequests).toBe(1);
     expect(announcements).toBeEmptyDOMElement();
-    expect(screen.getByText("Synchronized")).toBeVisible();
+    expect(screen.getByText("Live")).toBeVisible();
 
     act(() => source?.emit("mission.updated", streamEnvelope(1)));
     await waitFor(() => expect(missionRequests).toBe(2));

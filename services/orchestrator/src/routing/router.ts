@@ -18,6 +18,11 @@ function preferredModel(preset: Preset, providerId: ProviderId, env: ProviderEnv
   const prefs = preset.modelPreferences[providerId] ?? [];
   const status = getProviderStatus(providerId, env);
   const available = new Set(status?.models ?? []);
+  // A provider the preset lists without model preferences (the generic
+  // OpenAI-compatible gateway) has exactly one reviewed choice: the model the
+  // operator configured for it. Routing to that default is honest — there is
+  // no preset recommendation it could contradict.
+  if (prefs.length === 0) return status?.defaultModel ?? getProviderDefaultModel(providerId, env);
   const preferred = prefs.find((model) => available.size === 0 || available.has(model));
   // Once the active account surface supplied a model list, never substitute an
   // arbitrary provider default that the preset did not recommend. This keeps

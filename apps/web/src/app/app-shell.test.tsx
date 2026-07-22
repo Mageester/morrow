@@ -9,15 +9,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppProviders } from "./providers.js";
 import { createAppRouter } from "./router.js";
 
+// Ready product areas lead; visibly-incomplete areas are grouped after them
+// and marked "Soon" so they never masquerade as finished features.
 const navigationLabels = [
   "Home",
   "Missions",
+  "Connections",
+  "Settings",
   "Library",
   "Automations",
   "Workspace",
-  "Connections",
-  "Settings",
 ];
+const previewLabels = ["Library", "Automations", "Workspace"];
 
 function healthyResponse(): Response {
   return new Response(
@@ -55,17 +58,29 @@ describe("Morrow application shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders all seven approved navigation labels in order", async () => {
+  it("renders all seven navigation labels in order, marking unfinished areas as Soon", async () => {
     renderAt("/app/missions");
 
     const navigation = await screen.findByRole("navigation", {
       name: "Primary",
     });
+    const links = within(navigation).getAllByRole("link");
+    // The label lives in the link's first span; a preview link also carries a
+    // trailing "Soon" badge span, so read the label span explicitly.
     expect(
-      within(navigation)
-        .getAllByRole("link")
-        .map((link) => link.textContent?.trim()),
+      links.map((link) => link.querySelector("span")?.textContent?.trim()),
     ).toEqual(navigationLabels);
+
+    for (const label of previewLabels) {
+      const link = within(navigation).getByRole("link", { name: new RegExp(`^${label}`) });
+      expect(link).toHaveAttribute("data-preview", "true");
+      expect(within(link).getByText("Soon")).toBeVisible();
+    }
+    for (const label of ["Home", "Missions", "Connections", "Settings"]) {
+      expect(
+        within(navigation).getByRole("link", { name: label }),
+      ).not.toHaveAttribute("data-preview");
+    }
   });
 
   it("marks the active route as the current page", async () => {
@@ -106,7 +121,7 @@ describe("Morrow application shell", () => {
     ["/app/library", "Library"],
     ["/app/automations", "Automations"],
     ["/app/workspace", "Workspace"],
-    ["/app/connections", "Connections"],
+    ["/app/connections", "AI models"],
     ["/app/settings", "Settings"],
   ])("renders %s inside the shared shell", async (path, heading) => {
     renderAt(path);

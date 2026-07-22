@@ -27,7 +27,7 @@ a {
 
 .morrow-app-shell {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -38,25 +38,25 @@ a {
   height: 100vh;
   flex-direction: column;
   gap: var(--morrow-space-4);
-  padding: var(--morrow-space-5) var(--morrow-space-3);
-  background: var(--morrow-surface);
+  padding: var(--morrow-space-4) var(--morrow-space-3);
+  background: var(--morrow-surface-subtle);
   border-inline-end: 1px solid var(--morrow-border);
 }
 
 .morrow-brand {
   display: flex;
   align-items: center;
-  gap: var(--morrow-space-3);
+  gap: var(--morrow-space-2);
   padding-inline: var(--morrow-space-2);
 }
 
 .morrow-brand__mark {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
   color: var(--morrow-on-accent);
   background: var(--morrow-accent);
-  border-radius: var(--morrow-radius-md);
+  border-radius: var(--morrow-radius-sm);
   place-items: center;
 }
 
@@ -70,47 +70,59 @@ a {
   letter-spacing: -0.01em;
 }
 
+.morrow-brand strong {
+  font-size: 0.9375rem;
+}
+
 .morrow-brand div > span,
 .morrow-profile {
   color: var(--morrow-text-muted);
-  font-size: 0.75rem;
-}
-
-.morrow-workspace-switcher {
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--morrow-space-3);
-  color: var(--morrow-text);
-  background: var(--morrow-surface-subtle);
-  border: 1px solid var(--morrow-border);
-  border-radius: var(--morrow-radius-sm);
-  font: inherit;
+  font-size: 0.71875rem;
 }
 
 .morrow-nav,
 .morrow-nav__group {
   display: grid;
-  gap: var(--morrow-space-1);
+  gap: 2px;
 }
 
 .morrow-nav__group--secondary {
-  padding-top: var(--morrow-space-4);
+  padding-top: var(--morrow-space-3);
   margin-top: var(--morrow-space-3);
   border-top: 1px solid var(--morrow-border);
 }
 
 .morrow-nav__link {
   display: flex;
-  min-height: 44px;
+  min-height: 38px;
   align-items: center;
-  gap: var(--morrow-space-3);
-  padding: 0 var(--morrow-space-3);
+  gap: var(--morrow-space-2);
+  padding: 0 var(--morrow-space-2);
   color: var(--morrow-text-muted);
   border-radius: var(--morrow-radius-sm);
+  font-size: 0.875rem;
   font-weight: 590;
   text-decoration: none;
+}
+
+/* Preview areas are set apart by the "Soon" badge and a dimmed icon — not by
+   fading the label into a low-contrast tint (that failed WCAG AA). The label
+   stays at the same accessible muted colour as every other nav item. */
+.morrow-nav__link[data-preview="true"] svg {
+  opacity: 0.6;
+}
+
+.morrow-nav__soon {
+  padding: 1px var(--morrow-space-2);
+  margin-left: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .morrow-nav__link:hover {
@@ -349,35 +361,120 @@ a {
 }
 
 .morrow-mission-page {
-  gap: var(--morrow-space-5);
-}
-
-.morrow-mission-header .morrow-page__heading h1 {
-  font-size: clamp(1.5rem, 2.75vw, 2.125rem);
-  line-height: 1.25;
-  letter-spacing: -0.02em;
-  max-width: 34ch;
-}
-
-.morrow-mission-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
+  width: min(100%, 1200px);
   gap: var(--morrow-space-4);
 }
 
-.morrow-mission-header__status {
+/* ── Compact mission header ─────────────────────────────────────────────── */
+.morrow-mission-topbar {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding-bottom: var(--morrow-space-4);
+  border-bottom: 1px solid var(--morrow-border);
+}
+
+.morrow-mission-topbar__crumbs {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.morrow-mission-topbar__crumbs a {
+  color: var(--morrow-text-muted);
+  text-decoration: none;
+}
+
+.morrow-mission-topbar__crumbs a:hover {
+  color: var(--morrow-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.morrow-mission-topbar__lead {
+  display: grid;
+  gap: var(--morrow-space-1);
+}
+
+.morrow-mission-topbar h1 {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  -webkit-box-orient: vertical;
+  font-size: 1.25rem;
+  letter-spacing: -0.015em;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
+
+.morrow-mission-topbar__meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
   gap: var(--morrow-space-2);
   color: var(--morrow-text-muted);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
-.morrow-mission-state,
-.morrow-mission-sync,
+.morrow-mission-topbar__phase {
+  color: var(--morrow-text);
+  font-weight: 590;
+}
+
+.morrow-mission-topbar__sep {
+  color: var(--morrow-border);
+}
+
+.morrow-mission-topbar__fact {
+  white-space: nowrap;
+}
+
+.morrow-mission-topbar__meta .morrow-button {
+  margin-left: auto;
+}
+
+.morrow-mission-topbar__confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  margin-left: auto;
+}
+
+.morrow-mission-topbar__confirm .morrow-button {
+  margin-left: 0;
+}
+
+.morrow-mission-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 590;
+}
+
+.morrow-mission-sync__dot {
+  width: 7px;
+  height: 7px;
+  background: var(--morrow-text-muted);
+  border-radius: 999px;
+}
+
+.morrow-mission-sync[data-state="synchronized"] {
+  color: var(--morrow-success);
+}
+
+.morrow-mission-sync[data-state="synchronized"] .morrow-mission-sync__dot {
+  background: var(--morrow-success);
+}
+
+.morrow-mission-sync[data-state="reconnecting"],
+.morrow-mission-sync[data-state="offline"] {
+  color: var(--morrow-warning);
+}
+
+.morrow-mission-sync[data-state="reconnecting"] .morrow-mission-sync__dot,
+.morrow-mission-sync[data-state="offline"] .morrow-mission-sync__dot {
+  background: var(--morrow-warning);
+}
+
 .morrow-mission-milestone-state {
   padding: var(--morrow-space-1) var(--morrow-space-2);
   color: var(--morrow-text);
@@ -388,45 +485,345 @@ a {
   font-weight: 700;
 }
 
-.morrow-mission-state[data-state="completed_verified"],
-.morrow-mission-milestone-state[data-state="completed"],
-.morrow-mission-sync[data-state="synchronized"] {
+.morrow-mission-milestone-state[data-state="completed"] {
   color: var(--morrow-success);
 }
 
-.morrow-mission-state[data-state="blocked"],
-.morrow-mission-state[data-state="needs_input"],
-.morrow-mission-milestone-state[data-state="failed"],
-.morrow-mission-sync[data-state="offline"] {
+.morrow-mission-milestone-state[data-state="failed"] {
   color: var(--morrow-warning);
 }
 
-.morrow-mission-tabs {
+/* ── Recovery surface ───────────────────────────────────────────────────── */
+.morrow-mission-recovery {
   display: flex;
-  gap: var(--morrow-space-1);
-  overflow-x: auto;
-  border-bottom: 1px solid var(--morrow-border);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-5);
+  border: 1px solid color-mix(in srgb, var(--morrow-warning) 42%, var(--morrow-border));
+  border-left: 4px solid var(--morrow-warning);
 }
 
-.morrow-mission-tabs button {
-  min-width: 88px;
-  min-height: 44px;
-  padding: 0 var(--morrow-space-3);
+.morrow-mission-recovery__body {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-mission-recovery__body h2 {
+  margin: 0;
+  font-size: 1.0625rem;
+  letter-spacing: -0.01em;
+}
+
+.morrow-mission-recovery__body p {
+  max-width: 60ch;
+  margin: 0;
+}
+
+.morrow-mission-recovery__kind {
+  color: var(--morrow-warning);
+  font-size: 0.71875rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.morrow-mission-recovery__recommendation {
   color: var(--morrow-text-muted);
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  font: inherit;
+  font-size: 0.875rem;
+}
+
+.morrow-mission-recovery__technical summary {
+  color: var(--morrow-text-muted);
+  cursor: pointer;
+  font-size: 0.8125rem;
   font-weight: 650;
 }
 
-.morrow-mission-tabs button[aria-selected="true"] {
-  color: var(--morrow-text);
-  border-bottom-color: var(--morrow-accent);
+.morrow-mission-recovery__technical p {
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  margin-top: var(--morrow-space-2);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
 }
 
-.morrow-mission-panel[hidden] {
-  display: none;
+.morrow-mission-recovery__actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+}
+
+/* ── Two-column workspace ───────────────────────────────────────────────── */
+.morrow-mission-columns {
+  display: grid;
+  align-items: start;
+  gap: var(--morrow-space-4);
+  grid-template-columns: minmax(0, 1fr) 304px;
+}
+
+.morrow-mission-main {
+  display: grid;
+  min-width: 0;
+  gap: var(--morrow-space-4);
+}
+
+.morrow-mission-decisions {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-stream__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-mission-stream__heading h2 {
+  font-size: 1.0625rem;
+  letter-spacing: -0.01em;
+}
+
+.morrow-mission-stream__phase {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 590;
+  white-space: nowrap;
+}
+
+.morrow-mission-stream__current {
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  background: var(--morrow-surface-subtle);
+  border-left: 3px solid var(--morrow-accent);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.9375rem;
+}
+
+.morrow-mission-activity__empty {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.9375rem;
+}
+
+/* ── Context rail ───────────────────────────────────────────────────────── */
+.morrow-mission-rail {
+  display: grid;
+  min-width: 0;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-rail-card {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-rail-card h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.71875rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.morrow-rail-card__count {
+  font-size: 0.71875rem;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.morrow-rail-card__body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.morrow-rail-card__empty {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+
+.morrow-rail-plan {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: var(--morrow-space-2);
+  list-style: none;
+}
+
+.morrow-rail-plan li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--morrow-space-2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.morrow-rail-plan__dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--morrow-text-muted);
+  border-radius: 999px;
+  transform: translateY(-1px);
+}
+
+.morrow-rail-plan li[data-state="completed"] .morrow-rail-plan__dot {
+  background: var(--morrow-success);
+  border-color: var(--morrow-success);
+}
+
+.morrow-rail-plan li[data-state="running"] .morrow-rail-plan__dot {
+  border-color: var(--morrow-accent);
+  background: color-mix(in srgb, var(--morrow-accent) 45%, transparent);
+}
+
+.morrow-rail-plan li[data-state="failed"] .morrow-rail-plan__dot {
+  background: var(--morrow-danger);
+  border-color: var(--morrow-danger);
+}
+
+.morrow-rail-plan li[data-state="skipped"] {
+  color: var(--morrow-text-muted);
+  text-decoration: line-through;
+}
+
+.morrow-rail-deliverables {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: var(--morrow-space-2);
+  list-style: none;
+}
+
+.morrow-rail-deliverables li {
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.morrow-rail-details {
+  display: grid;
+  margin: 0;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-rail-details div {
+  display: grid;
+  gap: 2px;
+}
+
+.morrow-rail-details dt {
+  color: var(--morrow-text-muted);
+  font-size: 0.71875rem;
+  font-weight: 700;
+}
+
+.morrow-rail-details dd {
+  margin: 0;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.morrow-rail-details__mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+
+/* ── Providers (Connections page) ───────────────────────────────────────── */
+.morrow-provider-list {
+  display: grid;
+  gap: var(--morrow-space-3);
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+.morrow-provider-card {
+  display: grid;
+  align-content: start;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-provider-card__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-provider-card__heading h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.morrow-provider-card__host,
+.morrow-provider-card__hint,
+.morrow-provider-card__note,
+.morrow-provider-card__feedback {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+
+.morrow-provider-card__model {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.morrow-provider-card__actions {
+  display: flex;
+}
+
+.morrow-provider-card__form {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding-top: var(--morrow-space-2);
+}
+
+.morrow-provider-card__form label {
+  display: grid;
+  gap: var(--morrow-space-1);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.morrow-provider-card__form input {
+  min-height: 40px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.morrow-provider-card__form-actions {
+  display: flex;
+}
+
+.morrow-provider-callout {
+  border-left: 3px solid var(--morrow-accent);
+}
+
+.morrow-provider-callout p {
+  margin: 0;
+}
+
+.morrow-composer__provider-note {
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  margin: 0;
+  color: var(--morrow-text);
+  background: color-mix(in srgb, var(--morrow-warning) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--morrow-warning) 35%, var(--morrow-border));
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.875rem;
 }
 
 .morrow-mission-work,
@@ -811,22 +1208,24 @@ a {
     padding: var(--morrow-space-5) var(--morrow-space-4);
   }
 
-  .morrow-mission-header {
-    align-items: start;
+  /* Collapse the two-column workspace: the main column (recovery, decisions,
+     result, live stream) stacks first, the context rail follows below it. */
+  .morrow-mission-columns {
+    grid-template-columns: 1fr;
+  }
+
+  /* The recovery surface stacks its copy above its actions on narrow screens. */
+  .morrow-mission-recovery {
     flex-direction: column;
   }
 
-  .morrow-mission-header__status {
-    justify-content: flex-start;
+  .morrow-mission-recovery__actions {
+    width: 100%;
   }
 
   .morrow-mission-sync-warning {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .morrow-mission-overview {
-    grid-template-columns: 1fr;
   }
 
   .morrow-attention-choice {
