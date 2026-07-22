@@ -153,4 +153,10 @@ Provider/model: openai-compatible @ opencode.ai, model nemotron-3-ultra-free (a 
   - Evidence: focused 42/42; full web 187/187; web check/build; direct production-component Chromium 5/5 across desktop/mobile/touch; default runner attempts both production and composer suites.
   - Independent review found and fixed 9 Important lifecycle/security/coverage findings over two rounds. Final verdict APPROVED.
   - Unrelated existing warning: production E2E mobile result snapshot expected 2221px height versus stable 2197px actual; later dark serial case did not run. No Task 4 causal path found; keep open for result-page baseline owner.
-- Slice 5: pending (conversation persistence and streaming).
+- Slice 5: complete (`c1f51a2..d7217f2`; independent security/quality review clean, 0 Critical/Important/Minor).
+  - Added project-scoped conversation create/list/get/messages/rename/archive/delete, safe deletion boundaries, canonical message/tool/routing projections, and the production `/app/chats/:conversationId` workspace.
+  - Message dispatch is idempotent across all execution-affecting fields. Task, messages, initial state/event, and routing commit atomically; runner execution starts only after commit. Unverifiable legacy idempotency rows fail closed.
+  - Browser streaming exposes only coarse owned events and opaque cursors. Validated project/conversation/task-scoped cursor persistence survives refresh/reconnect, de-duplicates events, and clears only after awaited canonical terminal reconciliation.
+  - Ask/Plan send, accepted-only clearing, cancellation, failed/interrupted retry, cached-history warnings, rename/archive/delete confirmation, list-cache reconciliation, dialog focus trapping, and desktop/mobile lifecycle behavior are verified.
+  - Evidence: contracts 42/42; focused orchestrator/database/contracts 34/34; dispatcher 8/8; focused web 9/9; production build; packaged conversation Playwright 4/4; type checks and diff check green.
+  - Independent review found and fixed 5 Important and 2 Minor findings over three rounds. Final verdict APPROVED. Existing unrelated 3% mobile mission snapshot drift was not accepted as a Task 5 baseline change.

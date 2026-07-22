@@ -10,11 +10,11 @@ This ledger is the completion gate for production `/app` controls. A row is comp
 | `/app/` | Shared composer | Preserve draft and submit accepted messages | Conversation/message APIs | Full editing, Enter send, Shift+Enter newline, IME-safe | Accepted submission only | Stream response | Suggested actions from real state | Draft retained + retry | Keyboard-safe autosize | Pending Slice 4/5 | Pending |
 | `/app/` | Continue cards | Open real recent conversation or mission | Conversation/mission lists | Tab, Enter | Skeleton | Correct durable target | Honest empty state | Non-blocking warning | Single-column | Pending Slice 6 | Pending |
 | `/app/chats` | Conversation row | Open durable history | Conversation list | Tab, Enter | Skeleton | Correct active item | New-chat invitation | Retry | Touch target | Pending Slice 5/6 | Pending |
-| `/app/chats/:id` | Send | Accept once, preserve until accepted, stream canonical reply | Message dispatch + task SSE | Enter/button | Disabled while accepting | One assistant row | N/A | Draft retained | Reachable above keyboard | Pending Slice 4/5 | Pending |
-| `/app/chats/:id` | Stop generation | Cancel current task once | Task cancel API | Tab, Enter | Busy | Terminal cancelled state | Hidden when idle | Retry canonical fetch | Touch target | Pending Slice 4/5 | Pending |
+| `/app/chats/:id` | Send | Accept once, preserve until accepted, stream canonical reply | Message dispatch + task SSE | Enter/button | Disabled while accepting | One assistant row | N/A | Draft retained | Reachable above keyboard | `conversation-page.test.tsx`, `chat-stream.test.ts`, `conversations.spec.ts` | PASS desktop/mobile, refresh/reconnect and no duplicates |
+| `/app/chats/:id` | Stop generation | Cancel current task once | Task cancel API | Tab, Enter | Busy | Terminal cancelled state | Hidden when idle | Retry canonical fetch | Touch target | `conversation-page.test.tsx`, `conversations.spec.ts` | PASS active cancel and canonical terminal reconcile |
 | `/app/chats/:id` | Mode picker | Select Ask/Plan/Build/Build Auto truthfully | Routing/mission dispatch | Native/combobox keys | Catalogue readiness | Persist selection | Default Ask | Explain unavailable mode | Bottom-sheet or native-safe | Pending Slice 7 | Pending |
 | `/app/chats/:id` | Model picker | Search/select available backend models | `GET /api/models`, refresh | Combobox keys | Skeleton/refresh | Stable visible model | Connect-provider CTA | Stale/unavailable explanation | Responsive popover | Pending Slice 7 | Pending |
-| `/app/chats/:id` | Rename/archive/delete | Mutate durable conversation with confirmation | Conversation APIs | Menu/dialog keys, focus return | Busy per action | Canonical list refresh | N/A | Retry without state loss | Sheet/dialog | Pending Slice 5 | Pending |
+| `/app/chats/:id` | Rename/archive/delete | Mutate durable conversation with confirmation | Conversation APIs | Menu/dialog keys, focus return | Busy per action | Canonical list refresh | N/A | Retry without state loss | Sheet/dialog | `conversation-page.test.tsx`, `conversations.spec.ts` | PASS list reconciliation, focus trap/return, mobile confirmation |
 | `/app/chats/:id` | Mission card/panel | Start, inspect, approve, recover, stop in same chat | Mission APIs + SSE | Card/button/dialog keys | Streaming/skeleton | Canonical mission state | Hidden without mission | Reconnect/retry | Collapsible full-width panel | Pending Slice 8 | Pending |
 | `/app/projects` | Project row | Open data-backed project continuity | Projects API | Tab, Enter | Skeleton | Correct detail route | Honest empty state | Retry | Single-column | Pending Slice 9 | Pending |
 | `/app/projects/:id` | Continuity sections | Show real chats/missions/files/memory/decisions/repos/artifacts | Project projection APIs | Landmark/tab semantics only if interactive | Skeleton per section | Project-isolated data | Per-section empty | Non-blocking warning | Stacked | Pending Slice 9 | Pending |
@@ -30,6 +30,6 @@ This ledger is the completion gate for production `/app` controls. A row is comp
 ## Audit status
 
 - Baseline rows created: 2026-07-22.
-- Completed rows: 3.
+- Completed rows: 6.
 - Unexplained dead controls allowed: 0.
 - Final semantic-control sweep: pending Slice 12.
