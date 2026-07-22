@@ -188,6 +188,33 @@ describe("mission agent-task dispatcher", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("never replays a complete legacy bundle without its canonical fingerprint", () => {
+    const request = {
+      conversationId: "conversation-1",
+      content: "Complete legacy operation",
+      missionId: "mission-1",
+      idempotencyKey: "legacy-complete-bundle",
+      mode: "agent" as const,
+      useMemory: true,
+      autoApprove: false,
+    };
+    const created = dispatchAgentTask({ db, runner: { run }, env: process.env }, request);
+    db.prepare("UPDATE tasks SET idempotency_fingerprint=NULL WHERE id=?").run(created.task.id);
+    run.mockClear();
+
+    for (const replay of [request, { ...request, mode: "read-only" as const }]) {
+      let replayError: unknown;
+      try {
+        dispatchAgentTask({ db, runner: { run }, env: process.env }, replay);
+      } catch (error) {
+        replayError = error;
+      }
+      expect(replayError).toMatchObject({ code: "IDEMPOTENCY_INCOMPLETE" });
+    }
+    expect(run).not.toHaveBeenCalled();
+    expect(conversationsRepository(db).listMessages("conversation-1")).toHaveLength(2);
+  });
+
   it("rejects a mission owned by another project before creating a task", () => {
     const now = "2026-07-16T12:00:00.000Z";
     projectRepository(db).createProject({

@@ -76,31 +76,18 @@ function replayResult(
 
 function assertReplayMatches(
   db: Database.Database,
-  conversationId: string,
   task: NonNullable<ReturnType<ReturnType<typeof taskRepository>["getTaskById"]>>,
-  request: SendMessageInput,
   expectedFingerprint: string,
 ): void {
   const storedFingerprint = taskRepository(db).getIdempotencyFingerprint(task.id);
-  if (storedFingerprint && storedFingerprint !== expectedFingerprint) {
-    throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
+  if (!storedFingerprint) {
+    throw new AgentTaskDispatchError(
+      409,
+      "Idempotent request exists without a canonical request fingerprint",
+      "IDEMPOTENCY_INCOMPLETE",
+    );
   }
-  const mismatchedIdentity = task.missionId !== (request.missionId ?? null)
-    || task.worktreeId !== (request.worktreeId ?? null)
-    || task.agentId !== (request.agentId ?? null);
-  const messages = conversationsRepository(db).listMessages(conversationId);
-  const assistantIndex = messages.findIndex((message) => message.taskId === task.id && message.role === "assistant");
-  if (assistantIndex < 0) {
-    const owner = db.prepare("SELECT conversation_id FROM conversation_messages WHERE task_id=? AND role='assistant'")
-      .get(task.id) as { conversation_id: string } | undefined;
-    if (mismatchedIdentity || (owner && owner.conversation_id !== conversationId)) {
-      throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
-    }
-    return;
-  }
-  const userMessage = [...messages.slice(0, assistantIndex)].reverse()
-    .find((message) => message.role === "user");
-  if (mismatchedIdentity || userMessage?.content !== request.content) {
+  if (storedFingerprint !== expectedFingerprint) {
     throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
   }
 }
@@ -227,7 +214,7 @@ export function dispatchAgentTask(
   if (body.idempotencyKey) {
     const existing = tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey);
     if (existing) {
-      assertReplayMatches(dependencies.db, conversationId, existing, body, idempotencyFingerprint);
+      assertReplayMatches(dependencies.db, existing, idempotencyFingerprint);
       return replayResult(dependencies.db, conversationId, existing);
     }
   }
@@ -312,7 +299,7 @@ export function dispatchAgentTask(
       ? tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey)
       : undefined;
     if (!winner) throw error;
-    assertReplayMatches(dependencies.db, conversationId, winner, body, idempotencyFingerprint);
+    assertReplayMatches(dependencies.db, winner, idempotencyFingerprint);
     return replayResult(dependencies.db, conversationId, winner);
   }
   dependencies.runner.run(bundle.task.id);
