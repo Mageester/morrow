@@ -97,6 +97,7 @@ export const ModelCapabilitiesSchema=z.object({
   streaming:z.boolean(),
   toolCalls:z.boolean(),
   vision:z.boolean(),
+  reasoning:z.boolean().nullable().optional(),
 }).strict();
 
 // ── Reasoning / thinking control ─────────────────────────────────────────────
@@ -143,7 +144,7 @@ export const ModelPricingSchema=z.object({
   inputUsdPerMillion:z.number().nonnegative(),
   outputUsdPerMillion:z.number().nonnegative(),
   cachedInputUsdPerMillion:z.number().nonnegative().nullable().optional(),
-  source:z.literal("authoritative"),
+  source:z.enum(["authoritative","provider-reported"]),
 }).strict();
 export const ModelInfoSchema=z.object({
   version:SchemaVersionSchema,
@@ -153,6 +154,10 @@ export const ModelInfoSchema=z.object({
   aliases:z.array(z.string()),
   providerId:ProviderIdSchema,
   label:z.string(),
+  author:z.string().nullable().optional(),
+  inputModalities:z.array(z.string().min(1)).optional(),
+  outputModalities:z.array(z.string().min(1)).optional(),
+  costType:z.enum(["free","paid","unknown"]).optional(),
   family:z.string().nullable().optional(),
   generation:z.string().nullable().optional(),
   lifecycle:z.enum(["current","preview","legacy","deprecated","custom","unknown"]).optional(),
@@ -654,13 +659,21 @@ export type AuditEntry=z.infer<typeof AuditEntrySchema>;
 export const DiscoveredModelSchema=z.object({
   providerModelId:z.string().min(1).max(300),
   displayName:z.string().min(1).max(500),
+  author:z.string().min(1).max(200).nullable().optional(),
   contextWindow:z.number().int().positive().nullable(),
   maxOutputTokens:z.number().int().positive().nullable(),
+  inputModalities:z.array(z.string().min(1).max(100)).optional(),
+  outputModalities:z.array(z.string().min(1).max(100)).optional(),
   capabilities:z.object({
     streaming:z.boolean().nullable(),
     toolCalls:z.boolean().nullable(),
     vision:z.boolean().nullable(),
+    reasoning:z.boolean().nullable().optional(),
   }).strict(),
+  pricing:ModelPricingSchema.nullable().optional(),
+  costType:z.enum(["free","paid","unknown"]).optional(),
+  availability:z.enum(["available","unavailable","unknown"]).optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
   metadataSource:z.literal("provider-reported"),
 }).strict();
 export type DiscoveredModel=z.infer<typeof DiscoveredModelSchema>;

@@ -84,6 +84,49 @@ describe("Provider / preset / memory API", () => {
     }
   });
 
+  it("keeps OpenRouter disconnected until authentication, supports manual refresh, and preserves a missing selected model", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    const previousModel = process.env.OPENROUTER_MODEL;
+    process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
+    process.env.OPENROUTER_MODEL = "vendor/selected-but-gone";
+    const localDb = openDatabase(":memory:");
+    const connectivity = vi.fn(async () => ({
+      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+      modelsSample: ["vendor/current"],
+      models: [{ providerModelId: "vendor/current", displayName: "Current", author: "vendor", contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown" as const, availability: "available" as const, fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" as const }],
+    }));
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      let providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+
+      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      expect(refreshed.statusCode).toBe(200);
+      expect(connectivity).toHaveBeenCalledOnce();
+      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone" });
+
+      process.env.OPENROUTER_API_KEY = "different-unverified-key";
+      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+      process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
+
+      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+      expect(models.find((item: any) => item.model.providerId === "openrouter" && item.model.id === "vendor/selected-but-gone")).toMatchObject({
+        available: false,
+        availability: "unavailable",
+        availabilityReason: expect.stringMatching(/no longer|not returned/i),
+      });
+    } finally {
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+      if (previousModel === undefined) delete process.env.OPENROUTER_MODEL; else process.env.OPENROUTER_MODEL = previousModel;
+    }
+  });
+
   it("refreshes configured account models in the background without blocking startup", async () => {
     const previousKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "sk-background-discovery-test";

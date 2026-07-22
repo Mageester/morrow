@@ -10,8 +10,10 @@
  * Secrets never leave this process: the configure endpoint accepts a key and
  * returns only a non-secret status, and reads never echo a stored value back.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import type { ProviderId } from "@morrow/contracts";
 
 export interface ProviderEnvMapping {
@@ -46,6 +48,13 @@ export function providerEnvMapping(id: ProviderId): ProviderEnvMapping | null {
   return PROVIDER_ENV[id] ?? null;
 }
 
+/** One-way identity used to bind cached health to the exact credential tested. */
+export function providerCredentialIdentity(id: ProviderId, env: NodeJS.ProcessEnv = process.env): string | null {
+  const apiKeyEnv = providerEnvMapping(id)?.apiKeyEnv;
+  const value = apiKeyEnv ? env[apiKeyEnv]?.trim() : undefined;
+  return value ? createHash("sha256").update(value).digest("hex") : null;
+}
+
 /** Parse a simple KEY=VALUE secrets file. Ignores comments and blank lines. */
 export function parseSecretsFile(content: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -73,7 +82,28 @@ function readSecretsFileSafe(path: string): Record<string, string> {
   }
 }
 
-function writeSecretsFile(path: string, entries: Record<string, string>): { securePermissions: boolean } {
+export interface CredentialFileOptions {
+  platform?: NodeJS.Platform;
+  applyWindowsAcl?: (path: string) => boolean;
+}
+
+/** Restrict a file to the current Windows user and LocalSystem using SID ACLs. */
+export function applyWindowsCredentialAcl(path: string): boolean {
+  try {
+    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const sid = identity.match(/,"([^"]+)"\s*$/)?.[1];
+    if (!sid || !/^S-1-\d+(?:-\d+)+$/i.test(sid)) return false;
+    execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeSecretsFile(path: string, entries: Record<string, string>, options: CredentialFileOptions = {}): { securePermissions: boolean; credentialProtection: "windows-user-acl" | "posix-mode" } {
   mkdirSync(dirname(path), { recursive: true });
   const body =
     "# Morrow secrets — plaintext, not encrypted. Keep this file private.\n" +
@@ -81,15 +111,23 @@ function writeSecretsFile(path: string, entries: Record<string, string>): { secu
       .map(([k, v]) => `${k}=${v}`)
       .join("\n") +
     "\n";
-  writeFileSync(path, body, { mode: 0o600 });
-  let securePermissions = false;
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, body, { mode: 0o600, flag: "wx" });
+  const platform = options.platform ?? process.platform;
   try {
-    chmodSync(path, 0o600);
-    securePermissions = process.platform !== "win32"; // Windows ignores POSIX modes.
-  } catch {
-    securePermissions = false;
+    if (platform === "win32") {
+      const applyAcl = options.applyWindowsAcl ?? applyWindowsCredentialAcl;
+      if (!applyAcl(temporaryPath)) throw new Error("Unable to apply the current-user Windows ACL to the provider credential file.");
+      renameSync(temporaryPath, path);
+      return { securePermissions: true, credentialProtection: "windows-user-acl" };
+    }
+    chmodSync(temporaryPath, 0o600);
+    renameSync(temporaryPath, path);
+    return { securePermissions: true, credentialProtection: "posix-mode" };
+  } catch (error) {
+    rmSync(temporaryPath, { force: true });
+    throw error;
   }
-  return { securePermissions };
 }
 
 /**
@@ -123,6 +161,8 @@ export interface ConfigureProviderResult {
   cleared: string[];
   /** Whether the secrets file got owner-only (0600) permissions. */
   securePermissions: boolean;
+  /** Enforced local file boundary; never contains a path, identity, or value. */
+  credentialProtection: "windows-user-acl" | "posix-mode";
   /**
    * Env var names that were already set in the real process environment with a
    * DIFFERENT value (e.g. exported in the shell before launch). We still set
@@ -142,13 +182,46 @@ export function configureProvider(
   secretsFile: string,
   id: ProviderId,
   input: ConfigureProviderInput,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: CredentialFileOptions = {},
 ): ConfigureProviderResult {
   const mapping = providerEnvMapping(id);
   if (!mapping) {
     throw new Error(`Provider "${id}" cannot be configured (no env mapping).`);
   }
 
+  const updates = providerConfigurationUpdates(mapping, input);
+  validateProviderUpdates(updates);
+
+  const existing = readSecretsFileSafe(secretsFile);
+  const written: string[] = [];
+  const cleared: string[] = [];
+  const shadowedByEnv: string[] = [];
+
+  for (const { envName, value } of updates) {
+    const trimmed = value?.trim() ?? "";
+    if (trimmed === "") {
+      delete existing[envName];
+      cleared.push(envName);
+    } else {
+      if (env[envName] !== undefined && env[envName] !== trimmed) shadowedByEnv.push(envName);
+      existing[envName] = trimmed;
+      written.push(envName);
+    }
+  }
+
+  // Persist and enforce the platform boundary before promoting the candidate
+  // values into the live process. A write/ACL failure leaves the live route as-is.
+  const protection = writeSecretsFile(secretsFile, existing, options);
+  for (const { envName, value } of updates) {
+    const trimmed = value?.trim() ?? "";
+    if (trimmed === "") delete env[envName];
+    else env[envName] = trimmed;
+  }
+  return { written, cleared, ...protection, shadowedByEnv };
+}
+
+function providerConfigurationUpdates(mapping: ProviderEnvMapping, input: ConfigureProviderInput): Array<{ envName: string; value: string | undefined }> {
   const updates: Array<{ envName: string; value: string | undefined }> = [];
   if (input.apiKey !== undefined && mapping.apiKeyEnv) {
     updates.push({ envName: mapping.apiKeyEnv, value: input.apiKey });
@@ -167,36 +240,30 @@ export function configureProvider(
     updates.push({ envName: mapping.contextLimitEnv, value: limit === "" ? "" : String(limit) });
   }
 
-  // Validate every value BEFORE mutating env/file so a single bad value can
-  // never leave a half-applied configuration behind.
+  return updates;
+}
+
+function validateProviderUpdates(updates: Array<{ envName: string; value: string | undefined }>): void {
   for (const { envName, value } of updates) {
     const trimmed = value?.trim() ?? "";
     if (trimmed !== "") assertPersistableSecretValue(envName, trimmed);
   }
 
-  const existing = readSecretsFileSafe(secretsFile);
-  const written: string[] = [];
-  const cleared: string[] = [];
-  const shadowedByEnv: string[] = [];
+}
 
+/** Build an isolated candidate environment for authentication before persistence. */
+export function buildProviderCandidateEnv(id: ProviderId, input: ConfigureProviderInput, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const mapping = providerEnvMapping(id);
+  if (!mapping) throw new Error(`Provider "${id}" cannot be configured (no env mapping).`);
+  const updates = providerConfigurationUpdates(mapping, input);
+  validateProviderUpdates(updates);
+  const candidate = { ...env };
   for (const { envName, value } of updates) {
     const trimmed = value?.trim() ?? "";
-    if (trimmed === "") {
-      delete existing[envName];
-      delete env[envName];
-      cleared.push(envName);
-    } else {
-      if (env[envName] !== undefined && env[envName] !== trimmed) {
-        shadowedByEnv.push(envName);
-      }
-      existing[envName] = trimmed;
-      env[envName] = trimmed; // hot-apply: effective immediately, no restart.
-      written.push(envName);
-    }
+    if (trimmed === "") delete candidate[envName];
+    else candidate[envName] = trimmed;
   }
-
-  const { securePermissions } = writeSecretsFile(secretsFile, existing);
-  return { written, cleared, securePermissions, shadowedByEnv };
+  return candidate;
 }
 
 /** Remove all credentials for a provider from both the secrets file and env. */

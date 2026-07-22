@@ -10,7 +10,7 @@ import {
   resolveLocalCredential,
   safeHost,
 } from "./credentials.js";
-import { providerEnvMapping } from "./secrets.js";
+import { providerCredentialIdentity, providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
@@ -21,18 +21,27 @@ export function installProviderModelDiscoveries(discoveries: ProviderModelDiscov
   modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
 }
 
-function withDiscovery(status: ProviderStatus): ProviderStatus {
+function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus {
   const authMode = status.authMode ?? "unknown";
   const discovery = modelDiscoveries.find((item) => item.providerId === status.id && item.authMode === authMode);
-  if (!discovery) return status;
-  if (discovery.status === "unavailable") return { ...status, available: false };
+  if (status.id === "openrouter" && discovery && discovery.credentialIdentity !== providerCredentialIdentity(status.id, env)) {
+    return { ...status, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (!discovery) return status.id === "openrouter" && status.configured
+    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
+    : status;
+  if (discovery.status === "unavailable") return status.id === "openrouter"
+    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
+    : { ...status, available: false };
   const models = discovery.models.map((model) => model.providerModelId);
   if (models.length === 0) return { ...status, available: true };
   return {
     ...status,
     available: true,
-    models,
-    defaultModel: status.defaultModel && models.includes(status.defaultModel) ? status.defaultModel : models[0] ?? null,
+    models: status.defaultModel && !models.includes(status.defaultModel) ? [status.defaultModel, ...models] : models,
+    // Never silently replace a user's selected model when a refreshed
+    // catalogue stops returning it. The model status marks it unavailable.
+    defaultModel: status.defaultModel,
   };
 }
 
@@ -380,7 +389,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
 const BY_ID = new Map<ProviderId, ProviderDescriptor>(DESCRIPTORS.map((d) => [d.id, d]));
 
 export function listProviderStatuses(env: ProviderEnv = process.env): ProviderStatus[] {
-  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env)));
+  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env), env));
   if (env.MOCK_PROVIDER === "true") {
     statuses.push(withDiscovery({
       version: 1,
@@ -398,7 +407,7 @@ export function listProviderStatuses(env: ProviderEnv = process.env): ProviderSt
       defaultModel: "mock-model",
       note: "Deterministic in-memory provider. Only present because MOCK_PROVIDER=true.",
       setupHint: "Unset MOCK_PROVIDER to use real providers.",
-    }));
+    }, env));
   }
   return statuses;
 }

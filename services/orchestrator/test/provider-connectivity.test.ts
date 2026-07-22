@@ -11,7 +11,7 @@ describe("provider connectivity", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      headers: new Headers({ "content-length": "65537" }),
+      headers: new Headers({ "content-length": String(4 * 1024 * 1024 + 1) }),
       body: { cancel },
     }));
 
@@ -43,5 +43,71 @@ describe("provider connectivity", () => {
       maxOutputTokens: 65_536,
       metadataSource: "provider-reported",
     });
+  });
+
+  it("normalizes the rich OpenRouter model catalogue and deduplicates invalid records", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url, init: RequestInit) => {
+      expect(init.headers).toMatchObject({ Authorization: "Bearer openrouter-test-value" });
+      return new Response(JSON.stringify({ data: [
+        {
+          id: "anthropic/claude-sonnet-4",
+          name: "Anthropic: Claude Sonnet 4",
+          context_length: 200_000,
+          architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+          supported_parameters: ["tools", "tool_choice", "reasoning"],
+          pricing: { prompt: "0.000003", completion: "0.000015" },
+          top_provider: { max_completion_tokens: 64_000 },
+          expiration_date: null,
+        },
+        { id: "anthropic/claude-sonnet-4", name: "duplicate" },
+        { id: "free/model", name: "Free Model", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, supported_parameters: [], pricing: { prompt: "0", completion: "0" } },
+        { id: "", name: "malformed" },
+        null,
+      ] }), { status: 200 });
+    }));
+
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-test-value" });
+
+    expect(result.models).toHaveLength(2);
+    expect(result.models[0]).toMatchObject({
+      providerModelId: "anthropic/claude-sonnet-4",
+      displayName: "Anthropic: Claude Sonnet 4",
+      author: "anthropic",
+      contextWindow: 200_000,
+      maxOutputTokens: 64_000,
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+      pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, source: "provider-reported" },
+      costType: "paid",
+      availability: "available",
+      metadataSource: "provider-reported",
+    });
+    expect(result.models[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(result.models[1]).toMatchObject({ providerModelId: "free/model", costType: "free" });
+  });
+
+  it.each([
+    [401, "auth"],
+    [402, "provider"],
+    [429, "rate_limit"],
+    [502, "provider"],
+    [503, "provider"],
+  ] as const)("classifies OpenRouter HTTP %i without exposing the credential", async (status, errorKind) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: { message: "rejected openrouter-secret-value" },
+    }), { status })));
+
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-secret-value" });
+
+    expect(result).toMatchObject({ ok: false, configured: false, status, errorKind });
+    expect(JSON.stringify(result)).not.toContain("openrouter-secret-value");
+  });
+
+  it("redacts the OpenRouter credential from network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("socket failed for openrouter-secret-value"); }));
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-secret-value" });
+    expect(result.errorKind).toBe("network");
+    expect(JSON.stringify(result)).not.toContain("openrouter-secret-value");
   });
 });

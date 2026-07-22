@@ -1,6 +1,6 @@
 import type { DiscoveredModel, ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
-import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
+import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
 
@@ -16,7 +16,11 @@ import { codexHeaders } from "./codex.js";
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
-const MAX_RESPONSE_BYTES = 64 * 1024;
+// OpenRouter's account catalogue can contain thousands of rich model records.
+// Keep the read bounded, but large enough for the real endpoint rather than a
+// small display-oriented sample.
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_MODEL_RECORDS = 5_000;
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   const contentLength = Number(response.headers.get("content-length"));
@@ -61,33 +65,68 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-function normalizeModels(json: unknown): DiscoveredModel[] {
+function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): DiscoveredModel[] {
   try {
     const anyJson = json as any;
     const rows: any[] = Array.isArray(anyJson?.data) ? anyJson.data : Array.isArray(anyJson?.models) ? anyJson.models : [];
-    return rows.slice(0, 500).flatMap((entry): DiscoveredModel[] => {
-      const id = typeof entry?.name === "string"
+    const seen = new Set<string>();
+    return rows.slice(0, MAX_MODEL_RECORDS).flatMap((entry): DiscoveredModel[] => {
+      const id = typeof entry?.name === "string" && entry.name.startsWith("models/")
         ? entry.name.replace(/^models\//, "")
-        : entry?.id ?? entry?.slug ?? entry?.model;
+        : entry?.id ?? entry?.slug ?? entry?.model ?? entry?.name;
       if (typeof id !== "string" || !id.trim()) return [];
+      const providerModelId = id.trim();
+      if (seen.has(providerModelId)) return [];
+      seen.add(providerModelId);
       const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
       const reportedCapabilities = entry?.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {};
+      const supportedParameters = Array.isArray(entry?.supported_parameters)
+        ? entry.supported_parameters.filter((value: unknown): value is string => typeof value === "string")
+        : [];
+      const inputModalities = Array.isArray(entry?.architecture?.input_modalities)
+        ? entry.architecture.input_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      const outputModalities = Array.isArray(entry?.architecture?.output_modalities)
+        ? entry.architecture.output_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
       const reportedBoolean = (...values: unknown[]): boolean | null => {
         const value = values.find((candidate) => typeof candidate === "boolean");
         return typeof value === "boolean" ? value : null;
       };
+      const perMillion = (value: unknown): number | null => {
+        if (typeof value !== "string" && typeof value !== "number") return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
+      };
+      const inputPrice = perMillion(entry?.pricing?.prompt);
+      const outputPrice = perMillion(entry?.pricing?.completion);
+      const cachedInputPrice = perMillion(entry?.pricing?.input_cache_read);
+      const pricing = inputPrice !== null && outputPrice !== null
+        ? { inputUsdPerMillion: inputPrice, outputUsdPerMillion: outputPrice, ...(cachedInputPrice !== null ? { cachedInputUsdPerMillion: cachedInputPrice } : {}), source: "provider-reported" as const }
+        : null;
+      const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
+      const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
       return [{
-        providerModelId: id,
+        providerModelId,
         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
+        author: providerModelId.includes("/") ? providerModelId.split("/", 1)[0]! : null,
         contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
+          .concat(entry?.context_length)
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
-        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens]
+        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens, entry?.top_provider?.max_completion_tokens]
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        inputModalities,
+        outputModalities,
         capabilities: {
-          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming),
-          toolCalls: reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
-          vision: reportedBoolean(reportedCapabilities.vision),
+          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming) ?? true,
+          toolCalls: supportedParameters.length > 0 ? supportedParameters.includes("tools") || supportedParameters.includes("tool_choice") : reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
+          vision: inputModalities.length > 0 ? inputModalities.some((modality: string) => modality === "image" || modality === "video") : reportedBoolean(reportedCapabilities.vision),
+          reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
         },
+        pricing,
+        costType: pricing ? (pricing.inputUsdPerMillion === 0 && pricing.outputUsdPerMillion === 0 ? "free" : "paid") : "unknown",
+        availability,
+        fetchedAt,
         metadataSource: "provider-reported",
       }];
     });
@@ -197,6 +236,11 @@ export async function testProviderConnectivity(
   }
 
   const { url, headers, host } = plan.request;
+  const configuredSecret = "Authorization" in headers ? headers.Authorization.replace(/^Bearer\s+/i, "") : null;
+  const safeDetail = (value: string): string => {
+    const exactRedacted = configuredSecret ? value.split(configuredSecret).join("***redacted***") : value;
+    return redactSecrets(exactRedacted);
+  };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
@@ -209,11 +253,11 @@ export async function testProviderConnectivity(
       return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
     }
     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
-    return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
+    return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
   } catch (e: any) {
     const aborted = controller.signal.aborted;
     const err = classifyThrownError(e, aborted);
-    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : err.message, errorKind: aborted ? "timeout" : err.kind };
+    return { ...base, configured: false, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
   } finally {
     clearTimeout(timer);
   }

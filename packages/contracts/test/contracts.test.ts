@@ -4,6 +4,7 @@ import {
   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
   RequirementCategorySchema, RequirementNodeStatusSchema,
+  DiscoveredModelSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -38,6 +39,32 @@ describe("contracts", () => {
   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());
+
+  it("accepts a complete provider-reported OpenRouter catalogue model", () => {
+    expect(DiscoveredModelSchema.parse({
+      providerModelId: "anthropic/claude-sonnet-4",
+      displayName: "Claude Sonnet 4",
+      author: "anthropic",
+      contextWindow: 200_000,
+      maxOutputTokens: 64_000,
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+      pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, source: "provider-reported" },
+      costType: "paid",
+      availability: "available",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+      metadataSource: "provider-reported",
+    })).toMatchObject({
+      author: "anthropic",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { toolCalls: true, reasoning: true },
+      costType: "paid",
+      availability: "available",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+    });
+  });
 });
 
 describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {

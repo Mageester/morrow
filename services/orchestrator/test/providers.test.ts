@@ -75,6 +75,7 @@ describe("OpenAI-compatible provider normalization", () => {
     const toolChunks = chunks.filter((c) => c.type === "tool_call");
     expect(toolChunks.length).toBe(2);
     expect(toolChunks[0]!.toolCalls?.[0]?.function.name).toBe("read_file");
+    expect(toolChunks.map((chunk) => chunk.toolCalls?.[0]?.function.arguments ?? "").join("")).toBe('{"path":"a.txt"}');
     const done = chunks.find((c) => c.type === "done");
     expect(done?.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
 
@@ -156,6 +157,24 @@ describe("OpenAI-compatible provider normalization", () => {
     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
     const chunks = await collect(provider, userMessages);
     expect(chunks.filter((c) => c.type === "text").map((c) => c.text).join("")).toBe("ok");
+  });
+
+  it("ignores OpenRouter processing comments and classifies structured mid-stream errors", async () => {
+    mockFetch(sseResponse([
+      `: OPENROUTER PROCESSING\n\n`,
+      `data: {"choices":[{"delta":{"content":"partial"}}]}\n\n`,
+      `data: {"error":{"code":429,"message":"upstream rejected Bearer openrouter-secret-value","metadata":{"error_type":"rate_limit"}}}\n\n`,
+    ]));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "openrouter", apiKey: "openrouter-secret-value", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openrouter/auto" }), userMessages);
+    expect(chunks.find((chunk) => chunk.type === "text")?.text).toBe("partial");
+    expect(chunks.at(-1)).toMatchObject({ type: "error", error: { kind: "rate_limit", retryable: true, status: 429 } });
+    expect(JSON.stringify(chunks)).not.toContain("openrouter-secret-value");
+  });
+
+  it("reports a stream that ends before DONE or a finish reason as interrupted", async () => {
+    mockFetch(chunkedSseResponse([`data: {"choices":[{"delta":{"content":"partial"}}]}\n\n`]));
+    const chunks = await collect(new OpenAiCompatibleProvider({ id: "openrouter", apiKey: "k", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openrouter/auto" }), userMessages);
+    expect(chunks.at(-1)).toMatchObject({ type: "error", error: { type: "interrupted_stream", kind: "provider", retryable: true } });
   });
 
   it("flushes one final assistant record without a trailing newline exactly once", async () => {

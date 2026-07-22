@@ -141,7 +141,7 @@ import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
-import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
@@ -264,24 +264,32 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
   installProviderModelDiscoveries(providerModelDiscovery.list());
   const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
+  const discoveryExpiresAt = (fetchedAt: string, ok: boolean) => new Date(Date.parse(fetchedAt) + (ok ? 15 * 60_000 : 60_000)).toISOString();
   const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
     const result = await providerConnectivityTest(providerId, process.env);
     const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
     if (authMode) {
+      const fetchedAt = new Date().toISOString();
       providerModelDiscovery.upsert({
         providerId,
         authMode,
         status: result.ok ? "available" : "unavailable",
         models: result.models,
         errorKind: result.errorKind,
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
+        expiresAt: discoveryExpiresAt(fetchedAt, result.ok),
+        lastSuccessAt: result.ok ? fetchedAt : null,
+        credentialIdentity: providerCredentialIdentity(providerId, process.env),
       });
       installProviderModelDiscoveries(providerModelDiscovery.list());
     }
     return result;
   };
   if (deps.backgroundModelDiscovery ?? process.env.NODE_ENV !== "test") {
-    const configured = listProviderStatuses().filter((status) => status.configured && status.authMode && status.id !== "mock");
+    const configured = listProviderStatuses().filter((status) =>
+      status.authMode && status.id !== "mock" && (status.configured || (status.id === "openrouter" && !!process.env.OPENROUTER_API_KEY))
+      && !providerModelDiscovery.isFresh(status.id, status.authMode, new Date(), providerCredentialIdentity(status.id, process.env))
+    );
     queueMicrotask(() => {
       void Promise.allSettled(configured.map((status) => refreshProviderModelDiscovery(status.id, status.authMode)));
     });
@@ -2081,6 +2089,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return refreshProviderModelDiscovery(parsed.data);
   });
 
+  // Explicit account-catalogue refresh; unlike startup refresh this bypasses
+  // the TTL because it is a user-directed verification action.
+  app.post("/api/providers/:providerId/models/refresh", async (request) => {
+    const { providerId } = request.params as { providerId: string };
+    const parsed = ProviderIdSchema.safeParse(providerId);
+    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+    return refreshProviderModelDiscovery(parsed.data);
+  });
+
   // Save provider credentials from the app (no PowerShell / env vars / restart).
   // The key is written to the server-side secrets file AND hot-applied to the
   // running process so it takes effect immediately. The response never echoes
@@ -2122,7 +2139,21 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
       }
     }
+    let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
+    if (id === "openrouter") {
+      const candidateEnv = buildProviderCandidateEnv(id, body, process.env);
+      validatedResult = await providerConnectivityTest(id, candidateEnv);
+      if (!validatedResult.ok) {
+        const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
+        throw new ApiError(statusCode, `OpenRouter validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
+      }
+    }
     const result = configureProvider(deps.secretsFile, id, body, process.env);
+    if (validatedResult) {
+      const fetchedAt = new Date().toISOString();
+      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: providerCredentialIdentity(id, process.env) });
+      installProviderModelDiscoveries(providerModelDiscovery.list());
+    }
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
     reply.send({
       ok: true,
@@ -2130,6 +2161,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       written: result.written,
       cleared: result.cleared,
       securePermissions: result.securePermissions,
+      credentialProtection: result.credentialProtection,
       shadowedByEnv: result.shadowedByEnv,
       status,
     });

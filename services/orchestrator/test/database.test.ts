@@ -13,7 +13,7 @@ describe("database", () => {
 
   it("installs the durable mission runtime ledger and provider discovery schema", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)?.id).toBe(37);
+    expect(migrations.at(-1)?.id).toBe(38);
     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(missionColumns).toContain("execution_json");
     expect(missionColumns).toContain("idempotency_key");
@@ -30,6 +30,8 @@ describe("database", () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='learned_skills'").get()).toEqual({ name: "learned_skills" });
     const memoryColumns = (db.prepare("PRAGMA table_info(memory_entries)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(memoryColumns).toEqual(expect.arrayContaining(["normalized_content", "type", "lifecycle", "evidence_references_json", "sensitivity", "expires_at"]));
+    const providerDiscoveryColumns = (db.prepare("PRAGMA table_info(provider_model_discovery)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(providerDiscoveryColumns).toEqual(expect.arrayContaining(["expires_at", "last_success_at", "credential_identity"]));
     db.close();
   });
 

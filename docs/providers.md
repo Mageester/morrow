@@ -27,8 +27,10 @@ PowerShell, manually setting environment variables, or restarting the service.
 
 1. **In the app (recommended).** Settings → Providers → *Configure*. Paste the
    API key, optionally set a custom endpoint and default model, then *Save*. The
-   key is sent once to the local orchestrator, persisted to the secrets file, and
-   applied to the running process immediately. *Test connection* verifies it.
+   key is sent once to the local orchestrator. OpenRouter candidates are
+   authenticated against the account model endpoint before they are persisted or
+   promoted into the running process; a rejected replacement leaves the last
+   known-good key active. *Refresh models* repeats the bounded account check.
 2. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
    (optionally `--url <endpoint>` and `--model <id>`). This goes through the same
    running-service endpoint, so it also takes effect with no restart. Use
@@ -40,8 +42,32 @@ PowerShell, manually setting environment variables, or restarting the service.
 
 Keys are stored server-side in the owner-readable secrets file and never reach
 the browser (no `localStorage`), the database, logs, errors, or task events.
+On Windows, each atomic secrets-file replacement must receive an ACL limited to
+the current user and LocalSystem before it becomes active; configuration fails
+closed if `whoami.exe`/`icacls.exe` cannot establish that boundary. Unix-like
+systems use mode `0600`. The file remains a local plaintext compatibility format
+so existing CLI startup loading continues to work; it is not application-layer
+encryption.
 Provider status exposes only `configured`, the default model, and the endpoint
 *host*.
+
+For OpenRouter specifically, possession of a value is not reported as
+`configured`: Morrow reports connected/configured only after an authenticated
+`GET /api/v1/models` succeeds. The server normalizes the returned account
+catalogue (author, modalities, tool/reasoning signals, provider-reported pricing,
+free/paid state, availability, and refresh time), caches it in SQLite for a
+bounded 15-minute TTL, and refreshes it on explicit request. A failed refresh
+retains the last successful catalogue for diagnosis but marks the provider
+unavailable. If a selected model disappears, Morrow keeps the selection visible
+and unavailable rather than silently switching models.
+
+**Compatibility and rollback:** existing `secrets.env` values continue to load.
+Saving or replacing a credential rewrites the file atomically under the platform
+boundary above. To roll back an OpenRouter replacement, no action is required
+when validation fails because the previous value is untouched. After a
+successful replacement, configure the prior key again (it will be authenticated
+before promotion), or use `morrow providers remove openrouter` to remove the
+stored OpenRouter route entirely.
 
 ## Credential reference
 

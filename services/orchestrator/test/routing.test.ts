@@ -2,10 +2,34 @@ import { describe, it, expect } from "vitest";
 import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
 import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
-import { listModels } from "../src/routing/models.js";
+import { listModels, resolveModelStatuses } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
 
 describe("Model registry currency", () => {
+  it("lets live OpenRouter metadata override bundled fallback fields for known model ids", () => {
+    const provider = listProviderStatuses({ OPENROUTER_API_KEY: "catalogue-test-key" }).find((item) => item.id === "openrouter")!;
+    const statuses = resolveModelStatuses([{ ...provider, configured: true, available: true }], [{
+      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
+      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
+      models: [{
+        providerModelId: "openrouter/auto", displayName: "Auto Router Live", author: "openrouter",
+        contextWindow: 400_000, maxOutputTokens: 32_000, inputModalities: ["text", "image"], outputModalities: ["text"],
+        capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+        pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
+        costType: "free", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported",
+      }],
+    }]);
+    expect(statuses.find((item) => item.model.id === "openrouter/auto")?.model).toMatchObject({
+      label: "Auto Router Live",
+      author: "openrouter",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { toolCalls: true, vision: true, reasoning: true },
+      pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
+      costType: "free",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+    });
+  });
   it("exposes the current OpenAI, DeepSeek, and OpenRouter lineups and drops retired ids", () => {
     const ids = new Set(listModels().map((m) => m.id));
     for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]) {
