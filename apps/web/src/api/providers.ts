@@ -28,6 +28,9 @@ const ConfigureProviderResponseSchema = z
     ok: z.literal(true),
     provider: z.literal("openrouter"),
     status: ProviderStatusSchema.nullable(),
+    securePermissions: z.boolean(),
+    credentialProtection: z.enum(["windows-user-acl", "posix-mode"]),
+    shadowedByEnv: z.array(z.string()),
   })
   .passthrough();
 
@@ -35,7 +38,7 @@ const DisconnectProviderResponseSchema = z
   .object({
     ok: z.literal(true),
     provider: z.literal("openrouter"),
-    removed: z.boolean(),
+    removed: z.array(z.string()),
     status: ProviderStatusSchema.nullable(),
   })
   .passthrough();

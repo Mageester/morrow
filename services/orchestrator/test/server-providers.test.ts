@@ -106,7 +106,7 @@ describe("Provider / preset / memory API", () => {
       expect(refreshed.statusCode).toBe(200);
       expect(connectivity).toHaveBeenCalledOnce();
       providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
-      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone" });
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone", lastSuccessAt: expect.any(String) });
 
       process.env.OPENROUTER_API_KEY = "different-unverified-key";
       providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);

@@ -13,6 +13,7 @@ const disconnected = {
 const connected = {
   ...disconnected, configured: true, available: true, authStatus: "configured",
   models: ["anthropic/claude-sonnet-4", "openai/gpt-4.1"], defaultModel: "anthropic/claude-sonnet-4",
+  lastSuccessAt: "2026-07-22T15:00:00.000Z",
 };
 
 test("Connections keeps the OpenRouter key out of the rendered page and supports keyboard-safe disconnect", async ({ page }) => {
@@ -25,14 +26,14 @@ test("Connections keeps the OpenRouter key out of the rendered page and supports
     if (path === "/api/providers") return route.fulfill({ json: [current] });
     if (path === "/api/providers/openrouter/configure") {
       current = connected;
-      return route.fulfill({ json: { ok: true, provider: "openrouter", status: connected } });
+      return route.fulfill({ json: { ok: true, provider: "openrouter", status: connected, securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] } });
     }
     if (path.endsWith("/test") || path.endsWith("/models/refresh")) {
       return route.fulfill({ json: { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 1, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: [], models: [] } });
     }
     if (path.endsWith("/credentials")) {
       current = disconnected;
-      return route.fulfill({ json: { ok: true, provider: "openrouter", removed: true, status: disconnected } });
+      return route.fulfill({ json: { ok: true, provider: "openrouter", removed: ["OPENROUTER_API_KEY"], status: disconnected } });
     }
     throw new Error(`Unexpected provider route: ${path}`);
   });
@@ -54,4 +55,12 @@ test("Connections keeps the OpenRouter key out of the rendered page and supports
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(disconnect).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await disconnect.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Disconnect" }).click();
+  const connect = page.getByRole("button", { name: "Connect OpenRouter" });
+  await expect(connect).toBeFocused();
+  await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
 });

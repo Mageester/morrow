@@ -283,6 +283,7 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     await json("POST", "/api/providers/deepseek/configure", { apiKey: "k" });
     const del = await json("DELETE", "/api/providers/deepseek/credentials");
     expect(del.status).toBe(200);
+    expect(del.body.removed).toEqual(expect.arrayContaining(["DEEPSEEK_API_KEY"]));
     expect(del.body.status.configured).toBe(false);
   });
 

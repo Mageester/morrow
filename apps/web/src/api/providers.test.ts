@@ -6,10 +6,16 @@ afterEach(() => vi.unstubAllGlobals());
 describe("OpenRouter provider API", () => {
   it("sends a candidate key only to the configure endpoint and parses a secret-free response", async () => {
     const candidate = `synthetic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({ ok: true, provider: "openrouter", status: null }));
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({
+      ok: true, provider: "openrouter", status: null, securePermissions: true,
+      credentialProtection: "windows-user-acl", shadowedByEnv: ["OPENROUTER_API_KEY"],
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(openRouterApi.configure(candidate)).resolves.toMatchObject({ ok: true, provider: "openrouter" });
+    await expect(openRouterApi.configure(candidate)).resolves.toMatchObject({
+      ok: true, provider: "openrouter", credentialProtection: "windows-user-acl",
+      shadowedByEnv: ["OPENROUTER_API_KEY"],
+    });
 
     const [path, init] = fetchMock.mock.calls[0] ?? [];
     expect(path).toBe("/api/providers/openrouter/configure");
@@ -20,7 +26,7 @@ describe("OpenRouter provider API", () => {
   it("uses no credential payload for test, refresh, or disconnect", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (path) => Response.json(
       String(path).endsWith("/credentials")
-        ? { ok: true, provider: "openrouter", removed: true, status: null }
+        ? { ok: true, provider: "openrouter", removed: ["OPENROUTER_API_KEY"], status: null }
         : { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 12, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: [], models: [] },
     ));
     vi.stubGlobal("fetch", fetchMock);

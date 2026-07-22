@@ -38,6 +38,7 @@ function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus
       ? [status.defaultModel, ...discoveredModels]
       : discoveredModels,
     defaultModel: status.defaultModel,
+    lastSuccessAt: discovery.lastSuccessAt ?? null,
   };
   if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
     return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };

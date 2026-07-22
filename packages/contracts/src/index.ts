@@ -86,6 +86,8 @@ export const ProviderStatusSchema=z.object({
   capabilities:ProviderCapabilitiesSchema,
   models:z.array(z.string()),
   defaultModel:z.string().nullable(),
+  /** Last successful account-catalogue health check, never a browser clock. */
+  lastSuccessAt:z.string().datetime().nullable().optional(),
   note:z.string().nullable(),
   setupHint:z.string().nullable(),
 }).strict();
