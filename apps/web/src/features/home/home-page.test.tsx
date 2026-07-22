@@ -250,6 +250,23 @@ describe("HomePage", () => {
     });
   });
 
+  it("restores the project-scoped objective after navigation remounts Home", async () => {
+    installApi(standardHandler());
+    const user = userEvent.setup();
+    const { router } = renderHome();
+    const objective = await screen.findByRole("textbox", {
+      name: "Mission objective",
+    });
+    await user.type(objective, "Draft survives navigation");
+
+    await router.navigate({ to: "/library" });
+    await router.navigate({ to: "/" });
+
+    expect(
+      await screen.findByRole("textbox", { name: "Mission objective" }),
+    ).toHaveValue("Draft survives navigation");
+  });
+
   it("uses one stable idempotency key for rapid double submission and caches the created mission", async () => {
     const created = deferred<Response>();
     const fetchMock = installApi((path) => {

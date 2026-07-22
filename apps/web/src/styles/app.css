@@ -294,6 +294,179 @@ a {
   display: flex;
 }
 
+/* ── Shared chat composer ───────────────────────────────────────────────── */
+.morrow-chat-composer {
+  display: grid;
+  width: min(100%, 760px);
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  gap: var(--morrow-space-3);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-lg);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-chat-composer__input {
+  width: 100%;
+  min-height: 48px;
+  max-height: 192px;
+  padding: var(--morrow-space-2) 0;
+  color: var(--morrow-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-y: hidden;
+  resize: none;
+}
+
+.morrow-chat-composer__input::placeholder {
+  color: var(--morrow-text-muted);
+}
+
+.morrow-chat-composer:focus-within {
+  border-color: var(--morrow-focus);
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 2px;
+}
+
+.morrow-chat-composer__modes {
+  display: inline-grid;
+  width: fit-content;
+  padding: 3px;
+  gap: 2px;
+  grid-template-columns: repeat(4, auto);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-chat-composer__modes button,
+.morrow-chat-composer__stop,
+.morrow-chat-composer__send {
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.morrow-chat-composer__modes button.is-active {
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-chat-composer__toolbar {
+  display: flex;
+  align-items: end;
+  gap: var(--morrow-space-2);
+}
+
+.morrow-chat-composer__select {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.morrow-chat-composer__select select {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.morrow-chat-composer__send {
+  display: grid;
+  flex: 0 0 44px;
+  place-items: center;
+  margin-left: auto;
+  color: var(--morrow-on-accent);
+  background: var(--morrow-accent);
+}
+
+.morrow-chat-composer__stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--morrow-space-3);
+  gap: var(--morrow-space-2);
+  margin-left: auto;
+  color: var(--morrow-warning);
+  border: 1px solid var(--morrow-border);
+}
+
+.morrow-chat-composer button:disabled,
+.morrow-chat-composer select:disabled,
+.morrow-chat-composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.morrow-chat-composer__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-chat-composer__meta p,
+.morrow-chat-composer > [role="alert"],
+.morrow-chat-composer > [role="status"] {
+  margin: 0;
+}
+
+.morrow-chat-composer__counter {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .morrow-chat-composer {
+    padding: var(--morrow-space-3);
+    padding-bottom: max(var(--morrow-space-3), env(safe-area-inset-bottom));
+  }
+
+  .morrow-chat-composer__modes {
+    width: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .morrow-chat-composer__toolbar {
+    display: grid;
+    align-items: end;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .morrow-chat-composer__select:first-child:not(:last-child) {
+    grid-column: 1 / -1;
+  }
+
+  .morrow-chat-composer__send,
+  .morrow-chat-composer__stop {
+    margin-left: 0;
+  }
+
+  .morrow-chat-composer__meta {
+    display: grid;
+  }
+}
+
 /* ── Mission sections and cards ─────────────────────────────────────────── */
 .morrow-mission-section {
   display: grid;

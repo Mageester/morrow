@@ -17,6 +17,11 @@ import { Link } from "@tanstack/react-router";
 import { api, ApiClientError } from "../../api/client.js";
 import { missionKeys } from "../../api/query-keys.js";
 import { providerQueries } from "../../api/providers.js";
+import {
+  clearChatDraft,
+  loadChatDraft,
+  saveChatDraft,
+} from "../chat/draft-store.js";
 
 type Autonomy = CreateWebMissionInput["autonomy"];
 
@@ -58,6 +63,7 @@ export function MissionComposer({
   const isCurrent = useRef(false);
   const submissionInFlight = useRef(false);
   const objectiveInput = useRef<HTMLTextAreaElement>(null);
+  const priorProjectId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     isCurrent.current = true;
@@ -67,7 +73,18 @@ export function MissionComposer({
   }, []);
 
   useEffect(() => {
-    if (activeProjectId) objectiveInput.current?.focus();
+    if (!activeProjectId) return;
+    const storedDraft = loadChatDraft({ projectId: activeProjectId });
+    const liveDraft = objectiveInput.current?.value ?? "";
+    const nextDraft = priorProjectId.current === undefined && liveDraft
+      ? liveDraft
+      : storedDraft;
+    setDraft(nextDraft);
+    if (nextDraft && nextDraft !== storedDraft) {
+      saveChatDraft({ projectId: activeProjectId }, nextDraft);
+    }
+    priorProjectId.current = activeProjectId;
+    objectiveInput.current?.focus();
   }, [activeProjectId]);
 
   const createMission = useMutation({
@@ -86,6 +103,7 @@ export function MissionComposer({
 
       failedSubmission.current = false;
       currentIdempotencyKey.current = createIdempotencyKey();
+      if (activeProjectId) clearChatDraft({ projectId: activeProjectId });
       setDraft("");
       setObjectiveValidationError(null);
       setRequestError(null);
@@ -107,7 +125,9 @@ export function MissionComposer({
   }
 
   function submit() {
-    const objective = draft.trim();
+    // Read the live control so an immediate Enter after a large paste or
+    // browser autofill cannot race React's state update.
+    const objective = (objectiveInput.current?.value ?? draft).trim();
     if (!objective || !activeProjectId) return;
     if (objective.length > 8_000) {
       setObjectiveValidationError(
@@ -189,6 +209,9 @@ export function MissionComposer({
             if (nextDraft !== draft) setObjectiveValidationError(null);
             if (failedSubmission.current && nextDraft !== draft) {
               resetFailedSubmissionForEdit();
+            }
+            if (activeProjectId) {
+              saveChatDraft({ projectId: activeProjectId }, nextDraft);
             }
             setDraft(nextDraft);
           }}
