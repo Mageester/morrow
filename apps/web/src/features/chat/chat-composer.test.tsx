@@ -70,6 +70,17 @@ describe("ChatComposer", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("does not submit a compatibility Enter with keyCode 229 after compositionend", () => {
+    const onSubmit = vi.fn().mockResolvedValue({ accepted: true });
+    render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
+    fireEvent.input(textbox, { target: { value: "変換中" } });
+    fireEvent.compositionStart(textbox);
+    fireEvent.compositionEnd(textbox);
+    fireEvent.keyDown(textbox, { key: "Enter", keyCode: 229, which: 229 });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("leaves native editing, selection, clipboard, undo, and redo shortcuts untouched", () => {
     render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
     const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
@@ -88,6 +99,18 @@ describe("ChatComposer", () => {
     const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
     fireEvent.input(textbox, { target: { value: "  \n  " } });
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("never focuses a disabled textarea and focuses it only after re-enable", async () => {
+    const { rerender } = render(
+      <ChatComposer autoFocus disabled draftScope={scope} onSubmit={vi.fn()} />,
+    );
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
+    expect(textbox).toBeDisabled();
+    expect(textbox).not.toHaveFocus();
+
+    rerender(<ChatComposer autoFocus draftScope={scope} onSubmit={vi.fn()} />);
+    await waitFor(() => expect(textbox).toHaveFocus());
   });
 
   it("maps modes and real route/project selections into the submission callback", async () => {
@@ -139,6 +162,7 @@ describe("ChatComposer", () => {
 
     accept({ accepted: true });
     await waitFor(() => expect(textbox).toHaveValue(""));
+    expect(textbox).toHaveFocus();
     expect(loadChatDraft(scope)).toBe("");
   });
 
@@ -158,10 +182,14 @@ describe("ChatComposer", () => {
     expect(textbox).toHaveValue("Preserve   this exactly");
     expect(textbox.selectionStart).toBe(3);
     expect(textbox.selectionEnd).toBe(11);
+    expect(textbox).toHaveFocus();
 
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Message was not accepted. Try again.");
     expect(textbox).toHaveValue("Preserve   this exactly");
+    expect(textbox).toHaveFocus();
+    expect(textbox.selectionStart).toBe(3);
+    expect(textbox.selectionEnd).toBe(11);
   });
 
   it("restores and switches scoped drafts without replacing the textarea", async () => {
@@ -175,6 +203,66 @@ describe("ChatComposer", () => {
     rerender(<ChatComposer draftScope={other} onSubmit={vi.fn()} />);
     expect(screen.getByRole("textbox", { name: "Message Morrow" })).toBe(textbox);
     await waitFor(() => expect(textbox).toHaveValue("second conversation"));
+  });
+
+  it("commits the new scope together with its DOM draft and resets selection safely", () => {
+    const other = { projectId: "project-1", conversationId: "conversation-2" };
+    saveChatDraft(scope, "first conversation");
+    saveChatDraft(other, "second");
+    const { rerender } = render(<ChatComposer autoFocus draftScope={scope} onSubmit={vi.fn()} />);
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" }) as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(2, 10);
+
+    rerender(<ChatComposer autoFocus draftScope={other} onSubmit={vi.fn()} />);
+    expect(textbox).toHaveValue("second");
+    expect(textbox.selectionStart).toBe(6);
+    expect(textbox.selectionEnd).toBe(6);
+
+    fireEvent.input(textbox, { target: { value: "second edited" } });
+    expect(loadChatDraft(scope)).toBe("first conversation");
+    expect(loadChatDraft(other)).toBe("second edited");
+  });
+
+  it("owns delayed outcomes by submitted scope and never publishes them into a new scope", async () => {
+    const other = { projectId: "project-2", conversationId: "conversation-2" };
+    saveChatDraft(other, "other draft");
+    let resolve!: (value: { accepted: boolean; error?: string }) => void;
+    const onSubmit = vi.fn(() => new Promise<{ accepted: boolean; error?: string }>((done) => { resolve = done; }));
+    const { rerender } = render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" }) as HTMLTextAreaElement;
+    fireEvent.input(textbox, { target: { value: "submitted draft" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    rerender(<ChatComposer autoFocus draftScope={other} onSubmit={onSubmit} />);
+    expect(textbox).toHaveValue("other draft");
+    textbox.setSelectionRange(1, 3);
+    resolve({ accepted: true });
+
+    await waitFor(() => expect(loadChatDraft(scope)).toBe(""));
+    expect(loadChatDraft(other)).toBe("other draft");
+    expect(textbox).toHaveValue("other draft");
+    expect(textbox.selectionStart).toBe(1);
+    expect(textbox.selectionEnd).toBe(3);
+    expect(screen.queryByText("Message accepted.")).not.toBeInTheDocument();
+  });
+
+  it("hides late rejection from the new scope while retaining the submitted draft", async () => {
+    const other = { projectId: "project-2" };
+    saveChatDraft(other, "new scope");
+    let reject!: (error: Error) => void;
+    const onSubmit = vi.fn(() => new Promise<{ accepted: boolean }>((_resolve, fail) => { reject = fail; }));
+    const { rerender } = render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
+    fireEvent.input(textbox, { target: { value: "retry me" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    rerender(<ChatComposer draftScope={other} onSubmit={onSubmit} />);
+    reject(new Error("offline"));
+
+    await waitFor(() => expect(textbox).not.toBeDisabled());
+    expect(loadChatDraft(scope)).toBe("retry me");
+    expect(textbox).toHaveValue("new scope");
+    expect(screen.queryByText("Message was not accepted. Try again.")).not.toBeInTheDocument();
   });
 
   it("shows the 32,000-character boundary without truncating over-limit input", () => {
@@ -216,5 +304,27 @@ describe("ChatComposer", () => {
     );
     await user.click(screen.getByRole("button", { name: "Stop generation" }));
     expect(onStop).toHaveBeenCalledWith("task-1");
+  });
+
+  it("blocks every submit path while a task is active and leaves only Stop actionable", () => {
+    const onSubmit = vi.fn().mockResolvedValue({ accepted: true });
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ChatComposer
+        activeTaskId="task-1"
+        draftScope={scope}
+        onStop={onStop}
+        onSubmit={onSubmit}
+      />,
+    );
+    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
+    expect(textbox).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    fireEvent.submit(textbox.closest("form")!);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Stop generation" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    expect(screen.getByLabelText("Model route")).toBeDisabled();
   });
 });

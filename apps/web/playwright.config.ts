@@ -12,6 +12,7 @@ import { E2E_BASE_URL } from "./e2e/constants.js";
 export default defineConfig({
   testDir: "./e2e",
   testMatch: /.*\.spec\.ts$/,
+  testIgnore: /composer\.spec\.ts$/,
   fullyParallel: false,
   workers: 1,
   retries: 0,

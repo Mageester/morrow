@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -20,6 +21,7 @@ import { missionKeys } from "../../api/query-keys.js";
 import { RuntimeStatusProvider } from "../../state/runtime-status.js";
 import { ThemeProvider } from "../../state/theme.js";
 import { createAppRouter } from "../../app/router.js";
+import { loadChatDraft } from "../chat/draft-store.js";
 
 const now = "2026-07-21T12:00:00.000Z";
 
@@ -678,5 +680,41 @@ describe("HomePage", () => {
       );
     });
     expect(router.state.location.pathname).toBe("/library");
+  });
+
+  it("clears only the submitted project draft when the active project changes while pending", async () => {
+    const created = deferred<Response>();
+    installApi((path) => {
+      if (path === "/api/health") return json({ ok: true, service: "morrow-orchestrator" });
+      if (path === "/api/projects") return json([project]);
+      if (path === "/api/providers") return json([]);
+      if (path.startsWith("/api/web/missions?")) return json([]);
+      if (path === "/api/web/missions") return created.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { queryClient, router } = renderHome();
+    const user = userEvent.setup();
+    const objective = await screen.findByRole("textbox", { name: "Mission objective" });
+    await user.type(objective, "submitted project draft");
+    await user.keyboard("{Enter}");
+
+    act(() => {
+      queryClient.setQueryData(["projects", "available"], [
+        { id: "project-2", name: "Second project" },
+      ]);
+    });
+    await waitFor(() => expect(objective).toHaveValue(""));
+    await user.type(objective, "new project draft");
+    created.resolve(json(snapshot("mission-old-project"), 201));
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData(missionKeys.detail("mission-old-project"))).toEqual(
+        snapshot("mission-old-project"),
+      );
+    });
+    expect(loadChatDraft({ projectId: project.id })).toBe("");
+    expect(loadChatDraft({ projectId: "project-2" })).toBe("new project draft");
+    expect(objective).toHaveValue("new project draft");
+    expect(router.state.location.pathname).toBe("/");
   });
 });

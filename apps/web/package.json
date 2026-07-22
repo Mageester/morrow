@@ -9,6 +9,7 @@
     "test": "vitest run",
     "build": "tsc -p tsconfig.node.json && vite build",
     "e2e": "playwright test",
+    "e2e:composer": "playwright test --config=playwright.composer.config.ts",
     "e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {

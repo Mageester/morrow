@@ -90,20 +90,22 @@ export function MissionComposer({
   const createMission = useMutation({
     mutationFn: (input: CreateWebMissionInput) =>
       api.post("/api/web/missions", input, WebMissionSnapshotSchema),
-    onError: (error) => {
+    onError: (error, submittedInput) => {
+      if (priorProjectId.current !== submittedInput.projectId) return;
       failedSubmission.current = true;
       setRequestError(errorMessage(error));
     },
-    onSuccess: (snapshot) => {
+    onSuccess: (snapshot, submittedInput) => {
       queryClient.setQueryData(
         missionKeys.detail(snapshot.summary.id),
         snapshot,
       );
+      clearChatDraft({ projectId: submittedInput.projectId });
       if (!isCurrent.current) return;
+      if (priorProjectId.current !== submittedInput.projectId) return;
 
       failedSubmission.current = false;
       currentIdempotencyKey.current = createIdempotencyKey();
-      if (activeProjectId) clearChatDraft({ projectId: activeProjectId });
       setDraft("");
       setObjectiveValidationError(null);
       setRequestError(null);

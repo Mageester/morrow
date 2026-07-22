@@ -3,11 +3,14 @@ export interface ChatDraftScope {
   conversationId?: string | undefined;
 }
 
-const DRAFT_PREFIX = "morrow.chat-draft.v1";
+const DRAFT_PREFIX = "morrow.chat-draft.v2";
 
 function draftKey(scope: ChatDraftScope): string {
-  const conversation = scope.conversationId ?? "new";
-  return `${DRAFT_PREFIX}.${encodeURIComponent(scope.projectId)}.${encodeURIComponent(conversation)}`;
+  const structuredScope = JSON.stringify([
+    scope.projectId,
+    scope.conversationId ?? null,
+  ]);
+  return `${DRAFT_PREFIX}.${encodeURIComponent(structuredScope)}`;
 }
 
 function browserStorage(): Storage | null {
@@ -27,7 +30,7 @@ export function loadChatDraft(scope: ChatDraftScope): string {
       typeof stored !== "object" ||
       stored === null ||
       !("version" in stored) ||
-      stored.version !== 1 ||
+      stored.version !== 2 ||
       !("text" in stored) ||
       typeof stored.text !== "string"
     ) {
@@ -50,7 +53,7 @@ export function saveChatDraft(scope: ChatDraftScope, text: string): void {
     }
     // Product requirement: user-authored draft text is retained locally.
     // Provider credentials and routing metadata must never enter this record.
-    storage.setItem(key, JSON.stringify({ version: 1, text }));
+    storage.setItem(key, JSON.stringify({ version: 2, text }));
   } catch {
     // Draft persistence is best-effort. Storage denial/corruption must not make
     // the composer unusable or discard the live textarea value.

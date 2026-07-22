@@ -29,12 +29,35 @@ describe("chat draft storage", () => {
     expect(loadChatDraft(first)).toBe("");
   });
 
+  it("uses collision-free structured scope identities", () => {
+    const dottedProject = { projectId: "a.b", conversationId: "c" };
+    const dottedConversation = { projectId: "a", conversationId: "b.c" };
+    const absentConversation = { projectId: "a" };
+    const literalNewConversation = { projectId: "a", conversationId: "new" };
+    const unicode = { projectId: "私の.計画", conversationId: "会話/😀" };
+
+    saveChatDraft(dottedProject, "dotted project");
+    saveChatDraft(dottedConversation, "dotted conversation");
+    saveChatDraft(absentConversation, "new chat");
+    saveChatDraft(literalNewConversation, "literal new chat");
+    saveChatDraft(unicode, "unicode scope");
+
+    expect(loadChatDraft(dottedProject)).toBe("dotted project");
+    expect(loadChatDraft(dottedConversation)).toBe("dotted conversation");
+    expect(loadChatDraft(absentConversation)).toBe("new chat");
+    expect(loadChatDraft(literalNewConversation)).toBe("literal new chat");
+    expect(loadChatDraft(unicode)).toBe("unicode scope");
+    expect(localStorage).toHaveLength(5);
+  });
+
   it("fails closed on malformed or unsupported stored values", () => {
-    localStorage.setItem("morrow.chat-draft.v1.project%2Fa.chat%3A1", "not-json");
+    saveChatDraft(first, "valid");
+    const key = localStorage.key(0)!;
+    localStorage.setItem(key, "not-json");
     expect(loadChatDraft(first)).toBe("");
 
     localStorage.setItem(
-      "morrow.chat-draft.v1.project%2Fa.chat%3A1",
+      key,
       JSON.stringify({ version: 99, text: "stale" }),
     );
     expect(loadChatDraft(first)).toBe("");

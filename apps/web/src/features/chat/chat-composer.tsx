@@ -3,6 +3,7 @@ import { Send, Square } from "lucide-react";
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -79,7 +80,13 @@ function mapMode(mode: ComposerMode): Pick<ChatComposerSubmission, "mode" | "aut
 }
 
 function scopeId(scope: ChatDraftScope): string {
-  return `${scope.projectId}\u0000${scope.conversationId ?? ""}`;
+  return JSON.stringify([scope.projectId, scope.conversationId ?? null]);
+}
+
+interface SelectionSnapshot {
+  direction: "backward" | "forward" | "none";
+  end: number;
+  start: number;
 }
 
 export function ChatComposer({
@@ -99,20 +106,22 @@ export function ChatComposer({
   const inputId = `morrow-chat-message-${id}`;
   const helpId = `morrow-chat-help-${id}`;
   const limitId = `morrow-chat-limit-${id}`;
-  const initialDraft = useRef(loadChatDraft(draftScope));
+  const [initialDraft] = useState(() => loadChatDraft(draftScope));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   const sendingRef = useRef(false);
   const currentScopeId = scopeId(draftScope);
-  const priorScopeId = useRef(currentScopeId);
-  const currentScope = useRef(draftScope);
-  currentScope.current = draftScope;
+  const committedScope = useRef({ id: currentScopeId, scope: { ...draftScope } });
+  const pendingFocus = useRef<{
+    scopeId: string;
+    selection: SelectionSnapshot;
+  } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
   const [mode, setMode] = useState<ComposerMode>("ask");
   const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
-  const [length, setLength] = useState(() => initialDraft.current.length);
-  const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.current.trim()));
+  const [length, setLength] = useState(() => initialDraft.length);
+  const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.trim()));
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -124,43 +133,65 @@ export function ChatComposer({
     textarea.style.overflowY = textarea.scrollHeight > TEXTAREA_MAX_HEIGHT ? "auto" : "hidden";
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    if (priorScopeId.current !== currentScopeId) {
-      textarea.value = loadChatDraft(draftScope);
+    if (committedScope.current.id !== currentScopeId) {
+      const retainedFocus = document.activeElement === textarea;
+      const nextScope = { ...draftScope };
+      textarea.value = loadChatDraft(nextScope);
       setLength(textarea.value.length);
       setHasContent(Boolean(textarea.value.trim()));
       setMessage(null);
-      priorScopeId.current = currentScopeId;
+      committedScope.current = { id: currentScopeId, scope: nextScope };
+      if (retainedFocus) {
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      }
     }
     resize(textarea);
-  }, [currentScopeId, draftScope]);
+  }, [currentScopeId]);
 
   useEffect(() => {
-    if (autoFocus && !disabled) textareaRef.current?.focus();
-  }, [autoFocus, disabled]);
+    if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus();
+  }, [activeTaskId, autoFocus, disabled, sending]);
+
+  useLayoutEffect(() => {
+    const request = pendingFocus.current;
+    const textarea = textareaRef.current;
+    if (!request || !textarea || disabled || activeTaskId || sending) return;
+    pendingFocus.current = null;
+    if (request.scopeId !== committedScope.current.id) return;
+    textarea.focus();
+    const end = Math.min(request.selection.end, textarea.value.length);
+    const start = Math.min(request.selection.start, end);
+    textarea.setSelectionRange(start, end, request.selection.direction);
+  }, [activeTaskId, currentScopeId, disabled, sending]);
 
   function handleInput(event: InputEvent<HTMLTextAreaElement>) {
     const textarea = event.currentTarget;
     setLength(textarea.value.length);
     setHasContent(Boolean(textarea.value.trim()));
     setMessage(null);
-    saveChatDraft(currentScope.current, textarea.value);
+    saveChatDraft(committedScope.current.scope, textarea.value);
     resize(textarea);
   }
 
   async function submit() {
     const textarea = textareaRef.current;
-    if (!textarea || disabled || sendingRef.current) return;
+    if (!textarea || disabled || activeTaskId || stopping || sendingRef.current) return;
     const content = textarea.value;
     if (!content.trim() || content.length > CHAT_PROMPT_MAX_LENGTH) return;
 
     sendingRef.current = true;
     setSending(true);
     setMessage(null);
-    const submittedScope = currentScope.current;
+    const submittedScope = committedScope.current.scope;
     const submittedScopeId = scopeId(submittedScope);
+    const submittedSelection: SelectionSnapshot = {
+      direction: textarea.selectionDirection,
+      end: textarea.selectionEnd,
+      start: textarea.selectionStart,
+    };
     const selectedRoute = availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0]!;
     const routing = selectedRoute.providerId
       ? {
@@ -182,20 +213,29 @@ export function ChatComposer({
         ...routing,
       });
       if (!result.accepted) {
-        setMessage(result.error ?? "Message was not accepted. Review the details and try again.");
+        if (submittedScopeId === committedScope.current.id) {
+          setMessage(result.error ?? "Message was not accepted. Review the details and try again.");
+          pendingFocus.current = { scopeId: submittedScopeId, selection: submittedSelection };
+        }
         return;
       }
       clearChatDraft(submittedScope);
-      if (textareaRef.current && submittedScopeId === scopeId(currentScope.current)) {
+      if (textareaRef.current && submittedScopeId === committedScope.current.id) {
         textareaRef.current.value = "";
         setLength(0);
         setHasContent(false);
         resize(textareaRef.current);
-        textareaRef.current.focus();
+        pendingFocus.current = {
+          scopeId: submittedScopeId,
+          selection: { direction: "none", end: 0, start: 0 },
+        };
+        setMessage("Message accepted.");
       }
-      setMessage("Message accepted.");
     } catch {
-      setMessage("Message was not accepted. Try again.");
+      if (submittedScopeId === committedScope.current.id) {
+        setMessage("Message was not accepted. Try again.");
+        pendingFocus.current = { scopeId: submittedScopeId, selection: submittedSelection };
+      }
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -212,7 +252,9 @@ export function ChatComposer({
       event.key === "Enter" &&
       !event.shiftKey &&
       !composing.current &&
-      !event.nativeEvent.isComposing
+      !event.nativeEvent.isComposing &&
+      event.keyCode !== 229 &&
+      event.which !== 229
     ) {
       event.preventDefault();
       void submit();
@@ -235,7 +277,8 @@ export function ChatComposer({
 
   const overLimit = Math.max(0, length - CHAT_PROMPT_MAX_LENGTH);
   const showCounter = length >= 30_000;
-  const cannotSend = disabled || sending || !hasContent || overLimit > 0;
+  const interactionDisabled = disabled || sending || Boolean(activeTaskId);
+  const cannotSend = interactionDisabled || stopping || !hasContent || overLimit > 0;
 
   return (
     <form
@@ -251,8 +294,8 @@ export function ChatComposer({
         aria-invalid={overLimit > 0 ? "true" : undefined}
         autoComplete="on"
         className="morrow-chat-composer__input"
-        defaultValue={initialDraft.current}
-        disabled={disabled || sending}
+        defaultValue={initialDraft}
+        disabled={interactionDisabled}
         enterKeyHint="send"
         id={inputId}
         onCompositionEnd={() => { composing.current = false; }}
@@ -269,7 +312,7 @@ export function ChatComposer({
           <button
             aria-pressed={mode === item.id}
             className={mode === item.id ? "is-active" : undefined}
-            disabled={disabled || sending}
+            disabled={interactionDisabled}
             key={item.id}
             onClick={() => setMode(item.id)}
             type="button"
@@ -284,7 +327,7 @@ export function ChatComposer({
           <label className="morrow-chat-composer__select">
             <span>Project</span>
             <select
-              disabled={disabled || sending}
+              disabled={interactionDisabled}
               onChange={(event) => onProjectChange(event.target.value)}
               value={projectId}
             >
@@ -298,7 +341,7 @@ export function ChatComposer({
         <label className="morrow-chat-composer__select">
           <span>Model route</span>
           <select
-            disabled={disabled || sending}
+            disabled={interactionDisabled}
             onChange={(event) => setRouteId(event.target.value)}
             value={availableRoutes.some((route) => route.id === routeId) ? routeId : availableRoutes[0]!.id}
           >
@@ -312,14 +355,14 @@ export function ChatComposer({
           <button
             aria-label="Stop generation"
             className="morrow-chat-composer__stop"
-            disabled={stopping}
+            disabled={disabled || stopping}
             onClick={() => { void stop(); }}
             type="button"
           >
             <Square aria-hidden="true" size={15} />
             <span>{stopping ? "Stopping…" : "Stop"}</span>
           </button>
-        ) : (
+        ) : activeTaskId ? null : (
           <button
             aria-label={sending ? "Sending message" : "Send message"}
             className="morrow-chat-composer__send"
