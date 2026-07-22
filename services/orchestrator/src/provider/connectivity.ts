@@ -96,6 +96,7 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
       };
       const perMillion = (value: unknown): number | null => {
         if (typeof value !== "string" && typeof value !== "number") return null;
+        if (typeof value === "string" && value.trim().length === 0) return null;
         const parsed = Number(value);
         return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
       };

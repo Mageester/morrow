@@ -53,7 +53,7 @@ Provider status exposes only `configured`, the default model, and the endpoint
 
 For OpenRouter specifically, possession of a value is not reported as
 `configured`: Morrow reports connected/configured only after an authenticated
-`GET /api/v1/models` succeeds. The server normalizes the returned account
+`GET /api/v1/models/user` succeeds. The server normalizes the returned account
 catalogue (author, modalities, tool/reasoning signals, provider-reported pricing,
 free/paid state, availability, and refresh time), caches it in SQLite for a
 bounded 15-minute TTL, and refreshes it on explicit request. A failed refresh

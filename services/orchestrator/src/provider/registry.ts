@@ -256,7 +256,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     id: "openrouter",
     label: "OpenRouter",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "openrouter/auto",
     models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
     setupHint: "Set OPENROUTER_API_KEY.",

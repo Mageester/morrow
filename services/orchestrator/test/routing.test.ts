@@ -54,6 +54,11 @@ describe("Model registry currency", () => {
 });
 
 describe("Provider registry", () => {
+  it("reports OpenRouter vision support without advertising a custom endpoint", () => {
+    const openrouter = listProviderStatuses({}).find((provider) => provider.id === "openrouter")!;
+    expect(openrouter.capabilities).toMatchObject({ vision: true, customEndpoint: false });
+  });
+
   it("hard-pins OpenRouter chat to the official endpoint even when an override env var exists", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
     vi.stubGlobal("fetch", fetchMock);

@@ -113,6 +113,8 @@ describe("provider connectivity", () => {
       { id: "vendor/image-paid", pricing: { prompt: "0", completion: "0", image: "0.001" } },
       { id: "vendor/incomplete", pricing: { prompt: "0" } },
       { id: "vendor/unknown-component", pricing: { prompt: "0", completion: "0", future_billable_dimension: "0" } },
+      { id: "vendor/blank-price", pricing: { prompt: "", completion: "0" } },
+      { id: "vendor/whitespace-price", pricing: { prompt: "0", completion: "   " } },
       { id: "vendor/all-zero", pricing: { prompt: "0", completion: "0", request: "0", image: "0", web_search: "0", internal_reasoning: "0", input_cache_read: "0", input_cache_write: "0" } },
     ] }), { status: 200 })));
 
@@ -123,6 +125,8 @@ describe("provider connectivity", () => {
       "vendor/image-paid": "paid",
       "vendor/incomplete": "unknown",
       "vendor/unknown-component": "unknown",
+      "vendor/blank-price": "unknown",
+      "vendor/whitespace-price": "unknown",
       "vendor/all-zero": "free",
     });
   });
