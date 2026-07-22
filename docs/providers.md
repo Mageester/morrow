@@ -11,7 +11,7 @@ honest OAuth findings, and manual end-to-end verification.
 | OpenAI | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Anthropic | Messages API | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Google Gemini | generateContent | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
-| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
 | DeepSeek | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
 | OpenAI-compatible | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
 | Ollama | OpenAI-compatible | local | ✓ | ✓ | ✓ | — | ✓ | ✓ |
@@ -76,7 +76,7 @@ stored OpenRouter route entirely.
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` |
 | Gemini | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` |
-| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
+| OpenRouter | `OPENROUTER_API_KEY` | — (pinned; overrides rejected) | `https://openrouter.ai/api/v1` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` |
 | OpenAI-compatible | `OPENAI_COMPAT_API_KEY` (optional) | `OPENAI_COMPAT_BASE_URL` (required) | — (`OPENAI_COMPAT_MODEL` for the model) |
 | Ollama (local) | — | `OLLAMA_BASE_URL` (required to enable) | `http://127.0.0.1:11434/v1` |

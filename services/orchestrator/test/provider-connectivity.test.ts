@@ -46,7 +46,8 @@ describe("provider connectivity", () => {
   });
 
   it("normalizes the rich OpenRouter model catalogue and deduplicates invalid records", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (_url, init: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(async (url, init: RequestInit) => {
+      expect(String(url)).toBe("https://openrouter.ai/api/v1/models/user");
       expect(init.headers).toMatchObject({ Authorization: "Bearer openrouter-test-value" });
       return new Response(JSON.stringify({ data: [
         {
@@ -85,6 +86,45 @@ describe("provider connectivity", () => {
     });
     expect(result.models[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(result.models[1]).toMatchObject({ providerModelId: "free/model", costType: "free" });
+  });
+
+  it("uses OpenRouter's authenticated user catalogue so an invalid key cannot pass via the public catalogue", async () => {
+    const fetchMock = vi.fn(async (url: string) => url === "https://openrouter.ai/api/v1/models/user"
+      ? new Response(JSON.stringify({ error: { message: "invalid key" } }), { status: 401 })
+      : new Response(JSON.stringify({ data: [{ id: "public/model" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "invalid-candidate" });
+
+    expect(result).toMatchObject({ ok: false, configured: false, status: 401, errorKind: "auth" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://openrouter.ai/api/v1/models/user");
+  });
+
+  it("rejects a 200 OpenRouter response that is not an authenticated user-catalogue schema", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ id: "public/model" }] }), { status: 200 })));
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "candidate" });
+    expect(result).toMatchObject({ ok: false, configured: false, errorKind: "provider" });
+  });
+
+  it("classifies non-token OpenRouter charges and incomplete pricing conservatively", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "vendor/request-paid", pricing: { prompt: "0", completion: "0", request: "0.01" } },
+      { id: "vendor/image-paid", pricing: { prompt: "0", completion: "0", image: "0.001" } },
+      { id: "vendor/incomplete", pricing: { prompt: "0" } },
+      { id: "vendor/unknown-component", pricing: { prompt: "0", completion: "0", future_billable_dimension: "0" } },
+      { id: "vendor/all-zero", pricing: { prompt: "0", completion: "0", request: "0", image: "0", web_search: "0", internal_reasoning: "0", input_cache_read: "0", input_cache_write: "0" } },
+    ] }), { status: 200 })));
+
+    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "candidate" });
+    const costs = Object.fromEntries(result.models.map((model) => [model.providerModelId, model.costType]));
+    expect(costs).toMatchObject({
+      "vendor/request-paid": "paid",
+      "vendor/image-paid": "paid",
+      "vendor/incomplete": "unknown",
+      "vendor/unknown-component": "unknown",
+      "vendor/all-zero": "free",
+    });
   });
 
   it.each([

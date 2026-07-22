@@ -14,6 +14,7 @@ import { providerCredentialIdentity, providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
+import { OPENROUTER_API_BASE_URL } from "./connectivity.js";
 
 let modelDiscoveries: ProviderModelDiscovery[] = [];
 
@@ -30,18 +31,24 @@ function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus
   if (!discovery) return status.id === "openrouter" && status.configured
     ? { ...status, configured: false, available: false, authStatus: "unavailable" }
     : status;
-  if (discovery.status === "unavailable") return status.id === "openrouter"
-    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
-    : { ...status, available: false };
-  const models = discovery.models.map((model) => model.providerModelId);
-  if (models.length === 0) return { ...status, available: true };
-  return {
+  const discoveredModels = discovery.models.map((model) => model.providerModelId);
+  const withDiscoveredModels: ProviderStatus = {
     ...status,
-    available: true,
-    models: status.defaultModel && !models.includes(status.defaultModel) ? [status.defaultModel, ...models] : models,
-    // Never silently replace a user's selected model when a refreshed
-    // catalogue stops returning it. The model status marks it unavailable.
+    models: status.defaultModel && !discoveredModels.includes(status.defaultModel)
+      ? [status.defaultModel, ...discoveredModels]
+      : discoveredModels,
     defaultModel: status.defaultModel,
+  };
+  if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
+    return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (discovery.status === "unavailable") return status.id === "openrouter"
+    ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
+    : { ...status, available: false };
+  if (discoveredModels.length === 0) return { ...status, available: true };
+  return {
+    ...withDiscoveredModels,
+    available: true,
   };
 }
 
@@ -168,7 +175,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     id: "openai",
     label: "OpenAI",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "gpt-5.6-sol",
     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
@@ -255,20 +262,20 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     setupHint: "Set OPENROUTER_API_KEY.",
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
+      const c = { configured: !!env.OPENROUTER_API_KEY?.trim(), endpointType: "default" as const, host: "openrouter.ai" };
       return apiKeyStatus(this, c, env);
     },
     build(env, model) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
       return new OpenAiCompatibleProvider({
         id: "openrouter",
-        apiKey: c.apiKey!,
-        baseUrl: c.baseUrl,
+        apiKey,
+        baseUrl: OPENROUTER_API_BASE_URL,
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         includeUsage: true,
         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
-        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
+        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "default", endpointHost: "openrouter.ai" }),
       });
     },
   },

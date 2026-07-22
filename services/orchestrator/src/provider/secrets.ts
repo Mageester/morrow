@@ -38,7 +38,7 @@ export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
   openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", modelEnv: "OPENAI_MODEL", contextLimitEnv: "OPENAI_CONTEXT_LIMIT" },
   anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", modelEnv: "ANTHROPIC_MODEL", contextLimitEnv: "ANTHROPIC_CONTEXT_LIMIT" },
   gemini: { apiKeyEnv: "GEMINI_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", modelEnv: "GEMINI_MODEL", contextLimitEnv: "GEMINI_CONTEXT_LIMIT" },
-  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
+  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
   deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
   "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
   ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },

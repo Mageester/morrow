@@ -127,6 +127,44 @@ describe("Provider / preset / memory API", () => {
     }
   });
 
+  it("discards an in-flight OpenRouter refresh when the live credential changes", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "credential-before-refresh";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const connectivity = vi.fn(async (_id: any, env: NodeJS.ProcessEnv = {}) => {
+      expect(env.OPENROUTER_API_KEY).toBe("credential-before-refresh");
+      await gate;
+      return {
+        id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+        checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+        modelsSample: ["vendor/old-key-model"],
+        models: [{ providerModelId: "vendor/old-key-model", displayName: "Old key model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" as const }],
+      };
+    });
+    const localDb = openDatabase(":memory:");
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      const pending = localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      await vi.waitFor(() => expect(connectivity).toHaveBeenCalledOnce());
+      process.env.OPENROUTER_API_KEY = "credential-after-refresh";
+      release();
+      const response = await pending;
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ ok: false, configured: false, errorKind: "cancelled" });
+      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+      expect(models.some((item: any) => item.model.id === "vendor/old-key-model")).toBe(false);
+    } finally {
+      release();
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
+
   it("refreshes configured account models in the background without blocking startup", async () => {
     const previousKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "sk-background-discovery-test";

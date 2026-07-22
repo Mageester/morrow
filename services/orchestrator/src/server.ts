@@ -266,7 +266,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
   const discoveryExpiresAt = (fetchedAt: string, ok: boolean) => new Date(Date.parse(fetchedAt) + (ok ? 15 * 60_000 : 60_000)).toISOString();
   const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
-    const result = await providerConnectivityTest(providerId, process.env);
+    const envSnapshot = { ...process.env };
+    const credentialIdentity = providerCredentialIdentity(providerId, envSnapshot);
+    const result = await providerConnectivityTest(providerId, envSnapshot);
+    if (providerId === "openrouter" && providerCredentialIdentity(providerId, process.env) !== credentialIdentity) {
+      return { ...result, ok: false, configured: false, status: null, detail: "OpenRouter credential changed while refresh was in flight; result discarded.", errorKind: "cancelled", modelsSample: [], models: [] };
+    }
     const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
     if (authMode) {
       const fetchedAt = new Date().toISOString();
@@ -279,7 +284,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         fetchedAt,
         expiresAt: discoveryExpiresAt(fetchedAt, result.ok),
         lastSuccessAt: result.ok ? fetchedAt : null,
-        credentialIdentity: providerCredentialIdentity(providerId, process.env),
+        credentialIdentity,
       });
       installProviderModelDiscoveries(providerModelDiscovery.list());
     }
@@ -2091,11 +2096,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
 
   // Explicit account-catalogue refresh; unlike startup refresh this bypasses
   // the TTL because it is a user-directed verification action.
-  app.post("/api/providers/:providerId/models/refresh", async (request) => {
+  app.post("/api/providers/:providerId/models/refresh", async (request, reply) => {
     const { providerId } = request.params as { providerId: string };
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
-    return refreshProviderModelDiscovery(parsed.data);
+    const result = await refreshProviderModelDiscovery(parsed.data);
+    if (result.errorKind === "cancelled") reply.code(409);
+    return result;
   });
 
   // Save provider credentials from the app (no PowerShell / env vars / restart).
@@ -2139,10 +2146,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
       }
     }
+    if (id === "openrouter" && body.baseUrl !== undefined) {
+      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
+    }
     let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
+    let validatedCredentialIdentity: string | null = null;
     if (id === "openrouter") {
+      const previousCredentialIdentity = providerCredentialIdentity(id, process.env);
       const candidateEnv = buildProviderCandidateEnv(id, body, process.env);
+      validatedCredentialIdentity = providerCredentialIdentity(id, candidateEnv);
       validatedResult = await providerConnectivityTest(id, candidateEnv);
+      if (providerCredentialIdentity(id, process.env) !== previousCredentialIdentity) {
+        throw new ApiError(409, "OpenRouter configuration changed while validation was in flight. Retry with the current settings.", "PROVIDER_CONFIGURATION_CONFLICT");
+      }
       if (!validatedResult.ok) {
         const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
         throw new ApiError(statusCode, `OpenRouter validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
@@ -2151,7 +2167,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const result = configureProvider(deps.secretsFile, id, body, process.env);
     if (validatedResult) {
       const fetchedAt = new Date().toISOString();
-      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: providerCredentialIdentity(id, process.env) });
+      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: validatedCredentialIdentity });
       installProviderModelDiscoveries(providerModelDiscovery.list());
     }
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;

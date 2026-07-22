@@ -198,6 +198,22 @@ describe("OpenRouter authenticated configuration", () => {
     expect(response.json().error.code).toBe("PROVIDER_VALIDATION_FAILED");
     expect(JSON.stringify(response.json())).not.toMatch(/last-known-good|replacement-rejected/);
   });
+
+  it("rejects every OpenRouter endpoint override before an existing key can be sent elsewhere", async () => {
+    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
+    connectivity.mockClear();
+
+    for (const baseUrl of ["http://attacker.invalid/v1", "https://attacker.invalid/v1"]) {
+      const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { baseUrl } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("OPENROUTER_ENDPOINT_PINNED");
+    }
+
+    expect(connectivity).not.toHaveBeenCalled();
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(process.env.OPENROUTER_BASE_URL).toBeUndefined();
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+  });
 });
 
 describe("provider configuration API (DeepSeek acceptance flow)", () => {

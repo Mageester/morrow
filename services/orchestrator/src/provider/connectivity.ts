@@ -21,6 +21,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 // small display-oriented sample.
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_RECORDS = 5_000;
+export const OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1";
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   const contentLength = Number(response.headers.get("content-length"));
@@ -104,6 +105,22 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
       const pricing = inputPrice !== null && outputPrice !== null
         ? { inputUsdPerMillion: inputPrice, outputUsdPerMillion: outputPrice, ...(cachedInputPrice !== null ? { cachedInputUsdPerMillion: cachedInputPrice } : {}), source: "provider-reported" as const }
         : null;
+      const billablePricingFields = new Set([
+        "prompt", "completion", "request", "image", "web_search", "internal_reasoning",
+        "input_cache_read", "input_cache_write",
+      ]);
+      const pricingEntries = entry?.pricing && typeof entry.pricing === "object" && !Array.isArray(entry.pricing)
+        ? Object.entries(entry.pricing) : [];
+      const hasUnknownPricingField = pricingEntries.some(([key]) => !billablePricingFields.has(key));
+      const parsedPricingEntries = pricingEntries.map(([key, value]) => ({ key, value: perMillion(value) }));
+      const hasInvalidPricingValue = parsedPricingEntries.some(({ value }) => value === null);
+      const hasNonTokenCharge = parsedPricingEntries.some(({ key, value }) => key !== "prompt" && key !== "completion" && value !== null && value > 0);
+      const hasTokenCharge = (inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0;
+      const costType = hasTokenCharge || hasNonTokenCharge
+        ? "paid" as const
+        : inputPrice === null || outputPrice === null || pricingEntries.length === 0 || hasUnknownPricingField || hasInvalidPricingValue
+          ? "unknown" as const
+          : "free" as const;
       const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
       const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
       return [{
@@ -124,7 +141,7 @@ function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): D
           reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
         },
         pricing,
-        costType: pricing ? (pricing.inputUsdPerMillion === 0 && pricing.outputUsdPerMillion === 0 ? "free" : "paid") : "unknown",
+        costType,
         availability,
         fetchedAt,
         metadataSource: "provider-reported",
@@ -145,11 +162,9 @@ interface PlannedRequest {
 function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
   switch (id) {
     case "openai":
-    case "openrouter":
     case "deepseek": {
       const cfgByProvider: Record<string, { apiKeyEnv: string; baseUrlEnv: string; defaultBaseUrl: string; extra?: Record<string, string> }> = {
         openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" },
-        openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1", extra: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" } },
         deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" },
       };
       const spec = cfgByProvider[id]!;
@@ -163,6 +178,18 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       }
       if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+    }
+    case "openrouter": {
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) return { configured: false, reason: "openrouter is not configured (OPENROUTER_API_KEY missing)." };
+      return {
+        configured: true,
+        request: {
+          url: `${OPENROUTER_API_BASE_URL}/models/user`,
+          headers: { Authorization: `Bearer ${apiKey}`, "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
+          host: "openrouter.ai",
+        },
+      };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
@@ -249,6 +276,9 @@ export async function testProviderConnectivity(
     const latencyMs = Date.now() - startedAt;
     const body = await readBoundedJson(res);
     if (res.ok) {
+      if (id === "openrouter" && (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data))) {
+        return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
+      }
       const models = normalizeModels(body);
       return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
     }

@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
 import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
 import { listModels, resolveModelStatuses } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
+import { providerCredentialIdentity } from "../src/provider/secrets.js";
 
 describe("Model registry currency", () => {
   it("lets live OpenRouter metadata override bundled fallback fields for known model ids", () => {
@@ -53,6 +54,40 @@ describe("Model registry currency", () => {
 });
 
 describe("Provider registry", () => {
+  it("hard-pins OpenRouter chat to the official endpoint even when an override env var exists", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const provider = createProvider("openrouter", { OPENROUTER_API_KEY: "route-test-key", OPENROUTER_BASE_URL: "https://attacker.invalid/v1" });
+      for await (const _chunk of provider.streamChat([{ role: "user", content: "hello" }], {})) { /* drain */ }
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://openrouter.ai/api/v1/chat/completions");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an expired OpenRouter catalogue visible but marks the provider unavailable", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-22T12:16:00.000Z"));
+    const env = { OPENROUTER_API_KEY: "stale-key" };
+    installProviderModelDiscoveries([{
+      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
+      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
+      credentialIdentity: providerCredentialIdentity("openrouter", env),
+      models: [{ providerModelId: "vendor/stale-model", displayName: "Stale model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" }],
+    }]);
+    try {
+      expect(listProviderStatuses(env).find((provider) => provider.id === "openrouter")).toMatchObject({
+        configured: false,
+        available: false,
+        models: expect.arrayContaining(["vendor/stale-model"]),
+      });
+    } finally {
+      installProviderModelDiscoveries([]);
+      vi.useRealTimers();
+    }
+  });
   it("reports nothing configured with an empty environment", () => {
     const statuses = listProviderStatuses({});
     expect(statuses.length).toBeGreaterThanOrEqual(7);
