@@ -30,6 +30,7 @@ describe("web mission contracts", () => {
         objective: "Analyze the market",
         state: "working",
         currentPhase: "Researching",
+        modelLabel: "balanced preset",
         latestActivity: "Reviewed competitor sites",
         attentionCount: 0,
         completedMilestones: 1,
