@@ -1,802 +1,110 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import {
-  QueryClient,
-  QueryClientProvider,
-} from "@tanstack/react-query";
-import {
-  RouterProvider,
   createMemoryHistory,
   createRootRoute,
   createRoute,
   createRouter,
+  RouterProvider,
   type AnyRouter,
 } from "@tanstack/react-router";
-import { useLayoutEffect, useState } from "react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { missionKeys } from "../../api/query-keys.js";
-import { RuntimeStatusProvider } from "../../state/runtime-status.js";
-import { ThemeProvider } from "../../state/theme.js";
-import { createAppRouter } from "../../app/router.js";
-import { loadChatDraft, saveChatDraft } from "../chat/draft-store.js";
-import { MissionComposer } from "./mission-composer.js";
+import { HomePage } from "./home-page.js";
 
-const now = "2026-07-21T12:00:00.000Z";
+const now = "2026-07-22T12:00:00.000Z";
+const project = { id: "project-1", name: "Local project", version: 1, workspacePath: "C:\\local", createdAt: now };
+const conversation = { id: "conv-1", projectId: "project-1", title: "Local research", archived: false, version: 1, createdAt: now, updatedAt: now };
 
-const project = {
-  createdAt: now,
-  id: "project-1",
-  name: "Private workspace",
-  version: 1,
-  workspacePath: "C:\\private\\workspace",
-};
-
-function mission(
-  id: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    attentionCount: 0,
-    completedMilestones: 0,
-    createdAt: now,
-    currentPhase: "Planning",
-    id,
-    latestActivity: "Morrow is getting started.",
-    modelLabel: "claude-sonnet-5",
-    objective: `Objective for ${id}`,
-    projectId: project.id,
-    state: "working",
-    title: `Mission ${id}`,
-    totalMilestones: 2,
-    updatedAt: now,
-    version: 1,
-    workspaceId: "workspace-personal-project-1",
-    ...overrides,
-  };
-}
-
-function snapshot(id = "mission-created") {
-  return {
-    artifacts: [],
-    attention: [],
-    currentWork: null,
-    milestones: [],
-    recentActivity: [],
-    summary: mission(id),
-    verification: {
-      caveats: [],
-      evidenceCount: 0,
-      state: "not_ready",
-      summary: "Verification has not started.",
-    },
-    version: 1,
-  };
-}
-
-function providerStatus(overrides: Record<string, unknown> = {}) {
-  return {
-    version: 1,
-    id: "openai-compatible",
-    label: "OpenAI-compatible endpoint",
-    kind: "api-key",
-    configured: true,
-    available: true,
-    endpointType: "custom",
-    endpointHost: "example.test",
-    authStatus: "configured",
-    authMode: "custom-compatible",
-    capabilities: {
-      streaming: true,
-      toolCalls: true,
-      systemMessages: true,
-      vision: false,
-      customEndpoint: true,
-      local: false,
-    },
-    models: ["local-model-x"],
-    defaultModel: "local-model-x",
-    note: null,
-    setupHint: null,
-    ...overrides,
-  };
-}
-
-function json(body: unknown, status = 200) {
-  return Response.json(body, { status });
-}
-
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((onResolve) => {
-    resolve = onResolve;
+function renderHome(fetchImpl: (input: RequestInfo | URL) => Promise<Response>) {
+  vi.stubGlobal("fetch", vi.fn(fetchImpl));
+  const root = createRootRoute();
+  const home = createRoute({ getParentRoute: () => root, path: "/", component: HomePage });
+  const chats = createRoute({ getParentRoute: () => root, path: "/chats", component: () => null });
+  const conversationRoute = createRoute({
+    getParentRoute: () => root,
+    path: "/chats/$conversationId",
+    validateSearch: (search: Record<string, unknown>) => ({ projectId: search.projectId as string }),
+    component: () => null,
   });
-  return { promise, resolve };
-}
-
-function installApi(
-  handler: (path: string, init?: RequestInit) => Response | Promise<Response>,
-) {
-  const fetchMock = vi.fn(
-    (input: RequestInfo | URL, init?: RequestInit) =>
-      handler(String(input), init),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-function renderHome() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+  const missions = createRoute({ getParentRoute: () => root, path: "/missions", component: () => null });
+  const mission = createRoute({ getParentRoute: () => root, path: "/missions/$missionId", component: () => null });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: root.addChildren([home, chats, conversationRoute, missions, mission]),
   });
-  const router = createAppRouter(
-    createMemoryHistory({ initialEntries: ["/app/"] }),
-  );
-
   render(
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <RuntimeStatusProvider>
-          <RouterProvider router={router as AnyRouter} />
-        </RuntimeStatusProvider>
-      </ThemeProvider>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <RouterProvider router={router as AnyRouter} />
     </QueryClientProvider>,
   );
-
-  return { queryClient, router };
 }
 
-function standardHandler(
-  missions: ReturnType<typeof mission>[] = [],
-  createResponse: Response = json(snapshot(), 201),
-  providers: ReturnType<typeof providerStatus>[] = [],
-) {
-  return (path: string) => {
-    if (path === "/api/health") {
-      return json({ ok: true, service: "morrow-orchestrator" });
-    }
-    if (path === "/api/projects") return json([project]);
-    if (path === "/api/providers") return json(providers);
-    if (path.startsWith("/api/web/missions?")) return json(missions);
-    if (path === "/api/web/missions") return createResponse;
-    throw new Error(`Unexpected request: ${path}`);
-  };
-}
-
-afterEach(() => {
-  localStorage.clear();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+const emptyMissions = () => Response.json([]);
 
 describe("HomePage", () => {
-  it("uses the universal objective-first prompt without a task category selector", async () => {
-    installApi(standardHandler());
-    renderHome();
+  afterEach(() => vi.restoreAllMocks());
 
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
+  it("greets the user, offers a new chat, and links recent conversations", async () => {
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url.includes("/web/missions")) return emptyMissions();
+      if (url.includes("/conversations")) return Response.json([conversation]);
+      throw new Error(`unexpected ${url}`);
     });
-    expect(screen.getByText("What should Morrow accomplish?")).toBeVisible();
-    await waitFor(() => expect(objective).toHaveFocus());
-    expect(screen.queryByText(/Coding|Research|Documents/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
+
+    expect(await screen.findByRole("heading", { level: 1 })).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "New chat" })).toBeEnabled(),
+    );
+    expect(await screen.findByRole("link", { name: /Local research/ })).toHaveAttribute(
+      "href",
+      "/chats/conv-1?projectId=project-1",
+    );
   });
 
-  it("names the connected provider and model in the composer", async () => {
-    installApi(standardHandler([], json(snapshot(), 201), [providerStatus()]));
-    renderHome();
-
-    const ready = await screen.findByText(/Ready —/);
-    expect(ready).toHaveTextContent("local-model-x");
-    expect(ready).toHaveTextContent("OpenAI-compatible endpoint");
-    expect(
-      within(ready).getByRole("link", { name: "Change model" }),
-    ).toHaveAttribute("href", "/app/connections");
-    // The empty-state warning must NOT show when a model is connected.
-    expect(screen.queryByText(/No AI model is connected yet/)).not.toBeInTheDocument();
-  });
-
-  it("warns and links to Connections when no model is configured", async () => {
-    installApi(standardHandler([], json(snapshot(), 201), []));
-    renderHome();
-
-    const note = await screen.findByText(/No AI model is connected yet/);
-    expect(
-      within(note).getByRole("link", { name: "Connect a model" }),
-    ).toHaveAttribute("href", "/app/connections");
-    expect(screen.queryByText(/Ready —/)).not.toBeInTheDocument();
-  });
-
-  it("blocks an empty submission", async () => {
-    const fetchMock = installApi(standardHandler());
-    const user = userEvent.setup();
-    renderHome();
-
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
+  it("shows an honest empty state when there are no conversations yet", async () => {
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url.includes("/web/missions")) return emptyMissions();
+      if (url.includes("/conversations")) return Response.json([]);
+      throw new Error(`unexpected ${url}`);
     });
-    await user.keyboard("{Enter}");
 
-    expect(
-      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-    ).toHaveLength(0);
+    expect(await screen.findByText(/No conversations yet/i)).toBeVisible();
   });
 
-  it("submits with Enter while Shift+Enter adds a newline", async () => {
-    const fetchMock = installApi(standardHandler());
-    const user = userEvent.setup();
-    renderHome();
-
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Plan the release notes");
-    await user.keyboard("{Shift>}{Enter}{/Shift}");
-    expect(objective).toHaveValue("Plan the release notes\n");
-    expect(
-      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-    ).toHaveLength(0);
-
-    await user.keyboard("{Enter}");
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-      ).toHaveLength(1);
-    });
-  });
-
-  it("restores the project-scoped objective after navigation remounts Home", async () => {
-    installApi(standardHandler());
-    const user = userEvent.setup();
-    const { router } = renderHome();
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Draft survives navigation");
-
-    await router.navigate({ to: "/library" });
-    await router.navigate({ to: "/" });
-
-    expect(
-      await screen.findByRole("textbox", { name: "Mission objective" }),
-    ).toHaveValue("Draft survives navigation");
-  });
-
-  it("uses one stable idempotency key for rapid double submission and caches the created mission", async () => {
-    const created = deferred<Response>();
-    const fetchMock = installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
+  it("offers a retry when recent chats fail to load", async () => {
+    let conversationCalls = 0;
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([project]);
+      if (url.includes("/web/missions")) return emptyMissions();
+      if (url.includes("/conversations")) {
+        conversationCalls += 1;
+        if (conversationCalls === 1) {
+          return new Response(JSON.stringify({ error: { code: "OFFLINE", message: "offline" } }), { status: 503 });
+        }
+        return Response.json([conversation]);
       }
-      if (path === "/api/projects") return json([project]);
-      if (path.startsWith("/api/web/missions?")) return json([]);
-      if (path === "/api/web/missions") return created.promise;
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const { queryClient, router } = renderHome();
-    const user = userEvent.setup();
-
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Prepare the release");
-    await user.keyboard("{Enter}{Enter}");
-
-    const creates = fetchMock.mock.calls.filter(
-      ([path]) => path === "/api/web/missions",
-    );
-    expect(creates).toHaveLength(1);
-    expect(JSON.parse(String(creates[0]?.[1]?.body))).toMatchObject({
-      idempotencyKey: expect.any(String),
-      objective: "Prepare the release",
-      projectId: project.id,
+      throw new Error(`unexpected ${url}`);
     });
 
-    created.resolve(json(snapshot("mission-42"), 201));
-    await waitFor(() => {
-      expect(router.state.location.pathname).toBe("/missions/mission-42");
-    });
-    expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
-      snapshot("mission-42"),
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be loaded/i);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("link", { name: /Local research/ })).toBeVisible();
   });
 
-  it("preserves a failed objective and rotates the idempotency key only after an explicit edit", async () => {
-    let createCount = 0;
-    const fetchMock = installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return json([project]);
-      if (path.startsWith("/api/web/missions?")) return json([]);
-      if (path === "/api/web/missions") {
-        createCount += 1;
-        return createCount < 3
-          ? json(
-              {
-                error: {
-                  code: "MISSION_BLOCKED",
-                  message: "The mission needs a decision.",
-                },
-                version: 1,
-              },
-              409,
-            )
-          : json(snapshot("mission-retry"), 201);
-      }
-      throw new Error(`Unexpected request: ${path}`);
+  it("explains the no-project state without inventing data", async () => {
+    renderHome(async (input) => {
+      const url = String(input);
+      if (url === "/api/projects") return Response.json([]);
+      throw new Error(`unexpected ${url}`);
     });
-    const user = userEvent.setup();
-    renderHome();
 
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Review the proposal");
-    await user.keyboard("{Enter}");
-    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
-      "role",
-      "status",
-    );
-    expect(objective).toHaveValue("Review the proposal");
-    expect(objective).not.toHaveAttribute("aria-invalid");
-    expect(objective).not.toHaveAttribute("aria-describedby");
-
-    const first = JSON.parse(
-      String(
-        fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
-          ?.body,
-      ),
-    );
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(createCount).toBe(2));
-    const retry = JSON.parse(
-      String(
-        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[1]?.[1]
-          ?.body,
-      ),
-    );
-    expect(retry.idempotencyKey).toBe(first.idempotencyKey);
-
-    await user.type(objective, " with evidence");
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(createCount).toBe(3));
-    const second = JSON.parse(
-      String(fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[2]?.[1]?.body),
-    );
-    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
-  });
-
-  it("rotates the idempotency key when autonomy changes after a failed request", async () => {
-    let createCount = 0;
-    const fetchMock = installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return json([project]);
-      if (path.startsWith("/api/web/missions?")) return json([]);
-      if (path === "/api/web/missions") {
-        createCount += 1;
-        return createCount === 1
-          ? json(
-              {
-                error: {
-                  code: "MISSION_BLOCKED",
-                  message: "The mission needs a decision.",
-                },
-                version: 1,
-              },
-              409,
-            )
-          : json(snapshot("mission-autonomy"), 201);
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const user = userEvent.setup();
-    renderHome();
-
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Review the proposal");
-    await user.keyboard("{Enter}");
-    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
-      "role",
-      "status",
-    );
-    const first = JSON.parse(
-      String(
-        fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
-          ?.body,
-      ),
-    );
-
-    await user.selectOptions(
-      screen.getByLabelText("Autonomy"),
-      "autonomous",
-    );
-    await user.click(screen.getByRole("button", { name: "Start mission" }));
-    await waitFor(() => expect(createCount).toBe(2));
-    const changed = JSON.parse(
-      String(fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[1]?.[1]?.body),
-    );
-    expect(changed.autonomy).toBe("autonomous");
-    expect(changed.idempotencyKey).not.toBe(first.idempotencyKey);
-  });
-
-  it("offers no deadline input and never submits a deadline before the service supports deadlines", async () => {
-    const fetchMock = installApi(standardHandler());
-    const user = userEvent.setup();
-    renderHome();
-
-    await screen.findByRole("textbox", { name: "Mission objective" });
-    expect(screen.queryByLabelText("Optional deadline")).not.toBeInTheDocument();
-    await user.click(screen.getByText("Advanced mission options"));
-    expect(
-      screen.getByText(
-        "Deadlines, attachments, and connections are not available in this local slice.",
-      ),
-    ).toBeVisible();
-    const objective = screen.getByRole("textbox", { name: "Mission objective" });
-    await user.type(objective, "Plan the release");
-    await user.keyboard("{Enter}");
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-      ).toHaveLength(1);
-    });
-    expect(
-      JSON.parse(
-        String(
-          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
-            ?.body,
-        ),
-      ),
-    ).not.toHaveProperty("deadline");
-  });
-
-  it("rejects an oversized objective before locking submission and allows a corrected retry", async () => {
-    const fetchMock = installApi(standardHandler());
-    renderHome();
-
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    fireEvent.change(objective, { target: { value: "x".repeat(8_001) } });
-    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_001)));
-    fireEvent.keyDown(objective, { key: "Enter" });
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Mission objectives must be 8,000 characters or fewer.",
-    );
-    expect(objective).toHaveAttribute("aria-invalid", "true");
-    expect(objective).toHaveAttribute(
-      "aria-describedby",
-      "mission-objective-error",
-    );
-    expect(objective).toHaveValue("x".repeat(8_001));
-    expect(
-      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-    ).toHaveLength(0);
-
-    fireEvent.change(objective, { target: { value: "x".repeat(8_000) } });
-    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_000)));
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(objective).not.toHaveAttribute("aria-invalid");
-    expect(objective).not.toHaveAttribute("aria-describedby");
-    fireEvent.keyDown(objective, { key: "Enter" });
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
-      ).toHaveLength(1);
-    });
-    expect(
-      JSON.parse(
-        String(
-          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
-            ?.body,
-        ),
-      ).objective,
-    ).toHaveLength(8_000);
-  });
-
-  it("renders non-empty home sections in attention, active, then recent-result order", async () => {
-    installApi(
-      standardHandler([
-        mission("attention", {
-          attentionCount: 1,
-          state: "needs_input",
-          title: "Approve a connection",
-        }),
-        mission("active", { title: "Draft a plan" }),
-        mission("complete", {
-          state: "completed_verified",
-          title: "Completed research",
-        }),
-      ]),
-    );
-    renderHome();
-
-    await screen.findByText("Approve a connection");
-    const headings = await screen.findAllByRole("heading", { level: 2 });
-    expect(headings.map((heading) => heading.textContent)).toEqual(
-      expect.arrayContaining([
-        "Needs your attention",
-        "Active missions",
-        "Recent results",
-      ]),
-    );
-    const content = document.body.textContent ?? "";
-    expect(content.indexOf("Needs your attention")).toBeLessThan(
-      content.indexOf("Active missions"),
-    );
-    expect(content.indexOf("Active missions")).toBeLessThan(
-      content.indexOf("Recent results"),
-    );
-    expect(screen.getByText("Approve a connection")).toBeVisible();
-    expect(screen.getByText("Draft a plan")).toBeVisible();
-    expect(screen.getByText("Completed research")).toBeVisible();
-  });
-
-  it("places a working mission that needs attention only in the attention landmark", async () => {
-    installApi(
-      standardHandler([
-        mission("working-attention", {
-          attentionCount: 1,
-          title: "Choose a deployment window",
-        }),
-        mission("active", { title: "Continue research" }),
-        mission("complete", {
-          state: "completed_verified",
-          title: "Finished review",
-        }),
-      ]),
-    );
-    renderHome();
-
-    const attention = await screen.findByRole("region", {
-      name: "Needs your attention",
-    });
-    const active = screen.getByRole("region", { name: "Active missions" });
-    const results = screen.getByRole("region", { name: "Recent results" });
-    expect(attention).toHaveAttribute("aria-labelledby", "home-attention-heading");
-    expect(active).toHaveAttribute("aria-labelledby", "home-active-heading");
-    expect(results).toHaveAttribute("aria-labelledby", "home-results-heading");
-    expect(
-      screen.getAllByRole("link", { name: "Choose a deployment window" }),
-    ).toHaveLength(1);
-    expect(within(active).queryByText("Choose a deployment window")).not.toBeInTheDocument();
-  });
-
-  it("hides empty mission sections and teaches the empty state", async () => {
-    installApi(standardHandler());
-    renderHome();
-
-    expect(await screen.findByText("Start with an outcome.")).toBeVisible();
-    expect(
-      screen.queryByRole("heading", { name: "Needs your attention" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "Active missions" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "Recent results" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("handles unavailable and failed project loading without exposing workspace details", async () => {
-    installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return json([]);
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderHome();
-
-    expect(await screen.findByText("No project is available yet.")).toBeVisible();
-    expect(
-      screen.getByText(/No local project is available yet\./),
-    ).toHaveAttribute("role", "status");
-    expect(
-      screen.queryByText("Select or create a local project before starting a mission."),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(project.workspacePath)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
-  });
-
-  it("shows a recoverable project-loading error", async () => {
-    installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return json({ unexpected: true });
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderHome();
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Projects could not be loaded.",
-    );
-    expect(
-      screen.queryByText("Select or create a local project before starting a mission."),
-    ).not.toBeInTheDocument();
-  });
-
-  it("announces project loading before resolving an empty local-project state", async () => {
-    const projects = deferred<Response>();
-    installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return projects.promise;
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderHome();
-
-    expect(await screen.findByText("Loading local projects…")).toHaveAttribute(
-      "role",
-      "status",
-    );
-    expect(
-      screen.queryByText("Select or create a local project before starting a mission."),
-    ).not.toBeInTheDocument();
-    projects.resolve(json([]));
-    expect(
-      await screen.findByText(/No local project is available yet\./),
-    ).toHaveAttribute("role", "status");
-  });
-
-  it("caches a late success without navigating away from the page the user already chose", async () => {
-    const created = deferred<Response>();
-    installApi((path) => {
-      if (path === "/api/health") {
-        return json({ ok: true, service: "morrow-orchestrator" });
-      }
-      if (path === "/api/projects") return json([project]);
-      if (path.startsWith("/api/web/missions?")) return json([]);
-      if (path === "/api/web/missions") return created.promise;
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const { queryClient, router } = renderHome();
-    const user = userEvent.setup();
-    const objective = await screen.findByRole("textbox", {
-      name: "Mission objective",
-    });
-    await user.type(objective, "Prepare the release");
-    await user.keyboard("{Enter}");
-
-    await router.navigate({ to: "/library" });
-    created.resolve(json(snapshot("mission-late"), 201));
-    await waitFor(() => {
-      expect(queryClient.getQueryData(missionKeys.detail("mission-late"))).toEqual(
-        snapshot("mission-late"),
-      );
-    });
-    expect(router.state.location.pathname).toBe("/library");
-  });
-
-  it("clears only the submitted project draft when the active project changes while pending", async () => {
-    const created = deferred<Response>();
-    installApi((path) => {
-      if (path === "/api/health") return json({ ok: true, service: "morrow-orchestrator" });
-      if (path === "/api/projects") return json([project]);
-      if (path === "/api/providers") return json([]);
-      if (path.startsWith("/api/web/missions?")) return json([]);
-      if (path === "/api/web/missions") return created.promise;
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const { queryClient, router } = renderHome();
-    const user = userEvent.setup();
-    const objective = await screen.findByRole("textbox", { name: "Mission objective" });
-    await user.type(objective, "submitted project draft");
-    await user.keyboard("{Enter}");
-
-    act(() => {
-      queryClient.setQueryData(["projects", "available"], [
-        { id: "project-2", name: "Second project" },
-      ]);
-    });
-    await waitFor(() => expect(objective).toHaveValue(""));
-    await user.type(objective, "new project draft");
-    created.resolve(json(snapshot("mission-old-project"), 201));
-
-    await waitFor(() => {
-      expect(queryClient.getQueryData(missionKeys.detail("mission-old-project"))).toEqual(
-        snapshot("mission-old-project"),
-      );
-    });
-    expect(loadChatDraft({ projectId: project.id })).toBe("");
-    expect(loadChatDraft({ projectId: "project-2" })).toBe("new project draft");
-    expect(objective).toHaveValue("new project draft");
-    expect(router.state.location.pathname).toBe("/");
-  });
-
-  it("keeps project ownership through the layout-to-passive transition window", async () => {
-    const created = deferred<Response>();
-    installApi((path) => {
-      if (path === "/api/providers") return json([]);
-      if (path === "/api/web/missions") return created.promise;
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    saveChatDraft({ projectId: "project-2" }, "project B retained draft");
-
-    let transitionSnapshot: { projectA: string; projectB: string } | undefined;
-    function TransitionProbe({ activeProjectId }: { activeProjectId: string }) {
-      useLayoutEffect(() => {
-        if (activeProjectId !== "project-2") return;
-        const textarea = screen.getByRole("textbox", { name: "Mission objective" });
-        fireEvent.change(textarea, { target: { value: "project A transition event" } });
-        transitionSnapshot = {
-          projectA: loadChatDraft({ projectId: project.id }),
-          projectB: loadChatDraft({ projectId: "project-2" }),
-        };
-        created.resolve(json(snapshot("mission-layout-window"), 201));
-      }, [activeProjectId]);
-      return null;
-    }
-
-    function Harness() {
-      const [activeProjectId, setActiveProjectId] = useState(project.id);
-      return (
-        <>
-          <button onClick={() => setActiveProjectId("project-2")} type="button">
-            Switch project in layout window
-          </button>
-          <TransitionProbe activeProjectId={activeProjectId} />
-          <MissionComposer activeProjectId={activeProjectId} />
-        </>
-      );
-    }
-
-    const rootRoute = createRootRoute();
-    const indexRoute = createRoute({
-      component: Harness,
-      getParentRoute: () => rootRoute,
-      path: "/",
-    });
-    const router = createRouter({
-      history: createMemoryHistory({ initialEntries: ["/"] }),
-      routeTree: rootRoute.addChildren([indexRoute]),
-    });
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    const user = userEvent.setup();
-    render(
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router as AnyRouter} />
-      </QueryClientProvider>,
-    );
-
-    const objective = await screen.findByRole("textbox", { name: "Mission objective" });
-    await user.type(objective, "submitted project A draft");
-    await user.keyboard("{Enter}");
-    await user.click(screen.getByRole("button", { name: "Switch project in layout window" }));
-
-    expect(transitionSnapshot).toEqual({
-      projectA: "project A transition event",
-      projectB: "project B retained draft",
-    });
-    await waitFor(() => {
-      expect(queryClient.getQueryData(missionKeys.detail("mission-layout-window"))).toEqual(
-        snapshot("mission-layout-window"),
-      );
-    });
-    expect(loadChatDraft({ projectId: project.id })).toBe("");
-    expect(loadChatDraft({ projectId: "project-2" })).toBe("project B retained draft");
-    expect(objective).toHaveValue("project B retained draft");
-    expect(router.state.location.pathname).toBe("/");
+    expect(await screen.findByText(/No local project yet/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "New chat" })).toBeDisabled();
   });
 });

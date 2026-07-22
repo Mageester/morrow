@@ -9,8 +9,8 @@ import { LibraryPage } from "../features/library/library-page.js";
 import { HomePage } from "../features/home/home-page.js";
 import { MissionPage } from "../features/missions/mission-page.js";
 import { MissionsPage } from "../features/missions/missions-page.js";
-import { ComingSoonPage } from "../features/placeholders/coming-soon-page.js";
 import { ConnectionsPage } from "../features/connections/connections-page.js";
+import { ChatsPage } from "../features/chat/chats-page.js";
 import { ConversationPage } from "../features/chat/conversation-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
 import { AppShell } from "./app-shell.js";
@@ -35,6 +35,12 @@ const missionRoute = createRoute({
   path: "/missions/$missionId",
 });
 
+const chatsRoute = createRoute({
+  component: ChatsPage,
+  getParentRoute: () => rootRoute,
+  path: "/chats",
+});
+
 const conversationRoute = createRoute({
   component: ConversationPage,
   getParentRoute: () => rootRoute,
@@ -48,28 +54,6 @@ const libraryRoute = createRoute({
   component: LibraryPage,
   getParentRoute: () => rootRoute,
   path: "/library",
-});
-
-const automationsRoute = createRoute({
-  component: () => (
-    <ComingSoonPage
-      description="Create schedules and triggers for work that should run later."
-      title="Automations"
-    />
-  ),
-  getParentRoute: () => rootRoute,
-  path: "/automations",
-});
-
-const workspaceRoute = createRoute({
-  component: () => (
-    <ComingSoonPage
-      description="Manage the local context Morrow uses for your work."
-      title="Workspace"
-    />
-  ),
-  getParentRoute: () => rootRoute,
-  path: "/workspace",
 });
 
 const connectionsRoute = createRoute({
@@ -86,12 +70,11 @@ const settingsRoute = createRoute({
 
 export const routeTree = rootRoute.addChildren([
   homeRoute,
+  chatsRoute,
   missionsRoute,
   missionRoute,
   conversationRoute,
   libraryRoute,
-  automationsRoute,
-  workspaceRoute,
   connectionsRoute,
   settingsRoute,
 ]);

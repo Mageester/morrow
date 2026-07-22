@@ -1,8 +1,14 @@
-import { Button, Surface } from "@morrow/ui";
-import { useTheme } from "../../state/theme.js";
+import { Surface } from "@morrow/ui";
+import { useTheme, type ThemePreference } from "../../state/theme.js";
+
+const THEME_OPTIONS: ReadonlyArray<{ value: ThemePreference; label: string; hint: string }> = [
+  { value: "light", label: "Light", hint: "Always use the light theme." },
+  { value: "dark", label: "Dark", hint: "Always use the dark theme." },
+  { value: "system", label: "System", hint: "Follow your device's appearance." },
+];
 
 export function SettingsPage() {
-  const { setTheme, theme } = useTheme();
+  const { preference, resolvedTheme, setTheme } = useTheme();
 
   return (
     <section aria-labelledby="settings-heading" className="morrow-page">
@@ -12,18 +18,31 @@ export function SettingsPage() {
         <p>Adjust Morrow’s interface across every page.</p>
       </div>
       <Surface aria-labelledby="theme-heading" padding="large">
-        <h2 id="theme-heading">Theme</h2>
-        <p>
-          The {theme} theme is applied globally. Morrow follows your system
-          preference until you choose a theme here.
+        <h2 id="theme-heading">Appearance</h2>
+        <p id="theme-help">
+          {preference === "system"
+            ? `Following your device — currently ${resolvedTheme}.`
+            : `Using the ${preference} theme on every page.`}
         </p>
-        <Button
-          aria-pressed={theme === "dark"}
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          variant="secondary"
+        <div
+          aria-describedby="theme-help"
+          aria-label="Theme"
+          className="morrow-theme-choice"
+          role="group"
         >
-          {theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-        </Button>
+          {THEME_OPTIONS.map((option) => (
+            <button
+              aria-pressed={preference === option.value}
+              className="morrow-theme-choice__option"
+              key={option.value}
+              onClick={() => setTheme(option.value)}
+              title={option.hint}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       </Surface>
     </section>
   );

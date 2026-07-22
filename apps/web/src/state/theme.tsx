@@ -1,68 +1,112 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 export const THEME_STORAGE_KEY = "morrow-theme";
 
-export type Theme = "light" | "dark";
+/** What the user chose. `system` defers to the OS color-scheme preference. */
+export type ThemePreference = "light" | "dark" | "system";
+/** The concrete theme actually applied to the document. */
+export type ResolvedTheme = "light" | "dark";
 
 interface ThemeContextValue {
-  setTheme: (theme: Theme) => void;
-  theme: Theme;
+  /** The user's explicit choice (or `system` when they have not chosen). */
+  preference: ThemePreference;
+  /** The concrete light/dark theme currently applied. */
+  resolvedTheme: ResolvedTheme;
+  setTheme: (preference: ThemePreference) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function systemTheme(): Theme {
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+function systemPrefersDark(): boolean {
   try {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
+    return window.matchMedia(DARK_QUERY).matches;
   } catch {
-    return "light";
+    return false;
   }
 }
 
-function readStoredTheme(): Theme {
+function readStoredPreference(): ThemePreference {
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "dark" || stored === "light" ? stored : systemTheme();
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      return stored;
+    }
   } catch {
-    return systemTheme();
+    // A blocked storage API simply means we fall back to following the OS.
   }
+  return "system";
+}
+
+function resolvePreference(preference: ThemePreference): ResolvedTheme {
+  if (preference === "light" || preference === "dark") return preference;
+  return systemPrefersDark() ? "dark" : "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(readStoredTheme);
+  const [preference, setPreferenceState] = useState<ThemePreference>(readStoredPreference);
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolvePreference(preference),
+  );
+  // Read inside the OS-change listener so a single stable subscription always
+  // sees the current preference without re-subscribing on every change.
+  const preferenceRef = useRef(preference);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    preferenceRef.current = preference;
+    setResolvedTheme(resolvePreference(preference));
+  }, [preference]);
 
-  // Only an explicit user choice is persisted; until then the app follows the
-  // OS color-scheme preference on every visit.
-  const setTheme = useMemo(
-    () => (next: Theme) => {
-      setThemeState(next);
-      try {
-        window.localStorage.setItem(THEME_STORAGE_KEY, next);
-      } catch {
-        // A blocked storage API must not prevent the global theme from applying.
+  // Follow live OS changes, but only while the preference is `system`. An
+  // explicit light/dark choice always wins until the user changes it.
+  useEffect(() => {
+    let media: MediaQueryList;
+    try {
+      media = window.matchMedia(DARK_QUERY);
+    } catch {
+      return;
+    }
+    const onChange = (event: MediaQueryListEvent) => {
+      if (preferenceRef.current === "system") {
+        setResolvedTheme(event.matches ? "dark" : "light");
       }
-    },
-    [],
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+  }, [resolvedTheme]);
+
+  // Only an explicit choice is persisted; `system` is stored so the app keeps
+  // following the OS on the next visit instead of freezing the last resolved
+  // value.
+  const setTheme = useCallback((next: ThemePreference) => {
+    setPreferenceState(next);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // A blocked storage API must not prevent the theme from applying.
+    }
+  }, []);
+
+  const value = useMemo(
+    () => ({ preference, resolvedTheme, setTheme }),
+    [preference, resolvedTheme, setTheme],
   );
 
-  const value = useMemo(() => ({ setTheme, theme }), [setTheme, theme]);
-
-  return (
-    <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme(): ThemeContextValue {

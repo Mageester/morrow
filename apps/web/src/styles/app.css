@@ -1803,3 +1803,495 @@ a {
     min-height: 44px;
   }
 }
+
+/* ── Slice 6: chat-first shell, Home, Chats ──────────────────────────────── */
+
+/* Sidebar: New chat + recent conversations */
+.morrow-sidebar__new {
+  padding-inline: var(--morrow-space-1);
+}
+.morrow-new-chat {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+.morrow-new-chat__button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--morrow-space-2);
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-on-accent);
+  background: var(--morrow-accent);
+  border: 0;
+  border-radius: var(--morrow-radius-md);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: var(--morrow-shadow-sm);
+}
+.morrow-new-chat__button:hover:not(:disabled) {
+  background: var(--morrow-accent-hover);
+}
+.morrow-new-chat__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.morrow-new-chat__button--large {
+  min-height: 48px;
+  padding: 0 var(--morrow-space-5);
+  font-size: 0.95rem;
+}
+.morrow-new-chat__hint {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+.morrow-new-chat__error {
+  display: grid;
+  gap: var(--morrow-space-1);
+}
+.morrow-new-chat__error [role="alert"] {
+  margin: 0;
+  color: var(--morrow-danger);
+  font-size: 0.8125rem;
+}
+.morrow-new-chat__retry {
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 var(--morrow-space-2);
+  color: var(--morrow-accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+/* Sidebar nav label + upcoming (disabled) items + recent list */
+.morrow-nav__label {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-nav__link--upcoming {
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 590;
+  text-align: start;
+  cursor: default;
+}
+.morrow-nav__link--upcoming .morrow-nav__label {
+  color: var(--morrow-text-muted);
+}
+.morrow-nav__link--upcoming svg {
+  opacity: 0.5;
+}
+.morrow-nav__recent {
+  display: grid;
+  gap: 2px;
+  margin-top: var(--morrow-space-3);
+  padding-top: var(--morrow-space-3);
+  border-top: 1px solid var(--morrow-border);
+}
+.morrow-nav__section {
+  padding: 0 var(--morrow-space-2);
+  margin: 0 0 var(--morrow-space-1);
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.morrow-nav__recent-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-nav__recent-link {
+  display: block;
+  overflow: hidden;
+  padding: var(--morrow-space-1) var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-nav__recent-link:hover {
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+}
+
+/* Mobile top bar + drawer scrim (hidden on desktop) */
+.morrow-topbar {
+  display: none;
+}
+.morrow-scrim {
+  display: none;
+}
+
+/* Home */
+.morrow-home__intro {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+.morrow-home__intro h1 {
+  margin: 0;
+  font-size: clamp(1.6rem, 3.2vw, 2.1rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.morrow-home__subtitle {
+  color: var(--morrow-text-muted);
+  font-size: 1.0625rem;
+}
+.morrow-home__start {
+  max-width: 320px;
+  margin-top: var(--morrow-space-3);
+}
+.morrow-home__section {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+.morrow-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+.morrow-section-head h2 {
+  margin: 0;
+  font-size: 1.0625rem;
+  letter-spacing: -0.01em;
+}
+.morrow-section-head__link {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+.morrow-section-head__link:hover {
+  color: var(--morrow-accent);
+}
+.morrow-home__tiles,
+.morrow-home__missions {
+  display: grid;
+  gap: var(--morrow-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-home__tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.morrow-tile {
+  display: flex;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  color: inherit;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  text-decoration: none;
+  box-shadow: var(--morrow-shadow-sm);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.morrow-tile:hover {
+  border-color: var(--morrow-accent);
+  transform: translateY(-1px);
+}
+.morrow-tile__icon,
+.morrow-mission-row__icon {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: var(--morrow-accent);
+  background: color-mix(in srgb, var(--morrow-accent) 12%, transparent);
+  border-radius: var(--morrow-radius-sm);
+}
+.morrow-tile__body,
+.morrow-mission-row__body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.morrow-tile__title,
+.morrow-mission-row__title {
+  overflow: hidden;
+  font-weight: 620;
+  font-size: 0.9375rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-tile__meta,
+.morrow-mission-row__meta {
+  color: var(--morrow-text-muted);
+  font-size: 0.78rem;
+}
+.morrow-mission-row {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  color: inherit;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  text-decoration: none;
+  box-shadow: var(--morrow-shadow-sm);
+}
+.morrow-mission-row:hover {
+  border-color: var(--morrow-accent);
+}
+.morrow-mission-row__body {
+  flex: 1;
+}
+.morrow-mission-row__attention {
+  color: var(--morrow-warning);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+/* Chats */
+.morrow-chats__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-4);
+  flex-wrap: wrap;
+}
+.morrow-chats__tabs {
+  display: inline-flex;
+  width: max-content;
+  gap: 2px;
+  padding: 3px;
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-chats__tab {
+  min-height: 32px;
+  padding: var(--morrow-space-1) var(--morrow-space-3);
+  color: var(--morrow-text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-chats__tab[aria-pressed="true"] {
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  box-shadow: var(--morrow-shadow-sm);
+}
+.morrow-chats__list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-chats__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+  padding: 0 var(--morrow-space-4);
+  border-bottom: 1px solid var(--morrow-border);
+}
+.morrow-chats__row:last-child {
+  border-bottom: 0;
+}
+.morrow-chats__link {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  overflow: hidden;
+  padding: var(--morrow-space-2) 0;
+  color: inherit;
+  font-weight: 560;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-chats__link:hover {
+  color: var(--morrow-accent);
+}
+.morrow-chats__meta {
+  flex: none;
+  color: var(--morrow-text-muted);
+  font-size: 0.78rem;
+}
+
+/* Shared: empty, inline error, theme choice */
+.morrow-empty {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding: var(--morrow-space-7) var(--morrow-space-4);
+  text-align: center;
+  background: var(--morrow-surface-subtle);
+  border: 1px dashed var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-empty h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.morrow-empty p {
+  max-width: 48ch;
+  margin: 0 auto;
+  color: var(--morrow-text-muted);
+}
+.morrow-empty--soft {
+  padding: var(--morrow-space-5) var(--morrow-space-4);
+  background: none;
+}
+.morrow-inline-error {
+  display: grid;
+  gap: var(--morrow-space-2);
+  justify-items: start;
+  padding: var(--morrow-space-4);
+  background: color-mix(in srgb, var(--morrow-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--morrow-danger) 30%, transparent);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-inline-error [role="alert"] {
+  margin: 0;
+  color: var(--morrow-danger);
+}
+.morrow-inline-error button {
+  min-height: 36px;
+  padding: 0 var(--morrow-space-3);
+  color: inherit;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-inline-error button:hover {
+  color: var(--morrow-accent);
+  border-color: var(--morrow-accent);
+}
+.morrow-theme-choice {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-theme-choice__option {
+  min-height: 36px;
+  padding: var(--morrow-space-1) var(--morrow-space-4);
+  color: var(--morrow-text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-theme-choice__option[aria-pressed="true"] {
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+@media (max-width: 760px) {
+  .morrow-app-shell {
+    grid-template-columns: 1fr;
+  }
+  .morrow-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: var(--morrow-space-3);
+    height: 52px;
+    padding: 0 var(--morrow-space-3);
+    background: var(--morrow-surface);
+    border-bottom: 1px solid var(--morrow-border);
+  }
+  .morrow-topbar__menu {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    color: var(--morrow-text);
+    background: none;
+    border: 0;
+    border-radius: var(--morrow-radius-sm);
+    cursor: pointer;
+  }
+  .morrow-topbar__brand {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .morrow-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(84vw, 300px);
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: var(--morrow-shadow-sm);
+  }
+  .morrow-app-shell[data-nav-open="true"] .morrow-sidebar {
+    transform: translateX(0);
+  }
+  .morrow-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgb(0 0 0 / 0.45);
+    border: 0;
+  }
+  .morrow-nav__link,
+  .morrow-nav__recent-link,
+  .morrow-chats__tab,
+  .morrow-theme-choice__option {
+    min-height: 44px;
+  }
+  .morrow-main {
+    padding: var(--morrow-space-4);
+  }
+  .morrow-home__tiles {
+    grid-template-columns: 1fr;
+  }
+  .morrow-home__start {
+    max-width: none;
+  }
+  .morrow-chats__head {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morrow-sidebar,
+  .morrow-tile {
+    transition: none;
+  }
+}
