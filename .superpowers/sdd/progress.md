@@ -123,3 +123,14 @@ Three defects the real flow uncovered, fixed with tests (commit `0bd79c0`):
 One defect out of scope, documented: approving a MID-EXECUTION tool approval via the web UI does not resume the agent_chat worker (task stays `running`, controller waits) — this is the agent-executor/approval-reentry layer, untouched by and orthogonal to this PR's mission-state/recovery work. Autonomous autonomy avoids it. Recommend as follow-up.
 
 Provider/model: openai-compatible @ opencode.ai, model nemotron-3-ultra-free (a capable FREE model on the same endpoint; deepseek-v4-flash-free was too weak and thrashed the patch protocol). Duration: multi-cycle agentic run over ~10+ min. Events: 148 (stream bounded to 80). Final state: blocked (criteria unverifiable in sandbox). No secrets leaked.
+
+## Chat-first production reset (2026-07-22)
+
+- User approved the chat-first direction and authorized production implementation without another approval pause.
+- Recovery verified in linked worktree `C:\Morrow\worktrees\morrow-web-app-foundation` on `feat/morrow-web-app-foundation`; design documents and prototype remain intact.
+- Root-caused the red baseline to fixture drift after `WebMissionSummarySchema.modelLabel` became required. Added the missing fixture value, verified focused 3/3 and contracts 39/39, committed and pushed `630f23b`.
+- Rewrote PR #64 as `feat(web): build Morrow's chat-first adaptive intelligence app`; confirmed OPEN, DRAFT, UNMERGED.
+- Durable implementation plan: `docs/superpowers/plans/2026-07-22-chat-first-production-app.md`.
+- Durable interaction ledger: `docs/redesign/06-production-interaction-inventory.md`.
+- Slice 1: complete (`d4a01eb..630f23b`; baseline green, PR metadata updated).
+- Slice 2: in progress (OpenRouter provider backend).
