@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationKeys } from "../../api/conversations.js";
+import { chatStreamCursorKey } from "../../api/chat-stream.js";
 import { ConversationPageContent } from "./conversation-page.js";
 
 const now = "2026-07-22T12:00:00.000Z";
@@ -50,6 +51,7 @@ function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: {
 beforeEach(() => {
   FakeEventSource.instances = [];
   localStorage.clear();
+  sessionStorage.clear();
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("navigator", { onLine: true });
 });
@@ -140,6 +142,8 @@ describe("ConversationPage", () => {
       throw new Error(`Unexpected request ${path}`);
     }));
     const user = userEvent.setup();
+    const cursorKey = chatStreamCursorKey({ projectId: "project-1", conversationId: conversation.id, taskId: "task-1" });
+    sessionStorage.setItem(cursorKey, JSON.stringify({ version: 1, cursor: 7, terminal: false }));
     renderPage();
 
     const stop = await screen.findByRole("button", { name: "Stop generation" });
@@ -147,6 +151,7 @@ describe("ConversationPage", () => {
     expect(cancelCalls).toBe(1);
     expect(await screen.findByText("Stopped where requested")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Stop generation" })).not.toBeInTheDocument();
+    expect(sessionStorage.getItem(cursorKey)).toBeNull();
   });
 
   it("preserves saved history with a non-blocking warning when a refetch fails", async () => {
@@ -183,7 +188,10 @@ describe("ConversationPage", () => {
       return json(current);
     }));
     const user = userEvent.setup();
-    const { onDeleted } = renderPage();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    queryClient.setQueryData(conversationKeys.list("project-1", false), [conversation]);
+    queryClient.setQueryData(conversationKeys.list("project-1", true), [conversation]);
+    const { onDeleted } = renderPage(queryClient);
     await screen.findByRole("heading", { name: "Local model research" });
 
     const renameButton = screen.getByRole("button", { name: "Rename conversation" });
@@ -191,24 +199,39 @@ describe("ConversationPage", () => {
     const renameDialog = screen.getByRole("dialog", { name: "Rename conversation" });
     const title = within(renameDialog).getByLabelText("Conversation title");
     expect(title).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(renameDialog).getByRole("button", { name: "Save name" })).toHaveFocus();
+    await user.tab();
+    expect(title).toHaveFocus();
     await user.clear(title);
     await user.type(title, "Renamed chat");
     await user.click(within(renameDialog).getByRole("button", { name: "Save name" }));
     expect(await screen.findByRole("heading", { name: "Renamed chat" })).toBeVisible();
     await waitFor(() => expect(renameButton).toHaveFocus());
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))?.[0]?.title).toBe("Renamed chat");
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]?.title).toBe("Renamed chat");
 
     const archive = screen.getByRole("button", { name: "Archive conversation" });
     await user.click(archive);
     expect(await screen.findByText("Conversation archived.")).toBeVisible();
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))).toEqual([]);
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]).toMatchObject({ id: conversation.id, archived: true });
 
     const deleteButton = screen.getByRole("button", { name: "Delete conversation" });
     await user.click(deleteButton);
     const dialog = screen.getByRole("alertdialog", { name: "Delete this conversation?" });
+    expect(within(dialog).getByRole("button", { name: "Keep conversation" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "Delete permanently" })).toHaveFocus();
+    await user.tab();
+    expect(within(dialog).getByRole("button", { name: "Keep conversation" })).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(deleteButton).toHaveFocus();
     await user.click(deleteButton);
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete permanently" }));
     await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1));
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))).toEqual([]);
+    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))).toEqual([]);
   });
 });

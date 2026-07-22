@@ -109,6 +109,85 @@ describe("mission agent-task dispatcher", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects replay when any canonical execution input changes", () => {
+    const base = {
+      conversationId: "conversation-1",
+      content: "Immutable execution request",
+      missionId: "mission-1",
+      idempotencyKey: "mission:m1:op:full-fingerprint",
+      mode: "read-only" as const,
+      preset: "balanced" as const,
+      reasoning: { mode: "auto" as const },
+      useMemory: true,
+      autoApprove: false,
+    };
+    dispatchAgentTask({ db, runner: { run }, env: process.env }, base);
+
+    const conflicts = [
+      { label: "Ask to Build mode", request: { ...base, mode: "agent" as const } },
+      { label: "preset", request: { ...base, preset: "fast" as const } },
+      { label: "provider", request: { ...base, providerId: "openai" as const } },
+      { label: "model", request: { ...base, model: "different-model" } },
+      { label: "reasoning", request: { ...base, reasoning: { mode: "effort" as const, effort: "high" as const } } },
+      { label: "memory", request: { ...base, useMemory: false } },
+      { label: "approval", request: { ...base, autoApprove: true } },
+    ];
+    for (const conflict of conflicts) {
+      expect(
+        () => dispatchAgentTask({ db, runner: { run }, env: process.env }, conflict.request),
+        conflict.label,
+      ).toThrow(/different request/i);
+    }
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(1);
+  });
+
+  it("rolls back the entire dispatch bundle and never starts the runner when a late insert fails", () => {
+    const ids = ["task-atomic", "message-duplicate", "state-id", "message-duplicate"];
+    expect(() => dispatchAgentTask({
+      db,
+      runner: { run },
+      env: process.env,
+      createId: () => ids.shift() ?? "unexpected-id",
+    }, {
+      conversationId: "conversation-1",
+      content: "Atomic or absent",
+      idempotencyKey: "atomic-failure",
+      mode: "read-only",
+    })).toThrow();
+
+    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(0);
+    expect(conversationsRepository(db).listMessages("conversation-1")).toHaveLength(0);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM task_routing").get() as { count: number }).count).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM agent_state_transitions").get() as { count: number }).count).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM task_events").get() as { count: number }).count).toBe(0);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("never replays a legacy partial idempotency row without its committed bundle", () => {
+    taskRepository(db).createTask({
+      id: "partial-task",
+      projectId: "project-1",
+      kind: "agent_chat",
+      status: "queued",
+      idempotencyKey: "partial-bundle",
+      createdAt: "2026-07-16T12:00:00.000Z",
+    });
+
+    let replayError: unknown;
+    try {
+      dispatchAgentTask({ db, runner: { run }, env: process.env }, {
+        conversationId: "conversation-1",
+        content: "Missing persisted bundle",
+        idempotencyKey: "partial-bundle",
+      });
+    } catch (error) {
+      replayError = error;
+    }
+    expect(replayError).toMatchObject({ code: "IDEMPOTENCY_INCOMPLETE" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("rejects a mission owned by another project before creating a task", () => {
     const now = "2026-07-16T12:00:00.000Z";
     projectRepository(db).createProject({

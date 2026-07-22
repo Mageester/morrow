@@ -964,10 +964,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (task.status !== "failed" && task.status !== "interrupted") {
       throw new ApiError(409, "Only failed or interrupted responses can be retried", "TASK_NOT_RETRYABLE");
     }
+    const afterCursor = records.listEvents(taskId).at(-1)?.sequence ?? 0;
     records.retryTask(taskId);
     deps.runner.run(taskId);
     reply.status(202);
-    return { version: 1, taskId, status: "queued", outcome: "retried" };
+    return { version: 1, taskId, status: "queued", outcome: "retried", afterCursor };
   });
 
   app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/stream", async (request, reply) => {

@@ -1,9 +1,9 @@
 import type { Conversation, WebConversationMessage } from "@morrow/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Archive, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { useChatTaskStream } from "../../api/chat-stream.js";
+import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
 import {
   conversationApi,
   conversationKeys,
@@ -31,6 +31,27 @@ function routingLabel(message: WebConversationMessage): string | null {
 
 function safeError(error: unknown, fallback: string): string {
   return error instanceof ApiClientError ? error.message : fallback;
+}
+
+function reconcileConversationLists(
+  queryClient: QueryClient,
+  projectId: string,
+  conversationId: string,
+  updated: Conversation | null,
+): void {
+  for (const includeArchived of [false, true]) {
+    queryClient.setQueryData<Conversation[]>(
+      conversationKeys.list(projectId, includeArchived),
+      (current) => {
+        if (!current) return current;
+        const withoutCurrent = current.filter((item) => item.id !== conversationId);
+        if (!updated || (!includeArchived && updated.archived)) return withoutCurrent;
+        return [...withoutCurrent, updated].sort(
+          (left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+        );
+      },
+    );
+  }
 }
 
 function TaskStream({ projectId, conversationId, taskId }: { projectId: string; conversationId: string; taskId: string }) {
@@ -106,9 +127,28 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
     setDeleteOpen(false);
   };
   const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>, close: () => void) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    close();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+    )].filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   async function submit(submission: ChatComposerSubmission) {
@@ -151,7 +191,11 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
     cancellationRequests.current.add(taskId);
     try {
       await conversationApi.cancel(projectId, conversationId, taskId);
-      await queryClient.invalidateQueries({ queryKey: conversationKeys.messages(projectId, conversationId) });
+      await queryClient.refetchQueries(
+        { queryKey: conversationKeys.messages(projectId, conversationId), exact: true },
+        { throwOnError: true },
+      );
+      clearChatStreamCursor({ projectId, conversationId, taskId });
     } finally {
       cancellationRequests.current.delete(taskId);
     }
@@ -161,7 +205,9 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
     setActionBusy(true);
     setActionMessage(null);
     try {
-      await conversationApi.retry(projectId, conversationId, taskId);
+      const result = await conversationApi.retry(projectId, conversationId, taskId);
+      if (result.afterCursor === undefined) clearChatStreamCursor({ projectId, conversationId, taskId });
+      else resumeChatStreamAfter({ projectId, conversationId, taskId }, result.afterCursor);
       await queryClient.invalidateQueries({ queryKey: conversationKeys.messages(projectId, conversationId) });
     } catch (error) {
       setActionMessage(safeError(error, "Morrow could not retry this response. Try again."));
@@ -184,6 +230,7 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
     try {
       const updated = await conversationApi.update(projectId, conversationId, { title: renameTitle });
       queryClient.setQueryData(conversationKeys.detail(projectId, conversationId), updated);
+      reconcileConversationLists(queryClient, projectId, conversationId, updated);
       closeRename();
     } catch (error) {
       setActionMessage(safeError(error, "The conversation could not be renamed. Try again."));
@@ -200,6 +247,7 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
       const archived = !conversation.data.archived;
       const updated = await conversationApi.update(projectId, conversationId, { archived });
       queryClient.setQueryData(conversationKeys.detail(projectId, conversationId), updated);
+      reconcileConversationLists(queryClient, projectId, conversationId, updated);
       setActionMessage(archived ? "Conversation archived." : "Conversation restored.");
     } catch (error) {
       setActionMessage(safeError(error, "The conversation could not be updated. Try again."));
@@ -216,12 +264,12 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
       await conversationApi.delete(projectId, conversationId);
       queryClient.removeQueries({ queryKey: conversationKeys.detail(projectId, conversationId) });
       queryClient.removeQueries({ queryKey: conversationKeys.messages(projectId, conversationId) });
+      reconcileConversationLists(queryClient, projectId, conversationId, null);
       setDeleteOpen(false);
       onDeleted();
     } catch (error) {
       setActionMessage(safeError(error, "The conversation could not be deleted. Stop any active response and try again."));
-      setDeleteOpen(false);
-      queueMicrotask(() => deleteButtonRef.current?.focus());
+      closeDelete();
     } finally {
       setActionBusy(false);
     }

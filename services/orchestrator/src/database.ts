@@ -1134,6 +1134,9 @@ export const migrations:Migration[]=[
     ALTER TABLE provider_model_discovery ADD COLUMN credential_identity TEXT;
     UPDATE provider_model_discovery SET last_success_at=fetched_at WHERE status='available';
   `}
+  ,{id:39,name:"task_idempotency_fingerprint",sql:`
+    ALTER TABLE tasks ADD COLUMN idempotency_fingerprint TEXT;
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

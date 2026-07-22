@@ -2,11 +2,15 @@
  * Deterministic web-E2E seed.
  *
  * Builds a temporary Morrow home with a SQLite database pre-populated with
- * missions in the exact states the browser vertical-slice journey needs:
+ * missions and conversations in the exact states the browser vertical-slice
+ * journey needs:
  *
  *  - an "attention" mission with a durable pending approval (a resolvable
  *    attention request), and
- *  - a "result" mission carrying a persisted artifact and criterion evidence.
+ *  - a "result" mission carrying a persisted artifact and criterion evidence,
+ *  - an active conversation whose SSE cursor survives reconnects, and
+ *  - failed and interrupted conversations that can be retried from the durable
+ *    event cursor without replaying the prior attempt's terminal event.
  *
  * No provider, network, or agent execution is involved — every state is written
  * directly through the same repositories/service the orchestrator uses, so the
@@ -15,9 +19,11 @@
  *
  * Usage: MORROW_HOME=<dir> tsx scripts/e2e-seed.ts
  * Prints a single JSON line: { dbPath, workspace, projectId, attentionMissionId,
- *   attentionApprovalId, resultMissionId, artifactTitle }.
+ *   attentionApprovalId, resultMissionId, artifactTitle,
+ *   activeConversationId, activeTaskId, failedConversationId, failedTaskId,
+ *   interruptedConversationId, interruptedTaskId }.
  */
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +34,11 @@ import { projectRepository } from "../src/repositories/projects.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { buildMissionCompletion } from "../src/mission/completion.js";
+import { conversationsRepository } from "../src/repositories/conversations.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { taskRepository } from "../src/repositories/tasks.js";
 
 function log(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -50,9 +61,84 @@ const missionService = new MissionService({
 // Real, git-initialized workspace (project creation requires an existing dir).
 const workspace = mkdtempSync(join(tmpdir(), "morrow-e2e-ws-"));
 spawnSync("git", ["init", "-b", "main"], { cwd: workspace, stdio: "ignore" });
+writeFileSync(join(workspace, "evidence.txt"), "deterministic browser evidence\n", "utf8");
 const now = new Date("2026-07-21T12:00:00.000Z").toISOString();
 const projectId = `project-${randomUUID()}`;
 projects.createProject({ id: projectId, name: "E2E Personal", workspacePath: workspace, createdAt: now });
+
+const conversations = conversationsRepository(db);
+const tasks = taskRepository(db);
+const records = taskRecordsRepository(db);
+const routing = taskRoutingRepository(db);
+const continuity = executionContinuityRepository(db);
+const routingDecision = {
+  version: 1 as const,
+  presetId: "balanced" as const,
+  providerId: "mock" as const,
+  model: "mock-model",
+  reason: "Deterministic browser lifecycle seed.",
+  fallbackUsed: false,
+  overridden: false,
+  privacy: "cloud" as const,
+  candidates: [],
+  mode: "read-only" as const,
+  toolProfile: "read-only" as const,
+  autoApprove: false,
+};
+
+function seedConversationTask(input: {
+  title: string;
+  prompt: string;
+  state: "running" | "failed" | "interrupted";
+}) {
+  const conversationId = `conversation-${randomUUID()}`;
+  const taskId = `task-${randomUUID()}`;
+  const userAt = new Date(Date.parse(now) + 1_000).toISOString();
+  const assistantAt = new Date(Date.parse(now) + 2_000).toISOString();
+  conversations.createConversation({ id: conversationId, projectId, title: input.title, createdAt: now, updatedAt: now });
+  tasks.createTask({ id: taskId, projectId, kind: "agent_chat", status: "running", createdAt: now, startedAt: now });
+  conversations.appendMessage({ id: `user-${randomUUID()}`, conversationId, role: "user", content: input.prompt, createdAt: userAt, updatedAt: userAt });
+  conversations.appendMessage({
+    id: `assistant-${randomUUID()}`,
+    conversationId,
+    role: "assistant",
+    content: input.state === "running" ? "" : `The previous response was ${input.state}.`,
+    taskId,
+    streamingState: input.state === "running" ? "streaming" : input.state,
+    provider: "mock",
+    model: "mock-model",
+    createdAt: assistantAt,
+    updatedAt: assistantAt,
+  });
+  routing.upsert({ taskId, presetId: "balanced", providerId: "mock", model: "mock-model", useMemory: true, decision: routingDecision, createdAt: now });
+  records.transitionAgentState(taskId, { id: `state-${randomUUID()}`, state: "idle", details: {}, createdAt: now });
+  if (input.state !== "running") {
+    records.transitionAgentState(taskId, { id: `state-${randomUUID()}`, state: input.state, details: { reason: "e2e_seed" }, createdAt: assistantAt });
+    records.transitionTask(taskId, input.state, { id: `event-${randomUUID()}`, payload: { reason: "e2e_seed" }, createdAt: assistantAt });
+  }
+  return { conversationId, taskId };
+}
+
+// The unknown owner format is deliberately conservative: startup recovery can
+// neither prove it dead nor steal it, so this seeded running task remains active
+// and its stream remains open until the browser explicitly cancels it.
+const active = seedConversationTask({ title: "Active reconnect proof", prompt: "Keep this response active until I stop it.", state: "running" });
+const activeSegment = continuity.openSegment({
+  taskId: active.taskId,
+  missionId: null,
+  providerId: "mock",
+  model: "mock-model",
+  routeJson: routingDecision,
+  ownerId: "morrow-e2e-preserved-owner",
+  now,
+  leaseExpiresAt: new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString(),
+});
+db.prepare(
+  "INSERT INTO agent_execution_checkpoints(id,task_id,mission_id,segment_id,version,durable_event_cursor,snapshot_json,created_at) VALUES(?,?,NULL,?,1,1,?,?)",
+).run(`checkpoint-${randomUUID()}`, active.taskId, activeSegment.id, JSON.stringify({ version: 1, e2e: true }), now);
+
+const failed = seedConversationTask({ title: "Failed retry proof", prompt: "Retry this failed response once.", state: "failed" });
+const interrupted = seedConversationTask({ title: "Interrupted retry proof", prompt: "Retry this interrupted response once.", state: "interrupted" });
 
 // ── Mission A: a resolvable attention request ────────────────────────────
 const attentionMission = missionService.create(projectId, {
@@ -125,6 +211,12 @@ log({
   attentionApprovalId,
   resultMissionId: resultMission.id,
   artifactTitle,
+  activeConversationId: active.conversationId,
+  activeTaskId: active.taskId,
+  failedConversationId: failed.conversationId,
+  failedTaskId: failed.taskId,
+  interruptedConversationId: interrupted.conversationId,
+  interruptedTaskId: interrupted.taskId,
   resultStatus,
   finalizeError,
 });

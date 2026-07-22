@@ -13,7 +13,10 @@ describe("database", () => {
 
   it("installs the durable mission runtime ledger and provider discovery schema", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)?.id).toBe(38);
+    expect(migrations.at(-1)?.id).toBe(39);
+    expect(db.prepare("PRAGMA table_info(tasks)").all()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "idempotency_fingerprint" })]),
+    );
     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(missionColumns).toContain("execution_json");
     expect(missionColumns).toContain("idempotency_key");

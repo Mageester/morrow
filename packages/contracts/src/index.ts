@@ -48,7 +48,7 @@ export const ChatStreamEnvelopeSchema=z.object({
   emittedAt:z.string().datetime(),
   payload:z.object({eventId:z.string()}).strict(),
 }).strict();
-export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"])}).strict();
+export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
 
 export type Project=z.infer<typeof ProjectSchema>;
 export type Task=z.infer<typeof TaskSchema>;

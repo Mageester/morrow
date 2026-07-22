@@ -6,6 +6,7 @@ import { openDatabase } from "../src/database.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { TaskRunner } from "../src/runner.js";
 import { buildServer } from "../src/server.js";
@@ -151,6 +152,44 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
     expect(JSON.stringify(body)).not.toContain("private artifact contents");
     expect(JSON.stringify(body)).not.toContain("secret.txt");
+  });
+
+  it.each(["failed", "interrupted"] as const)("retries a %s response after its prior terminal cursor", async (terminalState) => {
+    const conversation = await create(`${terminalState} retry`);
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    const records = taskRecordsRepository(db);
+    tasks.createTask({ id: `task-${terminalState}`, projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW, startedAt: NOW });
+    conversations.appendMessage({
+      id: `assistant-${terminalState}`,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "Prior attempt",
+      taskId: `task-${terminalState}`,
+      streamingState: terminalState,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    records.transitionAgentState(`task-${terminalState}`, { id: `idle-${terminalState}`, state: "idle", details: {}, createdAt: NOW });
+    records.transitionAgentState(`task-${terminalState}`, { id: `state-${terminalState}`, state: terminalState, details: {}, createdAt: NOW });
+    records.transitionTask(`task-${terminalState}`, terminalState, { id: `terminal-${terminalState}`, payload: {}, createdAt: NOW });
+    const priorCursor = records.listEvents(`task-${terminalState}`).at(-1)!.sequence;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/project-a/conversations/${conversation.id}/tasks/task-${terminalState}/retry`,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      version: 1,
+      taskId: `task-${terminalState}`,
+      status: "queued",
+      outcome: "retried",
+      afterCursor: priorCursor,
+    });
+    expect(tasks.getTaskById(`task-${terminalState}`)?.status).toBe("queued");
+    expect(conversations.getMessage(`assistant-${terminalState}`)).toMatchObject({ content: "", streamingState: "queued" });
   });
 
   it("requires explicit confirmation, rejects deletion while a related task is active, and deletes dependents without deleting tasks or projects", async () => {

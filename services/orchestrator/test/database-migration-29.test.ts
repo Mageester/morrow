@@ -317,7 +317,7 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
     const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(38);
+    expect(Math.max(...appliedIds)).toBe(39);
 
     // source_locator now exists and is queryable/writable.
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
@@ -363,7 +363,7 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
     const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
     expect(appliedIds).toContain(29);
-    expect(Math.max(...appliedIds)).toBe(38);
+    expect(Math.max(...appliedIds)).toBe(39);
 
     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("source_locator");
@@ -391,8 +391,8 @@ describe("BLOCKER 3 — fresh database migrations in order", () => {
     const dbPath = join(tmp("ek-mig-c-"), "m.db");
     const db = openTestDatabase(dbPath);
     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-    expect(appliedIds).toEqual(Array.from({ length: 38 }, (_, i) => i + 1));
-    expect(migrations.at(-1)!.id).toBe(38);
+    expect(appliedIds).toEqual(Array.from({ length: 39 }, (_, i) => i + 1));
+    expect(migrations.at(-1)!.id).toBe(39);
     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
     expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
 
@@ -605,7 +605,7 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
     const db = openTestDatabase(dbPath);
     try {
       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-      expect(Math.max(...appliedAfterFix)).toBe(38);
+      expect(Math.max(...appliedAfterFix)).toBe(39);
       const repo = missionsRepository(db);
       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();

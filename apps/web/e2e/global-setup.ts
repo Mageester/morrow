@@ -19,6 +19,12 @@ export interface SeededState {
   attentionApprovalId: string;
   resultMissionId: string;
   artifactTitle: string;
+  activeConversationId: string;
+  activeTaskId: string;
+  failedConversationId: string;
+  failedTaskId: string;
+  interruptedConversationId: string;
+  interruptedTaskId: string;
   resultStatus: string;
 }
 
