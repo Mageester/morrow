@@ -66,6 +66,30 @@ export const api = {
     );
   },
 
+  patch<TInput, TOutput>(
+    path: string,
+    input: TInput,
+    schema: z.ZodType<TOutput>,
+  ): Promise<TOutput> {
+    return request(
+      path,
+      { body: JSON.stringify(input), method: "PATCH" },
+      schema,
+    );
+  },
+
+  deleteWithBody<TInput, TOutput>(
+    path: string,
+    input: TInput,
+    schema: z.ZodType<TOutput>,
+  ): Promise<TOutput> {
+    return request(
+      path,
+      { body: JSON.stringify(input), method: "DELETE" },
+      schema,
+    );
+  },
+
   delete<T>(path: string, schema: z.ZodType<T>): Promise<T> {
     return request(path, { method: "DELETE" }, schema);
   },

@@ -770,6 +770,11 @@ export async function executeAgentChatTask({
           { type: "text", text: "Verified: both defects are fixed, the new regression test passes, and the final multi-file diff was inspected." },
           { type: "done" },
         ],
+      ] : activeToolProfile === "none" ? [
+        [
+          { type: "text", text: "Based on the evidence, the system is fully operational." },
+          { type: "done" },
+        ],
       ] : [
         [
           { type: "tool_call", toolCalls: [{ id: `${demoCallId}-read`, index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) } }] },

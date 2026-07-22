@@ -122,4 +122,57 @@ describe("idempotent agent-chat message send", () => {
     const ids = new Set([a, b, c].map((r) => r.json().task.id));
     expect(ids.size).toBe(3);
   });
+
+  it("keeps the browser-scoped replay canonical and rejects key reuse for different content", async () => {
+    const payload = { content: "same accepted attempt", idempotencyKey: "browser-attempt" };
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/projects/p1/conversations/${conversationId}/messages`,
+      payload,
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/projects/p1/conversations/${conversationId}/messages`,
+      payload,
+    });
+    const conflict = await app.inject({
+      method: "POST",
+      url: `/api/projects/p1/conversations/${conversationId}/messages`,
+      payload: { content: "different attempt", idempotencyKey: "browser-attempt" },
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({
+      replayed: true,
+      task: { id: first.json().task.id },
+      userMessage: { id: first.json().userMessage.id },
+      assistantMessage: { id: first.json().assistantMessage.id },
+    });
+    expect(replay.json().sseUrl).toBe(`/api/projects/p1/conversations/${conversationId}/tasks/${first.json().task.id}/stream`);
+    expect(replay.json().aggregateUrl).toBe(`/api/projects/p1/conversations/${conversationId}/messages`);
+    expect(replay.json().routing).toMatchObject({ providerId: "mock", model: "mock-model" });
+    expect(replay.json().routing).not.toHaveProperty("reason");
+    expect(replay.json().routing).not.toHaveProperty("candidates");
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
+    const messages = await app.inject({
+      method: "GET",
+      url: `/api/projects/p1/conversations/${conversationId}/messages`,
+    });
+    expect(messages.json()).toHaveLength(2);
+  });
+
+  it("rejects a browser send through a foreign project without dispatching", async () => {
+    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: ws, createdAt: new Date().toISOString() });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/p2/conversations/${conversationId}/messages`,
+      payload: { content: "do not dispatch", idempotencyKey: "foreign" },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(0);
+    expect(taskRepository(db).listTasksByProject("p2")).toHaveLength(0);
+  });
 });

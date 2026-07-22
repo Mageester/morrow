@@ -92,6 +92,33 @@ export function conversationsRepository(db: Database.Database) {
       return this.getConversation(id);
     },
 
+    deleteConversation(id: string, projectId: string):
+      | { outcome: "deleted" }
+      | { outcome: "not_found" }
+      | { outcome: "project_mismatch" }
+      | { outcome: "active_task"; taskIds: string[] } {
+      return db.transaction(() => {
+        const conversation = this.getConversation(id);
+        if (!conversation) return { outcome: "not_found" } as const;
+        if (conversation.projectId !== projectId) return { outcome: "project_mismatch" } as const;
+
+        const active = db.prepare(
+          `SELECT DISTINCT tasks.id
+           FROM tasks
+           INNER JOIN conversation_messages ON conversation_messages.task_id = tasks.id
+           WHERE conversation_messages.conversation_id = ?
+             AND tasks.status IN ('queued', 'running')
+           ORDER BY tasks.id ASC`
+        ).all(id) as Array<{ id: string }>;
+        if (active.length > 0) {
+          return { outcome: "active_task", taskIds: active.map((task) => task.id) } as const;
+        }
+
+        db.prepare("DELETE FROM conversations WHERE id = ? AND project_id = ?").run(id, projectId);
+        return { outcome: "deleted" } as const;
+      })();
+    },
+
     appendMessage(input: {
       id: string;
       conversationId: string;

@@ -65,6 +65,9 @@ function getRouteTitle(pathname: string): string {
   if (/^\/missions\/[^/]+$/.test(routePath)) {
     return "Mission workspace";
   }
+  if (/^\/chats\/[^/]+$/.test(routePath)) {
+    return "Conversation";
+  }
 
   const routeTitles: Record<string, string> = {
     "/": "Home",

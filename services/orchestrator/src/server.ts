@@ -6,6 +6,9 @@ import {
   CreateTaskSchema,
   StructuredApiErrorSchema,
   SendMessageSchema,
+  CreateConversationSchema,
+  DeleteConversationSchema,
+  ChatStreamEnvelopeSchema,
   CreateMemoryEntrySchema,
   UpdateMemoryEntrySchema,
   UpdateConversationSchema,
@@ -21,6 +24,8 @@ import {
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
+  type ChatStreamEventType,
+  type RoutingDecision,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -807,7 +812,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     
-    const body = request.body as { title?: string } | null;
+    const body = CreateConversationSchema.parse(request.body ?? {});
     const title = body?.title?.trim() || "New Conversation";
     
     const conversation = convs.createConversation({
@@ -817,7 +822,226 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
+    reply.status(201);
     return conversation;
+  });
+
+  const ownedConversation = (projectId: string, conversationId: string) => {
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation || conversation.projectId !== projectId) {
+      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
+    }
+    return conversation;
+  };
+
+  const ownedConversationTask = (projectId: string, conversationId: string, taskId: string) => {
+    ownedConversation(projectId, conversationId);
+    const task = tasks.getTaskById(taskId);
+    const assistant = deps.db.prepare(
+      "SELECT id FROM conversation_messages WHERE conversation_id=? AND task_id=? AND role='assistant' LIMIT 1"
+    ).get(conversationId, taskId);
+    if (!task || task.projectId !== projectId || !assistant) {
+      throw new ApiError(404, "Conversation task not found in project", "NOT_FOUND");
+    }
+    return task;
+  };
+
+  const webRouting = (decision: RoutingDecision | null | undefined) => decision
+    ? {
+        version: decision.version,
+        presetId: decision.presetId,
+        providerId: decision.providerId,
+        model: decision.model,
+        fallbackUsed: decision.fallbackUsed,
+        overridden: decision.overridden,
+        mode: decision.mode ?? null,
+        autoApprove: decision.autoApprove ?? null,
+      }
+    : null;
+
+  const webMessages = (conversationId: string) => convs.listMessages(conversationId).map((message) => {
+    const task = message.taskId ? tasks.getTaskById(message.taskId) : undefined;
+    const routing = message.taskId ? webRouting(routingRepo.get(message.taskId)?.decision) : null;
+    const toolActivity = message.taskId
+      ? convs.listToolCallsForMessage(message.id).map((tool) => ({
+          id: tool.id,
+          toolName: tool.toolName,
+          status: tool.status,
+          startedAt: tool.startedAt ?? null,
+          completedAt: tool.completedAt ?? null,
+        }))
+      : [];
+    return {
+      ...message,
+      taskStatus: task?.status ?? null,
+      routing,
+      toolActivity,
+    };
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    return ownedConversation(projectId, conversationId);
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/messages", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return webMessages(conversationId);
+  });
+
+  app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    let updated = ownedConversation(projectId, conversationId);
+    const body = UpdateConversationSchema.parse(request.body);
+    const updatedAt = new Date().toISOString();
+    if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title, updatedAt) ?? updated;
+    if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, updatedAt) ?? updated;
+    return updated;
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    DeleteConversationSchema.parse(request.body ?? {});
+    const result = convs.deleteConversation(conversationId, projectId);
+    if (result.outcome === "project_mismatch") {
+      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
+    }
+    if (result.outcome === "active_task") {
+      throw new ApiError(
+        409,
+        "Stop the active response before deleting this conversation.",
+        "CONVERSATION_TASK_ACTIVE",
+      );
+    }
+    return { version: 1, conversationId, deleted: result.outcome === "deleted" };
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/messages", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const body = SendMessageSchema.parse(request.body);
+    const idempotencyKey = readIdempotencyKey(request);
+    try {
+      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId,
+        ...body,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
+      reply.status(result.replayed ? 200 : 202);
+      return {
+        ...result,
+        routing: webRouting(result.routing),
+        aggregateUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        sseUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(result.task.id)}/stream`,
+      };
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) {
+        throw new ApiError(error.statusCode, error.message, error.code);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/cancel", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const task = ownedConversationTask(projectId, conversationId, taskId);
+    if (task.status === "cancelled") {
+      return { version: 1, taskId, status: task.status, outcome: "already_cancelled" };
+    }
+    if (["completed", "verified", "failed", "interrupted"].includes(task.status)) {
+      throw new ApiError(409, `Task is ${task.status}; cancellation was not applied.`, "TASK_NOT_ACTIVE");
+    }
+    deps.runner.cancel(taskId);
+    const updated = tasks.getTaskById(taskId);
+    reply.status(202);
+    return { version: 1, taskId, status: updated?.status ?? "cancelled", outcome: "cancelled" };
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/retry", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const task = ownedConversationTask(projectId, conversationId, taskId);
+    if (task.status !== "failed" && task.status !== "interrupted") {
+      throw new ApiError(409, "Only failed or interrupted responses can be retried", "TASK_NOT_RETRYABLE");
+    }
+    records.retryTask(taskId);
+    deps.runner.run(taskId);
+    reply.status(202);
+    return { version: 1, taskId, status: "queued", outcome: "retried" };
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/stream", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const queryAfter = (request.query as { after?: string }).after;
+    const headerCursor = request.headers["last-event-id"];
+    const after = Math.max(
+      queryAfter === undefined ? 0 : parseEventCursor(queryAfter),
+      headerCursor === undefined ? 0 : parseEventCursor(String(headerCursor)),
+    );
+    ownedConversationTask(projectId, conversationId, taskId);
+
+    const terminalTypes = new Set(["task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"]);
+    const classify = (type: string): ChatStreamEventType => {
+      if (terminalTypes.has(type)) return "task.terminal";
+      if (type === "evidence.persisted" || type.startsWith("assistant.")) return "message.updated";
+      if (type.startsWith("tool.")) return "tool.updated";
+      return "task.updated";
+    };
+
+    reply.hijack();
+    let closed = false;
+    let cursor = after;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (destroy = false) => {
+      if (closed) return;
+      closed = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (destroy && !reply.raw.destroyed) reply.raw.destroy();
+    };
+    request.raw.on("close", () => stop());
+    reply.raw.on("close", () => stop());
+    reply.raw.on("error", () => stop(true));
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const poll = () => {
+      if (closed) return;
+      try {
+        const pending = records.listEvents(taskId, cursor);
+        for (const event of pending) {
+          const envelope = ChatStreamEnvelopeSchema.parse({
+            version: 1,
+            cursor: event.sequence,
+            taskId,
+            conversationId,
+            eventType: classify(event.type),
+            emittedAt: event.createdAt,
+            payload: { eventId: event.id },
+          });
+          reply.raw.write(`id: ${envelope.cursor}\nevent: ${envelope.eventType}\ndata: ${JSON.stringify(envelope)}\n\n`);
+          cursor = envelope.cursor;
+          if (envelope.eventType === "task.terminal") {
+            reply.raw.end();
+            stop();
+            return;
+          }
+        }
+        const task = tasks.getTaskById(taskId);
+        if (task && ["verified", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) {
+          reply.raw.end();
+          stop();
+          return;
+        }
+        timer = setTimeout(poll, deps.sseIntervalMs ?? 100);
+      } catch {
+        stop(true);
+      }
+    };
+    poll();
   });
 
   app.get("/api/conversations/:conversationId/messages", async (request, reply) => {

@@ -11,6 +11,7 @@ import { MissionPage } from "../features/missions/mission-page.js";
 import { MissionsPage } from "../features/missions/missions-page.js";
 import { ComingSoonPage } from "../features/placeholders/coming-soon-page.js";
 import { ConnectionsPage } from "../features/connections/connections-page.js";
+import { ConversationPage } from "../features/chat/conversation-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
 import { AppShell } from "./app-shell.js";
 
@@ -32,6 +33,15 @@ const missionRoute = createRoute({
   component: MissionPage,
   getParentRoute: () => rootRoute,
   path: "/missions/$missionId",
+});
+
+const conversationRoute = createRoute({
+  component: ConversationPage,
+  getParentRoute: () => rootRoute,
+  path: "/chats/$conversationId",
+  validateSearch: (search: Record<string, unknown>) => ({
+    projectId: typeof search.projectId === "string" ? search.projectId : undefined,
+  }),
 });
 
 const libraryRoute = createRoute({
@@ -78,6 +88,7 @@ export const routeTree = rootRoute.addChildren([
   homeRoute,
   missionsRoute,
   missionRoute,
+  conversationRoute,
   libraryRoute,
   automationsRoute,
   workspaceRoute,
