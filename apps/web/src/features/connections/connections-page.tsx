@@ -53,7 +53,8 @@ function formatCheckTime(value: string | null | undefined): string | null {
   }).format(parsed);
 }
 
-function protectionCopy(protection: "windows-user-acl" | "posix-mode"): string {
+function protectionCopy(protection: "windows-user-acl" | "posix-mode", securePermissions: boolean): string {
+  if (!securePermissions) return "local credential file; Morrow could not confirm owner-restricted permissions";
   return protection === "windows-user-acl"
     ? "protected local credential file (Windows user ACL)"
     : "protected local credential file (owner-only permissions)";
@@ -97,6 +98,7 @@ function DisconnectDialog({ onCancel, onConfirm }: { onCancel(): void; onConfirm
 function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const cardHeadingRef = useRef<HTMLHeadingElement>(null);
   const connectButtonRef = useRef<HTMLButtonElement>(null);
   const replaceButtonRef = useRef<HTMLButtonElement>(null);
   const disconnectButtonRef = useRef<HTMLButtonElement>(null);
@@ -125,9 +127,10 @@ function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
 
   useEffect(() => {
     if (editing || !focusAfterEditing) return;
-    (focusAfterEditing === "connect" ? connectButtonRef : replaceButtonRef).current?.focus();
+    if (focusAfterEditing === "replace" && !provider.configured) return;
+    ((focusAfterEditing === "connect" ? connectButtonRef : replaceButtonRef).current ?? cardHeadingRef.current)?.focus();
     setFocusAfterEditing(null);
-  }, [editing, focusAfterEditing]);
+  }, [editing, focusAfterEditing, provider.configured]);
 
   const clearDraft = (focusTarget?: "connect" | "replace") => {
     setApiKey("");
@@ -162,14 +165,14 @@ function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
     try {
       const response = await openRouterApi.configure(candidate);
       applyProviderStatus(response.status);
-      clearDraft(provider.configured ? "replace" : "connect");
+      clearDraft("replace");
       const shadowWarning = response.shadowedByEnv.length > 0
         ? " An environment setting also exists; restart Morrow after changing it to ensure its expected value is applied."
         : "";
-      setFeedback({ tone: "success", text: `OpenRouter is connected. The key stays server-side in a ${protectionCopy(response.credentialProtection)}.${shadowWarning}` });
+      setFeedback({ tone: "success", text: `OpenRouter is connected. The key stays server-side in a ${protectionCopy(response.credentialProtection, response.securePermissions)}.${shadowWarning}` });
       reconcileStatus();
     } catch (error) {
-      clearDraft();
+      clearDraft(provider.configured ? "replace" : "connect");
       setFeedback({ tone: "error", text: failureCopy(error, provider.configured) });
     } finally {
       setSaving(false);
@@ -215,7 +218,7 @@ function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
       <div className="morrow-connection__heading">
         <div>
           <p className="morrow-eyebrow">Cloud models</p>
-          <h2>OpenRouter</h2>
+            <h2 ref={cardHeadingRef} tabIndex={-1}>OpenRouter</h2>
           <p>Connect once to make your available OpenRouter models ready for chat.</p>
         </div>
         <StatusPill variant={provider.configured && provider.available ? "success" : "neutral"}>
@@ -258,7 +261,7 @@ function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
             type="password"
             value={apiKey}
           />
-          <p>Credentials stay server-side in local ACL-protected storage. Morrow does not claim application-layer encryption.</p>
+          <p>Credentials stay server-side in an owner-restricted local file. Morrow does not claim application-layer encryption.</p>
           <div className="morrow-connection__form-actions">
             <Button disabled={saving} size="compact" type="submit">{saving ? "Saving…" : "Save connection"}</Button>
             <Button disabled={saving} onClick={() => clearDraft(provider.configured ? "replace" : "connect")} size="compact" type="button" variant="secondary">Cancel</Button>

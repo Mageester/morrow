@@ -21,8 +21,7 @@ function result(overrides: Record<string, unknown> = {}) {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={queryClient}><ConnectionsPage /></QueryClientProvider>);
-  return queryClient;
+  return { queryClient, ...render(<QueryClientProvider client={queryClient}><ConnectionsPage /></QueryClientProvider>) };
 }
 
 function installApi(handler: (path: string, init?: RequestInit) => Response | Promise<Response>) {
@@ -42,11 +41,11 @@ describe("ConnectionsPage", () => {
       if (path === "/api/providers") return json([provider({ configured, available: configured, authStatus: configured ? "configured" : "missing", models: configured ? ["anthropic/claude-sonnet-4"] : [], defaultModel: configured ? "anthropic/claude-sonnet-4" : null })]);
       if (path === "/api/providers/openrouter/configure") {
         configured = true;
-        return json({ ok: true, provider: "openrouter", status: provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4" }), securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
+        return json({ ok: true, provider: "openrouter", status: provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4" }), securePermissions: false, credentialProtection: "posix-mode", shadowedByEnv: [] });
       }
       throw new Error(`Unexpected request: ${path}`);
     });
-    const queryClient = renderPage();
+    const { queryClient } = renderPage();
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: "Connect OpenRouter" }));
@@ -56,6 +55,8 @@ describe("ConnectionsPage", () => {
 
     await waitFor(() => expect(input).toHaveValue(""));
     expect(await screen.findByText("Connected", { exact: true })).toBeVisible();
+    expect(await screen.findByText(/could not confirm owner-restricted permissions/i)).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
     expect(screen.queryByText(secret)).not.toBeInTheDocument();
     expect(JSON.stringify(queryClient.getQueryData(["providers"]))).not.toContain(secret);
@@ -81,6 +82,7 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText(/could not verify this replacement key/i)).toBeVisible();
     expect(input).toHaveValue("");
     expect(screen.getByText("Connected")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
 
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/rate limit/i)).toBeVisible();
@@ -103,6 +105,7 @@ describe("ConnectionsPage", () => {
 
     expect(await screen.findByText(/could not verify this key/i)).toBeVisible();
     expect(screen.queryByText(/previous connection remains active/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connect OpenRouter" })).toHaveFocus());
   });
 
   it("shows model health, supports refresh, and returns focus after cancelling disconnect", async () => {
@@ -127,27 +130,39 @@ describe("ConnectionsPage", () => {
     expect(disconnect).toHaveFocus();
   });
 
-  it("uses the server health timestamp across reload and keeps mutation truth when reconciliation fails", async () => {
-    let requests = 0;
+  it("keeps the authoritative response across a failed reconciliation and a real remount", async () => {
+    let providerReads = 0;
+    const initial = provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/old"], defaultModel: "vendor/old", lastSuccessAt: "2026-07-21T15:00:00.000Z" });
+    const durable = provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/new"], defaultModel: "vendor/new", lastSuccessAt: "2026-07-22T15:00:00.000Z" });
     installApi((path) => {
       if (path === "/api/providers") {
-        requests += 1;
-        if (requests > 1) throw new TypeError("reconciliation offline");
-        return json([provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4", lastSuccessAt: "2026-07-22T15:00:00.000Z" })]);
+        providerReads += 1;
+        if (providerReads === 1) return json([initial]);
+        if (providerReads === 2) throw new TypeError("reconciliation offline");
+        return json([durable]);
       }
-      if (path === "/api/providers/openrouter/configure") return json({ ok: true, provider: "openrouter", status: provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4", lastSuccessAt: "2026-07-22T15:00:00.000Z" }), securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
+      if (path === "/api/providers/openrouter/configure") return json({ ok: true, provider: "openrouter", status: durable, securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
       throw new Error(`Unexpected request: ${path}`);
     });
     const user = userEvent.setup();
-    renderPage();
+    const firstMount = renderPage();
 
-    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
+    expect(await screen.findByText("Active model: vendor/old")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Replace key" }));
     const input = screen.getByLabelText("OpenRouter API key");
     await user.type(input, secret);
     await user.click(screen.getByRole("button", { name: "Save connection" }));
+    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
+    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     expect(await screen.findByText(/protected local credential file/i)).toBeVisible();
-    expect(screen.getByText("Connected", { exact: true })).toBeVisible();
+    await waitFor(() => expect(providerReads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
+
+    firstMount.unmount();
+    renderPage();
+    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
+    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
+    expect(providerReads).toBeGreaterThanOrEqual(3);
   });
 
   it("cancels a draft and confirms disconnect with authoritative disconnected state and focus", async () => {

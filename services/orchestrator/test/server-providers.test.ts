@@ -127,6 +127,33 @@ describe("Provider / preset / memory API", () => {
     }
   });
 
+  it("keeps durable OpenRouter health when an authenticated catalogue is empty", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "openrouter-empty-catalogue-secret";
+    const localDb = openDatabase(":memory:");
+    const connectivity = vi.fn(async () => ({
+      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+      modelsSample: [], models: [],
+    }));
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      expect(refreshed.statusCode).toBe(200);
+      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({
+        configured: true,
+        available: true,
+        lastSuccessAt: expect.any(String),
+      });
+    } finally {
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
+
   it("discards an in-flight OpenRouter refresh when the live credential changes", async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "credential-before-refresh";

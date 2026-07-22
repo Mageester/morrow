@@ -46,7 +46,7 @@ function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus
   if (discovery.status === "unavailable") return status.id === "openrouter"
     ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
     : { ...status, available: false };
-  if (discoveredModels.length === 0) return { ...status, available: true };
+  if (discoveredModels.length === 0) return { ...withDiscoveredModels, available: true };
   return {
     ...withDiscoveredModels,
     available: true,
