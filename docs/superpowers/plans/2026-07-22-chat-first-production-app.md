@@ -19,7 +19,7 @@
 - All project-scoped mutations verify `projectId` ownership.
 - No direct merge to `main`; final security-sensitive work requires independent review.
 
-## Slice 1 — Clean baseline and PR metadata
+## Task 1 — Clean baseline and PR metadata
 
 **Files:**
 - Modify: `packages/contracts/test/web.test.ts`
@@ -35,7 +35,7 @@
 
 **Status:** Baseline repair committed/pushed as `630f23b`; PR confirmed open and draft.
 
-## Slice 2 — OpenRouter provider backend
+## Task 2 — OpenRouter provider backend
 
 **Files:**
 - Modify: `packages/contracts/src/index.ts`
@@ -65,7 +65,7 @@
 7. Add streaming parser tests for fragmented text, assembled tool-call arguments, `[DONE]`, cancellation, malformed chunks, interrupted streams, and provider errors; implement the minimum parser changes.
 8. Run focused provider suites, orchestrator check/build, secret-name/value scans, browser status inspection, then commit/push/update ledger.
 
-## Slice 3 — Secure Connections workflow
+## Task 3 — Secure Connections workflow
 
 **Files:**
 - Modify: `apps/web/src/api/client.ts`
@@ -85,7 +85,7 @@
 5. Verify keyboard/focus/mobile behavior and that browser responses contain no key.
 6. Run focused tests, web check/build, packaged browser inspection, then commit/push/update ledger.
 
-## Slice 4 — Production chat composer
+## Task 4 — Production chat composer
 
 **Files:**
 - Add: `apps/web/src/features/chat/chat-composer.tsx`
@@ -104,7 +104,7 @@
 5. Add stop-generation behavior only when a live task exists.
 6. Run unit/browser keyboard/mobile checks, then commit/push/update ledger.
 
-## Slice 5 — Conversation persistence and streaming
+## Task 5 — Conversation persistence and streaming
 
 **Files:**
 - Modify: `packages/contracts/src/index.ts`
@@ -129,7 +129,7 @@
 5. Implement history, titles, rename/archive/delete, tool summaries, and actionable retry.
 6. Verify packaged refresh/reconnect in browser, then commit/push/update ledger.
 
-## Slice 6 — Chat-first shell and Home
+## Task 6 — Chat-first shell and Home
 
 **Files:**
 - Modify: `apps/web/src/app/app-shell.tsx`
@@ -150,7 +150,7 @@
 4. Add accessible keyboard navigation and light/dark/system persistence.
 5. Inspect all viewport/theme states, then commit/push/update ledger.
 
-## Slice 7 — Modes and model selection
+## Task 7 — Modes and model selection
 
 **Files:**
 - Modify: `services/orchestrator/src/routing/presets.ts`
@@ -169,7 +169,7 @@
 3. Implement searchable catalogue UI with availability, provider, context, modalities, capability, price/free state, stale status, and safe fallback when a saved model disappears.
 4. Verify selection and keyboard behavior against live backend data, then commit/push/update ledger.
 
-## Slice 8 — Missions inside chat
+## Task 8 — Missions inside chat
 
 **Files:**
 - Modify: `packages/contracts/src/web.ts`
@@ -192,7 +192,7 @@
 4. Prove approval/retry/stop actions and refresh/reconnect without duplicates.
 5. Commit/push/update ledger after packaged browser acceptance.
 
-## Slice 9 — Projects
+## Task 9 — Projects
 
 **Files:**
 - Modify: `services/orchestrator/src/repositories/projects.ts`
@@ -211,7 +211,7 @@
 2. Implement only data-backed surfaces; omit unsupported mutations.
 3. Verify empty/error/mobile/keyboard states, then commit/push/update ledger.
 
-## Slice 10 — Memory
+## Task 10 — Memory
 
 **Files:**
 - Modify: `packages/contracts/src/index.ts`
@@ -231,7 +231,7 @@
 3. Show applied-memory evidence in later conversation/mission work.
 4. Verify destructive confirmation, keyboard/mobile states, then commit/push/update ledger.
 
-## Slice 11 — Library
+## Task 11 — Library
 
 **Files:**
 - Modify: `services/orchestrator/src/server.ts`
@@ -248,7 +248,7 @@
 3. Render only existing outputs and remove unsupported actions.
 4. Prove mission results appear after persistence, then commit/push/update ledger.
 
-## Slice 12 — Full interaction audit
+## Task 12 — Full interaction audit
 
 **Files:**
 - Maintain: `docs/redesign/06-production-interaction-inventory.md`
@@ -261,7 +261,7 @@
 3. Run an automated semantic-control scan and manual route sweep.
 4. Fix every unexplained dead control; commit/push/update ledger only at zero.
 
-## Slice 13 — Accessibility and mobile polish
+## Task 13 — Accessibility and mobile polish
 
 **Files:**
 - Modify: `apps/web/src/styles/app.css`
@@ -275,7 +275,7 @@
 3. Record at least five fidelity comparisons and resolve Critical/Important defects.
 4. Commit/push/update ledger.
 
-## Slice 14 — Real-provider acceptance
+## Task 14 — Real-provider acceptance
 
 **Files:**
 - Add sanitized evidence under `.superpowers/sdd/` only; never store credentials or raw sensitive payloads
@@ -289,7 +289,7 @@
 4. Repeat essential flows across desktop/tablet/mobile, light/dark, and keyboard-only.
 5. Sanitize evidence, verify no secret material, commit/push only safe evidence, update ledger.
 
-## Slice 15 — Packaging and independent reviews
+## Task 15 — Packaging and independent reviews
 
 **Files:**
 - Modify documentation and release packaging only where final evidence finds a gap
@@ -303,4 +303,3 @@
 4. Capture final desktop/tablet/mobile light/dark screenshots and compare against accepted design.
 5. Report secure credential path, model discovery, real chat/composer evidence, interaction inventory, tests, screenshots, SHA, caveats, and honest readiness.
 6. Leave PR #64 open, draft unless every gate and user readiness condition explicitly warrants otherwise, unmerged in all cases.
-
