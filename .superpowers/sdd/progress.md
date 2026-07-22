@@ -133,4 +133,11 @@ Provider/model: openai-compatible @ opencode.ai, model nemotron-3-ultra-free (a 
 - Durable implementation plan: `docs/superpowers/plans/2026-07-22-chat-first-production-app.md`.
 - Durable interaction ledger: `docs/redesign/06-production-interaction-inventory.md`.
 - Slice 1: complete (`d4a01eb..630f23b`; baseline green, PR metadata updated).
-- Slice 2: in progress (OpenRouter provider backend).
+- Slice 2: complete (`1430cc3..6c78f8b`; review clean, 0 Critical/Important).
+  - OpenRouter now authenticates through pinned `https://openrouter.ai/api/v1/models/user`; arbitrary endpoint overrides are rejected and cannot receive stored credentials.
+  - Candidate keys are validated before atomic protected persistence/promotion; failed replacements retain the known-good key. Windows credential files use current-user + LocalSystem ACLs and fail closed; Unix uses `0600`. Storage remains honestly documented as ACL-protected plaintext, not DPAPI encryption.
+  - Catalogue persists rich account-filtered metadata, credential-bound health, 15-minute success TTL/1-minute retry TTL, manual refresh, stale-model truth, and unknown-safe pricing.
+  - Stream adapter handles fragments, tool arguments, keepalive comments, structured errors, cancellation, malformed trailing chunks, and interruption. One non-blocking Minor remains: full multi-line SSE `data:` event framing.
+  - Evidence: contracts 40/40; full orchestrator 1,184/1,184; security-fix focused 70/70; affected 115/115; final gap tests 48/48; contracts/orchestrator checks and builds green; Windows ACL smoke and secret/leak scans green.
+  - Independent review found and fixed 2 Critical + 5 Important findings over two fix rounds; final verdict APPROVED. Real redacted OpenRouter account catalogue/chat check remains Task 14 release gate.
+- Slice 3: pending (secure Connections workflow).

@@ -1,0 +1,2347 @@
+# Review package: 1430cc3..6c78f8b
+
+## Commits
+6c78f8b fix(orchestrator): close OpenRouter review gaps
+1577a0f fix(orchestrator): secure OpenRouter authentication
+f7c320c feat(orchestrator): add verified OpenRouter backend
+
+## Files changed
+ docs/privacy-model.md                              |   6 +
+ docs/providers.md                                  |  34 +++++-
+ packages/contracts/src/index.ts                    |  15 ++-
+ packages/contracts/test/contracts.test.ts          |  27 +++++
+ services/orchestrator/src/database.ts              |   6 +
+ services/orchestrator/src/provider/connectivity.ts | 105 ++++++++++++++---
+ .../orchestrator/src/provider/openai-compatible.ts |  27 ++++-
+ services/orchestrator/src/provider/registry.ts     |  54 ++++++---
+ services/orchestrator/src/provider/secrets.ts      | 131 ++++++++++++++++-----
+ .../src/repositories/provider-model-discovery.ts   |  33 +++++-
+ services/orchestrator/src/routing/models.ts        |  24 +++-
+ services/orchestrator/src/server.ts                |  56 ++++++++-
+ .../test/database-migration-29.test.ts             |  10 +-
+ services/orchestrator/test/database.test.ts        |   4 +-
+ .../orchestrator/test/provider-configure.test.ts   |  91 +++++++++++++-
+ .../test/provider-connectivity.test.ts             | 112 +++++++++++++++++-
+ .../test/provider-model-discovery.test.ts          |  30 ++++-
+ services/orchestrator/test/provider-vision.test.ts |   6 +-
+ services/orchestrator/test/providers.test.ts       |  19 +++
+ services/orchestrator/test/routing.test.ts         |  68 ++++++++++-
+ .../orchestrator/test/server-providers.test.ts     |  81 +++++++++++++
+ 21 files changed, 840 insertions(+), 99 deletions(-)
+
+## Diff
+diff --git a/docs/privacy-model.md b/docs/privacy-model.md
+index b764565..3b27ff7 100644
+--- a/docs/privacy-model.md
++++ b/docs/privacy-model.md
+@@ -50,20 +50,26 @@ Each category requires an explicit scope and retention rule.
+ - Per-project and per-agent rules
+ - Domain allowlists
+ - Model restrictions
+ - Retention controls
+ - Explicit exceptions
+ 
+ ## Required safeguards
+ 
+ - No silent telemetry
+ - No secret values in prompts or logs
++- Provider credential candidates remain server-only and are authenticated before
++  persistence or promotion; a failed OpenRouter replacement cannot overwrite the
++  last known-good credential.
++- Provider credentials use an atomic owner boundary: current-user plus
++  LocalSystem ACLs on Windows and mode `0600` on Unix-like systems. Failure to
++  establish the platform boundary aborts the write.
+ - No cross-project memory retrieval
+ - No external provider fallback without disclosure
+ - No plugin or skill access beyond declared capabilities
+ - Automatic memory stores concise normalized conclusions and evidence references,
+   never raw chain-of-thought; secret-like and prompt-poisoned candidates are
+   rejected before admission.
+ - Automatically learned skills are project-scoped under local Morrow data, need
+   two distinct successful mission observations, and cannot request network access
+   or secrets. Invalid or modified bundles are quarantined before reuse.
+ - Complete deletion for user-requested local data removal
+diff --git a/docs/providers.md b/docs/providers.md
+index 73e71ea..800d8f5 100644
+--- a/docs/providers.md
++++ b/docs/providers.md
+@@ -4,60 +4,86 @@ Morrow runs every model provider through one provider-neutral runtime. This
+ document is the reference for the capability matrix, presets, credentials, the
+ honest OAuth findings, and manual end-to-end verification.
+ 
+ ## Capability matrix
+ 
+ | Provider | Adapter | Kind | Streaming | Tool calls | System msg | Vision | Custom endpoint | Local |
+ |----------|---------|------|:---------:|:----------:|:----------:|:------:|:---------------:|:-----:|
+ | OpenAI | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+ | Anthropic | Messages API | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+ | Google Gemini | generateContent | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
+-| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
++| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
+ | DeepSeek | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
+ | OpenAI-compatible | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
+ | Ollama | OpenAI-compatible | local | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+ 
+ All adapters normalize to the same streaming chunk shape and the same typed
+ error classification (`auth`, `rate_limit`, `timeout`, `network`, `cancelled`,
+ `invalid_request`, `provider`).
+ 
+ ## Configuring a provider
+ 
+ There are three ways to give Morrow a provider credential. None require
+ PowerShell, manually setting environment variables, or restarting the service.
+ 
+ 1. **In the app (recommended).** Settings → Providers → *Configure*. Paste the
+    API key, optionally set a custom endpoint and default model, then *Save*. The
+-   key is sent once to the local orchestrator, persisted to the secrets file, and
+-   applied to the running process immediately. *Test connection* verifies it.
++   key is sent once to the local orchestrator. OpenRouter candidates are
++   authenticated against the account model endpoint before they are persisted or
++   promoted into the running process; a rejected replacement leaves the last
++   known-good key active. *Refresh models* repeats the bounded account check.
+ 2. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
+    (optionally `--url <endpoint>` and `--model <id>`). This goes through the same
+    running-service endpoint, so it also takes effect with no restart. Use
+    `morrow providers test <provider>` to verify and `morrow providers remove
+    <provider>` to delete the credential.
+ 3. **Pre-seeded environment.** Any of the env vars below set in the shell *before*
+    the service starts are honored as well. A shell-set variable takes precedence
+    over a saved one; the app and CLI warn you when that shadowing happens.
+ 
+ Keys are stored server-side in the owner-readable secrets file and never reach
+ the browser (no `localStorage`), the database, logs, errors, or task events.
++On Windows, each atomic secrets-file replacement must receive an ACL limited to
++the current user and LocalSystem before it becomes active; configuration fails
++closed if `whoami.exe`/`icacls.exe` cannot establish that boundary. Unix-like
++systems use mode `0600`. The file remains a local plaintext compatibility format
++so existing CLI startup loading continues to work; it is not application-layer
++encryption.
+ Provider status exposes only `configured`, the default model, and the endpoint
+ *host*.
+ 
++For OpenRouter specifically, possession of a value is not reported as
++`configured`: Morrow reports connected/configured only after an authenticated
++`GET /api/v1/models/user` succeeds. The server normalizes the returned account
++catalogue (author, modalities, tool/reasoning signals, provider-reported pricing,
++free/paid state, availability, and refresh time), caches it in SQLite for a
++bounded 15-minute TTL, and refreshes it on explicit request. A failed refresh
++retains the last successful catalogue for diagnosis but marks the provider
++unavailable. If a selected model disappears, Morrow keeps the selection visible
++and unavailable rather than silently switching models.
++
++**Compatibility and rollback:** existing `secrets.env` values continue to load.
++Saving or replacing a credential rewrites the file atomically under the platform
++boundary above. To roll back an OpenRouter replacement, no action is required
++when validation fails because the previous value is untouched. After a
++successful replacement, configure the prior key again (it will be authenticated
++before promotion), or use `morrow providers remove openrouter` to remove the
++stored OpenRouter route entirely.
++
+ ## Credential reference
+ 
+ | Provider | API key env | Base URL env (optional) | Default endpoint |
+ |----------|-------------|-------------------------|------------------|
+ | OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
+ | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` |
+ | Gemini | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` |
+-| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
++| OpenRouter | `OPENROUTER_API_KEY` | — (pinned; overrides rejected) | `https://openrouter.ai/api/v1` |
+ | DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` |
+ | OpenAI-compatible | `OPENAI_COMPAT_API_KEY` (optional) | `OPENAI_COMPAT_BASE_URL` (required) | — (`OPENAI_COMPAT_MODEL` for the model) |
+ | Ollama (local) | — | `OLLAMA_BASE_URL` (required to enable) | `http://127.0.0.1:11434/v1` |
+ 
+ Ollama is an explicit opt-in: Morrow does not claim a local server exists unless
+ `OLLAMA_BASE_URL` is set.
+ 
+ Every provider also accepts a verified endpoint context override named
+ `<PROVIDER>_CONTEXT_LIMIT` (for example `DEEPSEEK_CONTEXT_LIMIT` or
+ `OPENAI_COMPAT_CONTEXT_LIMIT`). The value is a positive integer token limit for
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index b78fe3d..05b2e31 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -90,20 +90,21 @@ export const ProviderStatusSchema=z.object({
+   setupHint:z.string().nullable(),
+ }).strict();
+ 
+ export const ModelSpeedClassSchema=z.enum(["fast","balanced","powerful","unknown"]);
+ export const ModelCostClassSchema=z.enum(["free","low","medium","high","unknown"]);
+ export const ModelPrivacyClassSchema=z.enum(["local","remote"]);
+ export const ModelCapabilitiesSchema=z.object({
+   streaming:z.boolean(),
+   toolCalls:z.boolean(),
+   vision:z.boolean(),
++  reasoning:z.boolean().nullable().optional(),
+ }).strict();
+ 
+ // ── Reasoning / thinking control ─────────────────────────────────────────────
+ //
+ // A route's reasoning behaviour is NOT uniform across providers, so it is
+ // modelled explicitly rather than assumed. `ReasoningConfiguration` is the
+ // single normalized shape every surface uses; each provider adapter translates
+ // it into that provider's real request format (see the orchestrator's
+ // translateReasoning). `RouteReasoningCapability` describes what a specific
+ // route actually exposes, with explicit provenance — never a guess.
+@@ -136,30 +137,34 @@ export const ReasoningConfigurationSchema=z.discriminatedUnion("mode",[
+   z.object({mode:z.literal("off")}).strict(),
+   z.object({mode:z.literal("effort"),effort:ReasoningEffortSchema}).strict(),
+   z.object({mode:z.literal("budget"),tokens:z.number().int().positive()}).strict(),
+   z.object({mode:z.literal("provider-fixed")}).strict(),
+ ]);
+ 
+ export const ModelPricingSchema=z.object({
+   inputUsdPerMillion:z.number().nonnegative(),
+   outputUsdPerMillion:z.number().nonnegative(),
+   cachedInputUsdPerMillion:z.number().nonnegative().nullable().optional(),
+-  source:z.literal("authoritative"),
++  source:z.enum(["authoritative","provider-reported"]),
+ }).strict();
+ export const ModelInfoSchema=z.object({
+   version:SchemaVersionSchema,
+   id:z.string(),
+   providerModelId:z.string().optional(),
+   canonicalId:z.string(),
+   aliases:z.array(z.string()),
+   providerId:ProviderIdSchema,
+   label:z.string(),
++  author:z.string().nullable().optional(),
++  inputModalities:z.array(z.string().min(1)).optional(),
++  outputModalities:z.array(z.string().min(1)).optional(),
++  costType:z.enum(["free","paid","unknown"]).optional(),
+   family:z.string().nullable().optional(),
+   generation:z.string().nullable().optional(),
+   lifecycle:z.enum(["current","preview","legacy","deprecated","custom","unknown"]).optional(),
+   contextWindow:z.number().int().positive().nullable(),
+   maxOutputTokens:z.number().int().positive().nullable(),
+   pricing:ModelPricingSchema.nullable(),
+   tokenUsage:z.boolean(),
+   streamingUsage:z.boolean(),
+   capabilities:ModelCapabilitiesSchema,
+   capabilitySource:z.enum(["provider-reported","remote-catalog","bundled-catalog","user-supplied","unknown"]).optional(),
+@@ -647,27 +652,35 @@ export const AuditEntrySchema=z.object({
+   networkAccess:z.string().nullable(),
+   toolCalls:z.number().int().nonnegative(),
+   evidence:z.number().int().nonnegative(),
+   createdAt:z.string(),
+ }).strict();
+ export type AuditEntry=z.infer<typeof AuditEntrySchema>;
+ 
+ export const DiscoveredModelSchema=z.object({
+   providerModelId:z.string().min(1).max(300),
+   displayName:z.string().min(1).max(500),
++  author:z.string().min(1).max(200).nullable().optional(),
+   contextWindow:z.number().int().positive().nullable(),
+   maxOutputTokens:z.number().int().positive().nullable(),
++  inputModalities:z.array(z.string().min(1).max(100)).optional(),
++  outputModalities:z.array(z.string().min(1).max(100)).optional(),
+   capabilities:z.object({
+     streaming:z.boolean().nullable(),
+     toolCalls:z.boolean().nullable(),
+     vision:z.boolean().nullable(),
++    reasoning:z.boolean().nullable().optional(),
+   }).strict(),
++  pricing:ModelPricingSchema.nullable().optional(),
++  costType:z.enum(["free","paid","unknown"]).optional(),
++  availability:z.enum(["available","unavailable","unknown"]).optional(),
++  fetchedAt:z.string().datetime().nullable().optional(),
+   metadataSource:z.literal("provider-reported"),
+ }).strict();
+ export type DiscoveredModel=z.infer<typeof DiscoveredModelSchema>;
+ export const ProviderTestResultSchema=z.object({
+   id:ProviderIdSchema,
+   ok:z.boolean(),
+   configured:z.boolean(),
+   status:z.number().int().nullable(),
+   latencyMs:z.number().int().nonnegative().nullable(),
+   checkedEndpoint:z.string().nullable(),
+diff --git a/packages/contracts/test/contracts.test.ts b/packages/contracts/test/contracts.test.ts
+index 890533b..ce7e409 100644
+--- a/packages/contracts/test/contracts.test.ts
++++ b/packages/contracts/test/contracts.test.ts
+@@ -1,16 +1,17 @@
+ import { describe, expect, it } from "vitest";
+ import {
+   CreateProjectSchema, CreateTaskSchema, TaskEventSchema,
+   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
+   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
+   RequirementCategorySchema, RequirementNodeStatusSchema,
++  DiscoveredModelSchema,
+ } from "../src/index.js";
+ 
+ function validNode(over: Record<string, unknown> = {}) {
+   return {
+     version: 1,
+     id: "req-1",
+     missionId: "m1",
+     order: 0,
+     statement: "do the thing",
+     category: "objective",
+@@ -31,20 +32,46 @@ function validNode(over: Record<string, unknown> = {}) {
+     createdAt: "2026-01-01T00:00:00.000Z",
+     updatedAt: "2026-01-01T00:00:00.000Z",
+     ...over,
+   };
+ }
+ 
+ describe("contracts", () => {
+   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
+   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
+   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());
++
++  it("accepts a complete provider-reported OpenRouter catalogue model", () => {
++    expect(DiscoveredModelSchema.parse({
++      providerModelId: "anthropic/claude-sonnet-4",
++      displayName: "Claude Sonnet 4",
++      author: "anthropic",
++      contextWindow: 200_000,
++      maxOutputTokens: 64_000,
++      inputModalities: ["text", "image"],
++      outputModalities: ["text"],
++      capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
++      pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, source: "provider-reported" },
++      costType: "paid",
++      availability: "available",
++      fetchedAt: "2026-07-22T12:00:00.000Z",
++      metadataSource: "provider-reported",
++    })).toMatchObject({
++      author: "anthropic",
++      inputModalities: ["text", "image"],
++      outputModalities: ["text"],
++      capabilities: { toolCalls: true, reasoning: true },
++      costType: "paid",
++      availability: "available",
++      fetchedAt: "2026-07-22T12:00:00.000Z",
++    });
++  });
+ });
+ 
+ describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {
+   it("accepts a fully-specified valid contract", () => {
+     const result = MissionContractSchema.safeParse({
+       version: 1,
+       missionId: "m1",
+       sourcePrompt: "Ship the payment retry queue",
+       objective: "Ship the payment retry queue",
+       expectedArtifacts: ["retry-queue.ts"],
+diff --git a/services/orchestrator/src/database.ts b/services/orchestrator/src/database.ts
+index 1a45b93..1a83daa 100644
+--- a/services/orchestrator/src/database.ts
++++ b/services/orchestrator/src/database.ts
+@@ -1121,20 +1121,26 @@ export const migrations:Migration[]=[
+     CREATE INDEX learned_skills_project_state_idx ON learned_skills(project_id, state, updated_at DESC);
+   `}
+   ,{id:36,name:"durable_mission_execution_route",sql:`
+     ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
+       DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
+   `}
+   ,{id:37,name:"mission_idempotency_keys",sql:`
+     ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
+     CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+   `}
++  ,{id:38,name:"provider_model_discovery_freshness",sql:`
++    ALTER TABLE provider_model_discovery ADD COLUMN expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z';
++    ALTER TABLE provider_model_discovery ADD COLUMN last_success_at TEXT;
++    ALTER TABLE provider_model_discovery ADD COLUMN credential_identity TEXT;
++    UPDATE provider_model_discovery SET last_success_at=fetched_at WHERE status='available';
++  `}
+ ];
+ export function openDatabase(file:string){
+   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
+   const db=new Database(file);
+   try{
+     db.pragma("foreign_keys = ON");
+     db.pragma("busy_timeout = 5000");
+     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
+     for(const m of migrations){
+diff --git a/services/orchestrator/src/provider/connectivity.ts b/services/orchestrator/src/provider/connectivity.ts
+index 9fae8e4..116b85f 100644
+--- a/services/orchestrator/src/provider/connectivity.ts
++++ b/services/orchestrator/src/provider/connectivity.ts
+@@ -1,29 +1,34 @@
+ import type { DiscoveredModel, ProviderId, ProviderTestResult } from "@morrow/contracts";
+ import { classifyHttpStatus, classifyThrownError } from "./base.js";
+-import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
++import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
+ import { getStoredAccessTokenSync } from "./oauth-flow.js";
+ import { codexHeaders } from "./codex.js";
+ 
+ /**
+  * Bounded, server-side provider connectivity check. Performs a single, cheap,
+  * read-only request (a model/list lookup) to confirm credentials and reachability.
+  *
+  * Security invariants:
+  *  - Runs only on the server; the API key never leaves this process.
+  *  - The result never contains the key, the Authorization header, or a URL with
+  *    embedded credentials — only the bare host of the checked endpoint.
+  *  - The request is time-bounded and reads at most a small JSON body.
+  */
+ 
+ const DEFAULT_TIMEOUT_MS = 8000;
+-const MAX_RESPONSE_BYTES = 64 * 1024;
++// OpenRouter's account catalogue can contain thousands of rich model records.
++// Keep the read bounded, but large enough for the real endpoint rather than a
++// small display-oriented sample.
++const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
++const MAX_MODEL_RECORDS = 5_000;
++export const OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1";
+ 
+ async function readBoundedJson(response: Response): Promise<unknown> {
+   const contentLength = Number(response.headers.get("content-length"));
+   if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+     try {
+       await response.body?.cancel();
+     } catch {
+       /* best effort cancellation */
+     }
+     return null;
+@@ -54,84 +59,146 @@ async function readBoundedJson(response: Response): Promise<unknown> {
+       offset += chunk.byteLength;
+     }
+     return JSON.parse(new TextDecoder().decode(bytes));
+   } catch {
+     return null;
+   } finally {
+     reader.releaseLock();
+   }
+ }
+ 
+-function normalizeModels(json: unknown): DiscoveredModel[] {
++function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): DiscoveredModel[] {
+   try {
+     const anyJson = json as any;
+     const rows: any[] = Array.isArray(anyJson?.data) ? anyJson.data : Array.isArray(anyJson?.models) ? anyJson.models : [];
+-    return rows.slice(0, 500).flatMap((entry): DiscoveredModel[] => {
+-      const id = typeof entry?.name === "string"
++    const seen = new Set<string>();
++    return rows.slice(0, MAX_MODEL_RECORDS).flatMap((entry): DiscoveredModel[] => {
++      const id = typeof entry?.name === "string" && entry.name.startsWith("models/")
+         ? entry.name.replace(/^models\//, "")
+-        : entry?.id ?? entry?.slug ?? entry?.model;
++        : entry?.id ?? entry?.slug ?? entry?.model ?? entry?.name;
+       if (typeof id !== "string" || !id.trim()) return [];
++      const providerModelId = id.trim();
++      if (seen.has(providerModelId)) return [];
++      seen.add(providerModelId);
+       const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
+       const reportedCapabilities = entry?.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {};
++      const supportedParameters = Array.isArray(entry?.supported_parameters)
++        ? entry.supported_parameters.filter((value: unknown): value is string => typeof value === "string")
++        : [];
++      const inputModalities = Array.isArray(entry?.architecture?.input_modalities)
++        ? entry.architecture.input_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
++        : [];
++      const outputModalities = Array.isArray(entry?.architecture?.output_modalities)
++        ? entry.architecture.output_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
++        : [];
+       const reportedBoolean = (...values: unknown[]): boolean | null => {
+         const value = values.find((candidate) => typeof candidate === "boolean");
+         return typeof value === "boolean" ? value : null;
+       };
++      const perMillion = (value: unknown): number | null => {
++        if (typeof value !== "string" && typeof value !== "number") return null;
++        if (typeof value === "string" && value.trim().length === 0) return null;
++        const parsed = Number(value);
++        return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
++      };
++      const inputPrice = perMillion(entry?.pricing?.prompt);
++      const outputPrice = perMillion(entry?.pricing?.completion);
++      const cachedInputPrice = perMillion(entry?.pricing?.input_cache_read);
++      const pricing = inputPrice !== null && outputPrice !== null
++        ? { inputUsdPerMillion: inputPrice, outputUsdPerMillion: outputPrice, ...(cachedInputPrice !== null ? { cachedInputUsdPerMillion: cachedInputPrice } : {}), source: "provider-reported" as const }
++        : null;
++      const billablePricingFields = new Set([
++        "prompt", "completion", "request", "image", "web_search", "internal_reasoning",
++        "input_cache_read", "input_cache_write",
++      ]);
++      const pricingEntries = entry?.pricing && typeof entry.pricing === "object" && !Array.isArray(entry.pricing)
++        ? Object.entries(entry.pricing) : [];
++      const hasUnknownPricingField = pricingEntries.some(([key]) => !billablePricingFields.has(key));
++      const parsedPricingEntries = pricingEntries.map(([key, value]) => ({ key, value: perMillion(value) }));
++      const hasInvalidPricingValue = parsedPricingEntries.some(({ value }) => value === null);
++      const hasNonTokenCharge = parsedPricingEntries.some(({ key, value }) => key !== "prompt" && key !== "completion" && value !== null && value > 0);
++      const hasTokenCharge = (inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0;
++      const costType = hasTokenCharge || hasNonTokenCharge
++        ? "paid" as const
++        : inputPrice === null || outputPrice === null || pricingEntries.length === 0 || hasUnknownPricingField || hasInvalidPricingValue
++          ? "unknown" as const
++          : "free" as const;
++      const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
++      const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
+       return [{
+-        providerModelId: id,
++        providerModelId,
+         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
++        author: providerModelId.includes("/") ? providerModelId.split("/", 1)[0]! : null,
+         contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
++          .concat(entry?.context_length)
+           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+-        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens]
++        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens, entry?.top_provider?.max_completion_tokens]
+           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
++        inputModalities,
++        outputModalities,
+         capabilities: {
+-          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming),
+-          toolCalls: reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
+-          vision: reportedBoolean(reportedCapabilities.vision),
++          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming) ?? true,
++          toolCalls: supportedParameters.length > 0 ? supportedParameters.includes("tools") || supportedParameters.includes("tool_choice") : reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
++          vision: inputModalities.length > 0 ? inputModalities.some((modality: string) => modality === "image" || modality === "video") : reportedBoolean(reportedCapabilities.vision),
++          reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
+         },
++        pricing,
++        costType,
++        availability,
++        fetchedAt,
+         metadataSource: "provider-reported",
+       }];
+     });
+   } catch {
+     /* ignore shape errors — sampling is best-effort */
+   }
+   return [];
+ }
+ 
+ interface PlannedRequest {
+   url: string;
+   headers: Record<string, string>;
+   host: string | null;
+ }
+ 
+ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
+   switch (id) {
+     case "openai":
+-    case "openrouter":
+     case "deepseek": {
+       const cfgByProvider: Record<string, { apiKeyEnv: string; baseUrlEnv: string; defaultBaseUrl: string; extra?: Record<string, string> }> = {
+         openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" },
+-        openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1", extra: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" } },
+         deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" },
+       };
+       const spec = cfgByProvider[id]!;
+       const c = resolveApiKeyCredential(env, { apiKeyEnv: spec.apiKeyEnv, baseUrlEnv: spec.baseUrlEnv, defaultBaseUrl: spec.defaultBaseUrl });
+       // A ChatGPT/Codex subscription OAuth token (OpenAI only) must be checked
+       // against the Codex backend with its Cloudflare-safe headers — probing
+       // api.openai.com with it returns 403/401.
+       const oauthToken = id === "openai" ? getStoredAccessTokenSync("openai", env) : null;
+       if (oauthToken) {
+         return { configured: true, request: { url: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers: codexHeaders(oauthToken), host: "chatgpt.com" } };
+       }
+       if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
+       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+     }
++    case "openrouter": {
++      const apiKey = env.OPENROUTER_API_KEY?.trim();
++      if (!apiKey) return { configured: false, reason: "openrouter is not configured (OPENROUTER_API_KEY missing)." };
++      return {
++        configured: true,
++        request: {
++          url: `${OPENROUTER_API_BASE_URL}/models/user`,
++          headers: { Authorization: `Bearer ${apiKey}`, "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
++          host: "openrouter.ai",
++        },
++      };
++    }
+     case "anthropic": {
+       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
+       const oauthToken = getStoredAccessTokenSync("anthropic", env);
+       if (oauthToken) {
+         // Subscription transport: Bearer + OAuth beta header, no x-api-key.
+         return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/v1/models`, headers: { Authorization: `Bearer ${oauthToken}`, "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" }, host: c.host } };
+       }
+       if (!c.configured) return { configured: false, reason: "anthropic is not configured (ANTHROPIC_API_KEY missing)." };
+       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/v1/models`, headers: { "x-api-key": c.apiKey!, "anthropic-version": "2023-06-01" }, host: c.host } };
+     }
+@@ -190,31 +257,39 @@ export async function testProviderConnectivity(
+   const plan = planRequest(id, env);
+   if (!plan.configured) {
+     return { ...base, configured: false, detail: plan.reason ?? "Not configured." };
+   }
+   if (!plan.request) {
+     // Local/mock providers that require no network.
+     return { ...base, configured: true, ok: true, detail: "No network check required for this provider." };
+   }
+ 
+   const { url, headers, host } = plan.request;
++  const configuredSecret = "Authorization" in headers ? headers.Authorization.replace(/^Bearer\s+/i, "") : null;
++  const safeDetail = (value: string): string => {
++    const exactRedacted = configuredSecret ? value.split(configuredSecret).join("***redacted***") : value;
++    return redactSecrets(exactRedacted);
++  };
+   const controller = new AbortController();
+   const timer = setTimeout(() => controller.abort(), timeoutMs);
+   const startedAt = Date.now();
+   try {
+     const res = await fetch(url, { method: "GET", headers, signal: controller.signal });
+     const latencyMs = Date.now() - startedAt;
+     const body = await readBoundedJson(res);
+     if (res.ok) {
++      if (id === "openrouter" && (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data))) {
++        return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
++      }
+       const models = normalizeModels(body);
+       return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
+     }
+     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
+-    return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
++    return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
+   } catch (e: any) {
+     const aborted = controller.signal.aborted;
+     const err = classifyThrownError(e, aborted);
+-    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : err.message, errorKind: aborted ? "timeout" : err.kind };
++    return { ...base, configured: false, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
+   } finally {
+     clearTimeout(timer);
+   }
+ }
+diff --git a/services/orchestrator/src/provider/openai-compatible.ts b/services/orchestrator/src/provider/openai-compatible.ts
+index da58c3a..4025348 100644
+--- a/services/orchestrator/src/provider/openai-compatible.ts
++++ b/services/orchestrator/src/provider/openai-compatible.ts
+@@ -160,33 +160,53 @@ export class OpenAiCompatibleProvider implements AiProvider {
+ 
+     if (!response.body) {
+       if (timeoutId) clearTimeout(timeoutId);
+       yield { type: "error", error: { type: "provider_error", kind: "provider", message: "Empty stream response body", retryable: false } };
+       return;
+     }
+ 
+     const reader = response.body.getReader();
+     const decoder = new TextDecoder("utf-8");
+     let buffer = "";
++    let completed = false;
++    let terminalError = false;
++    const redactConfiguredSecret = (message: string): string => this.config.apiKey
++      ? message.split(this.config.apiKey).join("***redacted***")
++      : message;
+     const parseRecord = (line: string, eof = false): ProviderChunk[] => {
+       const trimmed = line.trim();
+-      if (!trimmed || trimmed === "data: [DONE]") return [];
++      if (!trimmed) return [];
++      if (trimmed === "data: [DONE]") {
++        completed = true;
++        return [];
++      }
+       if (!trimmed.startsWith("data: ")) return [];
+       let parsed: any;
+       try { parsed = JSON.parse(trimmed.slice(6)); }
+       catch {
+         return eof ? [{ type: "error", error: { type: "malformed_sse", kind: "provider", message: "Malformed trailing SSE record", retryable: false } }] : [];
+       }
+       const out: ProviderChunk[] = [];
++      if (parsed?.error) {
++        terminalError = true;
++        const numericCode = Number(parsed.error.code);
++        const status = Number.isInteger(numericCode) && numericCode >= 400 && numericCode <= 599 ? numericCode : 500;
++        const message = redactConfiguredSecret(typeof parsed.error.message === "string" ? parsed.error.message : "Provider stream error");
++        out.push({ type: "error", error: classifyHttpStatus(status, message) });
++        return out;
++      }
+       if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
+       const wireFinishReason = parsed.choices?.[0]?.finish_reason;
+-      if (wireFinishReason) out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
++      if (wireFinishReason) {
++        completed = true;
++        out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
++      }
+       const delta = parsed.choices?.[0]?.delta;
+       if (delta?.reasoning_content) out.push({
+         type: "text",
+         providerContinuation: { reasoningContent: delta.reasoning_content },
+       });
+       if (delta?.content) out.push({ type: "text", text: delta.content });
+       if (delta?.tool_calls) out.push({ type: "tool_call", toolCalls: delta.tool_calls.map((tc: any) => ({ id: tc.id, index: tc.index, type: "function", function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } })) });
+       return out;
+     };
+ 
+@@ -197,20 +217,23 @@ export class OpenAiCompatibleProvider implements AiProvider {
+         buffer += decoder.decode(value, { stream: true });
+         const lines = buffer.split("\n");
+         buffer = lines.pop() || "";
+ 
+         for (const line of lines) {
+           yield* parseRecord(line);
+         }
+       }
+       buffer += decoder.decode();
+       yield* parseRecord(buffer, true);
++      if (!completed && !terminalError) {
++        yield { type: "error", error: { type: "interrupted_stream", kind: "provider", message: "Provider stream ended before completion", retryable: true } };
++      }
+     } catch (e: any) {
+       if (timedOut) {
+         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider stream timed out", retryable: true } };
+         return;
+       }
+       yield { type: "error", error: classifyThrownError(e, options.abortSignal?.aborted ?? false) };
+       return;
+     } finally {
+       if (timeoutId) clearTimeout(timeoutId);
+     }
+diff --git a/services/orchestrator/src/provider/registry.ts b/services/orchestrator/src/provider/registry.ts
+index f4d4018..33fad97 100644
+--- a/services/orchestrator/src/provider/registry.ts
++++ b/services/orchestrator/src/provider/registry.ts
+@@ -3,43 +3,59 @@ import { AiProvider, ProviderError, type ProviderProtocol, type ProviderRouteMet
+ import { OpenAiCompatibleProvider } from "./openai-compatible.js";
+ import { AnthropicProvider } from "./anthropic.js";
+ import { CodexProvider } from "./codex.js";
+ import { GeminiProvider } from "./gemini.js";
+ import {
+   ProviderEnv,
+   resolveApiKeyCredential,
+   resolveLocalCredential,
+   safeHost,
+ } from "./credentials.js";
+-import { providerEnvMapping } from "./secrets.js";
++import { providerCredentialIdentity, providerEnvMapping } from "./secrets.js";
+ import { getStoredAccessTokenSync } from "./oauth-flow.js";
+ import { createHash } from "node:crypto";
+ import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
++import { OPENROUTER_API_BASE_URL } from "./connectivity.js";
+ 
+ let modelDiscoveries: ProviderModelDiscovery[] = [];
+ 
+ export function installProviderModelDiscoveries(discoveries: ProviderModelDiscovery[]): void {
+   modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
+ }
+ 
+-function withDiscovery(status: ProviderStatus): ProviderStatus {
++function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus {
+   const authMode = status.authMode ?? "unknown";
+   const discovery = modelDiscoveries.find((item) => item.providerId === status.id && item.authMode === authMode);
+-  if (!discovery) return status;
+-  if (discovery.status === "unavailable") return { ...status, available: false };
+-  const models = discovery.models.map((model) => model.providerModelId);
+-  if (models.length === 0) return { ...status, available: true };
+-  return {
++  if (status.id === "openrouter" && discovery && discovery.credentialIdentity !== providerCredentialIdentity(status.id, env)) {
++    return { ...status, configured: false, available: false, authStatus: "unavailable" };
++  }
++  if (!discovery) return status.id === "openrouter" && status.configured
++    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
++    : status;
++  const discoveredModels = discovery.models.map((model) => model.providerModelId);
++  const withDiscoveredModels: ProviderStatus = {
+     ...status,
++    models: status.defaultModel && !discoveredModels.includes(status.defaultModel)
++      ? [status.defaultModel, ...discoveredModels]
++      : discoveredModels,
++    defaultModel: status.defaultModel,
++  };
++  if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
++    return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };
++  }
++  if (discovery.status === "unavailable") return status.id === "openrouter"
++    ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
++    : { ...status, available: false };
++  if (discoveredModels.length === 0) return { ...status, available: true };
++  return {
++    ...withDiscoveredModels,
+     available: true,
+-    models,
+-    defaultModel: status.defaultModel && models.includes(status.defaultModel) ? status.defaultModel : models[0] ?? null,
+   };
+ }
+ 
+ /** Mark a status as configured/available because a subscription OAuth token is held. */
+ function withOAuth(status: ProviderStatus, authMode: ProviderAuthMode): ProviderStatus {
+   return { ...status, configured: true, available: true, authStatus: "configured", authMode };
+ }
+ 
+ function apiKeyAuthMode(id: ProviderId): ProviderAuthMode {
+   return ({
+@@ -152,21 +168,21 @@ function apiKeyStatus(
+     note: d.note,
+     setupHint: d.setupHint,
+   };
+ }
+ 
+ const DESCRIPTORS: ProviderDescriptor[] = [
+   {
+     id: "openai",
+     label: "OpenAI",
+     kind: "api-key",
+-    capabilities: caps({ vision: true, customEndpoint: true }),
++    capabilities: caps({ vision: true, customEndpoint: false }),
+     defaultModel: "gpt-5.6-sol",
+     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
+     note: null,
+     status(env) {
+       const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" });
+       const s = apiKeyStatus(this, c, env);
+       if (getStoredAccessTokenSync("openai", env)) {
+         // Subscription sign-in routes through the Codex backend, which serves its
+         // own model slugs (gpt-5.x), not the api.openai.com model ids.
+@@ -233,40 +249,40 @@ const DESCRIPTORS: ProviderDescriptor[] = [
+     build(env, model) {
+       const c = resolveApiKeyCredential(env, { apiKeyEnv: "GEMINI_API_KEY", fallbackApiKeyEnv: "GOOGLE_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", defaultBaseUrl: "https://generativelanguage.googleapis.com" });
+       if (!c.configured) throw new ProviderError("not_configured", "Gemini is not configured (GEMINI_API_KEY missing)", { kind: "auth" });
+       return new GeminiProvider({ apiKey: c.apiKey!, baseUrl: c.baseUrl, defaultModel: resolveModel(env, this.id, model, this.defaultModel), route: routeMetadata({ env, id: this.id, protocol: "gemini-generate-content", endpointKind: c.endpointType, endpointHost: c.host }) });
+     },
+   },
+   {
+     id: "openrouter",
+     label: "OpenRouter",
+     kind: "api-key",
+-    capabilities: caps({ vision: true, customEndpoint: true }),
++    capabilities: caps({ vision: true, customEndpoint: false }),
+     defaultModel: "openrouter/auto",
+     models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
+     setupHint: "Set OPENROUTER_API_KEY.",
+     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
+     status(env) {
+-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
++      const c = { configured: !!env.OPENROUTER_API_KEY?.trim(), endpointType: "default" as const, host: "openrouter.ai" };
+       return apiKeyStatus(this, c, env);
+     },
+     build(env, model) {
+-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
+-      if (!c.configured) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
++      const apiKey = env.OPENROUTER_API_KEY?.trim();
++      if (!apiKey) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
+       return new OpenAiCompatibleProvider({
+         id: "openrouter",
+-        apiKey: c.apiKey!,
+-        baseUrl: c.baseUrl,
++        apiKey,
++        baseUrl: OPENROUTER_API_BASE_URL,
+         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
+         includeUsage: true,
+         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
+-        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
++        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "default", endpointHost: "openrouter.ai" }),
+       });
+     },
+   },
+   {
+     id: "deepseek",
+     label: "DeepSeek",
+     kind: "api-key",
+     capabilities: caps({ customEndpoint: true }),
+     defaultModel: "deepseek-v4-flash",
+     models: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+@@ -373,39 +389,39 @@ const DESCRIPTORS: ProviderDescriptor[] = [
+       const c = resolveLocalCredential(env, { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" });
+       if (!c.configured) throw new ProviderError("not_configured", "Ollama is not enabled (set OLLAMA_BASE_URL to a running server)", { kind: "invalid_request" });
+       return new OpenAiCompatibleProvider({ id: "ollama", baseUrl: c.baseUrl, defaultModel: model || env.OLLAMA_MODEL || this.defaultModel, includeUsage: false, route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }) });
+     },
+   },
+ ];
+ 
+ const BY_ID = new Map<ProviderId, ProviderDescriptor>(DESCRIPTORS.map((d) => [d.id, d]));
+ 
+ export function listProviderStatuses(env: ProviderEnv = process.env): ProviderStatus[] {
+-  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env)));
++  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env), env));
+   if (env.MOCK_PROVIDER === "true") {
+     statuses.push(withDiscovery({
+       version: 1,
+       id: "mock",
+       label: "Mock provider (testing)",
+       kind: "mock",
+       configured: true,
+       available: true,
+       endpointType: "default",
+       endpointHost: null,
+       authStatus: "not-applicable",
+       authMode: "mock",
+       capabilities: caps({ local: true, vision: false }),
+       models: ["mock-model"],
+       defaultModel: "mock-model",
+       note: "Deterministic in-memory provider. Only present because MOCK_PROVIDER=true.",
+       setupHint: "Unset MOCK_PROVIDER to use real providers.",
+-    }));
++    }, env));
+   }
+   return statuses;
+ }
+ 
+ export function getProviderStatus(id: ProviderId, env: ProviderEnv = process.env): ProviderStatus | undefined {
+   return listProviderStatuses(env).find((s) => s.id === id);
+ }
+ 
+ export function isProviderConfigured(id: ProviderId, env: ProviderEnv = process.env): boolean {
+   return getProviderStatus(id, env)?.configured ?? false;
+diff --git a/services/orchestrator/src/provider/secrets.ts b/services/orchestrator/src/provider/secrets.ts
+index 6eca872..d54479d 100644
+--- a/services/orchestrator/src/provider/secrets.ts
++++ b/services/orchestrator/src/provider/secrets.ts
+@@ -3,22 +3,24 @@
+  *
+  * This is the single source of truth for which environment variables back each
+  * provider, and the only module that writes the Morrow secrets file (a plain
+  * `KEY=VALUE` file, same format the CLI reads at startup). Configuring a
+  * provider here both persists the value AND hot-applies it to `process.env` so
+  * the change takes effect immediately — no service restart required.
+  *
+  * Secrets never leave this process: the configure endpoint accepts a key and
+  * returns only a non-secret status, and reads never echo a stored value back.
+  */
+-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
++import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+ import { dirname } from "node:path";
++import { execFileSync } from "node:child_process";
++import { createHash, randomUUID } from "node:crypto";
+ import type { ProviderId } from "@morrow/contracts";
+ 
+ export interface ProviderEnvMapping {
+   /** Env var holding the API key, if the provider authenticates with one. */
+   apiKeyEnv?: string;
+   /** Env var holding a custom base URL / endpoint. */
+   baseUrlEnv?: string;
+   /** Env var holding the persisted default model id. */
+   modelEnv?: string;
+   /** Env var holding a verified limit for the configured endpoint route. */
+@@ -29,30 +31,37 @@ export interface ProviderEnvMapping {
+ 
+ /**
+  * Canonical env-var mapping per provider. The registry resolves status/builds
+  * adapters from these same names, so configuring here is guaranteed to be the
+  * value the registry reads.
+  */
+ export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
+   openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", modelEnv: "OPENAI_MODEL", contextLimitEnv: "OPENAI_CONTEXT_LIMIT" },
+   anthropic: { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", modelEnv: "ANTHROPIC_MODEL", contextLimitEnv: "ANTHROPIC_CONTEXT_LIMIT" },
+   gemini: { apiKeyEnv: "GEMINI_API_KEY", baseUrlEnv: "GEMINI_BASE_URL", modelEnv: "GEMINI_MODEL", contextLimitEnv: "GEMINI_CONTEXT_LIMIT" },
+-  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
++  openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
+   deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
+   "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
+   ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },
+ };
+ 
+ export function providerEnvMapping(id: ProviderId): ProviderEnvMapping | null {
+   return PROVIDER_ENV[id] ?? null;
+ }
+ 
++/** One-way identity used to bind cached health to the exact credential tested. */
++export function providerCredentialIdentity(id: ProviderId, env: NodeJS.ProcessEnv = process.env): string | null {
++  const apiKeyEnv = providerEnvMapping(id)?.apiKeyEnv;
++  const value = apiKeyEnv ? env[apiKeyEnv]?.trim() : undefined;
++  return value ? createHash("sha256").update(value).digest("hex") : null;
++}
++
+ /** Parse a simple KEY=VALUE secrets file. Ignores comments and blank lines. */
+ export function parseSecretsFile(content: string): Record<string, string> {
+   const out: Record<string, string> = {};
+   for (const rawLine of content.split(/\r?\n/)) {
+     const line = rawLine.trim();
+     if (!line || line.startsWith("#")) continue;
+     const eq = line.indexOf("=");
+     if (eq < 0) continue;
+     const key = line.slice(0, eq).trim();
+     let value = line.slice(eq + 1).trim();
+@@ -66,37 +75,66 @@ export function parseSecretsFile(content: string): Record<string, string> {
+ 
+ function readSecretsFileSafe(path: string): Record<string, string> {
+   try {
+     if (!existsSync(path)) return {};
+     return parseSecretsFile(readFileSync(path, "utf-8"));
+   } catch {
+     return {};
+   }
+ }
+ 
+-function writeSecretsFile(path: string, entries: Record<string, string>): { securePermissions: boolean } {
++export interface CredentialFileOptions {
++  platform?: NodeJS.Platform;
++  applyWindowsAcl?: (path: string) => boolean;
++}
++
++/** Restrict a file to the current Windows user and LocalSystem using SID ACLs. */
++export function applyWindowsCredentialAcl(path: string): boolean {
++  try {
++    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
++    const sid = identity.match(/,"([^"]+)"\s*$/)?.[1];
++    if (!sid || !/^S-1-\d+(?:-\d+)+$/i.test(sid)) return false;
++    execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
++      stdio: "ignore",
++      windowsHide: true,
++    });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function writeSecretsFile(path: string, entries: Record<string, string>, options: CredentialFileOptions = {}): { securePermissions: boolean; credentialProtection: "windows-user-acl" | "posix-mode" } {
+   mkdirSync(dirname(path), { recursive: true });
+   const body =
+     "# Morrow secrets — plaintext, not encrypted. Keep this file private.\n" +
+     Object.entries(entries)
+       .map(([k, v]) => `${k}=${v}`)
+       .join("\n") +
+     "\n";
+-  writeFileSync(path, body, { mode: 0o600 });
+-  let securePermissions = false;
++  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
++  writeFileSync(temporaryPath, body, { mode: 0o600, flag: "wx" });
++  const platform = options.platform ?? process.platform;
+   try {
+-    chmodSync(path, 0o600);
+-    securePermissions = process.platform !== "win32"; // Windows ignores POSIX modes.
+-  } catch {
+-    securePermissions = false;
++    if (platform === "win32") {
++      const applyAcl = options.applyWindowsAcl ?? applyWindowsCredentialAcl;
++      if (!applyAcl(temporaryPath)) throw new Error("Unable to apply the current-user Windows ACL to the provider credential file.");
++      renameSync(temporaryPath, path);
++      return { securePermissions: true, credentialProtection: "windows-user-acl" };
++    }
++    chmodSync(temporaryPath, 0o600);
++    renameSync(temporaryPath, path);
++    return { securePermissions: true, credentialProtection: "posix-mode" };
++  } catch (error) {
++    rmSync(temporaryPath, { force: true });
++    throw error;
+   }
+-  return { securePermissions };
+ }
+ 
+ /**
+  * The secrets file is a line-oriented `KEY=VALUE` format. A value that contains
+  * a line break (or other control character) would split into additional lines on
+  * the next read, letting a single configured field smuggle in an arbitrary,
+  * unrelated env var — e.g. setting `apiKey` could inject
+  * `OPENAI_BASE_URL=http://attacker` and silently redirect a provider's traffic
+  * (and its real key) to an attacker. No legitimate API key, base URL, or model
+  * id contains a control character, so reject them at the single writer rather
+@@ -116,94 +154,123 @@ export interface ConfigureProviderInput {
+   endpointContextLimit?: number | "" | undefined;
+ }
+ 
+ export interface ConfigureProviderResult {
+   /** Env var names written (never values). */
+   written: string[];
+   /** Env var names removed because the caller passed an empty value. */
+   cleared: string[];
+   /** Whether the secrets file got owner-only (0600) permissions. */
+   securePermissions: boolean;
++  /** Enforced local file boundary; never contains a path, identity, or value. */
++  credentialProtection: "windows-user-acl" | "posix-mode";
+   /**
+    * Env var names that were already set in the real process environment with a
+    * DIFFERENT value (e.g. exported in the shell before launch). We still set
+    * process.env so the change takes effect now, but the caller should warn that
+    * on next restart the file value may be re-shadowed by the shell.
+    */
+   shadowedByEnv: string[];
+ }
+ 
+ /**
+  * Persist provider credentials and hot-apply them to `process.env`.
+  *
+  * An explicitly-empty string for a field removes that env var (clears it).
+  * Returns only non-secret metadata.
+  */
+ export function configureProvider(
+   secretsFile: string,
+   id: ProviderId,
+   input: ConfigureProviderInput,
+-  env: NodeJS.ProcessEnv = process.env
++  env: NodeJS.ProcessEnv = process.env,
++  options: CredentialFileOptions = {},
+ ): ConfigureProviderResult {
+   const mapping = providerEnvMapping(id);
+   if (!mapping) {
+     throw new Error(`Provider "${id}" cannot be configured (no env mapping).`);
+   }
+ 
++  const updates = providerConfigurationUpdates(mapping, input);
++  validateProviderUpdates(updates);
++
++  const existing = readSecretsFileSafe(secretsFile);
++  const written: string[] = [];
++  const cleared: string[] = [];
++  const shadowedByEnv: string[] = [];
++
++  for (const { envName, value } of updates) {
++    const trimmed = value?.trim() ?? "";
++    if (trimmed === "") {
++      delete existing[envName];
++      cleared.push(envName);
++    } else {
++      if (env[envName] !== undefined && env[envName] !== trimmed) shadowedByEnv.push(envName);
++      existing[envName] = trimmed;
++      written.push(envName);
++    }
++  }
++
++  // Persist and enforce the platform boundary before promoting the candidate
++  // values into the live process. A write/ACL failure leaves the live route as-is.
++  const protection = writeSecretsFile(secretsFile, existing, options);
++  for (const { envName, value } of updates) {
++    const trimmed = value?.trim() ?? "";
++    if (trimmed === "") delete env[envName];
++    else env[envName] = trimmed;
++  }
++  return { written, cleared, ...protection, shadowedByEnv };
++}
++
++function providerConfigurationUpdates(mapping: ProviderEnvMapping, input: ConfigureProviderInput): Array<{ envName: string; value: string | undefined }> {
+   const updates: Array<{ envName: string; value: string | undefined }> = [];
+   if (input.apiKey !== undefined && mapping.apiKeyEnv) {
+     updates.push({ envName: mapping.apiKeyEnv, value: input.apiKey });
+   }
+   if (input.baseUrl !== undefined && mapping.baseUrlEnv) {
+     updates.push({ envName: mapping.baseUrlEnv, value: input.baseUrl });
+   }
+   if (input.model !== undefined && mapping.modelEnv) {
+     updates.push({ envName: mapping.modelEnv, value: input.model });
+   }
+   if (input.endpointContextLimit !== undefined && mapping.contextLimitEnv) {
+     const limit = input.endpointContextLimit;
+     if (limit !== "" && (!Number.isSafeInteger(limit) || limit <= 0)) {
+       throw new Error(`${mapping.contextLimitEnv} must be a positive safe integer.`);
+     }
+     updates.push({ envName: mapping.contextLimitEnv, value: limit === "" ? "" : String(limit) });
+   }
+ 
+-  // Validate every value BEFORE mutating env/file so a single bad value can
+-  // never leave a half-applied configuration behind.
++  return updates;
++}
++
++function validateProviderUpdates(updates: Array<{ envName: string; value: string | undefined }>): void {
+   for (const { envName, value } of updates) {
+     const trimmed = value?.trim() ?? "";
+     if (trimmed !== "") assertPersistableSecretValue(envName, trimmed);
+   }
+ 
+-  const existing = readSecretsFileSafe(secretsFile);
+-  const written: string[] = [];
+-  const cleared: string[] = [];
+-  const shadowedByEnv: string[] = [];
++}
+ 
++/** Build an isolated candidate environment for authentication before persistence. */
++export function buildProviderCandidateEnv(id: ProviderId, input: ConfigureProviderInput, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
++  const mapping = providerEnvMapping(id);
++  if (!mapping) throw new Error(`Provider "${id}" cannot be configured (no env mapping).`);
++  const updates = providerConfigurationUpdates(mapping, input);
++  validateProviderUpdates(updates);
++  const candidate = { ...env };
+   for (const { envName, value } of updates) {
+     const trimmed = value?.trim() ?? "";
+-    if (trimmed === "") {
+-      delete existing[envName];
+-      delete env[envName];
+-      cleared.push(envName);
+-    } else {
+-      if (env[envName] !== undefined && env[envName] !== trimmed) {
+-        shadowedByEnv.push(envName);
+-      }
+-      existing[envName] = trimmed;
+-      env[envName] = trimmed; // hot-apply: effective immediately, no restart.
+-      written.push(envName);
+-    }
++    if (trimmed === "") delete candidate[envName];
++    else candidate[envName] = trimmed;
+   }
+-
+-  const { securePermissions } = writeSecretsFile(secretsFile, existing);
+-  return { written, cleared, securePermissions, shadowedByEnv };
++  return candidate;
+ }
+ 
+ /** Remove all credentials for a provider from both the secrets file and env. */
+ export function removeProviderCredentials(
+   secretsFile: string,
+   id: ProviderId,
+   env: NodeJS.ProcessEnv = process.env
+ ): { removed: string[] } {
+   const mapping = providerEnvMapping(id);
+   if (!mapping) return { removed: [] };
+diff --git a/services/orchestrator/src/repositories/provider-model-discovery.ts b/services/orchestrator/src/repositories/provider-model-discovery.ts
+index a60c51e..5a4abb4 100644
+--- a/services/orchestrator/src/repositories/provider-model-discovery.ts
++++ b/services/orchestrator/src/repositories/provider-model-discovery.ts
+@@ -1,56 +1,79 @@
+ import type Database from "better-sqlite3";
+ import { DiscoveredModelSchema, ProviderAuthModeSchema, ProviderIdSchema, type DiscoveredModel, type ProviderAuthMode, type ProviderId } from "@morrow/contracts";
+ 
+ export interface ProviderModelDiscovery {
+   providerId: ProviderId;
+   authMode: ProviderAuthMode;
+   status: "available" | "unavailable";
+   models: DiscoveredModel[];
+   errorKind: string | null;
+   fetchedAt: string;
++  expiresAt?: string;
++  lastSuccessAt?: string | null;
++  credentialIdentity?: string | null;
+ }
+ 
+ function fromRow(row: any): ProviderModelDiscovery | null {
+   try {
+     const parsed = DiscoveredModelSchema.array().safeParse(JSON.parse(row.models_json));
+     const providerId = ProviderIdSchema.safeParse(row.provider_id);
+     const authMode = ProviderAuthModeSchema.safeParse(row.auth_mode);
+     if (!parsed.success || !providerId.success || !authMode.success
+       || (row.status !== "available" && row.status !== "unavailable")
+-      || typeof row.fetched_at !== "string" || Number.isNaN(Date.parse(row.fetched_at))) return null;
++      || typeof row.fetched_at !== "string" || Number.isNaN(Date.parse(row.fetched_at))
++      || typeof row.expires_at !== "string" || Number.isNaN(Date.parse(row.expires_at))
++      || (row.last_success_at !== null && (typeof row.last_success_at !== "string" || Number.isNaN(Date.parse(row.last_success_at))))
++      || (row.credential_identity !== null && (typeof row.credential_identity !== "string" || !/^[a-f0-9]{64}$/i.test(row.credential_identity)))) return null;
+     return {
+       providerId: providerId.data,
+       authMode: authMode.data,
+       status: row.status,
+       models: parsed.data,
+       errorKind: row.error_kind ?? null,
+       fetchedAt: row.fetched_at,
++      expiresAt: row.expires_at,
++      lastSuccessAt: row.last_success_at ?? null,
++      credentialIdentity: row.credential_identity ?? null,
+     };
+   } catch {
+     return null;
+   }
+ }
+ 
+ export function providerModelDiscoveryRepository(db: Database.Database) {
+   return {
+     upsert(input: ProviderModelDiscovery): ProviderModelDiscovery {
++      const prior = this.get(input.providerId, input.authMode);
++      const models = input.status === "unavailable" && input.models.length === 0 ? prior?.models ?? [] : input.models;
++      const lastSuccessAt = input.status === "available"
++        ? input.lastSuccessAt ?? input.fetchedAt
++        : input.lastSuccessAt ?? prior?.lastSuccessAt ?? null;
++      const expiresAt = input.expiresAt ?? new Date(Date.parse(input.fetchedAt) + 15 * 60_000).toISOString();
+       db.prepare(`INSERT INTO provider_model_discovery
+-        (provider_id,auth_mode,status,models_json,error_kind,fetched_at)
+-        VALUES(?,?,?,?,?,?)
++        (provider_id,auth_mode,status,models_json,error_kind,fetched_at,expires_at,last_success_at,credential_identity)
++        VALUES(?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(provider_id,auth_mode) DO UPDATE SET
+-          status=excluded.status,models_json=excluded.models_json,error_kind=excluded.error_kind,fetched_at=excluded.fetched_at`)
+-        .run(input.providerId, input.authMode, input.status, JSON.stringify(input.models), input.errorKind, input.fetchedAt);
++          status=excluded.status,models_json=excluded.models_json,error_kind=excluded.error_kind,fetched_at=excluded.fetched_at,
++          expires_at=excluded.expires_at,last_success_at=excluded.last_success_at,credential_identity=excluded.credential_identity`)
++        .run(input.providerId, input.authMode, input.status, JSON.stringify(models), input.errorKind, input.fetchedAt, expiresAt, lastSuccessAt, input.credentialIdentity ?? prior?.credentialIdentity ?? null);
+       return this.get(input.providerId, input.authMode)!;
+     },
+     get(providerId: ProviderId, authMode: ProviderAuthMode): ProviderModelDiscovery | null {
+       const row = db.prepare("SELECT * FROM provider_model_discovery WHERE provider_id=? AND auth_mode=?")
+         .get(providerId, authMode);
+       return row ? fromRow(row) : null;
+     },
+     list(): ProviderModelDiscovery[] {
+       return (db.prepare("SELECT * FROM provider_model_discovery ORDER BY provider_id,auth_mode").all() as any[])
+         .map(fromRow)
+         .filter((item): item is ProviderModelDiscovery => item !== null);
+     },
++    isFresh(providerId: ProviderId, authMode: ProviderAuthMode, at = new Date(), credentialIdentity?: string | null): boolean {
++      const item = this.get(providerId, authMode);
++      return item !== null
++        && item.expiresAt !== undefined
++        && Date.parse(item.expiresAt) > at.getTime()
++        && (credentialIdentity === undefined || item.credentialIdentity === credentialIdentity);
++    },
+   };
+ }
+diff --git a/services/orchestrator/src/routing/models.ts b/services/orchestrator/src/routing/models.ts
+index b6ab45b..f612d55 100644
+--- a/services/orchestrator/src/routing/models.ts
++++ b/services/orchestrator/src/routing/models.ts
+@@ -226,21 +226,21 @@ export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
+  * openai-compatible) that have zero built-in registry rows because their
+  * model space cannot be known in advance. Without this, a correctly
+  * configured openai-compatible endpoint never appears in `/api/models` or the
+  * `/model` picker — the registry has nothing to return for it at all, unlike
+  * providers with real registry entries where "not configured" still lists the
+  * model as unavailable. Providers that already have registry entries are
+  * untouched; a provider with no configured default model yields nothing.
+  */
+ export function listConfiguredCustomModels(providers: ProviderStatus[]): ModelInfo[] {
+   return providers
+-    .filter((p) => p.configured && p.defaultModel && listModelsForProvider(p.id).length === 0)
++    .filter((p) => p.configured && p.defaultModel && !listModelsForProvider(p.id).some((model) => model.id === p.defaultModel || model.aliases.includes(p.defaultModel!)))
+     .map((p) => unknownModel(p.id, p.defaultModel!));
+ }
+ 
+ /**
+  * Merge the bundled catalog with the current authentication surface's durable
+  * provider discovery. Credentials prove configuration only; only a successful
+  * provider model-list response proves account availability.
+  */
+ export function resolveModelStatuses(
+   providers: ProviderStatus[],
+@@ -253,65 +253,81 @@ export function resolveModelStatuses(
+     const discovery = discoveries.find((item) => item.providerId === provider.id && item.authMode === authMode);
+     const providerModels = all.filter((model) => model.providerId === provider.id);
+     const discovered = discovery?.models ?? [];
+ 
+     for (const item of discovered) {
+       const known = providerModels.find((model) => model.id === item.providerModelId || model.aliases.includes(item.providerModelId));
+       if (known) continue;
+       providerModels.push({
+         ...unknownModel(provider.id, item.providerModelId),
+         label: item.displayName,
++        author: item.author ?? null,
++        inputModalities: item.inputModalities ?? [],
++        outputModalities: item.outputModalities ?? [],
++        pricing: item.pricing ?? null,
++        costType: item.costType ?? "unknown",
+         contextWindow: item.contextWindow,
+         maxOutputTokens: item.maxOutputTokens,
+         lifecycle: "custom",
+         metadataSource: "provider-reported",
+         fetchedAt: discovery?.fetchedAt ?? null,
+         confidence: "reported",
+       });
+     }
+ 
+     for (const model of providerModels) {
+       const report = discovered.find((item) => item.providerModelId === model.id || model.aliases.includes(item.providerModelId));
+       const resolved = report ? {
+         ...model,
+         providerModelId: report.providerModelId,
++        label: report.displayName,
++        author: report.author ?? model.author ?? null,
++        inputModalities: report.inputModalities ?? model.inputModalities ?? [],
++        outputModalities: report.outputModalities ?? model.outputModalities ?? [],
++        pricing: report.pricing ?? model.pricing,
++        costType: report.costType ?? model.costType ?? "unknown",
+         contextWindow: report.contextWindow ?? model.contextWindow,
+         maxOutputTokens: report.maxOutputTokens ?? model.maxOutputTokens,
+-        metadataSource: report.contextWindow !== null || report.maxOutputTokens !== null ? "provider-reported" as const : model.metadataSource,
++        metadataSource: "provider-reported" as const,
+         fetchedAt: discovery?.fetchedAt ?? model.fetchedAt,
+         confidence: report.contextWindow !== null || report.maxOutputTokens !== null ? "reported" as const : model.confidence,
+         capabilities: {
+           streaming: report.capabilities.streaming ?? model.capabilities.streaming,
+           toolCalls: report.capabilities.toolCalls ?? model.capabilities.toolCalls,
+           vision: report.capabilities.vision ?? model.capabilities.vision,
++          reasoning: report.capabilities.reasoning ?? null,
+         },
+         capabilitySource: Object.values(report.capabilities).some((value) => value !== null)
+           ? "provider-reported" as const
+           : model.capabilitySource,
+       } : model;
+       const availability = !provider.configured
+         ? "unavailable" as const
+         : discovery?.status === "available" && report
+-          ? "available" as const
++          ? report.availability ?? "available"
++          : discovery?.status === "available"
++            ? "unavailable" as const
+           : discovery?.status === "unavailable"
+             ? "unavailable" as const
+             : "unknown" as const;
+       output.push({
+         model: resolved,
+         available: availability === "available",
+         availability,
+         availabilitySource: report ? "provider-reported" : provider.configured ? "unknown" : "configured",
+         availabilityReason: availability === "available"
+           ? null
+           : !provider.configured
+             ? "Provider authentication is not configured."
+-            : discovery?.status === "unavailable"
++            : discovery?.status === "available"
++              ? "The selected model is no longer returned by the provider catalogue."
++              : discovery?.status === "unavailable"
+               ? `Last provider discovery failed${discovery.errorKind ? ` (${discovery.errorKind})` : ""}.`
+               : "Account model availability has not been discovered yet.",
+         authMode,
+         fetchedAt: discovery?.fetchedAt ?? null,
+       });
+     }
+   }
+   return output;
+ }
+ 
+diff --git a/services/orchestrator/src/server.ts b/services/orchestrator/src/server.ts
+index 26b014a..d092816 100644
+--- a/services/orchestrator/src/server.ts
++++ b/services/orchestrator/src/server.ts
+@@ -134,21 +134,21 @@ import { dirname, join } from "node:path";
+ import { createProvider, installProviderModelDiscoveries, listProviderStatuses } from "./provider/registry.js";
+ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
+ import { globalRateGuard } from "./provider/rate-guard.js";
+ import { OAUTH_FINDINGS } from "./provider/oauth.js";
+ import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
+ import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+ import { ModelCatalog } from "./routing/model-catalog.js";
+ import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
+ import { routePreset, listPresetStatuses } from "./routing/router.js";
+ import { testProviderConnectivity } from "./provider/connectivity.js";
+-import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
++import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+ import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
+ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
+ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
+ import { buildProviderProjection } from "./execution/provider-projection.js";
+ import { resolveModelBudget } from "./routing/model-budget.js";
+ import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+ import { registerWebMissionRoutes } from "./web/mission-routes.js";
+ import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+ import { registerWebAppRoutes } from "./web/static-app.js";
+ 
+@@ -257,38 +257,51 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+   const learnedSkills = learnedSkillsRepository(deps.db);
+   const schedules = schedulesRepository(deps.db);
+   const approvals = approvalsRepository(deps.db);
+   const changeSets = changeSetsRepository(deps.db);
+   const checkpoints = checkpointsRepository(deps.db);
+   const missions = missionsRepository(deps.db);
+   const missionRuntime = missionRuntimeRepository(deps.db);
+   const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
+   installProviderModelDiscoveries(providerModelDiscovery.list());
+   const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
++  const discoveryExpiresAt = (fetchedAt: string, ok: boolean) => new Date(Date.parse(fetchedAt) + (ok ? 15 * 60_000 : 60_000)).toISOString();
+   const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
+-    const result = await providerConnectivityTest(providerId, process.env);
++    const envSnapshot = { ...process.env };
++    const credentialIdentity = providerCredentialIdentity(providerId, envSnapshot);
++    const result = await providerConnectivityTest(providerId, envSnapshot);
++    if (providerId === "openrouter" && providerCredentialIdentity(providerId, process.env) !== credentialIdentity) {
++      return { ...result, ok: false, configured: false, status: null, detail: "OpenRouter credential changed while refresh was in flight; result discarded.", errorKind: "cancelled", modelsSample: [], models: [] };
++    }
+     const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
+     if (authMode) {
++      const fetchedAt = new Date().toISOString();
+       providerModelDiscovery.upsert({
+         providerId,
+         authMode,
+         status: result.ok ? "available" : "unavailable",
+         models: result.models,
+         errorKind: result.errorKind,
+-        fetchedAt: new Date().toISOString(),
++        fetchedAt,
++        expiresAt: discoveryExpiresAt(fetchedAt, result.ok),
++        lastSuccessAt: result.ok ? fetchedAt : null,
++        credentialIdentity,
+       });
+       installProviderModelDiscoveries(providerModelDiscovery.list());
+     }
+     return result;
+   };
+   if (deps.backgroundModelDiscovery ?? process.env.NODE_ENV !== "test") {
+-    const configured = listProviderStatuses().filter((status) => status.configured && status.authMode && status.id !== "mock");
++    const configured = listProviderStatuses().filter((status) =>
++      status.authMode && status.id !== "mock" && (status.configured || (status.id === "openrouter" && !!process.env.OPENROUTER_API_KEY))
++      && !providerModelDiscovery.isFresh(status.id, status.authMode, new Date(), providerCredentialIdentity(status.id, process.env))
++    );
+     queueMicrotask(() => {
+       void Promise.allSettled(configured.map((status) => refreshProviderModelDiscovery(status.id, status.authMode)));
+     });
+   }
+   const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
+     cacheDir: join(resolveMorrowHome(process.env), "catalog"),
+     remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+     bundledModels: BUILT_IN_MODELS,
+   });
+   installModelCatalog(modelCatalog.current().models);
+@@ -2074,20 +2087,31 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+   // Bounded, server-side connectivity test for a single provider. The request is
+   // made with credentials from the server environment; the response never
+   // contains the key or any header value — only the host and a normalized result.
+   app.post("/api/providers/:providerId/test", async (request) => {
+     const { providerId } = request.params as { providerId: string };
+     const parsed = ProviderIdSchema.safeParse(providerId);
+     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+     return refreshProviderModelDiscovery(parsed.data);
+   });
+ 
++  // Explicit account-catalogue refresh; unlike startup refresh this bypasses
++  // the TTL because it is a user-directed verification action.
++  app.post("/api/providers/:providerId/models/refresh", async (request, reply) => {
++    const { providerId } = request.params as { providerId: string };
++    const parsed = ProviderIdSchema.safeParse(providerId);
++    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
++    const result = await refreshProviderModelDiscovery(parsed.data);
++    if (result.errorKind === "cancelled") reply.code(409);
++    return result;
++  });
++
+   // Save provider credentials from the app (no PowerShell / env vars / restart).
+   // The key is written to the server-side secrets file AND hot-applied to the
+   // running process so it takes effect immediately. The response never echoes
+   // the secret — only the refreshed, non-secret provider status.
+   app.post("/api/providers/:providerId/configure", async (request, reply) => {
+     const { providerId } = request.params as { providerId: string };
+     const parsed = ProviderIdSchema.safeParse(providerId);
+     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+     const id = parsed.data;
+     if (!providerEnvMapping(id)) {
+@@ -2115,28 +2139,52 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+       throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
+     }
+     if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
+       try {
+         const u = new URL(body.baseUrl.trim());
+         if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("scheme");
+       } catch {
+         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
+       }
+     }
++    if (id === "openrouter" && body.baseUrl !== undefined) {
++      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
++    }
++    let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
++    let validatedCredentialIdentity: string | null = null;
++    if (id === "openrouter") {
++      const previousCredentialIdentity = providerCredentialIdentity(id, process.env);
++      const candidateEnv = buildProviderCandidateEnv(id, body, process.env);
++      validatedCredentialIdentity = providerCredentialIdentity(id, candidateEnv);
++      validatedResult = await providerConnectivityTest(id, candidateEnv);
++      if (providerCredentialIdentity(id, process.env) !== previousCredentialIdentity) {
++        throw new ApiError(409, "OpenRouter configuration changed while validation was in flight. Retry with the current settings.", "PROVIDER_CONFIGURATION_CONFLICT");
++      }
++      if (!validatedResult.ok) {
++        const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
++        throw new ApiError(statusCode, `OpenRouter validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
++      }
++    }
+     const result = configureProvider(deps.secretsFile, id, body, process.env);
++    if (validatedResult) {
++      const fetchedAt = new Date().toISOString();
++      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: validatedCredentialIdentity });
++      installProviderModelDiscoveries(providerModelDiscovery.list());
++    }
+     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
+     reply.send({
+       ok: true,
+       provider: id,
+       written: result.written,
+       cleared: result.cleared,
+       securePermissions: result.securePermissions,
++      credentialProtection: result.credentialProtection,
+       shadowedByEnv: result.shadowedByEnv,
+       status,
+     });
+   });
+ 
+   // Remove all stored credentials for a provider (file + running process).
+   app.delete("/api/providers/:providerId/credentials", async (request, reply) => {
+     const { providerId } = request.params as { providerId: string };
+     const parsed = ProviderIdSchema.safeParse(providerId);
+     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+diff --git a/services/orchestrator/test/database-migration-29.test.ts b/services/orchestrator/test/database-migration-29.test.ts
+index 0ac4f4a..0819a0d 100644
+--- a/services/orchestrator/test/database-migration-29.test.ts
++++ b/services/orchestrator/test/database-migration-29.test.ts
+@@ -310,21 +310,21 @@ function seedMigration30Mission(db: Database.Database, input: {
+ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", () => {
+   it("migration 29 applies, preserves data, adds source_locator, and rebuilds project_active_mission", () => {
+     const dbPath = join(tmp("ek-mig-a-"), "m.db");
+     buildHistoricalDb(dbPath, ORIGINAL_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: false });
+ 
+     // Open with the CURRENT application code: migration 29 must apply cleanly.
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(37);
++    expect(Math.max(...appliedIds)).toBe(38);
+ 
+     // source_locator now exists and is queryable/writable.
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     // Data survived.
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -356,21 +356,21 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
+ 
+ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () => {
+   it("migration 29 still succeeds when source_locator already exists, and data is preserved", () => {
+     const dbPath = join(tmp("ek-mig-b-"), "m.db");
+     buildHistoricalDb(dbPath, EDITED_F812872_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: true });
+ 
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(37);
++    expect(Math.max(...appliedIds)).toBe(38);
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+     // No duplicate column, no error — ALTER TABLE ADD COLUMN was correctly skipped.
+     expect(cols.filter((c) => c === "source_locator")).toHaveLength(1);
+ 
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -384,22 +384,22 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+   });
+ });
+ 
+ describe("BLOCKER 3 — fresh database migrations in order", () => {
+   it("applies all migrations and produces the correct final schema and triggers", () => {
+     const dbPath = join(tmp("ek-mig-c-"), "m.db");
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-    expect(appliedIds).toEqual(Array.from({ length: 37 }, (_, i) => i + 1));
+-    expect(migrations.at(-1)!.id).toBe(37);
++    expect(appliedIds).toEqual(Array.from({ length: 38 }, (_, i) => i + 1));
++    expect(migrations.at(-1)!.id).toBe(38);
+     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
+     expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     const pamCols = (db.prepare("PRAGMA table_info(project_active_mission)").all() as { name: string; notnull: number }[]);
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+ 
+@@ -598,21 +598,21 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
+     const fix = new Database(dbPath);
+     try {
+       fix.prepare("UPDATE project_active_mission SET project_id = 'proj-1' WHERE mission_id = 'mission-1'").run();
+     } finally {
+       fix.close();
+     }
+ 
+     const db = openTestDatabase(dbPath);
+     try {
+       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-      expect(Math.max(...appliedAfterFix)).toBe(37);
++      expect(Math.max(...appliedAfterFix)).toBe(38);
+       const repo = missionsRepository(db);
+       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
+       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();
+     } finally {
+       db.close();
+     }
+   });
+ 
+   it("a pointer referencing a nonexistent mission is also refused", () => {
+     const dbPath = join(tmp("ek-mig-corrupt-missing-"), "m.db");
+diff --git a/services/orchestrator/test/database.test.ts b/services/orchestrator/test/database.test.ts
+index a7da355..bda9580 100644
+--- a/services/orchestrator/test/database.test.ts
++++ b/services/orchestrator/test/database.test.ts
+@@ -6,37 +6,39 @@ import { migrations, openDatabase } from "../src/database.js";
+ 
+ describe("database", () => {
+   it("migrates in-memory database idempotently", () => {
+     const db = openDatabase(":memory:");
+     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: migrations.length });
+     db.close();
+   });
+ 
+   it("installs the durable mission runtime ledger and provider discovery schema", () => {
+     const db = openDatabase(":memory:");
+-    expect(migrations.at(-1)?.id).toBe(37);
++    expect(migrations.at(-1)?.id).toBe(38);
+     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
+     expect(missionColumns).toContain("execution_json");
+     expect(missionColumns).toContain("idempotency_key");
+     const tables = (db.prepare(`SELECT name FROM sqlite_master
+       WHERE type='table' AND name LIKE 'mission_runtime%' OR name IN ('mission_operations','mission_progress','mission_recovery_decisions')
+       ORDER BY name`).all() as Array<{ name: string }>).map((row) => row.name);
+     expect(tables).toEqual([
+       "mission_operations",
+       "mission_progress",
+       "mission_recovery_decisions",
+       "mission_runtime",
+       "mission_runtime_transitions",
+     ]);
+     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='learned_skills'").get()).toEqual({ name: "learned_skills" });
+     const memoryColumns = (db.prepare("PRAGMA table_info(memory_entries)").all() as Array<{ name: string }>).map((column) => column.name);
+     expect(memoryColumns).toEqual(expect.arrayContaining(["normalized_content", "type", "lifecycle", "evidence_references_json", "sensitivity", "expires_at"]));
++    const providerDiscoveryColumns = (db.prepare("PRAGMA table_info(provider_model_discovery)").all() as Array<{ name: string }>).map((column) => column.name);
++    expect(providerDiscoveryColumns).toEqual(expect.arrayContaining(["expires_at", "last_success_at", "credential_identity"]));
+     db.close();
+   });
+ 
+   it("enforces event sequence", () => {
+     const db = openDatabase(":memory:");
+     const now = new Date().toISOString();
+     db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run("p", 1, "p", "w", now, now);
+     db.prepare("INSERT INTO tasks(id,schema_version,project_id,type,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)")
+       .run("t", 1, "p", "inspect_workspace", "queued", now, now);
+     db.prepare("INSERT INTO task_events VALUES(?,?,?,?,?,?,?)").run("e", 1, "t", 1, "task.created", "{}", now);
+diff --git a/services/orchestrator/test/provider-configure.test.ts b/services/orchestrator/test/provider-configure.test.ts
+index adf0070..3405696 100644
+--- a/services/orchestrator/test/provider-configure.test.ts
++++ b/services/orchestrator/test/provider-configure.test.ts
+@@ -1,28 +1,31 @@
+-import { describe, it, expect, beforeEach, afterEach } from "vitest";
++import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+ import Database from "better-sqlite3";
+ import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import type { FastifyInstance } from "fastify";
+ import { openDatabase } from "../src/database.js";
+ import { buildServer } from "../src/server.js";
+ import { TaskRunner } from "../src/runner.js";
+ import { configureProvider, removeProviderCredentials, parseSecretsFile } from "../src/provider/secrets.js";
+ 
+ const PROVIDER_KEYS = [
+   "DEEPSEEK_API_KEY",
+   "DEEPSEEK_BASE_URL",
+   "DEEPSEEK_MODEL",
+   "DEEPSEEK_CONTEXT_LIMIT",
+   "OPENAI_API_KEY",
+   "OPENAI_MODEL",
++  "OPENROUTER_API_KEY",
++  "OPENROUTER_BASE_URL",
++  "OPENROUTER_MODEL",
+ ];
+ 
+ describe("provider configuration (secrets module)", () => {
+   let dir: string;
+   let secretsFile: string;
+   let env: NodeJS.ProcessEnv;
+ 
+   beforeEach(() => {
+     dir = mkdtempSync(join(tmpdir(), "morrow-secrets-"));
+     secretsFile = join(dir, "secrets.env");
+@@ -118,20 +121,106 @@ describe("provider configuration (secrets module)", () => {
+     expect(() => configureProvider(secretsFile, "openai", { apiKey: "tab\there" }, env)).toThrow(/control character/i);
+   });
+ 
+   it("validates all fields before applying any, so a bad field leaves no partial state", () => {
+     expect(() =>
+       configureProvider(secretsFile, "deepseek", { apiKey: "good-key", model: "bad\nmodel" }, env)
+     ).toThrow(/control character/i);
+     expect(env.DEEPSEEK_API_KEY).toBeUndefined(); // earlier good field not applied
+     expect(existsSync(secretsFile)).toBe(false);
+   });
++
++  it("uses a Windows user ACL boundary and reports the protection without exposing values", () => {
++    const acl = vi.fn(() => true);
++    const res = (configureProvider as any)(secretsFile, "openrouter", { apiKey: "windows-local-secret" }, env, {
++      platform: "win32",
++      applyWindowsAcl: acl,
++    });
++    expect(acl).toHaveBeenCalledOnce();
++    expect(res).toMatchObject({ securePermissions: true, credentialProtection: "windows-user-acl" });
++    expect(JSON.stringify(res)).not.toContain("windows-local-secret");
++  });
++});
++
++describe("OpenRouter authenticated configuration", () => {
++  let db: Database.Database;
++  let app: FastifyInstance;
++  let dir: string;
++  let secretsFile: string;
++  let connectivity: ReturnType<typeof vi.fn>;
++  const saved: Record<string, string | undefined> = {};
++
++  beforeEach(async () => {
++    for (const key of PROVIDER_KEYS) {
++      saved[key] = process.env[key];
++      delete process.env[key];
++    }
++    dir = mkdtempSync(join(tmpdir(), "morrow-openrouter-secrets-"));
++    secretsFile = join(dir, "secrets.env");
++    db = openDatabase(":memory:");
++    connectivity = vi.fn(async (_id: string, candidateEnv: NodeJS.ProcessEnv) => {
++      const accepted = candidateEnv.OPENROUTER_API_KEY === "last-known-good";
++      return {
++        id: "openrouter", ok: accepted, configured: true, status: accepted ? 200 : 401,
++        latencyMs: 1, checkedEndpoint: "openrouter.ai", detail: accepted ? "connected" : "rejected",
++        errorKind: accepted ? null : "auth", modelsSample: accepted ? ["vendor/live"] : [],
++        models: accepted ? [{ providerModelId: "vendor/live", displayName: "Live", author: "vendor", contextWindow: 100_000, maxOutputTokens: 8_000, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" }] : [],
++      };
++    });
++    app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile, providerConnectivityTest: connectivity as any, backgroundModelDiscovery: false });
++    await app.ready();
++  });
++
++  afterEach(async () => {
++    await app.close();
++    db.close();
++    rmSync(dir, { recursive: true, force: true });
++    for (const key of PROVIDER_KEYS) {
++      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
++    }
++  });
++
++  it("authenticates a candidate key before persisting and promoting it", async () => {
++    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good", model: "vendor/live" } });
++    expect(response.statusCode).toBe(200);
++    expect(connectivity).toHaveBeenCalledWith("openrouter", expect.objectContaining({ OPENROUTER_API_KEY: "last-known-good", OPENROUTER_MODEL: "vendor/live" }));
++    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
++    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
++    expect(JSON.stringify(response.json())).not.toContain("last-known-good");
++    expect(response.json().status).toMatchObject({ configured: true, available: true, defaultModel: "vendor/live" });
++  });
++
++  it("preserves the last known-good credential when replacement validation fails", async () => {
++    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
++    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "replacement-rejected" } });
++    expect(response.statusCode).toBe(401);
++    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
++    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
++    expect(response.json().error.code).toBe("PROVIDER_VALIDATION_FAILED");
++    expect(JSON.stringify(response.json())).not.toMatch(/last-known-good|replacement-rejected/);
++  });
++
++  it("rejects every OpenRouter endpoint override before an existing key can be sent elsewhere", async () => {
++    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
++    connectivity.mockClear();
++
++    for (const baseUrl of ["http://attacker.invalid/v1", "https://attacker.invalid/v1"]) {
++      const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { baseUrl } });
++      expect(response.statusCode).toBe(400);
++      expect(response.json().error.code).toBe("OPENROUTER_ENDPOINT_PINNED");
++    }
++
++    expect(connectivity).not.toHaveBeenCalled();
++    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
++    expect(process.env.OPENROUTER_BASE_URL).toBeUndefined();
++    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
++  });
+ });
+ 
+ describe("provider configuration API (DeepSeek acceptance flow)", () => {
+   let db: Database.Database;
+   let app: FastifyInstance;
+   let dir: string;
+   let secretsFile: string;
+   const saved: Record<string, string | undefined> = {};
+ 
+   beforeEach(async () => {
+diff --git a/services/orchestrator/test/provider-connectivity.test.ts b/services/orchestrator/test/provider-connectivity.test.ts
+index 5ea9abc..4ed9995 100644
+--- a/services/orchestrator/test/provider-connectivity.test.ts
++++ b/services/orchestrator/test/provider-connectivity.test.ts
+@@ -4,21 +4,21 @@ import { testProviderConnectivity } from "../src/provider/connectivity.js";
+ describe("provider connectivity", () => {
+   afterEach(() => {
+     vi.unstubAllGlobals();
+   });
+ 
+   it("does not read a provider response above the body limit", async () => {
+     const cancel = vi.fn().mockResolvedValue(undefined);
+     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+       ok: true,
+       status: 200,
+-      headers: new Headers({ "content-length": "65537" }),
++      headers: new Headers({ "content-length": String(4 * 1024 * 1024 + 1) }),
+       body: { cancel },
+     }));
+ 
+     const result = await testProviderConnectivity("openai", { OPENAI_API_KEY: "test-key" });
+ 
+     expect(result).toMatchObject({ ok: true, configured: true, modelsSample: [] });
+     expect(cancel).toHaveBeenCalledOnce();
+   });
+ 
+   it("returns normalized provider-reported metadata without truncating to the display sample", async () => {
+@@ -37,11 +37,121 @@ describe("provider connectivity", () => {
+     expect(result.modelsSample).toHaveLength(5);
+     expect(result.models).toHaveLength(8);
+     expect(result.models[0]).toMatchObject({
+       providerModelId: "gemini-live-0",
+       displayName: "Gemini Live 0",
+       contextWindow: 1_000_000,
+       maxOutputTokens: 65_536,
+       metadataSource: "provider-reported",
+     });
+   });
++
++  it("normalizes the rich OpenRouter model catalogue and deduplicates invalid records", async () => {
++    vi.stubGlobal("fetch", vi.fn(async (url, init: RequestInit) => {
++      expect(String(url)).toBe("https://openrouter.ai/api/v1/models/user");
++      expect(init.headers).toMatchObject({ Authorization: "Bearer openrouter-test-value" });
++      return new Response(JSON.stringify({ data: [
++        {
++          id: "anthropic/claude-sonnet-4",
++          name: "Anthropic: Claude Sonnet 4",
++          context_length: 200_000,
++          architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
++          supported_parameters: ["tools", "tool_choice", "reasoning"],
++          pricing: { prompt: "0.000003", completion: "0.000015" },
++          top_provider: { max_completion_tokens: 64_000 },
++          expiration_date: null,
++        },
++        { id: "anthropic/claude-sonnet-4", name: "duplicate" },
++        { id: "free/model", name: "Free Model", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, supported_parameters: [], pricing: { prompt: "0", completion: "0" } },
++        { id: "", name: "malformed" },
++        null,
++      ] }), { status: 200 });
++    }));
++
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-test-value" });
++
++    expect(result.models).toHaveLength(2);
++    expect(result.models[0]).toMatchObject({
++      providerModelId: "anthropic/claude-sonnet-4",
++      displayName: "Anthropic: Claude Sonnet 4",
++      author: "anthropic",
++      contextWindow: 200_000,
++      maxOutputTokens: 64_000,
++      inputModalities: ["text", "image"],
++      outputModalities: ["text"],
++      capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
++      pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, source: "provider-reported" },
++      costType: "paid",
++      availability: "available",
++      metadataSource: "provider-reported",
++    });
++    expect(result.models[0]?.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
++    expect(result.models[1]).toMatchObject({ providerModelId: "free/model", costType: "free" });
++  });
++
++  it("uses OpenRouter's authenticated user catalogue so an invalid key cannot pass via the public catalogue", async () => {
++    const fetchMock = vi.fn(async (url: string) => url === "https://openrouter.ai/api/v1/models/user"
++      ? new Response(JSON.stringify({ error: { message: "invalid key" } }), { status: 401 })
++      : new Response(JSON.stringify({ data: [{ id: "public/model" }] }), { status: 200 }));
++    vi.stubGlobal("fetch", fetchMock);
++
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "invalid-candidate" });
++
++    expect(result).toMatchObject({ ok: false, configured: false, status: 401, errorKind: "auth" });
++    expect(fetchMock).toHaveBeenCalledOnce();
++    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://openrouter.ai/api/v1/models/user");
++  });
++
++  it("rejects a 200 OpenRouter response that is not an authenticated user-catalogue schema", async () => {
++    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ id: "public/model" }] }), { status: 200 })));
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "candidate" });
++    expect(result).toMatchObject({ ok: false, configured: false, errorKind: "provider" });
++  });
++
++  it("classifies non-token OpenRouter charges and incomplete pricing conservatively", async () => {
++    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [
++      { id: "vendor/request-paid", pricing: { prompt: "0", completion: "0", request: "0.01" } },
++      { id: "vendor/image-paid", pricing: { prompt: "0", completion: "0", image: "0.001" } },
++      { id: "vendor/incomplete", pricing: { prompt: "0" } },
++      { id: "vendor/unknown-component", pricing: { prompt: "0", completion: "0", future_billable_dimension: "0" } },
++      { id: "vendor/blank-price", pricing: { prompt: "", completion: "0" } },
++      { id: "vendor/whitespace-price", pricing: { prompt: "0", completion: "   " } },
++      { id: "vendor/all-zero", pricing: { prompt: "0", completion: "0", request: "0", image: "0", web_search: "0", internal_reasoning: "0", input_cache_read: "0", input_cache_write: "0" } },
++    ] }), { status: 200 })));
++
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "candidate" });
++    const costs = Object.fromEntries(result.models.map((model) => [model.providerModelId, model.costType]));
++    expect(costs).toMatchObject({
++      "vendor/request-paid": "paid",
++      "vendor/image-paid": "paid",
++      "vendor/incomplete": "unknown",
++      "vendor/unknown-component": "unknown",
++      "vendor/blank-price": "unknown",
++      "vendor/whitespace-price": "unknown",
++      "vendor/all-zero": "free",
++    });
++  });
++
++  it.each([
++    [401, "auth"],
++    [402, "provider"],
++    [429, "rate_limit"],
++    [502, "provider"],
++    [503, "provider"],
++  ] as const)("classifies OpenRouter HTTP %i without exposing the credential", async (status, errorKind) => {
++    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
++      error: { message: "rejected openrouter-secret-value" },
++    }), { status })));
++
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-secret-value" });
++
++    expect(result).toMatchObject({ ok: false, configured: false, status, errorKind });
++    expect(JSON.stringify(result)).not.toContain("openrouter-secret-value");
++  });
++
++  it("redacts the OpenRouter credential from network failures", async () => {
++    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("socket failed for openrouter-secret-value"); }));
++    const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-secret-value" });
++    expect(result.errorKind).toBe("network");
++    expect(JSON.stringify(result)).not.toContain("openrouter-secret-value");
++  });
+ });
+diff --git a/services/orchestrator/test/provider-model-discovery.test.ts b/services/orchestrator/test/provider-model-discovery.test.ts
+index 9164ac4..b2a2b5c 100644
+--- a/services/orchestrator/test/provider-model-discovery.test.ts
++++ b/services/orchestrator/test/provider-model-discovery.test.ts
+@@ -12,37 +12,63 @@ describe("provider model discovery ledger", () => {
+   it("survives restart without storing credentials and ignores invalid partial data", () => {
+     const root = mkdtempSync(join(tmpdir(), "morrow-model-discovery-"));
+     roots.push(root);
+     const path = join(root, "morrow.db");
+     let db = openDatabase(path);
+     try {
+       providerModelDiscoveryRepository(db).upsert({
+         providerId: "openai",
+         authMode: "openai-api-key",
+         status: "available",
+-        models: [{ providerModelId: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: null, toolCalls: null, vision: null }, metadataSource: "provider-reported" }],
++        models: [{ providerModelId: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", author: "openai", contextWindow: null, maxOutputTokens: null, inputModalities: [], outputModalities: [], capabilities: { streaming: null, toolCalls: null, vision: null, reasoning: null }, pricing: null, costType: "unknown", availability: "available", fetchedAt: "2026-07-16T20:00:00.000Z", metadataSource: "provider-reported" }],
+         errorKind: null,
+         fetchedAt: "2026-07-16T20:00:00.000Z",
++        expiresAt: "2026-07-16T20:15:00.000Z",
++        lastSuccessAt: "2026-07-16T20:00:00.000Z",
+       });
+     } finally {
+       db.close();
+     }
+ 
+     db = openDatabase(path);
+     try {
+       const repo = providerModelDiscoveryRepository(db);
+       expect(repo.get("openai", "openai-api-key")).toMatchObject({ status: "available", models: [{ providerModelId: "gpt-5.6-sol" }] });
+       const columns = db.prepare("PRAGMA table_info(provider_model_discovery)").all() as Array<{ name: string }>;
+       expect(columns.map((column) => column.name)).toEqual([
+-        "provider_id", "auth_mode", "status", "models_json", "error_kind", "fetched_at",
++        "provider_id", "auth_mode", "status", "models_json", "error_kind", "fetched_at", "expires_at", "last_success_at", "credential_identity",
+       ]);
+       db.prepare("UPDATE provider_model_discovery SET models_json='[{\"providerModelId\":1}]'").run();
+       expect(repo.list()).toEqual([]);
+       db.prepare("UPDATE provider_model_discovery SET models_json='not-json'").run();
+       expect(repo.list()).toEqual([]);
+       db.prepare("UPDATE provider_model_discovery SET models_json='[]', auth_mode='invalid-auth-surface'").run();
+       expect(repo.list()).toEqual([]);
+     } finally {
+       db.close();
+     }
+   });
++
++  it("uses a bounded TTL and preserves the last successful catalogue across refresh failures", () => {
++    const db = openDatabase(":memory:");
++    try {
++      const repo = providerModelDiscoveryRepository(db);
++      const model = { providerModelId: "vendor/model", displayName: "Model", author: "vendor", contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: false, vision: false, reasoning: false }, pricing: null, costType: "unknown" as const, availability: "available" as const, fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" as const };
++      repo.upsert({ providerId: "openrouter", authMode: "openrouter-api-key", status: "available", models: [model], errorKind: null, fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z" });
++      expect(repo.isFresh("openrouter", "openrouter-api-key", new Date("2026-07-22T12:14:59.000Z"))).toBe(true);
++      expect(repo.isFresh("openrouter", "openrouter-api-key", new Date("2026-07-22T12:15:00.000Z"))).toBe(false);
++
++      repo.upsert({ providerId: "openrouter", authMode: "openrouter-api-key", status: "available", models: [model], errorKind: null, fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z", credentialIdentity: "a".repeat(64) });
++      expect(repo.isFresh("openrouter", "openrouter-api-key", new Date("2026-07-22T12:14:00.000Z"), "b".repeat(64))).toBe(false);
++
++      repo.upsert({ providerId: "openrouter", authMode: "openrouter-api-key", status: "unavailable", models: [], errorKind: "network", fetchedAt: "2026-07-22T12:16:00.000Z", expiresAt: "2026-07-22T12:17:00.000Z", lastSuccessAt: null });
++      expect(repo.get("openrouter", "openrouter-api-key")).toMatchObject({
++        status: "unavailable",
++        errorKind: "network",
++        models: [{ providerModelId: "vendor/model" }],
++        lastSuccessAt: "2026-07-22T12:00:00.000Z",
++      });
++    } finally {
++      db.close();
++    }
++  });
+ });
+diff --git a/services/orchestrator/test/provider-vision.test.ts b/services/orchestrator/test/provider-vision.test.ts
+index 3bfa51e..8475318 100644
+--- a/services/orchestrator/test/provider-vision.test.ts
++++ b/services/orchestrator/test/provider-vision.test.ts
+@@ -12,25 +12,29 @@ afterEach(() => {
+   vi.restoreAllMocks();
+ });
+ 
+ function emptySse(): Response {
+   return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }), {
+     status: 200,
+     headers: { "content-type": "text/event-stream" },
+   });
+ }
+ 
++function completedOpenAiSse(): Response {
++  return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
++}
++
+ async function captureBody(provider: AiProvider, messages: ChatMessage[]): Promise<Record<string, any>> {
+   let body: Record<string, any> | undefined;
+   globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+     body = JSON.parse(String(init.body));
+-    return emptySse();
++    return provider instanceof OpenAiCompatibleProvider ? completedOpenAiSse() : emptySse();
+   }) as typeof fetch;
+   const chunks: ProviderChunk[] = [];
+   for await (const chunk of provider.streamChat(messages, {})) chunks.push(chunk);
+   expect(chunks.find((chunk) => chunk.type === "error")).toBeUndefined();
+   expect(body).toBeDefined();
+   return body!;
+ }
+ 
+ const image = {
+   mimeType: "image/png" as const,
+diff --git a/services/orchestrator/test/providers.test.ts b/services/orchestrator/test/providers.test.ts
+index 0411a03..a53ed53 100644
+--- a/services/orchestrator/test/providers.test.ts
++++ b/services/orchestrator/test/providers.test.ts
+@@ -68,20 +68,21 @@ describe("OpenAI-compatible provider normalization", () => {
+         `data: [DONE]\n\n`,
+       ])
+     );
+     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "sk-secret-key", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini", includeUsage: true });
+     const chunks = await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
+ 
+     expect(chunks.find((c) => c.type === "text")?.text).toBe("Hello");
+     const toolChunks = chunks.filter((c) => c.type === "tool_call");
+     expect(toolChunks.length).toBe(2);
+     expect(toolChunks[0]!.toolCalls?.[0]?.function.name).toBe("read_file");
++    expect(toolChunks.map((chunk) => chunk.toolCalls?.[0]?.function.arguments ?? "").join("")).toBe('{"path":"a.txt"}');
+     const done = chunks.find((c) => c.type === "done");
+     expect(done?.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+ 
+     // Request carried the key, but no chunk echoes it.
+     expect(ref.captured?.init.headers.Authorization).toBe("Bearer sk-secret-key");
+     expect(JSON.stringify(chunks)).not.toContain("sk-secret-key");
+   });
+ 
+   it("preserves DeepSeek reasoning continuation fields without rendering them as text", async () => {
+     const ref = mockFetch(sseResponse([
+@@ -151,20 +152,38 @@ describe("OpenAI-compatible provider normalization", () => {
+         `: comment\n\n`,
+         `data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`,
+         `data: [DONE]\n\n`,
+       ])
+     );
+     const provider = new OpenAiCompatibleProvider({ id: "openai", apiKey: "k", baseUrl: "https://api.openai.com/v1", defaultModel: "m" });
+     const chunks = await collect(provider, userMessages);
+     expect(chunks.filter((c) => c.type === "text").map((c) => c.text).join("")).toBe("ok");
+   });
+ 
++  it("ignores OpenRouter processing comments and classifies structured mid-stream errors", async () => {
++    mockFetch(sseResponse([
++      `: OPENROUTER PROCESSING\n\n`,
++      `data: {"choices":[{"delta":{"content":"partial"}}]}\n\n`,
++      `data: {"error":{"code":429,"message":"upstream rejected Bearer openrouter-secret-value","metadata":{"error_type":"rate_limit"}}}\n\n`,
++    ]));
++    const chunks = await collect(new OpenAiCompatibleProvider({ id: "openrouter", apiKey: "openrouter-secret-value", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openrouter/auto" }), userMessages);
++    expect(chunks.find((chunk) => chunk.type === "text")?.text).toBe("partial");
++    expect(chunks.at(-1)).toMatchObject({ type: "error", error: { kind: "rate_limit", retryable: true, status: 429 } });
++    expect(JSON.stringify(chunks)).not.toContain("openrouter-secret-value");
++  });
++
++  it("reports a stream that ends before DONE or a finish reason as interrupted", async () => {
++    mockFetch(chunkedSseResponse([`data: {"choices":[{"delta":{"content":"partial"}}]}\n\n`]));
++    const chunks = await collect(new OpenAiCompatibleProvider({ id: "openrouter", apiKey: "k", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openrouter/auto" }), userMessages);
++    expect(chunks.at(-1)).toMatchObject({ type: "error", error: { type: "interrupted_stream", kind: "provider", retryable: true } });
++  });
++
+   it("flushes one final assistant record without a trailing newline exactly once", async () => {
+     mockFetch(chunkedSseResponse([`data: {"choices":[{"delta":{"content":"final"}}]}`]));
+     const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+     expect(chunks.filter((c) => c.type === "text").map((c) => c.text)).toEqual(["final"]);
+   });
+ 
+   it("handles a final DONE record without a trailing newline", async () => {
+     mockFetch(chunkedSseResponse([`data: [DONE]`]));
+     const chunks = await collect(new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat" }), userMessages);
+     expect(chunks).toEqual([]);
+diff --git a/services/orchestrator/test/routing.test.ts b/services/orchestrator/test/routing.test.ts
+index f5833e0..126ce1f 100644
+--- a/services/orchestrator/test/routing.test.ts
++++ b/services/orchestrator/test/routing.test.ts
+@@ -1,18 +1,43 @@
+-import { describe, it, expect } from "vitest";
++import { describe, it, expect, vi } from "vitest";
+ import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
+ import { routePreset, listPresetStatuses } from "../src/routing/router.js";
+ import { listPresets } from "../src/routing/presets.js";
+-import { listModels } from "../src/routing/models.js";
++import { listModels, resolveModelStatuses } from "../src/routing/models.js";
+ import { ProviderError } from "../src/provider/base.js";
++import { providerCredentialIdentity } from "../src/provider/secrets.js";
+ 
+ describe("Model registry currency", () => {
++  it("lets live OpenRouter metadata override bundled fallback fields for known model ids", () => {
++    const provider = listProviderStatuses({ OPENROUTER_API_KEY: "catalogue-test-key" }).find((item) => item.id === "openrouter")!;
++    const statuses = resolveModelStatuses([{ ...provider, configured: true, available: true }], [{
++      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
++      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
++      models: [{
++        providerModelId: "openrouter/auto", displayName: "Auto Router Live", author: "openrouter",
++        contextWindow: 400_000, maxOutputTokens: 32_000, inputModalities: ["text", "image"], outputModalities: ["text"],
++        capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
++        pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
++        costType: "free", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported",
++      }],
++    }]);
++    expect(statuses.find((item) => item.model.id === "openrouter/auto")?.model).toMatchObject({
++      label: "Auto Router Live",
++      author: "openrouter",
++      inputModalities: ["text", "image"],
++      outputModalities: ["text"],
++      capabilities: { toolCalls: true, vision: true, reasoning: true },
++      pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
++      costType: "free",
++      fetchedAt: "2026-07-22T12:00:00.000Z",
++    });
++  });
+   it("exposes the current OpenAI, DeepSeek, and OpenRouter lineups and drops retired ids", () => {
+     const ids = new Set(listModels().map((m) => m.id));
+     for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]) {
+       expect(ids.has(id), `expected model ${id} to be present`).toBe(true);
+     }
+     for (const retired of ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"]) {
+       expect(ids.has(retired), `retired model ${retired} should be gone`).toBe(false);
+     }
+   });
+ 
+@@ -22,20 +47,59 @@ describe("Model registry currency", () => {
+       for (const [, models] of Object.entries(preset.modelPreferences)) {
+         for (const m of models as string[]) {
+           expect(ids.has(m), `preset ${preset.id} references unknown model ${m}`).toBe(true);
+         }
+       }
+     }
+   });
+ });
+ 
+ describe("Provider registry", () => {
++  it("reports OpenRouter vision support without advertising a custom endpoint", () => {
++    const openrouter = listProviderStatuses({}).find((provider) => provider.id === "openrouter")!;
++    expect(openrouter.capabilities).toMatchObject({ vision: true, customEndpoint: false });
++  });
++
++  it("hard-pins OpenRouter chat to the official endpoint even when an override env var exists", async () => {
++    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
++    vi.stubGlobal("fetch", fetchMock);
++    try {
++      const provider = createProvider("openrouter", { OPENROUTER_API_KEY: "route-test-key", OPENROUTER_BASE_URL: "https://attacker.invalid/v1" });
++      for await (const _chunk of provider.streamChat([{ role: "user", content: "hello" }], {})) { /* drain */ }
++      expect(fetchMock).toHaveBeenCalledOnce();
++      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://openrouter.ai/api/v1/chat/completions");
++    } finally {
++      vi.unstubAllGlobals();
++    }
++  });
++
++  it("keeps an expired OpenRouter catalogue visible but marks the provider unavailable", () => {
++    vi.useFakeTimers();
++    vi.setSystemTime(new Date("2026-07-22T12:16:00.000Z"));
++    const env = { OPENROUTER_API_KEY: "stale-key" };
++    installProviderModelDiscoveries([{
++      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
++      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
++      credentialIdentity: providerCredentialIdentity("openrouter", env),
++      models: [{ providerModelId: "vendor/stale-model", displayName: "Stale model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" }],
++    }]);
++    try {
++      expect(listProviderStatuses(env).find((provider) => provider.id === "openrouter")).toMatchObject({
++        configured: false,
++        available: false,
++        models: expect.arrayContaining(["vendor/stale-model"]),
++      });
++    } finally {
++      installProviderModelDiscoveries([]);
++      vi.useRealTimers();
++    }
++  });
+   it("reports nothing configured with an empty environment", () => {
+     const statuses = listProviderStatuses({});
+     expect(statuses.length).toBeGreaterThanOrEqual(7);
+     expect(statuses.every((s) => !s.configured)).toBe(true);
+     expect(statuses.find((s) => s.id === "openai")?.authStatus).toBe("missing");
+   });
+ 
+   it("never serializes secrets into provider status", () => {
+     const json = JSON.stringify(listProviderStatuses({ OPENAI_API_KEY: "sk-leak-me", ANTHROPIC_API_KEY: "sk-ant-leak" }));
+     expect(json).not.toContain("sk-leak-me");
+diff --git a/services/orchestrator/test/server-providers.test.ts b/services/orchestrator/test/server-providers.test.ts
+index b8ecc2d..bb0b749 100644
+--- a/services/orchestrator/test/server-providers.test.ts
++++ b/services/orchestrator/test/server-providers.test.ts
+@@ -77,20 +77,101 @@ describe("Provider / preset / memory API", () => {
+         available: true,
+         model: { builtIn: false, contextWindow: null, metadataSource: "provider-reported" },
+       });
+       expect(fetchMock).toHaveBeenCalledTimes(1);
+     } finally {
+       fetchMock.mockRestore();
+       if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
+     }
+   });
+ 
++  it("keeps OpenRouter disconnected until authentication, supports manual refresh, and preserves a missing selected model", async () => {
++    const previousKey = process.env.OPENROUTER_API_KEY;
++    const previousModel = process.env.OPENROUTER_MODEL;
++    process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
++    process.env.OPENROUTER_MODEL = "vendor/selected-but-gone";
++    const localDb = openDatabase(":memory:");
++    const connectivity = vi.fn(async () => ({
++      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
++      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
++      modelsSample: ["vendor/current"],
++      models: [{ providerModelId: "vendor/current", displayName: "Current", author: "vendor", contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown" as const, availability: "available" as const, fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" as const }],
++    }));
++    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
++    try {
++      await localApp.ready();
++      let providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
++
++      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
++      expect(refreshed.statusCode).toBe(200);
++      expect(connectivity).toHaveBeenCalledOnce();
++      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone" });
++
++      process.env.OPENROUTER_API_KEY = "different-unverified-key";
++      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
++      process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
++
++      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
++      expect(models.find((item: any) => item.model.providerId === "openrouter" && item.model.id === "vendor/selected-but-gone")).toMatchObject({
++        available: false,
++        availability: "unavailable",
++        availabilityReason: expect.stringMatching(/no longer|not returned/i),
++      });
++    } finally {
++      await localApp.close();
++      localDb.close();
++      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
++      if (previousModel === undefined) delete process.env.OPENROUTER_MODEL; else process.env.OPENROUTER_MODEL = previousModel;
++    }
++  });
++
++  it("discards an in-flight OpenRouter refresh when the live credential changes", async () => {
++    const previousKey = process.env.OPENROUTER_API_KEY;
++    process.env.OPENROUTER_API_KEY = "credential-before-refresh";
++    let release!: () => void;
++    const gate = new Promise<void>((resolve) => { release = resolve; });
++    const connectivity = vi.fn(async (_id: any, env: NodeJS.ProcessEnv = {}) => {
++      expect(env.OPENROUTER_API_KEY).toBe("credential-before-refresh");
++      await gate;
++      return {
++        id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
++        checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
++        modelsSample: ["vendor/old-key-model"],
++        models: [{ providerModelId: "vendor/old-key-model", displayName: "Old key model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" as const }],
++      };
++    });
++    const localDb = openDatabase(":memory:");
++    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
++    try {
++      await localApp.ready();
++      const pending = localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
++      await vi.waitFor(() => expect(connectivity).toHaveBeenCalledOnce());
++      process.env.OPENROUTER_API_KEY = "credential-after-refresh";
++      release();
++      const response = await pending;
++      expect(response.statusCode).toBe(409);
++      expect(response.json()).toMatchObject({ ok: false, configured: false, errorKind: "cancelled" });
++      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
++      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
++      expect(models.some((item: any) => item.model.id === "vendor/old-key-model")).toBe(false);
++    } finally {
++      release();
++      await localApp.close();
++      localDb.close();
++      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
++    }
++  });
++
+   it("refreshes configured account models in the background without blocking startup", async () => {
+     const previousKey = process.env.OPENAI_API_KEY;
+     process.env.OPENAI_API_KEY = "sk-background-discovery-test";
+     const backgroundDb = openDatabase(":memory:");
+     const connectivity = vi.fn(async (id: any) => ({
+       id,
+       ok: true,
+       configured: true,
+       status: 200,
+       latencyMs: 1,
