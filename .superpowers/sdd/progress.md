@@ -140,4 +140,10 @@ Provider/model: openai-compatible @ opencode.ai, model nemotron-3-ultra-free (a 
   - Stream adapter handles fragments, tool arguments, keepalive comments, structured errors, cancellation, malformed trailing chunks, and interruption. One non-blocking Minor remains: full multi-line SSE `data:` event framing.
   - Evidence: contracts 40/40; full orchestrator 1,184/1,184; security-fix focused 70/70; affected 115/115; final gap tests 48/48; contracts/orchestrator checks and builds green; Windows ACL smoke and secret/leak scans green.
   - Independent review found and fixed 2 Critical + 5 Important findings over two fix rounds; final verdict APPROVED. Real redacted OpenRouter account catalogue/chat check remains Task 14 release gate.
-- Slice 3: pending (secure Connections workflow).
+- Slice 3: complete (`9773cbe..ce82fbd`; review clean, 0 Critical/Important/Minor).
+  - OpenRouter-specific connect/save/cancel/test/refresh/replace/disconnect flow uses typed secret-free responses; key input never enters React Query, browser storage, URL, logs, screenshots, or rendered copy.
+  - Real `removed: string[]` disconnect contract, authoritative mutation cache updates, durable server `lastSuccessAt`, failed-refetch preservation, first-connect/replacement error truth, environment-shadow warning, and platform-specific protection wording verified.
+  - Focus behavior covers editor open/cancel, save success/failure, replacement, confirmation focus loop, disconnect return, and mobile interaction. No OpenRouter base URL control exists.
+  - Evidence: web 161/161; contracts 40/40; focused orchestrator 37/37; final provider status 15/15; web check/build; mocked-backend desktop + 390px mobile E2E; CLI desktop/mobile screenshots without populated credentials.
+  - Independent review found and fixed 1 Critical + 6 Important findings over two rounds; final verdict APPROVED with zero open findings.
+- Slice 4: pending (production chat composer).

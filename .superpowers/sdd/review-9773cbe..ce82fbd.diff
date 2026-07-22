@@ -1,0 +1,1352 @@
+# Review package: 9773cbe..ce82fbd
+
+## Commits
+ce82fbd fix(web): preserve connection focus and health
+17cc1e1 fix(web): reconcile secure connection state
+64a6b7d feat(web): add secure OpenRouter connection flow
+
+## Files changed
+ apps/web/e2e/connections.spec.ts                   |  73 ++++
+ apps/web/src/api/client.ts                         |   4 +
+ apps/web/src/api/providers.test.ts                 |  47 +++
+ apps/web/src/api/providers.ts                      |  61 ++-
+ apps/web/src/app/app-shell.test.tsx                |   2 +-
+ .../features/connections/connections-page.test.tsx | 198 +++++++++
+ .../src/features/connections/connections-page.tsx  | 447 ++++++++++++---------
+ apps/web/src/styles/app.css                        | 172 +++++++-
+ packages/contracts/src/index.ts                    |   2 +
+ services/orchestrator/src/provider/registry.ts     |   3 +-
+ .../orchestrator/test/provider-configure.test.ts   |   1 +
+ .../orchestrator/test/server-providers.test.ts     |  29 +-
+ 12 files changed, 850 insertions(+), 189 deletions(-)
+
+## Diff
+diff --git a/apps/web/e2e/connections.spec.ts b/apps/web/e2e/connections.spec.ts
+new file mode 100644
+index 0000000..3dda7b1
+--- /dev/null
++++ b/apps/web/e2e/connections.spec.ts
+@@ -0,0 +1,73 @@
++import { test, expect } from "@playwright/test";
++
++const key = `synthetic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++
++const disconnected = {
++  version: 1, id: "openrouter", label: "OpenRouter", kind: "api-key",
++  configured: false, available: false, endpointType: "default", endpointHost: "openrouter.ai",
++  authStatus: "missing", authMode: "openrouter-api-key",
++  capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: false, local: false },
++  models: [], defaultModel: null, note: null, setupHint: "Add an API key to connect OpenRouter.",
++};
++
++const connected = {
++  ...disconnected, configured: true, available: true, authStatus: "configured",
++  models: ["anthropic/claude-sonnet-4", "openai/gpt-4.1"], defaultModel: "anthropic/claude-sonnet-4",
++  lastSuccessAt: "2026-07-22T15:00:00.000Z",
++};
++
++test("Connections keeps the OpenRouter key out of the rendered page and supports keyboard-safe disconnect", async ({ page }) => {
++  let current: typeof disconnected | typeof connected = disconnected;
++  const bodies: string[] = [];
++  await page.route("**/api/providers**", async (route) => {
++    const request = route.request();
++    bodies.push(request.postData() ?? "");
++    const path = new URL(request.url()).pathname;
++    if (path === "/api/providers") return route.fulfill({ json: [current] });
++    if (path === "/api/providers/openrouter/configure") {
++      current = connected;
++      return route.fulfill({ json: { ok: true, provider: "openrouter", status: connected, securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] } });
++    }
++    if (path.endsWith("/test") || path.endsWith("/models/refresh")) {
++      return route.fulfill({ json: { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 1, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: [], models: [] } });
++    }
++    if (path.endsWith("/credentials")) {
++      current = disconnected;
++      return route.fulfill({ json: { ok: true, provider: "openrouter", removed: ["OPENROUTER_API_KEY"], status: disconnected } });
++    }
++    throw new Error(`Unexpected provider route: ${path}`);
++  });
++
++  await page.goto("/app/connections");
++  await expect(page.getByRole("button", { name: "Connect OpenRouter" })).toBeVisible();
++  await page.getByRole("button", { name: "Connect OpenRouter" }).click();
++  const apiKeyInput = page.getByLabel("OpenRouter API key");
++  await expect(apiKeyInput).toBeFocused();
++  await apiKeyInput.fill(key);
++  await page.getByRole("button", { name: "Save connection" }).click();
++  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
++  await expect(page.getByText("2 available models")).toBeVisible();
++  await expect(page.getByRole("button", { name: "Replace key" })).toBeFocused();
++  await expect(page.locator("body")).not.toContainText(key);
++  expect(bodies.some((body) => body.includes(key))).toBe(true);
++
++  await page.reload();
++  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
++  await expect(page.getByText(/Last successful health check:.*2026/i)).toBeVisible();
++
++  const disconnect = page.getByRole("button", { name: "Disconnect OpenRouter" });
++  await disconnect.click();
++  const dialog = page.getByRole("alertdialog", { name: "Disconnect OpenRouter?" });
++  await expect(dialog).toBeVisible();
++  await page.keyboard.press("Escape");
++  await expect(dialog).toBeHidden();
++  await expect(disconnect).toBeFocused();
++
++  await page.setViewportSize({ width: 390, height: 844 });
++  await disconnect.click();
++  await expect(dialog).toBeVisible();
++  await dialog.getByRole("button", { name: "Disconnect" }).click();
++  const connect = page.getByRole("button", { name: "Connect OpenRouter" });
++  await expect(connect).toBeFocused();
++  await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
++});
+diff --git a/apps/web/src/api/client.ts b/apps/web/src/api/client.ts
+index 64533de..10e044a 100644
+--- a/apps/web/src/api/client.ts
++++ b/apps/web/src/api/client.ts
+@@ -58,11 +58,15 @@ export const api = {
+     path: string,
+     input: TInput,
+     schema: z.ZodType<TOutput>,
+   ): Promise<TOutput> {
+     return request(
+       path,
+       { body: JSON.stringify(input), method: "POST" },
+       schema,
+     );
+   },
++
++  delete<T>(path: string, schema: z.ZodType<T>): Promise<T> {
++    return request(path, { method: "DELETE" }, schema);
++  },
+ };
+diff --git a/apps/web/src/api/providers.test.ts b/apps/web/src/api/providers.test.ts
+new file mode 100644
+index 0000000..bc2b8b0
+--- /dev/null
++++ b/apps/web/src/api/providers.test.ts
+@@ -0,0 +1,47 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { openRouterApi } from "./providers.js";
++
++afterEach(() => vi.unstubAllGlobals());
++
++describe("OpenRouter provider API", () => {
++  it("sends a candidate key only to the configure endpoint and parses a secret-free response", async () => {
++    const candidate = `synthetic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({
++      ok: true, provider: "openrouter", status: null, securePermissions: true,
++      credentialProtection: "windows-user-acl", shadowedByEnv: ["OPENROUTER_API_KEY"],
++    }));
++    vi.stubGlobal("fetch", fetchMock);
++
++    await expect(openRouterApi.configure(candidate)).resolves.toMatchObject({
++      ok: true, provider: "openrouter", credentialProtection: "windows-user-acl",
++      shadowedByEnv: ["OPENROUTER_API_KEY"],
++    });
++
++    const [path, init] = fetchMock.mock.calls[0] ?? [];
++    expect(path).toBe("/api/providers/openrouter/configure");
++    expect(init?.method).toBe("POST");
++    expect(init?.body).toBe(JSON.stringify({ apiKey: candidate }));
++  });
++
++  it("uses no credential payload for test, refresh, or disconnect", async () => {
++    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (path) => Response.json(
++      String(path).endsWith("/credentials")
++        ? { ok: true, provider: "openrouter", removed: ["OPENROUTER_API_KEY"], status: null }
++        : { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 12, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: [], models: [] },
++    ));
++    vi.stubGlobal("fetch", fetchMock);
++
++    await openRouterApi.test();
++    await openRouterApi.refresh();
++    await openRouterApi.disconnect();
++
++    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
++      "/api/providers/openrouter/test",
++      "/api/providers/openrouter/models/refresh",
++      "/api/providers/openrouter/credentials",
++    ]);
++    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe("{}");
++    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe("{}");
++    expect(fetchMock.mock.calls[2]?.[1]?.body).toBeUndefined();
++  });
++});
+diff --git a/apps/web/src/api/providers.ts b/apps/web/src/api/providers.ts
+index 50b141c..94091b3 100644
+--- a/apps/web/src/api/providers.ts
++++ b/apps/web/src/api/providers.ts
+@@ -1,20 +1,79 @@
+-import { ProviderStatusSchema } from "@morrow/contracts";
++import {
++  ProviderStatusSchema,
++  ProviderTestResultSchema,
++} from "@morrow/contracts";
+ import { queryOptions } from "@tanstack/react-query";
++import { z } from "zod";
+ import { api } from "./client.js";
+ 
+ export const providerKeys = {
+   all: ["providers"] as const,
+ };
+ 
+ export const providerQueries = {
+   list() {
+     return queryOptions({
+       queryKey: providerKeys.all,
+       queryFn: () => api.get("/api/providers", ProviderStatusSchema.array()),
+       // Provider setup changes rarely; a short stale window avoids hammering
+       // the endpoint from every composer render while staying fresh enough
+       // for the "no model connected" banner to clear right after setup.
+       staleTime: 15_000,
+     });
+   },
+ };
++
++const ConfigureProviderResponseSchema = z
++  .object({
++    ok: z.literal(true),
++    provider: z.literal("openrouter"),
++    status: ProviderStatusSchema.nullable(),
++    securePermissions: z.boolean(),
++    credentialProtection: z.enum(["windows-user-acl", "posix-mode"]),
++    shadowedByEnv: z.array(z.string()),
++  })
++  .passthrough();
++
++const DisconnectProviderResponseSchema = z
++  .object({
++    ok: z.literal(true),
++    provider: z.literal("openrouter"),
++    removed: z.array(z.string()),
++    status: ProviderStatusSchema.nullable(),
++  })
++  .passthrough();
++
++/**
++ * Credential-bearing requests stay outside React Query. React Query retains
++ * mutation variables for inspection/retry, which would make an API key
++ * browser-resident longer than the single request that must carry it.
++ */
++export const openRouterApi = {
++  configure(apiKey: string) {
++    return api.post(
++      "/api/providers/openrouter/configure",
++      { apiKey },
++      ConfigureProviderResponseSchema,
++    );
++  },
++  test() {
++    return api.post(
++      "/api/providers/openrouter/test",
++      {},
++      ProviderTestResultSchema,
++    );
++  },
++  refresh() {
++    return api.post(
++      "/api/providers/openrouter/models/refresh",
++      {},
++      ProviderTestResultSchema,
++    );
++  },
++  disconnect() {
++    return api.delete(
++      "/api/providers/openrouter/credentials",
++      DisconnectProviderResponseSchema,
++    );
++  },
++};
+diff --git a/apps/web/src/app/app-shell.test.tsx b/apps/web/src/app/app-shell.test.tsx
+index 8bc5a9d..47bfbde 100644
+--- a/apps/web/src/app/app-shell.test.tsx
++++ b/apps/web/src/app/app-shell.test.tsx
+@@ -114,21 +114,21 @@ describe("Morrow application shell", () => {
+     });
+   });
+ 
+   it.each([
+     ["/app/", "Home"],
+     ["/app/missions", "Missions"],
+     ["/app/missions/mission-42", "Mission workspace"],
+     ["/app/library", "Library"],
+     ["/app/automations", "Automations"],
+     ["/app/workspace", "Workspace"],
+-    ["/app/connections", "AI models"],
++    ["/app/connections", "Connect a model"],
+     ["/app/settings", "Settings"],
+   ])("renders %s inside the shared shell", async (path, heading) => {
+     renderAt(path);
+ 
+     expect(
+       await screen.findByRole("heading", { name: heading, level: 1 }),
+     ).toBeInTheDocument();
+     expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
+   });
+ 
+diff --git a/apps/web/src/features/connections/connections-page.test.tsx b/apps/web/src/features/connections/connections-page.test.tsx
+new file mode 100644
+index 0000000..0b792d7
+--- /dev/null
++++ b/apps/web/src/features/connections/connections-page.test.tsx
+@@ -0,0 +1,198 @@
++import { render, screen, waitFor, within } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { ConnectionsPage } from "./connections-page.js";
++
++const secret = `synthetic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++
++function provider(overrides: Record<string, unknown> = {}) {
++  return {
++    version: 1, id: "openrouter", label: "OpenRouter", kind: "api-key", configured: false,
++    available: false, endpointType: "default", endpointHost: "openrouter.ai", authStatus: "missing",
++    authMode: "openrouter-api-key", capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: true, customEndpoint: false, local: false },
++    models: [], defaultModel: null, note: null, setupHint: "Add an API key to connect OpenRouter.", ...overrides,
++  };
++}
++
++function result(overrides: Record<string, unknown> = {}) {
++  return { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 12, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: ["anthropic/claude-sonnet-4"], models: [], ...overrides };
++}
++
++function renderPage() {
++  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
++  return { queryClient, ...render(<QueryClientProvider client={queryClient}><ConnectionsPage /></QueryClientProvider>) };
++}
++
++function installApi(handler: (path: string, init?: RequestInit) => Response | Promise<Response>) {
++  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init));
++  vi.stubGlobal("fetch", fetchMock);
++  return fetchMock;
++}
++
++function json(body: unknown, status = 200) { return Response.json(body, { status }); }
++
++afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
++
++describe("ConnectionsPage", () => {
++  it("connects OpenRouter, clears the key, and never places it in query data or visible copy", async () => {
++    let configured = false;
++    const fetchMock = installApi((path) => {
++      if (path === "/api/providers") return json([provider({ configured, available: configured, authStatus: configured ? "configured" : "missing", models: configured ? ["anthropic/claude-sonnet-4"] : [], defaultModel: configured ? "anthropic/claude-sonnet-4" : null })]);
++      if (path === "/api/providers/openrouter/configure") {
++        configured = true;
++        return json({ ok: true, provider: "openrouter", status: provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4" }), securePermissions: false, credentialProtection: "posix-mode", shadowedByEnv: [] });
++      }
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const { queryClient } = renderPage();
++    const user = userEvent.setup();
++
++    await user.click(await screen.findByRole("button", { name: "Connect OpenRouter" }));
++    const input = screen.getByLabelText("OpenRouter API key");
++    await user.type(input, secret);
++    await user.click(screen.getByRole("button", { name: "Save connection" }));
++
++    await waitFor(() => expect(input).toHaveValue(""));
++    expect(await screen.findByText("Connected", { exact: true })).toBeVisible();
++    expect(await screen.findByText(/could not confirm owner-restricted permissions/i)).toBeVisible();
++    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
++    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
++    expect(screen.queryByText(secret)).not.toBeInTheDocument();
++    expect(JSON.stringify(queryClient.getQueryData(["providers"]))).not.toContain(secret);
++  });
++
++  it("shows actionable invalid-key, rate-limit, and network failures without echoing a rejected replacement", async () => {
++    let configured = true;
++    installApi((path) => {
++      if (path === "/api/providers") return json([provider({ configured, available: configured, authStatus: configured ? "configured" : "missing", defaultModel: "anthropic/claude-sonnet-4", models: ["anthropic/claude-sonnet-4"] })]);
++      if (path === "/api/providers/openrouter/configure") return json({ version: 1, error: { code: "PROVIDER_VALIDATION_FAILED", message: "OpenRouter validation failed (auth). The previous credential was preserved." } }, 401);
++      if (path === "/api/providers/openrouter/test") return json(result({ ok: false, errorKind: "rate_limit" }));
++      if (path === "/api/providers/openrouter/models/refresh") throw new TypeError("network");
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderPage();
++
++    await screen.findByText("Connected");
++    await user.click(screen.getByRole("button", { name: "Replace key" }));
++    const input = screen.getByLabelText("OpenRouter API key");
++    await user.type(input, secret);
++    await user.click(screen.getByRole("button", { name: "Save connection" }));
++    expect(await screen.findByText(/could not verify this replacement key/i)).toBeVisible();
++    expect(input).toHaveValue("");
++    expect(screen.getByText("Connected")).toBeVisible();
++    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
++
++    await user.click(screen.getByRole("button", { name: "Test connection" }));
++    expect(await screen.findByText(/rate limit/i)).toBeVisible();
++    await user.click(screen.getByRole("button", { name: "Refresh models" }));
++    expect(await screen.findByText(/could not reach the local Morrow runtime/i)).toBeVisible();
++  });
++
++  it("explains an invalid first connection without claiming a prior credential remains", async () => {
++    installApi((path) => {
++      if (path === "/api/providers") return json([provider()]);
++      if (path === "/api/providers/openrouter/configure") return json({ version: 1, error: { code: "PROVIDER_VALIDATION_FAILED", message: "OpenRouter validation failed (auth)." } }, 401);
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderPage();
++
++    await user.click(await screen.findByRole("button", { name: "Connect OpenRouter" }));
++    await user.type(screen.getByLabelText("OpenRouter API key"), secret);
++    await user.click(screen.getByRole("button", { name: "Save connection" }));
++
++    expect(await screen.findByText(/could not verify this key/i)).toBeVisible();
++    expect(screen.queryByText(/previous connection remains active/i)).not.toBeInTheDocument();
++    await waitFor(() => expect(screen.getByRole("button", { name: "Connect OpenRouter" })).toHaveFocus());
++  });
++
++  it("shows model health, supports refresh, and returns focus after cancelling disconnect", async () => {
++    installApi((path) => {
++      if (path === "/api/providers") return json([provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4", "openai/gpt-4.1"], defaultModel: "anthropic/claude-sonnet-4", lastSuccessAt: "2026-07-22T15:00:00.000Z" })]);
++      if (path.endsWith("/test") || path.endsWith("/refresh")) return json(result());
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderPage();
++
++    expect(await screen.findByText("2 available models")).toBeVisible();
++    expect(screen.getByText("Active model: anthropic/claude-sonnet-4")).toBeVisible();
++    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
++    await user.click(screen.getByRole("button", { name: "Test connection" }));
++    const disconnect = screen.getByRole("button", { name: "Disconnect OpenRouter" });
++    await user.click(disconnect);
++    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect OpenRouter?" });
++    expect(dialog).toBeVisible();
++    await user.keyboard("{Escape}");
++    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
++    expect(disconnect).toHaveFocus();
++  });
++
++  it("keeps the authoritative response across a failed reconciliation and a real remount", async () => {
++    let providerReads = 0;
++    const initial = provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/old"], defaultModel: "vendor/old", lastSuccessAt: "2026-07-21T15:00:00.000Z" });
++    const durable = provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/new"], defaultModel: "vendor/new", lastSuccessAt: "2026-07-22T15:00:00.000Z" });
++    installApi((path) => {
++      if (path === "/api/providers") {
++        providerReads += 1;
++        if (providerReads === 1) return json([initial]);
++        if (providerReads === 2) throw new TypeError("reconciliation offline");
++        return json([durable]);
++      }
++      if (path === "/api/providers/openrouter/configure") return json({ ok: true, provider: "openrouter", status: durable, securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    const firstMount = renderPage();
++
++    expect(await screen.findByText("Active model: vendor/old")).toBeVisible();
++    await user.click(screen.getByRole("button", { name: "Replace key" }));
++    const input = screen.getByLabelText("OpenRouter API key");
++    await user.type(input, secret);
++    await user.click(screen.getByRole("button", { name: "Save connection" }));
++    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
++    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
++    expect(await screen.findByText(/protected local credential file/i)).toBeVisible();
++    await waitFor(() => expect(providerReads).toBeGreaterThanOrEqual(2));
++    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
++
++    firstMount.unmount();
++    renderPage();
++    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
++    expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
++    expect(providerReads).toBeGreaterThanOrEqual(3);
++  });
++
++  it("cancels a draft and confirms disconnect with authoritative disconnected state and focus", async () => {
++    let disconnected = false;
++    installApi((path) => {
++      if (path === "/api/providers") return json([disconnected ? provider() : provider({ configured: true, available: true, authStatus: "configured", models: ["anthropic/claude-sonnet-4"], defaultModel: "anthropic/claude-sonnet-4" })]);
++      if (path === "/api/providers/openrouter/credentials") { disconnected = true; return json({ ok: true, provider: "openrouter", removed: ["OPENROUTER_API_KEY"], status: provider() }); }
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderPage();
++
++    const replace = await screen.findByRole("button", { name: "Replace key" });
++    await user.click(replace);
++    const input = screen.getByLabelText("OpenRouter API key");
++    expect(input).toHaveFocus();
++    await user.type(input, secret);
++    await user.click(screen.getByRole("button", { name: "Cancel" }));
++    expect(screen.queryByLabelText("OpenRouter API key")).not.toBeInTheDocument();
++    await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
++
++    const disconnect = screen.getByRole("button", { name: "Disconnect OpenRouter" });
++    await user.click(disconnect);
++    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect OpenRouter?" });
++    await user.tab();
++    expect(within(dialog).getByRole("button", { name: "Disconnect" })).toHaveFocus();
++    await user.tab();
++    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
++    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
++    expect(await screen.findByRole("button", { name: "Connect OpenRouter" })).toHaveFocus();
++    expect(screen.getByText("Not connected", { exact: true })).toBeVisible();
++  });
++});
+diff --git a/apps/web/src/features/connections/connections-page.tsx b/apps/web/src/features/connections/connections-page.tsx
+index f8b4700..f398374 100644
+--- a/apps/web/src/features/connections/connections-page.tsx
++++ b/apps/web/src/features/connections/connections-page.tsx
+@@ -1,222 +1,301 @@
+-import type { ProviderStatus } from "@morrow/contracts";
++import type { ProviderStatus, ProviderTestResult } from "@morrow/contracts";
+ import { Button, StatusPill, Surface } from "@morrow/ui";
+-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+-import { useState, type FormEvent } from "react";
+-import { z } from "zod";
+-import { api, ApiClientError } from "../../api/client.js";
+-import { providerKeys, providerQueries } from "../../api/providers.js";
+-import { useRuntimeStatus } from "../../state/runtime-status.js";
+-
+-const ConfigureResponseSchema = z.object({ ok: z.boolean() }).loose();
+-
+-const runtimeStatusCopy = {
+-  checking: "Checking the local Morrow runtime.",
+-  offline: "The local Morrow runtime is unavailable.",
+-  online: "The local Morrow runtime is connected.",
+-  reconnecting: "Reconnecting to the local Morrow runtime.",
+-} as const;
+-
+-function errorMessage(error: unknown): string {
+-  if (error instanceof ApiClientError) return error.message;
+-  return "The change could not be saved. Check the local runtime connection.";
++import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { useEffect, useId, useRef, useState, type FormEvent } from "react";
++import { ApiClientError } from "../../api/client.js";
++import {
++  openRouterApi,
++  providerKeys,
++  providerQueries,
++} from "../../api/providers.js";
++
++type Feedback = { tone: "error" | "info" | "success"; text: string } | null;
++
++function failureCopy(error: unknown, isReplacement: boolean): string {
++  if (error instanceof ApiClientError) {
++    if (error.status === 401 || error.status === 403) {
++      return isReplacement
++        ? "We could not verify this replacement key. Check it in OpenRouter, then try again. Your previous connection is still active."
++        : "We could not verify this key. Check it in OpenRouter, then try again.";
++    }
++    if (error.status === 429) {
++      return "OpenRouter is rate limited right now. Wait a moment, then test or refresh again.";
++    }
++    return isReplacement
++      ? "Morrow could not complete that replacement. Your existing connection was not changed."
++      : "Morrow could not complete that connection request.";
++  }
++  return "Morrow could not reach the local Morrow runtime. Check that it is running, then try again.";
++}
++
++function resultCopy(result: ProviderTestResult): Feedback {
++  if (result.ok) {
++    return { tone: "success", text: "Connection is healthy." };
++  }
++  if (result.errorKind === "auth") {
++    return { tone: "error", text: "We could not verify this key. Your existing connection was not changed." };
++  }
++  if (result.errorKind === "rate_limit") {
++    return { tone: "error", text: "OpenRouter is rate limited right now. Wait a moment, then try again." };
++  }
++  if (result.errorKind === "network" || result.errorKind === "timeout") {
++    return { tone: "error", text: "Morrow could not reach OpenRouter. Your existing connection was not changed." };
++  }
++  return { tone: "error", text: "OpenRouter could not complete that check. Your existing connection was not changed." };
++}
++
++function formatCheckTime(value: string | null | undefined): string | null {
++  if (!value) return null;
++  const parsed = new Date(value);
++  if (Number.isNaN(parsed.valueOf())) return null;
++  return new Intl.DateTimeFormat(undefined, {
++    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
++  }).format(parsed);
++}
++
++function protectionCopy(protection: "windows-user-acl" | "posix-mode", securePermissions: boolean): string {
++  if (!securePermissions) return "local credential file; Morrow could not confirm owner-restricted permissions";
++  return protection === "windows-user-acl"
++    ? "protected local credential file (Windows user ACL)"
++    : "protected local credential file (owner-only permissions)";
+ }
+ 
+-/**
+- * Whether this provider's in-app form needs more than an API key: the generic
+- * OpenAI-compatible gateway is identified by its base URL and model, and a
+- * local Ollama server by its base URL.
+- */
+-function fieldsFor(provider: ProviderStatus): {
+-  apiKey: boolean;
+-  baseUrl: boolean;
+-  model: boolean;
+-} {
+-  if (provider.id === "openai-compatible") return { apiKey: true, baseUrl: true, model: true };
+-  if (provider.id === "ollama") return { apiKey: false, baseUrl: true, model: true };
+-  return { apiKey: true, baseUrl: false, model: false };
++function DisconnectDialog({ onCancel, onConfirm }: { onCancel(): void; onConfirm(): void }) {
++  const cancelRef = useRef<HTMLButtonElement>(null);
++  const confirmRef = useRef<HTMLButtonElement>(null);
++  const titleId = useId();
++  const descriptionId = useId();
++
++  useEffect(() => { cancelRef.current?.focus(); }, []);
++
++  return (
++    <div className="morrow-connection-dialog-backdrop">
++      <div
++        aria-describedby={descriptionId}
++        aria-labelledby={titleId}
++        aria-modal="true"
++        className="morrow-connection-dialog"
++        onKeyDown={(event) => {
++          if (event.key === "Escape") { event.preventDefault(); onCancel(); }
++          if (event.key === "Tab") {
++            if (event.shiftKey && event.target === cancelRef.current) { event.preventDefault(); confirmRef.current?.focus(); }
++            if (!event.shiftKey && event.target === confirmRef.current) { event.preventDefault(); cancelRef.current?.focus(); }
++          }
++        }}
++        role="alertdialog"
++      >
++        <h2 id={titleId}>Disconnect OpenRouter?</h2>
++        <p id={descriptionId}>This removes the saved key from local Morrow storage. Running work is not changed.</p>
++        <div className="morrow-connection-dialog__actions">
++          <Button onClick={onCancel} ref={cancelRef} variant="secondary">Cancel</Button>
++          <Button onClick={onConfirm} ref={confirmRef} variant="danger">Disconnect</Button>
++        </div>
++      </div>
++    </div>
++  );
+ }
+ 
+-function ProviderCard({ provider }: { provider: ProviderStatus }) {
++function OpenRouterConnection({ provider }: { provider: ProviderStatus }) {
+   const queryClient = useQueryClient();
+-  const fields = fieldsFor(provider);
+-  const [open, setOpen] = useState(false);
++  const inputRef = useRef<HTMLInputElement>(null);
++  const cardHeadingRef = useRef<HTMLHeadingElement>(null);
++  const connectButtonRef = useRef<HTMLButtonElement>(null);
++  const replaceButtonRef = useRef<HTMLButtonElement>(null);
++  const disconnectButtonRef = useRef<HTMLButtonElement>(null);
++  const [editing, setEditing] = useState(false);
+   const [apiKey, setApiKey] = useState("");
+-  const [baseUrl, setBaseUrl] = useState("");
+-  const [model, setModel] = useState("");
+-  const [feedback, setFeedback] = useState<string | null>(null);
+-
+-  const configure = useMutation({
+-    mutationFn: (input: { apiKey?: string; baseUrl?: string; model?: string }) =>
+-      api.post(
+-        `/api/providers/${encodeURIComponent(provider.id)}/configure`,
+-        input,
+-        ConfigureResponseSchema,
+-      ),
+-    onError: (error) => setFeedback(errorMessage(error)),
+-    onSuccess: () => {
+-      setFeedback("Saved. This takes effect immediately — no restart needed.");
+-      setApiKey("");
+-      void queryClient.invalidateQueries({ queryKey: providerKeys.all });
+-    },
+-  });
++  const [saving, setSaving] = useState(false);
++  const [testing, setTesting] = useState(false);
++  const [refreshing, setRefreshing] = useState(false);
++  const [disconnecting, setDisconnecting] = useState(false);
++  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
++  const [feedback, setFeedback] = useState<Feedback>(null);
++  const [focusConnectAfterDisconnect, setFocusConnectAfterDisconnect] = useState(false);
++  const [focusAfterEditing, setFocusAfterEditing] = useState<"connect" | "replace" | null>(null);
++
++  useEffect(() => () => setApiKey(""), []);
++
++  useEffect(() => {
++    if (editing) inputRef.current?.focus();
++  }, [editing]);
+ 
+-  function submit(event: FormEvent<HTMLFormElement>) {
++  useEffect(() => {
++    if (!focusConnectAfterDisconnect || provider.configured) return;
++    connectButtonRef.current?.focus();
++    setFocusConnectAfterDisconnect(false);
++  }, [focusConnectAfterDisconnect, provider.configured]);
++
++  useEffect(() => {
++    if (editing || !focusAfterEditing) return;
++    if (focusAfterEditing === "replace" && !provider.configured) return;
++    ((focusAfterEditing === "connect" ? connectButtonRef : replaceButtonRef).current ?? cardHeadingRef.current)?.focus();
++    setFocusAfterEditing(null);
++  }, [editing, focusAfterEditing, provider.configured]);
++
++  const clearDraft = (focusTarget?: "connect" | "replace") => {
++    setApiKey("");
++    setEditing(false);
++    if (focusTarget) setFocusAfterEditing(focusTarget);
++  };
++  const applyProviderStatus = (status: ProviderStatus | null) => {
++    if (!status) return;
++    queryClient.setQueryData<ProviderStatus[]>(providerKeys.all, (current = []) => {
++      const index = current.findIndex((item) => item.id === status.id);
++      return index < 0
++        ? [...current, status]
++        : current.map((item) => item.id === status.id ? status : item);
++    });
++  };
++  const reconcileStatus = () => {
++    void queryClient.invalidateQueries({ queryKey: providerKeys.all });
++  };
++  const submit = async (event: FormEvent<HTMLFormElement>) => {
+     event.preventDefault();
+-    const input: { apiKey?: string; baseUrl?: string; model?: string } = {};
+-    if (fields.apiKey && apiKey.trim()) input.apiKey = apiKey.trim();
+-    if (fields.baseUrl && baseUrl.trim()) input.baseUrl = baseUrl.trim();
+-    if (fields.model && model.trim()) input.model = model.trim();
+-    if (Object.keys(input).length === 0) {
+-      setFeedback("Enter at least one value to save.");
++    const candidate = apiKey.trim();
++    if (!candidate) {
++      setFeedback({ tone: "error", text: "Enter an OpenRouter API key to continue." });
++      inputRef.current?.focus();
+       return;
+     }
++    setSaving(true);
+     setFeedback(null);
+-    configure.mutate(input);
+-  }
+-
+-  const formId = `provider-${provider.id}`;
++    // This local variable is intentionally short lived: no query/mutation cache,
++    // URL, storage, or status copy receives the credential.
++    setApiKey("");
++    try {
++      const response = await openRouterApi.configure(candidate);
++      applyProviderStatus(response.status);
++      clearDraft("replace");
++      const shadowWarning = response.shadowedByEnv.length > 0
++        ? " An environment setting also exists; restart Morrow after changing it to ensure its expected value is applied."
++        : "";
++      setFeedback({ tone: "success", text: `OpenRouter is connected. The key stays server-side in a ${protectionCopy(response.credentialProtection, response.securePermissions)}.${shadowWarning}` });
++      reconcileStatus();
++    } catch (error) {
++      clearDraft(provider.configured ? "replace" : "connect");
++      setFeedback({ tone: "error", text: failureCopy(error, provider.configured) });
++    } finally {
++      setSaving(false);
++    }
++  };
++  const runCheck = async (kind: "test" | "refresh") => {
++    const setPending = kind === "test" ? setTesting : setRefreshing;
++    setPending(true);
++    setFeedback(null);
++    try {
++      const result = await (kind === "test" ? openRouterApi.test() : openRouterApi.refresh());
++      const nextFeedback = resultCopy(result);
++      setFeedback(nextFeedback);
++      reconcileStatus();
++    } catch (error) {
++      setFeedback({ tone: "error", text: failureCopy(error, true) });
++    } finally {
++      setPending(false);
++    }
++  };
++  const disconnect = async () => {
++    setDisconnecting(true);
++    setFeedback(null);
++    try {
++      const response = await openRouterApi.disconnect();
++      applyProviderStatus(response.status);
++      setConfirmingDisconnect(false);
++      setApiKey("");
++      setFocusConnectAfterDisconnect(true);
++      setFeedback({ tone: "info", text: "OpenRouter is disconnected. The saved key was removed from local Morrow storage." });
++      reconcileStatus();
++    } catch (error) {
++      setFeedback({ tone: "error", text: failureCopy(error, true) });
++    } finally {
++      setDisconnecting(false);
++    }
++  };
++  const lastCheck = formatCheckTime(provider.lastSuccessAt);
++  const modelCount = provider.models.length;
+ 
+   return (
+-    <Surface className="morrow-provider-card" padding="medium">
+-      <div className="morrow-provider-card__heading">
++    <Surface className="morrow-connection" padding="large">
++      <div className="morrow-connection__heading">
+         <div>
+-          <h2>{provider.label}</h2>
+-          {provider.endpointHost ? (
+-            <p className="morrow-provider-card__host">{provider.endpointHost}</p>
+-          ) : null}
++          <p className="morrow-eyebrow">Cloud models</p>
++            <h2 ref={cardHeadingRef} tabIndex={-1}>OpenRouter</h2>
++          <p>Connect once to make your available OpenRouter models ready for chat.</p>
+         </div>
+-        <StatusPill variant={provider.configured ? "success" : "neutral"}>
+-          {provider.configured ? "Connected" : "Not connected"}
++        <StatusPill variant={provider.configured && provider.available ? "success" : "neutral"}>
++          {provider.configured && provider.available ? "Connected" : "Not connected"}
+         </StatusPill>
+       </div>
+-      {provider.configured && provider.defaultModel ? (
+-        <p className="morrow-provider-card__model">
+-          Default model: <strong>{provider.defaultModel}</strong>
+-        </p>
+-      ) : null}
+-      {!provider.configured && provider.setupHint ? (
+-        <p className="morrow-provider-card__hint">{provider.setupHint}</p>
+-      ) : null}
+-      {provider.note ? (
+-        <p className="morrow-provider-card__note">{provider.note}</p>
+-      ) : null}
+ 
+-      <div className="morrow-provider-card__actions">
+-        <Button
+-          aria-controls={formId}
+-          aria-expanded={open}
+-          onClick={() => setOpen((current) => !current)}
+-          size="compact"
+-          variant="secondary"
+-        >
+-          {provider.configured ? "Update setup" : "Set up"}
+-        </Button>
+-      </div>
++      {provider.configured ? (
++        <dl className="morrow-connection__details">
++          <div><dt>Models</dt><dd>{modelCount} available model{modelCount === 1 ? "" : "s"}</dd></div>
++          <div><dt>Active model</dt><dd>{provider.defaultModel ? `Active model: ${provider.defaultModel}` : "No default model selected"}</dd></div>
++          <div><dt>Health</dt><dd>{lastCheck ? `Last successful health check: ${lastCheck}` : "Connected after an authenticated account check"}</dd></div>
++        </dl>
++      ) : (
++        <p className="morrow-connection__hint">Morrow verifies a new key with OpenRouter before saving it, so connected always means an authenticated account check succeeded.</p>
++      )}
++
++      {!editing ? <div className="morrow-connection__actions">
++        {provider.configured ? (
++          <>
++            <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={replaceButtonRef} size="compact" variant="secondary">Replace key</Button>
++            <Button disabled={testing} onClick={() => void runCheck("test")} size="compact" variant="secondary">{testing ? "Testing…" : "Test connection"}</Button>
++            <Button disabled={refreshing} onClick={() => void runCheck("refresh")} size="compact" variant="secondary">{refreshing ? "Refreshing…" : "Refresh models"}</Button>
++            <Button onClick={() => setConfirmingDisconnect(true)} ref={disconnectButtonRef} size="compact" variant="danger">Disconnect OpenRouter</Button>
++          </>
++        ) : (
++          <Button onClick={() => { setEditing(true); setFeedback(null); }} ref={connectButtonRef} size="compact">Connect OpenRouter</Button>
++        )}
++      </div> : null}
+ 
+-      {open ? (
+-        <form className="morrow-provider-card__form" id={formId} onSubmit={submit}>
+-          {fields.apiKey ? (
+-            <label>
+-              API key
+-              <input
+-                autoComplete="off"
+-                onChange={(event) => setApiKey(event.target.value)}
+-                placeholder="Paste the provider API key"
+-                type="password"
+-                value={apiKey}
+-              />
+-            </label>
+-          ) : null}
+-          {fields.baseUrl ? (
+-            <label>
+-              Server URL
+-              <input
+-                autoComplete="off"
+-                inputMode="url"
+-                onChange={(event) => setBaseUrl(event.target.value)}
+-                placeholder={provider.id === "ollama" ? "http://127.0.0.1:11434/v1" : "https://example.com/v1"}
+-                type="text"
+-                value={baseUrl}
+-              />
+-            </label>
+-          ) : null}
+-          {fields.model ? (
+-            <label>
+-              Model
+-              <input
+-                autoComplete="off"
+-                onChange={(event) => setModel(event.target.value)}
+-                placeholder="Model name served by this endpoint"
+-                type="text"
+-                value={model}
+-              />
+-            </label>
+-          ) : null}
+-          <div className="morrow-provider-card__form-actions">
+-            <Button disabled={configure.isPending} size="compact" type="submit">
+-              {configure.isPending ? "Saving…" : "Save"}
+-            </Button>
++      {editing ? (
++        <form className="morrow-connection__form" onSubmit={(event) => void submit(event)}>
++          <label htmlFor="openrouter-api-key">OpenRouter API key</label>
++          <input
++            autoComplete="off"
++            id="openrouter-api-key"
++            onChange={(event) => setApiKey(event.target.value)}
++            placeholder="Paste your OpenRouter API key"
++            ref={inputRef}
++            type="password"
++            value={apiKey}
++          />
++          <p>Credentials stay server-side in an owner-restricted local file. Morrow does not claim application-layer encryption.</p>
++          <div className="morrow-connection__form-actions">
++            <Button disabled={saving} size="compact" type="submit">{saving ? "Saving…" : "Save connection"}</Button>
++            <Button disabled={saving} onClick={() => clearDraft(provider.configured ? "replace" : "connect")} size="compact" type="button" variant="secondary">Cancel</Button>
+           </div>
+         </form>
+       ) : null}
+-      {feedback ? (
+-        <p aria-live="polite" className="morrow-provider-card__feedback" role="status">
+-          {feedback}
+-        </p>
++
++      {feedback ? <p aria-live="polite" className={`morrow-connection__feedback morrow-connection__feedback--${feedback.tone}`} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p> : null}
++      {confirmingDisconnect ? (
++        <DisconnectDialog
++          onCancel={() => { setConfirmingDisconnect(false); disconnectButtonRef.current?.focus(); }}
++          onConfirm={() => void disconnect()}
++        />
+       ) : null}
++      {disconnecting ? <p aria-live="polite" role="status">Disconnecting OpenRouter…</p> : null}
+     </Surface>
+   );
+ }
+ 
+ export function ConnectionsPage() {
+-  const { refresh, status } = useRuntimeStatus();
+   const providers = useQuery(providerQueries.list());
+-  const visible = (providers.data ?? []).filter((provider) => provider.id !== "mock");
+-  const configured = visible.filter((provider) => provider.configured);
++  const openRouter = providers.data?.find((provider) => provider.id === "openrouter");
+ 
+   return (
+-    <section aria-labelledby="connections-heading" className="morrow-page">
++    <section aria-labelledby="connections-heading" className="morrow-page morrow-connections-page">
+       <div className="morrow-page__heading">
+         <p className="morrow-eyebrow">Connections</p>
+-        <h1 id="connections-heading">AI models</h1>
+-        <p>
+-          Morrow works through the model providers you connect here. Keys are
+-          stored locally on this machine and are never shown back.
+-        </p>
+-      </div>
+-
+-      {providers.isPending ? (
+-        <p aria-live="polite" role="status">Checking configured providers…</p>
+-      ) : null}
+-      {providers.isError ? (
+-        <p role="alert">Provider status could not be loaded.</p>
+-      ) : null}
+-
+-      {providers.isSuccess && configured.length === 0 ? (
+-        <Surface className="morrow-provider-callout" padding="medium">
+-          <p>
+-            <strong>No model is connected yet.</strong> Missions cannot run
+-            until at least one provider below is set up. A local Ollama server
+-            works too — nothing has to leave your machine.
+-          </p>
+-        </Surface>
+-      ) : null}
+-
+-      <div className="morrow-provider-list">
+-        {visible.map((provider) => (
+-          <ProviderCard key={provider.id} provider={provider} />
+-        ))}
++        <h1 id="connections-heading">Connect a model</h1>
++        <p>Start with OpenRouter. Morrow only stores a verified key on this computer, and never returns it to this browser.</p>
+       </div>
+-
+-      <Surface aria-labelledby="runtime-heading" padding="large">
+-        <h2 id="runtime-heading">Morrow runtime</h2>
+-        <p aria-atomic="true" aria-live="polite" role="status">
+-          {runtimeStatusCopy[status]}
+-        </p>
+-        <Button onClick={() => void refresh()} variant="secondary">
+-          Check again
+-        </Button>
+-      </Surface>
++      {providers.isPending ? <p aria-live="polite" role="status">Checking OpenRouter…</p> : null}
++      {providers.isError && openRouter ? <p className="morrow-connection__feedback morrow-connection__feedback--info" role="status">We could not refresh connection status. Showing the last known state.</p> : null}
++      {providers.isError && !openRouter ? <p role="alert">Morrow could not load connection status. Check that the local runtime is running.</p> : null}
++      {openRouter ? <OpenRouterConnection provider={openRouter} /> : null}
+     </section>
+   );
+ }
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index 5eb2402..7f2eea1 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -729,21 +729,178 @@ a {
+   margin: 0;
+   font-size: 0.8125rem;
+   overflow-wrap: anywhere;
+ }
+ 
+ .morrow-rail-details__mono {
+   font-family: ui-monospace, monospace;
+   font-size: 0.75rem;
+ }
+ 
+-/* ── Providers (Connections page) ───────────────────────────────────────── */
++/* ── Connections ─────────────────────────────────────────────────────────── */
++.morrow-connections-page {
++  width: min(100%, 760px);
++}
++
++.morrow-connection {
++  gap: var(--morrow-space-4) !important;
++}
++
++.morrow-connection__heading {
++  display: flex;
++  align-items: flex-start;
++  justify-content: space-between;
++  gap: var(--morrow-space-4);
++}
++
++.morrow-connection__heading > div {
++  display: grid;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-connection__heading h2,
++.morrow-connection__heading p,
++.morrow-connection__hint,
++.morrow-connection__form p,
++.morrow-connection__feedback {
++  margin: 0;
++}
++
++.morrow-connection__heading h2 {
++  font-size: 1.25rem;
++}
++
++.morrow-connection__heading > div > p:last-child,
++.morrow-connection__hint,
++.morrow-connection__form p {
++  color: var(--morrow-text-muted);
++}
++
++.morrow-connection__details {
++  display: grid;
++  grid-template-columns: repeat(3, minmax(0, 1fr));
++  gap: var(--morrow-space-3);
++  padding: var(--morrow-space-3) 0;
++  margin: 0;
++  border-block: 1px solid var(--morrow-border);
++}
++
++.morrow-connection__details div {
++  display: grid;
++  gap: 2px;
++}
++
++.morrow-connection__details dt {
++  color: var(--morrow-text-muted);
++  font-size: 0.75rem;
++  font-weight: 700;
++}
++
++.morrow-connection__details dd {
++  margin: 0;
++  overflow-wrap: anywhere;
++}
++
++.morrow-connection__actions,
++.morrow-connection__form-actions,
++.morrow-connection-dialog__actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-connection__form {
++  display: grid;
++  gap: var(--morrow-space-2);
++  padding-top: var(--morrow-space-2);
++}
++
++.morrow-connection__form label {
++  font-size: 0.875rem;
++  font-weight: 700;
++}
++
++.morrow-connection__form input {
++  min-height: 44px;
++  padding: 0 var(--morrow-space-3);
++  color: var(--morrow-text);
++  background: var(--morrow-surface);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  font: inherit;
++}
++
++.morrow-connection__form input:focus-visible {
++  border-color: var(--morrow-focus);
++  outline: 2px solid var(--morrow-focus);
++  outline-offset: 0;
++}
++
++.morrow-connection__feedback {
++  padding: var(--morrow-space-3);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  font-size: 0.875rem;
++}
++
++.morrow-connection__feedback--success {
++  color: var(--morrow-success);
++  background: color-mix(in srgb, var(--morrow-success) 10%, var(--morrow-surface));
++  border-color: color-mix(in srgb, var(--morrow-success) 35%, var(--morrow-border));
++}
++
++.morrow-connection__feedback--error {
++  color: var(--morrow-danger);
++  background: color-mix(in srgb, var(--morrow-danger) 8%, var(--morrow-surface));
++  border-color: color-mix(in srgb, var(--morrow-danger) 35%, var(--morrow-border));
++}
++
++.morrow-connection__feedback--info {
++  color: var(--morrow-text-muted);
++  background: var(--morrow-surface-subtle);
++}
++
++.morrow-connection-dialog-backdrop {
++  position: fixed;
++  z-index: 20;
++  inset: 0;
++  display: grid;
++  padding: var(--morrow-space-4);
++  background: rgb(0 0 0 / 0.48);
++  place-items: center;
++}
++
++.morrow-connection-dialog {
++  display: grid;
++  width: min(100%, 30rem);
++  gap: var(--morrow-space-4);
++  padding: var(--morrow-space-5);
++  color: var(--morrow-text);
++  background: var(--morrow-surface);
++  border-radius: var(--morrow-radius-md);
++  box-shadow: var(--morrow-shadow-sm);
++}
++
++.morrow-connection-dialog h2,
++.morrow-connection-dialog p {
++  margin: 0;
++}
++
++.morrow-connection-dialog p {
++  color: var(--morrow-text-muted);
++}
++
++.morrow-connection-dialog__actions {
++  justify-content: flex-end;
++}
++
++/* ── Providers (legacy generic card) ────────────────────────────────────── */
+ .morrow-provider-list {
+   display: grid;
+   gap: var(--morrow-space-3);
+   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+ }
+ 
+ .morrow-provider-card {
+   display: grid;
+   align-content: start;
+   gap: var(--morrow-space-2);
+@@ -1241,11 +1398,24 @@ a {
+   }
+ 
+   .morrow-mission-sync-warning {
+     align-items: stretch;
+     flex-direction: column;
+   }
+ 
+   .morrow-attention-choice {
+     grid-template-columns: 1fr;
+   }
++
++  .morrow-connection__heading {
++    align-items: stretch;
++    flex-direction: column;
++  }
++
++  .morrow-connection__details {
++    grid-template-columns: 1fr;
++  }
++
++  .morrow-connection__actions .morrow-button {
++    min-height: 44px;
++  }
+ }
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index 05b2e31..f389822 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -79,20 +79,22 @@ export const ProviderStatusSchema=z.object({
+   kind:ProviderKindSchema,
+   configured:z.boolean(),
+   available:z.boolean(),
+   endpointType:z.enum(["default","custom"]),
+   endpointHost:z.string().nullable(),
+   authStatus:ProviderAuthStatusSchema,
+   authMode:ProviderAuthModeSchema.optional(),
+   capabilities:ProviderCapabilitiesSchema,
+   models:z.array(z.string()),
+   defaultModel:z.string().nullable(),
++  /** Last successful account-catalogue health check, never a browser clock. */
++  lastSuccessAt:z.string().datetime().nullable().optional(),
+   note:z.string().nullable(),
+   setupHint:z.string().nullable(),
+ }).strict();
+ 
+ export const ModelSpeedClassSchema=z.enum(["fast","balanced","powerful","unknown"]);
+ export const ModelCostClassSchema=z.enum(["free","low","medium","high","unknown"]);
+ export const ModelPrivacyClassSchema=z.enum(["local","remote"]);
+ export const ModelCapabilitiesSchema=z.object({
+   streaming:z.boolean(),
+   toolCalls:z.boolean(),
+diff --git a/services/orchestrator/src/provider/registry.ts b/services/orchestrator/src/provider/registry.ts
+index 33fad97..1713283 100644
+--- a/services/orchestrator/src/provider/registry.ts
++++ b/services/orchestrator/src/provider/registry.ts
+@@ -31,28 +31,29 @@ function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus
+   if (!discovery) return status.id === "openrouter" && status.configured
+     ? { ...status, configured: false, available: false, authStatus: "unavailable" }
+     : status;
+   const discoveredModels = discovery.models.map((model) => model.providerModelId);
+   const withDiscoveredModels: ProviderStatus = {
+     ...status,
+     models: status.defaultModel && !discoveredModels.includes(status.defaultModel)
+       ? [status.defaultModel, ...discoveredModels]
+       : discoveredModels,
+     defaultModel: status.defaultModel,
++    lastSuccessAt: discovery.lastSuccessAt ?? null,
+   };
+   if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
+     return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };
+   }
+   if (discovery.status === "unavailable") return status.id === "openrouter"
+     ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
+     : { ...status, available: false };
+-  if (discoveredModels.length === 0) return { ...status, available: true };
++  if (discoveredModels.length === 0) return { ...withDiscoveredModels, available: true };
+   return {
+     ...withDiscoveredModels,
+     available: true,
+   };
+ }
+ 
+ /** Mark a status as configured/available because a subscription OAuth token is held. */
+ function withOAuth(status: ProviderStatus, authMode: ProviderAuthMode): ProviderStatus {
+   return { ...status, configured: true, available: true, authStatus: "configured", authMode };
+ }
+diff --git a/services/orchestrator/test/provider-configure.test.ts b/services/orchestrator/test/provider-configure.test.ts
+index 3405696..2baa71c 100644
+--- a/services/orchestrator/test/provider-configure.test.ts
++++ b/services/orchestrator/test/provider-configure.test.ts
+@@ -276,20 +276,21 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
+       endpointContextLimit: 131_072,
+     });
+     expect(res.status).toBe(200);
+     expect(process.env.DEEPSEEK_CONTEXT_LIMIT).toBe("131072");
+   });
+ 
+   it("removes credentials and reverts to not-configured", async () => {
+     await json("POST", "/api/providers/deepseek/configure", { apiKey: "k" });
+     const del = await json("DELETE", "/api/providers/deepseek/credentials");
+     expect(del.status).toBe(200);
++    expect(del.body.removed).toEqual(expect.arrayContaining(["DEEPSEEK_API_KEY"]));
+     expect(del.body.status.configured).toBe(false);
+   });
+ 
+   it("rejects an unknown provider", async () => {
+     const res = await json("POST", "/api/providers/not-real/configure", { apiKey: "k" });
+     expect(res.status).toBe(400);
+   });
+ 
+   it("rejects an invalid base URL", async () => {
+     const res = await json("POST", "/api/providers/deepseek/configure", { baseUrl: "not a url" });
+diff --git a/services/orchestrator/test/server-providers.test.ts b/services/orchestrator/test/server-providers.test.ts
+index bb0b749..c08b20a 100644
+--- a/services/orchestrator/test/server-providers.test.ts
++++ b/services/orchestrator/test/server-providers.test.ts
+@@ -99,41 +99,68 @@ describe("Provider / preset / memory API", () => {
+     const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+     try {
+       await localApp.ready();
+       let providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+       expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+ 
+       const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+       expect(refreshed.statusCode).toBe(200);
+       expect(connectivity).toHaveBeenCalledOnce();
+       providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+-      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone" });
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone", lastSuccessAt: expect.any(String) });
+ 
+       process.env.OPENROUTER_API_KEY = "different-unverified-key";
+       providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+       expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+       process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
+ 
+       const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+       expect(models.find((item: any) => item.model.providerId === "openrouter" && item.model.id === "vendor/selected-but-gone")).toMatchObject({
+         available: false,
+         availability: "unavailable",
+         availabilityReason: expect.stringMatching(/no longer|not returned/i),
+       });
+     } finally {
+       await localApp.close();
+       localDb.close();
+       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+       if (previousModel === undefined) delete process.env.OPENROUTER_MODEL; else process.env.OPENROUTER_MODEL = previousModel;
+     }
+   });
+ 
++  it("keeps durable OpenRouter health when an authenticated catalogue is empty", async () => {
++    const previousKey = process.env.OPENROUTER_API_KEY;
++    process.env.OPENROUTER_API_KEY = "openrouter-empty-catalogue-secret";
++    const localDb = openDatabase(":memory:");
++    const connectivity = vi.fn(async () => ({
++      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
++      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
++      modelsSample: [], models: [],
++    }));
++    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
++    try {
++      await localApp.ready();
++      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
++      expect(refreshed.statusCode).toBe(200);
++      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
++      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({
++        configured: true,
++        available: true,
++        lastSuccessAt: expect.any(String),
++      });
++    } finally {
++      await localApp.close();
++      localDb.close();
++      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
++    }
++  });
++
+   it("discards an in-flight OpenRouter refresh when the live credential changes", async () => {
+     const previousKey = process.env.OPENROUTER_API_KEY;
+     process.env.OPENROUTER_API_KEY = "credential-before-refresh";
+     let release!: () => void;
+     const gate = new Promise<void>((resolve) => { release = resolve; });
+     const connectivity = vi.fn(async (_id: any, env: NodeJS.ProcessEnv = {}) => {
+       expect(env.OPENROUTER_API_KEY).toBe("credential-before-refresh");
+       await gate;
+       return {
+         id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,

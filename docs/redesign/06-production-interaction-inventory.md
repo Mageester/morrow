@@ -22,14 +22,14 @@ This ledger is the completion gate for production `/app` controls. A row is comp
 | `/app/library` | Output row | Open a real persisted output | Library projection | Tab, Enter | Skeleton | Safe output view | Honest empty | Retry | Stacked | Pending Slice 11 | Pending |
 | `/app/memory` | Search/filter | Filter real project-isolated memory | Memory list | Input/select keys | Debounced/busy | Matching rows | No-match message | Retry | Stacked controls | Pending Slice 10 | Pending |
 | `/app/memory` | Confirm/reject/edit/delete/pin/enable | Apply explicit lifecycle mutation with confirmation where destructive | Memory APIs | Button/dialog/form keys | Busy per row | Canonical refresh | N/A | Preserve edit + retry | Accessible row menu/sheet | Pending Slice 10 | Pending |
-| `/app/connections` | OpenRouter Connect/Save/Cancel | Validate key server-side; persist only after authenticated success | Provider configure/test | Form keys, Escape cancel | Save/test busy | Connected health state | Local setup form | Classified auth/rate/network | Full-width form | Pending Slice 2/3 | Pending |
-| `/app/connections` | Test/Refresh | Authenticate and refresh normalized model catalogue | Provider test/refresh | Tab, Enter | Busy | Health time/count updated | Zero-model explanation | Classified retry | Touch target | Pending Slice 2/3 | Pending |
-| `/app/connections` | Replace/Disconnect | Validate replacement before swap; confirm credential removal | Provider configure/delete | Dialog keys, focus return | Busy | Truthful state update | Setup form | Prior key retained on failed replace | Sheet/dialog | Pending Slice 2/3 | Pending |
+| `/app/connections` | OpenRouter Connect/Save/Cancel | Validate key server-side; persist only after authenticated success | Provider configure/test | Form keys, Escape cancel, focus return | Save/test busy | Durable connected health state | Local setup form | Classified auth/rate/network with first/replacement truth | Full-width form | `connections-page.test.tsx`, `connections.spec.ts` | PASS desktop/mobile, no populated-key screenshot |
+| `/app/connections` | Test/Refresh | Authenticate and refresh normalized model catalogue | Provider test/refresh | Tab, Enter, focus preserved | Busy | Durable health time/count updated | Authenticated zero-model state retains health | Classified retry; cached truth retained | Touch target | `providers.test.ts`, `connections-page.test.tsx`, `connections.spec.ts` | PASS desktop/mobile |
+| `/app/connections` | Replace/Disconnect | Validate replacement before swap; confirm credential removal | Provider configure/delete | Dialog trap, Escape, focus return | Busy | Authoritative cache update before reconcile | Setup form | Prior key retained on failed replace | Responsive dialog | `connections-page.test.tsx`, `connections.spec.ts` | PASS desktop/mobile |
 | `/app/settings` | Settings controls | Only render implemented theme/privacy/runtime preferences | Existing local/runtime settings | Native/form keys | Per-control | Persisted state | N/A | Roll back + explain | Stacked | Pending Slice 6/12 | Pending |
 
 ## Audit status
 
 - Baseline rows created: 2026-07-22.
-- Completed rows: 0.
+- Completed rows: 3.
 - Unexplained dead controls allowed: 0.
 - Final semantic-control sweep: pending Slice 12.
