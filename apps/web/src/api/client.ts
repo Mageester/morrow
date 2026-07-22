@@ -65,4 +65,8 @@ export const api = {
       schema,
     );
   },
+
+  delete<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+    return request(path, { method: "DELETE" }, schema);
+  },
 };

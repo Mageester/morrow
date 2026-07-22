@@ -121,7 +121,7 @@ describe("Morrow application shell", () => {
     ["/app/library", "Library"],
     ["/app/automations", "Automations"],
     ["/app/workspace", "Workspace"],
-    ["/app/connections", "AI models"],
+    ["/app/connections", "Connect a model"],
     ["/app/settings", "Settings"],
   ])("renders %s inside the shared shell", async (path, heading) => {
     renderAt(path);
