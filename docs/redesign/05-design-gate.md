@@ -142,6 +142,14 @@ This is strong prototype evidence, not a claim that the future production app is
 fully WCAG-conformant. Streaming, async state, forms, screen-reader journeys, zoom,
 and real backend failure paths still require production acceptance testing.
 
+Repository verification at this gate: `pnpm.cmd check` passed 7/7 packages plus
+repository validation, `pnpm.cmd build` passed 6/6 build targets, and the web unit
+suite passed 154/154 serially. The repo-wide `pnpm.cmd test` remains red on one
+pre-existing contracts fixture: `test/web.test.ts` omits the now-required
+`summary.modelLabel`. The same mismatch exists at pre-design-gate head `5fcf966`,
+and this design-only change does not touch `packages/contracts`. It is recorded,
+not silently fixed, because production code is outside this approval gate.
+
 ## Screenshot index
 
 All accepted captures live in [`prototypes/shots/final`](prototypes/shots/final).
