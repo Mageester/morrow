@@ -146,4 +146,11 @@ Provider/model: openai-compatible @ opencode.ai, model nemotron-3-ultra-free (a 
   - Focus behavior covers editor open/cancel, save success/failure, replacement, confirmation focus loop, disconnect return, and mobile interaction. No OpenRouter base URL control exists.
   - Evidence: web 161/161; contracts 40/40; focused orchestrator 37/37; final provider status 15/15; web check/build; mocked-backend desktop + 390px mobile E2E; CLI desktop/mobile screenshots without populated credentials.
   - Independent review found and fixed 1 Critical + 6 Important findings over two rounds; final verdict APPROVED with zero open findings.
-- Slice 4: pending (production chat composer).
+- Slice 4: complete (`f8d2168..19604d4`; privacy/security review clean, 0 Critical/Important).
+  - Reusable stable uncontrolled `ChatComposer` preserves native selection/cursor/clipboard/undo/IME across same-scope rerenders, maps Ask/Plan/Build/Build Auto truthfully, and exposes Stop only for a live cancellable task.
+  - Accepted-only clearing, double-send/active-task gating, exception/rejection retention, scoped late outcomes, 32,000-character no-truncation limit, bounded autosize, accessible count/errors, and real project/model routing values verified.
+  - V2 JSON-tuple local draft keys are collision-safe across project/conversation scopes; only version+text persist. Committed scope ownership prevents cross-project/conversation contamination and late-response clearing. Unsent text storage is local browser plaintext by explicit product requirement and documented honestly.
+  - Evidence: focused 42/42; full web 187/187; web check/build; direct production-component Chromium 5/5 across desktop/mobile/touch; default runner attempts both production and composer suites.
+  - Independent review found and fixed 9 Important lifecycle/security/coverage findings over two rounds. Final verdict APPROVED.
+  - Unrelated existing warning: production E2E mobile result snapshot expected 2221px height versus stable 2197px actual; later dark serial case did not run. No Task 4 causal path found; keep open for result-page baseline owner.
+- Slice 5: pending (conversation persistence and streaming).
