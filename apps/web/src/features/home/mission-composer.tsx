@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -63,7 +64,7 @@ export function MissionComposer({
   const isCurrent = useRef(false);
   const submissionInFlight = useRef(false);
   const objectiveInput = useRef<HTMLTextAreaElement>(null);
-  const priorProjectId = useRef<string | undefined>(undefined);
+  const committedProjectId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     isCurrent.current = true;
@@ -72,18 +73,25 @@ export function MissionComposer({
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeProjectId) return;
+  useLayoutEffect(() => {
+    if (committedProjectId.current === activeProjectId) return;
+    if (!activeProjectId) {
+      if (objectiveInput.current) objectiveInput.current.value = "";
+      committedProjectId.current = undefined;
+      setDraft("");
+      return;
+    }
     const storedDraft = loadChatDraft({ projectId: activeProjectId });
     const liveDraft = objectiveInput.current?.value ?? "";
-    const nextDraft = priorProjectId.current === undefined && liveDraft
+    const nextDraft = committedProjectId.current === undefined && liveDraft
       ? liveDraft
       : storedDraft;
+    if (objectiveInput.current) objectiveInput.current.value = nextDraft;
+    committedProjectId.current = activeProjectId;
     setDraft(nextDraft);
     if (nextDraft && nextDraft !== storedDraft) {
       saveChatDraft({ projectId: activeProjectId }, nextDraft);
     }
-    priorProjectId.current = activeProjectId;
     objectiveInput.current?.focus();
   }, [activeProjectId]);
 
@@ -91,7 +99,7 @@ export function MissionComposer({
     mutationFn: (input: CreateWebMissionInput) =>
       api.post("/api/web/missions", input, WebMissionSnapshotSchema),
     onError: (error, submittedInput) => {
-      if (priorProjectId.current !== submittedInput.projectId) return;
+      if (committedProjectId.current !== submittedInput.projectId) return;
       failedSubmission.current = true;
       setRequestError(errorMessage(error));
     },
@@ -102,7 +110,7 @@ export function MissionComposer({
       );
       clearChatDraft({ projectId: submittedInput.projectId });
       if (!isCurrent.current) return;
-      if (priorProjectId.current !== submittedInput.projectId) return;
+      if (committedProjectId.current !== submittedInput.projectId) return;
 
       failedSubmission.current = false;
       currentIdempotencyKey.current = createIdempotencyKey();
@@ -130,7 +138,8 @@ export function MissionComposer({
     // Read the live control so an immediate Enter after a large paste or
     // browser autofill cannot race React's state update.
     const objective = (objectiveInput.current?.value ?? draft).trim();
-    if (!objective || !activeProjectId) return;
+    const submittedProjectId = committedProjectId.current;
+    if (!objective || !submittedProjectId) return;
     if (objective.length > 8_000) {
       setObjectiveValidationError(
         "Mission objectives must be 8,000 characters or fewer.",
@@ -142,7 +151,7 @@ export function MissionComposer({
       autonomy,
       idempotencyKey: currentIdempotencyKey.current,
       objective,
-      projectId: activeProjectId,
+      projectId: submittedProjectId,
     });
     if (!parsed.success) {
       setRequestError("Review the mission details and try again.");
@@ -212,8 +221,8 @@ export function MissionComposer({
             if (failedSubmission.current && nextDraft !== draft) {
               resetFailedSubmissionForEdit();
             }
-            if (activeProjectId) {
-              saveChatDraft({ projectId: activeProjectId }, nextDraft);
+            if (committedProjectId.current) {
+              saveChatDraft({ projectId: committedProjectId.current }, nextDraft);
             }
             setDraft(nextDraft);
           }}

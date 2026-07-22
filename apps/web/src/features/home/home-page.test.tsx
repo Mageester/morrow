@@ -14,14 +14,19 @@ import {
 import {
   RouterProvider,
   createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
   type AnyRouter,
 } from "@tanstack/react-router";
+import { useLayoutEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { missionKeys } from "../../api/query-keys.js";
 import { RuntimeStatusProvider } from "../../state/runtime-status.js";
 import { ThemeProvider } from "../../state/theme.js";
 import { createAppRouter } from "../../app/router.js";
-import { loadChatDraft } from "../chat/draft-store.js";
+import { loadChatDraft, saveChatDraft } from "../chat/draft-store.js";
+import { MissionComposer } from "./mission-composer.js";
 
 const now = "2026-07-21T12:00:00.000Z";
 
@@ -715,6 +720,83 @@ describe("HomePage", () => {
     expect(loadChatDraft({ projectId: project.id })).toBe("");
     expect(loadChatDraft({ projectId: "project-2" })).toBe("new project draft");
     expect(objective).toHaveValue("new project draft");
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("keeps project ownership through the layout-to-passive transition window", async () => {
+    const created = deferred<Response>();
+    installApi((path) => {
+      if (path === "/api/providers") return json([]);
+      if (path === "/api/web/missions") return created.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    saveChatDraft({ projectId: "project-2" }, "project B retained draft");
+
+    let transitionSnapshot: { projectA: string; projectB: string } | undefined;
+    function TransitionProbe({ activeProjectId }: { activeProjectId: string }) {
+      useLayoutEffect(() => {
+        if (activeProjectId !== "project-2") return;
+        const textarea = screen.getByRole("textbox", { name: "Mission objective" });
+        fireEvent.change(textarea, { target: { value: "project A transition event" } });
+        transitionSnapshot = {
+          projectA: loadChatDraft({ projectId: project.id }),
+          projectB: loadChatDraft({ projectId: "project-2" }),
+        };
+        created.resolve(json(snapshot("mission-layout-window"), 201));
+      }, [activeProjectId]);
+      return null;
+    }
+
+    function Harness() {
+      const [activeProjectId, setActiveProjectId] = useState(project.id);
+      return (
+        <>
+          <button onClick={() => setActiveProjectId("project-2")} type="button">
+            Switch project in layout window
+          </button>
+          <TransitionProbe activeProjectId={activeProjectId} />
+          <MissionComposer activeProjectId={activeProjectId} />
+        </>
+      );
+    }
+
+    const rootRoute = createRootRoute();
+    const indexRoute = createRoute({
+      component: Harness,
+      getParentRoute: () => rootRoute,
+      path: "/",
+    });
+    const router = createRouter({
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+      routeTree: rootRoute.addChildren([indexRoute]),
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router as AnyRouter} />
+      </QueryClientProvider>,
+    );
+
+    const objective = await screen.findByRole("textbox", { name: "Mission objective" });
+    await user.type(objective, "submitted project A draft");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Switch project in layout window" }));
+
+    expect(transitionSnapshot).toEqual({
+      projectA: "project A transition event",
+      projectB: "project B retained draft",
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryData(missionKeys.detail("mission-layout-window"))).toEqual(
+        snapshot("mission-layout-window"),
+      );
+    });
+    expect(loadChatDraft({ projectId: project.id })).toBe("");
+    expect(loadChatDraft({ projectId: "project-2" })).toBe("project B retained draft");
+    expect(objective).toHaveValue("project B retained draft");
     expect(router.state.location.pathname).toBe("/");
   });
 });

@@ -2,7 +2,8 @@ import { expect, test } from "@playwright/test";
 
 const HARNESS = "/app/e2e/composer-harness.html";
 
-test("production composer preserves native editing and collision-free drafts across reload and scope changes", async ({ context, page }) => {
+test("production composer preserves native editing and collision-free drafts across reload and scope changes", async ({ context, isMobile, page }) => {
+  test.skip(isMobile, "Desktop native-keyboard coverage runs in the dedicated desktop project.");
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(HARNESS);
   const input = page.getByRole("textbox", { name: "Message Morrow" });
@@ -41,7 +42,8 @@ test("production composer preserves native editing and collision-free drafts acr
   expect(new Set(stored).size).toBe(2);
 });
 
-test("production composer handles bounded input, held deletion, autosize, IME 229, selectors, and callback payload", async ({ page }) => {
+test("production composer handles bounded input, held deletion, autosize, IME 229, selectors, and callback payload", async ({ isMobile, page }) => {
+  test.skip(isMobile, "Desktop native-keyboard coverage runs in the dedicated desktop project.");
   await page.goto(HARNESS);
   const input = page.getByRole("textbox", { name: "Message Morrow" });
   const rapidSample = "fast".repeat(256);
@@ -96,7 +98,8 @@ test("production composer handles bounded input, held deletion, autosize, IME 22
   await expect(page.getByTestId("payload")).toContainText('"providerId":"openrouter"');
 });
 
-test("production composer restores focus and selection after delayed outcomes and ignores stale scope status", async ({ page }) => {
+test("production composer restores focus and selection after delayed outcomes and ignores stale scope status", async ({ isMobile, page }) => {
+  test.skip(isMobile, "Desktop native-selection coverage runs in the dedicated desktop project.");
   await page.goto(HARNESS);
   const input = page.getByRole("textbox", { name: "Message Morrow" });
   const outcome = page.getByLabel("Harness outcome");
@@ -129,7 +132,8 @@ test("production composer restores focus and selection after delayed outcomes an
   await expect(page.getByText("Message accepted.")).toHaveCount(0);
 });
 
-test("active task blocks Enter and form submission so only Stop remains actionable", async ({ page }) => {
+test("active task blocks Enter and form submission so only Stop remains actionable", async ({ isMobile, page }) => {
+  test.skip(isMobile, "Desktop keyboard/form coverage runs in the dedicated desktop project.");
   await page.goto(HARNESS);
   const input = page.getByRole("textbox", { name: "Message Morrow" });
   await input.fill("must not submit");
@@ -144,17 +148,62 @@ test("active task blocks Enter and form submission so only Stop remains actionab
   await expect(page.getByTestId("payload")).toHaveText("none");
 });
 
-test("production composer remains reachable at 390px with safe-area-aware spacing", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("production composer remains touch-reachable with a reduced mobile visual viewport", async ({ isMobile, page }) => {
+  test.skip(!isMobile, "Touch and mobile-emulation coverage runs in the dedicated mobile project.");
   await page.goto(HARNESS);
   const input = page.getByRole("textbox", { name: "Message Morrow" });
+  expect(await page.evaluate(() => navigator.maxTouchPoints)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => navigator.userAgent)).toContain("Mobile");
+
+  await page.getByRole("button", { name: "Use beta scope" }).tap();
+  await expect(page.getByTestId("scope")).toHaveText("project-1:beta");
+  await page.getByRole("button", { name: "Use alpha scope" }).tap();
+  await expect(page.getByTestId("scope")).toHaveText("project-1:alpha");
+  await input.tap();
   await input.fill("Mobile draft 😀");
   await page.reload();
   await expect(input).toHaveValue("Mobile draft 😀");
+  await input.tap();
+
+  await page.setViewportSize({ width: 390, height: 500 });
+  await input.fill(Array.from({ length: 40 }, (_, index) => `mobile line ${index}`).join("\n"));
+  await input.scrollIntoViewIfNeeded();
+  const inputBox = await input.boundingBox();
+  expect(inputBox).not.toBeNull();
+  expect(inputBox!.y).toBeLessThan(500);
+  expect(inputBox!.y + inputBox!.height).toBeGreaterThan(0);
+  await input.tap();
+  const sizing = await input.evaluate((node) => ({
+    clientHeight: node.clientHeight,
+    overflowY: getComputedStyle(node).overflowY,
+    scrollHeight: node.scrollHeight,
+  }));
+  expect(sizing.scrollHeight).toBeGreaterThan(sizing.clientHeight);
+  expect(sizing.overflowY).toBe("auto");
+
   const send = page.getByRole("button", { name: "Send message" });
   const box = await send.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.height).toBeGreaterThanOrEqual(40);
+  expect(box!.height).toBeGreaterThanOrEqual(44);
+  expect(box!.width).toBeGreaterThanOrEqual(44);
+  await send.tap();
+  await expect(page.getByText("Harness rejected the message.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await page.locator(".morrow-chat-composer").evaluate((node) => getComputedStyle(node).paddingBottom)).not.toBe("0px");
+  expect(await page.evaluate(() => {
+    const includesSafeAreaRule = (rules: CSSRuleList): boolean =>
+      Array.from(rules).some((rule) => {
+        if (rule.cssText.includes(".morrow-chat-composer") &&
+            rule.cssText.includes("padding-bottom: max(") &&
+            rule.cssText.includes("env(safe-area-inset-bottom)")) return true;
+        return "cssRules" in rule && includesSafeAreaRule((rule as CSSGroupingRule).cssRules);
+      });
+    return Array.from(document.styleSheets).some((sheet) => {
+      try {
+        return sheet.cssRules ? includesSafeAreaRule(sheet.cssRules) : false;
+      } catch {
+        return false;
+      }
+    });
+  })).toBe(true);
 });

@@ -24,5 +24,18 @@ export default defineConfig({
     reuseExistingServer: false,
     url: "http://127.0.0.1:4381/app/e2e/composer-harness.html",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "desktop-chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "mobile-chromium",
+      use: {
+        browserName: "chromium",
+        deviceScaleFactor: 2.75,
+        hasTouch: true,
+        isMobile: true,
+        userAgent: "Mozilla/5.0 (Linux; Android 15; Morrow Mobile Test) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36",
+        viewport: { width: 390, height: 844 },
+      },
+    },
+  ],
 });

@@ -60,7 +60,12 @@ function ComposerHarness() {
         <button disabled={!pending} onClick={finishPending} type="button">Resolve pending</button>
       </div>
       <p data-testid="scope">{projectId}:{conversationId}</p>
-      <pre data-testid="payload">{payload ? JSON.stringify(payload) : "none"}</pre>
+      <pre
+        data-testid="payload"
+        style={{ maxWidth: "100%", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+      >
+        {payload ? JSON.stringify(payload) : "none"}
+      </pre>
       <ChatComposer
         activeTaskId={activeTaskId}
         autoFocus
