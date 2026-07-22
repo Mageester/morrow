@@ -271,6 +271,25 @@ describe("projectMissionForWeb", () => {
     expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
   });
 
+  it("bounds the recent-activity stream to its most recent window for long runs", () => {
+    // A mission that recovered many times emits hundreds of events; the stream
+    // shows the most recent window (newest kept), never an unusable full dump.
+    const manyEvents = Array.from({ length: 150 }, (_, i) =>
+      event(i + 1, "mission.criterion_verified", `Step ${i + 1}`),
+    );
+    const snapshot = projectMissionForWeb({
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: manyEvents,
+    });
+    expect(snapshot.recentActivity.length).toBe(80);
+    // The most recent event is retained; the oldest is dropped.
+    const cursors = snapshot.recentActivity.map((a) => a.cursor);
+    expect(cursors.at(-1)).toBe(150);
+    expect(cursors.includes(1)).toBe(false);
+    expect(() => WebMissionSnapshotSchema.parse(snapshot)).not.toThrow();
+  });
+
   it("never serializes a progressPercent or numeric percent field", () => {
     for (const fixture of [runningFixture, blockedFixture, completedFixture]) {
       const serialized = JSON.stringify(projectMissionForWeb(fixture));
@@ -418,5 +437,33 @@ describe("unified mission state derivation", () => {
     // something truthful.
     expect(withoutModel.modelLabel.length).toBeGreaterThan(0);
     expect(withoutModel.modelLabel).toBe("balanced preset");
+  });
+
+  it("names the model the router actually resolved when the mission pinned none", () => {
+    // The common case: the user did not pin a model, so execution.model is null
+    // and the router chose one per task. The header must name that real model,
+    // not the abstract preset.
+    const routed = projectMissionSummaryForWeb({
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [],
+      guardian: null,
+      runtime: runtime("executing"),
+      routedModel: "nemotron-3-ultra-free",
+      routedProviderId: "openai-compatible",
+    });
+    expect(routed.modelLabel).toBe("nemotron-3-ultra-free");
+
+    // With a provider but no concrete model yet, fall back to the provider id
+    // before the abstract preset.
+    const providerOnly = projectMissionSummaryForWeb({
+      workspaceId: WORKSPACE_ID,
+      mission: mission({ status: "running", criteria: [] }),
+      events: [],
+      guardian: null,
+      runtime: runtime("executing"),
+      routedProviderId: "openai-compatible",
+    });
+    expect(providerOnly.modelLabel).toBe("openai-compatible");
   });
 });

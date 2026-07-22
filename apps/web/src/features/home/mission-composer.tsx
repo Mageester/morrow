@@ -44,9 +44,15 @@ export function MissionComposer({
   const [objectiveValidationError, setObjectiveValidationError] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const providers = useQuery(providerQueries.list());
-  const noProviderConnected =
-    providers.isSuccess &&
-    !providers.data.some((provider) => provider.configured);
+  // The mock provider is a test-only fixture; it never counts as a real model
+  // the user connected, so exclude it from both the empty and ready states.
+  const configuredProviders = providers.isSuccess
+    ? providers.data.filter((provider) => provider.configured && provider.id !== "mock")
+    : [];
+  const noProviderConnected = providers.isSuccess && configuredProviders.length === 0;
+  // When exactly one provider is connected, name the model that will run; with
+  // several, the router chooses per preset, so summarise instead of guessing.
+  const singleProvider = configuredProviders.length === 1 ? configuredProviders[0] : null;
   const currentIdempotencyKey = useRef(createIdempotencyKey());
   const failedSubmission = useRef(false);
   const isCurrent = useRef(false);
@@ -150,6 +156,22 @@ export function MissionComposer({
           <p className="morrow-composer__provider-note" role="status">
             No AI model is connected yet, so missions will wait until one is
             added. <Link to="/connections">Connect a model</Link>
+          </p>
+        ) : configuredProviders.length > 0 ? (
+          <p className="morrow-composer__provider-ready" role="status">
+            <span aria-hidden="true" className="morrow-composer__provider-dot" />
+            {singleProvider ? (
+              <>
+                Ready —{" "}
+                <strong>{singleProvider.defaultModel ?? singleProvider.label}</strong>{" "}
+                via {singleProvider.label}. <Link to="/connections">Change model</Link>
+              </>
+            ) : (
+              <>
+                {configuredProviders.length} models connected.{" "}
+                <Link to="/connections">Manage models</Link>
+              </>
+            )}
           </p>
         ) : null}
         <label className="morrow-sr-only" htmlFor="mission-objective">

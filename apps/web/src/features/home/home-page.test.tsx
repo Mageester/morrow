@@ -73,6 +73,34 @@ function snapshot(id = "mission-created") {
   };
 }
 
+function providerStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    id: "openai-compatible",
+    label: "OpenAI-compatible endpoint",
+    kind: "api-key",
+    configured: true,
+    available: true,
+    endpointType: "custom",
+    endpointHost: "example.test",
+    authStatus: "configured",
+    authMode: "custom-compatible",
+    capabilities: {
+      streaming: true,
+      toolCalls: true,
+      systemMessages: true,
+      vision: false,
+      customEndpoint: true,
+      local: false,
+    },
+    models: ["local-model-x"],
+    defaultModel: "local-model-x",
+    note: null,
+    setupHint: null,
+    ...overrides,
+  };
+}
+
 function json(body: unknown, status = 200) {
   return Response.json(body, { status });
 }
@@ -125,12 +153,14 @@ function renderHome() {
 function standardHandler(
   missions: ReturnType<typeof mission>[] = [],
   createResponse: Response = json(snapshot(), 201),
+  providers: ReturnType<typeof providerStatus>[] = [],
 ) {
   return (path: string) => {
     if (path === "/api/health") {
       return json({ ok: true, service: "morrow-orchestrator" });
     }
     if (path === "/api/projects") return json([project]);
+    if (path === "/api/providers") return json(providers);
     if (path.startsWith("/api/web/missions?")) return json(missions);
     if (path === "/api/web/missions") return createResponse;
     throw new Error(`Unexpected request: ${path}`);
@@ -155,6 +185,31 @@ describe("HomePage", () => {
     await waitFor(() => expect(objective).toHaveFocus());
     expect(screen.queryByText(/Coding|Research|Documents/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
+  });
+
+  it("names the connected provider and model in the composer", async () => {
+    installApi(standardHandler([], json(snapshot(), 201), [providerStatus()]));
+    renderHome();
+
+    const ready = await screen.findByText(/Ready —/);
+    expect(ready).toHaveTextContent("local-model-x");
+    expect(ready).toHaveTextContent("OpenAI-compatible endpoint");
+    expect(
+      within(ready).getByRole("link", { name: "Change model" }),
+    ).toHaveAttribute("href", "/app/connections");
+    // The empty-state warning must NOT show when a model is connected.
+    expect(screen.queryByText(/No AI model is connected yet/)).not.toBeInTheDocument();
+  });
+
+  it("warns and links to Connections when no model is configured", async () => {
+    installApi(standardHandler([], json(snapshot(), 201), []));
+    renderHome();
+
+    const note = await screen.findByText(/No AI model is connected yet/);
+    expect(
+      within(note).getByRole("link", { name: "Connect a model" }),
+    ).toHaveAttribute("href", "/app/connections");
+    expect(screen.queryByText(/Ready —/)).not.toBeInTheDocument();
   });
 
   it("blocks an empty submission", async () => {

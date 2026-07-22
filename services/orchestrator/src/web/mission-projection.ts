@@ -51,6 +51,14 @@ export interface MissionWebProjectionInput {
   dispatchFailure?: { message: string; at: string } | null;
   /** Whether at least one model provider is currently configured. */
   providersConfigured?: boolean;
+  /**
+   * The concrete model/provider the mission's most recent worker task actually
+   * routed to. Missions rarely pin `execution.model`; the router resolves a
+   * model per task from the preset, so this is what genuinely ran — the header
+   * must name it rather than the abstract preset.
+   */
+  routedModel?: string | null;
+  routedProviderId?: string | null;
 }
 
 /** Attention id for the mission-level plan approval (not an approvals row). */
@@ -298,9 +306,17 @@ function buildMilestones(criteria: readonly MissionCriterion[]): WebMissionMiles
     }));
 }
 
+// The activity stream is a "recent progress" view, not a full audit log (the
+// complete history stays durable in the event store). A long-running mission
+// that recovers many times can emit hundreds of events; rendering every one
+// produces an unusable multi-screen wall, so the stream is bounded to its most
+// recent window. Normal missions (well under this many events) are unaffected.
+const ACTIVITY_WINDOW = 80;
+
 function buildActivity(missionId: string, events: readonly MissionEvent[]): WebMissionActivity[] {
-  return [...events]
-    .sort((a, b) => a.sequence - b.sequence)
+  const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
+  const recent = ordered.length > ACTIVITY_WINDOW ? ordered.slice(-ACTIVITY_WINDOW) : ordered;
+  return recent
     .map((event) => {
       const raw = event.summary.trim().length > 0 ? event.summary.trim() : humanizeEventType(event.type);
       const humanized = humanizeEventSummary(event);
@@ -568,9 +584,15 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
     : null;
 
   const presentation = derivePresentation(mission, input.runtime, verified);
+  // Name the model that actually ran: a pinned execution model wins, then the
+  // model the router resolved for the latest worker task, then a bare provider,
+  // and only as a last resort the abstract preset (before any task routed).
   const execution = mission.execution;
   const modelLabel = execution.model
-    ?? (execution.providerId ? execution.providerId : `${execution.preset} preset`);
+    ?? input.routedModel
+    ?? execution.providerId
+    ?? input.routedProviderId
+    ?? `${execution.preset} preset`;
 
   return {
     version: 1,

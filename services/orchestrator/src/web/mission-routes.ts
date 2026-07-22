@@ -127,6 +127,19 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
     const dispatchMessage = typeof failedDispatch?.result?.["message"] === "string"
       ? (failedDispatch.result["message"] as string)
       : null;
+    // The concrete model/provider the latest worker task routed to. Missions
+    // rarely pin a model, so this is what actually ran; the header names it
+    // instead of the abstract preset.
+    const latestRouting = deps.db
+      .prepare(
+        `SELECT routing.model AS model, routing.provider_id AS providerId
+         FROM task_routing AS routing
+         JOIN tasks AS task ON task.id = routing.task_id
+         WHERE task.mission_id = ?
+         ORDER BY task.created_at DESC, task.id DESC
+         LIMIT 1`,
+      )
+      .get(missionId) as { model: string | null; providerId: string | null } | undefined;
     return {
       mission,
       workspaceId: deriveWorkspace(project).id,
@@ -141,6 +154,8 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
           }
         : null,
       providersConfigured: providersConfigured(),
+      routedModel: latestRouting?.model ?? null,
+      routedProviderId: latestRouting?.providerId ?? null,
     };
   };
 
