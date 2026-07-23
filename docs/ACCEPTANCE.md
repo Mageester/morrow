@@ -104,6 +104,45 @@ Edge channel unless an explicit Playwright browser selection is configured.
 This keeps the consumer package self-contained without downloading an undeclared
 browser at runtime.
 
+## Web app vertical slice (`/app`)
+
+The web foundation ships an end-to-end Playwright gate covering the local
+`/app` product surface. It is deterministic and self-contained: no provider,
+network, or agent execution is involved.
+
+```bash
+pnpm --filter @morrow/web test        # 151 component/unit tests
+pnpm --filter @morrow/web build       # built bundle served at /app
+pnpm --filter @morrow/web e2e         # Playwright journey + a11y + visual
+```
+
+`e2e` starts an isolated orchestrator (temporary `MORROW_HOME`, `MOCK_PROVIDER`,
+loopback only) serving the built `/app`, seeded via
+`services/orchestrator/scripts/e2e-seed.ts` with two deterministic missions: one
+carrying a resolvable pending attention request, one carrying a persisted
+artifact and criterion evidence that finalizes to an honest
+`completed_with_caveats`. The suite asserts:
+
+- the objective-first composer, approved navigation, and mission creation →
+  durable workspace navigation;
+- refresh recovery of the same mission and state;
+- offline → online runtime reconnection status;
+- resolving a real attention request (recommendation shown, never auto-selected)
+  and destructive-choice focus trap + restoration;
+- inspecting a generated artifact and an honest Result (evidence + caveated
+  verification, never a fabricated "Completed and verified" or numeric percent);
+- keyboard-only tab navigation;
+- no serious/critical axe accessibility violations on Home, the attention
+  mission, and the Result mission;
+- responsive + dark-mode visual snapshots of the seeded mission.
+
+Visual baselines under `apps/web/e2e/**-snapshots/` are pinned to
+Windows/Chromium; regenerate with `pnpm --filter @morrow/web e2e:update` when the
+design changes intentionally. Full agent-driven mission *completion* (running →
+verified) is covered by the orchestrator's own acceptance suites, not re-driven
+through the browser, because the mock provider does not progress missions past
+`draft` headlessly.
+
 ## Security boundary
 
 The child process receives a minimal environment with provider credentials

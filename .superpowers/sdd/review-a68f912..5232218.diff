@@ -1,0 +1,1171 @@
+# Review package: a68f912c3efdf24ae39e1cb8051c832901ff75b1..5232218
+
+## Commits
+5232218 fix(web): separate composer validation errors
+57e4ea0 fix(web): harden mission composer behavior
+427527d feat(web): add universal mission composer
+
+## Files changed
+ .superpowers/sdd/task-7-report.md               | 150 ++++++
+ apps/web/src/api/projects.ts                    |  22 +
+ apps/web/src/features/home/home-page.test.tsx   | 612 ++++++++++++++++++++++++
+ apps/web/src/features/home/home-page.tsx        | 121 ++++-
+ apps/web/src/features/home/mission-composer.tsx | 208 ++++++++
+ 5 files changed, 1106 insertions(+), 7 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-7-report.md b/.superpowers/sdd/task-7-report.md
+new file mode 100644
+index 0000000..1d2b46c
+--- /dev/null
++++ b/.superpowers/sdd/task-7-report.md
+@@ -0,0 +1,150 @@
++# Task 7 Report — Home and Universal Mission Composer
++
++## Scope
++
++Implemented the Task 7 Home surface and universal mission composer only. The
++default flow is objective-first, uses one Morrow identity, has no task-category
++picker, creates missions through the typed `/api/web/missions` boundary, and
++navigates to the existing mission route after success.
++
++## TDD evidence
++
++### RED
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++Before implementation, the new `home-page.test.tsx` suite failed (9/9 tests).
++The Task 6 placeholder lacked the accessible `Mission objective` input,
++universal prompt, mission creation flow, mission sections, and project states.
++
++### GREEN
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++Passed: 1 file, 9 tests. Coverage includes prompt/category absence, empty
++submission, Enter and Shift+Enter behavior, rapid double submit locking,
++stable retry keys, key rotation after an explicit failed-draft edit, success
++navigation and cache population, failure preservation, section order/hiding,
++safe project states, and focus/accessibility semantics.
++
++## Initial verification (before reviewer hardening)
++
++- `pnpm --filter @morrow/web test` — passed, 4 files / 35 tests.
++- `pnpm --filter @morrow/web check` — passed.
++- `pnpm --filter @morrow/web build` — passed; Vite emitted `dist/index.html`
++  and the expected hashed assets.
++- `git diff --check` — passed.
++
++## Files
++
++- `apps/web/src/api/projects.ts`
++- `apps/web/src/features/home/home-page.tsx`
++- `apps/web/src/features/home/mission-composer.tsx`
++- `apps/web/src/features/home/home-page.test.tsx`
++
++## Privacy, security, and accessibility
++
++- `/api/projects` is schema-validated, then reduced to only `id` and `name`
++  before it enters the browser query cache. Workspace paths, project details,
++  and secrets are not persisted or rendered.
++- Mission creation validates its outgoing input with `CreateWebMissionSchema`
++  and validates responses with `WebMissionSnapshotSchema`.
++- A ref-level in-flight lock prevents rapid Enter events from starting two
++  requests before React mutation state re-renders. The idempotency key remains
++  stable across retries and changes only after success or a user edit after a
++  failed request.
++- The composer has an explicit textarea label, a keyboard submit/newline split,
++  automatic focus once a project is ready, status/error live semantics, and
++  disabled unavailable actions.
++
++## Limitations and deviations
++
++- The service does not yet persist a mission deadline. The deadline input is
++  explicitly disabled/unavailable and is not submitted. Attachment upload and
++  connection selection likewise have no truthful API in this slice.
++- Mission workspace activity, attention resolution, and richer mission cards
++  remain later tasks; this change does not implement Task 8+ behavior.
++
++## Rollback
++
++Revert commit `feat(web): add universal mission composer` to restore the Task 6
++Home placeholder and remove the project-selection query helper.
++
++---
++
++## Reviewer hardening follow-up
++
++### RED
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++The reviewer regression suite expanded Home coverage from 9 to 15 tests. Before
++the hardening implementation it failed 8 tests: active deadline submission,
++autonomy edits reusing a failed key, oversized-objective handling, duplicate
++attention/active placement and whitespace-derived landmark ids, contradictory
++project status copy, and a late create success overriding user navigation.
++
++### GREEN
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++Passed: 1 file, 15 tests. The resolved tests cover disabled/no-payload deadline
++behavior, objective and autonomy idempotency rotation after failure, stable
++retry keys, 8,000-character rejection and exact-boundary acceptance without a
++stuck submission lock, exclusive attention/active/recent partitions, fixed
++named landmarks, project loading/error/empty announcements, and a late success
++that caches but does not navigate after Home unmounts.
++
++### Privacy and accessibility correction
++
++The raw `/api/projects` response necessarily reaches the browser to be
++schema-validated. `projectQueries.list` immediately maps it to `id` and `name`
++before React Query/application state retains it, so `workspacePath` is neither
++rendered nor stored in client query state. A future browser-safe project
++projection endpoint would remove this raw-response exposure; it is deliberately
++out of scope for Task 7.
++
++Deadline, attachment, and connection controls are now explicitly unavailable
++in this local slice and are not submitted. Validation errors are announced via
++an alert and mark the objective invalid. Project states use distinct polite
++loading/empty announcements and an assertive error without contradictory
++composer copy.
++
++### Follow-up rollback
++
++Revert commit `fix(web): harden mission composer behavior` to remove only the
++reviewer hardening changes while retaining the original Task 7 feature.
++
++---
++
++## Final composer error-semantics follow-up
++
++### RED
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++The focused suite failed two regressions: a recoverable API failure marked a
++valid objective `aria-invalid` and described the textarea with the request
++error, while the objective-validation message did not have its dedicated
++description id.
++
++### GREEN
++
++`pnpm --filter @morrow/web test -- home-page.test.tsx`
++
++Passed: 1 file, 15 tests. API/runtime failures now remain a polite, accessible
++form status without invalidating a valid objective. Objective validation alone
++sets `aria-invalid`, describes the textarea with `mission-objective-error`, and
++clears when the user corrects the draft.
++
++### Current final verification
++
++- `pnpm --filter @morrow/web test` — passed, 4 files / 41 tests.
++- `pnpm --filter @morrow/web check` — passed.
++- `pnpm --filter @morrow/web build` — passed with `apps/web/dist/index.html`.
++- `git diff --check a68f912c3efdf24ae39e1cb8051c832901ff75b1..HEAD` — passed.
++
++### Final rollback
++
++Revert commit `fix(web): separate composer validation errors` to remove only
++the final validation/request-error accessibility separation.
+diff --git a/apps/web/src/api/projects.ts b/apps/web/src/api/projects.ts
+new file mode 100644
+index 0000000..a304008
+--- /dev/null
++++ b/apps/web/src/api/projects.ts
+@@ -0,0 +1,22 @@
++import { ProjectSchema } from "@morrow/contracts";
++import { queryOptions } from "@tanstack/react-query";
++import { api } from "./client.js";
++
++export interface ProjectSelection {
++  id: string;
++  name: string;
++}
++
++export const projectQueries = {
++  list() {
++    return queryOptions({
++      queryKey: ["projects", "available"] as const,
++      queryFn: async (): Promise<ProjectSelection[]> => {
++        const projects = await api.get("/api/projects", ProjectSchema.array());
++        // Workspace paths are only needed by the service. Do not retain them in
++        // the browser query cache when Home only needs a project identifier.
++        return projects.map(({ id, name }) => ({ id, name }));
++      },
++    });
++  },
++};
+diff --git a/apps/web/src/features/home/home-page.test.tsx b/apps/web/src/features/home/home-page.test.tsx
+new file mode 100644
+index 0000000..3b4c286
+--- /dev/null
++++ b/apps/web/src/features/home/home-page.test.tsx
+@@ -0,0 +1,612 @@
++import {
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++  within,
++} from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import {
++  QueryClient,
++  QueryClientProvider,
++} from "@tanstack/react-query";
++import {
++  RouterProvider,
++  createMemoryHistory,
++  type AnyRouter,
++} from "@tanstack/react-router";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { missionKeys } from "../../api/query-keys.js";
++import { RuntimeStatusProvider } from "../../state/runtime-status.js";
++import { ThemeProvider } from "../../state/theme.js";
++import { createAppRouter } from "../../app/router.js";
++
++const now = "2026-07-21T12:00:00.000Z";
++
++const project = {
++  createdAt: now,
++  id: "project-1",
++  name: "Private workspace",
++  version: 1,
++  workspacePath: "C:\\private\\workspace",
++};
++
++function mission(
++  id: string,
++  overrides: Record<string, unknown> = {},
++) {
++  return {
++    attentionCount: 0,
++    completedMilestones: 0,
++    createdAt: now,
++    currentPhase: "Planning",
++    id,
++    latestActivity: "Morrow is getting started.",
++    objective: `Objective for ${id}`,
++    projectId: project.id,
++    state: "working",
++    title: `Mission ${id}`,
++    totalMilestones: 2,
++    updatedAt: now,
++    version: 1,
++    workspaceId: "workspace-personal-project-1",
++    ...overrides,
++  };
++}
++
++function snapshot(id = "mission-created") {
++  return {
++    artifacts: [],
++    attention: [],
++    currentWork: null,
++    milestones: [],
++    recentActivity: [],
++    summary: mission(id),
++    verification: {
++      caveats: [],
++      evidenceCount: 0,
++      state: "not_ready",
++      summary: "Verification has not started.",
++    },
++    version: 1,
++  };
++}
++
++function json(body: unknown, status = 200) {
++  return Response.json(body, { status });
++}
++
++interface Deferred<T> {
++  promise: Promise<T>;
++  resolve(value: T): void;
++}
++
++function deferred<T>(): Deferred<T> {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((onResolve) => {
++    resolve = onResolve;
++  });
++  return { promise, resolve };
++}
++
++function installApi(
++  handler: (path: string, init?: RequestInit) => Response | Promise<Response>,
++) {
++  const fetchMock = vi.fn(
++    (input: RequestInfo | URL, init?: RequestInit) =>
++      handler(String(input), init),
++  );
++  vi.stubGlobal("fetch", fetchMock);
++  return fetchMock;
++}
++
++function renderHome() {
++  const queryClient = new QueryClient({
++    defaultOptions: { queries: { retry: false } },
++  });
++  const router = createAppRouter(
++    createMemoryHistory({ initialEntries: ["/app/"] }),
++  );
++
++  render(
++    <QueryClientProvider client={queryClient}>
++      <ThemeProvider>
++        <RuntimeStatusProvider>
++          <RouterProvider router={router as AnyRouter} />
++        </RuntimeStatusProvider>
++      </ThemeProvider>
++    </QueryClientProvider>,
++  );
++
++  return { queryClient, router };
++}
++
++function standardHandler(
++  missions: ReturnType<typeof mission>[] = [],
++  createResponse: Response = json(snapshot(), 201),
++) {
++  return (path: string) => {
++    if (path === "/api/health") {
++      return json({ ok: true, service: "morrow-orchestrator" });
++    }
++    if (path === "/api/projects") return json([project]);
++    if (path.startsWith("/api/web/missions?")) return json(missions);
++    if (path === "/api/web/missions") return createResponse;
++    throw new Error(`Unexpected request: ${path}`);
++  };
++}
++
++afterEach(() => {
++  localStorage.clear();
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("HomePage", () => {
++  it("uses the universal objective-first prompt without a task category selector", async () => {
++    installApi(standardHandler());
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    expect(screen.getByText("What should Morrow accomplish?")).toBeVisible();
++    await waitFor(() => expect(objective).toHaveFocus());
++    expect(screen.queryByText(/Coding|Research|Documents/)).not.toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
++  });
++
++  it("blocks an empty submission", async () => {
++    const fetchMock = installApi(standardHandler());
++    const user = userEvent.setup();
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.keyboard("{Enter}");
++
++    expect(
++      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++    ).toHaveLength(0);
++  });
++
++  it("submits with Enter while Shift+Enter adds a newline", async () => {
++    const fetchMock = installApi(standardHandler());
++    const user = userEvent.setup();
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Plan the release notes");
++    await user.keyboard("{Shift>}{Enter}{/Shift}");
++    expect(objective).toHaveValue("Plan the release notes\n");
++    expect(
++      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++    ).toHaveLength(0);
++
++    await user.keyboard("{Enter}");
++    await waitFor(() => {
++      expect(
++        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++      ).toHaveLength(1);
++    });
++  });
++
++  it("uses one stable idempotency key for rapid double submission and caches the created mission", async () => {
++    const created = deferred<Response>();
++    const fetchMock = installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json([project]);
++      if (path.startsWith("/api/web/missions?")) return json([]);
++      if (path === "/api/web/missions") return created.promise;
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const { queryClient, router } = renderHome();
++    const user = userEvent.setup();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Prepare the release");
++    await user.keyboard("{Enter}{Enter}");
++
++    const creates = fetchMock.mock.calls.filter(
++      ([path]) => path === "/api/web/missions",
++    );
++    expect(creates).toHaveLength(1);
++    expect(JSON.parse(String(creates[0]?.[1]?.body))).toMatchObject({
++      idempotencyKey: expect.any(String),
++      objective: "Prepare the release",
++      projectId: project.id,
++    });
++
++    created.resolve(json(snapshot("mission-42"), 201));
++    await waitFor(() => {
++      expect(router.state.location.pathname).toBe("/missions/mission-42");
++    });
++    expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
++      snapshot("mission-42"),
++    );
++  });
++
++  it("preserves a failed objective and rotates the idempotency key only after an explicit edit", async () => {
++    let createCount = 0;
++    const fetchMock = installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json([project]);
++      if (path.startsWith("/api/web/missions?")) return json([]);
++      if (path === "/api/web/missions") {
++        createCount += 1;
++        return createCount < 3
++          ? json(
++              {
++                error: {
++                  code: "MISSION_BLOCKED",
++                  message: "The mission needs a decision.",
++                },
++                version: 1,
++              },
++              409,
++            )
++          : json(snapshot("mission-retry"), 201);
++      }
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Review the proposal");
++    await user.keyboard("{Enter}");
++    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
++      "role",
++      "status",
++    );
++    expect(objective).toHaveValue("Review the proposal");
++    expect(objective).not.toHaveAttribute("aria-invalid");
++    expect(objective).not.toHaveAttribute("aria-describedby");
++
++    const first = JSON.parse(
++      String(
++        fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
++          ?.body,
++      ),
++    );
++    await user.keyboard("{Enter}");
++    await waitFor(() => expect(createCount).toBe(2));
++    const retry = JSON.parse(
++      String(
++        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[1]?.[1]
++          ?.body,
++      ),
++    );
++    expect(retry.idempotencyKey).toBe(first.idempotencyKey);
++
++    await user.type(objective, " with evidence");
++    await user.keyboard("{Enter}");
++    await waitFor(() => expect(createCount).toBe(3));
++    const second = JSON.parse(
++      String(fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[2]?.[1]?.body),
++    );
++    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
++  });
++
++  it("rotates the idempotency key when autonomy changes after a failed request", async () => {
++    let createCount = 0;
++    const fetchMock = installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json([project]);
++      if (path.startsWith("/api/web/missions?")) return json([]);
++      if (path === "/api/web/missions") {
++        createCount += 1;
++        return createCount === 1
++          ? json(
++              {
++                error: {
++                  code: "MISSION_BLOCKED",
++                  message: "The mission needs a decision.",
++                },
++                version: 1,
++              },
++              409,
++            )
++          : json(snapshot("mission-autonomy"), 201);
++      }
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const user = userEvent.setup();
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Review the proposal");
++    await user.keyboard("{Enter}");
++    expect(await screen.findByText("The mission needs a decision.")).toHaveAttribute(
++      "role",
++      "status",
++    );
++    const first = JSON.parse(
++      String(
++        fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
++          ?.body,
++      ),
++    );
++
++    await user.selectOptions(
++      screen.getByLabelText("Autonomy"),
++      "autonomous",
++    );
++    await user.click(screen.getByRole("button", { name: "Start mission" }));
++    await waitFor(() => expect(createCount).toBe(2));
++    const changed = JSON.parse(
++      String(fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions")[1]?.[1]?.body),
++    );
++    expect(changed.autonomy).toBe("autonomous");
++    expect(changed.idempotencyKey).not.toBe(first.idempotencyKey);
++  });
++
++  it("keeps the deadline disabled and never submits it before the service supports deadlines", async () => {
++    const fetchMock = installApi(standardHandler());
++    const user = userEvent.setup();
++    renderHome();
++
++    const deadline = await screen.findByLabelText("Optional deadline");
++    expect(deadline).toBeDisabled();
++    await user.click(screen.getByText("Advanced mission options"));
++    expect(
++      screen.getByText(
++        "Deadlines, attachments, and connections are not available in this local slice.",
++      ),
++    ).toBeVisible();
++    fireEvent.change(deadline, { target: { value: "2026-07-22T12:00" } });
++    const objective = screen.getByRole("textbox", { name: "Mission objective" });
++    await user.type(objective, "Plan the release");
++    await user.keyboard("{Enter}");
++    await waitFor(() => {
++      expect(
++        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++      ).toHaveLength(1);
++    });
++    expect(
++      JSON.parse(
++        String(
++          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
++            ?.body,
++        ),
++      ),
++    ).not.toHaveProperty("deadline");
++  });
++
++  it("rejects an oversized objective before locking submission and allows a corrected retry", async () => {
++    const fetchMock = installApi(standardHandler());
++    renderHome();
++
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    fireEvent.change(objective, { target: { value: "x".repeat(8_001) } });
++    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_001)));
++    fireEvent.keyDown(objective, { key: "Enter" });
++    expect(await screen.findByRole("alert")).toHaveTextContent(
++      "Mission objectives must be 8,000 characters or fewer.",
++    );
++    expect(objective).toHaveAttribute("aria-invalid", "true");
++    expect(objective).toHaveAttribute(
++      "aria-describedby",
++      "mission-objective-error",
++    );
++    expect(objective).toHaveValue("x".repeat(8_001));
++    expect(
++      fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++    ).toHaveLength(0);
++
++    fireEvent.change(objective, { target: { value: "x".repeat(8_000) } });
++    await waitFor(() => expect(objective).toHaveValue("x".repeat(8_000)));
++    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
++    expect(objective).not.toHaveAttribute("aria-invalid");
++    expect(objective).not.toHaveAttribute("aria-describedby");
++    fireEvent.keyDown(objective, { key: "Enter" });
++    await waitFor(() => {
++      expect(
++        fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
++      ).toHaveLength(1);
++    });
++    expect(
++      JSON.parse(
++        String(
++          fetchMock.mock.calls.find(([path]) => path === "/api/web/missions")?.[1]
++            ?.body,
++        ),
++      ).objective,
++    ).toHaveLength(8_000);
++  });
++
++  it("renders non-empty home sections in attention, active, then recent-result order", async () => {
++    installApi(
++      standardHandler([
++        mission("attention", {
++          attentionCount: 1,
++          state: "needs_input",
++          title: "Approve a connection",
++        }),
++        mission("active", { title: "Draft a plan" }),
++        mission("complete", {
++          state: "completed_verified",
++          title: "Completed research",
++        }),
++      ]),
++    );
++    renderHome();
++
++    await screen.findByText("Approve a connection");
++    const headings = await screen.findAllByRole("heading", { level: 2 });
++    expect(headings.map((heading) => heading.textContent)).toEqual(
++      expect.arrayContaining([
++        "Needs your attention",
++        "Active missions",
++        "Recent results",
++      ]),
++    );
++    const content = document.body.textContent ?? "";
++    expect(content.indexOf("Needs your attention")).toBeLessThan(
++      content.indexOf("Active missions"),
++    );
++    expect(content.indexOf("Active missions")).toBeLessThan(
++      content.indexOf("Recent results"),
++    );
++    expect(screen.getByText("Approve a connection")).toBeVisible();
++    expect(screen.getByText("Draft a plan")).toBeVisible();
++    expect(screen.getByText("Completed research")).toBeVisible();
++  });
++
++  it("places a working mission that needs attention only in the attention landmark", async () => {
++    installApi(
++      standardHandler([
++        mission("working-attention", {
++          attentionCount: 1,
++          title: "Choose a deployment window",
++        }),
++        mission("active", { title: "Continue research" }),
++        mission("complete", {
++          state: "completed_verified",
++          title: "Finished review",
++        }),
++      ]),
++    );
++    renderHome();
++
++    const attention = await screen.findByRole("region", {
++      name: "Needs your attention",
++    });
++    const active = screen.getByRole("region", { name: "Active missions" });
++    const results = screen.getByRole("region", { name: "Recent results" });
++    expect(attention).toHaveAttribute("aria-labelledby", "home-attention-heading");
++    expect(active).toHaveAttribute("aria-labelledby", "home-active-heading");
++    expect(results).toHaveAttribute("aria-labelledby", "home-results-heading");
++    expect(
++      screen.getAllByRole("link", { name: "Choose a deployment window" }),
++    ).toHaveLength(1);
++    expect(within(active).queryByText("Choose a deployment window")).not.toBeInTheDocument();
++  });
++
++  it("hides empty mission sections and teaches the empty state", async () => {
++    installApi(standardHandler());
++    renderHome();
++
++    expect(await screen.findByText("Start with an outcome.")).toBeVisible();
++    expect(
++      screen.queryByRole("heading", { name: "Needs your attention" }),
++    ).not.toBeInTheDocument();
++    expect(
++      screen.queryByRole("heading", { name: "Active missions" }),
++    ).not.toBeInTheDocument();
++    expect(
++      screen.queryByRole("heading", { name: "Recent results" }),
++    ).not.toBeInTheDocument();
++  });
++
++  it("handles unavailable and failed project loading without exposing workspace details", async () => {
++    installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json([]);
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    renderHome();
++
++    expect(await screen.findByText("No project is available yet.")).toBeVisible();
++    expect(screen.getByText("No local project is available yet.")).toHaveAttribute(
++      "role",
++      "status",
++    );
++    expect(
++      screen.queryByText("Select or create a local project before starting a mission."),
++    ).not.toBeInTheDocument();
++    expect(screen.queryByText(project.workspacePath)).not.toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "Start mission" })).toBeDisabled();
++  });
++
++  it("shows a recoverable project-loading error", async () => {
++    installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json({ unexpected: true });
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    renderHome();
++
++    expect(await screen.findByRole("alert")).toHaveTextContent(
++      "Projects could not be loaded.",
++    );
++    expect(
++      screen.queryByText("Select or create a local project before starting a mission."),
++    ).not.toBeInTheDocument();
++  });
++
++  it("announces project loading before resolving an empty local-project state", async () => {
++    const projects = deferred<Response>();
++    installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return projects.promise;
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    renderHome();
++
++    expect(await screen.findByText("Loading local projects…")).toHaveAttribute(
++      "role",
++      "status",
++    );
++    expect(
++      screen.queryByText("Select or create a local project before starting a mission."),
++    ).not.toBeInTheDocument();
++    projects.resolve(json([]));
++    expect(await screen.findByText("No local project is available yet.")).toHaveAttribute(
++      "role",
++      "status",
++    );
++  });
++
++  it("caches a late success without navigating away from the page the user already chose", async () => {
++    const created = deferred<Response>();
++    installApi((path) => {
++      if (path === "/api/health") {
++        return json({ ok: true, service: "morrow-orchestrator" });
++      }
++      if (path === "/api/projects") return json([project]);
++      if (path.startsWith("/api/web/missions?")) return json([]);
++      if (path === "/api/web/missions") return created.promise;
++      throw new Error(`Unexpected request: ${path}`);
++    });
++    const { queryClient, router } = renderHome();
++    const user = userEvent.setup();
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Prepare the release");
++    await user.keyboard("{Enter}");
++
++    await router.navigate({ to: "/library" });
++    created.resolve(json(snapshot("mission-late"), 201));
++    await waitFor(() => {
++      expect(queryClient.getQueryData(missionKeys.detail("mission-late"))).toEqual(
++        snapshot("mission-late"),
++      );
++    });
++    expect(router.state.location.pathname).toBe("/library");
++  });
++});
+diff --git a/apps/web/src/features/home/home-page.tsx b/apps/web/src/features/home/home-page.tsx
+index 448d2dd..bf66bbb 100644
+--- a/apps/web/src/features/home/home-page.tsx
++++ b/apps/web/src/features/home/home-page.tsx
+@@ -1,20 +1,127 @@
+ import { Surface } from "@morrow/ui";
++import { useQuery } from "@tanstack/react-query";
++import { Link } from "@tanstack/react-router";
++import { missionQueries } from "../../api/query-keys.js";
++import { projectQueries } from "../../api/projects.js";
++import { MissionComposer } from "./mission-composer.js";
++
++const activeStates = new Set(["draft", "working", "reviewing"]);
++const resultStates = new Set([
++  "completed_verified",
++  "completed_with_caveats",
++]);
+ 
+ export function HomePage() {
++  const projects = useQuery(projectQueries.list());
++  const activeProject = projects.data?.[0];
++  const missions = useQuery({
++    ...missionQueries.list(activeProject?.id ?? ""),
++    enabled: Boolean(activeProject),
++  });
++  const attention = (missions.data ?? []).filter(
++    (mission) =>
++      mission.attentionCount > 0 ||
++      mission.state === "blocked" ||
++      mission.state === "needs_input",
++  );
++  const attentionMissionIds = new Set(attention.map((mission) => mission.id));
++  const active = (missions.data ?? []).filter(
++    (mission) =>
++      !attentionMissionIds.has(mission.id) && activeStates.has(mission.state),
++  );
++  const results = (missions.data ?? []).filter((mission) =>
++    !attentionMissionIds.has(mission.id) && resultStates.has(mission.state),
++  );
++
+   return (
+     <section aria-labelledby="home-heading" className="morrow-page">
+       <div className="morrow-page__heading">
+         <p className="morrow-eyebrow">Your private agent</p>
+         <h1 id="home-heading">Home</h1>
+         <p>Start and resume durable work with Morrow.</p>
+       </div>
+-      <Surface padding="large" variant="raised">
+-        <h2>Mission workspace ready</h2>
+-        <p>
+-          Mission creation arrives in the next product slice. This foundation
+-          keeps the experience local-first and provider-neutral.
+-        </p>
+-      </Surface>
++      <MissionComposer activeProjectId={activeProject?.id} />
++      {projects.isPending ? (
++        <p aria-live="polite" role="status">Loading local projects…</p>
++      ) : null}
++      {projects.isError ? (
++        <p role="alert">Projects could not be loaded.</p>
++      ) : null}
++      {!projects.isPending && !projects.isError && !activeProject ? (
++        <Surface padding="large">
++          <h2>No project is available yet.</h2>
++          <p aria-live="polite" role="status">No local project is available yet.</p>
++          <p>Create or open a local project before asking Morrow to begin work.</p>
++        </Surface>
++      ) : null}
++      {missions.isError ? <p role="alert">Missions could not be loaded.</p> : null}
++      {attention.length > 0 ? (
++        <MissionSection
++          heading="Needs your attention"
++          headingId="home-attention-heading"
++          missions={attention}
++        />
++      ) : null}
++      {active.length > 0 ? (
++        <MissionSection
++          heading="Active missions"
++          headingId="home-active-heading"
++          missions={active}
++        />
++      ) : null}
++      {results.length > 0 ? (
++        <MissionSection
++          heading="Recent results"
++          headingId="home-results-heading"
++          missions={results}
++        />
++      ) : null}
++      {missions.isSuccess && missions.data.length === 0 ? (
++        <Surface padding="large">
++          <h2>Start with an outcome.</h2>
++          <p>
++            Try “Summarize this week’s findings,” “Plan a product launch,” or
++            “Review this workspace and recommend the next step.”
++          </p>
++        </Surface>
++      ) : null}
++    </section>
++  );
++}
++
++function MissionSection({
++  heading,
++  headingId,
++  missions,
++}: {
++  heading: string;
++  headingId: string;
++  missions: Array<{
++    currentPhase: string;
++    id: string;
++    latestActivity: string | null;
++    title: string;
++  }>;
++}) {
++  return (
++    <section aria-labelledby={headingId}>
++      <h2 id={headingId}>{heading}</h2>
++      <div>
++        {missions.map((mission) => (
++          <Surface key={mission.id} padding="medium">
++            <h3>
++              <Link
++                params={{ missionId: mission.id }}
++                to="/missions/$missionId"
++              >
++                {mission.title}
++              </Link>
++            </h3>
++            <p>{mission.currentPhase}</p>
++            {mission.latestActivity ? <p>{mission.latestActivity}</p> : null}
++          </Surface>
++        ))}
++      </div>
+     </section>
+   );
+ }
+diff --git a/apps/web/src/features/home/mission-composer.tsx b/apps/web/src/features/home/mission-composer.tsx
+new file mode 100644
+index 0000000..8a1ee03
+--- /dev/null
++++ b/apps/web/src/features/home/mission-composer.tsx
+@@ -0,0 +1,208 @@
++import {
++  CreateWebMissionSchema,
++  WebMissionSnapshotSchema,
++  type CreateWebMissionInput,
++} from "@morrow/contracts";
++import { Button, Surface } from "@morrow/ui";
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import { useNavigate } from "@tanstack/react-router";
++import {
++  useEffect,
++  useRef,
++  useState,
++  type FormEvent,
++  type KeyboardEvent,
++} from "react";
++import { api, ApiClientError } from "../../api/client.js";
++import { missionKeys } from "../../api/query-keys.js";
++
++type Autonomy = CreateWebMissionInput["autonomy"];
++
++function createIdempotencyKey(): string {
++  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
++    return `web-${crypto.randomUUID()}`;
++  }
++  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++}
++
++function errorMessage(error: unknown): string {
++  if (error instanceof ApiClientError) return error.message;
++  return "Morrow could not start this mission. Try again.";
++}
++
++export function MissionComposer({
++  activeProjectId,
++}: {
++  activeProjectId?: string | undefined;
++}) {
++  const navigate = useNavigate();
++  const queryClient = useQueryClient();
++  const [autonomy, setAutonomy] = useState<Autonomy>("recommended");
++  const [draft, setDraft] = useState("");
++  const [objectiveValidationError, setObjectiveValidationError] = useState<string | null>(null);
++  const [requestError, setRequestError] = useState<string | null>(null);
++  const currentIdempotencyKey = useRef(createIdempotencyKey());
++  const failedSubmission = useRef(false);
++  const isCurrent = useRef(false);
++  const submissionInFlight = useRef(false);
++  const objectiveInput = useRef<HTMLTextAreaElement>(null);
++
++  useEffect(() => {
++    isCurrent.current = true;
++    return () => {
++      isCurrent.current = false;
++    };
++  }, []);
++
++  useEffect(() => {
++    if (activeProjectId) objectiveInput.current?.focus();
++  }, [activeProjectId]);
++
++  const createMission = useMutation({
++    mutationFn: (input: CreateWebMissionInput) =>
++      api.post("/api/web/missions", input, WebMissionSnapshotSchema),
++    onError: (error) => {
++      failedSubmission.current = true;
++      setRequestError(errorMessage(error));
++    },
++    onSuccess: (snapshot) => {
++      queryClient.setQueryData(
++        missionKeys.detail(snapshot.summary.id),
++        snapshot,
++      );
++      if (!isCurrent.current) return;
++
++      failedSubmission.current = false;
++      currentIdempotencyKey.current = createIdempotencyKey();
++      setDraft("");
++      setObjectiveValidationError(null);
++      setRequestError(null);
++      void navigate({
++        params: { missionId: snapshot.summary.id },
++        to: "/missions/$missionId",
++      });
++    },
++    onSettled: () => {
++      submissionInFlight.current = false;
++    },
++  });
++
++  function resetFailedSubmissionForEdit() {
++    if (!failedSubmission.current) return;
++    currentIdempotencyKey.current = createIdempotencyKey();
++    failedSubmission.current = false;
++    setRequestError(null);
++  }
++
++  function submit() {
++    const objective = draft.trim();
++    if (!objective || !activeProjectId) return;
++    if (objective.length > 8_000) {
++      setObjectiveValidationError(
++        "Mission objectives must be 8,000 characters or fewer.",
++      );
++      return;
++    }
++
++    const parsed = CreateWebMissionSchema.safeParse({
++      autonomy,
++      idempotencyKey: currentIdempotencyKey.current,
++      objective,
++      projectId: activeProjectId,
++    });
++    if (!parsed.success) {
++      setRequestError("Review the mission details and try again.");
++      return;
++    }
++    if (submissionInFlight.current) return;
++
++    submissionInFlight.current = true;
++    setRequestError(null);
++    createMission.mutate(parsed.data);
++  }
++
++  function handleSubmit(event: FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    submit();
++  }
++
++  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
++    if (event.key === "Enter" && !event.shiftKey) {
++      event.preventDefault();
++      submit();
++    }
++  }
++
++  return (
++    <Surface aria-labelledby="mission-composer-heading" padding="large" variant="raised">
++      <form onSubmit={handleSubmit}>
++        <div>
++          <h2 id="mission-composer-heading">What should Morrow accomplish?</h2>
++          <p>Describe the outcome. Morrow will determine the capabilities needed.</p>
++        </div>
++        <label htmlFor="mission-objective">Mission objective</label>
++        <textarea
++          aria-describedby={
++            objectiveValidationError ? "mission-objective-error" : undefined
++          }
++          aria-invalid={objectiveValidationError ? true : undefined}
++          id="mission-objective"
++          onChange={(event) => {
++            const nextDraft = event.target.value;
++            if (nextDraft !== draft) setObjectiveValidationError(null);
++            if (failedSubmission.current && nextDraft !== draft) {
++              resetFailedSubmissionForEdit();
++            }
++            setDraft(nextDraft);
++          }}
++          onKeyDown={handleKeyDown}
++          placeholder="For example: compare these options and recommend the best next step."
++          ref={objectiveInput}
++          rows={5}
++          value={draft}
++        />
++        <details>
++          <summary>Advanced mission options</summary>
++          <label htmlFor="mission-autonomy">Autonomy</label>
++          <select
++            id="mission-autonomy"
++            onChange={(event) => {
++              const nextAutonomy = event.target.value as Autonomy;
++              if (nextAutonomy !== autonomy) resetFailedSubmissionForEdit();
++              setAutonomy(nextAutonomy);
++            }}
++            value={autonomy}
++          >
++            <option value="ask_at_risk">Ask before risky actions</option>
++            <option value="recommended">Use Morrow’s recommendations</option>
++            <option value="autonomous">Proceed autonomously</option>
++          </select>
++          <fieldset disabled>
++            <label htmlFor="mission-deadline">Optional deadline</label>
++            <input id="mission-deadline" type="datetime-local" />
++          </fieldset>
++          <p>
++            Deadlines, attachments, and connections are not available in this
++            local slice.
++          </p>
++        </details>
++        {objectiveValidationError ? (
++          <p id="mission-objective-error" role="alert">
++            {objectiveValidationError}
++          </p>
++        ) : null}
++        {requestError ? (
++          <p aria-live="polite" role="status">
++            {requestError}
++          </p>
++        ) : null}
++        <Button
++          disabled={!activeProjectId || !draft.trim() || createMission.isPending}
++          type="submit"
++        >
++          Start mission
++        </Button>
++      </form>
++    </Surface>
++  );
++}

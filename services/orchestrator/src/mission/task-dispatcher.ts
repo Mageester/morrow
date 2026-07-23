@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
   SendMessageSchema,
@@ -54,11 +54,20 @@ function replayResult(
   const userMessage = assistantIndex >= 0
     ? [...messages.slice(0, assistantIndex)].reverse().find((message) => message.role === "user") ?? null
     : null;
+  const routing = taskRoutingRepository(db).get(task.id)?.decision ?? null;
+  const agentState = taskRecordsRepository(db).getAgentState(task.id);
+  if (!userMessage || !assistantMessage || !routing || !agentState) {
+    throw new AgentTaskDispatchError(
+      409,
+      "Idempotent request exists without a complete committed dispatch bundle",
+      "IDEMPOTENCY_INCOMPLETE",
+    );
+  }
   return {
     task,
     userMessage,
     assistantMessage,
-    routing: taskRoutingRepository(db).get(task.id)?.decision ?? null,
+    routing,
     aggregateUrl: `/api/tasks/${task.id}`,
     sseUrl: `/api/tasks/${task.id}/events/stream`,
     replayed: true as const,
@@ -67,28 +76,38 @@ function replayResult(
 
 function assertReplayMatches(
   db: Database.Database,
-  conversationId: string,
   task: NonNullable<ReturnType<ReturnType<typeof taskRepository>["getTaskById"]>>,
-  request: SendMessageInput,
+  expectedFingerprint: string,
 ): void {
-  const mismatchedIdentity = task.missionId !== (request.missionId ?? null)
-    || task.worktreeId !== (request.worktreeId ?? null)
-    || task.agentId !== (request.agentId ?? null);
-  const messages = conversationsRepository(db).listMessages(conversationId);
-  const assistantIndex = messages.findIndex((message) => message.taskId === task.id && message.role === "assistant");
-  if (assistantIndex < 0) {
-    const owner = db.prepare("SELECT conversation_id FROM conversation_messages WHERE task_id=? AND role='assistant'")
-      .get(task.id) as { conversation_id: string } | undefined;
-    if (mismatchedIdentity || (owner && owner.conversation_id !== conversationId)) {
-      throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
-    }
-    return;
+  const storedFingerprint = taskRepository(db).getIdempotencyFingerprint(task.id);
+  if (!storedFingerprint) {
+    throw new AgentTaskDispatchError(
+      409,
+      "Idempotent request exists without a canonical request fingerprint",
+      "IDEMPOTENCY_INCOMPLETE",
+    );
   }
-  const userMessage = [...messages.slice(0, assistantIndex)].reverse()
-    .find((message) => message.role === "user");
-  if (mismatchedIdentity || userMessage?.content !== request.content) {
+  if (storedFingerprint !== expectedFingerprint) {
     throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
   }
+}
+
+function requestFingerprint(conversationId: string, request: SendMessageInput): string {
+  const canonical = {
+    conversationId,
+    content: request.content,
+    missionId: request.missionId ?? null,
+    worktreeId: request.worktreeId ?? null,
+    agentId: request.agentId ?? null,
+    mode: request.mode ?? "agent",
+    preset: request.preset ?? DEFAULT_PRESET_ID,
+    providerId: request.providerId ?? null,
+    model: request.model ?? null,
+    reasoning: request.reasoning ?? null,
+    useMemory: request.useMemory ?? true,
+    autoApprove: request.autoApprove ?? false,
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 function resolveDecision(
@@ -187,13 +206,15 @@ export function dispatchAgentTask(
   const tasks = taskRepository(dependencies.db);
   const conversations = conversationsRepository(dependencies.db);
   const routing = taskRoutingRepository(dependencies.db);
+  const records = taskRecordsRepository(dependencies.db);
   const conversation = conversations.getConversation(conversationId);
   if (!conversation) throw new AgentTaskDispatchError(404, "Conversation not found", "NOT_FOUND");
+  const idempotencyFingerprint = requestFingerprint(conversationId, body);
 
   if (body.idempotencyKey) {
     const existing = tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey);
     if (existing) {
-      assertReplayMatches(dependencies.db, conversationId, existing, body);
+      assertReplayMatches(dependencies.db, existing, idempotencyFingerprint);
       return replayResult(dependencies.db, conversationId, existing);
     }
   }
@@ -218,74 +239,78 @@ export function dispatchAgentTask(
   const { presetId, decision } = resolveDecision(body, env);
   const timestamp = now();
   const timestampIso = timestamp.toISOString();
-  let task;
+  let bundle;
   try {
-    task = tasks.createTask({
-      id: createId(),
-      projectId: conversation.projectId,
-      kind: "agent_chat",
-      status: "queued",
-      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}),
-      ...(body.agentId ? { agentId: body.agentId } : {}),
-      ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
-      ...(body.missionId ? { missionId: body.missionId } : {}),
-      createdAt: timestampIso,
-    });
+    bundle = dependencies.db.transaction(() => {
+      const task = tasks.createTask({
+        id: createId(),
+        projectId: conversation.projectId,
+        kind: "agent_chat",
+        status: "queued",
+        ...(body.idempotencyKey ? {
+          idempotencyKey: body.idempotencyKey,
+          idempotencyFingerprint,
+        } : {}),
+        ...(body.agentId ? { agentId: body.agentId } : {}),
+        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
+        ...(body.missionId ? { missionId: body.missionId } : {}),
+        createdAt: timestampIso,
+      });
+      const userMessage = conversations.appendMessage({
+        id: createId(),
+        conversationId,
+        role: "user",
+        content: body.content,
+        createdAt: timestampIso,
+        updatedAt: timestampIso,
+      });
+      records.transitionAgentState(task.id, {
+        id: createId(),
+        state: "idle",
+        details: {},
+        createdAt: timestampIso,
+      });
+      const assistantTimestamp = new Date(timestamp.getTime() + 50).toISOString();
+      const assistantMessage = conversations.appendMessage({
+        id: createId(),
+        conversationId,
+        role: "assistant",
+        content: "",
+        taskId: task.id,
+        streamingState: "queued",
+        provider: decision.providerId,
+        model: decision.model,
+        createdAt: assistantTimestamp,
+        updatedAt: assistantTimestamp,
+      });
+      routing.upsert({
+        taskId: task.id,
+        presetId,
+        providerId: decision.providerId,
+        model: decision.model,
+        useMemory: body.useMemory ?? true,
+        decision,
+        createdAt: timestampIso,
+      });
+      return { task, userMessage, assistantMessage };
+    })();
   } catch (error) {
     const winner = body.idempotencyKey
       ? tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey)
       : undefined;
     if (!winner) throw error;
-    assertReplayMatches(dependencies.db, conversationId, winner, body);
+    assertReplayMatches(dependencies.db, winner, idempotencyFingerprint);
     return replayResult(dependencies.db, conversationId, winner);
   }
-
-  const userMessage = conversations.appendMessage({
-    id: createId(),
-    conversationId,
-    role: "user",
-    content: body.content,
-    createdAt: timestampIso,
-    updatedAt: timestampIso,
-  });
-  taskRecordsRepository(dependencies.db).transitionAgentState(task.id, {
-    id: createId(),
-    state: "idle",
-    details: {},
-    createdAt: timestampIso,
-  });
-  const assistantTimestamp = new Date(timestamp.getTime() + 50).toISOString();
-  const assistantMessage = conversations.appendMessage({
-    id: createId(),
-    conversationId,
-    role: "assistant",
-    content: "",
-    taskId: task.id,
-    streamingState: "queued",
-    provider: decision.providerId,
-    model: decision.model,
-    createdAt: assistantTimestamp,
-    updatedAt: assistantTimestamp,
-  });
-
-  routing.upsert({
-    taskId: task.id,
-    presetId,
-    providerId: decision.providerId,
-    model: decision.model,
-    useMemory: body.useMemory ?? true,
-    decision,
-    createdAt: timestampIso,
-  });
-  dependencies.runner.run(task.id);
+  dependencies.runner.run(bundle.task.id);
 
   return {
-    task,
-    userMessage,
-    assistantMessage,
+    task: bundle.task,
+    userMessage: bundle.userMessage,
+    assistantMessage: bundle.assistantMessage,
     routing: decision,
-    aggregateUrl: `/api/tasks/${task.id}`,
-    sseUrl: `/api/tasks/${task.id}/events/stream`,
+    aggregateUrl: `/api/tasks/${bundle.task.id}`,
+    sseUrl: `/api/tasks/${bundle.task.id}/events/stream`,
     replayed: false as const,
   };
 }

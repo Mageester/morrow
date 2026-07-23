@@ -1,0 +1,1205 @@
+# Review package: 22a24b88cce90f26182cede95774ba804163a3bd..7fcdacfd959ce88899ec1527ce1c384f912c873c
+
+## Commits
+7fcdacf fix(web): expose accessible artifact previews
+efff829 fix(web): preserve truthful result and artifact semantics
+e671546 feat(web): add adaptive work and verified results
+
+## Files changed
+ .superpowers/sdd/task-9-report.md                  | 259 +++++++++++++++++++++
+ .../src/features/missions/mission-page.test.tsx    |   9 +-
+ apps/web/src/features/missions/mission-page.tsx    |  24 +-
+ apps/web/src/features/missions/result-tab.test.tsx | 147 ++++++++++++
+ apps/web/src/features/missions/result-tab.tsx      | 128 ++++++++++
+ apps/web/src/features/missions/work-tab.test.tsx   | 111 +++++++++
+ apps/web/src/features/missions/work-tab.tsx        | 162 +++++++++++++
+ apps/web/src/styles/app.css                        |  57 +++++
+ packages/ui/src/components/artifact-frame.tsx      |   5 +-
+ packages/ui/src/styles/global.css                  |   6 +-
+ packages/ui/test/components.test.tsx               |  12 +
+ 11 files changed, 898 insertions(+), 22 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-9-report.md b/.superpowers/sdd/task-9-report.md
+new file mode 100644
+index 0000000..36fe643
+--- /dev/null
++++ b/.superpowers/sdd/task-9-report.md
+@@ -0,0 +1,259 @@
++# Task 9 Report — Adaptive Work and Verified Results
++
++## Scope
++
++Implemented the browser-safe Work and Result mission views:
++
++- a complete typed artifact renderer registry with a metadata fallback for an
++  unexpected runtime kind;
++- shared `ArtifactFrame` presentation for every artifact kind, with safe text
++  previews only;
++- Result hierarchy for verification state, summary, deliverables, evidence,
++  caveats, and honest unavailable actions;
++- Work and Result wiring within the existing stable Task 8 tabpanels;
++- an optional `ArtifactFrame` heading level to preserve heading order when a
++  frame appears below a Work or Result section heading.
++
++No contract, controller, stream, attention, permissions, path-opening, or
++external-data behavior changed.
++
++## TDD Evidence
++
++### RED
++
++Before production components existed:
++
++```powershell
++pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
++pnpm --filter @morrow/ui test -- components.test.tsx
++```
++
++Observed expected failures:
++
++- both web suites could not resolve the absent `work-tab.js` and
++  `result-tab.js` modules;
++- the new public `ArtifactFrame headingLevel={3}` test failed because the
++  frame still rendered an `h2` and forwarded the unknown prop to the DOM.
++
++The focused Work/Result tests were then green after the minimum renderer,
++result, wiring, and heading-level implementation.
++
++A second RED→GREEN regression covered unknown MIME metadata:
++
++```powershell
++pnpm --filter @morrow/web test -- work-tab.test.tsx
++```
++
++With a whitespace-only MIME string, the test failed because metadata displayed
++blank text instead of `Unknown format`. The implementation now trims MIME
++metadata before applying the safe fallback; the same focused test passed
++afterward.
++
++## Historical Final Verification
++
++This evidence records the initial Task 9 delivery. The later review fixes and
++the current accessibility follow-up below supersede its rendered heading and
++preview details.
++
++```text
++pnpm --filter @morrow/web test -- mission-page.test.tsx work-tab.test.tsx result-tab.test.tsx
++PASS — 3 files, 16 tests
++
++pnpm --filter @morrow/web test
++PASS — 8 files, 62 tests
++
++pnpm --filter @morrow/ui test
++PASS — 1 file, 14 tests
++
++pnpm --filter @morrow/web check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/ui check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/web build
++PASS — Vite production build
++
++Test-Path apps/web/dist/index.html
++PASS — True
++
++pnpm --filter @morrow/ui build
++PASS — tsc -p tsconfig.build.json
++
++git diff --check 22a24b88cce90f26182cede95774ba804163a3bd
++PASS — no whitespace errors
++```
++
++## Security and Privacy Review
++
++- Artifact preview and caveat strings are rendered as React text nodes. There
++  is no `dangerouslySetInnerHTML`, HTML parsing, iframe, script, macro,
++  dynamic import, arbitrary fetch, or content execution path.
++- `openPath` is intentionally not rendered as a link or action. The current
++  browser projection offers no authorized open/download/share contract.
++- The renderer uses an allowlisted registry for all declared artifact kinds and
++  uses the same metadata/text-only fallback when a malformed runtime kind
++  reaches the component.
++- Unknown, null, and whitespace MIME values render the explicit `Unknown
++  format` fallback; preview absence is also visible rather than inferred.
++- No credentials, browser storage, telemetry, network request, permission
++  change, or external data flow was added.
++
++## Historical Accessibility Review
++
++- Task 8's persistent `tablist`, tabs, tabpanels, roving keyboard controls,
++  and hidden inactive panels are retained unchanged.
++- The initial slice used a shared frame heading API; later fixes establish the
++  current Work `h2` → `h3` and Result `h2` → `h3` → `h4` hierarchy below.
++- Artifact frames remain named regions through their title; result sections
++  use explicit headings and caveats are always present in the visible DOM,
++  never hidden in a disclosure.
++- Safe previews preserve whitespace, wrap long unbroken text, and have a
++  bounded scroll area instead of forcing horizontal page overflow.
++
++## Limitations
++
++- The current contract does not expose a verified artifact authorization URL,
++  download token, share action, version history, or itemized verification
++  criteria. The UI correctly does not fabricate them.
++- Artifact previews are limited to the projected text field. Rich file,
++  browser, office, or binary previews remain outside this safe slice.
++- The Result view can only report the supplied verification state, summary,
++  evidence count, and caveats; it does not infer success from mission status.
++
++## Rollback
++
++Revert `feat(web): add adaptive work and verified results`. This restores the
++Task 8 Work/Result placeholders and removes only Task 9 components, tests,
++styles, report, and the artifact-frame heading-level extension. Contracts,
++server projection, streaming, approvals, and permissions remain unchanged.
++
++---
++
++## Review-Fix Pass — Truthful Result and Artifact Semantics
++
++### Scope
++
++This follow-up corrects Task 9 review findings without changing the browser
++contract, controller, stream, attention behavior, permissions, or artifact
++actions:
++
++- Result labels now use an explicit mission-state × verification mapping.
++  Non-completed states retain their known projected outcome, and `Completed
++  and verified` appears only for `completed_verified` plus `passed`.
++- Result summaries and caveats are trimmed. Empty summaries use an explicit
++  fallback, and a caveated verification or completion state without usable
++  caveat details visibly reports that omission.
++- Artifact titles normalize to `Untitled artifact`; artifact list keys include
++  ID, version, and index to avoid duplicate-key identity collisions.
++- Text previews are keyboard-focusable named scroll containers.
++- Result heading hierarchy is `h2` result, `h3` subsections, and `h4`
++  deliverable artifact titles. Work remains `h2` then `h3` artifacts.
++
++### RED Evidence
++
++Before the follow-up implementation:
++
++```powershell
++pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
++```
++
++Expected failures were observed:
++
++- 54 Result cases failed because verification labels replaced known draft,
++  input-needed, working, reviewing, blocked, failure, cancelled, and
++  superseded mission outcomes; completed states also lacked the requested
++  explicit mapping.
++- Result hierarchy rendered sections as `h2` and artifact titles as `h3`.
++- Empty/whitespace summaries and caveats remained blank, including an invalid
++  `Completed with caveats` plus `No caveats were reported` pairing.
++- Work emitted React's duplicate-key warning for equal artifact IDs, retained
++  whitespace-only titles, and exposed no focusable labelled preview.
++
++### GREEN and Final Evidence
++
++```text
++pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
++PASS — 2 files, 62 tests
++
++pnpm --filter @morrow/web test -- mission-page.test.tsx work-tab.test.tsx result-tab.test.tsx
++PASS — 3 files, 72 tests
++
++pnpm --filter @morrow/web test
++PASS — 8 files, 118 tests
++
++pnpm --filter @morrow/ui test
++PASS — 1 file, 14 tests
++
++pnpm --filter @morrow/web check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/ui check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/web build
++PASS — Vite production build
++
++Test-Path apps/web/dist/index.html
++PASS — True
++
++pnpm --filter @morrow/ui build
++PASS — tsc -p tsconfig.build.json
++```
++
++### Security and Accessibility
++
++- Normalization operates on already-projected strings and preserves React text
++  rendering; it introduces no execution, URL, file, or network path.
++- The earlier native `pre` focus treatment is superseded by the current
++  focusable preview region described below.
++- The complete table-driven result test covers every `WebMissionUiState` with
++  every verification state for non-completed outcomes and every verification
++  state for both completed outcomes.
++
++### Rollback
++
++Revert `fix(web): preserve truthful result and artifact semantics` to remove
++only this corrective pass. The original Task 9 artifact/result slice remains
++available; no data, permission, external-flow, or server rollback is needed.
++
++---
++
++## Accessibility Follow-up — Named Artifact Preview Regions
++
++### RED Evidence
++
++```powershell
++pnpm --filter @morrow/web test -- work-tab.test.tsx
++```
++
++The updated accessibility test failed as expected because the current preview
++was an `aria-label`led `pre`, not the required focusable named `region`.
++
++### GREEN and Final Evidence
++
++The preview now uses a focusable `div role="region"` named `Preview of
++<artifact title>`. Its inner `pre` contains only text and has no accessible
++name or tab stop. Scroll bounds, overflow, and visible focus styling reside on
++the region.
++
++```text
++pnpm --filter @morrow/web test -- work-tab.test.tsx result-tab.test.tsx
++PASS — 2 files, 62 tests
++```
++
++### Current Accessibility and Truth Semantics
++
++- Work uses a semantic `h2` followed by `h3` artifact titles. Result uses an
++  `h2` delivery state, `h3` subsections, and `h4` primary artifact titles.
++- The Result component consumes the projected mission state alongside
++  verification state, so a known working, blocked, failed, cancelled, or
++  superseded outcome cannot be upgraded to a generic completion label.
++- Preview strings remain plain React text inside `pre`; the focusable wrapper
++  adds no content execution, URL, or action capability.
++
++### Rollback
++
++Revert `fix(web): expose accessible artifact previews` to restore the prior
++Task 9 preview markup only. The artifact registry, Result truth mapping, and
++all server-side boundaries remain unchanged.
+diff --git a/apps/web/src/features/missions/mission-page.test.tsx b/apps/web/src/features/missions/mission-page.test.tsx
+index 95260c9..d57a64f 100644
+--- a/apps/web/src/features/missions/mission-page.test.tsx
++++ b/apps/web/src/features/missions/mission-page.test.tsx
+@@ -260,21 +260,21 @@ describe("MissionPage", () => {
+     const skippedMilestone = within(skippedSurface as HTMLElement)
+       .getByText("Publish an obsolete draft")
+       .closest("li");
+     expect(skippedMilestone).not.toBeNull();
+     expect(within(skippedMilestone as HTMLElement).getByText("Skipped")).toBeVisible();
+     expect(
+       within(completedSurface as HTMLElement).queryByText("Publish an obsolete draft"),
+     ).not.toBeInTheDocument();
+   });
+ 
+-  it("provides four keyboard-operable tabs and honest later-slice placeholders", async () => {
++  it("provides four keyboard-operable tabs with adaptive Work and Result views", async () => {
+     installApi();
+     const user = userEvent.setup();
+     renderMission();
+ 
+     const overview = await screen.findByRole("tab", { name: "Overview" });
+     const activity = screen.getByRole("tab", { name: "Activity" });
+     const work = screen.getByRole("tab", { name: "Work" });
+     const result = screen.getByRole("tab", { name: "Result" });
+     expect(screen.getByRole("tablist", { name: "Mission views" })).toBeVisible();
+     expect(overview).toHaveAttribute("aria-selected", "true");
+@@ -283,32 +283,31 @@ describe("MissionPage", () => {
+ 
+     overview.focus();
+     await user.keyboard("{ArrowRight}");
+     expect(activity).toHaveFocus();
+     expect(activity).toHaveAttribute("aria-selected", "true");
+     expect(screen.getByRole("tabpanel", { name: "Activity" })).toBeVisible();
+ 
+     await user.keyboard("{End}");
+     expect(result).toHaveFocus();
+     expect(
+-      screen.getByText("A result will appear here only when the mission produces one."),
++      screen.getByRole("heading", { level: 2, name: "Working" }),
+     ).toBeVisible();
+ 
+     await user.keyboard("{Home}");
+     expect(overview).toHaveFocus();
+     await user.keyboard("{ArrowLeft}");
+     expect(result).toHaveFocus();
+ 
+     await user.click(work);
+-    expect(
+-      screen.getByText("Mission work inspection arrives in a later product slice."),
+-    ).toBeVisible();
++    expect(screen.getByRole("heading", { level: 2, name: "Work" })).toBeVisible();
++    expect(screen.getByRole("region", { name: "Launch brief" })).toBeVisible();
+   });
+ 
+   it("keeps all four controlled tabpanels stable while hiding only inactive panels", async () => {
+     installApi();
+     const user = userEvent.setup();
+     renderMission();
+ 
+     const tabElements = await screen.findAllByRole("tab");
+     expect(tabElements).toHaveLength(4);
+     for (const tab of tabElements) {
+diff --git a/apps/web/src/features/missions/mission-page.tsx b/apps/web/src/features/missions/mission-page.tsx
+index d60eede..6f3a523 100644
+--- a/apps/web/src/features/missions/mission-page.tsx
++++ b/apps/web/src/features/missions/mission-page.tsx
+@@ -7,20 +7,22 @@ import {
+   useId,
+   useRef,
+   useState,
+   type KeyboardEvent,
+ } from "react";
+ import { ApiClientError } from "../../api/client.js";
+ import { useMissionStream } from "../../api/mission-stream.js";
+ import { missionQueries } from "../../api/query-keys.js";
+ import { MissionActivity } from "./mission-activity.js";
+ import { MissionOverview } from "./mission-overview.js";
++import { ResultTab } from "./result-tab.js";
++import { WorkTab } from "./work-tab.js";
+ 
+ const tabs = ["Overview", "Activity", "Work", "Result"] as const;
+ type MissionTab = (typeof tabs)[number];
+ 
+ const missionStateLabels: Record<WebMissionUiState, string> = {
+   draft: "Draft",
+   needs_input: "Needs input",
+   working: "Working",
+   reviewing: "Reviewing",
+   blocked: "Blocked",
+@@ -53,33 +55,20 @@ function MissionLoadError({ error, retry }: { error: unknown; retry: () => void
+             : (typed?.message ?? "The request could not be completed.")
+         }
+         preservedMessage="Your synchronized mission data remains unchanged."
+         recommendedAction={{ label: "Retry mission", onClick: retry }}
+         title={notFound ? "Mission not found" : "Mission could not be loaded"}
+       />
+     </section>
+   );
+ }
+ 
+-function MissionPlaceholder({ tab }: { tab: "Work" | "Result" }) {
+-  return (
+-    <Surface padding="large">
+-      <h2>{tab}</h2>
+-      <p>
+-        {tab === "Work"
+-          ? "Mission work inspection arrives in a later product slice."
+-          : "A result will appear here only when the mission produces one."}
+-      </p>
+-    </Surface>
+-  );
+-}
+-
+ function MissionSynchronizationWarning({
+   error,
+   retry,
+ }: {
+   error: unknown;
+   retry: () => void;
+ }) {
+   return (
+     <Surface
+       aria-atomic="true"
+@@ -254,22 +243,27 @@ function MissionWorkspace({
+             hidden={!selected}
+             id={`${tabIdPrefix}-panel-${tab.toLowerCase()}`}
+             key={tab}
+             role="tabpanel"
+             tabIndex={selected ? 0 : -1}
+           >
+             {tab === "Overview" ? <MissionOverview snapshot={snapshot} /> : null}
+             {tab === "Activity" ? (
+               <MissionActivity activity={snapshot.recentActivity} />
+             ) : null}
+-            {tab === "Work" || tab === "Result" ? (
+-              <MissionPlaceholder tab={tab} />
++            {tab === "Work" ? <WorkTab artifacts={snapshot.artifacts} /> : null}
++            {tab === "Result" ? (
++              <ResultTab
++                artifacts={snapshot.artifacts}
++                missionState={snapshot.summary.state}
++                verification={snapshot.verification}
++              />
+             ) : null}
+           </div>
+         );
+       })}
+     </section>
+   );
+ }
+ 
+ export function MissionPage() {
+   const { missionId } = useParams({ strict: false });
+diff --git a/apps/web/src/features/missions/result-tab.test.tsx b/apps/web/src/features/missions/result-tab.test.tsx
+new file mode 100644
+index 0000000..eabbd19
+--- /dev/null
++++ b/apps/web/src/features/missions/result-tab.test.tsx
+@@ -0,0 +1,147 @@
++import type { WebMissionArtifact, WebMissionUiState } from "@morrow/contracts";
++import { render, screen } from "@testing-library/react";
++import { describe, expect, it } from "vitest";
++import { ResultTab } from "./result-tab.js";
++
++const artifact: WebMissionArtifact = {
++  createdAt: "2026-07-21T13:20:00.000Z",
++  id: "artifact-1",
++  kind: "document",
++  mimeType: "text/markdown",
++  missionId: "mission-42",
++  openPath: null,
++  preview: "Delivered safely.",
++  title: "Launch brief",
++  version: 1,
++};
++
++function renderResult(
++  verification: {
++    caveats: string[];
++    evidenceCount: number;
++    state: "not_ready" | "in_progress" | "passed" | "passed_with_caveats" | "failed";
++    summary: string;
++  },
++  missionState: WebMissionUiState = "completed_verified",
++) {
++  return render(
++    <ResultTab
++      artifacts={[artifact]}
++      missionState={missionState}
++      verification={verification}
++    />,
++  );
++}
++
++describe("ResultTab", () => {
++  it("does not claim verified completion when verification failed and keeps caveats visible", () => {
++    const { container } = renderResult({
++      caveats: ["The publication step still needs owner approval."],
++      evidenceCount: 1,
++      state: "failed",
++      summary: "The brief is drafted, but its final verification failed.",
++    });
++
++    expect(screen.getByRole("heading", { level: 2, name: "Completed; verification failed" })).toBeVisible();
++    expect(screen.queryByText("Completed and verified")).not.toBeInTheDocument();
++    expect(screen.getByText("The brief is drafted, but its final verification failed.")).toBeVisible();
++    expect(screen.getByRole("heading", { level: 3, name: "Primary deliverables" })).toBeVisible();
++    expect(screen.getByRole("region", { name: "Launch brief" })).toBeVisible();
++    expect(screen.getByRole("heading", { level: 4, name: "Launch brief" })).toBeVisible();
++    expect(screen.getByText("1 piece of verification evidence")).toBeVisible();
++    expect(screen.getByText("The publication step still needs owner approval.")).toBeVisible();
++    expect(container.querySelector("details")).toBeNull();
++  });
++
++  const verificationStates = [
++    "not_ready",
++    "in_progress",
++    "passed",
++    "passed_with_caveats",
++    "failed",
++  ] as const;
++  const namedStates: ReadonlyArray<[WebMissionUiState, string]> = [
++    ["draft", "Draft"],
++    ["needs_input", "Needs input"],
++    ["working", "Working"],
++    ["reviewing", "Reviewing"],
++    ["blocked", "Blocked"],
++    ["failed_recoverable", "Failed, recoverable"],
++    ["failed", "Failed"],
++    ["cancelled", "Cancelled"],
++    ["superseded", "Superseded"],
++  ];
++
++  it.each(
++    namedStates.flatMap(([missionState, expected]) =>
++      verificationStates.map((verificationState) => [
++        missionState,
++        verificationState,
++        expected,
++      ] as const),
++    ),
++  )("preserves the %s mission outcome when verification is %s", (missionState, state, expected) => {
++    renderResult({ caveats: [], evidenceCount: 0, state, summary: "Result summary." }, missionState);
++
++    expect(screen.getByRole("heading", { level: 2, name: expected })).toBeVisible();
++    expect(screen.queryByText("Completed and verified")).toBeNull();
++  });
++
++  it.each([
++    ["completed_verified", "passed", "Completed and verified"],
++    ["completed_verified", "passed_with_caveats", "Completed with caveats"],
++    ["completed_verified", "failed", "Completed; verification failed"],
++    ["completed_verified", "in_progress", "Completed; verification in progress"],
++    ["completed_verified", "not_ready", "Completed; verification not ready"],
++    ["completed_with_caveats", "passed", "Completed with caveats"],
++    ["completed_with_caveats", "passed_with_caveats", "Completed with caveats"],
++    ["completed_with_caveats", "failed", "Completed with caveats; verification failed"],
++    ["completed_with_caveats", "in_progress", "Completed with caveats; verification in progress"],
++    ["completed_with_caveats", "not_ready", "Completed with caveats; verification not ready"],
++  ] as const)("maps %s and %s to %s", (missionState, state, expected) => {
++    renderResult({ caveats: [], evidenceCount: 0, state, summary: "Result summary." }, missionState);
++
++    expect(screen.getByRole("heading", { level: 2, name: expected })).toBeVisible();
++  });
++
++  it("reports caveated and incomplete verification honestly with pluralized evidence", () => {
++    const { rerender } = renderResult({
++      caveats: [],
++      evidenceCount: 0,
++      state: "passed_with_caveats",
++      summary: "The mission completed with limitations.",
++    }, "completed_with_caveats");
++
++    expect(screen.getByRole("heading", { level: 2, name: "Completed with caveats" })).toBeVisible();
++    expect(screen.getByText("No verification evidence is available.")).toBeVisible();
++    expect(screen.getByText("Caveat details were not supplied.")).toBeVisible();
++
++    rerender(
++      <ResultTab
++        artifacts={[]}
++        missionState="reviewing"
++        verification={{
++          caveats: [],
++          evidenceCount: 0,
++          state: "in_progress",
++          summary: "Verification is still running.",
++        }}
++      />,
++    );
++    expect(screen.getByRole("heading", { level: 2, name: "Reviewing" })).toBeVisible();
++    expect(screen.getByText("No primary deliverables are available yet.")).toBeVisible();
++  });
++
++  it("normalizes the summary and caveats without hiding incomplete caveat details", () => {
++    renderResult({
++      caveats: ["  Keep the owner informed.  ", "   "],
++      evidenceCount: 0,
++      state: "passed_with_caveats",
++      summary: "   ",
++    }, "completed_with_caveats");
++
++    expect(screen.getByText("No plain-language result summary was supplied.")).toBeVisible();
++    expect(screen.getByText("Keep the owner informed.")).toBeVisible();
++    expect(screen.queryByText("Caveat details were not supplied.")).toBeNull();
++  });
++});
+diff --git a/apps/web/src/features/missions/result-tab.tsx b/apps/web/src/features/missions/result-tab.tsx
+new file mode 100644
+index 0000000..e1fcbb8
+--- /dev/null
++++ b/apps/web/src/features/missions/result-tab.tsx
+@@ -0,0 +1,128 @@
++import type { WebMissionArtifact, WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
++import { ArtifactList } from "./work-tab.js";
++
++type WebVerificationSummary = WebMissionSnapshot["verification"];
++
++const missionStateLabels: Record<WebMissionUiState, string> = {
++  blocked: "Blocked",
++  cancelled: "Cancelled",
++  completed_verified: "Completed",
++  completed_with_caveats: "Completed with caveats",
++  draft: "Draft",
++  failed: "Failed",
++  failed_recoverable: "Failed, recoverable",
++  needs_input: "Needs input",
++  reviewing: "Reviewing",
++  superseded: "Superseded",
++  working: "Working",
++};
++
++function completionLabel(
++  verificationState: WebVerificationSummary["state"],
++  missionState: WebMissionUiState,
++) {
++  if (missionState === "completed_verified") {
++    if (verificationState === "passed") return "Completed and verified";
++    if (verificationState === "passed_with_caveats") return "Completed with caveats";
++    if (verificationState === "failed") return "Completed; verification failed";
++    if (verificationState === "in_progress") return "Completed; verification in progress";
++    return "Completed; verification not ready";
++  }
++  if (missionState === "completed_with_caveats") {
++    if (verificationState === "failed") return "Completed with caveats; verification failed";
++    if (verificationState === "in_progress") {
++      return "Completed with caveats; verification in progress";
++    }
++    if (verificationState === "not_ready") {
++      return "Completed with caveats; verification not ready";
++    }
++    return "Completed with caveats";
++  }
++  return missionStateLabels[missionState];
++}
++
++function evidenceLabel(evidenceCount: number) {
++  if (evidenceCount === 0) return "No verification evidence is available.";
++  return `${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of verification evidence`;
++}
++
++function normalizedSummary(summary: string) {
++  return summary.trim() || "No plain-language result summary was supplied.";
++}
++
++function normalizedCaveats(
++  caveats: readonly string[],
++  verificationState: WebVerificationSummary["state"],
++  missionState: WebMissionUiState,
++) {
++  const values = caveats.map((caveat) => caveat.trim()).filter(Boolean);
++  if (
++    values.length === 0 &&
++    (verificationState === "passed_with_caveats" ||
++      missionState === "completed_with_caveats")
++  ) {
++    return ["Caveat details were not supplied."];
++  }
++  return values;
++}
++
++export function ResultTab({
++  artifacts,
++  missionState,
++  verification,
++}: {
++  artifacts: readonly WebMissionArtifact[];
++  missionState: WebMissionUiState;
++  verification: WebVerificationSummary;
++}) {
++  const caveats = normalizedCaveats(
++    verification.caveats,
++    verification.state,
++    missionState,
++  );
++
++  return (
++    <section aria-labelledby="mission-result-heading" className="morrow-mission-result">
++      <h2 id="mission-result-heading">
++        {completionLabel(verification.state, missionState)}
++      </h2>
++      <p className="morrow-mission-result__summary">
++        {normalizedSummary(verification.summary)}
++      </p>
++
++      <section aria-labelledby="mission-result-artifacts-heading">
++        <h3 id="mission-result-artifacts-heading">Primary deliverables</h3>
++        <ArtifactList
++          artifacts={artifacts}
++          emptyMessage="No primary deliverables are available yet."
++          headingLevel={4}
++        />
++      </section>
++
++      <section aria-labelledby="mission-verification-heading">
++        <h3 id="mission-verification-heading">Verification</h3>
++        <ul className="morrow-mission-result__checklist">
++          <li>Verification state: {verification.state.replaceAll("_", " ")}</li>
++          <li>{evidenceLabel(verification.evidenceCount)}</li>
++        </ul>
++      </section>
++
++      <section aria-labelledby="mission-caveats-heading">
++        <h3 id="mission-caveats-heading">Caveats and unresolved risks</h3>
++        {caveats.length > 0 ? (
++          <ul className="morrow-mission-result__caveats">
++            {caveats.map((caveat, index) => (
++              <li key={`${index}-${caveat}`}>{caveat}</li>
++            ))}
++          </ul>
++        ) : (
++          <p>No caveats were reported.</p>
++        )}
++      </section>
++
++      <p className="morrow-mission-result__actions">
++        No additional verified actions are available.
++      </p>
++    </section>
++  );
++}
+diff --git a/apps/web/src/features/missions/work-tab.test.tsx b/apps/web/src/features/missions/work-tab.test.tsx
+new file mode 100644
+index 0000000..f14b7e9
+--- /dev/null
++++ b/apps/web/src/features/missions/work-tab.test.tsx
+@@ -0,0 +1,111 @@
++import type { WebMissionArtifact } from "@morrow/contracts";
++import { render, screen, within } from "@testing-library/react";
++import { describe, expect, it } from "vitest";
++import { WorkTab } from "./work-tab.js";
++
++function artifact(
++  overrides: Partial<WebMissionArtifact> = {},
++): WebMissionArtifact {
++  return {
++    createdAt: "2026-07-21T13:20:00.000Z",
++    id: "artifact-1",
++    kind: "file",
++    mimeType: "text/plain",
++    missionId: "mission-42",
++    openPath: "/private/workspace/brief.txt",
++    preview: "Safe text preview.",
++    title: "Artifact",
++    version: 1,
++    ...overrides,
++  };
++}
++
++describe("WorkTab", () => {
++  it("renders file, source, document, and code diff artifacts in the shared frame", () => {
++    render(
++      <WorkTab
++        artifacts={[
++          artifact({ id: "file", kind: "file", title: "Launch notes" }),
++          artifact({ id: "source", kind: "source", title: "app.ts" }),
++          artifact({ id: "document", kind: "document", title: "Brief" }),
++          artifact({ id: "diff", kind: "code_diff", title: "Changes" }),
++        ]}
++      />,
++    );
++
++    for (const title of ["Launch notes", "app.ts", "Brief", "Changes"]) {
++      const frame = screen.getByRole("region", { name: title });
++      expect(frame).toHaveClass("morrow-artifact-frame");
++      expect(within(frame).getByText("Safe text preview.")).toBeVisible();
++    }
++    expect(screen.getByText("File · text/plain · Version 1")).toBeVisible();
++    expect(screen.getByText("Source · text/plain · Version 1")).toBeVisible();
++    expect(screen.getByText("Document · text/plain · Version 1")).toBeVisible();
++    expect(screen.getByText("Code diff · text/plain · Version 1")).toBeVisible();
++  });
++
++  it("falls back safely for an unexpected kind and renders previews as text", () => {
++    const { container } = render(
++      <WorkTab
++        artifacts={[
++          artifact({
++            kind: "unrecognized" as WebMissionArtifact["kind"],
++            mimeType: "   ",
++            preview: '<img src=x onerror="alert(1)">',
++            title: "Unrecognized artifact",
++          }),
++        ]}
++      />,
++    );
++
++    const frame = screen.getByRole("region", { name: "Unrecognized artifact" });
++    expect(within(frame).getByText("Other artifact · Unknown format · Version 1")).toBeVisible();
++    expect(within(frame).getByText('<img src=x onerror="alert(1)">')).toBeVisible();
++    expect(within(frame).queryByRole("img")).not.toBeInTheDocument();
++    expect(within(frame).queryByRole("link")).not.toBeInTheDocument();
++    expect(container.querySelector("script")).toBeNull();
++  });
++
++  it("explains when the mission has no artifacts or safe text preview", () => {
++    const { rerender } = render(<WorkTab artifacts={[]} />);
++    expect(screen.getByText("No mission artifacts are available yet.")).toBeVisible();
++
++    rerender(<WorkTab artifacts={[artifact({ preview: "   " })]} />);
++    expect(screen.getByText("No safe text preview is available.")).toBeVisible();
++  });
++
++  it("normalizes titles, offers a keyboard focusable preview, and keeps duplicate artifacts associated on rerender", () => {
++    const duplicateId = "duplicate";
++    const { rerender } = render(
++      <WorkTab
++        artifacts={[
++          artifact({ id: duplicateId, preview: "First preview", title: " First artifact ", version: 1 }),
++          artifact({ id: duplicateId, preview: "Second preview", title: "   ", version: 1 }),
++        ]}
++      />,
++    );
++
++    const firstPreview = screen.getByRole("region", {
++      name: "Preview of First artifact",
++    });
++    expect(firstPreview).toHaveAttribute("tabindex", "0");
++    firstPreview.focus();
++    expect(firstPreview).toHaveFocus();
++    const pre = within(firstPreview).getByText("First preview");
++    expect(pre.tagName).toBe("PRE");
++    expect(pre).not.toHaveAttribute("aria-label");
++    expect(pre).not.toHaveAttribute("tabindex");
++    expect(screen.getByRole("region", { name: "Untitled artifact" })).toHaveTextContent("Second preview");
++
++    rerender(
++      <WorkTab
++        artifacts={[
++          artifact({ id: duplicateId, preview: "Updated second preview", title: "Second artifact", version: 1 }),
++          artifact({ id: duplicateId, preview: "Updated first preview", title: "First artifact", version: 1 }),
++        ]}
++      />,
++    );
++    expect(screen.getByRole("region", { name: "Second artifact" })).toHaveTextContent("Updated second preview");
++    expect(screen.getByRole("region", { name: "First artifact" })).toHaveTextContent("Updated first preview");
++  });
++});
+diff --git a/apps/web/src/features/missions/work-tab.tsx b/apps/web/src/features/missions/work-tab.tsx
+new file mode 100644
+index 0000000..458d8f4
+--- /dev/null
++++ b/apps/web/src/features/missions/work-tab.tsx
+@@ -0,0 +1,162 @@
++import type { WebMissionArtifact } from "@morrow/contracts";
++import { ArtifactFrame } from "@morrow/ui";
++import type { ReactNode } from "react";
++
++type ArtifactHeadingLevel = 2 | 3 | 4 | 5 | 6;
++type ArtifactRenderer = (
++  artifact: WebMissionArtifact,
++  headingLevel: ArtifactHeadingLevel,
++) => ReactNode;
++
++const artifactLabels: Record<WebMissionArtifact["kind"], string> = {
++  browser_capture: "Browser capture",
++  calendar: "Calendar",
++  code_diff: "Code diff",
++  data: "Data",
++  document: "Document",
++  email: "Email",
++  file: "File",
++  other: "Other artifact",
++  source: "Source",
++};
++
++function artifactLabel(kind: string): string {
++  return artifactLabels[kind as WebMissionArtifact["kind"]] ?? "Other artifact";
++}
++
++function artifactTitle(title: string): string {
++  return title.trim() || "Untitled artifact";
++}
++
++function ArtifactMetadata({ artifact }: { artifact: WebMissionArtifact }) {
++  return (
++    <span>
++      {artifactLabel(artifact.kind)} · {artifact.mimeType?.trim() || "Unknown format"} · Version{" "}
++      {artifact.version}
++    </span>
++  );
++}
++
++function SafeTextPreview({
++  preview,
++  title,
++}: Pick<WebMissionArtifact, "preview"> & { title: string }) {
++  if (!preview?.trim()) {
++    return <p className="morrow-artifact-preview__empty">No safe text preview is available.</p>;
++  }
++
++  return (
++    <div
++      aria-label={`Preview of ${title}`}
++      className="morrow-artifact-preview"
++      role="region"
++      tabIndex={0}
++    >
++      <pre>{preview}</pre>
++    </div>
++  );
++}
++
++function ArtifactShell({
++  artifact,
++  headingLevel,
++}: {
++  artifact: WebMissionArtifact;
++  headingLevel: ArtifactHeadingLevel;
++}) {
++  const title = artifactTitle(artifact.title);
++
++  return (
++    <ArtifactFrame
++      headingLevel={headingLevel}
++      metadata={<ArtifactMetadata artifact={artifact} />}
++      title={title}
++    >
++      <SafeTextPreview preview={artifact.preview} title={title} />
++    </ArtifactFrame>
++  );
++}
++
++function FileArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
++  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
++}
++
++function TextArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
++  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
++}
++
++function SourceArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
++  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
++}
++
++function DiffArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
++  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
++}
++
++function MetadataArtifact(artifact: WebMissionArtifact, headingLevel: ArtifactHeadingLevel) {
++  return <ArtifactShell artifact={artifact} headingLevel={headingLevel} />;
++}
++
++const artifactRenderers: Record<WebMissionArtifact["kind"], ArtifactRenderer> = {
++  browser_capture: MetadataArtifact,
++  calendar: MetadataArtifact,
++  code_diff: DiffArtifact,
++  data: MetadataArtifact,
++  document: TextArtifact,
++  email: MetadataArtifact,
++  file: FileArtifact,
++  other: MetadataArtifact,
++  source: SourceArtifact,
++};
++
++function ArtifactView({
++  artifact,
++  headingLevel,
++}: {
++  artifact: WebMissionArtifact;
++  headingLevel: ArtifactHeadingLevel;
++}) {
++  const renderer = artifactRenderers[artifact.kind] ?? MetadataArtifact;
++  return <>{renderer(artifact, headingLevel)}</>;
++}
++
++interface ArtifactListProps {
++  artifacts: readonly WebMissionArtifact[];
++  emptyMessage: string;
++  headingLevel?: ArtifactHeadingLevel;
++}
++
++export function ArtifactList({
++  artifacts,
++  emptyMessage,
++  headingLevel = 3,
++}: ArtifactListProps) {
++  if (artifacts.length === 0) {
++    return <p className="morrow-artifact-list__empty">{emptyMessage}</p>;
++  }
++
++  return (
++    <div className="morrow-artifact-list">
++      {artifacts.map((artifact, index) => (
++        <ArtifactView
++          artifact={artifact}
++          headingLevel={headingLevel}
++          key={`${artifact.id}:${artifact.version}:${index}`}
++        />
++      ))}
++    </div>
++  );
++}
++
++export function WorkTab({ artifacts }: { artifacts: readonly WebMissionArtifact[] }) {
++  return (
++    <section aria-labelledby="mission-work-heading" className="morrow-mission-work">
++      <h2 id="mission-work-heading">Work</h2>
++      <ArtifactList
++        artifacts={artifacts}
++        emptyMessage="No mission artifacts are available yet."
++        headingLevel={3}
++      />
++    </section>
++  );
++}
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index 80e8b6d..e59fd52 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -252,20 +252,77 @@ a {
+ 
+ .morrow-mission-tabs button[aria-selected="true"] {
+   color: var(--morrow-text);
+   border-bottom-color: var(--morrow-accent);
+ }
+ 
+ .morrow-mission-panel[hidden] {
+   display: none;
+ }
+ 
++.morrow-mission-work,
++.morrow-mission-result,
++.morrow-mission-result > section {
++  display: grid;
++  gap: var(--morrow-space-3);
++}
++
++.morrow-mission-work > h2,
++.morrow-mission-result h2,
++.morrow-mission-result h3 {
++  margin: 0;
++}
++
++.morrow-artifact-list {
++  display: grid;
++  gap: var(--morrow-space-3);
++}
++
++.morrow-artifact-list__empty,
++.morrow-artifact-preview__empty,
++.morrow-mission-result__summary,
++.morrow-mission-result__actions {
++  margin: 0;
++  color: var(--morrow-text-muted);
++}
++
++.morrow-artifact-preview {
++  max-block-size: 26rem;
++  padding: var(--morrow-space-3);
++  margin: 0;
++  overflow: auto;
++  color: var(--morrow-text);
++  background: var(--morrow-surface-subtle);
++  border-radius: var(--morrow-radius-sm);
++}
++
++.morrow-artifact-preview:focus-visible {
++  outline: 2px solid var(--morrow-accent);
++  outline-offset: 2px;
++}
++
++.morrow-artifact-preview pre {
++  padding: 0;
++  margin: 0;
++  font: inherit;
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++}
++
++.morrow-mission-result__checklist,
++.morrow-mission-result__caveats {
++  display: grid;
++  gap: var(--morrow-space-2);
++  padding-inline-start: var(--morrow-space-5);
++  margin: 0;
++}
++
+ .morrow-mission-sync-warning {
+   display: flex;
+   align-items: center;
+   justify-content: space-between;
+   gap: var(--morrow-space-4);
+   border-color: var(--morrow-warning);
+ }
+ 
+ .morrow-mission-sync-warning h2 {
+   font-size: 1rem;
+diff --git a/packages/ui/src/components/artifact-frame.tsx b/packages/ui/src/components/artifact-frame.tsx
+index eab4673..604212b 100644
+--- a/packages/ui/src/components/artifact-frame.tsx
++++ b/packages/ui/src/components/artifact-frame.tsx
+@@ -1,42 +1,45 @@
+ import { clsx } from "clsx";
+ import { useId, type ComponentPropsWithRef, type ReactNode } from "react";
+ 
+ export interface ArtifactFrameProps
+   extends Omit<ComponentPropsWithRef<"section">, "title"> {
+   actions?: ReactNode;
+   children: ReactNode;
++  headingLevel?: 2 | 3 | 4 | 5 | 6;
+   metadata?: ReactNode;
+   title: ReactNode;
+ }
+ 
+ export function ArtifactFrame({
+   actions,
+   children,
+   className,
++  headingLevel = 2,
+   metadata,
+   ref,
+   title,
+   ...props
+ }: ArtifactFrameProps) {
+   const titleId = useId();
++  const Heading = `h${headingLevel}` as "h2" | "h3" | "h4" | "h5" | "h6";
+ 
+   return (
+     <section
+       aria-labelledby={titleId}
+       className={clsx("morrow-artifact-frame", className)}
+       ref={ref}
+       {...props}
+     >
+       <header className="morrow-artifact-frame__header">
+         <div>
+-          <h2 id={titleId}>{title}</h2>
++          <Heading id={titleId}>{title}</Heading>
+           {metadata ? (
+             <div className="morrow-artifact-frame__metadata">{metadata}</div>
+           ) : null}
+         </div>
+         {actions ? (
+           <div className="morrow-artifact-frame__actions">{actions}</div>
+         ) : null}
+       </header>
+       <div className="morrow-artifact-frame__content">{children}</div>
+     </section>
+diff --git a/packages/ui/src/styles/global.css b/packages/ui/src/styles/global.css
+index 6dc4b15..2503282 100644
+--- a/packages/ui/src/styles/global.css
++++ b/packages/ui/src/styles/global.css
+@@ -157,21 +157,25 @@ body {
+ 
+ .morrow-empty-state {
+   display: grid;
+   justify-items: start;
+   gap: var(--morrow-space-3);
+ }
+ 
+ .morrow-empty-state h2,
+ .morrow-error-card h2,
+ .morrow-error-card h3,
+-.morrow-artifact-frame h2 {
++.morrow-artifact-frame h2,
++.morrow-artifact-frame h3,
++.morrow-artifact-frame h4,
++.morrow-artifact-frame h5,
++.morrow-artifact-frame h6 {
+   margin: 0;
+   color: var(--morrow-text);
+   line-height: 1.25;
+ }
+ 
+ .morrow-empty-state__description,
+ .morrow-error-card__explanation,
+ .morrow-artifact-frame__metadata,
+ .morrow-timeline__description,
+ .morrow-timeline time {
+diff --git a/packages/ui/test/components.test.tsx b/packages/ui/test/components.test.tsx
+index 1440d93..b31dc43 100644
+--- a/packages/ui/test/components.test.tsx
++++ b/packages/ui/test/components.test.tsx
+@@ -311,11 +311,23 @@ describe("semantic primitives", () => {
+ 
+     const artifact = screen.getByRole("region", {
+       name: "Competitor report",
+     });
+     expect(within(artifact).getByText("Markdown · 12 KB")).toBeVisible();
+     expect(
+       within(artifact).getByRole("button", { name: "Download" }),
+     ).toBeVisible();
+     expect(within(artifact).getByText("Report preview")).toBeVisible();
+   });
++
++  it("allows artifact titles to preserve the surrounding heading hierarchy", () => {
++    render(
++      <ArtifactFrame headingLevel={3} title="Nested artifact">
++        Preview
++      </ArtifactFrame>,
++    );
++
++    expect(
++      screen.getByRole("heading", { level: 3, name: "Nested artifact" }),
++    ).toBeVisible();
++  });
+ });

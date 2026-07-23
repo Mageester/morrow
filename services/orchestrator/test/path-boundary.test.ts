@@ -35,6 +35,13 @@ describe("workspace path containment", () => {
     expect(isWithinWorkspace(oneDriveRoot, "C:\\Windows\\System32", win32)).toBe(false);
   });
 
+  it("contains children of a workspace whose path has spaces", () => {
+    const spacedRoot = "C:\\Users\\aidan\\Documents\\My Projects\\Todo App";
+    expect(isWithinWorkspace(spacedRoot, spacedRoot, win32)).toBe(true);
+    expect(isWithinWorkspace(spacedRoot, `${spacedRoot}\\src\\App.tsx`, win32)).toBe(true);
+    expect(isWithinWorkspace(spacedRoot, "C:\\Users\\aidan\\Documents\\My Projects\\Todo App Archive\\x", win32)).toBe(false);
+  });
+
   it("works for posix workspaces too", () => {
     const root = "/home/dev/projects/app";
     expect(isWithinWorkspace(root, root, posix)).toBe(true);

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,9 @@ const PROVIDER_KEYS = [
   "DEEPSEEK_CONTEXT_LIMIT",
   "OPENAI_API_KEY",
   "OPENAI_MODEL",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_BASE_URL",
+  "OPENROUTER_MODEL",
 ];
 
 describe("provider configuration (secrets module)", () => {
@@ -125,6 +128,92 @@ describe("provider configuration (secrets module)", () => {
     expect(env.DEEPSEEK_API_KEY).toBeUndefined(); // earlier good field not applied
     expect(existsSync(secretsFile)).toBe(false);
   });
+
+  it("uses a Windows user ACL boundary and reports the protection without exposing values", () => {
+    const acl = vi.fn(() => true);
+    const res = (configureProvider as any)(secretsFile, "openrouter", { apiKey: "windows-local-secret" }, env, {
+      platform: "win32",
+      applyWindowsAcl: acl,
+    });
+    expect(acl).toHaveBeenCalledOnce();
+    expect(res).toMatchObject({ securePermissions: true, credentialProtection: "windows-user-acl" });
+    expect(JSON.stringify(res)).not.toContain("windows-local-secret");
+  });
+});
+
+describe("OpenRouter authenticated configuration", () => {
+  let db: Database.Database;
+  let app: FastifyInstance;
+  let dir: string;
+  let secretsFile: string;
+  let connectivity: ReturnType<typeof vi.fn>;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    for (const key of PROVIDER_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    dir = mkdtempSync(join(tmpdir(), "morrow-openrouter-secrets-"));
+    secretsFile = join(dir, "secrets.env");
+    db = openDatabase(":memory:");
+    connectivity = vi.fn(async (_id: string, candidateEnv: NodeJS.ProcessEnv) => {
+      const accepted = candidateEnv.OPENROUTER_API_KEY === "last-known-good";
+      return {
+        id: "openrouter", ok: accepted, configured: true, status: accepted ? 200 : 401,
+        latencyMs: 1, checkedEndpoint: "openrouter.ai", detail: accepted ? "connected" : "rejected",
+        errorKind: accepted ? null : "auth", modelsSample: accepted ? ["vendor/live"] : [],
+        models: accepted ? [{ providerModelId: "vendor/live", displayName: "Live", author: "vendor", contextWindow: 100_000, maxOutputTokens: 8_000, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" }] : [],
+      };
+    });
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile, providerConnectivityTest: connectivity as any, backgroundModelDiscovery: false });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+    for (const key of PROVIDER_KEYS) {
+      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+  });
+
+  it("authenticates a candidate key before persisting and promoting it", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good", model: "vendor/live" } });
+    expect(response.statusCode).toBe(200);
+    expect(connectivity).toHaveBeenCalledWith("openrouter", expect.objectContaining({ OPENROUTER_API_KEY: "last-known-good", OPENROUTER_MODEL: "vendor/live" }));
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(JSON.stringify(response.json())).not.toContain("last-known-good");
+    expect(response.json().status).toMatchObject({ configured: true, available: true, defaultModel: "vendor/live" });
+  });
+
+  it("preserves the last known-good credential when replacement validation fails", async () => {
+    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
+    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "replacement-rejected" } });
+    expect(response.statusCode).toBe(401);
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(response.json().error.code).toBe("PROVIDER_VALIDATION_FAILED");
+    expect(JSON.stringify(response.json())).not.toMatch(/last-known-good|replacement-rejected/);
+  });
+
+  it("rejects every OpenRouter endpoint override before an existing key can be sent elsewhere", async () => {
+    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
+    connectivity.mockClear();
+
+    for (const baseUrl of ["http://attacker.invalid/v1", "https://attacker.invalid/v1"]) {
+      const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { baseUrl } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("OPENROUTER_ENDPOINT_PINNED");
+    }
+
+    expect(connectivity).not.toHaveBeenCalled();
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(process.env.OPENROUTER_BASE_URL).toBeUndefined();
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+  });
 });
 
 describe("provider configuration API (DeepSeek acceptance flow)", () => {
@@ -194,6 +283,7 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     await json("POST", "/api/providers/deepseek/configure", { apiKey: "k" });
     const del = await json("DELETE", "/api/providers/deepseek/credentials");
     expect(del.status).toBe(200);
+    expect(del.body.removed).toEqual(expect.arrayContaining(["DEEPSEEK_API_KEY"]));
     expect(del.body.status.configured).toBe(false);
   });
 

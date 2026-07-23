@@ -1124,6 +1124,19 @@ export const migrations:Migration[]=[
     ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
       DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
   `}
+  ,{id:37,name:"mission_idempotency_keys",sql:`
+    ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
+    CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `}
+  ,{id:38,name:"provider_model_discovery_freshness",sql:`
+    ALTER TABLE provider_model_discovery ADD COLUMN expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z';
+    ALTER TABLE provider_model_discovery ADD COLUMN last_success_at TEXT;
+    ALTER TABLE provider_model_discovery ADD COLUMN credential_identity TEXT;
+    UPDATE provider_model_discovery SET last_success_at=fetched_at WHERE status='available';
+  `}
+  ,{id:39,name:"task_idempotency_fingerprint",sql:`
+    ALTER TABLE tasks ADD COLUMN idempotency_fingerprint TEXT;
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

@@ -57,3 +57,9 @@ morrow-cli-recovery-*.patch
 *.patch
 *.orig
 *.rej
+
+# Web E2E (Playwright) transient artifacts
+apps/web/e2e/.state.json
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/

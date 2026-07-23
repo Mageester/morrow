@@ -12,7 +12,7 @@ export const PRESETS: Preset[] = [
     id: "best-quality",
     label: "Best Quality",
     description: "Highest-capability frontier models, quality over speed and cost.",
-    providerOrder: ["anthropic", "openai", "gemini", "openrouter", "deepseek", "ollama"],
+    providerOrder: ["anthropic", "openai", "gemini", "openrouter", "deepseek", "openai-compatible", "ollama"],
     modelPreferences: {
       anthropic: ["claude-fable-5", "claude-opus-4-8"],
       openai: ["gpt-5.6-sol"],
@@ -39,7 +39,7 @@ export const PRESETS: Preset[] = [
     id: "balanced",
     label: "Balanced",
     description: "A sensible default trading quality, speed, and cost.",
-    providerOrder: ["openai", "anthropic", "gemini", "openrouter", "deepseek", "ollama"],
+    providerOrder: ["openai", "anthropic", "gemini", "openrouter", "deepseek", "openai-compatible", "ollama"],
     modelPreferences: {
       openai: ["gpt-5.6-terra", "gpt-5.6-luna"],
       anthropic: ["claude-sonnet-5"],
@@ -66,7 +66,7 @@ export const PRESETS: Preset[] = [
     id: "fast",
     label: "Fast",
     description: "Lowest-latency models for quick answers.",
-    providerOrder: ["openai", "gemini", "deepseek", "openrouter", "anthropic", "ollama"],
+    providerOrder: ["openai", "gemini", "deepseek", "openrouter", "anthropic", "openai-compatible", "ollama"],
     modelPreferences: {
       openai: ["gpt-5.6-luna"],
       gemini: ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
@@ -93,7 +93,7 @@ export const PRESETS: Preset[] = [
     id: "cheap",
     label: "Cheap",
     description: "Minimizes cost using the least expensive hosted models.",
-    providerOrder: ["deepseek", "gemini", "openai", "openrouter", "ollama", "anthropic"],
+    providerOrder: ["deepseek", "gemini", "openai", "openrouter", "openai-compatible", "ollama", "anthropic"],
     modelPreferences: {
       deepseek: ["deepseek-v4-flash"],
       gemini: ["gemini-2.5-flash-lite"],
@@ -120,7 +120,7 @@ export const PRESETS: Preset[] = [
     id: "coding",
     label: "Coding",
     description: "Tuned for code understanding: strong models, low temperature, more tool turns.",
-    providerOrder: ["anthropic", "openai", "deepseek", "openrouter", "gemini", "ollama"],
+    providerOrder: ["anthropic", "openai", "deepseek", "openrouter", "gemini", "openai-compatible", "ollama"],
     modelPreferences: {
       anthropic: ["claude-opus-4-8", "claude-sonnet-5"],
       openai: ["gpt-5.6-sol"],
@@ -147,7 +147,7 @@ export const PRESETS: Preset[] = [
     id: "research",
     label: "Research",
     description: "Large-context models for synthesis across many files.",
-    providerOrder: ["gemini", "anthropic", "openai", "openrouter", "deepseek", "ollama"],
+    providerOrder: ["gemini", "anthropic", "openai", "openrouter", "deepseek", "openai-compatible", "ollama"],
     modelPreferences: {
       gemini: ["gemini-3.5-flash", "gemini-3.1-pro-preview"],
       anthropic: ["claude-sonnet-5", "claude-opus-4-8"],

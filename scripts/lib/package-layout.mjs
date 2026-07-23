@@ -27,6 +27,8 @@ export const REQUIRED_PACKAGE_FILES = [
   // The bundled CLI is the installed launcher's product surface (ask/fix/yolo/…).
   "orchestrator/cli/bin/morrow.mjs",
   "orchestrator/cli/src/main.js",
+  // The bundled web app, served locally by the orchestrator at /app.
+  "web/index.html",
   "skills/coding/SKILL.md",
   "VERSION",
   "PROVENANCE.json",
@@ -94,15 +96,19 @@ export function resolvePackageRoot(entries) {
 
 /**
  * Patterns that must NEVER appear among Morrow's OWN bundled files (i.e. package
- * paths outside third-party `node_modules/`). These guard the "CLI-only, no
- * secrets, no dev cruft" release invariants so a regression cannot silently ship
- * a dev/acceptance harness, a Morrow web dashboard, credentials, a local
- * database, the Git repo, or uncompiled TypeScript source.
+ * paths outside third-party `node_modules/`). These guard the "no secrets, no
+ * dev cruft" release invariants so a regression cannot silently ship a
+ * dev/acceptance harness, credentials, a local database, the Git repo, or
+ * uncompiled TypeScript source.
  *
  * They are deliberately scoped to Morrow's own files: `node_modules/` is
  * third-party and legitimately contains HTML (e.g. a dependency's internal Vite
  * dashboard), test certificates, and `.ts`/`.d.ts` — none of which is a Morrow
  * surface, so scoping avoids false positives.
+ *
+ * NOTE: the bundled Morrow web app (`web/index.html` + `web/assets/**`) is a
+ * first-class product surface served locally at /app (ADR 0007), so it is NOT
+ * forbidden — it is a REQUIRED package file.
  */
 export const FORBIDDEN_OWN_FILE_PATTERNS = [
   { pattern: /(^|\/)dist\/scripts\//, why: "compiled dev/smoke/acceptance script" },
@@ -112,7 +118,6 @@ export const FORBIDDEN_OWN_FILE_PATTERNS = [
   { pattern: /(^|\/)(secrets?|credentials?)\.(json|txt|ya?ml)$/i, why: "secrets/credentials file" },
   { pattern: /(^|\/)id_rsa(\.pub)?$/i, why: "private key" },
   { pattern: /\.(db|sqlite3?)$/i, why: "local database" },
-  { pattern: /(^|\/)web\/index\.html$/i, why: "Morrow web dashboard (Morrow is CLI-only)" },
 ];
 
 /**

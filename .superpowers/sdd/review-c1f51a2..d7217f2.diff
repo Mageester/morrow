@@ -1,0 +1,3764 @@
+# Review package: c1f51a2..HEAD
+
+## Commits
+d7217f2 fix(orchestrator): fail closed on legacy idempotency rows
+6df434c fix(web): close conversation lifecycle review gaps
+e70d11b feat(web): add durable conversation workspace
+
+## Files changed
+ apps/web/e2e/conversations.spec.ts                 | 159 ++++++++
+ apps/web/e2e/global-setup.ts                       |   6 +
+ apps/web/src/api/chat-stream.test.ts               | 140 +++++++
+ apps/web/src/api/chat-stream.ts                    | 227 ++++++++++++
+ apps/web/src/api/client.ts                         |  24 ++
+ apps/web/src/api/conversations.test.ts             |  81 +++++
+ apps/web/src/api/conversations.ts                  | 139 +++++++
+ apps/web/src/app/app-shell.tsx                     |   3 +
+ apps/web/src/app/router.tsx                        |  11 +
+ .../src/features/chat/conversation-page.test.tsx   | 237 ++++++++++++
+ apps/web/src/features/chat/conversation-page.tsx   | 403 +++++++++++++++++++++
+ apps/web/src/styles/app.css                        | 211 +++++++++++
+ packages/contracts/src/index.ts                    |  58 +++
+ packages/contracts/test/contracts.test.ts          |  65 ++++
+ services/orchestrator/scripts/e2e-seed.ts          | 100 ++++-
+ services/orchestrator/src/database.ts              |   3 +
+ services/orchestrator/src/execution/agent.ts       |   5 +
+ .../orchestrator/src/mission/task-dispatcher.ts    | 179 +++++----
+ .../orchestrator/src/repositories/conversations.ts |  27 ++
+ services/orchestrator/src/repositories/tasks.ts    |   9 +-
+ services/orchestrator/src/server.ts                | 227 +++++++++++-
+ services/orchestrator/test/conversations.test.ts   | 244 +++++++++++++
+ .../test/database-migration-29.test.ts             |  10 +-
+ services/orchestrator/test/database.test.ts        |   5 +-
+ services/orchestrator/test/idempotency-api.test.ts |  53 +++
+ .../test/mission-task-dispatcher.test.ts           | 106 ++++++
+ services/orchestrator/test/sse.test.ts             |  52 +++
+ 27 files changed, 2694 insertions(+), 90 deletions(-)
+
+## Diff
+diff --git a/apps/web/e2e/conversations.spec.ts b/apps/web/e2e/conversations.spec.ts
+new file mode 100644
+index 0000000..168d74d
+--- /dev/null
++++ b/apps/web/e2e/conversations.spec.ts
+@@ -0,0 +1,159 @@
++import { devices, expect, test, type APIRequestContext, type Page } from "@playwright/test";
++import { loadState } from "./seed-state.js";
++
++const state = loadState();
++
++async function createConversation(request: APIRequestContext, title: string): Promise<string> {
++  const response = await request.post(`/api/projects/${state.seed.projectId}/conversations`, {
++    data: { title },
++  });
++  expect(response.status()).toBe(201);
++  return (await response.json() as { id: string }).id;
++}
++
++async function openConversation(page: Page, conversationId: string): Promise<void> {
++  await page.goto(`/app/chats/${conversationId}?projectId=${encodeURIComponent(state.seed.projectId)}`);
++}
++
++test.describe.configure({ mode: "serial" });
++
++test.describe("durable conversation workspace", () => {
++  test("desktop sends once, reconciles the canonical answer, and survives refresh", async ({ page, request }) => {
++    const conversationId = await createConversation(request, "Desktop conversation proof");
++    await openConversation(page, conversationId);
++
++    await expect(page.getByRole("heading", { name: "Desktop conversation proof" })).toBeVisible();
++    const composer = page.getByRole("textbox", { name: "Message Morrow" });
++    await composer.fill("Is the local mock runtime operational?");
++    await composer.press("Enter");
++
++    await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
++    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
++    await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
++    await expect(page.getByText(/Ask · mock-model via mock/i)).toBeVisible();
++    await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
++
++    await page.reload();
++    await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
++    await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
++    await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
++    await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
++  });
++
++  test("active refresh and disconnect resume from the durable cursor before one cancellation", async ({ page, context }) => {
++    const { projectId, activeConversationId: conversationId, activeTaskId: taskId } = state.seed;
++    const cursorKey = `morrow.chat-stream-cursor.v1.${encodeURIComponent(JSON.stringify([projectId, conversationId, taskId]))}`;
++    const streamAfters: number[] = [];
++    page.on("request", (request) => {
++      const url = new URL(request.url());
++      if (url.pathname.endsWith(`/tasks/${taskId}/stream`)) {
++        streamAfters.push(Number(url.searchParams.get("after") ?? "0"));
++      }
++    });
++
++    await openConversation(page, conversationId);
++    await expect(page.getByRole("heading", { name: "Active reconnect proof" })).toBeVisible();
++    await expect(page.getByText("Morrow is responding…")).toBeVisible();
++    await expect.poll(async () => page.evaluate((key) => {
++      const raw = sessionStorage.getItem(key);
++      return raw ? (JSON.parse(raw) as { cursor: number }).cursor : 0;
++    }, cursorKey)).toBe(1);
++
++    await page.reload();
++    await expect(page.getByText("Morrow is responding…")).toBeVisible();
++    await expect.poll(() => streamAfters.filter((cursor) => cursor === 1).length).toBeGreaterThanOrEqual(1);
++
++    await context.setOffline(true);
++    await expect(page.getByText("Offline — showing saved conversation history.")).toBeVisible();
++    await context.setOffline(false);
++    await expect.poll(() => streamAfters.filter((cursor) => cursor === 1).length).toBeGreaterThanOrEqual(2);
++
++    await page.getByRole("button", { name: "Stop generation" }).click();
++    await expect(page.getByText("Task cancelled by user")).toBeVisible();
++    await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
++    await expect(page.getByRole("button", { name: "Stop generation" })).toHaveCount(0);
++    await expect.poll(() => page.evaluate((key) => sessionStorage.getItem(key), cursorKey)).toBeNull();
++  });
++
++  test("failed and interrupted responses retry from the prior attempt cursor without duplicate execution", async ({ page }) => {
++    for (const scenario of [
++      { conversationId: state.seed.failedConversationId, taskId: state.seed.failedTaskId, title: "Failed retry proof" },
++      { conversationId: state.seed.interruptedConversationId, taskId: state.seed.interruptedTaskId, title: "Interrupted retry proof" },
++    ]) {
++      const streamAfters: number[] = [];
++      const observe = (request: { url(): string }) => {
++        const url = new URL(request.url());
++        if (url.pathname.endsWith(`/tasks/${scenario.taskId}/stream`)) {
++          streamAfters.push(Number(url.searchParams.get("after") ?? "0"));
++        }
++      };
++      page.on("request", observe);
++      await openConversation(page, scenario.conversationId);
++      await expect(page.getByRole("heading", { name: scenario.title })).toBeVisible();
++      await page.getByRole("button", { name: "Retry response" }).click();
++      await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
++      await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
++      await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
++      await expect.poll(() => streamAfters.some((cursor) => cursor > 0)).toBe(true);
++      page.off("request", observe);
++    }
++  });
++
++  test("mobile touch path keeps Plan truthful, readable, and durable", async ({ browser, request }) => {
++    const conversationId = await createConversation(request, "Mobile conversation proof");
++    const context = await browser.newContext({
++      ...devices["Pixel 7"],
++      baseURL: state.baseURL,
++      colorScheme: "light",
++      reducedMotion: "reduce",
++    });
++    const page = await context.newPage();
++    try {
++      await openConversation(page, conversationId);
++      await expect(page.getByRole("heading", { name: "Mobile conversation proof" })).toBeVisible();
++      await page.getByRole("button", { name: "Plan" }).click();
++      await page.getByRole("textbox", { name: "Message Morrow" }).fill("Plan how to check the local runtime.");
++      await page.getByRole("button", { name: "Send message" }).click();
++
++      await expect(page.getByText("Plan how to check the local runtime.")).toBeVisible();
++      await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
++      await expect(page.getByText(/Plan · mock-model via mock/i)).toBeVisible();
++      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
++
++      await page.reload();
++      await expect(page.getByText("Plan how to check the local runtime.")).toBeVisible();
++      await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
++
++      await page.getByRole("button", { name: "Rename conversation" }).click();
++      const titleInput = page.getByRole("textbox", { name: "Conversation title" });
++      await expect(titleInput).toBeFocused();
++      await titleInput.fill("Mobile renamed proof");
++      await page.getByRole("button", { name: "Save name" }).click();
++      await expect(page.getByRole("heading", { name: "Mobile renamed proof" })).toBeVisible();
++
++      await page.getByRole("button", { name: "Archive conversation" }).click();
++      await expect(page.getByRole("status")).toHaveText("Conversation archived.");
++      await expect(page.getByRole("button", { name: "Restore conversation" })).toBeVisible();
++
++      const deleteButton = page.getByRole("button", { name: "Delete conversation" });
++      await deleteButton.click();
++      const keepButton = page.getByRole("button", { name: "Keep conversation" });
++      const confirmButton = page.getByRole("button", { name: "Delete permanently" });
++      await expect(keepButton).toBeFocused();
++      await keepButton.press("Shift+Tab");
++      await expect(confirmButton).toBeFocused();
++      await confirmButton.press("Tab");
++      await expect(keepButton).toBeFocused();
++      await keepButton.press("Escape");
++      await expect(deleteButton).toBeFocused();
++
++      await deleteButton.click();
++      await page.getByRole("button", { name: "Delete permanently" }).click();
++      await expect(page).toHaveURL(/\/app\/?$/);
++      const deleted = await request.get(`/api/projects/${state.seed.projectId}/conversations/${conversationId}`);
++      expect(deleted.status()).toBe(404);
++    } finally {
++      await context.close();
++    }
++  });
++});
+diff --git a/apps/web/e2e/global-setup.ts b/apps/web/e2e/global-setup.ts
+index 9bd50fd..d1e2708 100644
+--- a/apps/web/e2e/global-setup.ts
++++ b/apps/web/e2e/global-setup.ts
+@@ -12,20 +12,26 @@ const STATE_FILE = join(__dirname, ".state.json");
+ 
+ export interface SeededState {
+   dbPath: string;
+   home: string;
+   workspace: string;
+   projectId: string;
+   attentionMissionId: string;
+   attentionApprovalId: string;
+   resultMissionId: string;
+   artifactTitle: string;
++  activeConversationId: string;
++  activeTaskId: string;
++  failedConversationId: string;
++  failedTaskId: string;
++  interruptedConversationId: string;
++  interruptedTaskId: string;
+   resultStatus: string;
+ }
+ 
+ export interface E2EState {
+   baseURL: string;
+   serverPid: number | null;
+   home: string;
+   seed: SeededState;
+ }
+ 
+diff --git a/apps/web/src/api/chat-stream.test.ts b/apps/web/src/api/chat-stream.test.ts
+new file mode 100644
+index 0000000..87cbb5c
+--- /dev/null
++++ b/apps/web/src/api/chat-stream.test.ts
+@@ -0,0 +1,140 @@
++import { act, renderHook, waitFor } from "@testing-library/react";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { createElement, type ReactNode } from "react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { conversationKeys } from "./conversations.js";
++import { chatStreamCursorKey, useChatTaskStream } from "./chat-stream.js";
++
++class FakeEventSource {
++  static instances: FakeEventSource[] = [];
++  readonly listeners = new Map<string, Array<(event: Event) => void>>();
++  closed = false;
++
++  constructor(readonly url: string) {
++    FakeEventSource.instances.push(this);
++  }
++
++  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    const callback = typeof listener === "function" ? listener : (event: Event) => listener.handleEvent(event);
++    this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]);
++  }
++
++  close() { this.closed = true; }
++
++  emit(type: string, data?: unknown) {
++    const event = type === "open" || type === "error"
++      ? new Event(type)
++      : new MessageEvent(type, { data: JSON.stringify(data) });
++    for (const listener of this.listeners.get(type) ?? []) listener(event);
++  }
++}
++
++function wrapper(queryClient: QueryClient) {
++  return ({ children }: { children: ReactNode }) =>
++    createElement(QueryClientProvider, { client: queryClient }, children);
++}
++
++beforeEach(() => {
++  FakeEventSource.instances = [];
++  sessionStorage.clear();
++  vi.stubGlobal("EventSource", FakeEventSource);
++  vi.stubGlobal("navigator", { onLine: true });
++});
++
++afterEach(() => {
++  vi.useRealTimers();
++  vi.unstubAllGlobals();
++  vi.restoreAllMocks();
++});
++
++describe("useChatTaskStream", () => {
++  it("deduplicates ordered cursors, reconciles canonical messages, and closes at terminal", async () => {
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
++    const refetch = vi.spyOn(queryClient, "refetchQueries").mockResolvedValue(undefined);
++    const { result, unmount } = renderHook(() => useChatTaskStream({
++      projectId: "project-1", conversationId: "conversation-1", taskId: "task-1",
++    }), { wrapper: wrapper(queryClient) });
++
++    const source = FakeEventSource.instances[0]!;
++    expect(source.url).toBe("/api/projects/project-1/conversations/conversation-1/tasks/task-1/stream?after=0");
++    act(() => source.emit("open"));
++    await waitFor(() => expect(result.current.status).toBe("synchronized"));
++
++    const signal = { version: 1, cursor: 1, taskId: "task-1", conversationId: "conversation-1", eventType: "message.updated", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "event-1" } };
++    act(() => {
++      source.emit("message.updated", signal);
++      source.emit("message.updated", signal);
++    });
++    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2)); // open reconciliation + one unique signal
++    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: conversationKeys.messages("project-1", "conversation-1") });
++
++    act(() => source.emit("task.terminal", { ...signal, cursor: 2, eventType: "task.terminal", payload: { eventId: "event-2" } }));
++    await waitFor(() => expect(source.closed).toBe(true));
++    await waitFor(() => expect(result.current.terminal).toBe(true));
++    expect(invalidate).toHaveBeenCalledTimes(2);
++    expect(refetch).toHaveBeenCalledTimes(1);
++    expect(sessionStorage.getItem(chatStreamCursorKey({ projectId: "project-1", conversationId: "conversation-1", taskId: "task-1" }))).toBeNull();
++    unmount();
++  });
++
++  it("reconnects from the highest cursor and never applies a replay twice", async () => {
++    vi.useFakeTimers();
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
++    renderHook(() => useChatTaskStream({ projectId: "p", conversationId: "c", taskId: "t" }), { wrapper: wrapper(queryClient) });
++    const first = FakeEventSource.instances[0]!;
++    act(() => first.emit("message.updated", { version: 1, cursor: 4, taskId: "t", conversationId: "c", eventType: "message.updated", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "e4" } }));
++    act(() => first.emit("error"));
++    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
++
++    expect(FakeEventSource.instances).toHaveLength(2);
++    expect(FakeEventSource.instances[1]?.url).toBe("/api/projects/p/conversations/c/tasks/t/stream?after=4");
++    expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey({ projectId: "p", conversationId: "c", taskId: "t" }))!)).toMatchObject({ cursor: 4, terminal: false });
++    const beforeReplay = invalidate.mock.calls.length;
++    act(() => FakeEventSource.instances[1]?.emit("message.updated", { version: 1, cursor: 4, taskId: "t", conversationId: "c", eventType: "message.updated", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "e4" } }));
++    expect(invalidate).toHaveBeenCalledTimes(beforeReplay);
++  });
++
++  it("restores a validated identity-scoped cursor after unmount and ignores malformed or foreign cursors", () => {
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
++    const identity = { projectId: "project-1", conversationId: "conversation-1", taskId: "task-1" };
++    const firstRender = renderHook(() => useChatTaskStream(identity), { wrapper: wrapper(queryClient) });
++    act(() => FakeEventSource.instances[0]?.emit("message.updated", {
++      version: 1, cursor: 7, taskId: identity.taskId, conversationId: identity.conversationId,
++      eventType: "message.updated", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "event-7" },
++    }));
++    firstRender.unmount();
++
++    renderHook(() => useChatTaskStream(identity), { wrapper: wrapper(queryClient) });
++    expect(FakeEventSource.instances.at(-1)?.url).toContain("?after=7");
++
++    sessionStorage.setItem(chatStreamCursorKey({ projectId: "project-2", conversationId: "conversation-1", taskId: "task-1" }), JSON.stringify({ version: 1, cursor: 11, terminal: false }));
++    sessionStorage.setItem(chatStreamCursorKey({ projectId: "project-1", conversationId: "conversation-2", taskId: "task-2" }), "7.5");
++    renderHook(() => useChatTaskStream({ projectId: "project-1", conversationId: "conversation-2", taskId: "task-2" }), { wrapper: wrapper(queryClient) });
++    expect(FakeEventSource.instances.at(-1)?.url).toContain("?after=0");
++  });
++
++  it("keeps the terminal cursor until canonical reconciliation succeeds", async () => {
++    let reconcile!: () => void;
++    const pending = new Promise<void>((resolve) => { reconcile = resolve; });
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
++    vi.spyOn(queryClient, "refetchQueries").mockReturnValue(pending);
++    const identity = { projectId: "p-terminal", conversationId: "c-terminal", taskId: "t-terminal" };
++    const { result } = renderHook(() => useChatTaskStream(identity), { wrapper: wrapper(queryClient) });
++    const source = FakeEventSource.instances[0]!;
++
++    act(() => source.emit("task.terminal", {
++      version: 1, cursor: 6, taskId: identity.taskId, conversationId: identity.conversationId,
++      eventType: "task.terminal", emittedAt: "2026-07-22T12:00:00.000Z", payload: { eventId: "event-6" },
++    }));
++    expect(JSON.parse(sessionStorage.getItem(chatStreamCursorKey(identity))!)).toMatchObject({ cursor: 6, terminal: true });
++    expect(result.current.terminal).toBe(false);
++
++    await act(async () => { reconcile(); await pending; });
++    await waitFor(() => expect(result.current.terminal).toBe(true));
++    expect(sessionStorage.getItem(chatStreamCursorKey(identity))).toBeNull();
++  });
++});
+diff --git a/apps/web/src/api/chat-stream.ts b/apps/web/src/api/chat-stream.ts
+new file mode 100644
+index 0000000..0a4f61f
+--- /dev/null
++++ b/apps/web/src/api/chat-stream.ts
+@@ -0,0 +1,227 @@
++import { ChatStreamEnvelopeSchema } from "@morrow/contracts";
++import { useQueryClient } from "@tanstack/react-query";
++import { useEffect, useState } from "react";
++import { conversationKeys } from "./conversations.js";
++
++const eventTypes = [
++  "message.updated",
++  "tool.updated",
++  "task.updated",
++  "task.terminal",
++] as const;
++
++export type ChatTaskStreamStatus =
++  | "connecting"
++  | "synchronized"
++  | "reconnecting"
++  | "offline";
++
++export interface ChatTaskStreamIdentity {
++  projectId: string;
++  conversationId: string;
++  taskId: string;
++}
++
++const CURSOR_PREFIX = "morrow.chat-stream-cursor.v1.";
++
++export function chatStreamCursorKey({ projectId, conversationId, taskId }: ChatTaskStreamIdentity): string {
++  return `${CURSOR_PREFIX}${encodeURIComponent(JSON.stringify([projectId, conversationId, taskId]))}`;
++}
++
++function readCursor(identity: ChatTaskStreamIdentity): { cursor: number; terminal: boolean } {
++  try {
++    const raw = sessionStorage.getItem(chatStreamCursorKey(identity));
++    if (!raw) return { cursor: 0, terminal: false };
++    const value: unknown = JSON.parse(raw);
++    if (
++      typeof value !== "object" || value === null ||
++      (value as { version?: unknown }).version !== 1 ||
++      !Number.isSafeInteger((value as { cursor?: unknown }).cursor) ||
++      Number((value as { cursor?: number }).cursor) < 0 ||
++      typeof (value as { terminal?: unknown }).terminal !== "boolean"
++    ) return { cursor: 0, terminal: false };
++    return {
++      cursor: Number((value as { cursor: number }).cursor),
++      terminal: (value as { terminal: boolean }).terminal,
++    };
++  } catch {
++    return { cursor: 0, terminal: false };
++  }
++}
++
++function persistCursor(identity: ChatTaskStreamIdentity, cursor: number, terminal: boolean): void {
++  try {
++    sessionStorage.setItem(chatStreamCursorKey(identity), JSON.stringify({ version: 1, cursor, terminal }));
++  } catch {
++    // Stream recovery remains live in memory when browser storage is unavailable.
++  }
++}
++
++export function resumeChatStreamAfter(identity: ChatTaskStreamIdentity, cursor: number): void {
++  if (!Number.isSafeInteger(cursor) || cursor < 0) return;
++  persistCursor(identity, cursor, false);
++}
++
++export function clearChatStreamCursor(identity: ChatTaskStreamIdentity): void {
++  try { sessionStorage.removeItem(chatStreamCursorKey(identity)); } catch { /* no-op */ }
++}
++
++export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
++  const { projectId, conversationId, taskId } = identity;
++  const queryClient = useQueryClient();
++  const [status, setStatus] = useState<ChatTaskStreamStatus>(() =>
++    navigator.onLine ? "connecting" : "offline",
++  );
++  const [terminal, setTerminal] = useState(false);
++
++  useEffect(() => {
++    let stopped = false;
++    let finished = false;
++    let source: EventSource | null = null;
++    let reconnectTimer: number | null = null;
++    let reconnectAttempt = 0;
++    const restored = readCursor(identity);
++    let cursor = restored.cursor;
++    let terminalPending = restored.terminal;
++
++    const messagesKey = conversationKeys.messages(projectId, conversationId);
++    const reconcile = () => queryClient.invalidateQueries({ queryKey: messagesKey });
++    const reconcileTerminal = () => queryClient.refetchQueries(
++      { queryKey: messagesKey, exact: true },
++      { throwOnError: true },
++    );
++    const clearTimer = () => {
++      if (reconnectTimer === null) return;
++      window.clearTimeout(reconnectTimer);
++      reconnectTimer = null;
++    };
++    const close = () => {
++      const active = source;
++      source = null;
++      active?.close();
++    };
++    const publishStatus = (next: ChatTaskStreamStatus) => {
++      if (!stopped) setStatus(next);
++    };
++
++    let connect: () => void;
++    const completeTerminal = async () => {
++      try {
++        await reconcileTerminal();
++        if (stopped) return;
++        clearChatStreamCursor(identity);
++        finished = true;
++        terminalPending = false;
++        setTerminal(true);
++        close();
++      } catch {
++        if (stopped) return;
++        terminalPending = true;
++        publishStatus(navigator.onLine ? "reconnecting" : "offline");
++        if (!navigator.onLine || reconnectTimer !== null) return;
++        const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
++        reconnectAttempt += 1;
++        reconnectTimer = window.setTimeout(() => {
++          reconnectTimer = null;
++          void completeTerminal();
++        }, delay);
++      }
++    };
++    const reconnect = () => {
++      close();
++      if (stopped || finished) return;
++      void reconcile();
++      if (!navigator.onLine) {
++        clearTimer();
++        publishStatus("offline");
++        return;
++      }
++      publishStatus("reconnecting");
++      if (reconnectTimer !== null) return;
++      const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
++      reconnectAttempt += 1;
++      reconnectTimer = window.setTimeout(() => {
++        reconnectTimer = null;
++        connect();
++      }, delay);
++    };
++
++    connect = () => {
++      if (stopped || finished || terminalPending || source || reconnectTimer !== null) return;
++      if (!navigator.onLine) {
++        publishStatus("offline");
++        return;
++      }
++      const url = `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(taskId)}/stream?after=${cursor}`;
++      const active = new EventSource(url);
++      source = active;
++      active.addEventListener("open", () => {
++        if (stopped || source !== active || terminalPending) return;
++        reconnectAttempt = 0;
++        publishStatus("synchronized");
++        void reconcile();
++      });
++      active.addEventListener("error", () => {
++        if (stopped || source !== active || finished) return;
++        reconnect();
++      });
++      for (const eventType of eventTypes) {
++        active.addEventListener(eventType, (event) => {
++          if (stopped || source !== active || finished || terminalPending) return;
++          try {
++            const parsed = ChatStreamEnvelopeSchema.safeParse(
++              JSON.parse(String((event as MessageEvent).data)),
++            );
++            if (
++              !parsed.success ||
++              parsed.data.conversationId !== conversationId ||
++              parsed.data.taskId !== taskId ||
++              parsed.data.eventType !== eventType ||
++              parsed.data.cursor <= cursor
++            ) return;
++            cursor = parsed.data.cursor;
++            persistCursor(identity, cursor, eventType === "task.terminal");
++            if (eventType === "task.terminal") {
++              terminalPending = true;
++              close();
++              void completeTerminal();
++              return;
++            }
++            void reconcile();
++          } catch {
++            // Invalid or private stream data is ignored and never enters UI state.
++          }
++        });
++      }
++    };
++
++    const offline = () => {
++      clearTimer();
++      close();
++      publishStatus("offline");
++      void reconcile();
++    };
++    const online = () => {
++      if (stopped || finished || source || reconnectTimer !== null) return;
++      publishStatus("reconnecting");
++      if (terminalPending) void completeTerminal();
++      else connect();
++    };
++    window.addEventListener("offline", offline);
++    window.addEventListener("online", online);
++    if (navigator.onLine) {
++      if (terminalPending) void completeTerminal();
++      else connect();
++    }
++
++    return () => {
++      stopped = true;
++      clearTimer();
++      close();
++      window.removeEventListener("offline", offline);
++      window.removeEventListener("online", online);
++    };
++  }, [conversationId, projectId, queryClient, taskId]);
++
++  return { status, terminal } as const;
++}
+diff --git a/apps/web/src/api/client.ts b/apps/web/src/api/client.ts
+index 10e044a..ae424d3 100644
+--- a/apps/web/src/api/client.ts
++++ b/apps/web/src/api/client.ts
+@@ -59,14 +59,38 @@ export const api = {
+     input: TInput,
+     schema: z.ZodType<TOutput>,
+   ): Promise<TOutput> {
+     return request(
+       path,
+       { body: JSON.stringify(input), method: "POST" },
+       schema,
+     );
+   },
+ 
++  patch<TInput, TOutput>(
++    path: string,
++    input: TInput,
++    schema: z.ZodType<TOutput>,
++  ): Promise<TOutput> {
++    return request(
++      path,
++      { body: JSON.stringify(input), method: "PATCH" },
++      schema,
++    );
++  },
++
++  deleteWithBody<TInput, TOutput>(
++    path: string,
++    input: TInput,
++    schema: z.ZodType<TOutput>,
++  ): Promise<TOutput> {
++    return request(
++      path,
++      { body: JSON.stringify(input), method: "DELETE" },
++      schema,
++    );
++  },
++
+   delete<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+     return request(path, { method: "DELETE" }, schema);
+   },
+ };
+diff --git a/apps/web/src/api/conversations.test.ts b/apps/web/src/api/conversations.test.ts
+new file mode 100644
+index 0000000..e281aac
+--- /dev/null
++++ b/apps/web/src/api/conversations.test.ts
+@@ -0,0 +1,81 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { conversationApi } from "./conversations.js";
++
++const now = "2026-07-22T12:00:00.000Z";
++const conversation = {
++  version: 1 as const,
++  id: "conversation-1",
++  projectId: "project-1",
++  title: "Chat",
++  archived: false,
++  createdAt: now,
++  updatedAt: now,
++};
++
++afterEach(() => {
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("conversation API", () => {
++  it("uses project-scoped paths for create, list, get, messages, rename, archive, and confirmed delete", async () => {
++    const calls: Array<{ path: string; init?: RequestInit }> = [];
++    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const path = String(input);
++      calls.push(init ? { path, init } : { path });
++      if (path.endsWith("/messages")) return Response.json([]);
++      if (init?.method === "DELETE") return Response.json({ version: 1, conversationId: conversation.id, deleted: true });
++      if (path.endsWith("/conversations") && init?.method === "GET") return Response.json([conversation]);
++      return Response.json(conversation, { status: init?.method === "POST" ? 201 : 200 });
++    }));
++
++    await conversationApi.create("project-1", "Chat");
++    await conversationApi.list("project-1");
++    await conversationApi.get("project-1", "conversation-1");
++    await conversationApi.messages("project-1", "conversation-1");
++    await conversationApi.update("project-1", "conversation-1", { title: "Renamed" });
++    await conversationApi.update("project-1", "conversation-1", { archived: true });
++    await conversationApi.delete("project-1", "conversation-1");
++
++    expect(calls.map(({ path }) => path)).toEqual([
++      "/api/projects/project-1/conversations",
++      "/api/projects/project-1/conversations",
++      "/api/projects/project-1/conversations/conversation-1",
++      "/api/projects/project-1/conversations/conversation-1/messages",
++      "/api/projects/project-1/conversations/conversation-1",
++      "/api/projects/project-1/conversations/conversation-1",
++      "/api/projects/project-1/conversations/conversation-1",
++    ]);
++    expect(calls.at(-1)?.init?.body).toBe(JSON.stringify({ confirmation: "delete" }));
++  });
++
++  it("generates one idempotency key per accepted attempt and preserves it across a transport retry", async () => {
++    const bodies: string[] = [];
++    let calls = 0;
++    vi.spyOn(crypto, "randomUUID")
++      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
++      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
++    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
++      bodies.push(String(init?.body));
++      calls += 1;
++      if (calls === 1) throw new TypeError("connection reset after write");
++      return Response.json({
++        task: { version: 1, id: `task-${calls}`, projectId: "project-1", kind: "agent_chat", status: "queued", parentTaskId: null, agentId: null, worktreeId: null, missionId: null, createdAt: now, updatedAt: now },
++        userMessage: { version: 1, id: `user-${calls}`, conversationId: "conversation-1", role: "user", content: "Hello", taskId: null, streamingState: "completed", provider: null, model: null, createdAt: now, updatedAt: now },
++        assistantMessage: { version: 1, id: `assistant-${calls}`, conversationId: "conversation-1", role: "assistant", content: "", taskId: `task-${calls}`, streamingState: "queued", provider: "mock", model: "mock-model", createdAt: now, updatedAt: now },
++        routing: { version: 1, presetId: "balanced", providerId: "mock", model: "mock-model", fallbackUsed: false, overridden: false, mode: "read-only", autoApprove: false },
++        aggregateUrl: `/api/tasks/task-${calls}`,
++        sseUrl: `/api/projects/project-1/conversations/conversation-1/tasks/task-${calls}/stream`,
++      }, { status: 202 });
++    }));
++
++    const input = { content: "Hello", mode: "read-only" as const, autoApprove: false, preset: "balanced" as const };
++    await conversationApi.sendMessage("project-1", "conversation-1", input);
++    await conversationApi.sendMessage("project-1", "conversation-1", input);
++
++    const parsed = bodies.map((body) => JSON.parse(body));
++    expect(parsed[0].idempotencyKey).toBe("00000000-0000-4000-8000-000000000001");
++    expect(parsed[1].idempotencyKey).toBe(parsed[0].idempotencyKey);
++    expect(parsed[2].idempotencyKey).toBe("00000000-0000-4000-8000-000000000002");
++  });
++});
+diff --git a/apps/web/src/api/conversations.ts b/apps/web/src/api/conversations.ts
+new file mode 100644
+index 0000000..e49c3b2
+--- /dev/null
++++ b/apps/web/src/api/conversations.ts
+@@ -0,0 +1,139 @@
++import {
++  ConversationSchema,
++  ConversationTaskActionResultSchema,
++  DeleteConversationResultSchema,
++  WebSendMessageResultSchema,
++  WebConversationMessageSchema,
++  type SendMessageInput,
++  type WebConversationRouting,
++  type WebSendMessageResult,
++  type WebConversationMessage,
++} from "@morrow/contracts";
++import { queryOptions } from "@tanstack/react-query";
++import { api } from "./client.js";
++
++const projectPath = (projectId: string) =>
++  `/api/projects/${encodeURIComponent(projectId)}/conversations`;
++
++const conversationPath = (projectId: string, conversationId: string) =>
++  `${projectPath(projectId)}/${encodeURIComponent(conversationId)}`;
++
++export const conversationKeys = {
++  all: ["conversations"] as const,
++  list(projectId: string, includeArchived = false) {
++    return [...this.all, "list", projectId, includeArchived] as const;
++  },
++  detail(projectId: string, conversationId: string) {
++    return [...this.all, "detail", projectId, conversationId] as const;
++  },
++  messages(projectId: string, conversationId: string) {
++    return [...this.all, "messages", projectId, conversationId] as const;
++  },
++};
++
++export const conversationQueries = {
++  list(projectId: string, includeArchived = false) {
++    return queryOptions({
++      queryKey: conversationKeys.list(projectId, includeArchived),
++      queryFn: () => conversationApi.list(projectId, includeArchived),
++    });
++  },
++  detail(projectId: string, conversationId: string) {
++    return queryOptions({
++      queryKey: conversationKeys.detail(projectId, conversationId),
++      queryFn: () => conversationApi.get(projectId, conversationId),
++    });
++  },
++  messages(projectId: string, conversationId: string) {
++    return queryOptions({
++      queryKey: conversationKeys.messages(projectId, conversationId),
++      queryFn: () => conversationApi.messages(projectId, conversationId),
++    });
++  },
++};
++
++async function retryTransport<T>(operation: () => Promise<T>): Promise<T> {
++  try {
++    return await operation();
++  } catch (error) {
++    if (!(error instanceof TypeError)) throw error;
++    return operation();
++  }
++}
++
++export function pendingWebMessage(
++  message: WebSendMessageResult["userMessage"] | WebSendMessageResult["assistantMessage"],
++  taskStatus: WebConversationMessage["taskStatus"],
++  routing: WebConversationRouting | null,
++): WebConversationMessage {
++  return WebConversationMessageSchema.parse({
++    ...message,
++    taskStatus,
++    routing,
++    toolActivity: [],
++  });
++}
++
++export const conversationApi = {
++  create(projectId: string, title?: string) {
++    return api.post(projectPath(projectId), title ? { title } : {}, ConversationSchema);
++  },
++
++  list(projectId: string, includeArchived = false) {
++    const suffix = includeArchived ? "?includeArchived=true" : "";
++    return api.get(`${projectPath(projectId)}${suffix}`, ConversationSchema.array());
++  },
++
++  get(projectId: string, conversationId: string) {
++    return api.get(conversationPath(projectId, conversationId), ConversationSchema);
++  },
++
++  messages(projectId: string, conversationId: string) {
++    return api.get(
++      `${conversationPath(projectId, conversationId)}/messages`,
++      WebConversationMessageSchema.array(),
++    );
++  },
++
++  update(projectId: string, conversationId: string, patch: { title?: string; archived?: boolean }) {
++    return api.patch(conversationPath(projectId, conversationId), patch, ConversationSchema);
++  },
++
++  delete(projectId: string, conversationId: string) {
++    return api.deleteWithBody(
++      conversationPath(projectId, conversationId),
++      { confirmation: "delete" as const },
++      DeleteConversationResultSchema,
++    );
++  },
++
++  sendMessage(
++    projectId: string,
++    conversationId: string,
++    input: Omit<SendMessageInput, "idempotencyKey">,
++  ) {
++    const idempotencyKey = crypto.randomUUID();
++    const payload = { ...input, idempotencyKey };
++    return retryTransport(() => api.post(
++      `${conversationPath(projectId, conversationId)}/messages`,
++      payload,
++      WebSendMessageResultSchema,
++    ));
++  },
++
++  cancel(projectId: string, conversationId: string, taskId: string) {
++    return api.post(
++      `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/cancel`,
++      {},
++      ConversationTaskActionResultSchema,
++    );
++  },
++
++  retry(projectId: string, conversationId: string, taskId: string) {
++    return api.post(
++      `${conversationPath(projectId, conversationId)}/tasks/${encodeURIComponent(taskId)}/retry`,
++      {},
++      ConversationTaskActionResultSchema,
++    );
++  },
++};
+diff --git a/apps/web/src/app/app-shell.tsx b/apps/web/src/app/app-shell.tsx
+index 8bbe69f..5f65b4f 100644
+--- a/apps/web/src/app/app-shell.tsx
++++ b/apps/web/src/app/app-shell.tsx
+@@ -58,20 +58,23 @@ const runtimeVariants = {
+ 
+ function getRouteTitle(pathname: string): string {
+   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
+   const routePath = normalizedPath.startsWith("/app")
+     ? normalizedPath.slice("/app".length) || "/"
+     : normalizedPath;
+ 
+   if (/^\/missions\/[^/]+$/.test(routePath)) {
+     return "Mission workspace";
+   }
++  if (/^\/chats\/[^/]+$/.test(routePath)) {
++    return "Conversation";
++  }
+ 
+   const routeTitles: Record<string, string> = {
+     "/": "Home",
+     "/automations": "Automations",
+     "/connections": "Connections",
+     "/library": "Library",
+     "/missions": "Missions",
+     "/settings": "Settings",
+     "/workspace": "Workspace",
+   };
+diff --git a/apps/web/src/app/router.tsx b/apps/web/src/app/router.tsx
+index a25d9af..30e4813 100644
+--- a/apps/web/src/app/router.tsx
++++ b/apps/web/src/app/router.tsx
+@@ -4,20 +4,21 @@ import {
+   createRoute,
+   createRouter,
+   type RouterHistory,
+ } from "@tanstack/react-router";
+ import { LibraryPage } from "../features/library/library-page.js";
+ import { HomePage } from "../features/home/home-page.js";
+ import { MissionPage } from "../features/missions/mission-page.js";
+ import { MissionsPage } from "../features/missions/missions-page.js";
+ import { ComingSoonPage } from "../features/placeholders/coming-soon-page.js";
+ import { ConnectionsPage } from "../features/connections/connections-page.js";
++import { ConversationPage } from "../features/chat/conversation-page.js";
+ import { SettingsPage } from "../features/placeholders/settings-page.js";
+ import { AppShell } from "./app-shell.js";
+ 
+ const rootRoute = createRootRoute({ component: AppShell });
+ 
+ const homeRoute = createRoute({
+   component: HomePage,
+   getParentRoute: () => rootRoute,
+   path: "/",
+ });
+@@ -27,20 +28,29 @@ const missionsRoute = createRoute({
+   getParentRoute: () => rootRoute,
+   path: "/missions",
+ });
+ 
+ const missionRoute = createRoute({
+   component: MissionPage,
+   getParentRoute: () => rootRoute,
+   path: "/missions/$missionId",
+ });
+ 
++const conversationRoute = createRoute({
++  component: ConversationPage,
++  getParentRoute: () => rootRoute,
++  path: "/chats/$conversationId",
++  validateSearch: (search: Record<string, unknown>) => ({
++    projectId: typeof search.projectId === "string" ? search.projectId : undefined,
++  }),
++});
++
+ const libraryRoute = createRoute({
+   component: LibraryPage,
+   getParentRoute: () => rootRoute,
+   path: "/library",
+ });
+ 
+ const automationsRoute = createRoute({
+   component: () => (
+     <ComingSoonPage
+       description="Create schedules and triggers for work that should run later."
+@@ -71,20 +81,21 @@ const connectionsRoute = createRoute({
+ const settingsRoute = createRoute({
+   component: SettingsPage,
+   getParentRoute: () => rootRoute,
+   path: "/settings",
+ });
+ 
+ export const routeTree = rootRoute.addChildren([
+   homeRoute,
+   missionsRoute,
+   missionRoute,
++  conversationRoute,
+   libraryRoute,
+   automationsRoute,
+   workspaceRoute,
+   connectionsRoute,
+   settingsRoute,
+ ]);
+ 
+ export function createAppRouter(history: RouterHistory = createBrowserHistory()) {
+   return createRouter({
+     basepath: "/app",
+diff --git a/apps/web/src/features/chat/conversation-page.test.tsx b/apps/web/src/features/chat/conversation-page.test.tsx
+new file mode 100644
+index 0000000..8ae83bf
+--- /dev/null
++++ b/apps/web/src/features/chat/conversation-page.test.tsx
+@@ -0,0 +1,237 @@
++import { act, render, screen, waitFor, within } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { conversationKeys } from "../../api/conversations.js";
++import { chatStreamCursorKey } from "../../api/chat-stream.js";
++import { ConversationPageContent } from "./conversation-page.js";
++
++const now = "2026-07-22T12:00:00.000Z";
++const conversation = { version: 1, id: "conversation-1", projectId: "project-1", title: "Local model research", archived: false, createdAt: now, updatedAt: now };
++const routing = { version: 1, presetId: "balanced", providerId: "mock", model: "mock-model", fallbackUsed: false, overridden: false, mode: "read-only", autoApprove: false };
++
++function message(overrides: Record<string, unknown>) {
++  return {
++    version: 1, id: "assistant-1", conversationId: conversation.id, role: "assistant", content: "Saved answer",
++    taskId: "task-1", streamingState: "completed", provider: "mock", model: "mock-model", createdAt: now, updatedAt: now,
++    taskStatus: "completed", routing, toolActivity: [], ...overrides,
++  };
++}
++
++class FakeEventSource {
++  static instances: FakeEventSource[] = [];
++  listeners = new Map<string, Array<(event: Event) => void>>();
++  closed = false;
++  constructor(readonly url: string) { FakeEventSource.instances.push(this); }
++  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    const callback = typeof listener === "function" ? listener : (event: Event) => listener.handleEvent(event);
++    this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]);
++  }
++  close() { this.closed = true; }
++  emit(type: string, data?: unknown) {
++    const event = type === "open" || type === "error" ? new Event(type) : new MessageEvent(type, { data: JSON.stringify(data) });
++    for (const listener of this.listeners.get(type) ?? []) listener(event);
++  }
++}
++
++function json(body: unknown, status = 200) { return Response.json(body, { status }); }
++
++function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }), onDeleted = vi.fn()) {
++  return {
++    onDeleted,
++    queryClient,
++    ...render(
++      <QueryClientProvider client={queryClient}>
++        <ConversationPageContent conversationId={conversation.id} onDeleted={onDeleted} projectId="project-1" />
++      </QueryClientProvider>,
++    ),
++  };
++}
++
++beforeEach(() => {
++  FakeEventSource.instances = [];
++  localStorage.clear();
++  sessionStorage.clear();
++  vi.stubGlobal("EventSource", FakeEventSource);
++  vi.stubGlobal("navigator", { onLine: true });
++});
++
++afterEach(() => {
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("ConversationPage", () => {
++  it("retains input until the server accepts, then renders one canonical user and assistant row", async () => {
++    let accept!: (response: Response) => void;
++    const sendResponse = new Promise<Response>((resolve) => { accept = resolve; });
++    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const path = String(input);
++      if (path.endsWith("/messages") && init?.method === "GET") return json([]);
++      if (path.endsWith(`/conversations/${conversation.id}`) && init?.method === "GET") return json(conversation);
++      if (path.endsWith("/messages") && init?.method === "POST") return sendResponse;
++      throw new Error(`Unexpected request ${init?.method} ${path}`);
++    });
++    vi.stubGlobal("fetch", fetchMock);
++    const user = userEvent.setup();
++    renderPage();
++
++    const textbox = await screen.findByRole("textbox", { name: "Message Morrow" });
++    await user.type(textbox, "Which local model fits?");
++    await user.click(screen.getByRole("button", { name: "Send message" }));
++    expect(textbox).toHaveValue("Which local model fits?");
++
++    act(() => accept(json({
++      task: { version: 1, id: "task-1", projectId: "project-1", kind: "agent_chat", status: "queued", parentTaskId: null, agentId: null, worktreeId: null, missionId: null, createdAt: now, updatedAt: now },
++      userMessage: { version: 1, id: "user-1", conversationId: conversation.id, role: "user", content: "Which local model fits?", taskId: null, streamingState: "completed", provider: null, model: null, createdAt: now, updatedAt: now },
++      assistantMessage: { version: 1, id: "assistant-1", conversationId: conversation.id, role: "assistant", content: "", taskId: "task-1", streamingState: "queued", provider: "mock", model: "mock-model", createdAt: now, updatedAt: now },
++      routing,
++      aggregateUrl: "/api/tasks/task-1",
++      sseUrl: "/api/projects/project-1/conversations/conversation-1/tasks/task-1/stream",
++    }, 202)));
++
++    await waitFor(() => expect(textbox).toHaveValue(""));
++    expect(screen.getAllByTestId("conversation-message-user")).toHaveLength(1);
++    expect(screen.getAllByTestId("conversation-message-assistant")).toHaveLength(1);
++    expect(screen.getByText("Which local model fits?")).toBeVisible();
++    expect(screen.getByText(/Ask · mock-model via mock/i)).toBeVisible();
++  });
++
++  it("resumes an active persisted task, reconciles canonical content on signals and terminal, and never duplicates the assistant row", async () => {
++    let reads = 0;
++    const states = [
++      [message({ content: "", streamingState: "queued", taskStatus: "queued" })],
++      [message({ content: "Partial canonical answer", streamingState: "streaming", taskStatus: "running" })],
++      [message({ content: "Final canonical answer", streamingState: "completed", taskStatus: "completed" })],
++    ];
++    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const path = String(input);
++      if (path.endsWith("/messages") && init?.method === "GET") return json(states[Math.min(reads++, states.length - 1)]);
++      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
++      throw new Error(`Unexpected request ${path}`);
++    }));
++    renderPage();
++
++    expect(await screen.findByText("Morrow is responding…")).toBeVisible();
++    const source = FakeEventSource.instances[0]!;
++    expect(source.url).toContain("/tasks/task-1/stream?after=0");
++    act(() => source.emit("message.updated", { version: 1, cursor: 1, taskId: "task-1", conversationId: conversation.id, eventType: "message.updated", emittedAt: now, payload: { eventId: "event-1" } }));
++    expect(await screen.findByText("Partial canonical answer")).toBeVisible();
++
++    act(() => source.emit("task.terminal", { version: 1, cursor: 2, taskId: "task-1", conversationId: conversation.id, eventType: "task.terminal", emittedAt: now, payload: { eventId: "event-2" } }));
++    expect(await screen.findByText("Final canonical answer")).toBeVisible();
++    expect(screen.getAllByTestId("conversation-message-assistant")).toHaveLength(1);
++    expect(source.closed).toBe(true);
++  });
++
++  it("cancels an active task once and reconciles the canonical cancelled message", async () => {
++    let cancelled = false;
++    let cancelCalls = 0;
++    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const path = String(input);
++      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
++      if (path.endsWith("/messages")) return json([message(cancelled
++        ? { content: "Stopped where requested", streamingState: "cancelled", taskStatus: "cancelled" }
++        : { content: "Working", streamingState: "streaming", taskStatus: "running" })]);
++      if (path.endsWith("/cancel") && init?.method === "POST") {
++        cancelCalls += 1;
++        cancelled = true;
++        await new Promise((resolve) => setTimeout(resolve, 10));
++        return json({ version: 1, taskId: "task-1", status: "cancelled", outcome: "cancelled" }, 202);
++      }
++      throw new Error(`Unexpected request ${path}`);
++    }));
++    const user = userEvent.setup();
++    const cursorKey = chatStreamCursorKey({ projectId: "project-1", conversationId: conversation.id, taskId: "task-1" });
++    sessionStorage.setItem(cursorKey, JSON.stringify({ version: 1, cursor: 7, terminal: false }));
++    renderPage();
++
++    const stop = await screen.findByRole("button", { name: "Stop generation" });
++    await Promise.all([user.click(stop), user.click(stop)]);
++    expect(cancelCalls).toBe(1);
++    expect(await screen.findByText("Stopped where requested")).toBeVisible();
++    expect(screen.queryByRole("button", { name: "Stop generation" })).not.toBeInTheDocument();
++    expect(sessionStorage.getItem(cursorKey)).toBeNull();
++  });
++
++  it("preserves saved history with a non-blocking warning when a refetch fails", async () => {
++    let fail = false;
++    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
++      const path = String(input);
++      if (path.endsWith("/messages")) {
++        if (fail) throw new TypeError("offline");
++        return json([message({ content: "Useful saved history" })]);
++      }
++      return json(conversation);
++    }));
++    const { queryClient } = renderPage();
++    expect(await screen.findByText("Useful saved history")).toBeVisible();
++    fail = true;
++    await act(async () => {
++      await queryClient.refetchQueries({ queryKey: conversationKeys.messages("project-1", conversation.id) });
++    });
++    expect(queryClient.getQueryState(conversationKeys.messages("project-1", conversation.id))?.status).toBe("error");
++    expect(screen.getByText("Useful saved history")).toBeVisible();
++    expect(await screen.findByRole("status")).toHaveTextContent(/could not refresh.*showing saved history/i);
++  });
++
++  it("renames, archives, and confirms deletion with deterministic focus return", async () => {
++    let current = { ...conversation };
++    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
++      const path = String(input);
++      if (path.endsWith("/messages")) return json([]);
++      if (init?.method === "PATCH") {
++        current = { ...current, ...JSON.parse(String(init.body)), updatedAt: now };
++        return json(current);
++      }
++      if (init?.method === "DELETE") return json({ version: 1, conversationId: conversation.id, deleted: true });
++      return json(current);
++    }));
++    const user = userEvent.setup();
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
++    queryClient.setQueryData(conversationKeys.list("project-1", false), [conversation]);
++    queryClient.setQueryData(conversationKeys.list("project-1", true), [conversation]);
++    const { onDeleted } = renderPage(queryClient);
++    await screen.findByRole("heading", { name: "Local model research" });
++
++    const renameButton = screen.getByRole("button", { name: "Rename conversation" });
++    await user.click(renameButton);
++    const renameDialog = screen.getByRole("dialog", { name: "Rename conversation" });
++    const title = within(renameDialog).getByLabelText("Conversation title");
++    expect(title).toHaveFocus();
++    await user.tab({ shift: true });
++    expect(within(renameDialog).getByRole("button", { name: "Save name" })).toHaveFocus();
++    await user.tab();
++    expect(title).toHaveFocus();
++    await user.clear(title);
++    await user.type(title, "Renamed chat");
++    await user.click(within(renameDialog).getByRole("button", { name: "Save name" }));
++    expect(await screen.findByRole("heading", { name: "Renamed chat" })).toBeVisible();
++    await waitFor(() => expect(renameButton).toHaveFocus());
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))?.[0]?.title).toBe("Renamed chat");
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]?.title).toBe("Renamed chat");
++
++    const archive = screen.getByRole("button", { name: "Archive conversation" });
++    await user.click(archive);
++    expect(await screen.findByText("Conversation archived.")).toBeVisible();
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))).toEqual([]);
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))?.[0]).toMatchObject({ id: conversation.id, archived: true });
++
++    const deleteButton = screen.getByRole("button", { name: "Delete conversation" });
++    await user.click(deleteButton);
++    const dialog = screen.getByRole("alertdialog", { name: "Delete this conversation?" });
++    expect(within(dialog).getByRole("button", { name: "Keep conversation" })).toHaveFocus();
++    await user.tab({ shift: true });
++    expect(within(dialog).getByRole("button", { name: "Delete permanently" })).toHaveFocus();
++    await user.tab();
++    expect(within(dialog).getByRole("button", { name: "Keep conversation" })).toHaveFocus();
++    await user.keyboard("{Escape}");
++    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
++    expect(deleteButton).toHaveFocus();
++    await user.click(deleteButton);
++    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete permanently" }));
++    await waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1));
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", false))).toEqual([]);
++    expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))).toEqual([]);
++  });
++});
+diff --git a/apps/web/src/features/chat/conversation-page.tsx b/apps/web/src/features/chat/conversation-page.tsx
+new file mode 100644
+index 0000000..8d17b4a
+--- /dev/null
++++ b/apps/web/src/features/chat/conversation-page.tsx
+@@ -0,0 +1,403 @@
++import type { Conversation, WebConversationMessage } from "@morrow/contracts";
++import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
++import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
++import { Archive, Pencil, Trash2 } from "lucide-react";
++import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
++import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
++import {
++  conversationApi,
++  conversationKeys,
++  conversationQueries,
++  pendingWebMessage,
++} from "../../api/conversations.js";
++import { ApiClientError } from "../../api/client.js";
++import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
++
++const ACTIVE_STATES = new Set(["queued", "streaming"]);
++const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
++
++function routingLabel(message: WebConversationMessage): string | null {
++  const routing = message.routing;
++  if (!routing) return message.model && message.provider ? `${message.model} via ${message.provider}` : null;
++  const mode = routing.mode === "read-only"
++    ? "Ask"
++    : routing.mode === "plan-only"
++      ? "Plan"
++      : routing.mode === "agent"
++        ? routing.autoApprove ? "Build Auto" : "Build"
++        : null;
++  return `${mode ? `${mode} · ` : ""}${routing.model} via ${routing.providerId}`;
++}
++
++function safeError(error: unknown, fallback: string): string {
++  return error instanceof ApiClientError ? error.message : fallback;
++}
++
++function reconcileConversationLists(
++  queryClient: QueryClient,
++  projectId: string,
++  conversationId: string,
++  updated: Conversation | null,
++): void {
++  for (const includeArchived of [false, true]) {
++    queryClient.setQueryData<Conversation[]>(
++      conversationKeys.list(projectId, includeArchived),
++      (current) => {
++        if (!current) return current;
++        const withoutCurrent = current.filter((item) => item.id !== conversationId);
++        if (!updated || (!includeArchived && updated.archived)) return withoutCurrent;
++        return [...withoutCurrent, updated].sort(
++          (left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
++        );
++      },
++    );
++  }
++}
++
++function TaskStream({ projectId, conversationId, taskId }: { projectId: string; conversationId: string; taskId: string }) {
++  const stream = useChatTaskStream({ projectId, conversationId, taskId });
++  if (stream.status === "offline") {
++    return <p className="morrow-chat-sync" role="status">Offline — showing saved conversation history.</p>;
++  }
++  if (stream.status === "reconnecting") {
++    return <p className="morrow-chat-sync" role="status">Reconnecting to this response…</p>;
++  }
++  return null;
++}
++
++export interface ConversationPageContentProps {
++  projectId: string;
++  conversationId: string;
++  onDeleted: () => void;
++}
++
++export function ConversationPageContent({ projectId, conversationId, onDeleted }: ConversationPageContentProps) {
++  const queryClient = useQueryClient();
++  const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
++  const messages = useQuery(conversationQueries.messages(projectId, conversationId));
++  const [renameOpen, setRenameOpen] = useState(false);
++  const [deleteOpen, setDeleteOpen] = useState(false);
++  const [renameTitle, setRenameTitle] = useState("");
++  const [actionBusy, setActionBusy] = useState(false);
++  const [actionMessage, setActionMessage] = useState<string | null>(null);
++  const renameButtonRef = useRef<HTMLButtonElement>(null);
++  const renameInputRef = useRef<HTMLInputElement>(null);
++  const deleteButtonRef = useRef<HTMLButtonElement>(null);
++  const deleteCancelRef = useRef<HTMLButtonElement>(null);
++  const restoreRenameFocus = useRef(false);
++  const restoreDeleteFocus = useRef(false);
++  const cancellationRequests = useRef(new Set<string>());
++
++  const history = messages.data ?? [];
++  const activeMessages = useMemo(
++    () => history.filter((message) => message.taskId && ACTIVE_STATES.has(message.streamingState)),
++    [history],
++  );
++  const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
++
++  useEffect(() => {
++    if (renameOpen) {
++      renameInputRef.current?.focus();
++      renameInputRef.current?.select();
++      return;
++    }
++    if (restoreRenameFocus.current) {
++      restoreRenameFocus.current = false;
++      renameButtonRef.current?.focus();
++    }
++  }, [renameOpen]);
++
++  useEffect(() => {
++    if (deleteOpen) {
++      deleteCancelRef.current?.focus();
++      return;
++    }
++    if (restoreDeleteFocus.current) {
++      restoreDeleteFocus.current = false;
++      deleteButtonRef.current?.focus();
++    }
++  }, [deleteOpen]);
++
++  const closeRename = () => {
++    restoreRenameFocus.current = true;
++    setRenameOpen(false);
++  };
++  const closeDelete = () => {
++    restoreDeleteFocus.current = true;
++    setDeleteOpen(false);
++  };
++  const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>, close: () => void) => {
++    if (event.key === "Escape") {
++      event.preventDefault();
++      close();
++      return;
++    }
++    if (event.key !== "Tab") return;
++    const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>(
++      "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
++    )].filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
++    const first = focusable[0];
++    const last = focusable.at(-1);
++    if (!first || !last) {
++      event.preventDefault();
++      return;
++    }
++    if (event.shiftKey && document.activeElement === first) {
++      event.preventDefault();
++      last.focus();
++    } else if (!event.shiftKey && document.activeElement === last) {
++      event.preventDefault();
++      first.focus();
++    }
++  };
++
++  async function submit(submission: ChatComposerSubmission) {
++    try {
++      const result = await conversationApi.sendMessage(projectId, conversationId, {
++        content: submission.content,
++        mode: submission.mode,
++        autoApprove: submission.autoApprove,
++        ...(submission.preset ? { preset: submission.preset } : {}),
++        ...(submission.providerId ? { providerId: submission.providerId } : {}),
++        ...(submission.model ? { model: submission.model } : {}),
++      });
++      queryClient.setQueryData<WebConversationMessage[]>(
++        conversationKeys.messages(projectId, conversationId),
++        (current = []) => {
++          const next = [...current];
++          const candidates = [
++            pendingWebMessage(result.userMessage, null, null),
++            pendingWebMessage(result.assistantMessage, result.task.status, result.routing),
++          ];
++          for (const candidate of candidates) {
++            const index = next.findIndex((message) => message.id === candidate.id);
++            if (index >= 0) next[index] = candidate;
++            else next.push(candidate);
++          }
++          return next.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
++        },
++      );
++      return { accepted: true } as const;
++    } catch (error) {
++      return {
++        accepted: false,
++        error: safeError(error, "Morrow could not accept this message. Check the connection and try again."),
++      } as const;
++    }
++  }
++
++  async function stop(taskId: string) {
++    if (cancellationRequests.current.has(taskId)) return;
++    cancellationRequests.current.add(taskId);
++    try {
++      await conversationApi.cancel(projectId, conversationId, taskId);
++      await queryClient.refetchQueries(
++        { queryKey: conversationKeys.messages(projectId, conversationId), exact: true },
++        { throwOnError: true },
++      );
++      clearChatStreamCursor({ projectId, conversationId, taskId });
++    } finally {
++      cancellationRequests.current.delete(taskId);
++    }
++  }
++
++  async function retry(taskId: string) {
++    setActionBusy(true);
++    setActionMessage(null);
++    try {
++      const result = await conversationApi.retry(projectId, conversationId, taskId);
++      if (result.afterCursor === undefined) clearChatStreamCursor({ projectId, conversationId, taskId });
++      else resumeChatStreamAfter({ projectId, conversationId, taskId }, result.afterCursor);
++      await queryClient.invalidateQueries({ queryKey: conversationKeys.messages(projectId, conversationId) });
++    } catch (error) {
++      setActionMessage(safeError(error, "Morrow could not retry this response. Try again."));
++    } finally {
++      setActionBusy(false);
++    }
++  }
++
++  function openRename() {
++    setRenameTitle(conversation.data?.title ?? "");
++    setActionMessage(null);
++    setRenameOpen(true);
++  }
++
++  async function saveRename(event: FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    if (!renameTitle.trim() || actionBusy) return;
++    setActionBusy(true);
++    setActionMessage(null);
++    try {
++      const updated = await conversationApi.update(projectId, conversationId, { title: renameTitle });
++      queryClient.setQueryData(conversationKeys.detail(projectId, conversationId), updated);
++      reconcileConversationLists(queryClient, projectId, conversationId, updated);
++      closeRename();
++    } catch (error) {
++      setActionMessage(safeError(error, "The conversation could not be renamed. Try again."));
++    } finally {
++      setActionBusy(false);
++    }
++  }
++
++  async function toggleArchive() {
++    if (!conversation.data || actionBusy) return;
++    setActionBusy(true);
++    setActionMessage(null);
++    try {
++      const archived = !conversation.data.archived;
++      const updated = await conversationApi.update(projectId, conversationId, { archived });
++      queryClient.setQueryData(conversationKeys.detail(projectId, conversationId), updated);
++      reconcileConversationLists(queryClient, projectId, conversationId, updated);
++      setActionMessage(archived ? "Conversation archived." : "Conversation restored.");
++    } catch (error) {
++      setActionMessage(safeError(error, "The conversation could not be updated. Try again."));
++    } finally {
++      setActionBusy(false);
++    }
++  }
++
++  async function confirmDelete() {
++    if (actionBusy) return;
++    setActionBusy(true);
++    setActionMessage(null);
++    try {
++      await conversationApi.delete(projectId, conversationId);
++      queryClient.removeQueries({ queryKey: conversationKeys.detail(projectId, conversationId) });
++      queryClient.removeQueries({ queryKey: conversationKeys.messages(projectId, conversationId) });
++      reconcileConversationLists(queryClient, projectId, conversationId, null);
++      setDeleteOpen(false);
++      onDeleted();
++    } catch (error) {
++      setActionMessage(safeError(error, "The conversation could not be deleted. Stop any active response and try again."));
++      closeDelete();
++    } finally {
++      setActionBusy(false);
++    }
++  }
++
++  if (conversation.isPending || messages.isPending) {
++    return <section className="morrow-conversation-page"><p aria-live="polite" role="status">Loading conversation…</p></section>;
++  }
++  if ((conversation.isError && !conversation.data) || (messages.isError && !messages.data)) {
++    return (
++      <section className="morrow-conversation-page">
++        <h1>Conversation unavailable</h1>
++        <p role="alert">This conversation could not be loaded. Check the local runtime and try again.</p>
++      </section>
++    );
++  }
++
++  const value = conversation.data as Conversation;
++  return (
++    <section aria-labelledby="conversation-heading" className="morrow-conversation-page">
++      <header className="morrow-conversation-header">
++        <h1 id="conversation-heading">{value.title}</h1>
++        <div aria-label="Conversation actions" className="morrow-conversation-actions">
++          <button aria-label="Rename conversation" disabled={actionBusy} onClick={openRename} ref={renameButtonRef} type="button"><Pencil aria-hidden="true" size={16} /></button>
++          <button aria-label={value.archived ? "Restore conversation" : "Archive conversation"} disabled={actionBusy} onClick={() => { void toggleArchive(); }} type="button"><Archive aria-hidden="true" size={16} /></button>
++          <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={16} /></button>
++        </div>
++      </header>
++
++      {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
++        <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>
++      ) : null}
++      {actionMessage ? <p aria-live="polite" role={actionMessage.includes("could not") ? "alert" : "status"}>{actionMessage}</p> : null}
++
++      <div aria-live="polite" className="morrow-conversation-history">
++        {history.length === 0 ? (
++          <div className="morrow-conversation-empty">
++            <h2>Start this conversation</h2>
++            <p>Ask a question or choose Plan when you want a thoughtful approach without changes.</p>
++          </div>
++        ) : history.map((message) => {
++          const label = routingLabel(message);
++          const waiting = message.role === "assistant" && !message.content && ACTIVE_STATES.has(message.streamingState);
++          return (
++            <article
++              className={`morrow-conversation-message morrow-conversation-message--${message.role}`}
++              data-testid={`conversation-message-${message.role}`}
++              key={message.id}
++            >
++              {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
++              <div className="morrow-conversation-message__content">
++                {waiting ? <p>Morrow is responding…</p> : <p>{message.content}</p>}
++              </div>
++              {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
++              {message.toolActivity.length > 0 ? (
++                <ul aria-label="Tool activity" className="morrow-conversation-tools">
++                  {message.toolActivity.map((tool) => <li key={tool.id}>{tool.toolName.replaceAll("_", " ")} · {tool.status}</li>)}
++                </ul>
++              ) : null}
++              {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
++                <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>
++              ) : null}
++            </article>
++          );
++        })}
++      </div>
++
++      {activeMessages.map((message) => (
++        <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
++      ))}
++
++      <div className="morrow-conversation-composer">
++        <ChatComposer
++          activeTaskId={activeTaskId}
++          autoFocus
++          draftScope={{ projectId, conversationId }}
++          onStop={stop}
++          onSubmit={submit}
++          placeholder="Reply to Morrow…"
++        />
++      </div>
++
++      {renameOpen ? (
++        <div aria-labelledby="rename-conversation-heading" aria-modal="true" className="morrow-conversation-dialog-backdrop" onKeyDown={(event) => onDialogKeyDown(event, closeRename)} role="dialog">
++          <form className="morrow-conversation-dialog" onSubmit={saveRename}>
++            <h2 id="rename-conversation-heading">Rename conversation</h2>
++            <label>Conversation title<input maxLength={200} onChange={(event) => setRenameTitle(event.target.value)} ref={renameInputRef} value={renameTitle} /></label>
++            <div className="morrow-conversation-dialog__actions">
++              <button disabled={actionBusy} onClick={closeRename} type="button">Cancel</button>
++              <button disabled={actionBusy || !renameTitle.trim()} type="submit">Save name</button>
++            </div>
++          </form>
++        </div>
++      ) : null}
++
++      {deleteOpen ? (
++        <div aria-labelledby="delete-conversation-heading" aria-modal="true" className="morrow-conversation-dialog-backdrop" onKeyDown={(event) => onDialogKeyDown(event, closeDelete)} role="alertdialog">
++          <div className="morrow-conversation-dialog">
++            <h2 id="delete-conversation-heading">Delete this conversation?</h2>
++            <p>The saved messages will be removed. Completed task records and the project stay intact. This cannot be undone.</p>
++            <div className="morrow-conversation-dialog__actions">
++              <button disabled={actionBusy} onClick={closeDelete} ref={deleteCancelRef} type="button">Keep conversation</button>
++              <button disabled={actionBusy} onClick={() => { void confirmDelete(); }} type="button">Delete permanently</button>
++            </div>
++          </div>
++        </div>
++      ) : null}
++    </section>
++  );
++}
++
++export function ConversationPage() {
++  const { conversationId } = useParams({ strict: false }) as { conversationId?: string };
++  const search = useSearch({ strict: false }) as { projectId?: string };
++  const navigate = useNavigate();
++  if (!conversationId || !search.projectId) {
++    return (
++      <section className="morrow-conversation-page">
++        <h1>Conversation unavailable</h1>
++        <p role="alert">Open this conversation from its project so Morrow can verify its local ownership.</p>
++      </section>
++    );
++  }
++  return (
++    <ConversationPageContent
++      conversationId={conversationId}
++      onDeleted={() => { void navigate({ to: "/" }); }}
++      projectId={search.projectId}
++    />
++  );
++}
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index 3348da7..e2e264a 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -460,20 +460,231 @@ a {
+   .morrow-chat-composer__send,
+   .morrow-chat-composer__stop {
+     margin-left: 0;
+   }
+ 
+   .morrow-chat-composer__meta {
+     display: grid;
+   }
+ }
+ 
++/* ── Conversation workspace ─────────────────────────────────────────────── */
++.morrow-conversation-page {
++  display: flex;
++  width: min(100%, 920px);
++  min-height: calc(100vh - 128px);
++  flex-direction: column;
++  margin-inline: auto;
++}
++
++.morrow-conversation-header {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  padding-bottom: var(--morrow-space-4);
++  gap: var(--morrow-space-3);
++  border-bottom: 1px solid var(--morrow-border);
++}
++
++.morrow-conversation-header h1 {
++  margin: 0;
++  font-size: clamp(1.125rem, 2vw, 1.375rem);
++  letter-spacing: -0.02em;
++}
++
++.morrow-conversation-actions {
++  display: flex;
++  gap: var(--morrow-space-1);
++}
++
++.morrow-conversation-actions button,
++.morrow-conversation-message button,
++.morrow-conversation-dialog button {
++  min-width: 44px;
++  min-height: 44px;
++  padding: 0 var(--morrow-space-3);
++  color: var(--morrow-text-muted);
++  background: transparent;
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  cursor: pointer;
++  font: inherit;
++}
++
++.morrow-conversation-actions button {
++  display: grid;
++  padding: 0;
++  place-items: center;
++}
++
++.morrow-conversation-history {
++  display: grid;
++  flex: 1;
++  align-content: start;
++  padding: clamp(var(--morrow-space-5), 7vh, 72px) 0;
++  gap: var(--morrow-space-6);
++}
++
++.morrow-conversation-empty {
++  width: min(100%, 620px);
++  margin: auto;
++  text-align: center;
++}
++
++.morrow-conversation-empty h2,
++.morrow-conversation-empty p,
++.morrow-conversation-message p {
++  margin: 0;
++}
++
++.morrow-conversation-empty p,
++.morrow-conversation-message__route,
++.morrow-conversation-message__author,
++.morrow-conversation-tools,
++.morrow-chat-warning,
++.morrow-chat-sync {
++  color: var(--morrow-text-muted);
++}
++
++.morrow-conversation-message {
++  display: grid;
++  width: min(100%, 720px);
++  gap: var(--morrow-space-2);
++}
++
++.morrow-conversation-message--user {
++  width: fit-content;
++  max-width: min(80%, 680px);
++  padding: var(--morrow-space-3) var(--morrow-space-4);
++  margin-left: auto;
++  background: color-mix(in srgb, var(--morrow-accent) 10%, var(--morrow-surface));
++  border-radius: var(--morrow-radius-lg);
++}
++
++.morrow-conversation-message__author {
++  font-size: 0.8125rem;
++  font-weight: 700;
++}
++
++.morrow-conversation-message__content {
++  color: var(--morrow-text);
++  line-height: 1.65;
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++}
++
++.morrow-conversation-message__route,
++.morrow-conversation-tools,
++.morrow-chat-warning,
++.morrow-chat-sync {
++  margin: 0;
++  font-size: 0.8125rem;
++}
++
++.morrow-conversation-tools {
++  display: grid;
++  padding: var(--morrow-space-2) var(--morrow-space-3);
++  gap: var(--morrow-space-1);
++  list-style: none;
++  background: var(--morrow-surface-subtle);
++  border-radius: var(--morrow-radius-sm);
++}
++
++.morrow-chat-warning,
++.morrow-chat-sync {
++  padding: var(--morrow-space-2) var(--morrow-space-3);
++  background: var(--morrow-surface-subtle);
++  border-radius: var(--morrow-radius-sm);
++}
++
++.morrow-conversation-composer {
++  position: sticky;
++  bottom: 0;
++  display: grid;
++  padding: var(--morrow-space-4) 0 max(var(--morrow-space-3), env(safe-area-inset-bottom));
++  background: linear-gradient(to bottom, transparent, var(--morrow-bg) 18%);
++  place-items: center;
++}
++
++.morrow-conversation-dialog-backdrop {
++  position: fixed;
++  z-index: 30;
++  inset: 0;
++  display: grid;
++  padding: var(--morrow-space-4);
++  background: color-mix(in srgb, var(--morrow-bg) 72%, transparent);
++  place-items: center;
++}
++
++.morrow-conversation-dialog {
++  display: grid;
++  width: min(100%, 440px);
++  padding: var(--morrow-space-5);
++  gap: var(--morrow-space-4);
++  background: var(--morrow-surface);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-lg);
++  box-shadow: var(--morrow-shadow-lg);
++}
++
++.morrow-conversation-dialog h2,
++.morrow-conversation-dialog p {
++  margin: 0;
++}
++
++.morrow-conversation-dialog label {
++  display: grid;
++  gap: var(--morrow-space-2);
++  font-size: 0.875rem;
++  font-weight: 650;
++}
++
++.morrow-conversation-dialog input {
++  min-height: 44px;
++  padding: 0 var(--morrow-space-3);
++  color: var(--morrow-text);
++  background: var(--morrow-bg);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  font: inherit;
++}
++
++.morrow-conversation-dialog__actions {
++  display: flex;
++  justify-content: flex-end;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-conversation-dialog__actions button:last-child {
++  color: var(--morrow-on-accent);
++  background: var(--morrow-accent);
++  border-color: var(--morrow-accent);
++}
++
++@media (max-width: 760px) {
++  .morrow-conversation-page {
++    min-height: calc(100vh - 116px);
++  }
++
++  .morrow-conversation-message--user {
++    max-width: 92%;
++  }
++
++  .morrow-conversation-history {
++    padding-block: var(--morrow-space-5);
++  }
++
++  .morrow-conversation-dialog__actions {
++    display: grid;
++  }
++}
++
+ /* ── Mission sections and cards ─────────────────────────────────────────── */
+ .morrow-mission-section {
+   display: grid;
+   gap: var(--morrow-space-3);
+ }
+ 
+ .morrow-mission-section > h2 {
+   margin: 0;
+   font-size: 1.25rem;
+   letter-spacing: -0.01em;
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index f389822..a21985b 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -25,22 +25,37 @@ export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:
+ export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
+ export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
+ export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
+ export const CommandTrustSchema=z.object({version:SchemaVersionSchema,projectId:z.string(),pattern:z.string().min(1).max(240),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+ export const TaskEvidenceSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),type:z.literal("file"),path:z.string(),metadata:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
+ export const ExecutionDisclosureSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),executionMode:z.enum(["deterministic-local","agent-interactive"]),provider:ProviderIdSchema,networkAccess:z.enum(["disabled","enabled"]),filesystemAccess:z.enum(["read-only","workspace-write"]),shellExecution:z.boolean(),modelInvocation:z.boolean(),workspaceScope:z.string().min(1),estimatedCostUsd:z.string(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+ export const VerificationResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:z.literal("verified"),summary:z.string(),details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+ export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
+ 
+ export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
++export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional()}).strict();
+ export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
++export const DeleteConversationSchema=z.object({confirmation:z.literal("delete")}).strict();
++export const DeleteConversationResultSchema=z.object({version:SchemaVersionSchema,conversationId:z.string(),deleted:z.boolean()}).strict();
+ export const ConversationMessageSchema=z.object({version:SchemaVersionSchema,id:z.string(),conversationId:z.string(),role:z.enum(["user","assistant"]),content:z.string(),taskId:z.string().nullable().optional(),streamingState:z.enum(["queued","streaming","completed","failed","cancelled","interrupted"]),provider:z.string().nullable().optional(),model:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
++export const ConversationToolActivitySchema=z.object({id:z.string(),toolName:z.string(),status:z.enum(["requested","running","completed","failed","cancelled"]),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable()}).strict();
++export const ChatStreamEventTypeSchema=z.enum(["message.updated","tool.updated","task.updated","task.terminal"]);
++export const ChatStreamEnvelopeSchema=z.object({
++  version:SchemaVersionSchema,
++  cursor:z.number().int().positive(),
++  taskId:z.string(),
++  conversationId:z.string(),
++  eventType:ChatStreamEventTypeSchema,
++  emittedAt:z.string().datetime(),
++  payload:z.object({eventId:z.string()}).strict(),
++}).strict();
++export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
+ 
+ export type Project=z.infer<typeof ProjectSchema>;
+ export type Task=z.infer<typeof TaskSchema>;
+ export type TaskEvent=z.infer<typeof TaskEventSchema>;
+ export type PlanStep=z.infer<typeof PlanStepSchema>;
+ export type TaskEvidence=z.infer<typeof TaskEvidenceSchema>;
+ export type ExecutionDisclosure=z.infer<typeof ExecutionDisclosureSchema>;
+ export type VerificationResult=z.infer<typeof VerificationResultSchema>;
+ export type TaskStatus=z.infer<typeof TaskStatusSchema>;
+ export type AgentExecutionState=z.infer<typeof AgentExecutionStateSchema>;
+@@ -48,20 +63,25 @@ export type AgentStateTransition=z.infer<typeof AgentStateTransitionSchema>;
+ export type ApprovalKind=z.infer<typeof ApprovalKindSchema>;
+ export type ApprovalStatus=z.infer<typeof ApprovalStatusSchema>;
+ export type ApprovalDecision=z.infer<typeof ApprovalDecisionSchema>;
+ export type Approval=z.infer<typeof ApprovalSchema>;
+ export type ResolveApprovalInput=z.infer<typeof ResolveApprovalSchema>;
+ export type CommandTrust=z.infer<typeof CommandTrustSchema>;
+ export type PlanStepStatus=z.infer<typeof PlanStepStatusSchema>;
+ export type StructuredApiError=z.infer<typeof StructuredApiErrorSchema>;
+ export type Conversation=z.infer<typeof ConversationSchema>;
+ export type ConversationMessage=z.infer<typeof ConversationMessageSchema>;
++export type ConversationToolActivity=z.infer<typeof ConversationToolActivitySchema>;
++export type ChatStreamEventType=z.infer<typeof ChatStreamEventTypeSchema>;
++export type ChatStreamEnvelope=z.infer<typeof ChatStreamEnvelopeSchema>;
++export type ConversationTaskActionResult=z.infer<typeof ConversationTaskActionResultSchema>;
++export type DeleteConversationResult=z.infer<typeof DeleteConversationResultSchema>;
+ 
+ // ── Provider runtime, capability matrix, and model registry ──────────────────
+ 
+ export const ProviderKindSchema=z.enum(["api-key","local","oauth-disabled","mock"]);
+ export const ProviderCapabilitiesSchema=z.object({
+   streaming:z.boolean(),
+   toolCalls:z.boolean(),
+   systemMessages:z.boolean(),
+   vision:z.boolean(),
+   customEndpoint:z.boolean(),
+@@ -276,40 +296,74 @@ export const RoutingDecisionSchema=z.object({
+   mode:AgentModeSchema.optional(),
+   toolProfile:ToolProfileSchema.optional(),
+   autoApprove:z.boolean().optional(),
+   // The reasoning selection attached to this route at send time. Frozen into
+   // the durable decision record so retry/resume reuse exactly what was
+   // requested, never re-reading "current session settings" (routing/model
+   // overrides already behave this way — see execution/agent.ts).
+   reasoning:ReasoningConfigurationSchema.optional(),
+ }).strict();
+ 
++/** Browser-safe routing facts. Internal candidate diagnostics and free-form
++ * route reasons stay server-side; the UI receives only the route that was
++ * actually selected and the execution mode the user asked for. */
++export const WebConversationRoutingSchema=z.object({
++  version:SchemaVersionSchema,
++  presetId:PresetIdSchema,
++  providerId:ProviderIdSchema,
++  model:z.string(),
++  fallbackUsed:z.boolean(),
++  overridden:z.boolean(),
++  mode:AgentModeSchema.nullable(),
++  autoApprove:z.boolean().nullable(),
++}).strict();
++
++export const WebConversationMessageSchema=ConversationMessageSchema.extend({
++  taskStatus:TaskStatusSchema.nullable(),
++  routing:WebConversationRoutingSchema.nullable(),
++  toolActivity:z.array(ConversationToolActivitySchema),
++}).strict();
++
+ export const SendMessageSchema=z.object({
+   content:z.string().trim().min(1).max(32000),
+   preset:PresetIdSchema.optional(),
+   providerId:ProviderIdSchema.optional(),
+   model:z.string().min(1).max(200).optional(),
+   // Normalized per-request reasoning override for the resolved route. Absent
+   // means "use the preset/route default". The orchestrator validates this
+   // against the route's real capability and rejects unsupported combinations.
+   reasoning:ReasoningConfigurationSchema.optional(),
+   mode:AgentModeSchema.optional(),
+   useMemory:z.boolean().optional(),
+   autoApprove:z.boolean().optional(),
+   agentId:z.string().optional(),
+   idempotencyKey:z.string().trim().min(1).max(200).optional(),
+   worktreeId:z.string().optional(),
+   // Links the resulting agent task to a mission so tool failures during
+   // execution land in that mission's failure ledger.
+   missionId:z.string().optional(),
+ }).strict();
+ 
++export const SendMessageResultSchema=z.object({
++  task:TaskSchema,
++  userMessage:ConversationMessageSchema,
++  assistantMessage:ConversationMessageSchema,
++  routing:RoutingDecisionSchema.nullable(),
++  aggregateUrl:z.string(),
++  sseUrl:z.string(),
++  replayed:z.boolean().optional(),
++}).strict();
++
++export const WebSendMessageResultSchema=SendMessageResultSchema.extend({
++  routing:WebConversationRoutingSchema.nullable(),
++}).strict();
++
+ // ── Memory foundation ────────────────────────────────────────────────────────
+ 
+ // Scopes are tiers of recall. project/user/conversation are the original
+ // working tiers; episodic (time-stamped events), procedural (how-to/workflow),
+ // and knowledge (durable facts) are project-wide recall tiers. Every tier except
+ // conversation applies to all conversations in the project.
+ export const MemoryScopeSchema=z.enum([
+   "project","conversation","user","episodic","procedural","knowledge",
+   "user_global","machine_environment","workspace","repository","subtree",
+   "branch_worktree","mission","provider_model","temporary_context",
+@@ -565,22 +619,26 @@ export type ReasoningEffort=z.infer<typeof ReasoningEffortSchema>;
+ export type ReasoningControl=z.infer<typeof ReasoningControlSchema>;
+ export type ReasoningSource=z.infer<typeof ReasoningSourceSchema>;
+ export type RouteReasoningCapability=z.infer<typeof RouteReasoningCapabilitySchema>;
+ export type ReasoningConfiguration=z.infer<typeof ReasoningConfigurationSchema>;
+ export type PresetId=z.infer<typeof PresetIdSchema>;
+ export type Preset=z.infer<typeof PresetSchema>;
+ export type PresetStatus=z.infer<typeof PresetStatusSchema>;
+ export type ToolProfile=z.infer<typeof ToolProfileSchema>;
+ export type AgentMode=z.infer<typeof AgentModeSchema>;
+ export type RoutingDecision=z.infer<typeof RoutingDecisionSchema>;
++export type WebConversationRouting=z.infer<typeof WebConversationRoutingSchema>;
+ export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
+ export type SendMessageInput=z.infer<typeof SendMessageSchema>;
++export type SendMessageResult=z.infer<typeof SendMessageResultSchema>;
++export type WebSendMessageResult=z.infer<typeof WebSendMessageResultSchema>;
++export type WebConversationMessage=z.infer<typeof WebConversationMessageSchema>;
+ export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
+ export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
+ export type MemoryType=z.infer<typeof MemoryTypeSchema>;
+ export type MemoryLifecycle=z.infer<typeof MemoryLifecycleSchema>;
+ export type MemorySensitivity=z.infer<typeof MemorySensitivitySchema>;
+ export type MemoryEvidenceReference=z.infer<typeof MemoryEvidenceReferenceSchema>;
+ 
+ // ── Honest OAuth integration findings ────────────────────────────────────────
+ // Morrow only labels a flow "OAuth" when it is an officially supported, documented
+ // third-party integration. Where no such flow exists for this class of application,
+diff --git a/packages/contracts/test/contracts.test.ts b/packages/contracts/test/contracts.test.ts
+index ce7e409..f8d02f4 100644
+--- a/packages/contracts/test/contracts.test.ts
++++ b/packages/contracts/test/contracts.test.ts
+@@ -1,17 +1,22 @@
+ import { describe, expect, it } from "vitest";
+ import {
+   CreateProjectSchema, CreateTaskSchema, TaskEventSchema,
+   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
+   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
+   RequirementCategorySchema, RequirementNodeStatusSchema,
+   DiscoveredModelSchema,
++  ChatStreamEnvelopeSchema,
++  CreateConversationSchema,
++  DeleteConversationSchema,
++  WebConversationRoutingSchema,
++  WebConversationMessageSchema,
+ } from "../src/index.js";
+ 
+ function validNode(over: Record<string, unknown> = {}) {
+   return {
+     version: 1,
+     id: "req-1",
+     missionId: "m1",
+     order: 0,
+     statement: "do the thing",
+     category: "objective",
+@@ -33,20 +38,80 @@ function validNode(over: Record<string, unknown> = {}) {
+     updatedAt: "2026-01-01T00:00:00.000Z",
+     ...over,
+   };
+ }
+ 
+ describe("contracts", () => {
+   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
+   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
+   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());
+ 
++  it("types bounded conversation creation and explicit durable deletion confirmation", () => {
++    expect(CreateConversationSchema.parse({ title: " Chat " })).toEqual({ title: "Chat" });
++    expect(() => CreateConversationSchema.parse({ title: "x".repeat(201) })).toThrow();
++    expect(DeleteConversationSchema.parse({ confirmation: "delete" })).toEqual({ confirmation: "delete" });
++    expect(() => DeleteConversationSchema.parse({ confirmation: true })).toThrow();
++  });
++
++  it("keeps browser chat events coarse and canonical message tool activity secret-free", () => {
++    const publicRouting = {
++      version: 1,
++      presetId: "balanced",
++      providerId: "mock",
++      model: "mock-model",
++      fallbackUsed: false,
++      overridden: false,
++      mode: "read-only",
++      autoApprove: false,
++    };
++    expect(WebConversationRoutingSchema.parse(publicRouting)).toEqual(publicRouting);
++    expect(() => WebConversationRoutingSchema.parse({ ...publicRouting, reason: "internal provider diagnostic" })).toThrow();
++
++    expect(ChatStreamEnvelopeSchema.parse({
++      version: 1,
++      cursor: 2,
++      taskId: "task-1",
++      conversationId: "conversation-1",
++      eventType: "message.updated",
++      emittedAt: "2026-07-22T12:00:00.000Z",
++      payload: { eventId: "event-2" },
++    }).payload).toEqual({ eventId: "event-2" });
++    expect(() => ChatStreamEnvelopeSchema.parse({
++      version: 1,
++      cursor: 2,
++      taskId: "task-1",
++      conversationId: "conversation-1",
++      eventType: "message.updated",
++      emittedAt: "2026-07-22T12:00:00.000Z",
++      payload: { eventId: "event-2", deltaText: "private" },
++    })).toThrow();
++
++    const parsed = WebConversationMessageSchema.parse({
++      version: 1,
++      id: "assistant-1",
++      conversationId: "conversation-1",
++      role: "assistant",
++      content: "Canonical",
++      taskId: "task-1",
++      streamingState: "completed",
++      provider: "mock",
++      model: "mock-model",
++      createdAt: "2026-07-22T12:00:00.000Z",
++      updatedAt: "2026-07-22T12:00:00.000Z",
++      taskStatus: "completed",
++      routing: null,
++      toolActivity: [{ id: "tool-1", toolName: "read_file", status: "completed", startedAt: null, completedAt: "2026-07-22T12:00:00.000Z" }],
++    });
++    expect(parsed.toolActivity).toEqual([expect.objectContaining({ toolName: "read_file" })]);
++    expect(() => WebConversationMessageSchema.parse({ ...parsed, toolActivity: [{ ...parsed.toolActivity[0], argsJson: "secret" }] })).toThrow();
++  });
++
+   it("accepts a complete provider-reported OpenRouter catalogue model", () => {
+     expect(DiscoveredModelSchema.parse({
+       providerModelId: "anthropic/claude-sonnet-4",
+       displayName: "Claude Sonnet 4",
+       author: "anthropic",
+       contextWindow: 200_000,
+       maxOutputTokens: 64_000,
+       inputModalities: ["text", "image"],
+       outputModalities: ["text"],
+       capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+diff --git a/services/orchestrator/scripts/e2e-seed.ts b/services/orchestrator/scripts/e2e-seed.ts
+index b341e8e..18ef09a 100644
+--- a/services/orchestrator/scripts/e2e-seed.ts
++++ b/services/orchestrator/scripts/e2e-seed.ts
+@@ -1,40 +1,51 @@
+ /**
+  * Deterministic web-E2E seed.
+  *
+  * Builds a temporary Morrow home with a SQLite database pre-populated with
+- * missions in the exact states the browser vertical-slice journey needs:
++ * missions and conversations in the exact states the browser vertical-slice
++ * journey needs:
+  *
+  *  - an "attention" mission with a durable pending approval (a resolvable
+  *    attention request), and
+- *  - a "result" mission carrying a persisted artifact and criterion evidence.
++ *  - a "result" mission carrying a persisted artifact and criterion evidence,
++ *  - an active conversation whose SSE cursor survives reconnects, and
++ *  - failed and interrupted conversations that can be retried from the durable
++ *    event cursor without replaying the prior attempt's terminal event.
+  *
+  * No provider, network, or agent execution is involved — every state is written
+  * directly through the same repositories/service the orchestrator uses, so the
+  * result is fully deterministic. The orchestrator is then started against this
+  * home (read-only for the seeded rows) to serve /app.
+  *
+  * Usage: MORROW_HOME=<dir> tsx scripts/e2e-seed.ts
+  * Prints a single JSON line: { dbPath, workspace, projectId, attentionMissionId,
+- *   attentionApprovalId, resultMissionId, artifactTitle }.
++ *   attentionApprovalId, resultMissionId, artifactTitle,
++ *   activeConversationId, activeTaskId, failedConversationId, failedTaskId,
++ *   interruptedConversationId, interruptedTaskId }.
+  */
+-import { mkdtempSync, mkdirSync } from "node:fs";
++import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+ import { spawnSync } from "node:child_process";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { randomUUID } from "node:crypto";
+ import { openDatabase } from "../src/database.js";
+ import { resolveDefaultDatabasePath, resolveMorrowHome } from "../src/home.js";
+ import { projectRepository } from "../src/repositories/projects.js";
+ import { missionsRepository } from "../src/repositories/missions.js";
+ import { MissionService } from "../src/mission/service.js";
+ import { buildMissionCompletion } from "../src/mission/completion.js";
++import { conversationsRepository } from "../src/repositories/conversations.js";
++import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
++import { taskRecordsRepository } from "../src/repositories/task-records.js";
++import { taskRoutingRepository } from "../src/repositories/task-routing.js";
++import { taskRepository } from "../src/repositories/tasks.js";
+ 
+ function log(obj: unknown): void {
+   process.stdout.write(JSON.stringify(obj) + "\n");
+ }
+ 
+ const home = resolveMorrowHome(process.env);
+ const dbPath = resolveDefaultDatabasePath(process.env);
+ mkdirSync(home, { recursive: true });
+ const db = openDatabase(dbPath);
+ 
+@@ -43,24 +54,99 @@ const missions = missionsRepository(db);
+ const missionService = new MissionService({
+   repo: missions,
+   getWorkspacePath: (projectId: string) => projects.getProjectById(projectId)?.workspacePath,
+   completion: buildMissionCompletion({ env: process.env }),
+   backupDir: join(home, "mission-checkpoints"),
+ });
+ 
+ // Real, git-initialized workspace (project creation requires an existing dir).
+ const workspace = mkdtempSync(join(tmpdir(), "morrow-e2e-ws-"));
+ spawnSync("git", ["init", "-b", "main"], { cwd: workspace, stdio: "ignore" });
++writeFileSync(join(workspace, "evidence.txt"), "deterministic browser evidence\n", "utf8");
+ const now = new Date("2026-07-21T12:00:00.000Z").toISOString();
+ const projectId = `project-${randomUUID()}`;
+ projects.createProject({ id: projectId, name: "E2E Personal", workspacePath: workspace, createdAt: now });
+ 
++const conversations = conversationsRepository(db);
++const tasks = taskRepository(db);
++const records = taskRecordsRepository(db);
++const routing = taskRoutingRepository(db);
++const continuity = executionContinuityRepository(db);
++const routingDecision = {
++  version: 1 as const,
++  presetId: "balanced" as const,
++  providerId: "mock" as const,
++  model: "mock-model",
++  reason: "Deterministic browser lifecycle seed.",
++  fallbackUsed: false,
++  overridden: false,
++  privacy: "cloud" as const,
++  candidates: [],
++  mode: "read-only" as const,
++  toolProfile: "read-only" as const,
++  autoApprove: false,
++};
++
++function seedConversationTask(input: {
++  title: string;
++  prompt: string;
++  state: "running" | "failed" | "interrupted";
++}) {
++  const conversationId = `conversation-${randomUUID()}`;
++  const taskId = `task-${randomUUID()}`;
++  const userAt = new Date(Date.parse(now) + 1_000).toISOString();
++  const assistantAt = new Date(Date.parse(now) + 2_000).toISOString();
++  conversations.createConversation({ id: conversationId, projectId, title: input.title, createdAt: now, updatedAt: now });
++  tasks.createTask({ id: taskId, projectId, kind: "agent_chat", status: "running", createdAt: now, startedAt: now });
++  conversations.appendMessage({ id: `user-${randomUUID()}`, conversationId, role: "user", content: input.prompt, createdAt: userAt, updatedAt: userAt });
++  conversations.appendMessage({
++    id: `assistant-${randomUUID()}`,
++    conversationId,
++    role: "assistant",
++    content: input.state === "running" ? "" : `The previous response was ${input.state}.`,
++    taskId,
++    streamingState: input.state === "running" ? "streaming" : input.state,
++    provider: "mock",
++    model: "mock-model",
++    createdAt: assistantAt,
++    updatedAt: assistantAt,
++  });
++  routing.upsert({ taskId, presetId: "balanced", providerId: "mock", model: "mock-model", useMemory: true, decision: routingDecision, createdAt: now });
++  records.transitionAgentState(taskId, { id: `state-${randomUUID()}`, state: "idle", details: {}, createdAt: now });
++  if (input.state !== "running") {
++    records.transitionAgentState(taskId, { id: `state-${randomUUID()}`, state: input.state, details: { reason: "e2e_seed" }, createdAt: assistantAt });
++    records.transitionTask(taskId, input.state, { id: `event-${randomUUID()}`, payload: { reason: "e2e_seed" }, createdAt: assistantAt });
++  }
++  return { conversationId, taskId };
++}
++
++// The unknown owner format is deliberately conservative: startup recovery can
++// neither prove it dead nor steal it, so this seeded running task remains active
++// and its stream remains open until the browser explicitly cancels it.
++const active = seedConversationTask({ title: "Active reconnect proof", prompt: "Keep this response active until I stop it.", state: "running" });
++const activeSegment = continuity.openSegment({
++  taskId: active.taskId,
++  missionId: null,
++  providerId: "mock",
++  model: "mock-model",
++  routeJson: routingDecision,
++  ownerId: "morrow-e2e-preserved-owner",
++  now,
++  leaseExpiresAt: new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString(),
++});
++db.prepare(
++  "INSERT INTO agent_execution_checkpoints(id,task_id,mission_id,segment_id,version,durable_event_cursor,snapshot_json,created_at) VALUES(?,?,NULL,?,1,1,?,?)",
++).run(`checkpoint-${randomUUID()}`, active.taskId, activeSegment.id, JSON.stringify({ version: 1, e2e: true }), now);
++
++const failed = seedConversationTask({ title: "Failed retry proof", prompt: "Retry this failed response once.", state: "failed" });
++const interrupted = seedConversationTask({ title: "Interrupted retry proof", prompt: "Retry this interrupted response once.", state: "interrupted" });
++
+ // ── Mission A: a resolvable attention request ────────────────────────────
+ const attentionMission = missionService.create(projectId, {
+   objective: "Research three competitors and prepare a concise report.",
+ });
+ const attentionApprovalId = `approval-${randomUUID()}`;
+ const attnTaskId = `task-${attentionApprovalId}`;
+ db.prepare(
+   "INSERT INTO tasks(id,schema_version,project_id,type,status,mission_id,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?)",
+ ).run(attnTaskId, projectId, "agent_chat", "running", attentionMission.id, now, now);
+ db.prepare(
+@@ -118,13 +204,19 @@ db.close();
+ 
+ log({
+   dbPath,
+   home,
+   workspace,
+   projectId,
+   attentionMissionId: attentionMission.id,
+   attentionApprovalId,
+   resultMissionId: resultMission.id,
+   artifactTitle,
++  activeConversationId: active.conversationId,
++  activeTaskId: active.taskId,
++  failedConversationId: failed.conversationId,
++  failedTaskId: failed.taskId,
++  interruptedConversationId: interrupted.conversationId,
++  interruptedTaskId: interrupted.taskId,
+   resultStatus,
+   finalizeError,
+ });
+diff --git a/services/orchestrator/src/database.ts b/services/orchestrator/src/database.ts
+index 1a83daa..c79826e 100644
+--- a/services/orchestrator/src/database.ts
++++ b/services/orchestrator/src/database.ts
+@@ -1127,20 +1127,23 @@ export const migrations:Migration[]=[
+   ,{id:37,name:"mission_idempotency_keys",sql:`
+     ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
+     CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+   `}
+   ,{id:38,name:"provider_model_discovery_freshness",sql:`
+     ALTER TABLE provider_model_discovery ADD COLUMN expires_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z';
+     ALTER TABLE provider_model_discovery ADD COLUMN last_success_at TEXT;
+     ALTER TABLE provider_model_discovery ADD COLUMN credential_identity TEXT;
+     UPDATE provider_model_discovery SET last_success_at=fetched_at WHERE status='available';
+   `}
++  ,{id:39,name:"task_idempotency_fingerprint",sql:`
++    ALTER TABLE tasks ADD COLUMN idempotency_fingerprint TEXT;
++  `}
+ ];
+ export function openDatabase(file:string){
+   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
+   const db=new Database(file);
+   try{
+     db.pragma("foreign_keys = ON");
+     db.pragma("busy_timeout = 5000");
+     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
+     for(const m of migrations){
+diff --git a/services/orchestrator/src/execution/agent.ts b/services/orchestrator/src/execution/agent.ts
+index a6b0b77..2404ab8 100644
+--- a/services/orchestrator/src/execution/agent.ts
++++ b/services/orchestrator/src/execution/agent.ts
+@@ -763,20 +763,25 @@ export async function executeAgentChatTask({
+           { type: "done" },
+         ],
+         [
+           { type: "tool_call", toolCalls: [{ id: `${demoCallId}-diff`, index: 0, type: "function", function: { name: "git_diff", arguments: JSON.stringify({}) } }] },
+           { type: "done" },
+         ],
+         [
+           { type: "text", text: "Verified: both defects are fixed, the new regression test passes, and the final multi-file diff was inspected." },
+           { type: "done" },
+         ],
++      ] : activeToolProfile === "none" ? [
++        [
++          { type: "text", text: "Based on the evidence, the system is fully operational." },
++          { type: "done" },
++        ],
+       ] : [
+         [
+           { type: "tool_call", toolCalls: [{ id: `${demoCallId}-read`, index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "evidence.txt" }) } }] },
+           { type: "done" }
+         ],
+         [
+           { type: "text", text: "Based on the evidence, the system is fully operational." },
+           { type: "done" }
+         ]
+       ],
+diff --git a/services/orchestrator/src/mission/task-dispatcher.ts b/services/orchestrator/src/mission/task-dispatcher.ts
+index 5c83eaa..6486913 100644
+--- a/services/orchestrator/src/mission/task-dispatcher.ts
++++ b/services/orchestrator/src/mission/task-dispatcher.ts
+@@ -1,11 +1,11 @@
+-import { randomUUID } from "node:crypto";
++import { createHash, randomUUID } from "node:crypto";
+ import type Database from "better-sqlite3";
+ import {
+   SendMessageSchema,
+   type PresetId,
+   type RoutingDecision,
+   type SendMessageInput,
+ } from "@morrow/contracts";
+ import type { ProviderRouteMetadata } from "../provider/base.js";
+ import { createProvider } from "../provider/registry.js";
+ import { translateReasoning } from "../provider/reasoning.js";
+@@ -47,57 +47,76 @@ function replayResult(
+   conversationId: string,
+   task: NonNullable<ReturnType<ReturnType<typeof taskRepository>["getTaskById"]>>,
+ ) {
+   const conversations = conversationsRepository(db);
+   const messages = conversations.listMessages(conversationId);
+   const assistantIndex = messages.findIndex((message) => message.taskId === task.id && message.role === "assistant");
+   const assistantMessage = assistantIndex >= 0 ? messages[assistantIndex]! : null;
+   const userMessage = assistantIndex >= 0
+     ? [...messages.slice(0, assistantIndex)].reverse().find((message) => message.role === "user") ?? null
+     : null;
++  const routing = taskRoutingRepository(db).get(task.id)?.decision ?? null;
++  const agentState = taskRecordsRepository(db).getAgentState(task.id);
++  if (!userMessage || !assistantMessage || !routing || !agentState) {
++    throw new AgentTaskDispatchError(
++      409,
++      "Idempotent request exists without a complete committed dispatch bundle",
++      "IDEMPOTENCY_INCOMPLETE",
++    );
++  }
+   return {
+     task,
+     userMessage,
+     assistantMessage,
+-    routing: taskRoutingRepository(db).get(task.id)?.decision ?? null,
++    routing,
+     aggregateUrl: `/api/tasks/${task.id}`,
+     sseUrl: `/api/tasks/${task.id}/events/stream`,
+     replayed: true as const,
+   };
+ }
+ 
+ function assertReplayMatches(
+   db: Database.Database,
+-  conversationId: string,
+   task: NonNullable<ReturnType<ReturnType<typeof taskRepository>["getTaskById"]>>,
+-  request: SendMessageInput,
++  expectedFingerprint: string,
+ ): void {
+-  const mismatchedIdentity = task.missionId !== (request.missionId ?? null)
+-    || task.worktreeId !== (request.worktreeId ?? null)
+-    || task.agentId !== (request.agentId ?? null);
+-  const messages = conversationsRepository(db).listMessages(conversationId);
+-  const assistantIndex = messages.findIndex((message) => message.taskId === task.id && message.role === "assistant");
+-  if (assistantIndex < 0) {
+-    const owner = db.prepare("SELECT conversation_id FROM conversation_messages WHERE task_id=? AND role='assistant'")
+-      .get(task.id) as { conversation_id: string } | undefined;
+-    if (mismatchedIdentity || (owner && owner.conversation_id !== conversationId)) {
+-      throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
+-    }
+-    return;
++  const storedFingerprint = taskRepository(db).getIdempotencyFingerprint(task.id);
++  if (!storedFingerprint) {
++    throw new AgentTaskDispatchError(
++      409,
++      "Idempotent request exists without a canonical request fingerprint",
++      "IDEMPOTENCY_INCOMPLETE",
++    );
+   }
+-  const userMessage = [...messages.slice(0, assistantIndex)].reverse()
+-    .find((message) => message.role === "user");
+-  if (mismatchedIdentity || userMessage?.content !== request.content) {
++  if (storedFingerprint !== expectedFingerprint) {
+     throw new AgentTaskDispatchError(409, "Idempotency key was reused for a different request", "IDEMPOTENCY_CONFLICT");
+   }
+ }
+ 
++function requestFingerprint(conversationId: string, request: SendMessageInput): string {
++  const canonical = {
++    conversationId,
++    content: request.content,
++    missionId: request.missionId ?? null,
++    worktreeId: request.worktreeId ?? null,
++    agentId: request.agentId ?? null,
++    mode: request.mode ?? "agent",
++    preset: request.preset ?? DEFAULT_PRESET_ID,
++    providerId: request.providerId ?? null,
++    model: request.model ?? null,
++    reasoning: request.reasoning ?? null,
++    useMemory: request.useMemory ?? true,
++    autoApprove: request.autoApprove ?? false,
++  };
++  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
++}
++
+ function resolveDecision(
+   body: SendMessageInput,
+   env: NodeJS.ProcessEnv,
+ ): { presetId: PresetId; decision: RoutingDecision } {
+   const presetId = body.preset ?? DEFAULT_PRESET_ID;
+   const mode = body.mode ?? "agent";
+   const toolProfile = mode === "plan-only" ? "none" : mode === "agent" ? "agent" : "read-only";
+   const autoApprove = mode === "agent" && body.autoApprove === true;
+   let decision: RoutingDecision;
+ 
+@@ -180,27 +199,29 @@ export function dispatchAgentTask(
+   request: AgentTaskRequest,
+ ) {
+   const { conversationId, ...rawBody } = request;
+   const body = SendMessageSchema.parse(rawBody);
+   const env = dependencies.env ?? process.env;
+   const now = dependencies.now ?? (() => new Date());
+   const createId = dependencies.createId ?? randomUUID;
+   const tasks = taskRepository(dependencies.db);
+   const conversations = conversationsRepository(dependencies.db);
+   const routing = taskRoutingRepository(dependencies.db);
++  const records = taskRecordsRepository(dependencies.db);
+   const conversation = conversations.getConversation(conversationId);
+   if (!conversation) throw new AgentTaskDispatchError(404, "Conversation not found", "NOT_FOUND");
++  const idempotencyFingerprint = requestFingerprint(conversationId, body);
+ 
+   if (body.idempotencyKey) {
+     const existing = tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey);
+     if (existing) {
+-      assertReplayMatches(dependencies.db, conversationId, existing, body);
++      assertReplayMatches(dependencies.db, existing, idempotencyFingerprint);
+       return replayResult(dependencies.db, conversationId, existing);
+     }
+   }
+ 
+   if (body.worktreeId) {
+     const worktree = worktreesRepository(dependencies.db).get(body.worktreeId);
+     if (!worktree || worktree.projectId !== conversation.projectId) {
+       throw new AgentTaskDispatchError(404, "Worktree not found in this project", "NOT_FOUND");
+     }
+     if (worktree.status !== "active") {
+@@ -211,81 +232,85 @@ export function dispatchAgentTask(
+   if (body.missionId) {
+     const mission = missionsRepository(dependencies.db).get(body.missionId);
+     if (!mission || mission.projectId !== conversation.projectId) {
+       throw new AgentTaskDispatchError(404, "Mission not found in this project", "NOT_FOUND");
+     }
+   }
+ 
+   const { presetId, decision } = resolveDecision(body, env);
+   const timestamp = now();
+   const timestampIso = timestamp.toISOString();
+-  let task;
++  let bundle;
+   try {
+-    task = tasks.createTask({
+-      id: createId(),
+-      projectId: conversation.projectId,
+-      kind: "agent_chat",
+-      status: "queued",
+-      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}),
+-      ...(body.agentId ? { agentId: body.agentId } : {}),
+-      ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
+-      ...(body.missionId ? { missionId: body.missionId } : {}),
+-      createdAt: timestampIso,
+-    });
++    bundle = dependencies.db.transaction(() => {
++      const task = tasks.createTask({
++        id: createId(),
++        projectId: conversation.projectId,
++        kind: "agent_chat",
++        status: "queued",
++        ...(body.idempotencyKey ? {
++          idempotencyKey: body.idempotencyKey,
++          idempotencyFingerprint,
++        } : {}),
++        ...(body.agentId ? { agentId: body.agentId } : {}),
++        ...(body.worktreeId ? { worktreeId: body.worktreeId } : {}),
++        ...(body.missionId ? { missionId: body.missionId } : {}),
++        createdAt: timestampIso,
++      });
++      const userMessage = conversations.appendMessage({
++        id: createId(),
++        conversationId,
++        role: "user",
++        content: body.content,
++        createdAt: timestampIso,
++        updatedAt: timestampIso,
++      });
++      records.transitionAgentState(task.id, {
++        id: createId(),
++        state: "idle",
++        details: {},
++        createdAt: timestampIso,
++      });
++      const assistantTimestamp = new Date(timestamp.getTime() + 50).toISOString();
++      const assistantMessage = conversations.appendMessage({
++        id: createId(),
++        conversationId,
++        role: "assistant",
++        content: "",
++        taskId: task.id,
++        streamingState: "queued",
++        provider: decision.providerId,
++        model: decision.model,
++        createdAt: assistantTimestamp,
++        updatedAt: assistantTimestamp,
++      });
++      routing.upsert({
++        taskId: task.id,
++        presetId,
++        providerId: decision.providerId,
++        model: decision.model,
++        useMemory: body.useMemory ?? true,
++        decision,
++        createdAt: timestampIso,
++      });
++      return { task, userMessage, assistantMessage };
++    })();
+   } catch (error) {
+     const winner = body.idempotencyKey
+       ? tasks.findByIdempotencyKey(conversation.projectId, body.idempotencyKey)
+       : undefined;
+     if (!winner) throw error;
+-    assertReplayMatches(dependencies.db, conversationId, winner, body);
++    assertReplayMatches(dependencies.db, winner, idempotencyFingerprint);
+     return replayResult(dependencies.db, conversationId, winner);
+   }
+-
+-  const userMessage = conversations.appendMessage({
+-    id: createId(),
+-    conversationId,
+-    role: "user",
+-    content: body.content,
+-    createdAt: timestampIso,
+-    updatedAt: timestampIso,
+-  });
+-  taskRecordsRepository(dependencies.db).transitionAgentState(task.id, {
+-    id: createId(),
+-    state: "idle",
+-    details: {},
+-    createdAt: timestampIso,
+-  });
+-  const assistantTimestamp = new Date(timestamp.getTime() + 50).toISOString();
+-  const assistantMessage = conversations.appendMessage({
+-    id: createId(),
+-    conversationId,
+-    role: "assistant",
+-    content: "",
+-    taskId: task.id,
+-    streamingState: "queued",
+-    provider: decision.providerId,
+-    model: decision.model,
+-    createdAt: assistantTimestamp,
+-    updatedAt: assistantTimestamp,
+-  });
+-
+-  routing.upsert({
+-    taskId: task.id,
+-    presetId,
+-    providerId: decision.providerId,
+-    model: decision.model,
+-    useMemory: body.useMemory ?? true,
+-    decision,
+-    createdAt: timestampIso,
+-  });
+-  dependencies.runner.run(task.id);
++  dependencies.runner.run(bundle.task.id);
+ 
+   return {
+-    task,
+-    userMessage,
+-    assistantMessage,
++    task: bundle.task,
++    userMessage: bundle.userMessage,
++    assistantMessage: bundle.assistantMessage,
+     routing: decision,
+-    aggregateUrl: `/api/tasks/${task.id}`,
+-    sseUrl: `/api/tasks/${task.id}/events/stream`,
++    aggregateUrl: `/api/tasks/${bundle.task.id}`,
++    sseUrl: `/api/tasks/${bundle.task.id}/events/stream`,
+     replayed: false as const,
+   };
+ }
+diff --git a/services/orchestrator/src/repositories/conversations.ts b/services/orchestrator/src/repositories/conversations.ts
+index da369d1..51ec3b6 100644
+--- a/services/orchestrator/src/repositories/conversations.ts
++++ b/services/orchestrator/src/repositories/conversations.ts
+@@ -85,20 +85,47 @@ export function conversationsRepository(db: Database.Database) {
+     renameConversation(id: string, title: string, updatedAt: string): Conversation | undefined {
+       db.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?").run(title, updatedAt, id);
+       return this.getConversation(id);
+     },
+ 
+     setArchived(id: string, archived: boolean, updatedAt: string): Conversation | undefined {
+       db.prepare("UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, updatedAt, id);
+       return this.getConversation(id);
+     },
+ 
++    deleteConversation(id: string, projectId: string):
++      | { outcome: "deleted" }
++      | { outcome: "not_found" }
++      | { outcome: "project_mismatch" }
++      | { outcome: "active_task"; taskIds: string[] } {
++      return db.transaction(() => {
++        const conversation = this.getConversation(id);
++        if (!conversation) return { outcome: "not_found" } as const;
++        if (conversation.projectId !== projectId) return { outcome: "project_mismatch" } as const;
++
++        const active = db.prepare(
++          `SELECT DISTINCT tasks.id
++           FROM tasks
++           INNER JOIN conversation_messages ON conversation_messages.task_id = tasks.id
++           WHERE conversation_messages.conversation_id = ?
++             AND tasks.status IN ('queued', 'running')
++           ORDER BY tasks.id ASC`
++        ).all(id) as Array<{ id: string }>;
++        if (active.length > 0) {
++          return { outcome: "active_task", taskIds: active.map((task) => task.id) } as const;
++        }
++
++        db.prepare("DELETE FROM conversations WHERE id = ? AND project_id = ?").run(id, projectId);
++        return { outcome: "deleted" } as const;
++      })();
++    },
++
+     appendMessage(input: {
+       id: string;
+       conversationId: string;
+       role: "user" | "assistant";
+       content: string;
+       taskId?: string | null;
+       streamingState?: "queued" | "streaming" | "completed" | "failed" | "cancelled" | "interrupted";
+       provider?: string | null;
+       model?: string | null;
+       createdAt: string;
+diff --git a/services/orchestrator/src/repositories/tasks.ts b/services/orchestrator/src/repositories/tasks.ts
+index cb720b2..2c2d523 100644
+--- a/services/orchestrator/src/repositories/tasks.ts
++++ b/services/orchestrator/src/repositories/tasks.ts
+@@ -1,16 +1,16 @@
+ import type Database from "better-sqlite3";
+ import type { Task as TaskRecord } from "@morrow/contracts";
+ 
+ type Input = {
+   id: string; projectId: string; kind: string; status: string;
+-  idempotencyKey?: string; parentTaskId?: string; agentId?: string; worktreeId?: string; missionId?: string;
++  idempotencyKey?: string; idempotencyFingerprint?: string; parentTaskId?: string; agentId?: string; worktreeId?: string; missionId?: string;
+   createdAt: string; updatedAt?: string; startedAt?: string; completedAt?: string;
+ };
+ type Update = { status: string; updatedAt: string; startedAt?: string | null; completedAt?: string | null };
+ 
+ function map(row: Record<string, unknown>): TaskRecord {
+   return {
+     version: Number(row.schema_version),
+     id: String(row.id),
+     projectId: String(row.project_id),
+     kind: String(row.type || row.kind),
+@@ -22,38 +22,43 @@ function map(row: Record<string, unknown>): TaskRecord {
+     createdAt: String(row.created_at),
+     updatedAt: String(row.updated_at),
+   } as TaskRecord;
+ }
+ 
+ export function taskRepository(db: Database.Database) {
+   const get = db.prepare("SELECT * FROM tasks WHERE id=?");
+   return {
+     createTask(i: Input) {
+       db.prepare(
+-        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
++        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,idempotency_fingerprint,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@idempotencyFingerprint,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
+       ).run({
+         ...i,
+         idempotencyKey: i.idempotencyKey ?? null,
++        idempotencyFingerprint: i.idempotencyFingerprint ?? null,
+         parentTaskId: i.parentTaskId ?? null,
+         agentId: i.agentId ?? null,
+         worktreeId: i.worktreeId ?? null,
+         missionId: i.missionId ?? null,
+         updatedAt: i.updatedAt ?? i.createdAt,
+         startedAt: i.startedAt ?? null,
+         completedAt: i.completedAt ?? null,
+       });
+       return this.getTaskById(i.id)!;
+     },
+     findByIdempotencyKey(projectId: string, key: string) {
+       const r = db.prepare("SELECT * FROM tasks WHERE project_id=? AND idempotency_key=?").get(projectId, key);
+       return r ? map(r as Record<string, unknown>) : undefined;
+     },
++    getIdempotencyFingerprint(id: string) {
++      const row = db.prepare("SELECT idempotency_fingerprint FROM tasks WHERE id=?").get(id) as { idempotency_fingerprint: string | null } | undefined;
++      return row?.idempotency_fingerprint ?? null;
++    },
+     getTaskById(id: string) {
+       const r = get.get(id);
+       return r ? map(r as Record<string, unknown>) : undefined;
+     },
+     listTasksByProject(projectId: string) {
+       return db.prepare("SELECT * FROM tasks WHERE project_id=? ORDER BY created_at ASC,id ASC").all(projectId).map(r => map(r as Record<string, unknown>));
+     },
+     listChildren(parentTaskId: string) {
+       return db.prepare("SELECT * FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC,id ASC").all(parentTaskId).map(r => map(r as Record<string, unknown>));
+     },
+diff --git a/services/orchestrator/src/server.ts b/services/orchestrator/src/server.ts
+index d092816..3caf6fd 100644
+--- a/services/orchestrator/src/server.ts
++++ b/services/orchestrator/src/server.ts
+@@ -1,33 +1,38 @@
+ import { z } from "zod";
+ import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+ import type Database from "better-sqlite3";
+ import {
+   CreateProjectSchema,
+   CreateTaskSchema,
+   StructuredApiErrorSchema,
+   SendMessageSchema,
++  CreateConversationSchema,
++  DeleteConversationSchema,
++  ChatStreamEnvelopeSchema,
+   CreateMemoryEntrySchema,
+   UpdateMemoryEntrySchema,
+   UpdateConversationSchema,
+   ApprovalStatusSchema,
+   ResolveApprovalSchema,
+   ProviderIdSchema,
+   CreateAgentSchema,
+   UpdateAgentSchema,
+   UpsertToolPermissionSchema,
+   UpsertSkillAccessSchema,
+   CreateProjectRuleSchema,
+   PatchConventionSchema,
+   type PresetId,
+   type ProviderId,
+   type ProviderAuthMode,
++  type ChatStreamEventType,
++  type RoutingDecision,
+ } from "@morrow/contracts";
+ import { openDatabase } from "./database.js";
+ import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
+ import { resolve } from "node:path";
+ import { projectRepository } from "./repositories/projects.js";
+ import { agentsRepository } from "./repositories/agents.js";
+ import { taskRepository } from "./repositories/tasks.js";
+ import { taskRecordsRepository } from "./repositories/task-records.js";
+ import { conversationsRepository } from "./repositories/conversations.js";
+ import { taskRoutingRepository } from "./repositories/task-routing.js";
+@@ -800,31 +805,251 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+     if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title.trim(), now) ?? updated;
+     if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, now) ?? updated;
+     return updated;
+   });
+ 
+   app.post("/api/projects/:projectId/conversations", async (request, reply) => {
+     const { projectId } = request.params as { projectId: string };
+     const project = projects.getProjectById(projectId);
+     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+     
+-    const body = request.body as { title?: string } | null;
++    const body = CreateConversationSchema.parse(request.body ?? {});
+     const title = body?.title?.trim() || "New Conversation";
+     
+     const conversation = convs.createConversation({
+       id: crypto.randomUUID(),
+       projectId,
+       title,
+       createdAt: new Date().toISOString(),
+       updatedAt: new Date().toISOString()
+     });
++    reply.status(201);
++    return conversation;
++  });
++
++  const ownedConversation = (projectId: string, conversationId: string) => {
++    const conversation = convs.getConversation(conversationId);
++    if (!conversation || conversation.projectId !== projectId) {
++      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
++    }
+     return conversation;
++  };
++
++  const ownedConversationTask = (projectId: string, conversationId: string, taskId: string) => {
++    ownedConversation(projectId, conversationId);
++    const task = tasks.getTaskById(taskId);
++    const assistant = deps.db.prepare(
++      "SELECT id FROM conversation_messages WHERE conversation_id=? AND task_id=? AND role='assistant' LIMIT 1"
++    ).get(conversationId, taskId);
++    if (!task || task.projectId !== projectId || !assistant) {
++      throw new ApiError(404, "Conversation task not found in project", "NOT_FOUND");
++    }
++    return task;
++  };
++
++  const webRouting = (decision: RoutingDecision | null | undefined) => decision
++    ? {
++        version: decision.version,
++        presetId: decision.presetId,
++        providerId: decision.providerId,
++        model: decision.model,
++        fallbackUsed: decision.fallbackUsed,
++        overridden: decision.overridden,
++        mode: decision.mode ?? null,
++        autoApprove: decision.autoApprove ?? null,
++      }
++    : null;
++
++  const webMessages = (conversationId: string) => convs.listMessages(conversationId).map((message) => {
++    const task = message.taskId ? tasks.getTaskById(message.taskId) : undefined;
++    const routing = message.taskId ? webRouting(routingRepo.get(message.taskId)?.decision) : null;
++    const toolActivity = message.taskId
++      ? convs.listToolCallsForMessage(message.id).map((tool) => ({
++          id: tool.id,
++          toolName: tool.toolName,
++          status: tool.status,
++          startedAt: tool.startedAt ?? null,
++          completedAt: tool.completedAt ?? null,
++        }))
++      : [];
++    return {
++      ...message,
++      taskStatus: task?.status ?? null,
++      routing,
++      toolActivity,
++    };
++  });
++
++  app.get("/api/projects/:projectId/conversations/:conversationId", async (request) => {
++    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
++    return ownedConversation(projectId, conversationId);
++  });
++
++  app.get("/api/projects/:projectId/conversations/:conversationId/messages", async (request) => {
++    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
++    ownedConversation(projectId, conversationId);
++    return webMessages(conversationId);
++  });
++
++  app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {
++    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
++    let updated = ownedConversation(projectId, conversationId);
++    const body = UpdateConversationSchema.parse(request.body);
++    const updatedAt = new Date().toISOString();
++    if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title, updatedAt) ?? updated;
++    if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, updatedAt) ?? updated;
++    return updated;
++  });
++
++  app.delete("/api/projects/:projectId/conversations/:conversationId", async (request) => {
++    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
++    DeleteConversationSchema.parse(request.body ?? {});
++    const result = convs.deleteConversation(conversationId, projectId);
++    if (result.outcome === "project_mismatch") {
++      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
++    }
++    if (result.outcome === "active_task") {
++      throw new ApiError(
++        409,
++        "Stop the active response before deleting this conversation.",
++        "CONVERSATION_TASK_ACTIVE",
++      );
++    }
++    return { version: 1, conversationId, deleted: result.outcome === "deleted" };
++  });
++
++  app.post("/api/projects/:projectId/conversations/:conversationId/messages", async (request, reply) => {
++    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
++    ownedConversation(projectId, conversationId);
++    const body = SendMessageSchema.parse(request.body);
++    const idempotencyKey = readIdempotencyKey(request);
++    try {
++      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
++        conversationId,
++        ...body,
++        ...(idempotencyKey ? { idempotencyKey } : {}),
++      });
++      reply.status(result.replayed ? 200 : 202);
++      return {
++        ...result,
++        routing: webRouting(result.routing),
++        aggregateUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
++        sseUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(result.task.id)}/stream`,
++      };
++    } catch (error) {
++      if (error instanceof AgentTaskDispatchError) {
++        throw new ApiError(error.statusCode, error.message, error.code);
++      }
++      throw error;
++    }
++  });
++
++  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/cancel", async (request, reply) => {
++    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
++    const task = ownedConversationTask(projectId, conversationId, taskId);
++    if (task.status === "cancelled") {
++      return { version: 1, taskId, status: task.status, outcome: "already_cancelled" };
++    }
++    if (["completed", "verified", "failed", "interrupted"].includes(task.status)) {
++      throw new ApiError(409, `Task is ${task.status}; cancellation was not applied.`, "TASK_NOT_ACTIVE");
++    }
++    deps.runner.cancel(taskId);
++    const updated = tasks.getTaskById(taskId);
++    reply.status(202);
++    return { version: 1, taskId, status: updated?.status ?? "cancelled", outcome: "cancelled" };
++  });
++
++  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/retry", async (request, reply) => {
++    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
++    const task = ownedConversationTask(projectId, conversationId, taskId);
++    if (task.status !== "failed" && task.status !== "interrupted") {
++      throw new ApiError(409, "Only failed or interrupted responses can be retried", "TASK_NOT_RETRYABLE");
++    }
++    const afterCursor = records.listEvents(taskId).at(-1)?.sequence ?? 0;
++    records.retryTask(taskId);
++    deps.runner.run(taskId);
++    reply.status(202);
++    return { version: 1, taskId, status: "queued", outcome: "retried", afterCursor };
++  });
++
++  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/stream", async (request, reply) => {
++    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
++    const queryAfter = (request.query as { after?: string }).after;
++    const headerCursor = request.headers["last-event-id"];
++    const after = Math.max(
++      queryAfter === undefined ? 0 : parseEventCursor(queryAfter),
++      headerCursor === undefined ? 0 : parseEventCursor(String(headerCursor)),
++    );
++    ownedConversationTask(projectId, conversationId, taskId);
++
++    const terminalTypes = new Set(["task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"]);
++    const classify = (type: string): ChatStreamEventType => {
++      if (terminalTypes.has(type)) return "task.terminal";
++      if (type === "evidence.persisted" || type.startsWith("assistant.")) return "message.updated";
++      if (type.startsWith("tool.")) return "tool.updated";
++      return "task.updated";
++    };
++
++    reply.hijack();
++    let closed = false;
++    let cursor = after;
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    const stop = (destroy = false) => {
++      if (closed) return;
++      closed = true;
++      if (timer) clearTimeout(timer);
++      timer = undefined;
++      if (destroy && !reply.raw.destroyed) reply.raw.destroy();
++    };
++    request.raw.on("close", () => stop());
++    reply.raw.on("close", () => stop());
++    reply.raw.on("error", () => stop(true));
++    reply.raw.writeHead(200, {
++      "Content-Type": "text/event-stream",
++      "Cache-Control": "no-cache",
++      Connection: "keep-alive",
++    });
++
++    const poll = () => {
++      if (closed) return;
++      try {
++        const pending = records.listEvents(taskId, cursor);
++        for (const event of pending) {
++          const envelope = ChatStreamEnvelopeSchema.parse({
++            version: 1,
++            cursor: event.sequence,
++            taskId,
++            conversationId,
++            eventType: classify(event.type),
++            emittedAt: event.createdAt,
++            payload: { eventId: event.id },
++          });
++          reply.raw.write(`id: ${envelope.cursor}\nevent: ${envelope.eventType}\ndata: ${JSON.stringify(envelope)}\n\n`);
++          cursor = envelope.cursor;
++          if (envelope.eventType === "task.terminal") {
++            reply.raw.end();
++            stop();
++            return;
++          }
++        }
++        const task = tasks.getTaskById(taskId);
++        if (task && ["verified", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) {
++          reply.raw.end();
++          stop();
++          return;
++        }
++        timer = setTimeout(poll, deps.sseIntervalMs ?? 100);
++      } catch {
++        stop(true);
++      }
++    };
++    poll();
+   });
+ 
+   app.get("/api/conversations/:conversationId/messages", async (request, reply) => {
+     const { conversationId } = request.params as { conversationId: string };
+     const conversation = convs.getConversation(conversationId);
+     if (!conversation) throw new ApiError(404, "Conversation not found", "NOT_FOUND");
+     return convs.listMessages(conversationId);
+   });
+ 
+   app.post("/api/conversations/:conversationId/compact", async (request) => {
+diff --git a/services/orchestrator/test/conversations.test.ts b/services/orchestrator/test/conversations.test.ts
+new file mode 100644
+index 0000000..807e6e2
+--- /dev/null
++++ b/services/orchestrator/test/conversations.test.ts
+@@ -0,0 +1,244 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { openDatabase } from "../src/database.js";
++import { conversationsRepository } from "../src/repositories/conversations.js";
++import { projectRepository } from "../src/repositories/projects.js";
++import { taskRoutingRepository } from "../src/repositories/task-routing.js";
++import { taskRecordsRepository } from "../src/repositories/task-records.js";
++import { taskRepository } from "../src/repositories/tasks.js";
++import { TaskRunner } from "../src/runner.js";
++import { buildServer } from "../src/server.js";
++
++const NOW = "2026-07-22T12:00:00.000Z";
++
++describe("project-scoped conversation API", () => {
++  let app: ReturnType<typeof buildServer>;
++  let db: ReturnType<typeof openDatabase>;
++  let workspace: string;
++
++  beforeEach(() => {
++    workspace = mkdtempSync(join(tmpdir(), "morrow-conversations-"));
++    db = openDatabase(":memory:");
++    projectRepository(db).createProject({ id: "project-a", name: "A", workspacePath: workspace, createdAt: NOW });
++    projectRepository(db).createProject({ id: "project-b", name: "B", workspacePath: workspace, createdAt: NOW });
++    app = buildServer({ db, runner: new TaskRunner(db, async () => {}) });
++  });
++
++  afterEach(async () => {
++    await app.close();
++    db.close();
++    rmSync(workspace, { force: true, recursive: true });
++  });
++
++  async function create(title = "Durable chat") {
++    const response = await app.inject({
++      method: "POST",
++      url: "/api/projects/project-a/conversations",
++      payload: { title },
++    });
++    expect(response.statusCode).toBe(201);
++    return response.json() as { id: string };
++  }
++
++  it("creates, lists, gets, loads, renames, and archives only within the owning project", async () => {
++    const conversation = await create();
++
++    const listed = await app.inject({ method: "GET", url: "/api/projects/project-a/conversations" });
++    expect(listed.statusCode).toBe(200);
++    expect(listed.json()).toEqual([expect.objectContaining({ id: conversation.id, projectId: "project-a", title: "Durable chat" })]);
++
++    const loaded = await app.inject({
++      method: "GET",
++      url: `/api/projects/project-a/conversations/${conversation.id}`,
++    });
++    expect(loaded.statusCode).toBe(200);
++
++    const messages = await app.inject({
++      method: "GET",
++      url: `/api/projects/project-a/conversations/${conversation.id}/messages`,
++    });
++    expect(messages.statusCode).toBe(200);
++    expect(messages.json()).toEqual([]);
++
++    const rename = await app.inject({
++      method: "PATCH",
++      url: `/api/projects/project-a/conversations/${conversation.id}`,
++      payload: { title: "Renamed chat" },
++    });
++    expect(rename.statusCode).toBe(200);
++    expect(rename.json().title).toBe("Renamed chat");
++
++    const replayedRename = await app.inject({
++      method: "PATCH",
++      url: `/api/projects/project-a/conversations/${conversation.id}`,
++      payload: { title: "Renamed chat" },
++    });
++    expect(replayedRename.statusCode).toBe(200);
++    expect(replayedRename.json().title).toBe("Renamed chat");
++
++    const archive = await app.inject({
++      method: "PATCH",
++      url: `/api/projects/project-a/conversations/${conversation.id}`,
++      payload: { archived: true },
++    });
++    expect(archive.statusCode).toBe(200);
++    expect(archive.json().archived).toBe(true);
++
++    const replayedArchive = await app.inject({
++      method: "PATCH",
++      url: `/api/projects/project-a/conversations/${conversation.id}`,
++      payload: { archived: true },
++    });
++    expect(replayedArchive.statusCode).toBe(200);
++    expect(replayedArchive.json().archived).toBe(true);
++
++    const hidden = await app.inject({ method: "GET", url: "/api/projects/project-a/conversations" });
++    expect(hidden.json()).toEqual([]);
++    const archived = await app.inject({ method: "GET", url: "/api/projects/project-a/conversations?includeArchived=true" });
++    expect(archived.json()).toHaveLength(1);
++
++    for (const request of [
++      { method: "GET", url: `/api/projects/project-b/conversations/${conversation.id}` },
++      { method: "GET", url: `/api/projects/project-b/conversations/${conversation.id}/messages` },
++      { method: "PATCH", url: `/api/projects/project-b/conversations/${conversation.id}`, payload: { title: "Stolen" } },
++      { method: "PATCH", url: `/api/projects/project-b/conversations/${conversation.id}`, payload: { archived: false } },
++    ] as const) {
++      const response = await app.inject(request);
++      expect(response.statusCode).toBe(404);
++      expect(response.json().error.code).toBe("NOT_FOUND");
++    }
++  });
++
++  it("returns canonical persisted messages with truthful routing and safe tool summaries", async () => {
++    const conversation = await create();
++    const tasks = taskRepository(db);
++    const conversations = conversationsRepository(db);
++    tasks.createTask({ id: "task-complete", projectId: "project-a", kind: "agent_chat", status: "completed", createdAt: NOW });
++    conversations.appendMessage({ id: "user-message", conversationId: conversation.id, role: "user", content: "Question", createdAt: NOW, updatedAt: NOW });
++    conversations.appendMessage({
++      id: "assistant-message", conversationId: conversation.id, role: "assistant", content: "Canonical answer",
++      taskId: "task-complete", streamingState: "completed", provider: "mock", model: "mock-model", createdAt: NOW, updatedAt: NOW,
++    });
++    conversations.upsertToolCall({
++      id: "tool-call", messageId: "assistant-message", taskId: "task-complete", toolName: "read_file",
++      argsJson: JSON.stringify({ path: "secret.txt", token: "must-not-leak" }), resultJson: "private artifact contents",
++      status: "completed", createdAt: NOW, completedAt: NOW,
++    });
++    taskRoutingRepository(db).upsert({
++      taskId: "task-complete", presetId: "balanced", providerId: "mock", model: "mock-model", useMemory: true,
++      decision: {
++        version: 1, presetId: "balanced", providerId: "mock", model: "mock-model", reason: "Deterministic test",
++        fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode: "read-only", toolProfile: "read-only", autoApprove: false,
++      },
++      createdAt: NOW,
++    });
++
++    const response = await app.inject({
++      method: "GET",
++      url: `/api/projects/project-a/conversations/${conversation.id}/messages`,
++    });
++    expect(response.statusCode).toBe(200);
++    const body = response.json();
++    expect(body).toHaveLength(2);
++    expect(body.find((entry: { id: string }) => entry.id === "assistant-message")).toMatchObject({
++      id: "assistant-message",
++      content: "Canonical answer",
++      taskStatus: "completed",
++      routing: { providerId: "mock", model: "mock-model", mode: "read-only" },
++      toolActivity: [{ id: "tool-call", toolName: "read_file", status: "completed", startedAt: null, completedAt: NOW }],
++    });
++    expect(JSON.stringify(body)).not.toContain("must-not-leak");
++    expect(JSON.stringify(body)).not.toContain("private artifact contents");
++    expect(JSON.stringify(body)).not.toContain("secret.txt");
++  });
++
++  it.each(["failed", "interrupted"] as const)("retries a %s response after its prior terminal cursor", async (terminalState) => {
++    const conversation = await create(`${terminalState} retry`);
++    const tasks = taskRepository(db);
++    const conversations = conversationsRepository(db);
++    const records = taskRecordsRepository(db);
++    tasks.createTask({ id: `task-${terminalState}`, projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW, startedAt: NOW });
++    conversations.appendMessage({
++      id: `assistant-${terminalState}`,
++      conversationId: conversation.id,
++      role: "assistant",
++      content: "Prior attempt",
++      taskId: `task-${terminalState}`,
++      streamingState: terminalState,
++      createdAt: NOW,
++      updatedAt: NOW,
++    });
++    records.transitionAgentState(`task-${terminalState}`, { id: `idle-${terminalState}`, state: "idle", details: {}, createdAt: NOW });
++    records.transitionAgentState(`task-${terminalState}`, { id: `state-${terminalState}`, state: terminalState, details: {}, createdAt: NOW });
++    records.transitionTask(`task-${terminalState}`, terminalState, { id: `terminal-${terminalState}`, payload: {}, createdAt: NOW });
++    const priorCursor = records.listEvents(`task-${terminalState}`).at(-1)!.sequence;
++
++    const response = await app.inject({
++      method: "POST",
++      url: `/api/projects/project-a/conversations/${conversation.id}/tasks/task-${terminalState}/retry`,
++    });
++
++    expect(response.statusCode).toBe(202);
++    expect(response.json()).toEqual({
++      version: 1,
++      taskId: `task-${terminalState}`,
++      status: "queued",
++      outcome: "retried",
++      afterCursor: priorCursor,
++    });
++    expect(tasks.getTaskById(`task-${terminalState}`)?.status).toBe("queued");
++    expect(conversations.getMessage(`assistant-${terminalState}`)).toMatchObject({ content: "", streamingState: "queued" });
++  });
++
++  it("requires explicit confirmation, rejects deletion while a related task is active, and deletes dependents without deleting tasks or projects", async () => {
++    const conversation = await create("Delete me");
++    const other = await create("Keep me");
++    const tasks = taskRepository(db);
++    const conversations = conversationsRepository(db);
++    tasks.createTask({ id: "active-task", projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW });
++    conversations.appendMessage({ id: "assistant-active", conversationId: conversation.id, role: "assistant", content: "Working", taskId: "active-task", streamingState: "streaming", createdAt: NOW, updatedAt: NOW });
++
++    const unconfirmed = await app.inject({
++      method: "DELETE", url: `/api/projects/project-a/conversations/${conversation.id}`, payload: {},
++    });
++    expect(unconfirmed.statusCode).toBe(400);
++
++    const foreign = await app.inject({
++      method: "DELETE", url: `/api/projects/project-b/conversations/${conversation.id}`, payload: { confirmation: "delete" },
++    });
++    expect(foreign.statusCode).toBe(404);
++
++    const active = await app.inject({
++      method: "DELETE", url: `/api/projects/project-a/conversations/${conversation.id}`, payload: { confirmation: "delete" },
++    });
++    expect(active.statusCode).toBe(409);
++    expect(active.json().error.code).toBe("CONVERSATION_TASK_ACTIVE");
++    expect(conversations.getConversation(conversation.id)).toBeDefined();
++
++    taskRepository(db).updateTaskStatus("active-task", { status: "completed", updatedAt: NOW, completedAt: NOW });
++    conversations.upsertToolCall({
++      id: "dependent-tool", messageId: "assistant-active", taskId: "active-task", toolName: "read_file",
++      argsJson: "{}", resultJson: "{}", status: "completed", createdAt: NOW, completedAt: NOW,
++    });
++
++    const deleted = await app.inject({
++      method: "DELETE", url: `/api/projects/project-a/conversations/${conversation.id}`, payload: { confirmation: "delete" },
++    });
++    expect(deleted.statusCode).toBe(200);
++    expect(deleted.json()).toEqual({ version: 1, conversationId: conversation.id, deleted: true });
++    expect(conversations.getConversation(conversation.id)).toBeUndefined();
++    expect(conversations.getMessage("assistant-active")).toBeUndefined();
++    expect(conversations.getToolCall("dependent-tool")).toBeUndefined();
++    expect(tasks.getTaskById("active-task")).toBeDefined();
++    expect(projectRepository(db).getProjectById("project-a")).toBeDefined();
++    expect(conversations.getConversation(other.id)).toBeDefined();
++
++    const replay = await app.inject({
++      method: "DELETE", url: `/api/projects/project-a/conversations/${conversation.id}`, payload: { confirmation: "delete" },
++    });
++    expect(replay.statusCode).toBe(200);
++    expect(replay.json()).toEqual({ version: 1, conversationId: conversation.id, deleted: false });
++  });
++});
+diff --git a/services/orchestrator/test/database-migration-29.test.ts b/services/orchestrator/test/database-migration-29.test.ts
+index 0819a0d..a13134b 100644
+--- a/services/orchestrator/test/database-migration-29.test.ts
++++ b/services/orchestrator/test/database-migration-29.test.ts
+@@ -310,21 +310,21 @@ function seedMigration30Mission(db: Database.Database, input: {
+ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", () => {
+   it("migration 29 applies, preserves data, adds source_locator, and rebuilds project_active_mission", () => {
+     const dbPath = join(tmp("ek-mig-a-"), "m.db");
+     buildHistoricalDb(dbPath, ORIGINAL_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: false });
+ 
+     // Open with the CURRENT application code: migration 29 must apply cleanly.
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(38);
++    expect(Math.max(...appliedIds)).toBe(39);
+ 
+     // source_locator now exists and is queryable/writable.
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     // Data survived.
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -356,21 +356,21 @@ describe("BLOCKER 3 — migration 29 upgrades a genuine 29d0364-era database", (
+ 
+ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () => {
+   it("migration 29 still succeeds when source_locator already exists, and data is preserved", () => {
+     const dbPath = join(tmp("ek-mig-b-"), "m.db");
+     buildHistoricalDb(dbPath, EDITED_F812872_MIGRATION_28_SQL);
+     seedRepresentativeData(dbPath, { nodeHasSourceLocator: true });
+ 
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+     expect(appliedIds).toContain(29);
+-    expect(Math.max(...appliedIds)).toBe(38);
++    expect(Math.max(...appliedIds)).toBe(39);
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+     // No duplicate column, no error — ALTER TABLE ADD COLUMN was correctly skipped.
+     expect(cols.filter((c) => c === "source_locator")).toHaveLength(1);
+ 
+     const repo = missionsRepository(db);
+     const mission = repo.get("mission-1")!;
+     expect(mission.objective).toBe("Historical objective");
+     const node = repo.getRequirementNode("node-1")!;
+@@ -384,22 +384,22 @@ describe("BLOCKER 3 — migration 29 upgrades an edited-f812872 database", () =>
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+   });
+ });
+ 
+ describe("BLOCKER 3 — fresh database migrations in order", () => {
+   it("applies all migrations and produces the correct final schema and triggers", () => {
+     const dbPath = join(tmp("ek-mig-c-"), "m.db");
+     const db = openTestDatabase(dbPath);
+     const appliedIds = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-    expect(appliedIds).toEqual(Array.from({ length: 38 }, (_, i) => i + 1));
+-    expect(migrations.at(-1)!.id).toBe(38);
++    expect(appliedIds).toEqual(Array.from({ length: 39 }, (_, i) => i + 1));
++    expect(migrations.at(-1)!.id).toBe(39);
+     const reviewCycleCols = (db.prepare("PRAGMA table_info(mission_review_cycles)").all() as { name: string }[]).map((c) => c.name);
+     expect(reviewCycleCols).toEqual(expect.arrayContaining(["id", "mission_id", "sequence", "status", "reserved_at", "resolved_at", "owner_id", "lease_expires_at"]));
+ 
+     const cols = (db.prepare("PRAGMA table_info(mission_requirement_nodes)").all() as { name: string }[]).map((c) => c.name);
+     expect(cols).toContain("source_locator");
+ 
+     const pamCols = (db.prepare("PRAGMA table_info(project_active_mission)").all() as { name: string; notnull: number }[]);
+     const missionIdCol = pamCols.find((c) => c.name === "mission_id")!;
+     expect(missionIdCol.notnull).toBe(1);
+ 
+@@ -598,21 +598,21 @@ describe("MAJOR 3 — migration 29 refuses ownership-corrupt existing pointers",
+     const fix = new Database(dbPath);
+     try {
+       fix.prepare("UPDATE project_active_mission SET project_id = 'proj-1' WHERE mission_id = 'mission-1'").run();
+     } finally {
+       fix.close();
+     }
+ 
+     const db = openTestDatabase(dbPath);
+     try {
+       const appliedAfterFix = (db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+-      expect(Math.max(...appliedAfterFix)).toBe(38);
++      expect(Math.max(...appliedAfterFix)).toBe(39);
+       const repo = missionsRepository(db);
+       expect(repo.getProjectActiveMission("proj-1")?.missionId).toBe("mission-1");
+       expect(repo.getProjectActiveMission("proj-2")).toBeUndefined();
+     } finally {
+       db.close();
+     }
+   });
+ 
+   it("a pointer referencing a nonexistent mission is also refused", () => {
+     const dbPath = join(tmp("ek-mig-corrupt-missing-"), "m.db");
+diff --git a/services/orchestrator/test/database.test.ts b/services/orchestrator/test/database.test.ts
+index bda9580..5f8e39b 100644
+--- a/services/orchestrator/test/database.test.ts
++++ b/services/orchestrator/test/database.test.ts
+@@ -6,21 +6,24 @@ import { migrations, openDatabase } from "../src/database.js";
+ 
+ describe("database", () => {
+   it("migrates in-memory database idempotently", () => {
+     const db = openDatabase(":memory:");
+     expect(db.prepare("SELECT count(*) n FROM schema_migrations").get()).toEqual({ n: migrations.length });
+     db.close();
+   });
+ 
+   it("installs the durable mission runtime ledger and provider discovery schema", () => {
+     const db = openDatabase(":memory:");
+-    expect(migrations.at(-1)?.id).toBe(38);
++    expect(migrations.at(-1)?.id).toBe(39);
++    expect(db.prepare("PRAGMA table_info(tasks)").all()).toEqual(
++      expect.arrayContaining([expect.objectContaining({ name: "idempotency_fingerprint" })]),
++    );
+     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
+     expect(missionColumns).toContain("execution_json");
+     expect(missionColumns).toContain("idempotency_key");
+     const tables = (db.prepare(`SELECT name FROM sqlite_master
+       WHERE type='table' AND name LIKE 'mission_runtime%' OR name IN ('mission_operations','mission_progress','mission_recovery_decisions')
+       ORDER BY name`).all() as Array<{ name: string }>).map((row) => row.name);
+     expect(tables).toEqual([
+       "mission_operations",
+       "mission_progress",
+       "mission_recovery_decisions",
+diff --git a/services/orchestrator/test/idempotency-api.test.ts b/services/orchestrator/test/idempotency-api.test.ts
+index 59811d4..1ba54f3 100644
+--- a/services/orchestrator/test/idempotency-api.test.ts
++++ b/services/orchestrator/test/idempotency-api.test.ts
+@@ -115,11 +115,64 @@ describe("idempotent agent-chat message send", () => {
+     expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
+   });
+ 
+   it("different keys and keyless sends still create distinct tasks", async () => {
+     const a = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "a", idempotencyKey: "ka" } });
+     const b = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "b", idempotencyKey: "kb" } });
+     const c = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { content: "c" } });
+     const ids = new Set([a, b, c].map((r) => r.json().task.id));
+     expect(ids.size).toBe(3);
+   });
++
++  it("keeps the browser-scoped replay canonical and rejects key reuse for different content", async () => {
++    const payload = { content: "same accepted attempt", idempotencyKey: "browser-attempt" };
++    const first = await app.inject({
++      method: "POST",
++      url: `/api/projects/p1/conversations/${conversationId}/messages`,
++      payload,
++    });
++    const replay = await app.inject({
++      method: "POST",
++      url: `/api/projects/p1/conversations/${conversationId}/messages`,
++      payload,
++    });
++    const conflict = await app.inject({
++      method: "POST",
++      url: `/api/projects/p1/conversations/${conversationId}/messages`,
++      payload: { content: "different attempt", idempotencyKey: "browser-attempt" },
++    });
++
++    expect(first.statusCode).toBe(202);
++    expect(replay.statusCode).toBe(200);
++    expect(replay.json()).toMatchObject({
++      replayed: true,
++      task: { id: first.json().task.id },
++      userMessage: { id: first.json().userMessage.id },
++      assistantMessage: { id: first.json().assistantMessage.id },
++    });
++    expect(replay.json().sseUrl).toBe(`/api/projects/p1/conversations/${conversationId}/tasks/${first.json().task.id}/stream`);
++    expect(replay.json().aggregateUrl).toBe(`/api/projects/p1/conversations/${conversationId}/messages`);
++    expect(replay.json().routing).toMatchObject({ providerId: "mock", model: "mock-model" });
++    expect(replay.json().routing).not.toHaveProperty("reason");
++    expect(replay.json().routing).not.toHaveProperty("candidates");
++    expect(conflict.statusCode).toBe(409);
++    expect(conflict.json().error.code).toBe("IDEMPOTENCY_CONFLICT");
++    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(1);
++    const messages = await app.inject({
++      method: "GET",
++      url: `/api/projects/p1/conversations/${conversationId}/messages`,
++    });
++    expect(messages.json()).toHaveLength(2);
++  });
++
++  it("rejects a browser send through a foreign project without dispatching", async () => {
++    projectRepository(db).createProject({ id: "p2", name: "P2", workspacePath: ws, createdAt: new Date().toISOString() });
++    const response = await app.inject({
++      method: "POST",
++      url: `/api/projects/p2/conversations/${conversationId}/messages`,
++      payload: { content: "do not dispatch", idempotencyKey: "foreign" },
++    });
++    expect(response.statusCode).toBe(404);
++    expect(taskRepository(db).listTasksByProject("p1")).toHaveLength(0);
++    expect(taskRepository(db).listTasksByProject("p2")).toHaveLength(0);
++  });
+ });
+diff --git a/services/orchestrator/test/mission-task-dispatcher.test.ts b/services/orchestrator/test/mission-task-dispatcher.test.ts
+index cbe3553..79ea51d 100644
+--- a/services/orchestrator/test/mission-task-dispatcher.test.ts
++++ b/services/orchestrator/test/mission-task-dispatcher.test.ts
+@@ -102,20 +102,126 @@ describe("mission agent-task dispatcher", () => {
+     };
+     dispatchAgentTask({ db, runner: { run }, env: process.env }, base);
+ 
+     expect(() => dispatchAgentTask({ db, runner: { run }, env: process.env }, {
+       ...base,
+       content: "Different operation",
+     })).toThrow(/different request/i);
+     expect(run).toHaveBeenCalledTimes(1);
+   });
+ 
++  it("rejects replay when any canonical execution input changes", () => {
++    const base = {
++      conversationId: "conversation-1",
++      content: "Immutable execution request",
++      missionId: "mission-1",
++      idempotencyKey: "mission:m1:op:full-fingerprint",
++      mode: "read-only" as const,
++      preset: "balanced" as const,
++      reasoning: { mode: "auto" as const },
++      useMemory: true,
++      autoApprove: false,
++    };
++    dispatchAgentTask({ db, runner: { run }, env: process.env }, base);
++
++    const conflicts = [
++      { label: "Ask to Build mode", request: { ...base, mode: "agent" as const } },
++      { label: "preset", request: { ...base, preset: "fast" as const } },
++      { label: "provider", request: { ...base, providerId: "openai" as const } },
++      { label: "model", request: { ...base, model: "different-model" } },
++      { label: "reasoning", request: { ...base, reasoning: { mode: "effort" as const, effort: "high" as const } } },
++      { label: "memory", request: { ...base, useMemory: false } },
++      { label: "approval", request: { ...base, autoApprove: true } },
++    ];
++    for (const conflict of conflicts) {
++      expect(
++        () => dispatchAgentTask({ db, runner: { run }, env: process.env }, conflict.request),
++        conflict.label,
++      ).toThrow(/different request/i);
++    }
++    expect(run).toHaveBeenCalledTimes(1);
++    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(1);
++  });
++
++  it("rolls back the entire dispatch bundle and never starts the runner when a late insert fails", () => {
++    const ids = ["task-atomic", "message-duplicate", "state-id", "message-duplicate"];
++    expect(() => dispatchAgentTask({
++      db,
++      runner: { run },
++      env: process.env,
++      createId: () => ids.shift() ?? "unexpected-id",
++    }, {
++      conversationId: "conversation-1",
++      content: "Atomic or absent",
++      idempotencyKey: "atomic-failure",
++      mode: "read-only",
++    })).toThrow();
++
++    expect(taskRepository(db).listTasksByProject("project-1")).toHaveLength(0);
++    expect(conversationsRepository(db).listMessages("conversation-1")).toHaveLength(0);
++    expect((db.prepare("SELECT COUNT(*) AS count FROM task_routing").get() as { count: number }).count).toBe(0);
++    expect((db.prepare("SELECT COUNT(*) AS count FROM agent_state_transitions").get() as { count: number }).count).toBe(0);
++    expect((db.prepare("SELECT COUNT(*) AS count FROM task_events").get() as { count: number }).count).toBe(0);
++    expect(run).not.toHaveBeenCalled();
++  });
++
++  it("never replays a legacy partial idempotency row without its committed bundle", () => {
++    taskRepository(db).createTask({
++      id: "partial-task",
++      projectId: "project-1",
++      kind: "agent_chat",
++      status: "queued",
++      idempotencyKey: "partial-bundle",
++      createdAt: "2026-07-16T12:00:00.000Z",
++    });
++
++    let replayError: unknown;
++    try {
++      dispatchAgentTask({ db, runner: { run }, env: process.env }, {
++        conversationId: "conversation-1",
++        content: "Missing persisted bundle",
++        idempotencyKey: "partial-bundle",
++      });
++    } catch (error) {
++      replayError = error;
++    }
++    expect(replayError).toMatchObject({ code: "IDEMPOTENCY_INCOMPLETE" });
++    expect(run).not.toHaveBeenCalled();
++  });
++
++  it("never replays a complete legacy bundle without its canonical fingerprint", () => {
++    const request = {
++      conversationId: "conversation-1",
++      content: "Complete legacy operation",
++      missionId: "mission-1",
++      idempotencyKey: "legacy-complete-bundle",
++      mode: "agent" as const,
++      useMemory: true,
++      autoApprove: false,
++    };
++    const created = dispatchAgentTask({ db, runner: { run }, env: process.env }, request);
++    db.prepare("UPDATE tasks SET idempotency_fingerprint=NULL WHERE id=?").run(created.task.id);
++    run.mockClear();
++
++    for (const replay of [request, { ...request, mode: "read-only" as const }]) {
++      let replayError: unknown;
++      try {
++        dispatchAgentTask({ db, runner: { run }, env: process.env }, replay);
++      } catch (error) {
++        replayError = error;
++      }
++      expect(replayError).toMatchObject({ code: "IDEMPOTENCY_INCOMPLETE" });
++    }
++    expect(run).not.toHaveBeenCalled();
++    expect(conversationsRepository(db).listMessages("conversation-1")).toHaveLength(2);
++  });
++
+   it("rejects a mission owned by another project before creating a task", () => {
+     const now = "2026-07-16T12:00:00.000Z";
+     projectRepository(db).createProject({
+       id: "project-2",
+       name: "Other",
+       workspacePath: "/other",
+       createdAt: now,
+     });
+     db.prepare(`INSERT INTO missions
+       (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+diff --git a/services/orchestrator/test/sse.test.ts b/services/orchestrator/test/sse.test.ts
+index 3a8918c..e5d6a2c 100644
+--- a/services/orchestrator/test/sse.test.ts
++++ b/services/orchestrator/test/sse.test.ts
+@@ -1,18 +1,22 @@
+ import { describe, it, expect, beforeEach, afterEach } from "vitest";
+ import { openDatabase } from "../src/database.js";
+ import { buildServer } from "../src/server.js";
+ import { TaskRunner } from "../src/runner.js";
+ import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+ import { join } from "node:path";
+ import { tmpdir } from "node:os";
+ import * as http from "node:http";
++import { projectRepository } from "../src/repositories/projects.js";
++import { taskRepository } from "../src/repositories/tasks.js";
++import { taskRecordsRepository } from "../src/repositories/task-records.js";
++import { conversationsRepository } from "../src/repositories/conversations.js";
+ 
+ describe("SSE Streaming", () => {
+   let db: any;
+   let runner: TaskRunner;
+   let app: any;
+   let tempDir: string;
+ 
+   beforeEach(() => {
+     tempDir = mkdtempSync(join(tmpdir(), "morrow-sse-test-"));
+     const dbPath = join(tempDir, "morrow.db");
+@@ -136,11 +140,59 @@ describe("SSE Streaming", () => {
+     releaseGate!();
+     await gatedRunner.waitFor(taskId);
+     await streamPromise;
+     await reconnectPromise;
+ 
+     expect(reconnectedEvents.every(id => id > lastEventId)).toBe(true);
+     for (let i = 1; i < reconnectedEvents.length; i++) {
+       expect(reconnectedEvents[i]).toBeGreaterThan(reconnectedEvents[i-1]);
+     }
+   });
++
++  it("streams ordered resumable browser signals without raw task payloads", async () => {
++    const now = new Date().toISOString();
++    projectRepository(db).createProject({ id: "chat-project", name: "Chat", workspacePath: tempDir, createdAt: now });
++    conversationsRepository(db).createConversation({ id: "chat-conversation", projectId: "chat-project", title: "Chat", createdAt: now, updatedAt: now });
++    taskRepository(db).createTask({ id: "chat-task", projectId: "chat-project", kind: "agent_chat", status: "queued", createdAt: now });
++    conversationsRepository(db).appendMessage({
++      id: "assistant", conversationId: "chat-conversation", role: "assistant", content: "canonical",
++      taskId: "chat-task", streamingState: "queued", createdAt: now, updatedAt: now,
++    });
++    const records = taskRecordsRepository(db);
++    const first = records.appendEvent({
++      id: "private-1", taskId: "chat-task", type: "evidence.persisted",
++      payload: { deltaText: "secret token-shaped text", artifact: "raw private artifact" }, createdAt: now,
++    });
++    records.transitionTask("chat-task", "running", { id: "private-2", payload: { private: "do not expose" }, createdAt: now });
++    const terminal = records.transitionTask("chat-task", "completed", { id: "private-3", payload: { secret: "never" }, createdAt: now });
++
++    const all = await app.inject({
++      method: "GET",
++      url: "/api/projects/chat-project/conversations/chat-conversation/tasks/chat-task/stream?after=0",
++    });
++    expect(all.statusCode).toBe(200);
++    expect(all.headers["content-type"]).toContain("text/event-stream");
++    expect(all.body).toContain(`id: ${first.sequence}`);
++    expect(all.body).toContain("event: message.updated");
++    expect(all.body).toContain("event: task.terminal");
++    expect(all.body).not.toContain("secret token-shaped text");
++    expect(all.body).not.toContain("raw private artifact");
++    expect(all.body).not.toContain("do not expose");
++    expect(all.body).not.toContain('"secret":"never"');
++
++    const resumed = await app.inject({
++      method: "GET",
++      url: `/api/projects/chat-project/conversations/chat-conversation/tasks/chat-task/stream?after=${first.sequence}`,
++    });
++    const ids = [...resumed.body.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
++    expect(ids.length).toBeGreaterThan(0);
++    expect(ids.every((id) => id > first.sequence)).toBe(true);
++    expect(ids.at(-1)).toBe(taskRecordsRepository(db).listEvents("chat-task").at(-1)?.sequence);
++
++    const foreign = await app.inject({
++      method: "GET",
++      url: "/api/projects/chat-project/conversations/missing/tasks/chat-task/stream",
++    });
++    expect(foreign.statusCode).toBe(404);
++    expect(terminal.status).toBe("completed");
++  });
+ });

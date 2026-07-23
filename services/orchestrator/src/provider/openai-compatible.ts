@@ -167,9 +167,18 @@ export class OpenAiCompatibleProvider implements AiProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
+    let completed = false;
+    let terminalError = false;
+    const redactConfiguredSecret = (message: string): string => this.config.apiKey
+      ? message.split(this.config.apiKey).join("***redacted***")
+      : message;
     const parseRecord = (line: string, eof = false): ProviderChunk[] => {
       const trimmed = line.trim();
-      if (!trimmed || trimmed === "data: [DONE]") return [];
+      if (!trimmed) return [];
+      if (trimmed === "data: [DONE]") {
+        completed = true;
+        return [];
+      }
       if (!trimmed.startsWith("data: ")) return [];
       let parsed: any;
       try { parsed = JSON.parse(trimmed.slice(6)); }
@@ -177,9 +186,20 @@ export class OpenAiCompatibleProvider implements AiProvider {
         return eof ? [{ type: "error", error: { type: "malformed_sse", kind: "provider", message: "Malformed trailing SSE record", retryable: false } }] : [];
       }
       const out: ProviderChunk[] = [];
+      if (parsed?.error) {
+        terminalError = true;
+        const numericCode = Number(parsed.error.code);
+        const status = Number.isInteger(numericCode) && numericCode >= 400 && numericCode <= 599 ? numericCode : 500;
+        const message = redactConfiguredSecret(typeof parsed.error.message === "string" ? parsed.error.message : "Provider stream error");
+        out.push({ type: "error", error: classifyHttpStatus(status, message) });
+        return out;
+      }
       if (parsed.usage) out.push({ type: "done", usage: { promptTokens: parsed.usage.prompt_tokens ?? 0, completionTokens: parsed.usage.completion_tokens ?? 0, ...(parsed.usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedPromptTokens: parsed.usage.prompt_tokens_details.cached_tokens } : {}) } });
       const wireFinishReason = parsed.choices?.[0]?.finish_reason;
-      if (wireFinishReason) out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
+      if (wireFinishReason) {
+        completed = true;
+        out.push({ type: "done", finishReason: normalizeFinishReason(wireFinishReason) });
+      }
       const delta = parsed.choices?.[0]?.delta;
       if (delta?.reasoning_content) out.push({
         type: "text",
@@ -204,6 +224,9 @@ export class OpenAiCompatibleProvider implements AiProvider {
       }
       buffer += decoder.decode();
       yield* parseRecord(buffer, true);
+      if (!completed && !terminalError) {
+        yield { type: "error", error: { type: "interrupted_stream", kind: "provider", message: "Provider stream ended before completion", retryable: true } };
+      }
     } catch (e: any) {
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider stream timed out", retryable: true } };

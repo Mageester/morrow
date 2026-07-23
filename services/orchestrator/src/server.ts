@@ -6,6 +6,9 @@ import {
   CreateTaskSchema,
   StructuredApiErrorSchema,
   SendMessageSchema,
+  CreateConversationSchema,
+  DeleteConversationSchema,
+  ChatStreamEnvelopeSchema,
   CreateMemoryEntrySchema,
   UpdateMemoryEntrySchema,
   UpdateConversationSchema,
@@ -21,6 +24,8 @@ import {
   type PresetId,
   type ProviderId,
   type ProviderAuthMode,
+  type ChatStreamEventType,
+  type RoutingDecision,
 } from "@morrow/contracts";
 import { openDatabase } from "./database.js";
 import { realpathSync, existsSync, lstatSync, readFileSync } from "node:fs";
@@ -42,6 +47,7 @@ import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
+import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
 import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 
@@ -141,13 +147,16 @@ import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
-import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
 import { buildProviderProjection } from "./execution/provider-projection.js";
 import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+import { registerWebMissionRoutes } from "./web/mission-routes.js";
+import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
@@ -193,6 +202,8 @@ export type ServerDependencies = {
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
   supervisor?: ProcessSupervisor;
   sseIntervalMs?: number;
+  /** Idle heartbeat cadence for the web mission stream; injectable for tests. */
+  webStreamHeartbeatMs?: number;
   modelCatalog?: ModelCatalog;
   /** Injectable account-model discovery transport for deterministic tests. */
   providerConnectivityTest?: typeof testProviderConnectivity;
@@ -209,6 +220,13 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
+  /**
+   * Absolute path to the built web bundle (the directory containing
+   * `index.html`). When provided, the orchestrator serves the local Morrow web
+   * application at `/app`. When absent, the service stays CLI-only and no `/app`
+   * surface exists.
+   */
+  webRoot?: string;
 };
 
 export function buildServer(deps: ServerDependencies): FastifyInstance {
@@ -252,24 +270,37 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   const providerModelDiscovery = providerModelDiscoveryRepository(deps.db);
   installProviderModelDiscoveries(providerModelDiscovery.list());
   const providerConnectivityTest = deps.providerConnectivityTest ?? testProviderConnectivity;
+  const discoveryExpiresAt = (fetchedAt: string, ok: boolean) => new Date(Date.parse(fetchedAt) + (ok ? 15 * 60_000 : 60_000)).toISOString();
   const refreshProviderModelDiscovery = async (providerId: ProviderId, knownAuthMode?: ProviderAuthMode) => {
-    const result = await providerConnectivityTest(providerId, process.env);
+    const envSnapshot = { ...process.env };
+    const credentialIdentity = providerCredentialIdentity(providerId, envSnapshot);
+    const result = await providerConnectivityTest(providerId, envSnapshot);
+    if (providerId === "openrouter" && providerCredentialIdentity(providerId, process.env) !== credentialIdentity) {
+      return { ...result, ok: false, configured: false, status: null, detail: "OpenRouter credential changed while refresh was in flight; result discarded.", errorKind: "cancelled", modelsSample: [], models: [] };
+    }
     const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
     if (authMode) {
+      const fetchedAt = new Date().toISOString();
       providerModelDiscovery.upsert({
         providerId,
         authMode,
         status: result.ok ? "available" : "unavailable",
         models: result.models,
         errorKind: result.errorKind,
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
+        expiresAt: discoveryExpiresAt(fetchedAt, result.ok),
+        lastSuccessAt: result.ok ? fetchedAt : null,
+        credentialIdentity,
       });
       installProviderModelDiscoveries(providerModelDiscovery.list());
     }
     return result;
   };
   if (deps.backgroundModelDiscovery ?? process.env.NODE_ENV !== "test") {
-    const configured = listProviderStatuses().filter((status) => status.configured && status.authMode && status.id !== "mock");
+    const configured = listProviderStatuses().filter((status) =>
+      status.authMode && status.id !== "mock" && (status.configured || (status.id === "openrouter" && !!process.env.OPENROUTER_API_KEY))
+      && !providerModelDiscovery.isFresh(status.id, status.authMode, new Date(), providerCredentialIdentity(status.id, process.env))
+    );
     queueMicrotask(() => {
       void Promise.allSettled(configured.map((status) => refreshProviderModelDiscovery(status.id, status.authMode)));
     });
@@ -334,6 +365,36 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       },
     };
   };
+  // Web app surface: honest mission projections for the browser client. Injected
+  // with the same repositories/service the terminal API uses so there is a
+  // single source of truth and zero behavior change to the existing routes.
+  registerWebMissionRoutes(app, {
+    db: deps.db,
+    projects,
+    missions,
+    approvals,
+    agents,
+    missionRuntime,
+    missionService,
+    ...(deps.missionControllerRunner ? { missionControllerRunner: deps.missionControllerRunner } : {}),
+    readIdempotencyKey,
+  });
+  // Resumable, ordered mission event stream (SSE) for the web client. Polls
+  // persisted mission events so it is correct across restarts and never leaks
+  // provider internals into the wire payload.
+  registerWebMissionStreamRoutes(app, {
+    missions,
+    ...(deps.sseIntervalMs !== undefined ? { pollIntervalMs: deps.sseIntervalMs } : {}),
+    ...(deps.webStreamHeartbeatMs !== undefined ? { heartbeatIntervalMs: deps.webStreamHeartbeatMs } : {}),
+  });
+  // Local web application surface. Serves the built bundle at /app with SPA
+  // fallback when a web root is present, and otherwise installs only the JSON
+  // not-found envelope so the service stays CLI-only. Never intercepts /api/*
+  // or the JSON root probe.
+  registerWebAppRoutes(app, {
+    ...(deps.webRoot !== undefined ? { webRoot: deps.webRoot } : {}),
+  });
+
   const processesRepo = processesRepository(deps.db);
   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   // A `running` row from a previous orchestrator run is unobservable — mark it
@@ -465,6 +526,50 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return project;
+  });
+
+  // Dedicated status endpoint (rather than adding these fields to the project
+  // list/get responses) so the browser only pays for a git spawn + realpath
+  // check when a surface actually needs to show workspace health, not on every
+  // project list fetch.
+  app.get("/api/projects/:projectId/status", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+
+    let canonicalPath = project.workspacePath;
+    let accessible = false;
+    try {
+      canonicalPath = realpathSync(project.workspacePath);
+      accessible = lstatSync(canonicalPath).isDirectory();
+    } catch {
+      accessible = false;
+    }
+
+    let gitDetected = false;
+    let branch: string | null = null;
+    if (accessible) {
+      try {
+        const status = await gitStatus(canonicalPath, { timeoutMs: 2000 });
+        const branchLine = status.lines.find((line) => line.startsWith("## "));
+        if (branchLine) {
+          gitDetected = true;
+          const match = /^## (?:No commits yet on )?([^.\s]+)/.exec(branchLine);
+          branch = match?.[1] && match[1] !== "HEAD" ? match[1] : null;
+        }
+      } catch {
+        gitDetected = false;
+      }
+    }
+
+    return {
+      id: project.id,
+      name: project.name,
+      workspacePath: canonicalPath,
+      accessible,
+      gitDetected,
+      branch,
+    };
   });
 
   // ── Agents ─────────────────────────────────────────────────────────────────
@@ -752,7 +857,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     
-    const body = request.body as { title?: string } | null;
+    const body = CreateConversationSchema.parse(request.body ?? {});
     const title = body?.title?.trim() || "New Conversation";
     
     const conversation = convs.createConversation({
@@ -762,7 +867,227 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
+    reply.status(201);
     return conversation;
+  });
+
+  const ownedConversation = (projectId: string, conversationId: string) => {
+    const conversation = convs.getConversation(conversationId);
+    if (!conversation || conversation.projectId !== projectId) {
+      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
+    }
+    return conversation;
+  };
+
+  const ownedConversationTask = (projectId: string, conversationId: string, taskId: string) => {
+    ownedConversation(projectId, conversationId);
+    const task = tasks.getTaskById(taskId);
+    const assistant = deps.db.prepare(
+      "SELECT id FROM conversation_messages WHERE conversation_id=? AND task_id=? AND role='assistant' LIMIT 1"
+    ).get(conversationId, taskId);
+    if (!task || task.projectId !== projectId || !assistant) {
+      throw new ApiError(404, "Conversation task not found in project", "NOT_FOUND");
+    }
+    return task;
+  };
+
+  const webRouting = (decision: RoutingDecision | null | undefined) => decision
+    ? {
+        version: decision.version,
+        presetId: decision.presetId,
+        providerId: decision.providerId,
+        model: decision.model,
+        fallbackUsed: decision.fallbackUsed,
+        overridden: decision.overridden,
+        mode: decision.mode ?? null,
+        autoApprove: decision.autoApprove ?? null,
+      }
+    : null;
+
+  const webMessages = (conversationId: string) => convs.listMessages(conversationId).map((message) => {
+    const task = message.taskId ? tasks.getTaskById(message.taskId) : undefined;
+    const routing = message.taskId ? webRouting(routingRepo.get(message.taskId)?.decision) : null;
+    const toolActivity = message.taskId
+      ? convs.listToolCallsForMessage(message.id).map((tool) => ({
+          id: tool.id,
+          toolName: tool.toolName,
+          status: tool.status,
+          startedAt: tool.startedAt ?? null,
+          completedAt: tool.completedAt ?? null,
+        }))
+      : [];
+    return {
+      ...message,
+      taskStatus: task?.status ?? null,
+      routing,
+      toolActivity,
+    };
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    return ownedConversation(projectId, conversationId);
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/messages", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    return webMessages(conversationId);
+  });
+
+  app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    let updated = ownedConversation(projectId, conversationId);
+    const body = UpdateConversationSchema.parse(request.body);
+    const updatedAt = new Date().toISOString();
+    if (body.title !== undefined) updated = convs.renameConversation(conversationId, body.title, updatedAt) ?? updated;
+    if (body.archived !== undefined) updated = convs.setArchived(conversationId, body.archived, updatedAt) ?? updated;
+    return updated;
+  });
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    DeleteConversationSchema.parse(request.body ?? {});
+    const result = convs.deleteConversation(conversationId, projectId);
+    if (result.outcome === "project_mismatch") {
+      throw new ApiError(404, "Conversation not found in project", "NOT_FOUND");
+    }
+    if (result.outcome === "active_task") {
+      throw new ApiError(
+        409,
+        "Stop the active response before deleting this conversation.",
+        "CONVERSATION_TASK_ACTIVE",
+      );
+    }
+    return { version: 1, conversationId, deleted: result.outcome === "deleted" };
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/messages", async (request, reply) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const body = SendMessageSchema.parse(request.body);
+    const idempotencyKey = readIdempotencyKey(request);
+    try {
+      const result = dispatchAgentTask({ db: deps.db, runner: deps.runner, env: process.env }, {
+        conversationId,
+        ...body,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
+      reply.status(result.replayed ? 200 : 202);
+      return {
+        ...result,
+        routing: webRouting(result.routing),
+        aggregateUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        sseUrl: `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/tasks/${encodeURIComponent(result.task.id)}/stream`,
+      };
+    } catch (error) {
+      if (error instanceof AgentTaskDispatchError) {
+        throw new ApiError(error.statusCode, error.message, error.code);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/cancel", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const task = ownedConversationTask(projectId, conversationId, taskId);
+    if (task.status === "cancelled") {
+      return { version: 1, taskId, status: task.status, outcome: "already_cancelled" };
+    }
+    if (["completed", "verified", "failed", "interrupted"].includes(task.status)) {
+      throw new ApiError(409, `Task is ${task.status}; cancellation was not applied.`, "TASK_NOT_ACTIVE");
+    }
+    deps.runner.cancel(taskId);
+    const updated = tasks.getTaskById(taskId);
+    reply.status(202);
+    return { version: 1, taskId, status: updated?.status ?? "cancelled", outcome: "cancelled" };
+  });
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/retry", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const task = ownedConversationTask(projectId, conversationId, taskId);
+    if (task.status !== "failed" && task.status !== "interrupted") {
+      throw new ApiError(409, "Only failed or interrupted responses can be retried", "TASK_NOT_RETRYABLE");
+    }
+    const afterCursor = records.listEvents(taskId).at(-1)?.sequence ?? 0;
+    records.retryTask(taskId);
+    deps.runner.run(taskId);
+    reply.status(202);
+    return { version: 1, taskId, status: "queued", outcome: "retried", afterCursor };
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/tasks/:taskId/stream", async (request, reply) => {
+    const { projectId, conversationId, taskId } = request.params as { projectId: string; conversationId: string; taskId: string };
+    const queryAfter = (request.query as { after?: string }).after;
+    const headerCursor = request.headers["last-event-id"];
+    const after = Math.max(
+      queryAfter === undefined ? 0 : parseEventCursor(queryAfter),
+      headerCursor === undefined ? 0 : parseEventCursor(String(headerCursor)),
+    );
+    ownedConversationTask(projectId, conversationId, taskId);
+
+    const terminalTypes = new Set(["task.verified", "task.completed", "task.failed", "task.cancelled", "task.interrupted"]);
+    const classify = (type: string): ChatStreamEventType => {
+      if (terminalTypes.has(type)) return "task.terminal";
+      if (type === "evidence.persisted" || type.startsWith("assistant.")) return "message.updated";
+      if (type.startsWith("tool.")) return "tool.updated";
+      return "task.updated";
+    };
+
+    reply.hijack();
+    let closed = false;
+    let cursor = after;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (destroy = false) => {
+      if (closed) return;
+      closed = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (destroy && !reply.raw.destroyed) reply.raw.destroy();
+    };
+    request.raw.on("close", () => stop());
+    reply.raw.on("close", () => stop());
+    reply.raw.on("error", () => stop(true));
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const poll = () => {
+      if (closed) return;
+      try {
+        const pending = records.listEvents(taskId, cursor);
+        for (const event of pending) {
+          const envelope = ChatStreamEnvelopeSchema.parse({
+            version: 1,
+            cursor: event.sequence,
+            taskId,
+            conversationId,
+            eventType: classify(event.type),
+            emittedAt: event.createdAt,
+            payload: { eventId: event.id },
+          });
+          reply.raw.write(`id: ${envelope.cursor}\nevent: ${envelope.eventType}\ndata: ${JSON.stringify(envelope)}\n\n`);
+          cursor = envelope.cursor;
+          if (envelope.eventType === "task.terminal") {
+            reply.raw.end();
+            stop();
+            return;
+          }
+        }
+        const task = tasks.getTaskById(taskId);
+        if (task && ["verified", "completed", "failed", "cancelled", "interrupted"].includes(task.status)) {
+          reply.raw.end();
+          stop();
+          return;
+        }
+        timer = setTimeout(poll, deps.sseIntervalMs ?? 100);
+      } catch {
+        stop(true);
+      }
+    };
+    poll();
   });
 
   app.get("/api/conversations/:conversationId/messages", async (request, reply) => {
@@ -2039,6 +2364,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     return refreshProviderModelDiscovery(parsed.data);
   });
 
+  // Explicit account-catalogue refresh; unlike startup refresh this bypasses
+  // the TTL because it is a user-directed verification action.
+  app.post("/api/providers/:providerId/models/refresh", async (request, reply) => {
+    const { providerId } = request.params as { providerId: string };
+    const parsed = ProviderIdSchema.safeParse(providerId);
+    if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
+    const result = await refreshProviderModelDiscovery(parsed.data);
+    if (result.errorKind === "cancelled") reply.code(409);
+    return result;
+  });
+
   // Save provider credentials from the app (no PowerShell / env vars / restart).
   // The key is written to the server-side secrets file AND hot-applied to the
   // running process so it takes effect immediately. The response never echoes
@@ -2080,7 +2416,30 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
       }
     }
+    if (id === "openrouter" && body.baseUrl !== undefined) {
+      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
+    }
+    let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
+    let validatedCredentialIdentity: string | null = null;
+    if (id === "openrouter") {
+      const previousCredentialIdentity = providerCredentialIdentity(id, process.env);
+      const candidateEnv = buildProviderCandidateEnv(id, body, process.env);
+      validatedCredentialIdentity = providerCredentialIdentity(id, candidateEnv);
+      validatedResult = await providerConnectivityTest(id, candidateEnv);
+      if (providerCredentialIdentity(id, process.env) !== previousCredentialIdentity) {
+        throw new ApiError(409, "OpenRouter configuration changed while validation was in flight. Retry with the current settings.", "PROVIDER_CONFIGURATION_CONFLICT");
+      }
+      if (!validatedResult.ok) {
+        const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
+        throw new ApiError(statusCode, `OpenRouter validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
+      }
+    }
     const result = configureProvider(deps.secretsFile, id, body, process.env);
+    if (validatedResult) {
+      const fetchedAt = new Date().toISOString();
+      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: validatedCredentialIdentity });
+      installProviderModelDiscoveries(providerModelDiscovery.list());
+    }
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
     reply.send({
       ok: true,
@@ -2088,6 +2447,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       written: result.written,
       cleared: result.cleared,
       securePermissions: result.securePermissions,
+      credentialProtection: result.credentialProtection,
       shadowedByEnv: result.shadowedByEnv,
       status,
     });

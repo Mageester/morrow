@@ -12,6 +12,10 @@ const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
 const skillsDir = join(app, "skills");
+// The bundled web app (served by the orchestrator at /app). Present in packaged
+// installs; the orchestrator only serves /app when this directory has an
+// index.html, so an older package without it degrades to CLI-only cleanly.
+const webRoot = join(app, "web");
 // The bundled CLI (product surface). It is co-located under orchestrator/ so its
 // `@morrow/*` and runtime dependencies resolve from the orchestrator's flat
 // node_modules with no extra wiring. Present in packaged installs; when absent
@@ -30,6 +34,7 @@ function cliEnv() {
     ...process.env,
     MORROW_HOME: data,
     MORROW_SKILLS_DIR: skillsDir,
+    MORROW_WEB_ROOT: webRoot,
     MORROW_BIND_HOST: host,
     PORT: String(port),
     // The launcher owns the service; the CLI must never try to spawn its own.
@@ -59,7 +64,7 @@ function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { r
 async function health() { try { const response = await fetch(url + "/api/health"); return response.ok ? await response.json() : null; } catch { return null; } }
 async function healthy() { return isMorrowHealth(await health()); }
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
-function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
+function open() { execFileSync("cmd.exe", ["/c", "start", "", url + "/app/"], { stdio: "ignore" }); }
 function printHelp() {
   // Delegate to the CLI's full help when available so the two never drift; fall
   // back to the launcher-only surface for packages without the bundled CLI.
@@ -80,7 +85,7 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, NODE_ENV: "production" } });
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());

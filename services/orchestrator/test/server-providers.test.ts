@@ -41,6 +41,11 @@ describe("Provider / preset / memory API", () => {
       expect(JSON.stringify(body)).not.toContain("sk-route-leak-test");
       expect(body.find((p: any) => p.id === "openai").capabilities).toBeTruthy();
       expect(body.find((p: any) => p.id === "openai").authMode).toBe("openai-api-key");
+      // Readiness is reported as a plain boolean — the exact signal the composer
+      // and the mission projection consume to decide whether a mission can run.
+      // It must be accurate (openai has a key here) but must never carry the key.
+      for (const provider of body) expect(typeof provider.configured).toBe("boolean");
+      expect(body.find((p: any) => p.id === "openai").configured).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = prev;
@@ -76,6 +81,114 @@ describe("Provider / preset / memory API", () => {
     } finally {
       fetchMock.mockRestore();
       if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
+    }
+  });
+
+  it("keeps OpenRouter disconnected until authentication, supports manual refresh, and preserves a missing selected model", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    const previousModel = process.env.OPENROUTER_MODEL;
+    process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
+    process.env.OPENROUTER_MODEL = "vendor/selected-but-gone";
+    const localDb = openDatabase(":memory:");
+    const connectivity = vi.fn(async () => ({
+      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+      modelsSample: ["vendor/current"],
+      models: [{ providerModelId: "vendor/current", displayName: "Current", author: "vendor", contextWindow: null, maxOutputTokens: null, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown" as const, availability: "available" as const, fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" as const }],
+    }));
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      let providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+
+      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      expect(refreshed.statusCode).toBe(200);
+      expect(connectivity).toHaveBeenCalledOnce();
+      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: true, available: true, defaultModel: "vendor/selected-but-gone", lastSuccessAt: expect.any(String) });
+
+      process.env.OPENROUTER_API_KEY = "different-unverified-key";
+      providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+      process.env.OPENROUTER_API_KEY = "openrouter-status-secret";
+
+      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+      expect(models.find((item: any) => item.model.providerId === "openrouter" && item.model.id === "vendor/selected-but-gone")).toMatchObject({
+        available: false,
+        availability: "unavailable",
+        availabilityReason: expect.stringMatching(/no longer|not returned/i),
+      });
+    } finally {
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+      if (previousModel === undefined) delete process.env.OPENROUTER_MODEL; else process.env.OPENROUTER_MODEL = previousModel;
+    }
+  });
+
+  it("keeps durable OpenRouter health when an authenticated catalogue is empty", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "openrouter-empty-catalogue-secret";
+    const localDb = openDatabase(":memory:");
+    const connectivity = vi.fn(async () => ({
+      id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+      checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+      modelsSample: [], models: [],
+    }));
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      const refreshed = await localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      expect(refreshed.statusCode).toBe(200);
+      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({
+        configured: true,
+        available: true,
+        lastSuccessAt: expect.any(String),
+      });
+    } finally {
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
+
+  it("discards an in-flight OpenRouter refresh when the live credential changes", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "credential-before-refresh";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const connectivity = vi.fn(async (_id: any, env: NodeJS.ProcessEnv = {}) => {
+      expect(env.OPENROUTER_API_KEY).toBe("credential-before-refresh");
+      await gate;
+      return {
+        id: "openrouter" as const, ok: true, configured: true, status: 200, latencyMs: 1,
+        checkedEndpoint: "openrouter.ai", detail: "connected", errorKind: null,
+        modelsSample: ["vendor/old-key-model"],
+        models: [{ providerModelId: "vendor/old-key-model", displayName: "Old key model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" as const }],
+      };
+    });
+    const localDb = openDatabase(":memory:");
+    const localApp = buildServer({ db: localDb, runner: new TaskRunner(localDb, async () => {}), providerConnectivityTest: connectivity, backgroundModelDiscovery: false });
+    try {
+      await localApp.ready();
+      const pending = localApp.inject({ method: "POST", url: "/api/providers/openrouter/models/refresh" });
+      await vi.waitFor(() => expect(connectivity).toHaveBeenCalledOnce());
+      process.env.OPENROUTER_API_KEY = "credential-after-refresh";
+      release();
+      const response = await pending;
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ ok: false, configured: false, errorKind: "cancelled" });
+      const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
+      expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
+      const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);
+      expect(models.some((item: any) => item.model.id === "vendor/old-key-model")).toBe(false);
+    } finally {
+      release();
+      await localApp.close();
+      localDb.close();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousKey;
     }
   });
 

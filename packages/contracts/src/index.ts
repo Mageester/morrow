@@ -32,8 +32,23 @@ export const VerificationResultSchema=z.object({version:SchemaVersionSchema,task
 export const StructuredApiErrorSchema=z.object({version:SchemaVersionSchema,error:z.object({code:z.string(),message:z.string()}).strict()}).strict();
 
 export const ConversationSchema=z.object({version:SchemaVersionSchema,id:z.string(),projectId:z.string(),title:z.string(),archived:z.boolean().default(false),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const CreateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional()}).strict();
 export const UpdateConversationSchema=z.object({title:z.string().trim().min(1).max(200).optional(),archived:z.boolean().optional()}).strict().refine((v)=>v.title!==undefined||v.archived!==undefined,{message:"Provide title or archived"});
+export const DeleteConversationSchema=z.object({confirmation:z.literal("delete")}).strict();
+export const DeleteConversationResultSchema=z.object({version:SchemaVersionSchema,conversationId:z.string(),deleted:z.boolean()}).strict();
 export const ConversationMessageSchema=z.object({version:SchemaVersionSchema,id:z.string(),conversationId:z.string(),role:z.enum(["user","assistant"]),content:z.string(),taskId:z.string().nullable().optional(),streamingState:z.enum(["queued","streaming","completed","failed","cancelled","interrupted"]),provider:z.string().nullable().optional(),model:z.string().nullable().optional(),createdAt:z.string().datetime(),updatedAt:z.string().datetime()}).strict();
+export const ConversationToolActivitySchema=z.object({id:z.string(),toolName:z.string(),status:z.enum(["requested","running","completed","failed","cancelled"]),startedAt:z.string().datetime().nullable(),completedAt:z.string().datetime().nullable()}).strict();
+export const ChatStreamEventTypeSchema=z.enum(["message.updated","tool.updated","task.updated","task.terminal"]);
+export const ChatStreamEnvelopeSchema=z.object({
+  version:SchemaVersionSchema,
+  cursor:z.number().int().positive(),
+  taskId:z.string(),
+  conversationId:z.string(),
+  eventType:ChatStreamEventTypeSchema,
+  emittedAt:z.string().datetime(),
+  payload:z.object({eventId:z.string()}).strict(),
+}).strict();
+export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
 
 export type Project=z.infer<typeof ProjectSchema>;
 export type Task=z.infer<typeof TaskSchema>;
@@ -55,6 +70,11 @@ export type PlanStepStatus=z.infer<typeof PlanStepStatusSchema>;
 export type StructuredApiError=z.infer<typeof StructuredApiErrorSchema>;
 export type Conversation=z.infer<typeof ConversationSchema>;
 export type ConversationMessage=z.infer<typeof ConversationMessageSchema>;
+export type ConversationToolActivity=z.infer<typeof ConversationToolActivitySchema>;
+export type ChatStreamEventType=z.infer<typeof ChatStreamEventTypeSchema>;
+export type ChatStreamEnvelope=z.infer<typeof ChatStreamEnvelopeSchema>;
+export type ConversationTaskActionResult=z.infer<typeof ConversationTaskActionResultSchema>;
+export type DeleteConversationResult=z.infer<typeof DeleteConversationResultSchema>;
 
 // ── Provider runtime, capability matrix, and model registry ──────────────────
 
@@ -86,6 +106,8 @@ export const ProviderStatusSchema=z.object({
   capabilities:ProviderCapabilitiesSchema,
   models:z.array(z.string()),
   defaultModel:z.string().nullable(),
+  /** Last successful account-catalogue health check, never a browser clock. */
+  lastSuccessAt:z.string().datetime().nullable().optional(),
   note:z.string().nullable(),
   setupHint:z.string().nullable(),
 }).strict();
@@ -97,6 +119,7 @@ export const ModelCapabilitiesSchema=z.object({
   streaming:z.boolean(),
   toolCalls:z.boolean(),
   vision:z.boolean(),
+  reasoning:z.boolean().nullable().optional(),
 }).strict();
 
 // ── Reasoning / thinking control ─────────────────────────────────────────────
@@ -143,7 +166,7 @@ export const ModelPricingSchema=z.object({
   inputUsdPerMillion:z.number().nonnegative(),
   outputUsdPerMillion:z.number().nonnegative(),
   cachedInputUsdPerMillion:z.number().nonnegative().nullable().optional(),
-  source:z.literal("authoritative"),
+  source:z.enum(["authoritative","provider-reported"]),
 }).strict();
 export const ModelInfoSchema=z.object({
   version:SchemaVersionSchema,
@@ -153,6 +176,10 @@ export const ModelInfoSchema=z.object({
   aliases:z.array(z.string()),
   providerId:ProviderIdSchema,
   label:z.string(),
+  author:z.string().nullable().optional(),
+  inputModalities:z.array(z.string().min(1)).optional(),
+  outputModalities:z.array(z.string().min(1)).optional(),
+  costType:z.enum(["free","paid","unknown"]).optional(),
   family:z.string().nullable().optional(),
   generation:z.string().nullable().optional(),
   lifecycle:z.enum(["current","preview","legacy","deprecated","custom","unknown"]).optional(),
@@ -276,6 +303,26 @@ export const RoutingDecisionSchema=z.object({
   reasoning:ReasoningConfigurationSchema.optional(),
 }).strict();
 
+/** Browser-safe routing facts. Internal candidate diagnostics and free-form
+ * route reasons stay server-side; the UI receives only the route that was
+ * actually selected and the execution mode the user asked for. */
+export const WebConversationRoutingSchema=z.object({
+  version:SchemaVersionSchema,
+  presetId:PresetIdSchema,
+  providerId:ProviderIdSchema,
+  model:z.string(),
+  fallbackUsed:z.boolean(),
+  overridden:z.boolean(),
+  mode:AgentModeSchema.nullable(),
+  autoApprove:z.boolean().nullable(),
+}).strict();
+
+export const WebConversationMessageSchema=ConversationMessageSchema.extend({
+  taskStatus:TaskStatusSchema.nullable(),
+  routing:WebConversationRoutingSchema.nullable(),
+  toolActivity:z.array(ConversationToolActivitySchema),
+}).strict();
+
 export const SendMessageSchema=z.object({
   content:z.string().trim().min(1).max(32000),
   preset:PresetIdSchema.optional(),
@@ -294,6 +341,20 @@ export const SendMessageSchema=z.object({
   // Links the resulting agent task to a mission so tool failures during
   // execution land in that mission's failure ledger.
   missionId:z.string().optional(),
+}).strict();
+
+export const SendMessageResultSchema=z.object({
+  task:TaskSchema,
+  userMessage:ConversationMessageSchema,
+  assistantMessage:ConversationMessageSchema,
+  routing:RoutingDecisionSchema.nullable(),
+  aggregateUrl:z.string(),
+  sseUrl:z.string(),
+  replayed:z.boolean().optional(),
+}).strict();
+
+export const WebSendMessageResultSchema=SendMessageResultSchema.extend({
+  routing:WebConversationRoutingSchema.nullable(),
 }).strict();
 
 // ── Memory foundation ────────────────────────────────────────────────────────
@@ -565,8 +626,12 @@ export type PresetStatus=z.infer<typeof PresetStatusSchema>;
 export type ToolProfile=z.infer<typeof ToolProfileSchema>;
 export type AgentMode=z.infer<typeof AgentModeSchema>;
 export type RoutingDecision=z.infer<typeof RoutingDecisionSchema>;
+export type WebConversationRouting=z.infer<typeof WebConversationRoutingSchema>;
 export type RoutingCandidate=z.infer<typeof RoutingCandidateSchema>;
 export type SendMessageInput=z.infer<typeof SendMessageSchema>;
+export type SendMessageResult=z.infer<typeof SendMessageResultSchema>;
+export type WebSendMessageResult=z.infer<typeof WebSendMessageResultSchema>;
+export type WebConversationMessage=z.infer<typeof WebConversationMessageSchema>;
 export type MemoryEntry=z.infer<typeof MemoryEntrySchema>;
 export type MemoryScope=z.infer<typeof MemoryScopeSchema>;
 export type MemoryType=z.infer<typeof MemoryTypeSchema>;
@@ -654,13 +719,21 @@ export type AuditEntry=z.infer<typeof AuditEntrySchema>;
 export const DiscoveredModelSchema=z.object({
   providerModelId:z.string().min(1).max(300),
   displayName:z.string().min(1).max(500),
+  author:z.string().min(1).max(200).nullable().optional(),
   contextWindow:z.number().int().positive().nullable(),
   maxOutputTokens:z.number().int().positive().nullable(),
+  inputModalities:z.array(z.string().min(1).max(100)).optional(),
+  outputModalities:z.array(z.string().min(1).max(100)).optional(),
   capabilities:z.object({
     streaming:z.boolean().nullable(),
     toolCalls:z.boolean().nullable(),
     vision:z.boolean().nullable(),
+    reasoning:z.boolean().nullable().optional(),
   }).strict(),
+  pricing:ModelPricingSchema.nullable().optional(),
+  costType:z.enum(["free","paid","unknown"]).optional(),
+  availability:z.enum(["available","unavailable","unknown"]).optional(),
+  fetchedAt:z.string().datetime().nullable().optional(),
   metadataSource:z.literal("provider-reported"),
 }).strict();
 export type DiscoveredModel=z.infer<typeof DiscoveredModelSchema>;
@@ -1173,3 +1246,5 @@ export * from "./cortex.js";
 export * from "./mission-runtime.js";
 
 export { isReasoningCompatible, normalizeReasoningForRoute } from "./reasoning.js";
+
+export * from "./web.js";

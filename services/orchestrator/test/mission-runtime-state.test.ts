@@ -5,6 +5,7 @@ import {
   MissionRuntimeTransitionSchema,
 } from "@morrow/contracts";
 import {
+  MISSION_RUNTIME_USER_RETRY_CAUSE,
   MissionRuntimeTransitionError,
   assertMissionRuntimeTransition,
   canTransitionMissionRuntime,
@@ -24,6 +25,29 @@ describe("durable mission runtime state", () => {
       expect(() => assertMissionRuntimeTransition(terminal, "recovering", "manual_resume"))
         .toThrow(MissionRuntimeTransitionError);
     }
+  });
+
+  it("keeps a blocked runtime terminal except for an explicit user retry into replanning", () => {
+    // The single sanctioned escape from blocked: a human asking to try again.
+    expect(
+      canTransitionMissionRuntime("blocked", "replanning", MISSION_RUNTIME_USER_RETRY_CAUSE),
+    ).toBe(true);
+    expect(() =>
+      assertMissionRuntimeTransition("blocked", "replanning", MISSION_RUNTIME_USER_RETRY_CAUSE),
+    ).not.toThrow();
+
+    // Every other target or cause is rejected — nothing silently resurrects a
+    // blocked mission, and it cannot skip replanning straight into execution.
+    expect(
+      canTransitionMissionRuntime("blocked", "executing", MISSION_RUNTIME_USER_RETRY_CAUSE),
+    ).toBe(false);
+    expect(
+      canTransitionMissionRuntime("blocked", "replanning", "controller_wake"),
+    ).toBe(false);
+    expect(canTransitionMissionRuntime("blocked", "recovering", "manual_resume")).toBe(false);
+    expect(() =>
+      assertMissionRuntimeTransition("blocked", "executing", MISSION_RUNTIME_USER_RETRY_CAUSE),
+    ).toThrow(MissionRuntimeTransitionError);
   });
 
   it("allows waiting missions to resume through the controller", () => {

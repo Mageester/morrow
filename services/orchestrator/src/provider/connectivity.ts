@@ -1,6 +1,6 @@
 import type { DiscoveredModel, ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
-import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
+import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
 
@@ -16,7 +16,12 @@ import { codexHeaders } from "./codex.js";
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
-const MAX_RESPONSE_BYTES = 64 * 1024;
+// OpenRouter's account catalogue can contain thousands of rich model records.
+// Keep the read bounded, but large enough for the real endpoint rather than a
+// small display-oriented sample.
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_MODEL_RECORDS = 5_000;
+export const OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1";
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   const contentLength = Number(response.headers.get("content-length"));
@@ -61,33 +66,85 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-function normalizeModels(json: unknown): DiscoveredModel[] {
+function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): DiscoveredModel[] {
   try {
     const anyJson = json as any;
     const rows: any[] = Array.isArray(anyJson?.data) ? anyJson.data : Array.isArray(anyJson?.models) ? anyJson.models : [];
-    return rows.slice(0, 500).flatMap((entry): DiscoveredModel[] => {
-      const id = typeof entry?.name === "string"
+    const seen = new Set<string>();
+    return rows.slice(0, MAX_MODEL_RECORDS).flatMap((entry): DiscoveredModel[] => {
+      const id = typeof entry?.name === "string" && entry.name.startsWith("models/")
         ? entry.name.replace(/^models\//, "")
-        : entry?.id ?? entry?.slug ?? entry?.model;
+        : entry?.id ?? entry?.slug ?? entry?.model ?? entry?.name;
       if (typeof id !== "string" || !id.trim()) return [];
+      const providerModelId = id.trim();
+      if (seen.has(providerModelId)) return [];
+      seen.add(providerModelId);
       const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
       const reportedCapabilities = entry?.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {};
+      const supportedParameters = Array.isArray(entry?.supported_parameters)
+        ? entry.supported_parameters.filter((value: unknown): value is string => typeof value === "string")
+        : [];
+      const inputModalities = Array.isArray(entry?.architecture?.input_modalities)
+        ? entry.architecture.input_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      const outputModalities = Array.isArray(entry?.architecture?.output_modalities)
+        ? entry.architecture.output_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
       const reportedBoolean = (...values: unknown[]): boolean | null => {
         const value = values.find((candidate) => typeof candidate === "boolean");
         return typeof value === "boolean" ? value : null;
       };
+      const perMillion = (value: unknown): number | null => {
+        if (typeof value !== "string" && typeof value !== "number") return null;
+        if (typeof value === "string" && value.trim().length === 0) return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
+      };
+      const inputPrice = perMillion(entry?.pricing?.prompt);
+      const outputPrice = perMillion(entry?.pricing?.completion);
+      const cachedInputPrice = perMillion(entry?.pricing?.input_cache_read);
+      const pricing = inputPrice !== null && outputPrice !== null
+        ? { inputUsdPerMillion: inputPrice, outputUsdPerMillion: outputPrice, ...(cachedInputPrice !== null ? { cachedInputUsdPerMillion: cachedInputPrice } : {}), source: "provider-reported" as const }
+        : null;
+      const billablePricingFields = new Set([
+        "prompt", "completion", "request", "image", "web_search", "internal_reasoning",
+        "input_cache_read", "input_cache_write",
+      ]);
+      const pricingEntries = entry?.pricing && typeof entry.pricing === "object" && !Array.isArray(entry.pricing)
+        ? Object.entries(entry.pricing) : [];
+      const hasUnknownPricingField = pricingEntries.some(([key]) => !billablePricingFields.has(key));
+      const parsedPricingEntries = pricingEntries.map(([key, value]) => ({ key, value: perMillion(value) }));
+      const hasInvalidPricingValue = parsedPricingEntries.some(({ value }) => value === null);
+      const hasNonTokenCharge = parsedPricingEntries.some(({ key, value }) => key !== "prompt" && key !== "completion" && value !== null && value > 0);
+      const hasTokenCharge = (inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0;
+      const costType = hasTokenCharge || hasNonTokenCharge
+        ? "paid" as const
+        : inputPrice === null || outputPrice === null || pricingEntries.length === 0 || hasUnknownPricingField || hasInvalidPricingValue
+          ? "unknown" as const
+          : "free" as const;
+      const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
+      const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
       return [{
-        providerModelId: id,
+        providerModelId,
         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
+        author: providerModelId.includes("/") ? providerModelId.split("/", 1)[0]! : null,
         contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
+          .concat(entry?.context_length)
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
-        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens]
+        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens, entry?.top_provider?.max_completion_tokens]
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        inputModalities,
+        outputModalities,
         capabilities: {
-          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming),
-          toolCalls: reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
-          vision: reportedBoolean(reportedCapabilities.vision),
+          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming) ?? true,
+          toolCalls: supportedParameters.length > 0 ? supportedParameters.includes("tools") || supportedParameters.includes("tool_choice") : reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
+          vision: inputModalities.length > 0 ? inputModalities.some((modality: string) => modality === "image" || modality === "video") : reportedBoolean(reportedCapabilities.vision),
+          reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
         },
+        pricing,
+        costType,
+        availability,
+        fetchedAt,
         metadataSource: "provider-reported",
       }];
     });
@@ -106,11 +163,9 @@ interface PlannedRequest {
 function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
   switch (id) {
     case "openai":
-    case "openrouter":
     case "deepseek": {
       const cfgByProvider: Record<string, { apiKeyEnv: string; baseUrlEnv: string; defaultBaseUrl: string; extra?: Record<string, string> }> = {
         openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" },
-        openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1", extra: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" } },
         deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" },
       };
       const spec = cfgByProvider[id]!;
@@ -124,6 +179,18 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       }
       if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+    }
+    case "openrouter": {
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) return { configured: false, reason: "openrouter is not configured (OPENROUTER_API_KEY missing)." };
+      return {
+        configured: true,
+        request: {
+          url: `${OPENROUTER_API_BASE_URL}/models/user`,
+          headers: { Authorization: `Bearer ${apiKey}`, "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
+          host: "openrouter.ai",
+        },
+      };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
@@ -197,6 +264,11 @@ export async function testProviderConnectivity(
   }
 
   const { url, headers, host } = plan.request;
+  const configuredSecret = "Authorization" in headers ? headers.Authorization.replace(/^Bearer\s+/i, "") : null;
+  const safeDetail = (value: string): string => {
+    const exactRedacted = configuredSecret ? value.split(configuredSecret).join("***redacted***") : value;
+    return redactSecrets(exactRedacted);
+  };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
@@ -205,15 +277,18 @@ export async function testProviderConnectivity(
     const latencyMs = Date.now() - startedAt;
     const body = await readBoundedJson(res);
     if (res.ok) {
+      if (id === "openrouter" && (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data))) {
+        return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
+      }
       const models = normalizeModels(body);
       return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
     }
     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
-    return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
+    return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
   } catch (e: any) {
     const aborted = controller.signal.aborted;
     const err = classifyThrownError(e, aborted);
-    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : err.message, errorKind: aborted ? "timeout" : err.kind };
+    return { ...base, configured: false, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
   } finally {
     clearTimeout(timer);
   }

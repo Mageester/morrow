@@ -19,11 +19,15 @@ function emptySse(): Response {
   });
 }
 
+function completedOpenAiSse(): Response {
+  return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 async function captureBody(provider: AiProvider, messages: ChatMessage[]): Promise<Record<string, any>> {
   let body: Record<string, any> | undefined;
   globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
     body = JSON.parse(String(init.body));
-    return emptySse();
+    return provider instanceof OpenAiCompatibleProvider ? completedOpenAiSse() : emptySse();
   }) as typeof fetch;
   const chunks: ProviderChunk[] = [];
   for await (const chunk of provider.streamChat(messages, {})) chunks.push(chunk);

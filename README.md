@@ -134,6 +134,23 @@ a separate release gate. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
 - **Web App**: `pnpm --filter @morrow/web dev`
 
+### Local web app (`/app`)
+Morrow ships a local web application served by the orchestrator.
+
+- **Packaged install:** the orchestrator serves the app at
+  `http://127.0.0.1:4317/app`. `morrow open` opens it in your browser; the CLI
+  and terminal agent are unchanged.
+- **Source development:** run `pnpm --filter @morrow/web dev` and open the Vite
+  dev server at `http://127.0.0.1:4318/app` (it proxies `/api` to the
+  orchestrator on port 4317). The orchestrator only serves `/app` itself when
+  `MORROW_WEB_ROOT` points at a built bundle (`apps/web/dist`); the packaged
+  launcher sets this automatically.
+
+The app is a second presentation surface over the same authoritative mission
+endpoints — no provider secret, token, or credential is ever placed in browser
+storage or browser-visible payloads. See
+[ADR 0007](docs/decisions/0007-local-web-app-surface.md).
+
 ### Data Storage
 Morrow stores data locally. By default, global service state lives under `~/.morrow/`, including the primary SQLite database at `~/.morrow/morrow.db`. Project-local `.morrow/` remains available for workspace metadata.
 

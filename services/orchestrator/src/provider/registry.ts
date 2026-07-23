@@ -10,10 +10,11 @@ import {
   resolveLocalCredential,
   safeHost,
 } from "./credentials.js";
-import { providerEnvMapping } from "./secrets.js";
+import { providerCredentialIdentity, providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
+import { OPENROUTER_API_BASE_URL } from "./connectivity.js";
 
 let modelDiscoveries: ProviderModelDiscovery[] = [];
 
@@ -21,18 +22,34 @@ export function installProviderModelDiscoveries(discoveries: ProviderModelDiscov
   modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
 }
 
-function withDiscovery(status: ProviderStatus): ProviderStatus {
+function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus {
   const authMode = status.authMode ?? "unknown";
   const discovery = modelDiscoveries.find((item) => item.providerId === status.id && item.authMode === authMode);
-  if (!discovery) return status;
-  if (discovery.status === "unavailable") return { ...status, available: false };
-  const models = discovery.models.map((model) => model.providerModelId);
-  if (models.length === 0) return { ...status, available: true };
-  return {
+  if (status.id === "openrouter" && discovery && discovery.credentialIdentity !== providerCredentialIdentity(status.id, env)) {
+    return { ...status, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (!discovery) return status.id === "openrouter" && status.configured
+    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
+    : status;
+  const discoveredModels = discovery.models.map((model) => model.providerModelId);
+  const withDiscoveredModels: ProviderStatus = {
     ...status,
+    models: status.defaultModel && !discoveredModels.includes(status.defaultModel)
+      ? [status.defaultModel, ...discoveredModels]
+      : discoveredModels,
+    defaultModel: status.defaultModel,
+    lastSuccessAt: discovery.lastSuccessAt ?? null,
+  };
+  if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
+    return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (discovery.status === "unavailable") return status.id === "openrouter"
+    ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
+    : { ...status, available: false };
+  if (discoveredModels.length === 0) return { ...withDiscoveredModels, available: true };
+  return {
+    ...withDiscoveredModels,
     available: true,
-    models,
-    defaultModel: status.defaultModel && models.includes(status.defaultModel) ? status.defaultModel : models[0] ?? null,
   };
 }
 
@@ -159,7 +176,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     id: "openai",
     label: "OpenAI",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "gpt-5.6-sol",
     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
@@ -240,26 +257,26 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     id: "openrouter",
     label: "OpenRouter",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "openrouter/auto",
     models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
     setupHint: "Set OPENROUTER_API_KEY.",
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
+      const c = { configured: !!env.OPENROUTER_API_KEY?.trim(), endpointType: "default" as const, host: "openrouter.ai" };
       return apiKeyStatus(this, c, env);
     },
     build(env, model) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
       return new OpenAiCompatibleProvider({
         id: "openrouter",
-        apiKey: c.apiKey!,
-        baseUrl: c.baseUrl,
+        apiKey,
+        baseUrl: OPENROUTER_API_BASE_URL,
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         includeUsage: true,
         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
-        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
+        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "default", endpointHost: "openrouter.ai" }),
       });
     },
   },
@@ -380,7 +397,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
 const BY_ID = new Map<ProviderId, ProviderDescriptor>(DESCRIPTORS.map((d) => [d.id, d]));
 
 export function listProviderStatuses(env: ProviderEnv = process.env): ProviderStatus[] {
-  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env)));
+  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env), env));
   if (env.MOCK_PROVIDER === "true") {
     statuses.push(withDiscovery({
       version: 1,
@@ -398,7 +415,7 @@ export function listProviderStatuses(env: ProviderEnv = process.env): ProviderSt
       defaultModel: "mock-model",
       note: "Deterministic in-memory provider. Only present because MOCK_PROVIDER=true.",
       setupHint: "Unset MOCK_PROVIDER to use real providers.",
-    }));
+    }, env));
   }
   return statuses;
 }

@@ -4,6 +4,12 @@ import {
   MissionContractSchema, MissionRequirementNodeSchema, MissionCursorSchema,
   CreateMissionSchema, MissionSchema, MissionEventTypeSchema,
   RequirementCategorySchema, RequirementNodeStatusSchema,
+  DiscoveredModelSchema,
+  ChatStreamEnvelopeSchema,
+  CreateConversationSchema,
+  DeleteConversationSchema,
+  WebConversationRoutingSchema,
+  WebConversationMessageSchema,
 } from "../src/index.js";
 
 function validNode(over: Record<string, unknown> = {}) {
@@ -38,6 +44,92 @@ describe("contracts", () => {
   it("rejects a project without a workspace path", () => expect(() => CreateProjectSchema.parse({ name: "x" })).toThrow());
   it("allows only inspect_workspace tasks", () => expect(() => CreateTaskSchema.parse({ projectId: "p", kind: "shell" })).toThrow());
   it("requires a numeric ordered event sequence", () => expect(() => TaskEventSchema.parse({ id: "e", taskId: "t", sequence: "1", type: "task.created", createdAt: "x", payload: {} })).toThrow());
+
+  it("types bounded conversation creation and explicit durable deletion confirmation", () => {
+    expect(CreateConversationSchema.parse({ title: " Chat " })).toEqual({ title: "Chat" });
+    expect(() => CreateConversationSchema.parse({ title: "x".repeat(201) })).toThrow();
+    expect(DeleteConversationSchema.parse({ confirmation: "delete" })).toEqual({ confirmation: "delete" });
+    expect(() => DeleteConversationSchema.parse({ confirmation: true })).toThrow();
+  });
+
+  it("keeps browser chat events coarse and canonical message tool activity secret-free", () => {
+    const publicRouting = {
+      version: 1,
+      presetId: "balanced",
+      providerId: "mock",
+      model: "mock-model",
+      fallbackUsed: false,
+      overridden: false,
+      mode: "read-only",
+      autoApprove: false,
+    };
+    expect(WebConversationRoutingSchema.parse(publicRouting)).toEqual(publicRouting);
+    expect(() => WebConversationRoutingSchema.parse({ ...publicRouting, reason: "internal provider diagnostic" })).toThrow();
+
+    expect(ChatStreamEnvelopeSchema.parse({
+      version: 1,
+      cursor: 2,
+      taskId: "task-1",
+      conversationId: "conversation-1",
+      eventType: "message.updated",
+      emittedAt: "2026-07-22T12:00:00.000Z",
+      payload: { eventId: "event-2" },
+    }).payload).toEqual({ eventId: "event-2" });
+    expect(() => ChatStreamEnvelopeSchema.parse({
+      version: 1,
+      cursor: 2,
+      taskId: "task-1",
+      conversationId: "conversation-1",
+      eventType: "message.updated",
+      emittedAt: "2026-07-22T12:00:00.000Z",
+      payload: { eventId: "event-2", deltaText: "private" },
+    })).toThrow();
+
+    const parsed = WebConversationMessageSchema.parse({
+      version: 1,
+      id: "assistant-1",
+      conversationId: "conversation-1",
+      role: "assistant",
+      content: "Canonical",
+      taskId: "task-1",
+      streamingState: "completed",
+      provider: "mock",
+      model: "mock-model",
+      createdAt: "2026-07-22T12:00:00.000Z",
+      updatedAt: "2026-07-22T12:00:00.000Z",
+      taskStatus: "completed",
+      routing: null,
+      toolActivity: [{ id: "tool-1", toolName: "read_file", status: "completed", startedAt: null, completedAt: "2026-07-22T12:00:00.000Z" }],
+    });
+    expect(parsed.toolActivity).toEqual([expect.objectContaining({ toolName: "read_file" })]);
+    expect(() => WebConversationMessageSchema.parse({ ...parsed, toolActivity: [{ ...parsed.toolActivity[0], argsJson: "secret" }] })).toThrow();
+  });
+
+  it("accepts a complete provider-reported OpenRouter catalogue model", () => {
+    expect(DiscoveredModelSchema.parse({
+      providerModelId: "anthropic/claude-sonnet-4",
+      displayName: "Claude Sonnet 4",
+      author: "anthropic",
+      contextWindow: 200_000,
+      maxOutputTokens: 64_000,
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+      pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, source: "provider-reported" },
+      costType: "paid",
+      availability: "available",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+      metadataSource: "provider-reported",
+    })).toMatchObject({
+      author: "anthropic",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { toolCalls: true, reasoning: true },
+      costType: "paid",
+      availability: "available",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+    });
+  });
 });
 
 describe("Advanced Execution Kernel — contract schemas (R1, R2, R16)", () => {

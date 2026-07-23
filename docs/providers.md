@@ -11,7 +11,7 @@ honest OAuth findings, and manual end-to-end verification.
 | OpenAI | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Anthropic | Messages API | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Google Gemini | generateContent | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
-| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| OpenRouter | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | ✓ | — | — |
 | DeepSeek | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
 | OpenAI-compatible | OpenAI-compatible | api-key | ✓ | ✓ | ✓ | — | ✓ | — |
 | Ollama | OpenAI-compatible | local | ✓ | ✓ | ✓ | — | ✓ | ✓ |
@@ -27,8 +27,10 @@ PowerShell, manually setting environment variables, or restarting the service.
 
 1. **In the app (recommended).** Settings → Providers → *Configure*. Paste the
    API key, optionally set a custom endpoint and default model, then *Save*. The
-   key is sent once to the local orchestrator, persisted to the secrets file, and
-   applied to the running process immediately. *Test connection* verifies it.
+   key is sent once to the local orchestrator. OpenRouter candidates are
+   authenticated against the account model endpoint before they are persisted or
+   promoted into the running process; a rejected replacement leaves the last
+   known-good key active. *Refresh models* repeats the bounded account check.
 2. **From the CLI.** `morrow providers configure <provider> --key <KEY>`
    (optionally `--url <endpoint>` and `--model <id>`). This goes through the same
    running-service endpoint, so it also takes effect with no restart. Use
@@ -40,8 +42,32 @@ PowerShell, manually setting environment variables, or restarting the service.
 
 Keys are stored server-side in the owner-readable secrets file and never reach
 the browser (no `localStorage`), the database, logs, errors, or task events.
+On Windows, each atomic secrets-file replacement must receive an ACL limited to
+the current user and LocalSystem before it becomes active; configuration fails
+closed if `whoami.exe`/`icacls.exe` cannot establish that boundary. Unix-like
+systems use mode `0600`. The file remains a local plaintext compatibility format
+so existing CLI startup loading continues to work; it is not application-layer
+encryption.
 Provider status exposes only `configured`, the default model, and the endpoint
 *host*.
+
+For OpenRouter specifically, possession of a value is not reported as
+`configured`: Morrow reports connected/configured only after an authenticated
+`GET /api/v1/models/user` succeeds. The server normalizes the returned account
+catalogue (author, modalities, tool/reasoning signals, provider-reported pricing,
+free/paid state, availability, and refresh time), caches it in SQLite for a
+bounded 15-minute TTL, and refreshes it on explicit request. A failed refresh
+retains the last successful catalogue for diagnosis but marks the provider
+unavailable. If a selected model disappears, Morrow keeps the selection visible
+and unavailable rather than silently switching models.
+
+**Compatibility and rollback:** existing `secrets.env` values continue to load.
+Saving or replacing a credential rewrites the file atomically under the platform
+boundary above. To roll back an OpenRouter replacement, no action is required
+when validation fails because the previous value is untouched. After a
+successful replacement, configure the prior key again (it will be authenticated
+before promotion), or use `morrow providers remove openrouter` to remove the
+stored OpenRouter route entirely.
 
 ## Credential reference
 
@@ -50,7 +76,7 @@ Provider status exposes only `configured`, the default model, and the endpoint
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` |
 | Gemini | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com` |
-| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` |
+| OpenRouter | `OPENROUTER_API_KEY` | — (pinned; overrides rejected) | `https://openrouter.ai/api/v1` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` |
 | OpenAI-compatible | `OPENAI_COMPAT_API_KEY` (optional) | `OPENAI_COMPAT_BASE_URL` (required) | — (`OPENAI_COMPAT_MODEL` for the model) |
 | Ollama (local) | — | `OLLAMA_BASE_URL` (required to enable) | `http://127.0.0.1:11434/v1` |

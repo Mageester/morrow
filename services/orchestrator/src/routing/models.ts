@@ -233,7 +233,7 @@ export function listModelsForProvider(providerId: ProviderId): ModelInfo[] {
  */
 export function listConfiguredCustomModels(providers: ProviderStatus[]): ModelInfo[] {
   return providers
-    .filter((p) => p.configured && p.defaultModel && listModelsForProvider(p.id).length === 0)
+    .filter((p) => p.configured && p.defaultModel && !listModelsForProvider(p.id).some((model) => model.id === p.defaultModel || model.aliases.includes(p.defaultModel!)))
     .map((p) => unknownModel(p.id, p.defaultModel!));
 }
 
@@ -260,6 +260,11 @@ export function resolveModelStatuses(
       providerModels.push({
         ...unknownModel(provider.id, item.providerModelId),
         label: item.displayName,
+        author: item.author ?? null,
+        inputModalities: item.inputModalities ?? [],
+        outputModalities: item.outputModalities ?? [],
+        pricing: item.pricing ?? null,
+        costType: item.costType ?? "unknown",
         contextWindow: item.contextWindow,
         maxOutputTokens: item.maxOutputTokens,
         lifecycle: "custom",
@@ -274,15 +279,22 @@ export function resolveModelStatuses(
       const resolved = report ? {
         ...model,
         providerModelId: report.providerModelId,
+        label: report.displayName,
+        author: report.author ?? model.author ?? null,
+        inputModalities: report.inputModalities ?? model.inputModalities ?? [],
+        outputModalities: report.outputModalities ?? model.outputModalities ?? [],
+        pricing: report.pricing ?? model.pricing,
+        costType: report.costType ?? model.costType ?? "unknown",
         contextWindow: report.contextWindow ?? model.contextWindow,
         maxOutputTokens: report.maxOutputTokens ?? model.maxOutputTokens,
-        metadataSource: report.contextWindow !== null || report.maxOutputTokens !== null ? "provider-reported" as const : model.metadataSource,
+        metadataSource: "provider-reported" as const,
         fetchedAt: discovery?.fetchedAt ?? model.fetchedAt,
         confidence: report.contextWindow !== null || report.maxOutputTokens !== null ? "reported" as const : model.confidence,
         capabilities: {
           streaming: report.capabilities.streaming ?? model.capabilities.streaming,
           toolCalls: report.capabilities.toolCalls ?? model.capabilities.toolCalls,
           vision: report.capabilities.vision ?? model.capabilities.vision,
+          reasoning: report.capabilities.reasoning ?? null,
         },
         capabilitySource: Object.values(report.capabilities).some((value) => value !== null)
           ? "provider-reported" as const
@@ -291,7 +303,9 @@ export function resolveModelStatuses(
       const availability = !provider.configured
         ? "unavailable" as const
         : discovery?.status === "available" && report
-          ? "available" as const
+          ? report.availability ?? "available"
+          : discovery?.status === "available"
+            ? "unavailable" as const
           : discovery?.status === "unavailable"
             ? "unavailable" as const
             : "unknown" as const;
@@ -304,7 +318,9 @@ export function resolveModelStatuses(
           ? null
           : !provider.configured
             ? "Provider authentication is not configured."
-            : discovery?.status === "unavailable"
+            : discovery?.status === "available"
+              ? "The selected model is no longer returned by the provider catalogue."
+              : discovery?.status === "unavailable"
               ? `Last provider discovery failed${discovery.errorKind ? ` (${discovery.errorKind})` : ""}.`
               : "Account model availability has not been discovered yet.",
         authMode,

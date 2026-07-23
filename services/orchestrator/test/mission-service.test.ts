@@ -143,6 +143,68 @@ describe("MissionService — criteria", () => {
   });
 });
 
+describe("MissionService — user-requested plan revision", () => {
+  it("replaces the proposed criteria and stays awaiting approval", async () => {
+    const { service } = setup();
+    const ws = setupWs(service);
+    writeFileSync(join(ws, "package.json"), "{}");
+    mkdirSync(join(ws, "src"));
+    writeFileSync(join(ws, "src", "index.js"), "module.exports = {};\n");
+    const m = service.create("p1", { objective: "Fix bugs" });
+    const original = await service.generateCriteria(m.id, "package.json, src/index.js");
+    const originalIds = original.criteria.map((c) => c.id);
+
+    const revised = await service.requestPlanRevision(m.id, "Also add a criterion for the login page");
+    expect(revised.status).toBe("awaiting_criteria_approval");
+    expect(revised.criteria.length).toBeGreaterThan(0);
+    expect(revised.criteria.every((c) => c.state === "proposed")).toBe(true);
+    // The old criteria are gone, not merely appended to.
+    expect(revised.criteria.some((c) => originalIds.includes(c.id))).toBe(false);
+  });
+
+  it("records a durable mission.plan_revised event carrying the feedback", async () => {
+    const { service, repo } = setup();
+    const m = service.create("p1", { objective: "Fix bugs" });
+    await service.generateCriteria(m.id, "");
+    await service.requestPlanRevision(m.id, "Skip the login page for now");
+
+    const events = repo.listEvents(m.id);
+    const revisionEvent = events.find((e) => e.type === "mission.plan_revised");
+    expect(revisionEvent).toBeDefined();
+    expect(revisionEvent!.data["trigger"]).toBe("user_requested_change");
+    expect(revisionEvent!.data["feedback"]).toBe("Skip the login page for now");
+  });
+
+  it("folds the feedback into what the model is asked to plan against", async () => {
+    const seenPrompts: string[] = [];
+    const completion: MissionCompletionFn = async (messages) => {
+      seenPrompts.push(messages.map((message) => message.content).join("\n"));
+      return {
+        text: JSON.stringify([
+          { description: "node --check src/index.js exits 0", verification: { kind: "command", command: "node --check src/index.js" } },
+        ]),
+      };
+    };
+    const { service } = setup({ completion });
+    const m = service.create("p1", { objective: "Fix bugs" });
+    await service.generateCriteria(m.id, "");
+    await service.requestPlanRevision(m.id, "Also cover the login page");
+
+    expect(seenPrompts.length).toBe(2);
+    expect(seenPrompts[1]).toContain("Also cover the login page");
+  });
+
+  it("refuses to revise a plan that is not awaiting approval", async () => {
+    const { service } = setup();
+    const m = service.create("p1", { objective: "Fix bugs", autoApprove: true });
+    await service.generateCriteria(m.id, ""); // auto-approves and starts running
+
+    await expect(service.requestPlanRevision(m.id, "Change something")).rejects.toMatchObject({
+      code: "plan_not_awaiting_approval",
+    });
+  });
+});
+
 function setupWs(service: MissionService): string {
   // helper to grab the workspace via the private dep for writing fixtures
   return (service as any).deps.getWorkspacePath("p1");
