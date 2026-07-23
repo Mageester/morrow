@@ -307,6 +307,15 @@ describe("projectMissionSummaryForWeb", () => {
     expect(summary.projectId).toBe(PROJECT_ID);
     expect(summary.workspaceId).toBe(WORKSPACE_ID);
   });
+
+  it("carries the originating conversation id so chat can show the mission inline", () => {
+    expect(projectMissionSummaryForWeb(runningFixture).conversationId).toBeNull();
+    const linked = projectMissionSummaryForWeb({
+      ...runningFixture,
+      mission: mission({ conversationId: "conversation-42" }),
+    });
+    expect(linked.conversationId).toBe("conversation-42");
+  });
 });
 
 // ── Unified state derivation ────────────────────────────────────────────────

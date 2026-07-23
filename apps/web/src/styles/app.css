@@ -2443,3 +2443,223 @@ a {
   color: var(--morrow-text-muted);
   font-size: 0.8125rem;
 }
+
+/* ── Slice 8: mission inside chat ────────────────────────────────────────── */
+.morrow-conversation-mission {
+  display: grid;
+  gap: var(--morrow-space-2);
+  margin-bottom: var(--morrow-space-4);
+}
+.morrow-conversation-mission__start {
+  justify-self: start;
+  min-height: 40px;
+  padding: 0 var(--morrow-space-4);
+  color: var(--morrow-accent);
+  background: var(--morrow-surface);
+  border: 1px solid color-mix(in srgb, var(--morrow-accent) 40%, var(--morrow-border));
+  border-radius: var(--morrow-radius-md);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-conversation-mission__start:hover:not(:disabled) {
+  background: var(--morrow-accent-soft, color-mix(in srgb, var(--morrow-accent) 10%, transparent));
+}
+.morrow-conversation-mission__start:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.morrow-mission-card {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  box-shadow: var(--morrow-shadow-sm);
+}
+.morrow-mission-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-3);
+}
+.morrow-mission-card__icon {
+  display: grid;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: var(--morrow-accent);
+  background: color-mix(in srgb, var(--morrow-accent) 12%, transparent);
+  border-radius: var(--morrow-radius-sm);
+}
+.morrow-mission-card__title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.morrow-mission-card__title {
+  margin: 0;
+  overflow: hidden;
+  font-weight: 620;
+  font-size: 0.9375rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-mission-card__meta {
+  margin: 2px 0 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8rem;
+}
+.morrow-mission-tag {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.morrow-mission-tag--neutral {
+  color: var(--morrow-text-muted);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+}
+.morrow-mission-tag--accent {
+  color: var(--morrow-accent);
+  background: color-mix(in srgb, var(--morrow-accent) 12%, transparent);
+}
+.morrow-mission-tag--success {
+  color: var(--morrow-success);
+  background: color-mix(in srgb, var(--morrow-success) 14%, transparent);
+}
+.morrow-mission-tag--warning {
+  color: var(--morrow-warning);
+  background: color-mix(in srgb, var(--morrow-warning) 16%, transparent);
+}
+.morrow-mission-tag--danger {
+  color: var(--morrow-danger);
+  background: color-mix(in srgb, var(--morrow-danger) 14%, transparent);
+}
+.morrow-mission-card__bar {
+  height: 6px;
+  overflow: hidden;
+  background: var(--morrow-surface-subtle);
+  border-radius: 999px;
+}
+.morrow-mission-card__bar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--morrow-accent), color-mix(in srgb, var(--morrow-accent) 55%, #fff));
+  border-radius: 999px;
+}
+.morrow-mission-card__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-3);
+}
+.morrow-mission-card__toggle {
+  min-height: 32px;
+  padding: 0 var(--morrow-space-2);
+  color: var(--morrow-accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-mission-card__attention {
+  color: var(--morrow-warning);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.morrow-mission-panel {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-mission-panel__status {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-mission-panel__facts {
+  display: grid;
+  gap: 2px;
+}
+.morrow-mission-panel__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+  font-size: 0.8125rem;
+}
+.morrow-mission-panel__row span {
+  color: var(--morrow-text-muted);
+}
+.morrow-mission-panel__current {
+  margin: 0;
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  background: var(--morrow-surface);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.8125rem;
+}
+.morrow-mission-panel__block {
+  display: grid;
+  gap: var(--morrow-space-2);
+}
+.morrow-mission-panel__label {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.morrow-mission-plan {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-mission-plan__item {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  font-size: 0.8125rem;
+  color: var(--morrow-text-muted);
+}
+.morrow-mission-plan__item[data-state="running"],
+.morrow-mission-plan__item[data-state="completed"] {
+  color: var(--morrow-text);
+}
+.morrow-mission-plan__icon {
+  display: grid;
+  place-items: center;
+  color: var(--morrow-text-faint, var(--morrow-text-muted));
+}
+.morrow-mission-plan__icon[data-state="completed"] {
+  color: var(--morrow-success);
+}
+.morrow-mission-plan__icon[data-state="running"] {
+  color: var(--morrow-accent);
+}
+.morrow-mission-plan__icon[data-state="failed"] {
+  color: var(--morrow-danger);
+}
+.morrow-mission-panel__verification,
+.morrow-mission-panel__caveats,
+.morrow-mission-panel__activity {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-mission-panel__caveats,
+.morrow-mission-panel__activity {
+  display: grid;
+  gap: 2px;
+  padding-left: var(--morrow-space-4);
+}

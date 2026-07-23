@@ -111,6 +111,7 @@ function snapshot(): WebMissionSnapshot {
     summary: {
       attentionCount: 1,
       completedMilestones: 2,
+      conversationId: null,
       createdAt: "2026-07-21T13:00:00.000Z",
       currentPhase: "Reviewing evidence",
       id: "mission-42",

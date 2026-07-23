@@ -27,6 +27,9 @@ export const WebMissionSummarySchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
   workspaceId: z.string().min(1),
+  /** The conversation this mission was started from, when it has one. Lets the
+   * chat surface show a mission inline with the conversation that created it. */
+  conversationId: z.string().min(1).nullable().default(null),
   title: z.string().min(1).max(160),
   objective: z.string().min(1).max(8000),
   state: WebMissionUiStateSchema,
@@ -116,6 +119,8 @@ export const WebMissionSnapshotSchema = z.object({
 export const CreateWebMissionSchema = z.object({
   objective: z.string().trim().min(1).max(8000),
   projectId: z.string().min(1),
+  /** Link the new mission to the conversation it was started from. */
+  conversationId: z.string().min(1).optional(),
   autonomy: z.enum(["ask_at_risk", "recommended", "autonomous"]).default("recommended"),
   deadline: z.string().datetime().optional(),
   attachmentIds: z.array(z.string()).max(50).optional(),

@@ -234,6 +234,7 @@ function missionSnapshot(
     summary: {
       attentionCount: 0,
       completedMilestones: 0,
+      conversationId: null,
       createdAt: "2026-07-21T13:00:00.000Z",
       currentPhase: "Recorded state",
       id: "mission-42",

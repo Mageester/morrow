@@ -599,6 +599,7 @@ export function projectMissionSummaryForWeb(input: MissionWebProjectionInput): W
     id: mission.id,
     projectId: mission.projectId,
     workspaceId: input.workspaceId,
+    conversationId: mission.conversationId,
     title: clamp(input.title ?? deriveTitle(mission.objective, mission.id), 160),
     objective: mission.objective,
     state: presentation.state,

@@ -1,5 +1,6 @@
-import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage } from "@morrow/contracts";
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
+import { WebMissionSnapshotSchema } from "@morrow/contracts";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Archive, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
@@ -11,8 +12,11 @@ import {
   pendingWebMessage,
 } from "../../api/conversations.js";
 import { modelQueries } from "../../api/models.js";
-import { ApiClientError } from "../../api/client.js";
+import { missionKeys, missionQueries } from "../../api/query-keys.js";
+import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
+import { MissionCard } from "./mission-card.js";
+import { MissionPanel } from "./mission-panel.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -71,9 +75,20 @@ export interface ConversationPageContentProps {
   conversationId: string;
   onDeleted: () => void;
   modelCatalogue?: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } | undefined;
+  /** The durable mission started from this conversation, when one exists. */
+  linkedMission?: WebMissionSummary | undefined;
+  /** Enables the "Start a mission from this chat" action (real usage only). */
+  missionsEnabled?: boolean | undefined;
 }
 
-export function ConversationPageContent({ projectId, conversationId, onDeleted, modelCatalogue }: ConversationPageContentProps) {
+export function ConversationPageContent({
+  projectId,
+  conversationId,
+  onDeleted,
+  modelCatalogue,
+  linkedMission,
+  missionsEnabled = false,
+}: ConversationPageContentProps) {
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
@@ -89,6 +104,18 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted, 
   const restoreRenameFocus = useRef(false);
   const restoreDeleteFocus = useRef(false);
   const cancellationRequests = useRef(new Set<string>());
+  const [missionPanelOpen, setMissionPanelOpen] = useState(false);
+  const startMission = useMutation({
+    mutationFn: (objective: string) =>
+      api.post(
+        "/api/web/missions",
+        { projectId, conversationId, objective, autonomy: "recommended" },
+        WebMissionSnapshotSchema,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: missionKeys.list(projectId) });
+    },
+  });
 
   const history = messages.data ?? [];
   const activeMessages = useMemo(
@@ -290,6 +317,15 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted, 
   }
 
   const value = conversation.data as Conversation;
+
+  function startMissionFromChat() {
+    if (startMission.isPending) return;
+    const lastUser = [...history].reverse().find((message) => message.role === "user");
+    const objective = (lastUser?.content?.trim() || value.title).slice(0, 8000);
+    if (!objective) return;
+    startMission.mutate(objective);
+  }
+
   return (
     <section aria-labelledby="conversation-heading" className="morrow-conversation-page">
       <header className="morrow-conversation-header">
@@ -305,6 +341,31 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted, 
         <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>
       ) : null}
       {actionMessage ? <p aria-live="polite" role={actionMessage.includes("could not") ? "alert" : "status"}>{actionMessage}</p> : null}
+
+      {linkedMission ? (
+        <div className="morrow-conversation-mission">
+          <MissionCard
+            expanded={missionPanelOpen}
+            onToggle={() => setMissionPanelOpen((open) => !open)}
+            summary={linkedMission}
+          />
+          {missionPanelOpen ? <ConversationMissionPanel missionId={linkedMission.id} /> : null}
+        </div>
+      ) : missionsEnabled ? (
+        <div className="morrow-conversation-mission">
+          <button
+            className="morrow-conversation-mission__start"
+            disabled={startMission.isPending}
+            onClick={startMissionFromChat}
+            type="button"
+          >
+            {startMission.isPending ? "Starting a mission…" : "Start a mission from this chat"}
+          </button>
+          {startMission.isError ? (
+            <p role="alert">Morrow could not start a mission. Check the connection and try again.</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div aria-live="polite" className="morrow-conversation-history">
         {history.length === 0 ? (
@@ -384,6 +445,25 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted, 
   );
 }
 
+function ConversationMissionPanel({ missionId }: { missionId: string }) {
+  const snapshot = useQuery(missionQueries.detail(missionId));
+  if (snapshot.isPending) {
+    return (
+      <p aria-live="polite" className="morrow-mission-panel__status" role="status">
+        Loading mission details…
+      </p>
+    );
+  }
+  if (snapshot.isError || !snapshot.data) {
+    return (
+      <p className="morrow-mission-panel__status" role="alert">
+        Mission details are unavailable right now.
+      </p>
+    );
+  }
+  return <MissionPanel snapshot={snapshot.data} />;
+}
+
 export function ConversationPage() {
   const { conversationId } = useParams({ strict: false }) as { conversationId?: string };
   const search = useSearch({ strict: false }) as { projectId?: string };
@@ -392,6 +472,10 @@ export function ConversationPage() {
   // recommended route until the catalogue resolves. Hooks run before the guard.
   const catalogue = useQuery(modelQueries.catalogue());
   const presets = useQuery(modelQueries.presets());
+  const missions = useQuery({
+    ...missionQueries.list(search.projectId ?? ""),
+    enabled: Boolean(search.projectId),
+  });
   if (!conversationId || !search.projectId) {
     return (
       <section className="morrow-conversation-page">
@@ -400,9 +484,14 @@ export function ConversationPage() {
       </section>
     );
   }
+  const linkedMission = (missions.data ?? [])
+    .filter((mission) => mission.conversationId === conversationId)
+    .at(-1);
   return (
     <ConversationPageContent
       conversationId={conversationId}
+      linkedMission={linkedMission}
+      missionsEnabled
       modelCatalogue={{ models: catalogue.data ?? [], presets: presets.data ?? [] }}
       onDeleted={() => { void navigate({ to: "/" }); }}
       projectId={search.projectId}

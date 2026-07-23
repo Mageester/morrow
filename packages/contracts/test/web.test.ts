@@ -26,6 +26,7 @@ describe("web mission contracts", () => {
         id: "mission-1",
         projectId: "project-1",
         workspaceId: "project-1",
+        conversationId: null,
         title: "Market analysis",
         objective: "Analyze the market",
         state: "working",

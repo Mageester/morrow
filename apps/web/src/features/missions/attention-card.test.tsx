@@ -60,6 +60,7 @@ function snapshot(
     summary: {
       attentionCount: request ? 1 : 0,
       completedMilestones: 0,
+      conversationId: null,
       createdAt: "2026-07-21T13:00:00.000Z",
       currentPhase: request ? "Waiting for approval" : "Continuing",
       id: "mission-42",

@@ -217,6 +217,9 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
         // "autonomous" pre-approves the plan; every other autonomy level keeps a
         // human in the loop. No second mission state machine is created.
         autoApprove: body.autonomy === "autonomous",
+        // Link the mission to the conversation it was started from, so the chat
+        // surface can show it inline.
+        ...(body.conversationId ? { conversationId: body.conversationId } : {}),
       });
       deps.missionRuntime.create({ missionId: mission.id, now: mission.createdAt });
       if (idempotencyKey) deps.missions.setIdempotencyKey(mission.id, idempotencyKey);
