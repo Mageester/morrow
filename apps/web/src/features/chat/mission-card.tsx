@@ -1,5 +1,12 @@
 import type { WebMissionSummary, WebMissionUiState } from "@morrow/contracts";
 import { Workflow } from "lucide-react";
+import type { MissionStreamStatus } from "../../api/mission-stream.js";
+
+const LIVE_PRESENTATION: Partial<Record<MissionStreamStatus, { label: string; tone: string }>> = {
+  synchronized: { label: "Live", tone: "success" },
+  reconnecting: { label: "Reconnecting…", tone: "warning" },
+  offline: { label: "Offline", tone: "neutral" },
+};
 
 interface StatePresentation {
   label: string;
@@ -24,10 +31,13 @@ export interface MissionCardProps {
   summary: WebMissionSummary;
   expanded: boolean;
   onToggle: () => void;
+  /** Live connection state of the mission event stream, when subscribed. */
+  liveStatus?: MissionStreamStatus | undefined;
 }
 
-export function MissionCard({ summary, expanded, onToggle }: MissionCardProps) {
+export function MissionCard({ summary, expanded, onToggle, liveStatus }: MissionCardProps) {
   const presentation = MISSION_STATE_PRESENTATION[summary.state];
+  const live = liveStatus ? LIVE_PRESENTATION[liveStatus] : undefined;
   const total = summary.totalMilestones;
   const pct = total > 0 ? Math.round((summary.completedMilestones / total) * 100) : 0;
   // The state tag already says "Needs you" for needs_input/blocked; only add the
@@ -50,6 +60,13 @@ export function MissionCard({ summary, expanded, onToggle }: MissionCardProps) {
         </div>
         <span className={`morrow-mission-tag morrow-mission-tag--${presentation.tone}`}>{presentation.label}</span>
       </div>
+
+      {live ? (
+        <p aria-live="polite" className={`morrow-mission-card__live morrow-mission-card__live--${live.tone}`}>
+          <span aria-hidden="true" className="morrow-mission-card__live-dot" />
+          {live.label}
+        </p>
+      ) : null}
 
       {total > 0 ? (
         <div aria-hidden="true" className="morrow-mission-card__bar">

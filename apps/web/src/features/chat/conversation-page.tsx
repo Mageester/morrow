@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Archive, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
+import { useMissionStream } from "../../api/mission-stream.js";
 import {
   conversationApi,
   conversationKeys,
@@ -104,7 +105,6 @@ export function ConversationPageContent({
   const restoreRenameFocus = useRef(false);
   const restoreDeleteFocus = useRef(false);
   const cancellationRequests = useRef(new Set<string>());
-  const [missionPanelOpen, setMissionPanelOpen] = useState(false);
   const startMission = useMutation({
     mutationFn: (objective: string) =>
       api.post(
@@ -343,14 +343,7 @@ export function ConversationPageContent({
       {actionMessage ? <p aria-live="polite" role={actionMessage.includes("could not") ? "alert" : "status"}>{actionMessage}</p> : null}
 
       {linkedMission ? (
-        <div className="morrow-conversation-mission">
-          <MissionCard
-            expanded={missionPanelOpen}
-            onToggle={() => setMissionPanelOpen((open) => !open)}
-            summary={linkedMission}
-          />
-          {missionPanelOpen ? <ConversationMissionPanel missionId={linkedMission.id} /> : null}
-        </div>
+        <ConversationMissionSurface fallbackSummary={linkedMission} missionId={linkedMission.id} />
       ) : missionsEnabled ? (
         <div className="morrow-conversation-mission">
           <button
@@ -445,23 +438,49 @@ export function ConversationPageContent({
   );
 }
 
-function ConversationMissionPanel({ missionId }: { missionId: string }) {
+/**
+ * The live mission surface inside a conversation. It subscribes to the mission
+ * event stream and reads the authoritative snapshot, so the card AND the detail
+ * panel both update in place as the mission progresses — no refresh, no second
+ * state machine. The card falls back to the list summary until the first
+ * snapshot resolves. This is a child (not inline) so the stream and snapshot
+ * hooks only mount when a conversation actually has a linked mission.
+ */
+function ConversationMissionSurface({
+  missionId,
+  fallbackSummary,
+}: {
+  missionId: string;
+  fallbackSummary: WebMissionSummary;
+}) {
+  const [open, setOpen] = useState(false);
+  const { status } = useMissionStream(missionId);
   const snapshot = useQuery(missionQueries.detail(missionId));
-  if (snapshot.isPending) {
-    return (
-      <p aria-live="polite" className="morrow-mission-panel__status" role="status">
-        Loading mission details…
-      </p>
-    );
-  }
-  if (snapshot.isError || !snapshot.data) {
-    return (
-      <p className="morrow-mission-panel__status" role="alert">
-        Mission details are unavailable right now.
-      </p>
-    );
-  }
-  return <MissionPanel snapshot={snapshot.data} />;
+  const summary = snapshot.data?.summary ?? fallbackSummary;
+
+  return (
+    <div className="morrow-conversation-mission">
+      <MissionCard
+        expanded={open}
+        liveStatus={status}
+        onToggle={() => setOpen((value) => !value)}
+        summary={summary}
+      />
+      {open ? (
+        snapshot.isPending ? (
+          <p aria-live="polite" className="morrow-mission-panel__status" role="status">
+            Loading mission details…
+          </p>
+        ) : snapshot.isError || !snapshot.data ? (
+          <p className="morrow-mission-panel__status" role="alert">
+            Mission details are unavailable right now.
+          </p>
+        ) : (
+          <MissionPanel snapshot={snapshot.data} />
+        )
+      ) : null}
+    </div>
+  );
 }
 
 export function ConversationPage() {
