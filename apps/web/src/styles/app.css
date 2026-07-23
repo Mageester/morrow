@@ -36,9 +36,14 @@ a {
   top: 0;
   display: flex;
   height: 100vh;
+  min-width: 0;
   flex-direction: column;
   gap: var(--morrow-space-4);
   padding: var(--morrow-space-4) var(--morrow-space-3);
+  /* Nothing inside the sidebar may render outside its column. Combined with the
+     constrained nav grid, this guarantees badges/labels never float into the
+     main content region. */
+  overflow: hidden;
   background: var(--morrow-surface-subtle);
   border-inline-end: 1px solid var(--morrow-border);
 }
@@ -83,7 +88,21 @@ a {
 .morrow-nav,
 .morrow-nav__group {
   display: grid;
+  /* Single column pinned to the sidebar width. Without minmax(0, 1fr) the
+     implicit grid column sizes to max-content, so a long recent-conversation
+     title (nowrap) blows the column — and every nav row with it — far past the
+     208px sidebar, spilling the "Soon" badges and labels across the chat. This
+     is the shared containment primitive the whole sidebar depends on. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
+}
+
+/* The nav scrolls within the sidebar when recents overflow, instead of pushing
+   the footer off-screen or growing the sticky column. */
+.morrow-nav {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .morrow-nav__group--secondary {
@@ -95,6 +114,7 @@ a {
 .morrow-nav__link {
   display: flex;
   min-height: 38px;
+  min-width: 0;
   align-items: center;
   gap: var(--morrow-space-2);
   padding: 0 var(--morrow-space-2);
@@ -105,6 +125,10 @@ a {
   text-decoration: none;
 }
 
+.morrow-nav__link svg {
+  flex: none;
+}
+
 /* Preview areas are set apart by the "Soon" badge and a dimmed icon — not by
    fading the label into a low-contrast tint (that failed WCAG AA). The label
    stays at the same accessible muted colour as every other nav item. */
@@ -113,6 +137,7 @@ a {
 }
 
 .morrow-nav__soon {
+  flex: none;
   padding: 1px var(--morrow-space-2);
   margin-left: auto;
   color: var(--morrow-text);
@@ -600,8 +625,11 @@ a {
   position: sticky;
   bottom: 0;
   display: grid;
-  padding: var(--morrow-space-4) 0 max(var(--morrow-space-3), env(safe-area-inset-bottom));
-  background: linear-gradient(to bottom, transparent, var(--morrow-bg) 18%);
+  padding: var(--morrow-space-5) 0 max(var(--morrow-space-3), env(safe-area-inset-bottom));
+  /* Opaque enough to fully mask conversation text scrolling behind the pinned
+     composer — the earlier near-transparent fade let the last message bleed
+     through the top edge. */
+  background: linear-gradient(to bottom, transparent, var(--morrow-bg) 45%);
   place-items: center;
 }
 
@@ -1699,71 +1727,13 @@ a {
 }
 
 @media (max-width: 760px) {
+  /* The mobile sidebar is a slide-in left drawer (see the consolidated block
+     below with the topbar + scrim). This block only collapses the content grid
+     and stacks the in-page mission/connection layouts. The previous bottom-bar
+     sidebar rules were removed — they contradicted the drawer and left a
+     horizontal-scroll nav and dead body padding behind. */
   .morrow-app-shell {
     grid-template-columns: 1fr;
-    padding-bottom: 76px;
-  }
-
-  .morrow-sidebar {
-    position: fixed;
-    z-index: 5;
-    top: auto;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    display: block;
-    width: 100%;
-    height: auto;
-    padding: var(--morrow-space-2);
-    border-block-start: 1px solid var(--morrow-border);
-    border-inline-end: 0;
-  }
-
-  .morrow-brand,
-  .morrow-workspace-switcher,
-  .morrow-sidebar__footer {
-    display: none;
-  }
-
-  .morrow-nav {
-    display: flex;
-    overflow-x: auto;
-    scrollbar-width: thin;
-  }
-
-  .morrow-nav__group {
-    display: flex;
-  }
-
-  .morrow-nav__group--secondary {
-    padding-top: 0;
-    padding-left: var(--morrow-space-1);
-    margin-top: 0;
-    margin-left: var(--morrow-space-1);
-    border-top: 0;
-    border-left: 1px solid var(--morrow-border);
-  }
-
-  .morrow-nav__link {
-    min-width: 62px;
-    min-height: 56px;
-    flex: 1 1 0;
-    flex-direction: column;
-    justify-content: center;
-    gap: 2px;
-    padding: var(--morrow-space-1);
-    font-size: 0.7rem;
-  }
-
-  .morrow-nav__link span {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .morrow-main {
-    padding: var(--morrow-space-5) var(--morrow-space-4);
   }
 
   /* Collapse the two-column workspace: the main column (recovery, decisions,
@@ -1893,6 +1863,7 @@ a {
 }
 .morrow-nav__recent {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   margin-top: var(--morrow-space-3);
   padding-top: var(--morrow-space-3);
@@ -1909,6 +1880,7 @@ a {
 }
 .morrow-nav__recent-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
   margin: 0;
   padding: 0;

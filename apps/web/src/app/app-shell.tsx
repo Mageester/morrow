@@ -139,6 +139,7 @@ function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
               onClick={onNavigate}
               params={{ conversationId: conversation.id }}
               search={{ projectId: activeProject.id }}
+              title={conversation.title}
               to="/chats/$conversationId"
             >
               {conversation.title}

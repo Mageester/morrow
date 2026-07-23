@@ -162,6 +162,18 @@ export function ChatComposer({
     if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus();
   }, [activeTaskId, autoFocus, disabled, sending]);
 
+  // Transient confirmations announce to assistive tech through the polite live
+  // region, then clear themselves — "Message accepted." must never linger in the
+  // UI as if it were a standing status. Errors are left in place (they need the
+  // user to act), so only the known success notices auto-dismiss.
+  useEffect(() => {
+    if (message !== "Message accepted." && message !== "Stop requested.") return;
+    const timer = setTimeout(() => {
+      setMessage((current) => (current === message ? null : current));
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [message]);
+
   useLayoutEffect(() => {
     const request = pendingFocus.current;
     const textarea = textareaRef.current;
