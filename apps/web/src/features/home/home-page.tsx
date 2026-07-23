@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { MessageSquare, Workflow } from "lucide-react";
 import { conversationQueries } from "../../api/conversations.js";
 import { missionQueries } from "../../api/query-keys.js";
-import { projectQueries } from "../../api/projects.js";
+import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "../chat/new-chat-button.js";
 
 const ACTIVE_MISSION_STATES = new Set([
@@ -31,8 +31,8 @@ function formatWhen(iso: string): string {
 }
 
 export function HomePage() {
-  const projects = useQuery(projectQueries.list());
-  const activeProject = projects.data?.[0];
+  const projects = useActiveProject();
+  const activeProject = projects.activeProject;
   const conversations = useQuery({
     ...conversationQueries.list(activeProject?.id ?? "", false),
     enabled: Boolean(activeProject),

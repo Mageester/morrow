@@ -47,6 +47,7 @@ import { schedulesRepository } from "./repositories/schedules.js";
 import { assertValidCron, nextRun } from "./schedule/cron.js";
 import { parseTscDiagnostics, parseEslintDiagnostics, summarizeDiagnostics } from "./workspace/diagnostics.js";
 import { runProcessSafe } from "./tools/command-executor.js";
+import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
 import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
 
@@ -525,6 +526,50 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const project = projects.getProjectById(projectId);
     if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
     return project;
+  });
+
+  // Dedicated status endpoint (rather than adding these fields to the project
+  // list/get responses) so the browser only pays for a git spawn + realpath
+  // check when a surface actually needs to show workspace health, not on every
+  // project list fetch.
+  app.get("/api/projects/:projectId/status", async (request, reply) => {
+    const { projectId } = request.params as { projectId: string };
+    const project = projects.getProjectById(projectId);
+    if (!project) throw new ApiError(404, "Project not found", "NOT_FOUND");
+
+    let canonicalPath = project.workspacePath;
+    let accessible = false;
+    try {
+      canonicalPath = realpathSync(project.workspacePath);
+      accessible = lstatSync(canonicalPath).isDirectory();
+    } catch {
+      accessible = false;
+    }
+
+    let gitDetected = false;
+    let branch: string | null = null;
+    if (accessible) {
+      try {
+        const status = await gitStatus(canonicalPath, { timeoutMs: 2000 });
+        const branchLine = status.lines.find((line) => line.startsWith("## "));
+        if (branchLine) {
+          gitDetected = true;
+          const match = /^## (?:No commits yet on )?([^.\s]+)/.exec(branchLine);
+          branch = match?.[1] && match[1] !== "HEAD" ? match[1] : null;
+        }
+      } catch {
+        gitDetected = false;
+      }
+    }
+
+    return {
+      id: project.id,
+      name: project.name,
+      workspacePath: canonicalPath,
+      accessible,
+      gitDetected,
+      branch,
+    };
   });
 
   // ── Agents ─────────────────────────────────────────────────────────────────

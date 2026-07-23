@@ -16,11 +16,18 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { conversationQueries } from "../api/conversations.js";
-import { projectQueries } from "../api/projects.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
+import { useActiveProject } from "../features/projects/use-active-project.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 
-type ImplementedRoute = "/" | "/chats" | "/missions" | "/library" | "/connections" | "/settings";
+type ImplementedRoute =
+  | "/"
+  | "/chats"
+  | "/missions"
+  | "/library"
+  | "/connections"
+  | "/settings"
+  | "/projects";
 
 interface NavItem {
   icon: LucideIcon;
@@ -34,7 +41,7 @@ interface NavItem {
 const NAVIGATION: NavItem[] = [
   { icon: Home, label: "Home", to: "/" },
   { icon: MessageSquare, label: "Chats", to: "/chats" },
-  { icon: Folder, label: "Projects", upcoming: true },
+  { icon: Folder, label: "Projects", to: "/projects" },
   { icon: Workflow, label: "Missions", to: "/missions" },
   { icon: Library, label: "Library", to: "/library" },
   { icon: Sparkles, label: "Memory", upcoming: true },
@@ -71,6 +78,7 @@ function getRouteTitle(pathname: string): string {
     "/connections": "Connections",
     "/library": "Library",
     "/missions": "Missions",
+    "/projects": "Projects",
     "/settings": "Settings",
   };
   return routeTitles[routePath] ?? "Morrow";
@@ -109,13 +117,12 @@ function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate: () => vo
 }
 
 function SidebarNewChat() {
-  const projects = useQuery(projectQueries.list());
-  return <NewChatButton projectId={projects.data?.[0]?.id} />;
+  const { activeProject } = useActiveProject();
+  return <NewChatButton projectId={activeProject?.id} />;
 }
 
 function SidebarRecent({ onNavigate }: { onNavigate: () => void }) {
-  const projects = useQuery(projectQueries.list());
-  const activeProject = projects.data?.[0];
+  const { activeProject } = useActiveProject();
   const conversations = useQuery({
     ...conversationQueries.list(activeProject?.id ?? "", false),
     enabled: Boolean(activeProject),

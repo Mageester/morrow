@@ -3,7 +3,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { conversationQueries } from "../../api/conversations.js";
-import { projectQueries } from "../../api/projects.js";
+import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "./new-chat-button.js";
 
 type ChatsTab = "active" | "archived";
@@ -17,8 +17,8 @@ function formatUpdated(iso: string): string {
 }
 
 export function ChatsPage() {
-  const projects = useQuery(projectQueries.list());
-  const activeProject = projects.data?.[0];
+  const projects = useActiveProject();
+  const activeProject = projects.activeProject;
   const [tab, setTab] = useState<ChatsTab>("active");
   const includeArchived = tab === "archived";
   const conversations = useQuery({

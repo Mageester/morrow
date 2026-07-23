@@ -541,6 +541,38 @@ a {
   place-items: center;
 }
 
+.morrow-conversation-workspace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: var(--morrow-space-2);
+  margin: 0;
+  padding-top: var(--morrow-space-3);
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-conversation-workspace--blocked {
+  color: var(--morrow-danger);
+}
+.morrow-conversation-workspace__project {
+  flex: none;
+  font-weight: 650;
+}
+.morrow-conversation-workspace__path {
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--morrow-font-mono, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-conversation-workspace__branch {
+  flex: none;
+  padding: 1px var(--morrow-space-2);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+}
+
 .morrow-conversation-history {
   display: grid;
   flex: 1;
@@ -2112,6 +2144,117 @@ a {
   font-size: 0.78rem;
 }
 
+/* ── Projects ────────────────────────────────────────────────────────────── */
+.morrow-projects__create {
+  display: grid;
+  gap: var(--morrow-space-3);
+}
+.morrow-projects__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--morrow-space-3);
+}
+.morrow-projects__field {
+  display: grid;
+  flex: 1 1 220px;
+  min-width: 200px;
+  gap: var(--morrow-space-1);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.morrow-projects__field input {
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-weight: 400;
+}
+.morrow-projects__field input:focus-visible {
+  border-color: var(--morrow-focus);
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 0;
+}
+.morrow-projects__list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+}
+.morrow-projects__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-3) var(--morrow-space-4);
+  border-bottom: 1px solid var(--morrow-border);
+}
+.morrow-projects__row:last-child {
+  border-bottom: 0;
+}
+.morrow-projects__row-main {
+  display: flex;
+  flex: 1 1 160px;
+  min-width: 0;
+  align-items: center;
+  gap: var(--morrow-space-2);
+}
+.morrow-projects__row-name {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-projects__row-badge {
+  flex: none;
+  padding: 2px var(--morrow-space-2);
+  color: var(--morrow-accent);
+  background: color-mix(in srgb, var(--morrow-accent) 12%, transparent);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.morrow-projects__row-detail {
+  display: flex;
+  flex: 2 1 260px;
+  min-width: 0;
+  align-items: center;
+  gap: var(--morrow-space-3);
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-projects__row-path {
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--morrow-font-mono, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-projects__row-branch {
+  flex: none;
+  padding: 2px var(--morrow-space-2);
+  background: var(--morrow-surface-subtle);
+  border-radius: var(--morrow-radius-sm);
+}
+.morrow-projects__row-branch--none {
+  color: var(--morrow-text-muted);
+}
+.morrow-projects__row-blocker {
+  flex: none;
+  color: var(--morrow-danger);
+}
+
 /* Shared: empty, inline error, theme choice */
 .morrow-empty {
   display: grid;
@@ -2258,6 +2401,14 @@ a {
   }
   .morrow-chats__head {
     flex-direction: column;
+  }
+  .morrow-projects__row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .morrow-projects__row-path {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

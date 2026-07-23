@@ -13,6 +13,7 @@ import {
   pendingWebMessage,
 } from "../../api/conversations.js";
 import { modelQueries } from "../../api/models.js";
+import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
@@ -69,6 +70,42 @@ function TaskStream({ projectId, conversationId, taskId }: { projectId: string; 
     return <p className="morrow-chat-sync" role="status">Reconnecting to this response…</p>;
   }
   return null;
+}
+
+/**
+ * Makes the active workspace visible and trustworthy in the surface where work
+ * actually happens, instead of only in the Projects switcher. Fetched lazily
+ * (dedicated status endpoint) so opening a conversation doesn't pay for a git
+ * spawn until this line actually renders.
+ */
+function WorkspaceStatusLine({ projectId }: { projectId: string }) {
+  const status = useQuery(projectQueries.status(projectId));
+
+  if (status.isPending) {
+    return <p className="morrow-conversation-workspace">Checking workspace…</p>;
+  }
+  if (status.isError || !status.data) {
+    // Not surfaced as role="alert": the status ping failing is a cosmetic
+    // degradation (the conversation still works), unlike the workspace itself
+    // being inaccessible below, which is a real blocker worth an interruption.
+    return <p className="morrow-conversation-workspace">Workspace status unavailable.</p>;
+  }
+  if (!status.data.accessible) {
+    return (
+      <p className="morrow-conversation-workspace morrow-conversation-workspace--blocked" role="alert">
+        Workspace &quot;{status.data.name}&quot; is not accessible: {status.data.workspacePath}
+      </p>
+    );
+  }
+  return (
+    <p className="morrow-conversation-workspace" title={status.data.workspacePath}>
+      <span className="morrow-conversation-workspace__project">{status.data.name}</span>
+      <span className="morrow-conversation-workspace__path">{status.data.workspacePath}</span>
+      {status.data.gitDetected ? (
+        <span className="morrow-conversation-workspace__branch">{status.data.branch ?? "detached HEAD"}</span>
+      ) : null}
+    </p>
+  );
 }
 
 export interface ConversationPageContentProps {
@@ -336,6 +373,8 @@ export function ConversationPageContent({
           <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={16} /></button>
         </div>
       </header>
+
+      <WorkspaceStatusLine projectId={projectId} />
 
       {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
         <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>

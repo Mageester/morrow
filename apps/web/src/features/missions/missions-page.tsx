@@ -2,7 +2,7 @@ import type { WebMissionSummary } from "@morrow/contracts";
 import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
 import { missionQueries } from "../../api/query-keys.js";
-import { projectQueries } from "../../api/projects.js";
+import { useActiveProject } from "../projects/use-active-project.js";
 import { MissionCardList } from "./mission-card.js";
 
 const activeStates = new Set(["draft", "working", "reviewing"]);
@@ -39,8 +39,8 @@ function MissionGroup({
 }
 
 export function MissionsPage() {
-  const projects = useQuery(projectQueries.list());
-  const activeProject = projects.data?.[0];
+  const projects = useActiveProject();
+  const activeProject = projects.activeProject;
   const missions = useQuery({
     ...missionQueries.list(activeProject?.id ?? ""),
     enabled: Boolean(activeProject),

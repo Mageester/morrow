@@ -15,6 +15,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAppRouter } from "../../app/router.js";
+import { ActiveProjectProvider } from "../../state/active-project.js";
 import { RuntimeStatusProvider } from "../../state/runtime-status.js";
 import { ThemeProvider } from "../../state/theme.js";
 
@@ -234,7 +235,9 @@ function renderMission() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <RuntimeStatusProvider>
-          <RouterProvider router={router as AnyRouter} />
+          <ActiveProjectProvider>
+            <RouterProvider router={router as AnyRouter} />
+          </ActiveProjectProvider>
         </RuntimeStatusProvider>
       </ThemeProvider>
     </QueryClientProvider>,

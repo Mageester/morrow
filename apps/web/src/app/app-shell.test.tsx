@@ -19,8 +19,8 @@ const NAV_ORDER = [
   "Connections",
   "Settings",
 ];
-const IMPLEMENTED = ["Home", "Chats", "Missions", "Library", "Connections", "Settings"];
-const UPCOMING = ["Projects", "Memory"];
+const IMPLEMENTED = ["Home", "Chats", "Projects", "Missions", "Library", "Connections", "Settings"];
+const UPCOMING = ["Memory"];
 
 function stubFetch() {
   vi.stubGlobal(
@@ -114,6 +114,7 @@ describe("Morrow application shell", () => {
 
   it.each([
     ["/app/chats", "Chats"],
+    ["/app/projects", "Projects"],
     ["/app/missions", "Missions"],
     ["/app/library", "Library"],
     ["/app/connections", "Connect a model"],

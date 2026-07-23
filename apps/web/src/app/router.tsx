@@ -10,6 +10,7 @@ import { HomePage } from "../features/home/home-page.js";
 import { MissionPage } from "../features/missions/mission-page.js";
 import { MissionsPage } from "../features/missions/missions-page.js";
 import { ConnectionsPage } from "../features/connections/connections-page.js";
+import { ProjectsPage } from "../features/projects/projects-page.js";
 import { ChatsPage } from "../features/chat/chats-page.js";
 import { ConversationPage } from "../features/chat/conversation-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
@@ -39,6 +40,12 @@ const chatsRoute = createRoute({
   component: ChatsPage,
   getParentRoute: () => rootRoute,
   path: "/chats",
+});
+
+const projectsRoute = createRoute({
+  component: ProjectsPage,
+  getParentRoute: () => rootRoute,
+  path: "/projects",
 });
 
 const conversationRoute = createRoute({
@@ -71,6 +78,7 @@ const settingsRoute = createRoute({
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   chatsRoute,
+  projectsRoute,
   missionsRoute,
   missionRoute,
   conversationRoute,

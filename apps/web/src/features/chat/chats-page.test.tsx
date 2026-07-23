@@ -3,6 +3,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Router
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActiveProjectProvider } from "../../state/active-project.js";
 import { ChatsPage } from "./chats-page.js";
 
 const now = "2026-07-22T12:00:00.000Z";
@@ -14,7 +15,13 @@ function renderPage() {
   const root = createRootRoute();
   const route = createRoute({ getParentRoute: () => root, path: "/", component: ChatsPage });
   const router = createRouter({ history: createMemoryHistory({ initialEntries: ["/"] }), routeTree: root.addChildren([route]) });
-  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><RouterProvider router={router as AnyRouter} /></QueryClientProvider>);
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <ActiveProjectProvider>
+        <RouterProvider router={router as AnyRouter} />
+      </ActiveProjectProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("Chats page", () => {
