@@ -28,6 +28,7 @@ function attention(
         id: "approve",
         label: "Approve",
         recommended: true,
+        requiresNote: false,
       },
       {
         description: "The command will not run and this mission may remain blocked.",
@@ -35,6 +36,7 @@ function attention(
         id: "deny",
         label: "Deny",
         recommended: false,
+        requiresNote: false,
       },
     ],
     createdAt: "2026-07-21T13:30:00.000Z",

@@ -72,6 +72,8 @@ export const WebAttentionChoiceSchema = z.object({
   description: z.string().max(500).nullable(),
   recommended: z.boolean(),
   destructive: z.boolean(),
+  /** This choice needs the decision note filled in first (e.g. "what should change?"). */
+  requiresNote: z.boolean().default(false),
 }).strict();
 
 export const WebAttentionRequestSchema = z.object({

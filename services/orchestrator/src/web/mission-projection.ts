@@ -409,7 +409,7 @@ function buildAttention(input: MissionWebProjectionInput): WebAttentionRequest[]
         ? "Retry the mission. If it fails again, check the provider's status on the Connections page."
         : "Add a provider on the Connections page (an API key or a local Ollama server), then retry the mission.",
       choices: [
-        { id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false },
+        { id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false, requiresNote: false },
       ],
       canContinueElsewhere: false,
       createdAt: input.dispatchFailure.at,
@@ -429,7 +429,7 @@ function buildAttention(input: MissionWebProjectionInput): WebAttentionRequest[]
       explanation: clamp(explanation, 2000),
       recommendation: null,
       choices: runtime?.state === "blocked"
-        ? [{ id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false }]
+        ? [{ id: "retry", label: "Try again", description: "Restart the mission from its saved state.", recommended: true, destructive: false, requiresNote: false }]
         : [],
       canContinueElsewhere: false,
       createdAt: mission.updatedAt,
@@ -451,10 +451,11 @@ function buildAttention(input: MissionWebProjectionInput): WebAttentionRequest[]
           : "Morrow prepared a plan for this mission and is waiting for your approval before starting.",
         2000,
       ),
-      recommendation: "Approve to start the work, or decline to cancel the mission.",
+      recommendation: "Approve to start the work, request changes, or decline to cancel the mission.",
       choices: [
-        { id: "approve", label: "Approve and start", description: "Morrow begins working immediately.", recommended: true, destructive: false },
-        { id: "deny", label: "Cancel mission", description: "Stops this mission. Your objective stays saved in the timeline.", recommended: false, destructive: true },
+        { id: "approve", label: "Approve and start", description: "Morrow begins working immediately.", recommended: true, destructive: false, requiresNote: false },
+        { id: "adjust", label: "Request changes", description: "Add what should change in the note above, then choose this. Morrow proposes a revised plan; nothing starts yet.", recommended: false, destructive: false, requiresNote: true },
+        { id: "deny", label: "Cancel mission", description: "Stops this mission. Your objective stays saved in the timeline.", recommended: false, destructive: true, requiresNote: false },
       ],
       canContinueElsewhere: false,
       createdAt: mission.updatedAt,
@@ -471,8 +472,8 @@ function buildAttention(input: MissionWebProjectionInput): WebAttentionRequest[]
       explanation: clamp(approval.summary, 2000),
       recommendation: null,
       choices: [
-        { id: "approve", label: "Approve", description: null, recommended: false, destructive: false },
-        { id: "deny", label: "Deny", description: null, recommended: false, destructive: true },
+        { id: "approve", label: "Approve", description: null, recommended: false, destructive: false, requiresNote: false },
+        { id: "deny", label: "Deny", description: null, recommended: false, destructive: true, requiresNote: false },
       ],
       canContinueElsewhere: false,
       createdAt: approval.createdAt,

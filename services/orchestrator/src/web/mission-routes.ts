@@ -316,6 +316,14 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
         deps.missionControllerRunner?.wake(missionId);
         return projectMissionForWeb(projectionInput(missionId));
       }
+      if (body.choiceId === "adjust") {
+        const feedback = body.note?.trim();
+        if (!feedback) {
+          throw new ApiError(400, "Describe what should change in the decision note before requesting changes.", "VALIDATION_ERROR");
+        }
+        await deps.missionService.requestPlanRevision(missionId, feedback);
+        return projectMissionForWeb(projectionInput(missionId));
+      }
       throw new ApiError(400, `Unknown choice "${body.choiceId}"`, "INVALID_CHOICE");
     }
 

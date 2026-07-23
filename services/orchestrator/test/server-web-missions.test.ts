@@ -23,12 +23,30 @@ describe("Web mission REST API", () => {
 
   const PROJECT_ID = "p1";
   const OTHER_PROJECT_ID = "p2";
+  let morrowHome: string;
+
+  // Every env var any registered provider treats as "configured" (see
+  // provider/registry.ts). Cleared for the duration of these tests so mission
+  // criteria generation can never discover a real credential from the
+  // developer's actual shell/`~/.morrow` and attempt a live network completion
+  // call — these tests must exercise the deterministic heuristic fallback.
+  const PROVIDER_ENV_KEYS = [
+    "OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+    "GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_BASE_URL",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL",
+    "OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_MODEL",
+  ];
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "morrow-web-"));
     workspace = mkdtempSync(join(tmpdir(), "morrow-web-ws-"));
     spawnSync("git", ["init", "-b", "main"], { cwd: workspace });
     db = openDatabase(join(tempDir, "morrow.db"));
+    morrowHome = mkdtempSync(join(tmpdir(), "morrow-web-home-"));
+    vi.stubEnv("MORROW_HOME", morrowHome);
+    for (const key of PROVIDER_ENV_KEYS) vi.stubEnv(key, "");
     missionControllerRunner = {
       run: vi.fn(),
       wake: vi.fn(),
@@ -46,6 +64,8 @@ describe("Web mission REST API", () => {
     db.close();
     rmSync(tempDir, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
+    rmSync(morrowHome, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   async function createMission(projectId = PROJECT_ID, objective = "Research three competitors and create a report.", headers: Record<string, string> = {}) {
@@ -175,6 +195,89 @@ describe("Web mission REST API", () => {
     expect(res.statusCode).toBe(404);
     const row = db.prepare("SELECT status FROM approvals WHERE id=?").get("approval-x") as { status: string };
     expect(row.status).toBe("pending");
+  });
+
+  async function createMissionWithProposedPlan() {
+    const missionId = (await createMission()).json().summary.id;
+    const generated = await app.inject({ method: "POST", url: `/api/missions/${missionId}/criteria/generate`, payload: {} });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().status).toBe("awaiting_criteria_approval");
+    return missionId as string;
+  }
+
+  function planApprovalId(missionId: string): string {
+    return `${missionId}:plan-approval`;
+  }
+
+  describe("plan-approval attention (Task 8-C/8-D)", () => {
+    it("surfaces the plan as an approve/request-changes/cancel attention once proposed", async () => {
+      const missionId = await createMissionWithProposedPlan();
+
+      const res = await app.inject({ method: "GET", url: `/api/web/missions/${missionId}` });
+      expect(res.statusCode).toBe(200);
+      const snapshot = WebMissionSnapshotSchema.parse(res.json());
+      const attention = snapshot.attention.find((a) => a.id === planApprovalId(missionId));
+      expect(attention).toBeDefined();
+      expect(attention!.choices.map((c) => c.id)).toEqual(["approve", "adjust", "deny"]);
+      const adjust = attention!.choices.find((c) => c.id === "adjust")!;
+      expect(adjust.requiresNote).toBe(true);
+      expect(attention!.choices.find((c) => c.id === "approve")!.requiresNote).toBe(false);
+    });
+
+    it("approves the plan and starts execution", async () => {
+      const missionId = await createMissionWithProposedPlan();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/web/missions/${missionId}/attention/${planApprovalId(missionId)}/resolve`,
+        payload: { choiceId: "approve" },
+      });
+      expect(res.statusCode).toBe(200);
+      const snapshot = WebMissionSnapshotSchema.parse(res.json());
+      expect(snapshot.attention.find((a) => a.id === planApprovalId(missionId))).toBeUndefined();
+      expect(missionControllerRunner.wake).toHaveBeenCalledWith(missionId);
+    });
+
+    it("revises the plan on request and keeps it awaiting approval", async () => {
+      const missionId = await createMissionWithProposedPlan();
+      const before = WebMissionSnapshotSchema.parse(
+        (await app.inject({ method: "GET", url: `/api/web/missions/${missionId}` })).json(),
+      );
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/web/missions/${missionId}/attention/${planApprovalId(missionId)}/resolve`,
+        payload: { choiceId: "adjust", note: "Also add a criterion for the login page" },
+      });
+      expect(res.statusCode).toBe(200);
+      const after = WebMissionSnapshotSchema.parse(res.json());
+      // Still waiting for approval — nothing started executing.
+      expect(after.attention.find((a) => a.id === planApprovalId(missionId))).toBeDefined();
+      expect(after.milestones.map((m) => m.id).sort()).not.toEqual(before.milestones.map((m) => m.id).sort());
+    });
+
+    it("rejects a request-changes choice with no note instead of silently ignoring the feedback", async () => {
+      const missionId = await createMissionWithProposedPlan();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/web/missions/${missionId}/attention/${planApprovalId(missionId)}/resolve`,
+        payload: { choiceId: "adjust" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("cancels the mission when the plan is denied", async () => {
+      const missionId = await createMissionWithProposedPlan();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/web/missions/${missionId}/attention/${planApprovalId(missionId)}/resolve`,
+        payload: { choiceId: "deny" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().summary.state).toBe("cancelled");
+    });
   });
 
   it("refuses to retry a mission that is not blocked", async () => {

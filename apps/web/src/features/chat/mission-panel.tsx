@@ -1,5 +1,6 @@
 import type { WebMissionMilestone, WebMissionSnapshot } from "@morrow/contracts";
 import { Check, Circle, Loader, X } from "lucide-react";
+import { AttentionCard, AttentionResolutionCoordinator } from "../missions/attention-card.js";
 import { MISSION_STATE_PRESENTATION } from "./mission-card.js";
 
 function milestoneIcon(state: WebMissionMilestone["state"]) {
@@ -14,7 +15,7 @@ export interface MissionPanelProps {
 }
 
 export function MissionPanel({ snapshot }: MissionPanelProps) {
-  const { summary, milestones, currentWork, verification, recentActivity } = snapshot;
+  const { summary, milestones, currentWork, verification, recentActivity, attention } = snapshot;
   const presentation = MISSION_STATE_PRESENTATION[summary.state];
 
   return (
@@ -33,6 +34,16 @@ export function MissionPanel({ snapshot }: MissionPanelProps) {
           <b>{summary.modelLabel}</b>
         </div>
       </div>
+
+      {attention.length > 0 ? (
+        <AttentionResolutionCoordinator missionId={summary.id}>
+          <div className="morrow-mission-panel__block morrow-mission-panel__attention">
+            {attention.map((request) => (
+              <AttentionCard key={request.id} missionId={summary.id} request={request} />
+            ))}
+          </div>
+        </AttentionResolutionCoordinator>
+      ) : null}
 
       {currentWork ? <p className="morrow-mission-panel__current">{currentWork}</p> : null}
 

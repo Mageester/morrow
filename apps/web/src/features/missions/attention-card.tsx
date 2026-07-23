@@ -350,6 +350,9 @@ export function AttentionCard({
     if (submissionPending.current || resolution.activeAttentionId !== null) {
       return;
     }
+    if (choice.requiresNote && !note.trim()) {
+      return;
+    }
     if (choice.destructive) {
       confirmationSubmitting.current = false;
       setConfirmation(choice);
@@ -496,7 +499,11 @@ export function AttentionCard({
       {request.choices.length > 0 ? (
         <>
           <div className="morrow-attention-card__note">
-            <label htmlFor={noteId}>Decision note (optional)</label>
+            <label htmlFor={noteId}>
+              {request.choices.some((choice) => choice.requiresNote)
+                ? "Decision note"
+                : "Decision note (optional)"}
+            </label>
             <textarea
               disabled={operationPending}
               id={noteId}
@@ -525,7 +532,7 @@ export function AttentionCard({
                       choice.description ? consequenceId : undefined
                     }
                     data-recommended={choice.recommended ? "true" : "false"}
-                    disabled={operationPending}
+                    disabled={operationPending || (choice.requiresNote && !note.trim())}
                     onClick={() => selectChoice(choice)}
                     ref={(node) => {
                       if (node) choiceRefs.current.set(choice.id, node);
@@ -548,6 +555,11 @@ export function AttentionCard({
                   </Button>
                   {choice.description ? (
                     <p id={consequenceId}>{choice.description}</p>
+                  ) : null}
+                  {choice.requiresNote && !note.trim() ? (
+                    <p className="morrow-attention-choice__hint">
+                      Add a note above first.
+                    </p>
                   ) : null}
                 </div>
               );
