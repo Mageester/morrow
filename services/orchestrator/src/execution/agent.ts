@@ -32,6 +32,8 @@ import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
 import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
+import { processesRepository } from "../repositories/processes.js";
+import { ProcessSupervisor } from "../processes/supervisor.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
@@ -366,6 +368,11 @@ type Dependencies = {
   /** Injectable for deterministic browser-policy tests. Production uses the
    * hardened Playwright controller. */
   browserFactory?: (options: PlaywrightControllerOptions) => BrowserController;
+  /** Shared background-process registry (dev servers, watchers) started via
+   * run_command background:true. Production shares one instance with the REST
+   * process routes so either side can observe/stop what the other started;
+   * tests may omit it to get an isolated instance. */
+  supervisor?: ProcessSupervisor;
 };
 
 class AgentToolFailure extends Error {
@@ -519,10 +526,13 @@ export async function executeAgentChatTask({
   recovery,
   onSegmentBoundary,
   browserFactory,
+  supervisor,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
   const records = taskRecordsRepository(db);
+  const processesRepo = processesRepository(db);
+  const procSupervisor = supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
   const convs = conversationsRepository(db);
   const routingRepo = taskRoutingRepository(db);
   const memoryRepo = memoryRepository(db);
@@ -1031,16 +1041,42 @@ export async function executeAgentChatTask({
     },
     {
       name: "run_command",
-      description: "Run a verification, build, test, or mutation command safely. Denies metacharacters and privilege escalation. Scoped to the project workspace.",
+      description: "Run a verification, build, test, or mutation command safely. Denies metacharacters and privilege escalation. Scoped to the project workspace. Set background:true for a command that does not exit on its own (a dev server, a watcher) â€” it returns a processId immediately instead of waiting for exit; check on it with read_process_output and end it with stop_process.",
       parameters: {
         type: "object",
         properties: {
           executable: { type: "string", description: "Executable name (e.g. 'pnpm' or 'git')" },
           args: { type: "array", items: { type: "string" }, description: "Command arguments" },
           cwd: { type: "string", description: "Optional working directory relative to project root" },
-          purpose: { type: "string", description: "Reason for running this command" }
+          purpose: { type: "string", description: "Reason for running this command" },
+          background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." }
         },
         required: ["executable", "args", "purpose"]
+      }
+    },
+    {
+      name: "read_process_output",
+      description: "Read captured stdout/stderr from a process started with run_command background:true. Poll this to see readiness output (e.g. 'Local: http://localhost:5173') without blocking.",
+      parameters: {
+        type: "object",
+        properties: {
+          processId: { type: "string", description: "The processId returned by the background run_command call" },
+          stream: { type: "string", description: "'stdout' (default) or 'stderr'" },
+          offset: { type: "number", description: "Byte offset to resume from â€” pass the previous call's nextOffset to read only what's new" },
+        },
+        required: ["processId"]
+      }
+    },
+    {
+      name: "stop_process",
+      description: "Terminate a background process started with run_command background:true. Call this once you've verified a dev server works, or before finishing if it should not keep running.",
+      parameters: {
+        type: "object",
+        properties: {
+          processId: { type: "string", description: "The processId to terminate" },
+          force: { type: "boolean", description: "Skip the graceful attempt and kill immediately" },
+        },
+        required: ["processId"]
       }
     },
     {
@@ -1507,6 +1543,45 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
 
       transitionAgentState("executing_tool", { tool: "run_command" });
+
+      // background:true is for a process that never exits on its own (a dev
+      // server, a watcher). Routing it through the same runProcessSafe path as
+      // a normal command would either block forever or, worse, get killed by
+      // the timeout ceiling and misreported as a failed/hung command â€” the
+      // process supervisor starts it, captures output to a log, and returns
+      // immediately so the agent can poll read_process_output and later
+      // stop_process instead of waiting for an exit that will never come.
+      if (args.background === true) {
+        let record;
+        try {
+          record = await procSupervisor.start({
+            projectId,
+            taskId,
+            agentId: (task as { agentId?: string | null }).agentId ?? null,
+            command: exec,
+            args: cmdArgs,
+            cwd: resolvedCwd,
+          });
+        } catch (e: any) {
+          throw new Error(`Failed to start background process: ${e?.message ?? e}`);
+        }
+        const backgroundResultStr = JSON.stringify({
+          processId: record.id,
+          pid: record.pid,
+          status: record.status,
+          note: "Started in the background. It keeps running after this tool call returns â€” use read_process_output to check its output and stop_process to end it.",
+        });
+        records.appendEvidence({
+          id: randomUUID(),
+          taskId,
+          type: "file",
+          path: `${exec} ${cmdArgs.join(" ")} (background)`,
+          metadata: { processId: record.id, pid: record.pid, status: record.status },
+          createdAt: now(),
+        });
+        return backgroundResultStr;
+      }
+
       // Dependency installs, builds, and test runs legitimately take minutes;
       // the default 30s ceiling was too tight for `npm install` / `npm run build`
       // and made ordinary project setup time out. Give those a generous ceiling
@@ -2026,7 +2101,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     for (const viewport of ["1440x900", "768x1024", "390x844"]) {
       if (!screenshotViewports.has(viewport)) gaps.push(`${viewport} screenshot`);
     }
-    if (!routeSupportsVision || !allScreenshotsVisionAttached || screenshotViewports.size === 0) gaps.push("verified vision analysis attachment");
+    // Only demand vision-attached screenshots when the routed model can
+    // actually do vision analysis. Requiring it unconditionally made this gate
+    // permanently unsatisfiable on a non-vision route (e.g. a free-tier
+    // model) â€” no amount of correct, complete work could ever pass it. The
+    // viewport-coverage checks above still require the screenshots themselves
+    // regardless of vision support.
+    if (routeSupportsVision && (!allScreenshotsVisionAttached || screenshotViewports.size === 0)) gaps.push("verified vision analysis attachment");
     return gaps;
   };
   const completionStateFromCalls = (calls: ToolCallRecord[]): {
@@ -3194,7 +3275,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // verification) â€” it must not block an otherwise-complete read-only
           // or plan-only task from reporting `completed` (see
           // `tool_not_permitted_in_mode` handling in the completion gate).
-          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "create_directory" || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
+          if ((tc.name === "run_command" || tc.name === "propose_patch" || tc.name === "create_file" || tc.name === "create_directory" || tc.name === "stop_process" || BROWSER_TOOL_NAMES.has(tc.name)) && activeToolProfile !== "agent") {
             throw new AgentToolFailure(
               `Tool "${tc.name}" is not permitted in ${agentMode} mode`,
               { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
@@ -3314,6 +3395,38 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             totalBytesRead += Buffer.byteLength(resultStr, "utf8");
             if (totalBytesRead > contextBytesLimit) throw new SafeReadError(`Raw byte budget ceiling (${Math.round(contextBytesLimit / 1024)} KB) exceeded`);
             event("workspace.inspected", { kind: "git_log", resultCount: result.commits.length, truncated: result.truncated || result.timedOut });
+          } else if (tc.name === "read_process_output") {
+            const processId = args.processId;
+            if (typeof processId !== "string" || !processId) throw new Error("Missing required argument: processId");
+            const owned = processesRepo.get(processId);
+            if (!owned || owned.projectId !== project.id) throw new Error(`Process not found: ${processId}`);
+            const stream = args.stream === "stderr" ? "stderr" : "stdout";
+            const offset = typeof args.offset === "number" && args.offset >= 0 ? Math.floor(args.offset) : 0;
+            const slice = procSupervisor.readOutput(processId, stream, offset, 64 * 1024);
+            resultStr = JSON.stringify({ processId, stream, status: processesRepo.get(processId)?.status ?? owned.status, ...slice });
+            event("workspace.inspected", { kind: "read_process_output", processId, truncated: slice.truncated });
+          } else if (tc.name === "stop_process") {
+            const processId = args.processId;
+            if (typeof processId !== "string" || !processId) throw new Error("Missing required argument: processId");
+            const owned = processesRepo.get(processId);
+            if (!owned || owned.projectId !== project.id) throw new Error(`Process not found: ${processId}`);
+            const outcome = await procSupervisor.terminate(processId, { force: args.force === true });
+            if (!outcome.ok && outcome.reason !== "not_found") {
+              // "not_running" (already ended) is a normal, reportable outcome â€”
+              // not_owned (a row surviving a restart of this instance) is the
+              // only case worth surfacing as a real error.
+              if (outcome.reason === "not_owned") throw new Error("This process is no longer controlled by the running orchestrator (survived a restart); it cannot be stopped from here.");
+            }
+            resultStr = JSON.stringify({ processId, ...outcome, status: processesRepo.get(processId)?.status ?? owned.status });
+            records.appendEvidence({
+              id: randomUUID(),
+              taskId,
+              type: "file",
+              path: `${owned.command} ${owned.args.join(" ")} (stopped)`,
+              metadata: { processId, ok: outcome.ok, forced: args.force === true },
+              createdAt: now(),
+            });
+            event("workspace.inspected", { kind: "stop_process", processId, ok: outcome.ok });
           } else if (tc.name === "browser_open") {
             const target = parseBrowserTarget(args.url);
             const existingApprovals = approvals.listByTask(taskId);

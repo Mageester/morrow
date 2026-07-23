@@ -113,20 +113,53 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "run_command",
     title: "Run command",
-    description: "Run a safe, structured verification, build, test, or mutation command in the workspace.",
+    description: "Run a safe, structured verification, build, test, or mutation command in the workspace. Set background:true for a command that does not exit on its own (a dev server, a watcher) — it returns a processId immediately instead of waiting for exit; use read_process_output and stop_process to manage it.",
     sideEffect: "execute",
     enabled: true,
     parameters: {
       executable: { type: "string", description: "The executable name or path (e.g. 'pnpm' or 'git')" },
       args: { type: "array", items: { type: "string" }, description: "Arguments passed to the executable" },
       cwd: { type: "string", description: "Optional working directory relative to project root" },
-      purpose: { type: "string", description: "Explain why this command is being run" }
+      purpose: { type: "string", description: "Explain why this command is being run" },
+      background: { type: "boolean", description: "Start a long-running process (e.g. a dev server) without waiting for it to exit. Returns a processId instead of exit output." }
     },
     constraints: [
       "Must not use shell: true",
       "Rejects shell metacharacters and privilege escalation",
       "Requires explicit user approval unless trusted",
-      "Kills the process tree on timeout, cancellation, or task interruption"
+      "Foreground commands are killed on timeout, cancellation, or task interruption",
+      "background:true commands keep running after the tool call returns; stop them with stop_process when done",
+    ],
+  },
+  {
+    name: "read_process_output",
+    title: "Read process output",
+    description: "Read captured stdout/stderr from a process started with run_command background:true.",
+    sideEffect: "read-only",
+    enabled: true,
+    parameters: {
+      processId: { type: "string", description: "The processId returned by the background run_command call" },
+      stream: { type: "string", description: "'stdout' (default) or 'stderr'" },
+      offset: { type: "number", description: "Byte offset to resume from (use the previous call's nextOffset); omit to read from the start" },
+    },
+    constraints: [
+      "Scoped to processes owned by this project",
+      "Bounded to 64 KB per read; page with the returned nextOffset",
+    ],
+  },
+  {
+    name: "stop_process",
+    title: "Stop process",
+    description: "Terminate a background process started with run_command background:true.",
+    sideEffect: "execute",
+    enabled: true,
+    parameters: {
+      processId: { type: "string", description: "The processId to terminate" },
+      force: { type: "boolean", description: "Skip the graceful termination attempt and kill immediately" },
+    },
+    constraints: [
+      "Scoped to processes owned by this project",
+      "Graceful termination escalates to a forced kill after a short grace period",
     ],
   },
   {
@@ -220,7 +253,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 /** Tool names the agent runtime actually implements (must match the catalog). */
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
-  "git_status", "git_diff", "git_log", "run_command", "propose_patch", "create_file", "create_directory",
+  "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "propose_patch", "create_file", "create_directory",
   "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
 ] as const;

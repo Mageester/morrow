@@ -8,6 +8,8 @@ import { reconcileMissionsOnStartup } from "./recovery.js";
 import { createDefaultMissionControllerRunner } from "./mission/controller-runner.js";
 import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
+import { ProcessSupervisor } from "./processes/supervisor.js";
+import { processesRepository } from "./repositories/processes.js";
 
 // In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
 // skills directory. When running from source (pnpm dev) fall back to the repo's
@@ -22,7 +24,12 @@ const dbPath = resolveDefaultDatabasePath(process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
 const db = openDatabase(dbPath);
 
-const runner = new TaskRunner(db);
+// Shared with buildServer below so a process the agent starts in the
+// background (a dev server, a watcher) and one started through the REST
+// process routes both live in the same registry — either side can observe or
+// stop what the other started.
+const supervisor = new ProcessSupervisor(processesRepository(db), join(resolveMorrowHome(process.env), "process-logs"));
+const runner = new TaskRunner(db, undefined, supervisor);
 const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskRunner: runner });
 
 // Reclaim durable missions first, then reconcile their checkpoint-aware tasks.
@@ -44,6 +51,7 @@ const app = buildServer({
   db,
   runner,
   missionControllerRunner,
+  supervisor,
   secretsFile: join(resolveMorrowHome(process.env), "secrets.env"),
   ...(webRoot ? { webRoot } : {}),
 });
