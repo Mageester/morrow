@@ -1,4 +1,4 @@
-import type { Conversation, WebConversationMessage } from "@morrow/contracts";
+import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage } from "@morrow/contracts";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Archive, Pencil, Trash2 } from "lucide-react";
@@ -10,6 +10,7 @@ import {
   conversationQueries,
   pendingWebMessage,
 } from "../../api/conversations.js";
+import { modelQueries } from "../../api/models.js";
 import { ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 
@@ -69,9 +70,10 @@ export interface ConversationPageContentProps {
   projectId: string;
   conversationId: string;
   onDeleted: () => void;
+  modelCatalogue?: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } | undefined;
 }
 
-export function ConversationPageContent({ projectId, conversationId, onDeleted }: ConversationPageContentProps) {
+export function ConversationPageContent({ projectId, conversationId, onDeleted, modelCatalogue }: ConversationPageContentProps) {
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
@@ -346,6 +348,7 @@ export function ConversationPageContent({ projectId, conversationId, onDeleted }
           activeTaskId={activeTaskId}
           autoFocus
           draftScope={{ projectId, conversationId }}
+          modelCatalogue={modelCatalogue}
           onStop={stop}
           onSubmit={submit}
           placeholder="Reply to Morrow…"
@@ -385,6 +388,10 @@ export function ConversationPage() {
   const { conversationId } = useParams({ strict: false }) as { conversationId?: string };
   const search = useSearch({ strict: false }) as { projectId?: string };
   const navigate = useNavigate();
+  // Fetched once for the whole conversation; the picker degrades to the
+  // recommended route until the catalogue resolves. Hooks run before the guard.
+  const catalogue = useQuery(modelQueries.catalogue());
+  const presets = useQuery(modelQueries.presets());
   if (!conversationId || !search.projectId) {
     return (
       <section className="morrow-conversation-page">
@@ -396,6 +403,7 @@ export function ConversationPage() {
   return (
     <ConversationPageContent
       conversationId={conversationId}
+      modelCatalogue={{ models: catalogue.data ?? [], presets: presets.data ?? [] }}
       onDeleted={() => { void navigate({ to: "/" }); }}
       projectId={search.projectId}
     />

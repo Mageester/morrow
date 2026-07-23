@@ -2295,3 +2295,151 @@ a {
     transition: none;
   }
 }
+
+/* ── Slice 7: searchable model picker ────────────────────────────────────── */
+.morrow-model-picker {
+  position: relative;
+}
+.morrow-model-picker__trigger {
+  display: inline-flex;
+  min-height: 34px;
+  max-width: 220px;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  padding: 0 var(--morrow-space-2);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.morrow-model-picker__trigger:hover:not(:disabled) {
+  border-color: var(--morrow-accent);
+}
+.morrow-model-picker__trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.morrow-model-picker__value {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--morrow-space-1);
+}
+.morrow-model-picker__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-model-picker__flag {
+  padding: 0 6px;
+  color: var(--morrow-warning);
+  background: color-mix(in srgb, var(--morrow-warning) 16%, transparent);
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.morrow-model-picker__panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  width: min(320px, 84vw);
+  max-height: 320px;
+  gap: var(--morrow-space-2);
+  overflow: auto;
+  padding: var(--morrow-space-2);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  box-shadow: var(--morrow-shadow-sm);
+}
+.morrow-model-picker__search {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--morrow-space-2);
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+.morrow-model-picker__note {
+  margin: 0;
+  padding: var(--morrow-space-1) var(--morrow-space-2);
+  color: var(--morrow-warning);
+  font-size: 0.75rem;
+}
+.morrow-model-picker__list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-model-picker__group {
+  padding: var(--morrow-space-2) var(--morrow-space-2) var(--morrow-space-1);
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.morrow-model-picker__option {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-2);
+  padding: var(--morrow-space-1) var(--morrow-space-2);
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.morrow-model-picker__option:hover {
+  background: var(--morrow-surface-subtle);
+}
+.morrow-model-picker__option[aria-pressed="true"] {
+  color: var(--morrow-text);
+  background: color-mix(in srgb, var(--morrow-accent) 11%, transparent);
+}
+.morrow-model-picker__option svg {
+  flex: none;
+  color: var(--morrow-accent);
+}
+.morrow-model-picker__option-main {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.morrow-model-picker__option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.morrow-model-picker__option-meta {
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-model-picker__empty {
+  padding: var(--morrow-space-3) var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}

@@ -1,5 +1,6 @@
-import type { AgentMode, PresetId, ProviderId } from "@morrow/contracts";
+import type { AgentMode, ModelStatus, PresetId, PresetStatus, ProviderId } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
+import { ModelPicker } from "./model-picker.js";
 import {
   useEffect,
   useId,
@@ -56,6 +57,9 @@ export interface ChatComposerProps {
   projectId?: string | undefined;
   onProjectChange?: ((projectId: string) => void) | undefined;
   modelRoutes?: ReadonlyArray<ChatComposerModelRoute> | undefined;
+  /** When provided, the live model catalogue replaces the simple route select
+   * with the searchable model picker. */
+  modelCatalogue?: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } | undefined;
   activeTaskId?: string | undefined;
   onStop?: ((taskId: string) => Promise<void>) | undefined;
 }
@@ -99,6 +103,7 @@ export function ChatComposer({
   projectId = draftScope.projectId,
   onProjectChange,
   modelRoutes = [DEFAULT_ROUTE],
+  modelCatalogue,
   activeTaskId,
   onStop,
 }: ChatComposerProps) {
@@ -120,6 +125,8 @@ export function ChatComposer({
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
   const [mode, setMode] = useState<ComposerMode>("ask");
   const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
+  // Selection from the searchable catalogue; undefined means "Auto — recommended".
+  const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
   const [length, setLength] = useState(() => initialDraft.length);
   const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.trim()));
   const [sending, setSending] = useState(false);
@@ -192,14 +199,16 @@ export function ChatComposer({
       end: textarea.selectionEnd,
       start: textarea.selectionStart,
     };
-    const selectedRoute = availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0]!;
-    const routing = selectedRoute.providerId
+    const effectiveRoute = modelCatalogue
+      ? catalogueRoute
+      : availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0];
+    const routing = effectiveRoute?.providerId
       ? {
-          providerId: selectedRoute.providerId,
-          ...(selectedRoute.model ? { model: selectedRoute.model } : {}),
+          providerId: effectiveRoute.providerId,
+          ...(effectiveRoute.model ? { model: effectiveRoute.model } : {}),
         }
-      : selectedRoute.preset
-        ? { preset: selectedRoute.preset }
+      : effectiveRoute?.preset
+        ? { preset: effectiveRoute.preset }
         : {};
 
     try {
@@ -338,18 +347,28 @@ export function ChatComposer({
           </label>
         ) : null}
 
-        <label className="morrow-chat-composer__select">
-          <span>Model route</span>
-          <select
+        {modelCatalogue ? (
+          <ModelPicker
             disabled={interactionDisabled}
-            onChange={(event) => setRouteId(event.target.value)}
-            value={availableRoutes.some((route) => route.id === routeId) ? routeId : availableRoutes[0]!.id}
-          >
-            {availableRoutes.map((route) => (
-              <option key={route.id} value={route.id}>{route.label}</option>
-            ))}
-          </select>
-        </label>
+            models={modelCatalogue.models}
+            onChange={setCatalogueRoute}
+            presets={modelCatalogue.presets}
+            value={catalogueRoute}
+          />
+        ) : (
+          <label className="morrow-chat-composer__select">
+            <span>Model route</span>
+            <select
+              disabled={interactionDisabled}
+              onChange={(event) => setRouteId(event.target.value)}
+              value={availableRoutes.some((route) => route.id === routeId) ? routeId : availableRoutes[0]!.id}
+            >
+              {availableRoutes.map((route) => (
+                <option key={route.id} value={route.id}>{route.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {activeTaskId && onStop ? (
           <button
