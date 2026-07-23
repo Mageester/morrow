@@ -597,8 +597,17 @@ export async function executeAgentChatTask({
   });
   let turn = 0;
   let absoluteTurn = 0;
+  const TERMINAL_AGENT_STATES = new Set<AgentExecutionState>(["completed", "failed", "cancelled"]);
   const transitionAgentState = (state: AgentExecutionState, details: Record<string, unknown> = {}) => {
     const timestamp = now();
+    // A tool call already in flight can complete AFTER the task is cancelled (or
+    // otherwise reaches a terminal state) and try to record `observing`. The
+    // task is already over, so a late transition is a no-op, not a crash — do
+    // not let it turn a clean cancellation into a failed execution.
+    const currentState = records.getAgentState(taskId)?.state;
+    if (currentState && TERMINAL_AGENT_STATES.has(currentState) && !TERMINAL_AGENT_STATES.has(state)) {
+      return records.getAgentState(taskId);
+    }
     try {
       return records.transitionAgentState(taskId, { id: randomUUID(), state, details, createdAt: timestamp });
     } catch (err) {
@@ -630,9 +639,20 @@ export async function executeAgentChatTask({
 
   if (!records.getAgentState(taskId)) transitionAgentState("idle");
   if (!durableResume) transitionAgentState("understanding");
-  if (durableResume && records.getAgentState(taskId)?.state === "interrupted") {
-    transitionAgentState("understanding", { event: "durable_resume" });
-    transitionAgentState("planning", { event: "durable_resume" });
+  if (durableResume) {
+    // A durably-resumed task can still be parked in its INITIAL `idle` state —
+    // the mission dispatcher creates agent tasks idle and hands them to a worker
+    // that resumes durably — or in `interrupted` after a mid-run crash. Neither
+    // `idle` nor `interrupted` can legally reach `executing_tool`, so a model
+    // that opens its very first turn with a tool call (deepseek, nemotron, and
+    // most tool-first models do) would throw `idle -> executing_tool` and fail
+    // the whole task. Advance it into the active lifecycle before the stream
+    // loop runs so the first tool call is a legal `planning -> executing_tool`.
+    const resumedState = records.getAgentState(taskId)?.state;
+    if (resumedState === "idle" || resumedState === "interrupted") {
+      transitionAgentState("understanding", { event: "durable_resume" });
+      transitionAgentState("planning", { event: "durable_resume" });
+    }
   }
 
   // Define plan. Default to the full agent capability for an interactive
