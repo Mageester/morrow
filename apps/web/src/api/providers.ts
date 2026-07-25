@@ -33,6 +33,8 @@ const ConfigureProviderResponseSchema = z
     securePermissions: z.boolean(),
     credentialProtection: z.enum(["windows-user-acl", "posix-mode"]),
     shadowedByEnv: z.array(z.string()),
+    /** Whether saving actually proved the credential works; null when unproven. */
+    credentialVerified: z.boolean().nullable().optional(),
   })
   .passthrough();
 

@@ -195,7 +195,12 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
       const shadowWarning = response.shadowedByEnv.length > 0
         ? " An environment setting also exists; restart Morrow after changing it to ensure its expected value is applied."
         : "";
-      setFeedback({ tone: "success", text: `${label} is connected. Credentials stay server-side in a ${protectionCopy(response.credentialProtection, response.securePermissions)}.${shadowWarning}` });
+      // Saying "connected" when the endpoint never checked the key would tell a
+      // user with a typo that they are ready to go.
+      const unverifiedNote = response.credentialVerified === false
+        ? ` This endpoint lists models without a key, so the key itself was not checked — an invalid one would fail on first use.`
+        : "";
+      setFeedback({ tone: "success", text: `${label} is connected. Credentials stay server-side in a ${protectionCopy(response.credentialProtection, response.securePermissions)}.${unverifiedNote}${shadowWarning}` });
       reconcileStatus();
     } catch (error) {
       clearDraft(provider.configured ? "replace" : "connect");

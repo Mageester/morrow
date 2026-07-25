@@ -137,7 +137,7 @@ import { canonicalCommandTrustKey, classifyCommand } from "./tools/command-polic
 import { resolveMorrowHome } from "./home.js";
 import { unlinkSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createProvider, installProviderModelDiscoveries, listProviderStatuses } from "./provider/registry.js";
+import { createProvider, installProviderModelDiscoveries, listProviderStatuses, providerCapabilities } from "./provider/registry.js";
 import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
@@ -2424,24 +2424,85 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
     let validatedCredentialIdentity: string | null = null;
-    if (id === "openrouter") {
+
+    /*
+     * Verify a candidate credential against the provider BEFORE persisting it.
+     *
+     * This used to run for OpenRouter alone, which meant OpenRouter was the
+     * only provider where a mistyped key was rejected instead of silently
+     * overwriting a working one, and the only provider whose models were known
+     * straight after setup. Every other provider — including all 22 catalog
+     * providers — saved whatever it was given and reported "connected".
+     *
+     * Two providers are exempt because there is nothing to verify: `mock` is an
+     * in-memory test double, and `deterministic-local` performs no inference.
+     */
+    const providerLabel = listProviderStatuses().find((item) => item.id === id)?.label ?? id;
+    const isLocalProvider = providerCapabilities(id)?.local ?? false;
+    // Only a change to the credential or the endpoint is worth verifying.
+    // A request that just sets a default model or a context limit touches
+    // nothing a provider could reject, and demanding a live check for it would
+    // make those settings impossible to save on a provider that is not yet
+    // connected — or while the network happens to be down.
+    const touchesCredential = body.apiKey !== undefined || body.baseUrl !== undefined;
+    const candidateEnv = touchesCredential ? buildProviderCandidateEnv(id, body, process.env) : process.env;
+    const mapping = providerEnvMapping(id);
+    // Ask the credential layer directly rather than going through provider
+    // status: status gates `configured` on stored model discovery matching the
+    // credential, which is false for a brand-new candidate key and would skip
+    // the very verification this exists to perform.
+    const candidateHasKey = mapping?.apiKeyEnv ? !!candidateEnv[mapping.apiKeyEnv]?.trim() : false;
+    const candidateHasUrl = mapping?.baseUrlEnv ? !!candidateEnv[mapping.baseUrlEnv]?.trim() : false;
+    const verifiable =
+      id !== "mock" &&
+      id !== "deterministic-local" &&
+      touchesCredential &&
+      (candidateHasKey || candidateHasUrl);
+
+    if (verifiable) {
       const previousCredentialIdentity = providerCredentialIdentity(id, process.env);
-      const candidateEnv = buildProviderCandidateEnv(id, body, process.env);
       validatedCredentialIdentity = providerCredentialIdentity(id, candidateEnv);
       validatedResult = await providerConnectivityTest(id, candidateEnv);
       if (providerCredentialIdentity(id, process.env) !== previousCredentialIdentity) {
-        throw new ApiError(409, "OpenRouter configuration changed while validation was in flight. Retry with the current settings.", "PROVIDER_CONFIGURATION_CONFLICT");
+        throw new ApiError(409, `${providerLabel} configuration changed while validation was in flight. Retry with the current settings.`, "PROVIDER_CONFIGURATION_CONFLICT");
       }
       if (!validatedResult.ok) {
-        const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
-        throw new ApiError(statusCode, `OpenRouter validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
+        // A local server is opt-in by URL and is routinely configured before it
+        // is started, so "nothing is listening yet" must not block saving the
+        // address. Any other failure — and every failure for a hosted provider
+        // — preserves the previous credential rather than replacing a working
+        // one with a broken one.
+        const localNotRunningYet =
+          isLocalProvider && (validatedResult.errorKind === "network" || validatedResult.errorKind === "timeout");
+        if (!localNotRunningYet) {
+          const statusCode = validatedResult.errorKind === "auth" ? 401 : validatedResult.errorKind === "rate_limit" ? 429 : 502;
+          throw new ApiError(statusCode, `${providerLabel} validation failed (${validatedResult.errorKind ?? "provider"}). The previous credential was preserved.`, "PROVIDER_VALIDATION_FAILED");
+        }
+        validatedResult = null; // Nothing verified, so nothing to record.
       }
     }
+
     const result = configureProvider(deps.secretsFile, id, body, process.env);
+
+    // Record what the credential can actually reach, so a provider is useful
+    // the moment it is configured instead of after a separate refresh.
     if (validatedResult) {
       const fetchedAt = new Date().toISOString();
-      providerModelDiscovery.upsert({ providerId: id, authMode: "openrouter-api-key", status: "available", models: validatedResult.models, errorKind: null, fetchedAt, expiresAt: discoveryExpiresAt(fetchedAt, true), lastSuccessAt: fetchedAt, credentialIdentity: validatedCredentialIdentity });
-      installProviderModelDiscoveries(providerModelDiscovery.list());
+      const authMode = listProviderStatuses().find((item) => item.id === id)?.authMode;
+      if (authMode) {
+        providerModelDiscovery.upsert({
+          providerId: id,
+          authMode,
+          status: "available",
+          models: validatedResult.models,
+          errorKind: null,
+          fetchedAt,
+          expiresAt: discoveryExpiresAt(fetchedAt, true),
+          lastSuccessAt: fetchedAt,
+          credentialIdentity: validatedCredentialIdentity,
+        });
+        installProviderModelDiscoveries(providerModelDiscovery.list());
+      }
     }
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
     reply.send({
@@ -2452,6 +2513,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       securePermissions: result.securePermissions,
       credentialProtection: result.credentialProtection,
       shadowedByEnv: result.shadowedByEnv,
+      /*
+       * Whether saving this credential actually proved it works.
+       *
+       * `true`  — the provider authenticated it.
+       * `false` — the endpoint answered but serves its model list without
+       *           authentication (OpenCode Zen does), so a wrong key is
+       *           indistinguishable from a right one here and would only fail
+       *           on the first real request. The client must say so rather than
+       *           report a plain "connected".
+       * `null`  — nothing was verified (a local server that is not running
+       *           yet, or a request that changed no credential).
+       */
+      credentialVerified: validatedResult ? validatedResult.credentialVerified ?? null : null,
       status,
     });
   });
