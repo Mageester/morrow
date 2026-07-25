@@ -113,7 +113,9 @@ describe("safe remote model catalog", () => {
             },
           },
         },
-        unsupported: { id: "unsupported", models: { ignored: { id: "ignored", name: "Ignored" } } },
+        // Real models.dev includes providers outside Morrow's supported route
+        // set. Their schema must not make supported metadata unusable.
+        unsupported: { not: "a provider document" },
       }), { status: 200, headers: { etag: '"models-dev-test"' } })),
     });
 

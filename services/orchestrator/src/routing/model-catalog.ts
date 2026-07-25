@@ -41,7 +41,9 @@ const CatalogDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   catalogVersion: z.string().min(1).max(120),
   generatedAt: z.string().datetime(),
-  models: ModelInfoSchema.array().max(500),
+  // models.dev currently yields more than 500 normalized rows across Morrow's
+  // supported providers. Raw response remains bounded independently.
+  models: ModelInfoSchema.array().max(2_000),
 }).strict().superRefine((document, context) => {
   const seen = new Set<string>();
   for (const [index, model] of document.models.entries()) {
@@ -90,7 +92,7 @@ const ModelsDevProviderSchema = z.object({
   models: z.record(z.string(), ModelsDevModelSchema),
 }).passthrough();
 
-const ModelsDevDocumentSchema = z.record(z.string(), ModelsDevProviderSchema);
+const ModelsDevDocumentSchema = z.record(z.string(), z.unknown());
 
 const MODELS_DEV_PROVIDER_IDS: Record<string, ProviderId> = {
   openai: "openai",
@@ -108,13 +110,18 @@ function sourceVersion(response: Response, fetchedAt: string): string {
 function normalizeModelsDev(raw: unknown, response: Response): CatalogDocument | null {
   const parsed = ModelsDevDocumentSchema.safeParse(raw);
   if (!parsed.success) return null;
-  if (Object.keys(parsed.data).length > 400 || Object.values(parsed.data).some((provider) => Object.keys(provider.models).length > 2_000)) return null;
+  if (Object.keys(parsed.data).length > 400) return null;
   const fetchedAt = new Date().toISOString();
   const metadataVersion = sourceVersion(response, fetchedAt);
   const models: ModelInfo[] = [];
-  for (const [sourceProviderId, provider] of Object.entries(parsed.data)) {
+  for (const [sourceProviderId, rawProvider] of Object.entries(parsed.data)) {
     const providerId = MODELS_DEV_PROVIDER_IDS[sourceProviderId];
     if (!providerId) continue;
+    const providerResult = ModelsDevProviderSchema.safeParse(rawProvider);
+    // One malformed upstream provider must not discard safe metadata from every
+    // other supported provider. Each accepted provider is still schema-checked.
+    if (!providerResult.success || Object.keys(providerResult.data.models).length > 2_000) continue;
+    const provider = providerResult.data;
     for (const source of Object.values(provider.models)) {
       const supportsVision = source.attachment === true || source.modalities?.input?.includes("image") === true;
       models.push({
@@ -149,14 +156,15 @@ function normalizeModelsDev(raw: unknown, response: Response): CatalogDocument |
       });
     }
   }
-  return CatalogDocumentSchema.safeParse({
+  if (models.length === 0) return null;
+  const normalized = CatalogDocumentSchema.safeParse({
     schemaVersion: 1,
     catalogVersion: metadataVersion,
     generatedAt: fetchedAt,
     models,
-  }).success
-    ? { schemaVersion: 1, catalogVersion: metadataVersion, generatedAt: fetchedAt, models }
-    : null;
+  });
+  if (!normalized.success) throw new Error(`Invalid normalized models.dev catalog: ${normalized.error.issues[0]?.message ?? "schema mismatch"}`);
+  return normalized.data;
 }
 
 function parseCatalog(raw: unknown, response: Response): CatalogDocument {
