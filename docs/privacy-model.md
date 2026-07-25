@@ -47,12 +47,14 @@ Each category requires an explicit scope and retention rule.
 
 ### Public model metadata refresh
 
-On normal startup, Morrow may fetch the public models.dev catalog over HTTPS to
-refresh model capability metadata. This request sends no Morrow credentials,
+Morrow refreshes the public models.dev catalog only when an operator explicitly
+requests a model-metadata refresh. This request sends no Morrow credentials,
 conversation content, project paths, memory, or provider keys; normal network
 metadata such as the client IP reaches models.dev. The normalized response is
 cached locally and a last-known-good cache is retained on refresh failure.
 Provider account availability remains a separate authenticated provider request.
+Redirects are rejected, so catalog metadata cannot select a second network
+destination. Private Local startup never triggers this request.
 
 ### Custom
 

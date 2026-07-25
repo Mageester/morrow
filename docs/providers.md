@@ -48,8 +48,9 @@ Provider status exposes only `configured`, the default model, and the endpoint
 Provider discovery and model metadata are separate facts. A successful
 authenticated provider `/models` response proves that a model is available to
 that account; it does not supply context or output limits when that endpoint
-omits them. On startup Morrow loads a local cache and refreshes normalized
-capability metadata from `https://models.dev/api.json` over HTTPS. Bundled
+omits them. On startup Morrow loads a local cache. An operator can explicitly
+refresh normalized capability metadata from `https://models.dev/api.json` over
+HTTPS through `POST /api/models/refresh`; redirects are rejected. Bundled
 metadata remains offline seed data only. Cached catalog data is atomically
 updated and retained when refresh fails.
 

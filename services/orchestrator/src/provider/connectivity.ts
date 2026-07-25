@@ -149,12 +149,10 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       return { configured: true, request: { url: `${baseUrl.replace(/\/$/, "")}/models`, headers, host: safeHostOf(baseUrl) } };
     }
     case "opencode-go": {
-      // OpenCode Go: a separate first-class provider. Default base URL is the
-      // one published by models.dev for this provider; operators can override
-      // via OPENCODE_GO_BASE_URL (e.g. for a private deployment).
+      // OpenCode Go credentials are only sent to its published endpoint.
       const apiKey = env.OPENCODE_GO_API_KEY?.trim();
       if (!apiKey) return { configured: false, reason: "opencode-go is not configured (OPENCODE_GO_API_KEY missing)." };
-      const baseUrl = env.OPENCODE_GO_BASE_URL?.trim() || "https://opencode.ai/zen/go/v1";
+      const baseUrl = "https://opencode.ai/zen/go/v1";
       return { configured: true, request: { url: `${baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${apiKey}` }, host: safeHostOf(baseUrl) } };
     }
     case "ollama": {

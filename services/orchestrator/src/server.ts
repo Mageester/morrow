@@ -282,7 +282,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     bundledModels: BUILT_IN_MODELS,
   });
   installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, modelCatalog.current().models));
-  void modelCatalog.refresh().then((snapshot) => installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models))).catch(() => undefined);
+  // Catalog refresh is operator-triggered. Starting a Private Local session
+  // must not make an outbound metadata request before any routing choice.
+  const refreshModelCatalog = async () => {
+    const snapshot = await modelCatalog.refresh();
+    installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
+    return snapshot;
+  };
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -2054,7 +2060,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
     const id = parsed.data;
-    if (!providerEnvMapping(id)) {
+    const mapping = providerEnvMapping(id);
+    if (!mapping) {
       throw new ApiError(400, `Provider "${id}" cannot be configured in-app.`, "PROVIDER_NOT_CONFIGURABLE");
     }
     if (!deps.secretsFile) {
@@ -2077,6 +2084,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       .parse((request.body ?? {}) as unknown);
     if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined && body.endpointContextLimit === undefined) {
       throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
+    }
+    if (body.baseUrl !== undefined && !mapping.baseUrlEnv) {
+      throw new ApiError(400, `Provider "${id}" does not support a custom endpoint.`, "CUSTOM_ENDPOINT_UNSUPPORTED");
     }
     if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
       try {
@@ -2157,6 +2167,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
     return resolveModelStatuses(statuses, providerModelDiscovery.list());
+  });
+
+  // Explicit refresh makes public catalog egress visible to the operator. It
+  // is deliberately not a startup side effect so local-only mode stays local.
+  app.post("/api/models/refresh", async () => {
+    try {
+      const snapshot = await refreshModelCatalog();
+      return { ...snapshot, refreshed: true };
+    } catch {
+      throw new ApiError(502, "Model catalog refresh failed; cached metadata remains active.", "MODEL_CATALOG_REFRESH_FAILED");
+    }
   });
 
   /**

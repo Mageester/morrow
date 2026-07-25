@@ -348,11 +348,11 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     defaultModel: "glm-5.2",
     models: [],
     setupHint:
-      "Set OPENCODE_GO_API_KEY (one subscription key from https://opencode.ai/auth). Optionally OPENCODE_GO_MODEL (default glm-5.2) and OPENCODE_GO_BASE_URL (default https://opencode.ai/zen/go/v1).",
+      "Set OPENCODE_GO_API_KEY (one subscription key from https://opencode.ai/auth). Optionally set OPENCODE_GO_MODEL (default glm-5.2).",
     note:
       "OpenCode Go subscription (https://opencode.ai/docs/zen) — distinct from OpenCode Zen. Use `morrow providers test opencode-go` to verify and `morrow providers refresh opencode-go` to update the live model catalog.",
     status(env) {
-      const baseUrl = env.OPENCODE_GO_BASE_URL?.trim() || "https://opencode.ai/zen/go/v1";
+      const baseUrl = "https://opencode.ai/zen/go/v1";
       const hasKey = !!env.OPENCODE_GO_API_KEY?.trim();
       const configured = hasKey;
       const model = env.OPENCODE_GO_MODEL?.trim() || this.defaultModel;
@@ -375,7 +375,7 @@ const DESCRIPTORS: ProviderDescriptor[] = [
       };
     },
     build(env, model) {
-      const baseUrl = env.OPENCODE_GO_BASE_URL?.trim() || "https://opencode.ai/zen/go/v1";
+      const baseUrl = "https://opencode.ai/zen/go/v1";
       const apiKey = env.OPENCODE_GO_API_KEY?.trim() || "";
       if (!apiKey) throw new ProviderError("not_configured", "OpenCode Go requires OPENCODE_GO_API_KEY", { kind: "invalid_request" });
       const resolvedModel = model || env.OPENCODE_GO_MODEL?.trim() || this.defaultModel;

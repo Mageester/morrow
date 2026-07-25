@@ -73,6 +73,21 @@ describe("safe remote model catalog", () => {
     expect(() => new ModelCatalog({ cacheDir: root(), remoteUrl: "http://example.com/models.json", bundledModels: [] })).toThrow(/HTTPS/);
   });
 
+  it("rejects redirects instead of following a catalog-controlled destination", async () => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe("error");
+      throw new TypeError("unexpected redirect");
+    });
+    const catalog = new ModelCatalog({
+      cacheDir: root(),
+      remoteUrl: "https://models.dev/api.json",
+      bundledModels: [],
+      fetcher: fetcher as typeof fetch,
+    });
+    await expect(catalog.refresh()).rejects.toThrow(/redirect/i);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("cancels an oversized streamed response even when content-length is absent", async () => {
     const cacheDir = root();
     const cancel = vi.fn();

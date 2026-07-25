@@ -178,9 +178,10 @@ events. See [docs/providers.md](docs/providers.md) for the capability matrix,
 credential reference, honest OAuth findings, and manual verification steps.
 
 ## Current alpha limitations
-- Live provider discovery determines account availability. Morrow refreshes
-  public model capabilities from models.dev in a local cache; bundled metadata
-  remains an offline seed. Unknown route limits stay explicitly unverified.
+- Live provider discovery determines account availability. Morrow loads public
+  model capabilities from a local cache and refreshes models.dev only through
+  explicit operator action; bundled metadata remains an offline seed. Unknown
+  route limits stay explicitly unverified.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT

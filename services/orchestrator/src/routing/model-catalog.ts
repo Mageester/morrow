@@ -225,7 +225,9 @@ export class ModelCatalog {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetcher(this.options.remoteUrl, { method: "GET", headers, signal: controller.signal });
+      // Catalog metadata is untrusted remote input. Do not let it turn this
+      // fixed public request into a request to an attacker-selected host.
+      const response = await this.fetcher(this.options.remoteUrl, { method: "GET", headers, signal: controller.signal, redirect: "error" });
       if (response.status === 304) return this.current();
       if (!response.ok) throw new Error(`Model catalog refresh returned HTTP ${response.status}`);
       const length = Number(response.headers.get("content-length"));
