@@ -276,7 +276,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const credentialIdentity = providerCredentialIdentity(providerId, envSnapshot);
     const result = await providerConnectivityTest(providerId, envSnapshot);
     if (providerId === "openrouter" && providerCredentialIdentity(providerId, process.env) !== credentialIdentity) {
-      return { ...result, ok: false, configured: false, status: null, detail: "OpenRouter credential changed while refresh was in flight; result discarded.", errorKind: "cancelled", modelsSample: [], models: [] };
+      // A discarded refresh says nothing about whether a credential is stored —
+      // one plainly is, it just changed mid-flight. `configured` stays true so
+      // the UI does not flip to "not connected" during a routine key rotation.
+      return { ...result, ok: false, configured: true, status: null, detail: "OpenRouter credential changed while refresh was in flight; result discarded.", errorKind: "cancelled", modelsSample: [], models: [] };
     }
     const authMode = knownAuthMode ?? listProviderStatuses().find((item) => item.id === providerId)?.authMode;
     if (authMode) {

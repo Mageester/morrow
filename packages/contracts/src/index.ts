@@ -1,6 +1,15 @@
 import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
-export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama"]);
+export const ProviderIdSchema=z.enum([
+  // Internal / bespoke adapters (native protocols, OAuth, or special handling).
+  "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama",
+  // Catalog providers — all OpenAI-compatible. Kept in sync with
+  // services/orchestrator/src/provider/catalog.ts (a test asserts both lists match).
+  "opencode-zen","vercel-ai-gateway","github-models",
+  "xai","mistral","moonshot","zai","dashscope","perplexity","cohere",
+  "groq","cerebras","together","fireworks","deepinfra","nebius","novita","hyperbolic","sambanova",
+  "lmstudio","llamacpp","vllm","jan",
+]);
 export const TaskStatusSchema=z.enum(["queued","running","completed","verified","failed","cancelled","interrupted"]);
 export const AgentExecutionStateSchema=z.enum(["idle","understanding","planning","waiting_for_approval","executing_tool","observing","proposing_changes","applying_changes","verifying","completed","failed","cancelled","interrupted"]);
 export const ApprovalKindSchema=z.enum(["command","change_set"]);
@@ -88,9 +97,18 @@ export const ProviderCapabilitiesSchema=z.object({
   local:z.boolean(),
 }).strict();
 export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applicable","unavailable"]);
+/**
+ * Grouping used to present providers during setup. Purely presentational — it
+ * never affects routing, and it lets the CLI render a browsable catalog without
+ * duplicating the server's provider table.
+ */
+export const ProviderCategorySchema=z.enum(["assistant","gateway","frontier","inference","local","custom","testing"]);
 export const ProviderAuthModeSchema=z.enum([
   "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
   "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+  // Catalog providers: an API key over an OpenAI-compatible endpoint, or a
+  // keyless local server the user points Morrow at.
+  "catalog-api-key","catalog-local",
 ]);
 export const ProviderStatusSchema=z.object({
   version:SchemaVersionSchema,
@@ -110,6 +128,14 @@ export const ProviderStatusSchema=z.object({
   lastSuccessAt:z.string().datetime().nullable().optional(),
   note:z.string().nullable(),
   setupHint:z.string().nullable(),
+  /** Presentation group for setup UIs. Optional for backward compatibility. */
+  category:ProviderCategorySchema.optional(),
+  /** Page where the user creates an API key, when one exists. */
+  keyUrl:z.string().nullable().optional(),
+  /** True when this provider offers a real subscription sign-in (OAuth) flow. */
+  supportsOAuth:z.boolean().optional(),
+  /** True when the provider documents a no-cost tier. */
+  hasFreeTier:z.boolean().optional(),
 }).strict();
 
 export const ModelSpeedClassSchema=z.enum(["fast","balanced","powerful","unknown"]);
@@ -609,6 +635,7 @@ export type ProviderId=z.infer<typeof ProviderIdSchema>;
 export type ProviderKind=z.infer<typeof ProviderKindSchema>;
 export type ProviderAuthMode=z.infer<typeof ProviderAuthModeSchema>;
 export type ProviderCapabilities=z.infer<typeof ProviderCapabilitiesSchema>;
+export type ProviderCategory=z.infer<typeof ProviderCategorySchema>;
 export type ProviderStatus=z.infer<typeof ProviderStatusSchema>;
 export type ModelInfo=z.infer<typeof ModelInfoSchema>;
 export type ModelStatus=z.infer<typeof ModelStatusSchema>;
@@ -748,6 +775,16 @@ export const ProviderTestResultSchema=z.object({
   errorKind:z.string().nullable(),
   modelsSample:z.array(z.string()),
   models:z.array(DiscoveredModelSchema),
+  /**
+   * Whether this check actually proved the credential is valid.
+   *
+   * The probe is a GET on the endpoint's model list. Some providers serve that
+   * list without authentication, so a success there proves the endpoint is
+   * reachable but says nothing about the key — reporting it as "verified" would
+   * tell a user their invalid key is fine. False means reachable-but-unproven.
+   * Absent on older servers.
+   */
+  credentialVerified:z.boolean().optional(),
 }).strict();
 export type ProviderTestResult=z.infer<typeof ProviderTestResultSchema>;
 

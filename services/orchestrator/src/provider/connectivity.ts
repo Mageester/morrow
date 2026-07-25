@@ -3,6 +3,7 @@ import { classifyHttpStatus, classifyThrownError } from "./base.js";
 import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
+import { catalogProvider } from "./catalog.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -223,8 +224,43 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
     case "mock":
     case "deterministic-local":
       return { configured: true };
-    default:
-      return { configured: false, reason: `Unknown provider: ${id}` };
+    default: {
+      // Catalog providers are all OpenAI-compatible, so one plan covers them:
+      // GET {baseUrl}/models with a bearer key (or no key, for a local server).
+      const p = catalogProvider(id);
+      if (!p) return { configured: false, reason: `Unknown provider: ${id}` };
+      if (p.local) {
+        const c = resolveLocalCredential(env, { baseUrlEnv: p.baseUrlEnv, defaultBaseUrl: p.defaultBaseUrl });
+        if (!c.configured) {
+          return { configured: false, reason: `${id} is not enabled (set ${p.baseUrlEnv} to a running server).` };
+        }
+        // A local server may still be key-protected (e.g. vLLM --api-key).
+        const localKey = p.apiKeyEnv ? env[p.apiKeyEnv] : undefined;
+        return {
+          configured: true,
+          request: {
+            url: `${c.baseUrl.replace(/\/$/, "")}/models`,
+            headers: { ...(localKey ? { Authorization: `Bearer ${localKey}` } : {}), ...(p.extraHeaders ?? {}) },
+            host: c.host,
+          },
+        };
+      }
+      const c = resolveApiKeyCredential(env, {
+        apiKeyEnv: p.apiKeyEnv!,
+        ...(p.fallbackApiKeyEnv ? { fallbackApiKeyEnv: p.fallbackApiKeyEnv } : {}),
+        baseUrlEnv: p.baseUrlEnv,
+        defaultBaseUrl: p.defaultBaseUrl,
+      });
+      if (!c.configured) return { configured: false, reason: `${id} is not configured (${p.apiKeyEnv} missing).` };
+      return {
+        configured: true,
+        request: {
+          url: `${c.baseUrl.replace(/\/$/, "")}/models`,
+          headers: { Authorization: `Bearer ${c.apiKey!}`, ...(p.extraHeaders ?? {}) },
+          host: c.host,
+        },
+      };
+    }
   }
 }
 
@@ -233,6 +269,46 @@ function safeHostOf(url: string): string | null {
     return new URL(url).host || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Decide whether a successful model-list probe actually proved the credential.
+ *
+ * The probe is a plain GET on `/models`. Several providers (OpenCode Zen among
+ * them) serve that list to anyone, so a 200 there says the endpoint is
+ * reachable and nothing at all about the key. Reporting that as "verified"
+ * means telling a user their invalid key is fine, and letting them discover the
+ * truth on their first real request instead.
+ *
+ * To tell the two apart we repeat the request with the credential removed. If
+ * it still succeeds, the endpoint does not authenticate this route and the
+ * credential is unproven. If it now fails, the credential is what made the
+ * first request work.
+ *
+ * Runs only after an authenticated probe already succeeded, so it costs one
+ * extra request on a path a user explicitly asked to test, never during normal
+ * operation. Any error here means "cannot claim verification", never a hard
+ * failure — the endpoint is known to be reachable at this point.
+ */
+async function didEndpointCheckCredential(
+  url: string,
+  headers: Record<string, string>,
+  signal: AbortSignal
+): Promise<boolean> {
+  const authHeaders = Object.keys(headers).filter((h) => /^(authorization|x-api-key|x-goog-api-key)$/i.test(h));
+  // No credential was sent (keyless local server), or the key is embedded in
+  // the URL as a query parameter, where stripping it is not meaningful.
+  if (authHeaders.length === 0) return false;
+
+  const anonymous = Object.fromEntries(Object.entries(headers).filter(([name]) => !authHeaders.includes(name)));
+  try {
+    const res = await fetch(url, { method: "GET", headers: anonymous, signal });
+    await res.body?.cancel();
+    // Rejected without the credential ⇒ the credential is what worked.
+    return !res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -278,17 +354,38 @@ export async function testProviderConnectivity(
     const body = await readBoundedJson(res);
     if (res.ok) {
       if (id === "openrouter" && (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data))) {
-        return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
+        return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
       }
       const models = normalizeModels(body);
-      return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
+      const credentialVerified = await didEndpointCheckCredential(url, headers, controller.signal);
+      return {
+        ...base,
+        configured: true,
+        ok: true,
+        status: res.status,
+        latencyMs,
+        checkedEndpoint: host,
+        detail: credentialVerified
+          ? `Reachable and credential accepted (HTTP ${res.status}).`
+          : `Reachable (HTTP ${res.status}), but this endpoint serves its model list without authentication, so the credential itself was not checked.`,
+        modelsSample: models.slice(0, 5).map((model) => model.providerModelId),
+        models,
+        credentialVerified,
+      };
     }
     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
-    return { ...base, configured: false, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
+    // `configured` reports whether the operator supplied a credential, NOT
+    // whether this check succeeded — `ok` and `errorKind` carry that. Clearing
+    // it here told the user their provider was "not configured" whenever the
+    // endpoint returned 500 or rate-limited them, sending them to re-enter a
+    // key that was never the problem.
+    return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
   } catch (e: any) {
     const aborted = controller.signal.aborted;
     const err = classifyThrownError(e, aborted);
-    return { ...base, configured: false, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
+    // Same reasoning as the HTTP-error path: an unreachable endpoint or a
+    // timeout says nothing about whether a credential is stored.
+    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
   } finally {
     clearTimeout(timer);
   }

@@ -77,7 +77,11 @@ describe("Provider / preset / memory API", () => {
         available: true,
         model: { builtIn: false, contextWindow: null, metadataSource: "provider-reported" },
       });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // Two bounded requests: the authenticated model-list probe, plus a
+      // credential-free repeat that determines whether the endpoint actually
+      // enforces the key (so a reachable endpoint that ignores credentials is
+      // not reported as "verified"). Discovery still comes from the first.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       fetchMock.mockRestore();
       if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey;
@@ -179,7 +183,10 @@ describe("Provider / preset / memory API", () => {
       release();
       const response = await pending;
       expect(response.statusCode).toBe(409);
-      expect(response.json()).toMatchObject({ ok: false, configured: false, errorKind: "cancelled" });
+      // The test *result* reports a credential is present (configured) with the
+      // check cancelled; the provider *status* below is what reflects that the
+      // refreshed credential was not promoted.
+      expect(response.json()).toMatchObject({ ok: false, configured: true, errorKind: "cancelled" });
       const providers = JSON.parse((await localApp.inject({ method: "GET", url: "/api/providers" })).body);
       expect(providers.find((provider: any) => provider.id === "openrouter")).toMatchObject({ configured: false, available: false });
       const models = JSON.parse((await localApp.inject({ method: "GET", url: "/api/models" })).body);

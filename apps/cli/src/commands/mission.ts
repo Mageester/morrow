@@ -77,7 +77,12 @@ export async function missionCommand(ctx: Context, sub: string | undefined, args
   return runMission(ctx, api, objective);
 }
 
-async function runMission(ctx: Context, api: MorrowApi, objective: string): Promise<number> {
+/**
+ * Run a durable mission against the resolved project. Exported so `morrow
+ * build` can reuse the exact same execution path after creating a workspace,
+ * rather than growing a parallel implementation that could drift.
+ */
+export async function runMission(ctx: Context, api: MorrowApi, objective: string): Promise<number> {
   const project = await resolveProject(ctx, api, { required: true, autoCreateMissing: true });
   if (!project) return EXIT.NOT_FOUND;
 

@@ -3,7 +3,18 @@ import { Check, ChevronsUpDown } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import type { ChatComposerModelRoute } from "./chat-composer.js";
 
-const PROVIDER_NAMES: Record<ProviderId, string> = {
+/**
+ * Display names for providers in the picker.
+ *
+ * Deliberately `Partial`: this is a set of presentation overrides, not an
+ * exhaustive registry. When it was exhaustive, every provider added to the
+ * engine broke the web build until this file was edited too — the catalog of 22
+ * new providers did exactly that. Anything missing here falls back to a
+ * humanised id, so a new provider renders acceptably on day one and can be
+ * given a nicer name later. `model-picker.test.tsx` asserts every known
+ * provider id produces a presentable label.
+ */
+const PROVIDER_NAMES: Partial<Record<ProviderId, string>> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   gemini: "Gemini",
@@ -13,10 +24,39 @@ const PROVIDER_NAMES: Record<ProviderId, string> = {
   ollama: "Ollama · local",
   "deterministic-local": "Local",
   mock: "Mock",
+  "opencode-zen": "OpenCode Zen",
+  "vercel-ai-gateway": "Vercel AI Gateway",
+  "github-models": "GitHub Models",
+  xai: "xAI",
+  mistral: "Mistral",
+  moonshot: "Moonshot",
+  zai: "Z.ai",
+  dashscope: "Qwen · DashScope",
+  perplexity: "Perplexity",
+  cohere: "Cohere",
+  groq: "Groq",
+  cerebras: "Cerebras",
+  together: "Together AI",
+  fireworks: "Fireworks",
+  deepinfra: "DeepInfra",
+  nebius: "Nebius",
+  novita: "Novita",
+  hyperbolic: "Hyperbolic",
+  sambanova: "SambaNova",
+  lmstudio: "LM Studio · local",
+  llamacpp: "llama.cpp · local",
+  vllm: "vLLM · local",
+  jan: "Jan · local",
 };
 
-function providerName(id: ProviderId): string {
-  return PROVIDER_NAMES[id] ?? id;
+/** Turn an unknown provider id into something presentable ("new-host" → "New host"). */
+function humaniseProviderId(id: string): string {
+  const words = id.replace(/[-_]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : id;
+}
+
+export function providerName(id: ProviderId): string {
+  return PROVIDER_NAMES[id] ?? humaniseProviderId(id);
 }
 
 function presetRouteId(id: string): string {

@@ -6,6 +6,86 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added - 30 model providers, guided setup, and one-command project builds
+
+- A data-driven provider catalog adds 22 OpenAI-compatible providers on top of
+  the existing 7: OpenCode Zen, Vercel AI Gateway, GitHub Models, xAI, Mistral,
+  Moonshot, Z.ai, DashScope, Perplexity, Cohere, Groq, Cerebras, Together,
+  Fireworks, DeepInfra, Nebius, Novita, Hyperbolic, SambaNova, and the LM
+  Studio, llama.cpp, vLLM, and Jan local servers. The registry, secrets writer,
+  and connectivity checker all derive from one table, and a test keeps the four
+  surfaces in sync.
+- Catalog providers ship no hardcoded model ids. Models come from each
+  endpoint's own `/models` response, so Morrow never claims a model exists that
+  the endpoint would reject, and guided setup offers exactly the models a
+  credential can reach.
+- One guided setup flow now backs both `morrow onboard` and `morrow providers
+  configure`: browse or search the catalog grouped by kind, sign in with a
+  subscription where a real OAuth flow exists, otherwise open the provider's key
+  page, then verify and pick a default model. `supportsOAuth` is reported by the
+  server, so clients no longer keep a list that drifts from the flows that
+  actually work. OpenCode Zen is presented as API-key only, which matches its
+  official documentation.
+- `morrow build "<what you want>"` creates a new project directory, registers
+  it, and builds it end to end through the existing durable mission engine.
+  It refuses a directory that already has contents and a workspace root too
+  broad to scope autonomy to, so autonomous-by-default is safe here.
+
+### Fixed - first-run setup reported valid API keys as invalid
+
+- `morrow onboard` wrote the secrets file directly from the CLI process and then
+  asked the already-running service to validate the key. The service had read
+  its environment at startup and never re-read the file, so it validated a
+  credential it did not have: a correct, freshly pasted key was reported as
+  "Validation failed" to a brand-new user, who was then offered the chance to
+  discard it. Credentials now persist through `configureProvider`, which
+  hot-applies inside the service that performs the request, and a test asserts
+  that ordering.
+
+### Fixed - configured providers that could not be reached
+
+- Presets name a curated `providerOrder`, and routing stopped there, so a user
+  whose only configured provider was outside that list got "no configured
+  provider" from every preset. Any other configured provider is now appended
+  after the preset's own. A local-only preset filters appended providers too,
+  so the fallback can never turn a local-only run into a hosted one — and
+  local-only now works with LM Studio, llama.cpp, vLLM, and Jan, not Ollama
+  alone.
+- `preferredModel` returned null whenever a preset had no model preference for a
+  provider, treating "no opinion" the same as "recommended models, none
+  available". A preset only curates models for the providers it names.
+- A routing failure caused by a provider with no model selected said nothing was
+  configured, sending users to reconfigure a provider that already worked. It
+  now names the provider and the exact command to fix it.
+
+### Fixed - "verified" was claimed for credentials that were never checked
+
+- The provider check is a `GET` on the endpoint's model list, and some
+  providers serve that list without authentication. A deliberately invalid
+  OpenCode Zen key was reported as verified, telling a user they were ready
+  when their first real request would fail. The check now repeats the request
+  with the credential removed; if it still succeeds, the endpoint does not
+  enforce the key on that route, and the result says "reachable" instead of
+  "verified" and explains why. Reported as `credentialVerified` on the provider
+  test result.
+
+### Fixed - credential and endpoint handling
+
+- `github-models` no longer reads `GITHUB_TOKEN`. That variable is set in
+  nearly every CI runner and dev shell for unrelated reasons, and honouring it
+  marked a hosted network provider as configured — and made it eligible for
+  routing — for users who never opted in. A test forbids any catalog provider
+  from claiming a general-purpose environment variable.
+- A key-protected local server (for example `vllm --api-key`) was unreachable
+  because local providers dropped their API key. The key now reaches both the
+  adapter and the connectivity probe.
+- The CLI drove provider configuration from a hardcoded map of 5 ids, leaving
+  most providers unconfigurable and omitting Gemini from onboarding entirely.
+  It now reads the provider list from the server.
+- Onboarding's mission step compared the selected index against hardcoded
+  numbers, so reordering an option would silently change which branch ran.
+  Options are identified by id.
+
 ### Release status - 0.1.0-beta.31 is conditionally ready
 
 Deterministic and packaged acceptance gates (foundation, durable-autonomy,

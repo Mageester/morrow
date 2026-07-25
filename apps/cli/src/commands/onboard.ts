@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { Context } from "../cli/context.js";
 import { EXIT, CliError } from "../cli/errors.js";
 import { ensureRunning, isRunning } from "../service/lifecycle.js";
-import { ask, askMultiline, askSecret, confirm, select, validateDirectory } from "./common.js";
-import { writeSecret } from "../config/env.js";
+import { ask, askMultiline, confirm, select, validateDirectory } from "./common.js";
+import { pickProvider, setupProvider } from "./provider-setup.js";
 import { discoverSkills, isSafeDefaultSkill } from "../skills/registry.js";
 import { localSkillsRoot } from "./skills.js";
 import { chatCommand } from "./chat.js";
@@ -20,14 +20,6 @@ const STEPS = [
   "project",
   "mission",
 ];
-
-const KEY_ENV: Record<string, string> = {
-  openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  gemini: "GEMINI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-};
 
 export async function onboardCommand(ctx: Context, sub: string, args: string[]): Promise<number> {
   if (sub === "reset") {
@@ -152,6 +144,7 @@ export async function onboardCommand(ctx: Context, sub: string, args: string[]):
   ctx.out.print();
   ctx.out.print(ctx.out.bold("Start utilizing your companion with these commands:"));
   ctx.out.print("  Launch interactive chat:       " + ctx.out.cyan("morrow"));
+  ctx.out.print("  Build a new project from zero: " + ctx.out.cyan('morrow build "<what you want>"'));
   ctx.out.print("  Start with project autonomy:   " + ctx.out.cyan("morrow yolo"));
   ctx.out.print("  Check setup status:            " + ctx.out.cyan("morrow onboard status"));
   ctx.out.print("  Reset and rerun onboarding:    " + ctx.out.cyan("morrow onboard reset"));
@@ -231,79 +224,46 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       await ensureRunning(ctx);
       const api = ctx.api();
 
-      const options = [
-        { id: "openai", label: "OpenAI (API-key Billing)" },
-        { id: "anthropic", label: "Anthropic (API-key Billing)" },
-        { id: "deepseek", label: "DeepSeek (API-key Billing)" },
-        { id: "openrouter", label: "OpenRouter (API-key Billing)" },
-        { id: "skip", label: "Skip / Continue with current providers" },
-      ];
+      ctx.out.print("Morrow talks directly to model providers using your own credentials.");
+      ctx.out.print("Pick as many as you like — you can switch between them at any time.");
+      ctx.out.print();
+      ctx.out.print(
+        ctx.out.gray(
+          "Some providers let you sign in with a subscription you already pay for; the rest use an API key from their console."
+        )
+      );
+      ctx.out.print(ctx.out.gray(`Credentials are stored locally at ${ctx.paths.secretsFile} and never sent anywhere but the provider you chose.`));
 
+      // The whole flow — sign-in or key, persistence through the running
+      // service, verification, and model discovery — is shared with
+      // `morrow providers configure`, so onboarding is never the weaker path.
       while (true) {
-        const statuses = await api.listProviders();
-        ctx.out.print("Morrow connects directly to provider endpoints using your credentials.");
-        ctx.out.print(
-          ctx.out.yellow(
-            "Note: Consumer subscriptions (ChatGPT Plus, Claude Pro) do NOT provide API credits."
-          )
-        );
-        ctx.out.print("Configure billing on the developer platform of your provider.");
-        ctx.out.print();
+        const target = await pickProvider(ctx, api);
+        if (!target) break;
 
-        ctx.out.print(ctx.out.bold("Current Provider Setup:"));
-        for (const p of statuses) {
-          const mark = p.configured ? ctx.out.green("● configured") : ctx.out.gray("○ not configured");
-          if (["openai", "anthropic", "deepseek", "openrouter"].includes(p.id)) {
-            ctx.out.print(`  ${mark}  ${ctx.out.bold(p.label)}`);
-          }
-        }
-        ctx.out.print();
-
-        const idx = await select(ctx, "Select a provider to configure:", options, (item) => item.label);
-        const choice = options[idx]!;
-        if (choice.id === "skip") {
-          break;
+        try {
+          // `onboard` is a guided, human-driven flow by definition, so it may
+          // always prompt regardless of TTY detection.
+          const result = await setupProvider(ctx, api, target, { interactive: true });
+          if (!result.ok && result.detail) ctx.out.warn(result.detail);
+        } catch (e: any) {
+          // A failure on one provider must not abandon the whole setup step.
+          ctx.out.error(`Could not set up ${target.label}: ${e.message}`);
         }
 
-        const providerId = choice.id;
-        const keyEnv = KEY_ENV[providerId]!;
-        const key = await askSecret(`Enter your ${choice.label} API Key: `);
-        if (!key) {
-          ctx.out.warn("API key cannot be empty.");
-          continue;
-        }
-
-        // Plaintext secrets warning
         ctx.out.print();
-        ctx.out.warn(
-          `WARNING: API keys are stored in plaintext in: ${ctx.paths.secretsFile}`
-        );
-        ctx.out.warn("Ensure you secure this file using filesystem owner-only permissions.");
-        ctx.out.print();
-
-        writeSecret(ctx.paths.secretsFile, keyEnv, key);
-
-        // Validation
-        ctx.out.info(`Validating connection to ${choice.label}…`);
-        const result = await api.testProvider(providerId);
-        if (result.ok) {
-          ctx.out.success(`Validated! ${choice.label} is reachable (${result.latencyMs ?? 0} ms).`);
-        } else {
-          ctx.out.error(`Validation failed: ${result.detail}`);
-          const retry = await confirm("Keep key anyway?", false);
-          if (!retry) {
-            writeSecret(ctx.paths.secretsFile, keyEnv, ""); // clear
-          }
-        }
-        ctx.out.print();
-
-        const another = await confirm("Configure another provider?", false);
-        if (!another) {
-          break;
-        }
+        if (!(await confirm("Set up another provider?", false))) break;
       }
 
-      await ensureRunning(ctx);
+      const configured = (await api.listProviders()).filter((p) => p.configured);
+      if (configured.length === 0) {
+        ctx.out.print();
+        ctx.out.warn("No provider is configured yet — Morrow cannot run a model until one is.");
+        ctx.out.info("Add one any time with `morrow providers configure`.");
+      } else {
+        ctx.out.print();
+        ctx.out.success(`${configured.length} provider${configured.length === 1 ? "" : "s"} ready: ${configured.map((p) => p.label).join(", ")}.`);
+      }
       return true;
     }
 
@@ -535,21 +495,25 @@ async function runStep(step: string, ctx: Context): Promise<boolean> {
       ctx.out.print("Provide a query, or choose an example mission below.");
       ctx.out.print();
 
+      // Identified by id rather than position: the previous version compared
+      // the selected index against hardcoded 3 and 4, so inserting or
+      // reordering an option silently changed which branch ran.
       const examples = [
-        "Explain the project entry point and structure.",
-        "Scan this workspace for files and document them.",
-        "Locate configuration scripts and check for errors.",
-        "Enter a custom mission prompt…",
-        "Finish setup without launching a mission",
+        { id: "explain", label: "Explain the project entry point and structure." },
+        { id: "document", label: "Scan this workspace for files and document them." },
+        { id: "check", label: "Locate configuration scripts and check for errors." },
+        { id: "custom", label: "Enter a custom mission prompt…" },
+        { id: "finish", label: "Finish setup without launching a mission" },
       ];
 
-      const idx = await select(ctx, "Select initial mission:", examples, (item) => item);
-      if (idx === 4) {
+      const idx = await select(ctx, "Select initial mission:", examples, (item) => item.label);
+      const selected = examples[idx]!;
+      if (selected.id === "finish") {
         return true;
       }
 
-      let missionText = examples[idx]!;
-      if (idx === 3) {
+      let missionText = selected.label;
+      if (selected.id === "custom") {
         missionText = "";
         while (!missionText) {
           missionText = await askMultiline("What would you like Morrow to help you with?");
