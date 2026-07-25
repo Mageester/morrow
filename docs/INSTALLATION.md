@@ -1,6 +1,6 @@
 # Morrow installation
 
-Morrow v0.1.0-beta.31 is an unsigned Windows 10/11 x64 Early Access release.
+Morrow v0.1.0-beta.33 is an unsigned Windows 10/11 x64 Early Access release.
 The installed product is terminal-only and includes its own Node.js runtime;
 Git, Node.js, and pnpm are not required for the Windows install.
 

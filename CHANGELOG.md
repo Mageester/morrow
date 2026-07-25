@@ -6,6 +6,55 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.33] - 2026-07-25
+
+### Added - the web app can use every provider, and ships in the package
+
+- The web Connections page is now a browsable catalog of all 30 providers,
+  grouped by kind and searchable, with subscription-sign-in and free-tier
+  badges and a direct link to each provider's key page. It could previously
+  configure exactly one provider (OpenRouter) — its API client asserted
+  `z.literal("openrouter")` — leaving 29 unreachable from the browser.
+- Local servers get a base-URL field and an explicitly optional key.
+- The release package bundles the built web app, so `install.ps1` installs the
+  CLI, the local service, and the web UI together.
+
+### Fixed - every provider now gets OpenRouter's protections
+
+- Credentials are verified against the provider before being stored, for every
+  provider rather than OpenRouter alone. A mistyped key is rejected and the
+  working one preserved; previously every other provider stored an invalid key
+  and reported "connected". Verified live against Groq, Mistral, Cerebras, xAI,
+  and Together.
+- Where an endpoint serves its model list without authentication (OpenCode
+  Zen), a wrong key cannot honestly be rejected. The credential is saved and
+  reported as unverified — `credentialVerified: false` — instead of a bare
+  "connected".
+- Model discovery runs on save for every provider, so a freshly connected
+  provider has selectable models immediately instead of after a manual refresh.
+- Local servers can still be configured before they are started; only a
+  reachable-but-rejecting endpoint blocks the save.
+- Setting a default model or context limit no longer requires a network check,
+  so those are savable on an unconnected provider or offline.
+
+### Fixed - release notes described the wrong release
+
+- The release workflow carried its body as a hardcoded string describing
+  beta.30, so every release published after beta.30 shipped beta.30's notes.
+  The body is now generated from this CHANGELOG's section for the version being
+  released, and publication fails if that section is missing.
+
+### Fixed - long-standing test and UI defects
+
+- The six orchestrator test failures recorded as accepted baseline noise were
+  both fixture schema drift: a hand-written CREATE TABLE that had fallen behind
+  the migrations, and a migration test seeding a pinned-schema database with
+  current repositories. The whole monorepo is now green.
+- Unknown web addresses rendered an empty shell with no heading and no way
+  back; there is now a not-found page.
+- The first-run home page reported a missing project while offering no way to
+  create one, and never surfaced the missing-provider prompt.
+
 ### Added - 30 model providers, guided setup, and one-command project builds
 
 - A data-driven provider catalog adds 22 OpenAI-compatible providers on top of

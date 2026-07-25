@@ -67,34 +67,21 @@ jobs:
         run: node --test --test-force-exit scripts/package-release.test.mjs scripts/install-integration.test.mjs
         shell: bash
 
+      # The release body used to be a hardcoded string describing beta.30, so
+      # every release after beta.30 shipped beta.30's notes. It is now derived
+      # from the CHANGELOG section for the version being released, and the step
+      # fails if that section is missing rather than publishing empty notes.
+      - name: Compose release notes from the CHANGELOG
+        run: node scripts/release-notes.mjs ${{ inputs.version }} > dist/RELEASE_NOTES.md
+        shell: bash
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
           name: Morrow v${{ inputs.version }}
           prerelease: true
-          body: |
-            ## Morrow v${{ inputs.version }} (Beta)
-
-            Unsigned Early Access beta for Windows 10/11 x64. Install:
-
-            ```powershell
-            irm https://morrowproject.getaxiom.ca/install.ps1 | iex
-            ```
-
-            Beta.30 adds model and reasoning routing — an interactive `/model`
-            picker with honest live status/context, and a normalized
-            reasoning-effort control wired through to the provider request —
-            and hardens mission continuity across context-window limits and
-            terminal event/recovery integrity. It also fixes a `--url` flag
-            collision in `providers configure`, makes configured
-            `openai-compatible` custom models visible in `/api/models`,
-            hardens `run_command` against malformed tool-call arguments, and
-            stops mission success criteria from inventing an impossible
-            JS-entry-point check for non-JS projects.
-
-            The installer downloads this artifact, verifies its SHA-256, and
-            launches the loopback-only local service. Expect breaking changes.
+          body_path: dist/RELEASE_NOTES.md
           files: |
             dist/Morrow-*.zip
             dist/latest.json
