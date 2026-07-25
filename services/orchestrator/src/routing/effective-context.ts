@@ -34,6 +34,55 @@ export interface EffectiveContextResolution {
   outputReserveTokens: number;
   maximumInputTokens: number;
   fallbackLimitTokens: number | null;
+  /**
+   * Demarcates which unverified-route category the conservative fallback (if
+   * any) was sourced from. Lets the diagnostic, telemetry, and the upcoming
+   * OpenCode Go live-discovery path distinguish "fallback because no Zen
+   * route metadata is available" from "fallback because some custom OpenAI-
+   * compatible endpoint has no declared limit" — WITHOUT fabricating per-slug
+   * context limits. Different identities mean different fixes: Zen/Go need
+   * live discovery; arbitrary custom endpoints need a user-supplied override.
+   */
+  routeFallbackIdentity: RouteFallbackIdentity;
+}
+
+/**
+ * Class of provider route the conservative safe fallback applies to, when no
+ * authoritative metadata is available. This is *provenance*, not a context
+ * limit — the fallback number itself remains the single conservative constant
+ * until live discovery or a user override replaces it.
+ *
+ *   "opencode-zen"      — opencode.ai host, opencode-zen subscription route
+ *   "opencode-go"       — opencode.ai host, opencode-go subscription route
+ *   "custom-compatible" — any other OpenAI-compatible bring-your-own endpoint
+ *   "generic"            — bundled provider with no custom endpoint (deepseek,
+ *                         anthropic, openai, gemini, openrouter, ollama, …)
+ */
+export type RouteFallbackIdentity =
+  | "opencode-zen"
+  | "opencode-go"
+  | "custom-compatible"
+  | "generic";
+
+export function classifyRouteFallbackIdentity(input: {
+  endpointKind: EffectiveContextEndpointInput["kind"];
+  host: string | null;
+  providerId: string;
+}): RouteFallbackIdentity {
+  if (input.endpointKind === "default") return "generic";
+  const host = (input.host ?? "").toLowerCase();
+  if (host === "opencode.ai" || host.endsWith(".opencode.ai")) {
+    // Zen and Go currently share the opencode.ai host. The OpenCode Zen auth
+    // flow historically lands as the openai-compatible provider's authMode
+    // "opencode-zen"; OpenCode Go is being added as a separate first-class
+    // provider (see services/orchestrator/src/provider/registry.ts). Until a
+    // route-discovery record explicitly disambiguates, conservatively demarcate
+    // known opencode.ai hosts as the Zen route — the OpenCode Go provider path
+    // carries its own auth and identity, so this branch is only reached by the
+    // legacy openai-compatible-talking-to-Zen route.
+    return "opencode-zen";
+  }
+  return "custom-compatible";
 }
 
 const DEFAULT_SAFE_FALLBACK_TOKENS = 32_768;
@@ -106,5 +155,10 @@ export function resolveEffectiveContext(input: EffectiveContextInput): Effective
     outputReserveTokens,
     maximumInputTokens: effective.tokens - outputReserveTokens,
     fallbackLimitTokens: effective.source === "fallback" ? fallback : null,
+    routeFallbackIdentity: classifyRouteFallbackIdentity({
+      endpointKind: input.endpoint.kind,
+      host: input.endpoint.host,
+      providerId: input.providerId,
+    }),
   };
 }

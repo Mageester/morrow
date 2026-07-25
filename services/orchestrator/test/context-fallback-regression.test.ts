@@ -22,7 +22,7 @@ function zenFreeEndpoint(): EffectiveContextEndpointInput {
   return {
     kind: "custom",
     host: "opencode.ai",
-    protocol: "openai",
+    protocol: "openai-chat",
     limitTokens: null,
     limitSource: "unknown",
   };
@@ -81,7 +81,7 @@ describe("regression: shared 27_504 fallback across OpenCode Zen free slugs", ()
     const local: EffectiveContextEndpointInput = {
       kind: "custom",
       host: "127.0.0.1",
-      protocol: "openai",
+      protocol: "openai-chat",
       limitTokens: null,
       limitSource: "unknown",
     };
@@ -93,6 +93,49 @@ describe("regression: shared 27_504 fallback across OpenCode Zen free slugs", ()
     // Both currently share the same fallback (the bug). After the route-aware
     // fix, this assertion should flip: distinct hosts with no verified metadata
     // have INDEPENDENT conservative ceilings.
-    expect(localBudget.usableInputTokens).toBe(budgets[0].usableInputTokens);
+    expect(localBudget.usableInputTokens).toBe(budgets[0]!.usableInputTokens);
+  });
+
+  it("demarcates the unverified-route category on the budget (provenance seam for §6 OpenCode Go live discovery)", () => {
+    // The fallback source provenance field exposes WHICH category of route the
+    // conservative fallback applies to, WITHOUT fabricating per-slug context.
+    // This is the seam the §6 OpenCode Go work fills in: an opencode-ai route
+    // classed as the Zen subscription path becomes the opencode-zen identity,
+    // and a local LM Studio route is classed as custom-compatible. Both still
+    // share the 32_768 number today; the diagnostic/telemetry can now tell them
+    // apart and ask for the right next-step fix (live discovery for OpenCode-
+    // branded hosts; explicit user override for arbitrary custom endpoints).
+    for (const b of budgets) {
+      expect(b.routeFallbackIdentity).toBe("opencode-zen");
+    }
+    const local: EffectiveContextEndpointInput = {
+      kind: "custom",
+      host: "127.0.0.1",
+      protocol: "openai-chat",
+      limitTokens: null,
+      limitSource: "unknown",
+    };
+    const localBudget = resolveModelBudget({
+      providerId: "openai-compatible",
+      selectedModel: "lmstudio/google/gemma-3n-e4b",
+      endpoint: local,
+    });
+    expect(localBudget.routeFallbackIdentity).toBe("custom-compatible");
+    // A bundled provider with no custom endpoint does NOT inherit route-keyed
+    // fallback demarcation — its declared native context governs.
+    const deepseekDefault: EffectiveContextEndpointInput = {
+      kind: "default",
+      host: null,
+      protocol: "openai-chat",
+      limitTokens: null,
+      limitSource: "unknown",
+    };
+    const deepseekBudget = resolveModelBudget({
+      providerId: "deepseek",
+      selectedModel: "deepseek-v4-flash",
+      endpoint: deepseekDefault,
+    });
+    expect(deepseekBudget.routeFallbackIdentity).toBe("generic");
+    expect(deepseekBudget.contextWindowConfidence).toBe("verified");
   });
 });
