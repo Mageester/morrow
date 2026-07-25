@@ -50,6 +50,8 @@ import { buildProviderProjection, projectProviderRequest, type DurableProviderTu
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
+import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
+import { externalizeToolResult, renderExternalizedForContext } from "./artifact-externalization.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
@@ -300,9 +302,19 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
   return { languages: [...languages], frameworks: [...frameworks] };
 }
 
-function capToolResult(toolName: string, result: string): string {
+function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
   if (bytes <= TOOL_RESULT_BYTE_LIMIT) return result;
+  // §3+§4: when the tool result is larger than the inline limit, store the
+  // complete content in the durable tool_artifacts store and return a small
+  // metadata reference (id, hash, excerpt, retrieval hint) for the model.
+  // The full payload no longer poisons future turns. Identical content
+  // (same hash + kind) deduplicates into a single row with an incremented
+  // refcount. The fallback (no externalizer wired) is the legacy head/tail
+  // fragment, retained only for tests.
+  if (externalizer) {
+    return externalizer(result, toolName);
+  }
   try {
     const parsed = JSON.parse(result) as any;
     if (Array.isArray(parsed.entries)) {
@@ -3832,7 +3844,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
         }
 
-        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
+        // §3+§4: oversized tool results are stored in the durable tool_artifacts
+        // store and the model receives a small metadata reference instead of
+        // the full payload. The next turn re-references the artifact (refcount
+        // increments) rather than re-inlining the bytes, so a 100 KB build log
+        // can never poison the request budget again.
+        const externalizer = (text: string, kind: string): string => {
+          const repo = toolArtifactsRepository(db);
+          const result = externalizeToolResult(repo, text, {
+            toolName: tc.name,
+            kind,
+            contentType: "application/json",
+            taskId,
+            now: now(),
+          });
+          return renderExternalizedForContext(result);
+        };
+        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr, externalizer) : resultStr;
         if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
 
         // Complete tool call record. The database keeps raw output for /output;
