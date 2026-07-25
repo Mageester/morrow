@@ -37,6 +37,15 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - Setting a default model or context limit no longer requires a network check,
   so those are savable on an unconnected provider or offline.
 
+### Fixed - the installed web UI was invisible
+
+- The packaged launcher reported only the JSON API root, so a new user read
+  "Morrow is ready at http://127.0.0.1:4317", opened it, and got a page of raw
+  JSON. The web UI bundled into the same package was never mentioned by
+  `start`, `status`, or `help`, and `morrow open` — which already launched it —
+  was undiscoverable. All three now show the web app address, and only when a
+  web bundle is really present.
+
 ### Fixed - release notes described the wrong release
 
 - The release workflow carried its body as a hardcoded string describing
