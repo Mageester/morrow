@@ -3292,7 +3292,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 retryExhausted,
                 instruction: retryExhausted
                   ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
-                  : `Fix the "${problem.field}" argument and call the tool once more.`,
+                  // Naming only the broken field matters most when the rest of
+                  // the call is expensive: create_file carries the entire file
+                  // body, and a model told to "fix the arguments" regenerates
+                  // all of it to supply one missing string â€” which is how a
+                  // single missing `path` burned six attempts of a 15k-token
+                  // payload without ever becoming valid.
+                  : tc.name === "create_file" && problem.field === "path" && problem.problem === "missing"
+                  ? 'Resend create_file with the identical content you just produced, adding the "path" argument: the workspace-relative path of the file to write (for example "src/index.css"). Do not regenerate or re-derive the content.'
+                  : `Fix the "${problem.field}" argument and call the tool once more. Keep every other argument exactly as you already sent it.`,
               });
             }
           }
