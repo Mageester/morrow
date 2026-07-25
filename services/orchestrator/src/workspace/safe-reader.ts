@@ -16,12 +16,36 @@ function contained(root: string, target: string) {
   return isWithinWorkspace(root, target);
 }
 
-const SUPPORTED_EXTENSIONS = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".html", ".css",
-  ".yaml", ".yml", ".log", ".mjs", ".cjs", ".toml", ".config", ".xml", ".ini",
-  ".sh", ".bat", ".ps1", ".py", ".go", ".rs", ".java", ".c", ".cpp",
-  ".h", ".cs", ".rb", ".php", ".sql", ".gradle", ".properties",
-  ".lock", ".map", ".svg", ".csv", ".env.example", ""
+/**
+ * Extensions that are never useful to read as text.
+ *
+ * This used to be an allowlist of "supported" text extensions, which meant any
+ * ordinary source file nobody had thought of was rejected outright — a real
+ * project could not be read because it contained `.prisma`, `.vue`, `.svelte`,
+ * `.kt`, or `.tf`. An allowlist fails closed on exactly the files an agent is
+ * asked to work on, and it can never be finished.
+ *
+ * Inverting it keeps every security control unchanged — workspace containment
+ * and denied-name (credential/system file) checks still run below and are what
+ * actually protect the user. This list only avoids streaming binary junk into
+ * a model's context; the worst case of a miss is an unusual text file being
+ * readable, which is the desired behaviour anyway.
+ */
+const BINARY_EXTENSIONS = new Set([
+  // Images and media
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".avif", ".tiff", ".heic",
+  ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac",
+  ".mp4", ".avi", ".mov", ".mkv", ".webm", ".wmv",
+  // Archives and disk images
+  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".iso", ".dmg",
+  // Executables, objects, and debug artifacts
+  ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib",
+  ".class", ".jar", ".war", ".pyc", ".pyo", ".wasm", ".pdb", ".node",
+  // Documents and fonts
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".ttf", ".otf", ".woff", ".woff2", ".eot",
+  // Databases and misc binary
+  ".sqlite", ".sqlite3", ".db", ".mdb", ".dat", ".pack", ".idx",
 ]);
 
 /**
@@ -80,10 +104,10 @@ export function validateSafeReadPath(root: string, requested: string): string {
   }
   const nameOnly = lastPart.toLowerCase();
 
-  // Enforce supported text extensions
+  // Reject binary formats; any other extension is treated as readable text.
   const ext = extname(nameOnly);
-  if (!SUPPORTED_EXTENSIONS.has(ext)) {
-    throw new SafeReadError(`File extension ${ext || "binary"} is not supported in this milestone`);
+  if (BINARY_EXTENSIONS.has(ext)) {
+    throw new SafeReadError(`${ext} is a binary file format and cannot be read as text`);
   }
 
   return target;

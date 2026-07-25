@@ -2717,7 +2717,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         await onSegmentBoundary?.("context_pressure");
       }
       const hasImageInputs = preparedContext.messages.some((message) => (message.images?.length ?? 0) > 0);
-      const candidateEnvelopes = streamCandidates.map((candidate) => {
+      const routedCandidates = streamCandidates.map((candidate) => {
         const candidateModel = candidate.id === providerType
           ? contextModel
           : (getProviderDefaultModel(candidate.id as ProviderId, process.env) ?? `${candidate.id}-model`);
@@ -2793,7 +2793,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const metadata = resolveModelMetadata(candidate.id, candidateModel);
         const verifiedVision = metadata.capabilities.vision && metadata.capabilitySource !== "unknown";
         return { candidate, candidateModel, route, resolution, routeFingerprint, candidateOptions, envelope, verifiedVision };
-      }).filter((item) => !hasImageInputs || item.verifiedVision);
+      });
+      const candidateEnvelopes = routedCandidates.filter((item) => !hasImageInputs || item.verifiedVision);
+      // An image with no vision-capable route is a capability dead end, not a
+      // size one. This used to fall through to the admission check below and
+      // report "request cannot fit the endpoint limit", sending people to
+      // shrink a conversation that would never have been the problem.
+      if (candidateEnvelopes.length === 0 && routedCandidates.length > 0) {
+        throw new Error(
+          `This request includes an image, but none of the configured routes has verified image support (${routedCandidates
+            .map((item) => `${item.candidate.id}/${item.candidateModel}`)
+            .join(", ")}). Connect a vision-capable model, or send the request without the image.`,
+        );
+      }
       const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
       const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
         measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
@@ -2849,7 +2861,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           : [];
       });
       if (admittedCandidates.length === 0) {
-        throw new Error("Provider request cannot fit the verified endpoint limit after automatic compaction; no provider call was made.");
+        // Compaction already reduces the request to system + checkpoint + the
+        // most recent group. When even that is rejected, conversation length is
+        // not what is left to shrink â€” a single message or tool result is
+        // bigger than the route allows. The old message named neither the
+        // route nor the size, so it read as an unexplained failure and offered
+        // no way forward.
+        const detail = projectedCandidates
+          .map(({ candidate, candidateModel, projection }) => {
+            const admission = projection.admission;
+            return admission.ok
+              ? `${candidate.id}/${candidateModel}: fits`
+              : `${candidate.id}/${candidateModel}: needs ${admission.measurement.inputTokens} input tokens, verified limit ${admission.usableInputTokens}`;
+          })
+          .join("; ");
+        throw new Error(
+          `This request is larger than every configured route accepts, even after automatic compaction (${detail}). One message or tool result is too large to send â€” start a new chat, or connect a model with a larger context window.`,
+        );
       }
       const opened = await openStreamWithFallback(
         admittedCandidates,
