@@ -138,4 +138,30 @@ describe("regression: shared 27_504 fallback across OpenCode Zen free slugs", ()
     expect(deepseekBudget.routeFallbackIdentity).toBe("generic");
     expect(deepseekBudget.contextWindowConfidence).toBe("verified");
   });
+
+  it("demarcates the new opencode-go provider distinctly from opencode-zen (commit 3, §6)", () => {
+    // OpenCode Go is now a separate first-class provider (id: "opencode-go",
+    // base URL https://opencode.ai/zen/go/v1, env OPENCODE_GO_API_KEY). Its
+    // route-fallback identity must be `opencode-go` even when the host is
+    // opencode.ai, so the diagnostic/telemetry can route discovery requests
+    // to the right auth/credentials path.
+    const goEndpoint: EffectiveContextEndpointInput = {
+      kind: "custom",
+      host: "opencode.ai",
+      protocol: "openai-chat",
+      limitTokens: null,
+      limitSource: "unknown",
+    };
+    const goBudget = resolveModelBudget({
+      providerId: "opencode-go",
+      selectedModel: "glm-5.2",
+      endpoint: goEndpoint,
+    });
+    expect(goBudget.routeFallbackIdentity).toBe("opencode-go");
+    // Before live discovery runs, the fallback is still shared 32_768, but it
+    // is demarcated as the opencode-go route so consumers can ask for the
+    // right fix.
+    expect(goBudget.contextWindowConfidence).toBe("unverified");
+    expect(goBudget.contextWindowSource).toBe("fallback");
+  });
 });
