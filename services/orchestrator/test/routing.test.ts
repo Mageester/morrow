@@ -1,11 +1,36 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { listProviderStatuses, isProviderConfigured, createProvider, getProviderDefaultModel, installProviderModelDiscoveries } from "../src/provider/registry.js";
 import { routePreset, listPresetStatuses } from "../src/routing/router.js";
 import { listPresets } from "../src/routing/presets.js";
-import { listModels } from "../src/routing/models.js";
+import { listModels, resolveModelStatuses } from "../src/routing/models.js";
 import { ProviderError } from "../src/provider/base.js";
+import { providerCredentialIdentity } from "../src/provider/secrets.js";
 
 describe("Model registry currency", () => {
+  it("lets live OpenRouter metadata override bundled fallback fields for known model ids", () => {
+    const provider = listProviderStatuses({ OPENROUTER_API_KEY: "catalogue-test-key" }).find((item) => item.id === "openrouter")!;
+    const statuses = resolveModelStatuses([{ ...provider, configured: true, available: true }], [{
+      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
+      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
+      models: [{
+        providerModelId: "openrouter/auto", displayName: "Auto Router Live", author: "openrouter",
+        contextWindow: 400_000, maxOutputTokens: 32_000, inputModalities: ["text", "image"], outputModalities: ["text"],
+        capabilities: { streaming: true, toolCalls: true, vision: true, reasoning: true },
+        pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
+        costType: "free", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported",
+      }],
+    }]);
+    expect(statuses.find((item) => item.model.id === "openrouter/auto")?.model).toMatchObject({
+      label: "Auto Router Live",
+      author: "openrouter",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text"],
+      capabilities: { toolCalls: true, vision: true, reasoning: true },
+      pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0, source: "provider-reported" },
+      costType: "free",
+      fetchedAt: "2026-07-22T12:00:00.000Z",
+    });
+  });
   it("exposes the current OpenAI, DeepSeek, and OpenRouter lineups and drops retired ids", () => {
     const ids = new Set(listModels().map((m) => m.id));
     for (const id of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"]) {
@@ -29,6 +54,45 @@ describe("Model registry currency", () => {
 });
 
 describe("Provider registry", () => {
+  it("reports OpenRouter vision support without advertising a custom endpoint", () => {
+    const openrouter = listProviderStatuses({}).find((provider) => provider.id === "openrouter")!;
+    expect(openrouter.capabilities).toMatchObject({ vision: true, customEndpoint: false });
+  });
+
+  it("hard-pins OpenRouter chat to the official endpoint even when an override env var exists", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const provider = createProvider("openrouter", { OPENROUTER_API_KEY: "route-test-key", OPENROUTER_BASE_URL: "https://attacker.invalid/v1" });
+      for await (const _chunk of provider.streamChat([{ role: "user", content: "hello" }], {})) { /* drain */ }
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://openrouter.ai/api/v1/chat/completions");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an expired OpenRouter catalogue visible but marks the provider unavailable", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-22T12:16:00.000Z"));
+    const env = { OPENROUTER_API_KEY: "stale-key" };
+    installProviderModelDiscoveries([{
+      providerId: "openrouter", authMode: "openrouter-api-key", status: "available", errorKind: null,
+      fetchedAt: "2026-07-22T12:00:00.000Z", expiresAt: "2026-07-22T12:15:00.000Z", lastSuccessAt: "2026-07-22T12:00:00.000Z",
+      credentialIdentity: providerCredentialIdentity("openrouter", env),
+      models: [{ providerModelId: "vendor/stale-model", displayName: "Stale model", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: true, vision: false }, metadataSource: "provider-reported" }],
+    }]);
+    try {
+      expect(listProviderStatuses(env).find((provider) => provider.id === "openrouter")).toMatchObject({
+        configured: false,
+        available: false,
+        models: expect.arrayContaining(["vendor/stale-model"]),
+      });
+    } finally {
+      installProviderModelDiscoveries([]);
+      vi.useRealTimers();
+    }
+  });
   it("reports nothing configured with an empty environment", () => {
     const statuses = listProviderStatuses({});
     expect(statuses.length).toBeGreaterThanOrEqual(7);

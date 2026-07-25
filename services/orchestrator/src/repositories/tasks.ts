@@ -3,7 +3,7 @@ import type { Task as TaskRecord } from "@morrow/contracts";
 
 type Input = {
   id: string; projectId: string; kind: string; status: string;
-  idempotencyKey?: string; parentTaskId?: string; agentId?: string; worktreeId?: string; missionId?: string;
+  idempotencyKey?: string; idempotencyFingerprint?: string; parentTaskId?: string; agentId?: string; worktreeId?: string; missionId?: string;
   createdAt: string; updatedAt?: string; startedAt?: string; completedAt?: string;
 };
 type Update = { status: string; updatedAt: string; startedAt?: string | null; completedAt?: string | null };
@@ -29,10 +29,11 @@ export function taskRepository(db: Database.Database) {
   return {
     createTask(i: Input) {
       db.prepare(
-        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
+        "INSERT INTO tasks(id,schema_version,project_id,type,status,idempotency_key,idempotency_fingerprint,parent_task_id,agent_id,worktree_id,mission_id,created_at,updated_at,started_at,completed_at) VALUES(@id,1,@projectId,@kind,@status,@idempotencyKey,@idempotencyFingerprint,@parentTaskId,@agentId,@worktreeId,@missionId,@createdAt,@updatedAt,@startedAt,@completedAt)"
       ).run({
         ...i,
         idempotencyKey: i.idempotencyKey ?? null,
+        idempotencyFingerprint: i.idempotencyFingerprint ?? null,
         parentTaskId: i.parentTaskId ?? null,
         agentId: i.agentId ?? null,
         worktreeId: i.worktreeId ?? null,
@@ -46,6 +47,10 @@ export function taskRepository(db: Database.Database) {
     findByIdempotencyKey(projectId: string, key: string) {
       const r = db.prepare("SELECT * FROM tasks WHERE project_id=? AND idempotency_key=?").get(projectId, key);
       return r ? map(r as Record<string, unknown>) : undefined;
+    },
+    getIdempotencyFingerprint(id: string) {
+      const row = db.prepare("SELECT idempotency_fingerprint FROM tasks WHERE id=?").get(id) as { idempotency_fingerprint: string | null } | undefined;
+      return row?.idempotency_fingerprint ?? null;
     },
     getTaskById(id: string) {
       const r = get.get(id);

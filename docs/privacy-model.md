@@ -57,6 +57,12 @@ Each category requires an explicit scope and retention rule.
 
 - No silent telemetry
 - No secret values in prompts or logs
+- Provider credential candidates remain server-only and are authenticated before
+  persistence or promotion; a failed OpenRouter replacement cannot overwrite the
+  last known-good credential.
+- Provider credentials use an atomic owner boundary: current-user plus
+  LocalSystem ACLs on Windows and mode `0600` on Unix-like systems. Failure to
+  establish the platform boundary aborts the write.
 - No cross-project memory retrieval
 - No external provider fallback without disclosure
 - No plugin or skill access beyond declared capabilities

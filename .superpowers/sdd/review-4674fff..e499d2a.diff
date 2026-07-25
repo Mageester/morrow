@@ -1,0 +1,958 @@
+# Review package: 4674fff..e499d2a
+
+## Commits
+e499d2a fix(orchestrator): harden web mission stream
+6541c1d feat(orchestrator): add resumable web mission stream
+
+## Files changed
+ services/orchestrator/src/repositories/missions.ts |   6 +
+ services/orchestrator/src/server.ts                |  11 +
+ services/orchestrator/src/web/mission-stream.ts    | 246 +++++++++
+ .../orchestrator/test/server-web-stream.test.ts    | 577 +++++++++++++++++++++
+ 4 files changed, 840 insertions(+)
+
+## Diff
+diff --git a/services/orchestrator/src/repositories/missions.ts b/services/orchestrator/src/repositories/missions.ts
+index 5f82949..9724823 100644
+--- a/services/orchestrator/src/repositories/missions.ts
++++ b/services/orchestrator/src/repositories/missions.ts
+@@ -597,20 +597,26 @@ export function missionsRepository(db: Database.Database) {
+       db.prepare(
+         `INSERT INTO mission_events (id, mission_id, sequence, type, summary, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       ).run(id, missionId, seq, type, summary, JSON.stringify(data), now);
+       return { id, missionId, sequence: seq, type, summary, data, createdAt: now };
+     },
+ 
+     listEvents(missionId: string): MissionEvent[] {
+       return db.prepare("SELECT * FROM mission_events WHERE mission_id = ? ORDER BY sequence ASC").all(missionId).map(mapEvent);
+     },
+ 
++    listEventsAfter(missionId: string, afterSequence: number): MissionEvent[] {
++      return db.prepare(
++        "SELECT * FROM mission_events WHERE mission_id = ? AND sequence > ? ORDER BY sequence ASC",
++      ).all(missionId, afterSequence).map(mapEvent);
++    },
++
+     // ── Advanced Execution Kernel: contract + requirement ledger ──────────
+     createContract(input: {
+       missionId: string;
+       sourcePrompt: string;
+       objective: string;
+       expectedArtifacts?: string[];
+       acceptanceCriteria?: string[];
+       verificationCommands?: string[];
+       requiredGitResult?: string | null;
+       unresolvedAmbiguities?: string[];
+diff --git a/services/orchestrator/src/server.ts b/services/orchestrator/src/server.ts
+index 8951a5a..18f7083 100644
+--- a/services/orchestrator/src/server.ts
++++ b/services/orchestrator/src/server.ts
+@@ -142,20 +142,21 @@ import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing
+ import { routePreset, listPresetStatuses } from "./routing/router.js";
+ import { testProviderConnectivity } from "./provider/connectivity.js";
+ import { configureProvider, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+ import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
+ import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
+ import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
+ import { buildProviderProjection } from "./execution/provider-projection.js";
+ import { resolveModelBudget } from "./routing/model-budget.js";
+ import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
+ import { registerWebMissionRoutes } from "./web/mission-routes.js";
++import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+ 
+ export class ApiError extends Error {
+   constructor(public statusCode: number, message: string, public code: string = "INTERNAL_ERROR") {
+     super(message);
+     this.name = "ApiError";
+   }
+ }
+ 
+ /**
+  * An idempotency key lets a client safely retry a creation request (e.g. after a
+@@ -187,20 +188,22 @@ export type ServerDependencies = {
+   /** Wake durable mission ownership after task or approval state changes. */
+   missionControllerRunner?: {
+     run?(missionId: string): void;
+     wake(missionId: string): void;
+     cancel?(missionId: string): void;
+     isActive?(missionId: string): boolean;
+   };
+   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
+   supervisor?: ProcessSupervisor;
+   sseIntervalMs?: number;
++  /** Idle heartbeat cadence for the web mission stream; injectable for tests. */
++  webStreamHeartbeatMs?: number;
+   modelCatalog?: ModelCatalog;
+   /** Injectable account-model discovery transport for deterministic tests. */
+   providerConnectivityTest?: typeof testProviderConnectivity;
+   /** Defaults on outside tests; discovery failures never block server startup. */
+   backgroundModelDiscovery?: boolean;
+   /** Injectable so the diagnostics route is fast and deterministic in tests. */
+   diagnosticsRunner?: DiagnosticsRunner;
+   /** Injectable messaging adapters; defaults to env-configured ones. */
+   messageAdapters?: MessageAdapter[];
+   /**
+@@ -342,20 +345,28 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
+     db: deps.db,
+     projects,
+     missions,
+     approvals,
+     agents,
+     missionRuntime,
+     missionService,
+     ...(deps.missionControllerRunner ? { missionControllerRunner: deps.missionControllerRunner } : {}),
+     readIdempotencyKey,
+   });
++  // Resumable, ordered mission event stream (SSE) for the web client. Polls
++  // persisted mission events so it is correct across restarts and never leaks
++  // provider internals into the wire payload.
++  registerWebMissionStreamRoutes(app, {
++    missions,
++    ...(deps.sseIntervalMs !== undefined ? { pollIntervalMs: deps.sseIntervalMs } : {}),
++    ...(deps.webStreamHeartbeatMs !== undefined ? { heartbeatIntervalMs: deps.webStreamHeartbeatMs } : {}),
++  });
+ 
+   const processesRepo = processesRepository(deps.db);
+   const supervisor = deps.supervisor ?? new ProcessSupervisor(processesRepo, join(resolveMorrowHome(process.env), "process-logs"));
+   // A `running` row from a previous orchestrator run is unobservable — mark it
+   // lost before serving any traffic so no stale row masquerades as live.
+   supervisor.reconcileOnStartup();
+   const worktreesRepo = worktreesRepository(deps.db);
+   const worktreeManager = new WorktreeManager(worktreesRepo, join(resolveMorrowHome(process.env), "worktrees"));
+   const integrationsRepo = integrationsRepository(deps.db);
+   const contextSummariesRepo = contextSummariesRepository(deps.db);
+diff --git a/services/orchestrator/src/web/mission-stream.ts b/services/orchestrator/src/web/mission-stream.ts
+new file mode 100644
+index 0000000..cd2c3f9
+--- /dev/null
++++ b/services/orchestrator/src/web/mission-stream.ts
+@@ -0,0 +1,246 @@
++import type { FastifyInstance } from "fastify";
++import type { MissionEvent, WebMissionStreamEnvelope } from "@morrow/contracts";
++import { ApiError } from "../server.js";
++import type { MissionsRepository } from "../repositories/missions.js";
++
++/**
++ * Everything the resumable mission event stream needs, injected so the route
++ * performs no global lookups and stays trivially testable. Timers are injectable
++ * so tests can drive polling and heartbeats deterministically without waiting on
++ * wall-clock seconds.
++ */
++export interface WebMissionStreamDependencies {
++  missions: MissionsRepository;
++  /** Persisted-event poll cadence. Defaults to 100ms in production. */
++  pollIntervalMs?: number;
++  /** Idle heartbeat cadence. Defaults to 15s per the spec. */
++  heartbeatIntervalMs?: number;
++}
++
++type WebStreamEventType = WebMissionStreamEnvelope["eventType"];
++
++// Runtime/execution lifecycle transitions surface in the runtime pane. Matched
++// against the raw mission-event type with its `mission.` prefix stripped, so an
++// unrelated event that merely contains one of these words (e.g.
++// `review_started`) is never miscategorised.
++const RUNTIME_SUFFIXES = new Set<string>([
++  "started",
++  "status_changed",
++  "completed",
++  "cancelled",
++  "recovery_applied",
++  "rolled_back",
++  "loop_detected",
++  "failure_recorded",
++]);
++
++/**
++ * Map a durable mission-event type onto one of the four web envelope event
++ * types the client cache is keyed by. The mapping is intentionally coarse: the
++ * browser reacts to the *category* of change and then re-reads the authoritative
++ * snapshot, so it never depends on the full internal event vocabulary.
++ */
++export function classifyWebStreamEventType(rawType: string): WebStreamEventType {
++  const suffix = rawType.startsWith("mission.") ? rawType.slice("mission.".length) : rawType;
++  // Approval / decision events drive the attention pane.
++  if (suffix.includes("approv")) return "attention.updated";
++  // Evidence and durable artifacts (checkpoints) drive the artifact pane.
++  if (suffix.includes("evidence") || suffix.includes("artifact") || suffix === "checkpoint_created") {
++    return "artifact.updated";
++  }
++  if (RUNTIME_SUFFIXES.has(suffix)) return "runtime.updated";
++  return "mission.updated";
++}
++
++/**
++ * Resolve the resume point for a stream. A client may present a cursor via the
++ * `after` query parameter and/or the `Last-Event-ID` reconnect header; the
++ * stream resumes from the larger of the two so a stale query string can never
++ * replay events the client already acknowledged on the socket. Any malformed
++ * value is rejected as a structured 400 (INVALID_CURSOR) rather than being
++ * silently coerced.
++ */
++export function resolveResumeCursor(queryAfter: unknown, lastEventId: unknown): number {
++  const parse = (value: unknown): number => {
++    if (value === undefined || value === null || value === "") return 0;
++    if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
++    const parsed = Number(value);
++    if (!Number.isSafeInteger(parsed)) throw new ApiError(400, "Invalid cursor", "INVALID_CURSOR");
++    return parsed;
++  };
++  return Math.max(parse(queryAfter), parse(lastEventId));
++}
++
++/**
++ * Frame a single envelope as one SSE message. The `id:` line carries the mission
++ * event sequence so the browser's EventSource records it as Last-Event-ID for
++ * reconnects; `event:` carries the coarse envelope type for client-side routing.
++ */
++export function encodeSse(envelope: WebMissionStreamEnvelope): string {
++  return `id: ${envelope.cursor}\nevent: ${envelope.eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
++}
++
++/**
++ * Build the web envelope for a persisted mission event. The payload deliberately
++ * carries only an opaque event identity: summaries and event data can contain
++ * commands, credential-bearing URLs, or provider internals and must not cross
++ * the browser boundary.
++ */
++function toEnvelope(missionId: string, event: MissionEvent): WebMissionStreamEnvelope {
++  return {
++    version: 1,
++    cursor: event.sequence,
++    missionId,
++    eventType: classifyWebStreamEventType(event.type),
++    emittedAt: event.createdAt,
++    payload: { eventId: event.id },
++  };
++}
++
++/**
++ * Register the resumable, ordered mission event stream:
++ *   GET /api/web/missions/:missionId/stream?after=<cursor>
++ *
++ * The stream polls PERSISTED mission events (never an in-memory-only bus) after
++ * the last sent cursor, so it is correct across process restarts and delivers a
++ * complete backlog on connect. It closes all timers when the socket closes and
++ * emits an idle heartbeat comment so proxies keep the connection alive.
++ */
++export function registerWebMissionStreamRoutes(app: FastifyInstance, deps: WebMissionStreamDependencies): void {
++  const pollIntervalMs = deps.pollIntervalMs ?? 100;
++  const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 15_000;
++
++  app.get("/api/web/missions/:missionId/stream", async (request, reply) => {
++    const { missionId } = request.params as { missionId: string };
++    const afterQuery = (request.query as { after?: unknown }).after;
++    const lastEventId = request.headers["last-event-id"];
++
++    // Resolve the cursor (may throw a structured 400) and confirm the mission
++    // exists BEFORE any stream headers are written, so a bad request surfaces as
++    // a normal JSON error response rather than a half-open event stream.
++    const startCursor = resolveResumeCursor(afterQuery, lastEventId);
++    if (!deps.missions.get(missionId)) throw new ApiError(404, "Mission not found", "NOT_FOUND");
++
++    reply.hijack();
++    let closed = false;
++    let lastSent = startCursor;
++    let pollTimer: ReturnType<typeof setTimeout> | undefined;
++    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
++    let waitingForDrain = false;
++    let drainHandler: (() => void) | undefined;
++
++    const clearTimers = () => {
++      if (pollTimer) clearTimeout(pollTimer);
++      if (heartbeatTimer) clearTimeout(heartbeatTimer);
++      pollTimer = undefined;
++      heartbeatTimer = undefined;
++    };
++
++    const stop = (destroyResponse = false) => {
++      if (closed) return;
++      closed = true;
++      clearTimers();
++      if (drainHandler) {
++        reply.raw.off("drain", drainHandler);
++        drainHandler = undefined;
++      }
++      if (destroyResponse && !reply.raw.destroyed) {
++        try {
++          reply.raw.destroy();
++        } catch {
++          if (!reply.raw.writableEnded) {
++            try { reply.raw.end(); } catch { /* socket is already unusable */ }
++          }
++        }
++      }
++    };
++
++    request.raw.on("close", stop);
++    reply.raw.on("close", stop);
++    reply.raw.on("error", () => stop(true));
++
++    try {
++      reply.raw.writeHead(200, {
++        "Content-Type": "text/event-stream",
++        "Cache-Control": "no-cache",
++        Connection: "keep-alive",
++      });
++    } catch {
++      stop(true);
++      return;
++    }
++
++    const resumeAfterDrain = () => {
++      drainHandler = undefined;
++      if (closed) return;
++      waitingForDrain = false;
++      scheduleHeartbeat();
++      poll();
++    };
++
++    const waitForDrain = () => {
++      if (closed || waitingForDrain) return;
++      waitingForDrain = true;
++      clearTimers();
++      drainHandler = resumeAfterDrain;
++      reply.raw.once("drain", drainHandler);
++    };
++
++    const scheduleHeartbeat = () => {
++      if (closed || waitingForDrain || heartbeatTimer) return;
++      heartbeatTimer = setTimeout(() => {
++        heartbeatTimer = undefined;
++        if (closed || waitingForDrain) return;
++        try {
++          if (!reply.raw.write(": heartbeat\n\n")) {
++            waitForDrain();
++            return;
++          }
++          scheduleHeartbeat();
++        } catch {
++          stop(true);
++        }
++      }, heartbeatIntervalMs);
++    };
++
++    const schedulePoll = () => {
++      if (closed || waitingForDrain || pollTimer) return;
++      pollTimer = setTimeout(() => {
++        pollTimer = undefined;
++        poll();
++      }, pollIntervalMs);
++    };
++
++    const poll = () => {
++      if (closed || waitingForDrain) return;
++      try {
++        const pending = deps.missions.listEventsAfter(missionId, lastSent);
++        if (pending.length > 0) {
++          for (const event of pending) {
++            const accepted = reply.raw.write(encodeSse(toEnvelope(missionId, event)));
++            // Node accepts the chunk into its output buffer even when `write`
++            // returns false. Advance only after a non-throwing write, then wait
++            // for drain before querying or writing the next event.
++            lastSent = event.sequence;
++            if (!accepted) {
++              waitForDrain();
++              return;
++            }
++          }
++          // Real traffic resets the idle clock: a heartbeat is only for silence.
++          if (heartbeatTimer) {
++            clearTimeout(heartbeatTimer);
++            heartbeatTimer = undefined;
++          }
++          scheduleHeartbeat();
++        }
++        schedulePoll();
++      } catch {
++        stop(true);
++      }
++    };
++
++    scheduleHeartbeat();
++    poll();
++  });
++}
+diff --git a/services/orchestrator/test/server-web-stream.test.ts b/services/orchestrator/test/server-web-stream.test.ts
+new file mode 100644
+index 0000000..014b8da
+--- /dev/null
++++ b/services/orchestrator/test/server-web-stream.test.ts
+@@ -0,0 +1,577 @@
++import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
++import { mkdtempSync, rmSync } from "node:fs";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import * as http from "node:http";
++import Fastify from "fastify";
++import { openDatabase } from "../src/database.js";
++import { buildServer } from "../src/server.js";
++import { TaskRunner } from "../src/runner.js";
++import { missionsRepository } from "../src/repositories/missions.js";
++import { resolveResumeCursor, encodeSse, registerWebMissionStreamRoutes } from "../src/web/mission-stream.js";
++import { WebMissionStreamEnvelopeSchema, type MissionBudget } from "@morrow/contracts";
++
++const BUDGET: MissionBudget = {
++  maxUsd: null,
++  maxAttempts: null,
++  maxReviewCycles: 2,
++  spentUsd: 0,
++  attemptsUsed: 0,
++  reviewCyclesUsed: 0,
++};
++
++/** Collect Server-Sent-Events from a live connection, keeping both the raw wire
++ *  text (for exact framing assertions) and the parsed frames (id/event/data). */
++function connect(baseUrl: string, path: string, headers: Record<string, string> = {}) {
++  const frames: Array<{ id: number; event: string; data: any }> = [];
++  let raw = "";
++  let buffer = "";
++  const req = http.get(baseUrl + path, { headers }, (res) => {
++    res.setEncoding("utf8");
++    res.on("data", (chunk: string) => {
++      raw += chunk;
++      buffer += chunk;
++      const parts = buffer.split("\n\n");
++      buffer = parts.pop() ?? "";
++      for (const part of parts) {
++        const lines = part.split("\n");
++        const idLine = lines.find((l) => l.startsWith("id: "));
++        const eventLine = lines.find((l) => l.startsWith("event: "));
++        const dataLine = lines.find((l) => l.startsWith("data: "));
++        if (idLine && eventLine && dataLine) {
++          frames.push({ id: Number(idLine.slice(4)), event: eventLine.slice(7), data: JSON.parse(dataLine.slice(6)) });
++        }
++      }
++    });
++  });
++  req.on("error", () => { /* destroyed on purpose during teardown */ });
++  return { req, frames, getRaw: () => raw, close: () => req.destroy() };
++}
++
++async function until(predicate: () => boolean, timeoutMs = 2000): Promise<boolean> {
++  const deadline = Date.now() + timeoutMs;
++  while (Date.now() < deadline) {
++    if (predicate()) return true;
++    await new Promise((r) => setTimeout(r, 5));
++  }
++  return predicate();
++}
++
++describe("Web mission event stream", () => {
++  let db: any;
++  let app: any;
++  let tempDir: string;
++  let baseUrl: string;
++  let missions: ReturnType<typeof missionsRepository>;
++  const open: Array<{ close: () => void }> = [];
++
++  const PROJECT_ID = "p1";
++  const MISSION_ID = "mission-1";
++
++  function seedMission(id = MISSION_ID) {
++    missions.create({ id, projectId: PROJECT_ID, objective: "Stream objective", budget: BUDGET });
++    return id;
++  }
++
++  beforeEach(async () => {
++    tempDir = mkdtempSync(join(tmpdir(), "morrow-web-stream-"));
++    db = openDatabase(join(tempDir, "morrow.db"));
++    const now = "2026-07-19T00:00:00.000Z";
++    db.prepare("INSERT INTO projects VALUES(?,?,?,?,?,?)").run(PROJECT_ID, 1, "Personal", tempDir, now, now);
++    missions = missionsRepository(db);
++    app = buildServer({
++      db,
++      runner: new TaskRunner(db),
++      missionControllerRunner: { run: vi.fn(), wake: vi.fn(), cancel: vi.fn(), isActive: vi.fn(() => false) },
++      sseIntervalMs: 10,
++      webStreamHeartbeatMs: 20,
++    });
++    await app.listen({ host: "127.0.0.1", port: 0 });
++    const address = app.server.address() as any;
++    baseUrl = `http://127.0.0.1:${address.port}`;
++  });
++
++  afterEach(async () => {
++    for (const c of open.splice(0)) c.close();
++    await app.close();
++    db.close();
++    rmSync(tempDir, { recursive: true, force: true });
++  });
++
++  it("resolveResumeCursor takes the larger of after and Last-Event-ID and rejects garbage", () => {
++    expect(resolveResumeCursor(undefined, undefined)).toBe(0);
++    expect(resolveResumeCursor("5", undefined)).toBe(5);
++    expect(resolveResumeCursor("2", "7")).toBe(7);
++    expect(resolveResumeCursor("9", "3")).toBe(9);
++    expect(() => resolveResumeCursor("abc", undefined)).toThrow();
++    expect(() => resolveResumeCursor("-1", undefined)).toThrow();
++  });
++
++  it("queries persisted mission events strictly after the supplied cursor", () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    const second = missions.appendEvent(MISSION_ID, "mission.status_changed", "two");
++    const third = missions.appendEvent(MISSION_ID, "mission.evidence_recorded", "three");
++
++    expect(missions.listEventsAfter(MISSION_ID, second.sequence)).toEqual([third]);
++    expect(missions.listEventsAfter(MISSION_ID, third.sequence)).toEqual([]);
++  });
++
++  it("forwards the last sent cursor to the bounded repository query", async () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    missions.appendEvent(MISSION_ID, "mission.status_changed", "two");
++    const third = missions.appendEvent(MISSION_ID, "mission.evidence_recorded", "three");
++    const listEventsAfter = vi.fn(missions.listEventsAfter);
++    const streamApp = Fastify({ logger: false });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 10,
++      heartbeatIntervalMs: 100,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream?after=2`);
++
++    try {
++      expect(await until(() => stream.frames.length === 1)).toBe(true);
++      expect(stream.frames[0]!.id).toBe(third.sequence);
++      expect(listEventsAfter).toHaveBeenCalledWith(MISSION_ID, 2);
++      expect(await until(() => listEventsAfter.mock.calls.length >= 2)).toBe(true);
++      expect(listEventsAfter).toHaveBeenCalledWith(MISSION_ID, third.sequence);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("hijacks Fastify only after validation and before writing SSE headers", async () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    const order: string[] = [];
++    const streamApp = Fastify({ logger: false });
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      const hijack = reply.hijack.bind(reply);
++      reply.hijack = (() => {
++        order.push("hijack");
++        return hijack();
++      }) as typeof reply.hijack;
++      const writeHead = reply.raw.writeHead.bind(reply.raw);
++      reply.raw.writeHead = ((...args: Parameters<typeof reply.raw.writeHead>) => {
++        order.push("headers");
++        return writeHead(...args);
++      }) as typeof reply.raw.writeHead;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, { missions, pollIntervalMs: 10, heartbeatIntervalMs: 100 });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => stream.frames.length === 1)).toBe(true);
++      expect(order.slice(0, 2)).toEqual(["hijack", "headers"]);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++
++    order.length = 0;
++    const validationApp = Fastify({ logger: false });
++    validationApp.addHook("onRequest", (request, reply, done) => {
++      const hijack = reply.hijack.bind(reply);
++      reply.hijack = (() => {
++        order.push("hijack");
++        return hijack();
++      }) as typeof reply.hijack;
++      done();
++    });
++    registerWebMissionStreamRoutes(validationApp, { missions });
++    const invalid = await validationApp.inject({
++      method: "GET",
++      url: `/api/web/missions/${MISSION_ID}/stream?after=invalid`,
++    });
++    expect(invalid.statusCode).toBe(400);
++    expect(order).toEqual([]);
++    await validationApp.close();
++  });
++
++  it("stops polling when the raw response closes", async () => {
++    seedMission();
++    const listEventsAfter = vi.fn(missions.listEventsAfter);
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 5,
++      heartbeatIntervalMs: 100,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => listEventsAfter.mock.calls.length >= 2)).toBe(true);
++      rawResponse!.emit("close");
++      const callsAfterClose = listEventsAfter.mock.calls.length;
++      await new Promise((resolve) => setTimeout(resolve, 30));
++      expect(listEventsAfter).toHaveBeenCalledTimes(callsAfterClose);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("stops and destroys the stream when the raw response emits an error", async () => {
++    seedMission();
++    const listEventsAfter = vi.fn(missions.listEventsAfter);
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 5,
++      heartbeatIntervalMs: 100,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => listEventsAfter.mock.calls.length >= 2)).toBe(true);
++      expect(() => rawResponse!.emit("error", new Error("synthetic response failure"))).not.toThrow();
++      expect(await until(() => rawResponse!.destroyed)).toBe(true);
++      const callsAfterError = listEventsAfter.mock.calls.length;
++      await new Promise((resolve) => setTimeout(resolve, 30));
++      expect(listEventsAfter).toHaveBeenCalledTimes(callsAfterError);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("contains repository exceptions from timer callbacks and destroys the stream", async () => {
++    seedMission();
++    const listEventsAfter = vi.fn()
++      .mockReturnValueOnce([])
++      .mockImplementation(() => { throw new Error("synthetic repository failure"); });
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 5,
++      heartbeatIntervalMs: 100,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => listEventsAfter.mock.calls.length >= 2)).toBe(true);
++      expect(await until(() => rawResponse!.destroyed)).toBe(true);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("contains write exceptions and destroys the stream after headers", async () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      reply.raw.write = (() => { throw new Error("synthetic write failure"); }) as typeof reply.raw.write;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, { missions, pollIntervalMs: 5, heartbeatIntervalMs: 100 });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => rawResponse?.destroyed === true)).toBe(true);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("contains header write exceptions after hijacking and destroys the stream", async () => {
++    seedMission();
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      reply.raw.writeHead = (() => { throw new Error("synthetic header failure"); }) as typeof reply.raw.writeHead;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, { missions, pollIntervalMs: 5, heartbeatIntervalMs: 100 });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => rawResponse?.destroyed === true)).toBe(true);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("pauses buffered event delivery on backpressure and resumes from the accepted cursor after drain", async () => {
++    seedMission();
++    const first = missions.appendEvent(MISSION_ID, "mission.created", "one");
++    const second = missions.appendEvent(MISSION_ID, "mission.status_changed", "two");
++    const listEventsAfter = vi.fn(missions.listEventsAfter);
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    let eventWrites = 0;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      const write = reply.raw.write.bind(reply.raw);
++      reply.raw.write = ((chunk: any, ...args: any[]) => {
++        const accepted = write(chunk, ...args);
++        if (String(chunk).startsWith("id: ") && ++eventWrites === 1) return false;
++        return accepted;
++      }) as typeof reply.raw.write;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 5,
++      heartbeatIntervalMs: 100,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => stream.frames.length >= 1)).toBe(true);
++      await new Promise((resolve) => setTimeout(resolve, 30));
++      expect(stream.frames.map((frame) => frame.id)).toEqual([first.sequence]);
++      expect(rawResponse!.listenerCount("drain")).toBe(1);
++      expect(listEventsAfter).toHaveBeenCalledTimes(1);
++
++      rawResponse!.emit("drain");
++      expect(await until(() => stream.frames.length === 2)).toBe(true);
++      expect(stream.frames.map((frame) => frame.id)).toEqual([first.sequence, second.sequence]);
++      expect(listEventsAfter).toHaveBeenCalledWith(MISSION_ID, first.sequence);
++      expect(rawResponse!.listenerCount("drain")).toBe(0);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("pauses heartbeats and polling on backpressure and resumes both after drain", async () => {
++    seedMission();
++    const listEventsAfter = vi.fn(missions.listEventsAfter);
++    const streamApp = Fastify({ logger: false });
++    let rawResponse: http.ServerResponse | undefined;
++    let heartbeatWrites = 0;
++    streamApp.addHook("onRequest", (request, reply, done) => {
++      rawResponse = reply.raw;
++      const write = reply.raw.write.bind(reply.raw);
++      reply.raw.write = ((chunk: any, ...args: any[]) => {
++        const accepted = write(chunk, ...args);
++        if (String(chunk) === ": heartbeat\n\n" && ++heartbeatWrites === 1) return false;
++        return accepted;
++      }) as typeof reply.raw.write;
++      done();
++    });
++    registerWebMissionStreamRoutes(streamApp, {
++      missions: { ...missions, listEventsAfter },
++      pollIntervalMs: 5,
++      heartbeatIntervalMs: 10,
++    });
++    await streamApp.listen({ host: "127.0.0.1", port: 0 });
++    const address = streamApp.server.address() as any;
++    const stream = connect(`http://127.0.0.1:${address.port}`, `/api/web/missions/${MISSION_ID}/stream`);
++
++    try {
++      expect(await until(() => heartbeatWrites === 1)).toBe(true);
++      const pollsAtBackpressure = listEventsAfter.mock.calls.length;
++      await new Promise((resolve) => setTimeout(resolve, 35));
++      expect(heartbeatWrites).toBe(1);
++      expect(listEventsAfter).toHaveBeenCalledTimes(pollsAtBackpressure);
++      expect(rawResponse!.listenerCount("drain")).toBe(1);
++
++      rawResponse!.emit("drain");
++      expect(await until(() => heartbeatWrites >= 2)).toBe(true);
++      expect(listEventsAfter.mock.calls.length).toBeGreaterThan(pollsAtBackpressure);
++      expect(rawResponse!.listenerCount("drain")).toBe(0);
++    } finally {
++      stream.close();
++      await streamApp.close();
++    }
++  });
++
++  it("encodeSse frames the envelope exactly as id/event/data", () => {
++    const envelope = {
++      version: 1 as const,
++      cursor: 3,
++      missionId: MISSION_ID,
++      eventType: "mission.updated" as const,
++      emittedAt: "2026-07-19T12:00:03.000Z",
++      payload: { eventId: "mission-1-ev-3" },
++    };
++    expect(encodeSse(envelope)).toBe(
++      `id: 3\nevent: mission.updated\ndata: ${JSON.stringify(envelope)}\n\n`,
++    );
++  });
++
++  it("streams persisted events in order, framed exactly, and picks up events appended after open", async () => {
++    seedMission();
++    const e1 = missions.appendEvent(MISSION_ID, "mission.created", "Mission created");
++    const e2 = missions.appendEvent(MISSION_ID, "mission.status_changed", "Status: draft → running", { from: "draft", to: "running" });
++
++    const stream = connect(baseUrl, `/api/web/missions/${MISSION_ID}/stream`);
++    open.push(stream);
++
++    expect(await until(() => stream.frames.length >= 2)).toBe(true);
++
++    // Live update: append AFTER the stream opened; the poll loop must deliver it.
++    const e3 = missions.appendEvent(MISSION_ID, "mission.evidence_recorded", "Evidence recorded", { status: "passed" });
++    expect(await until(() => stream.frames.length >= 3)).toBe(true);
++
++    const ids = stream.frames.map((f) => f.id);
++    expect(ids).toEqual([e1.sequence, e2.sequence, e3.sequence]);
++    // strictly increasing, no duplicates
++    for (let i = 1; i < ids.length; i++) expect(ids[i]! > ids[i - 1]!).toBe(true);
++
++    // event-type mapping
++    expect(stream.frames.map((f) => f.event)).toEqual([
++      "mission.updated",
++      "runtime.updated",
++      "artifact.updated",
++    ]);
++
++    // exact wire frame for the first event
++    const firstEnvelope = {
++      version: 1,
++      cursor: e1.sequence,
++      missionId: MISSION_ID,
++      eventType: "mission.updated",
++      emittedAt: e1.createdAt,
++      payload: { eventId: e1.id },
++    };
++    expect(stream.getRaw()).toContain(
++      `id: ${e1.sequence}\nevent: mission.updated\ndata: ${JSON.stringify(firstEnvelope)}\n\n`,
++    );
++
++    // every frame parses under the contract schema
++    for (const frame of stream.frames) {
++      const parsed = WebMissionStreamEnvelopeSchema.parse(frame.data);
++      expect(parsed.cursor).toBe(frame.id);
++      expect(parsed.missionId).toBe(MISSION_ID);
++    }
++  });
++
++  it("exposes only the event ID when a persisted summary contains credentials", async () => {
++    seedMission();
++    const secretSummary = "Authorization: Bearer test-only-secret fetch https://user:password@example.test/private";
++    const event = missions.appendEvent(MISSION_ID, "mission.criterion_verified", secretSummary, {
++      command: "curl -H 'Authorization: Bearer test-only-secret' https://user:password@example.test/private",
++      provider: "private-provider",
++      model: "private-model",
++    });
++
++    const stream = connect(baseUrl, `/api/web/missions/${MISSION_ID}/stream`);
++    open.push(stream);
++
++    expect(await until(() => stream.frames.length === 1)).toBe(true);
++    const expectedEnvelope = {
++      version: 1,
++      cursor: event.sequence,
++      missionId: MISSION_ID,
++      eventType: "mission.updated",
++      emittedAt: event.createdAt,
++      payload: { eventId: event.id },
++    };
++    expect(stream.getRaw()).toContain(
++      `id: ${event.sequence}\nevent: mission.updated\ndata: ${JSON.stringify(expectedEnvelope)}\n\n`,
++    );
++    expect(stream.frames[0]!.data).toEqual(expectedEnvelope);
++    expect(stream.getRaw()).not.toContain("Authorization");
++    expect(stream.getRaw()).not.toContain("Bearer");
++    expect(stream.getRaw()).not.toContain("test-only-secret");
++    expect(stream.getRaw()).not.toContain("https://user:password@example.test/private");
++    expect(stream.getRaw()).not.toContain("mission.criterion_verified");
++    expect(stream.getRaw()).not.toContain("private-provider");
++    expect(stream.getRaw()).not.toContain("private-model");
++  });
++
++  it("resumes from a cursor: reconnect from cursor 2 starts at cursor 3", async () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    missions.appendEvent(MISSION_ID, "mission.status_changed", "two");
++    missions.appendEvent(MISSION_ID, "mission.evidence_recorded", "three");
++
++    const stream = connect(baseUrl, `/api/web/missions/${MISSION_ID}/stream?after=2`);
++    open.push(stream);
++
++    expect(await until(() => stream.frames.length >= 1)).toBe(true);
++    expect(stream.frames[0]!.id).toBe(3);
++    expect(stream.frames.every((f) => f.id > 2)).toBe(true);
++  });
++
++  it("rejects an invalid cursor with a structured 400 (before stream headers)", async () => {
++    seedMission();
++    const res = await app.inject({ method: "GET", url: `/api/web/missions/${MISSION_ID}/stream?after=abc` });
++    expect(res.statusCode).toBe(400);
++    expect(res.json().error.code).toBe("INVALID_CURSOR");
++
++    const res2 = await app.inject({
++      method: "GET",
++      url: `/api/web/missions/${MISSION_ID}/stream`,
++      headers: { "last-event-id": "xyz" },
++    });
++    expect(res2.statusCode).toBe(400);
++    expect(res2.json().error.code).toBe("INVALID_CURSOR");
++  });
++
++  it("returns 404 for an unknown mission before stream headers are sent", async () => {
++    const res = await app.inject({ method: "GET", url: `/api/web/missions/nope/stream` });
++    expect(res.statusCode).toBe(404);
++    expect(res.json().error.code).toBe("NOT_FOUND");
++    expect(res.headers["content-type"]).not.toContain("text/event-stream");
++  });
++
++  it("emits heartbeat comments without mutating the cursor", async () => {
++    seedMission();
++    missions.appendEvent(MISSION_ID, "mission.created", "one");
++    const e2 = missions.appendEvent(MISSION_ID, "mission.status_changed", "two");
++
++    const stream = connect(baseUrl, `/api/web/missions/${MISSION_ID}/stream`);
++    open.push(stream);
++
++    expect(await until(() => stream.frames.length >= 2)).toBe(true);
++    // Wait for at least one idle heartbeat comment to be written.
++    expect(await until(() => stream.getRaw().includes(": heartbeat\n\n"))).toBe(true);
++    const framesAfterHeartbeat = stream.frames.length;
++    expect(framesAfterHeartbeat).toBe(2);
++
++    // A heartbeat must not have advanced or duplicated the cursor: the next real
++    // event is delivered contiguously at e2.sequence + 1.
++    const e3 = missions.appendEvent(MISSION_ID, "mission.evidence_recorded", "three");
++    expect(await until(() => stream.frames.length >= 3)).toBe(true);
++    expect(stream.frames[2]!.id).toBe(e2.sequence + 1);
++    expect(e3.sequence).toBe(e2.sequence + 1);
++    // no duplicate ids across the whole stream
++    const ids = stream.frames.map((f) => f.id);
++    expect(new Set(ids).size).toBe(ids.length);
++  });
++});

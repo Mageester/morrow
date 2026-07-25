@@ -13,9 +13,13 @@ describe("database", () => {
 
   it("installs the durable mission runtime ledger and provider discovery schema", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)?.id).toBe(36);
+    expect(migrations.at(-1)?.id).toBe(39);
+    expect(db.prepare("PRAGMA table_info(tasks)").all()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "idempotency_fingerprint" })]),
+    );
     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(missionColumns).toContain("execution_json");
+    expect(missionColumns).toContain("idempotency_key");
     const tables = (db.prepare(`SELECT name FROM sqlite_master
       WHERE type='table' AND name LIKE 'mission_runtime%' OR name IN ('mission_operations','mission_progress','mission_recovery_decisions')
       ORDER BY name`).all() as Array<{ name: string }>).map((row) => row.name);
@@ -29,6 +33,8 @@ describe("database", () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='learned_skills'").get()).toEqual({ name: "learned_skills" });
     const memoryColumns = (db.prepare("PRAGMA table_info(memory_entries)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(memoryColumns).toEqual(expect.arrayContaining(["normalized_content", "type", "lifecycle", "evidence_references_json", "sensitivity", "expires_at"]));
+    const providerDiscoveryColumns = (db.prepare("PRAGMA table_info(provider_model_discovery)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(providerDiscoveryColumns).toEqual(expect.arrayContaining(["expires_at", "last_success_at", "credential_identity"]));
     db.close();
   });
 

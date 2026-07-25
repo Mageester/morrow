@@ -4,6 +4,7 @@ import type {
   MissionRecoveryAction,
   MissionRecoveryCategory,
   MissionRuntime,
+  MissionStatus,
   TaskStatus,
 } from "@morrow/contracts";
 import type {
@@ -29,6 +30,13 @@ export interface ControllerSnapshot {
   approvals: Array<{ id: string; status: ApprovalStatus; autoResolvable?: boolean }>;
   guardianDecision: GuardianDecision;
   recovery: ControllerRecovery | null;
+  /**
+   * The mission aggregate's own status. The runtime machine (this controller)
+   * and the mission status machine advance together; the controller reads this
+   * so it never runs ahead of a mission that is waiting on a human (plan
+   * approval) or already terminal (cancelled).
+   */
+  missionStatus?: MissionStatus;
 }
 
 export interface MissionControllerDependencies {
@@ -39,6 +47,21 @@ export interface MissionControllerDependencies {
   validateMission?(missionId: string): Promise<unknown> | unknown;
   reviewMission?(missionId: string): Promise<unknown> | unknown;
   resolveApproval?(approvalId: string): Promise<unknown> | unknown;
+  /**
+   * Prepare the mission plan (success criteria) before execution starts. Runs
+   * once during the planning phase; returns whether the plan now awaits a
+   * human approval so the controller can park in `waiting_for_approval`
+   * instead of executing an unapproved plan. Absent in tests that drive the
+   * runtime machine alone.
+   */
+  prepareMission?(missionId: string): Promise<{ awaitingApproval: boolean }> | { awaitingApproval: boolean };
+  /**
+   * Record a dispatch failure in the mission's durable, user-visible history
+   * (mission event + status). The controller itself only owns runtime state;
+   * this hook keeps the mission aggregate truthful without coupling the
+   * controller to the mission service.
+   */
+  recordDispatchFailure?(missionId: string, message: string): void;
   now?: () => string;
   createId?: () => string;
 }
@@ -82,13 +105,29 @@ export class MissionController {
       return this.result(missionId, `transition:${to}`, true, false);
     };
 
+    // A cancelled mission aggregate always wins: park the runtime machine in
+    // its own cancelled state instead of continuing to drive dead work.
+    if (
+      snapshot.missionStatus === "cancelled"
+      && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)
+    ) {
+      return transition("cancelled", "mission_cancelled");
+    }
+
     switch (runtime.state) {
       case "created":
         return transition("orienting", "controller_started");
       case "orienting":
         return transition("planning", "orientation_complete");
-      case "planning":
+      case "planning": {
+        if (this.dependencies.prepareMission) {
+          const prepared = await this.dependencies.prepareMission(missionId);
+          if (prepared.awaitingApproval) {
+            return transition("waiting_for_approval", "plan_awaiting_approval");
+          }
+        }
         return transition("executing", "plan_ready");
+      }
       case "replanning":
         return transition("executing", "replan_ready");
       case "waiting_for_tool": {
@@ -101,6 +140,11 @@ export class MissionController {
       case "waiting_for_approval": {
         const pending = snapshot.approvals.find((approval) => approval.status === "pending");
         if (pending) return this.result(missionId, "wait:approval", false, true);
+        // The mission-level plan approval is not an approvals-table row; the
+        // mission status carries it. Keep waiting until a human approves.
+        if (snapshot.missionStatus === "awaiting_criteria_approval") {
+          return this.result(missionId, "wait:plan_approval", false, true);
+        }
         return transition("executing", "approval_resolved");
       }
       case "executing":
@@ -226,14 +270,47 @@ export class MissionController {
       this.dependencies.runtime.setActiveTask({ missionId, taskId: dispatched.taskId, fence, now });
       return this.result(missionId, "dispatch:worker", false, true);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       this.dependencies.runtime.failOperation({
         missionId,
         operationId: operation.id,
         fence,
-        result: { message: error instanceof Error ? error.message : String(error) },
+        result: { message },
         now,
       });
-      throw error;
+      // A dispatch that cannot even start a worker (typically: no configured
+      // model provider) is not transient — retrying in-process would fail the
+      // same way forever. Park the mission in `blocked` with a durable
+      // recovery decision so the UI can present the exact cause and a
+      // user-driven retry, and record it in the mission's visible history.
+      // Silently swallowing this error is what once left missions stuck
+      // showing "Draft" while the runtime claimed to be executing.
+      this.dependencies.runtime.recordRecovery({
+        id: this.createId(),
+        missionId,
+        operationId: operation.id,
+        category: "provider_failure",
+        diagnosis: message.slice(0, 2_000),
+        failedStrategyFingerprint: "worker:primary",
+        nextStrategyFingerprint: null,
+        action: "await_retry_condition",
+        retryCondition: "A model provider is configured and the mission is retried.",
+        exhausted: false,
+        fence,
+        now,
+      });
+      this.dependencies.recordDispatchFailure?.(missionId, message);
+      this.dependencies.runtime.transition({
+        missionId,
+        from: "executing",
+        to: "blocked",
+        cause: "dispatch_failed",
+        actor: "controller",
+        details: { operationId: operation.id, message },
+        fence,
+        now,
+      });
+      return this.result(missionId, "blocked:dispatch_failed", false, false);
     }
   }
 

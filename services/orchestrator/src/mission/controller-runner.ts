@@ -93,9 +93,12 @@ export class MissionControllerRunner {
       }
     });
     this.activePromises.set(missionId, promise);
-    // The promise remains observable through waitFor, while this prevents an
-    // unattended background run from becoming an unhandled rejection.
-    void promise.catch(() => undefined);
+    // The promise remains observable through waitFor. An escaped error must
+    // never disappear silently — the mission would look alive while nothing
+    // drives it — so it is at minimum logged with its mission id.
+    void promise.catch((error) => {
+      console.error(`Mission controller run failed for ${missionId}:`, error);
+    });
   }
 
   wake(missionId: string): void {
@@ -251,6 +254,7 @@ export function createDefaultMissionControllerRunner(
         });
       }
       return {
+        missionStatus: mission.status,
         tasks: guardianDependencies.tasks,
         approvals: guardianDependencies.approvals.map((approval) => ({ ...approval, autoResolvable: false })),
         guardianDecision: missionService.assessGuardian(missionId),
@@ -264,6 +268,29 @@ export function createDefaultMissionControllerRunner(
           exhausted: recovery.exhausted,
         } : null,
       };
+    },
+    prepareMission: async (missionId) => {
+      // Generate the mission's success criteria before the first worker runs.
+      // `generateCriteria` is deliberately resilient: with no configured model
+      // it falls back to deterministic heuristic criteria, so planning never
+      // hard-depends on a provider. Auto-approve missions move straight to
+      // `running`; the rest wait for the human plan approval.
+      try {
+        const mission = await missionService.generateCriteria(missionId, "");
+        return { awaitingApproval: mission.status === "awaiting_criteria_approval" };
+      } catch (error) {
+        console.error(`Mission ${missionId}: criteria generation failed`, error);
+        return { awaitingApproval: false };
+      }
+    },
+    recordDispatchFailure: (missionId, message) => {
+      missions.appendEvent(
+        missionId,
+        "mission.failure_recorded",
+        `Could not start the work: ${message}`.slice(0, 1_000),
+        { kind: "dispatch", message: message.slice(0, 2_000) },
+        now(),
+      );
     },
     dispatchWorker: ({ missionId, idempotencyKey }) => {
       const mission = missionService.get(missionId);

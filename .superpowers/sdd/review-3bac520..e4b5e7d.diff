@@ -1,0 +1,2977 @@
+# Review package: 3bac5202f1e1cc6e1b14e22241c5d96cf5daa9ce..e4b5e7d
+
+## Commits
+e4b5e7d fix(web): harden attention and recovery safety
+99ed33e feat(web): add honest attention and recovery states
+
+## Files changed
+ .superpowers/sdd/task-10-report.md                 | 252 +++++++++++
+ apps/web/src/api/attention.ts                      |  61 +++
+ apps/web/src/app/app-shell.tsx                     |   3 +
+ apps/web/src/app/error-boundary.test.tsx           | 188 ++++++++
+ apps/web/src/app/error-boundary.tsx                | 214 +++++++++
+ apps/web/src/app/providers.tsx                     |   5 +-
+ .../src/features/missions/attention-card.test.tsx  | 493 +++++++++++++++++++++
+ apps/web/src/features/missions/attention-card.tsx  | 481 ++++++++++++++++++++
+ .../web/src/features/missions/mission-overview.tsx |  43 +-
+ .../src/features/missions/mission-page.test.tsx    |  45 +-
+ apps/web/src/features/missions/mission-page.tsx    |  37 +-
+ .../src/features/placeholders/connections-page.tsx |   1 +
+ apps/web/src/main.test.tsx                         |  59 +++
+ apps/web/src/main.tsx                              |  15 +-
+ apps/web/src/state/mission-status.tsx              | 101 +++++
+ apps/web/src/state/runtime-status.test.tsx         | 165 +++++++
+ apps/web/src/state/runtime-status.tsx              |  16 +-
+ apps/web/src/styles/app.css                        | 132 +++++-
+ 18 files changed, 2263 insertions(+), 48 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-10-report.md b/.superpowers/sdd/task-10-report.md
+new file mode 100644
+index 0000000..ebfca0f
+--- /dev/null
++++ b/.superpowers/sdd/task-10-report.md
+@@ -0,0 +1,252 @@
++# Task 10 Report — Honest Attention and Recovery States
++
++## Scope
++
++Implemented the browser-side attention, error, runtime reconnection, and
++recovery surfaces for the existing web mission vertical slice:
++
++- typed attention resolution through the existing mission-owned endpoint;
++- complete attention cards with explicit consequences and unrelated-work state;
++- confirmation for destructive choices with no implicit decision;
++- authoritative snapshot cache replacement plus mission-query invalidation;
++- safe actionable API-error conversion and a global route render boundary;
++- runtime reconnecting state and honest mission failure, recovery, and
++  verification summaries;
++- Overview integration and responsive styles.
++
++No orchestrator, controller, contract, shared UI, lockfile, permission,
++packaging, deployment, authentication, or provider behavior changed.
++
++## TDD Evidence
++
++### Initial RED
++
++Before production modules existed:
++
++```powershell
++pnpm --filter @morrow/web test -- attention-card.test.tsx runtime-status.test.tsx error-boundary.test.tsx
++```
++
++Observed exit code `1`: all three suites failed import resolution for the
++missing `attention-card.js`, `mission-status.js`, and `error-boundary.js`
++modules. No tests ran, which was the intended missing-feature failure.
++
++### Focused GREEN
++
++After the minimum attention, state, and boundary implementation:
++
++```text
++pnpm --filter @morrow/web test -- attention-card.test.tsx runtime-status.test.tsx error-boundary.test.tsx
++PASS — 3 files, 27 tests
++```
++
++### Integration RED → GREEN
++
++Overview integration was removed before adding its behavior tests. The focused
++mission test then failed for exactly two missing surfaces: no recommended
++attention action and no recoverable-failure summary.
++
++```text
++pnpm --filter @morrow/web test -- mission-page.test.tsx
++RED — 1 file, 2 failed / 9 passed
++GREEN — 1 file, 11 passed
++```
++
++A second regression cycle replaced raw runtime API messages in both initial
++load and background synchronization paths. Both new assertions failed before
++conversion was wired and passed afterward.
++
++A final security/contract cycle failed on a secret-bearing structured 400
++message and the missing explicit `What happened` field. Static client-error
++copy and the complete attention definition list made the focused suites green:
++
++```text
++pnpm --filter @morrow/web test -- attention-card.test.tsx error-boundary.test.tsx
++PASS — 2 files, 16 tests
++```
++
++## Final Verification
++
++Fresh final run after all implementation and security changes:
++
++```text
++pnpm --filter @morrow/web test
++PASS — 10 files, 141 tests
++
++pnpm --filter @morrow/web check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/web build
++PASS — Vite 8.1.3, 2018 modules transformed, built in 1.11s
++       dist/index.html: 0.50 kB (0.31 kB gzip)
++       JS: 449.66 kB (133.97 kB gzip)
++       CSS: 17.13 kB (3.55 kB gzip)
++
++Test-Path apps/web/dist/index.html
++PASS — True
++
++git diff --check 3bac5202f1e1cc6e1b14e22241c5d96cf5daa9ce
++PASS — no whitespace errors
++```
++
++## Security and Ownership Review
++
++- Attention decisions are never preselected, automatically invoked, or
++  retried by TanStack Query. Every mutation begins with an explicit user
++  action.
++- Both `missionId` and `attentionId` are independently URL-encoded. A request
++  whose projected mission ownership differs from the rendered mission is
++  inert. Successful response snapshots are also rejected unless every nested
++  mission reference matches the requested mission.
++- A synchronous submission guard prevents double submission before React
++  exposes pending state. All choices and the note are disabled while the one
++  mutation is pending.
++- The returned schema-validated authoritative snapshot enters the exact detail
++  cache. A response cannot replace a cache entry with a later activity cursor
++  or update timestamp. Mission list/detail queries are then invalidated.
++- Conflict, not-found, unsupported-choice, ownership-mismatch, and server
++  failures keep the request, note, and choices visible. No failure is treated
++  as a successful durable decision.
++- The optional note is included because the existing
++  `ResolveWebAttentionSchema` and orchestrator route already support and
++  persist it. Empty notes are omitted; the field is capped at 1,000 characters
++  and warns against credentials.
++- Structured API errors use static browser-safe explanations. Server messages,
++  unknown exception messages, stacks, paths, and secret-like content are not
++  rendered. Trace IDs are shown only when they match a small safe-character
++  allowlist.
++- No state-changing retry, permission expansion, cross-project lookup,
++  telemetry, browser storage, hosted dependency, or external data flow was
++  added.
++
++## Accessibility Review
++
++- Attention cards use ordered headings and an explicit definition-list
++  contract for what happened, why it matters, recommendation, and unrelated
++  work. Choices form a labelled group and each button is described by its
++  consequence.
++- Recommended choices receive visible and semantic emphasis through text and a
++  data state; they are not toggles and never use a selected or pressed state.
++- Destructive choices open an `alertdialog` with an accessible name,
++  description, and modal state. Focus starts on Cancel, Tab is contained,
++  Escape and Cancel close the dialog, and focus returns to the invoking choice.
++  Confirm is guarded so repeated activation submits exactly once.
++- The global fallback is focusable and receives focus after a render error.
++  A successful explicit retry restores focus to the application main region.
++- Attention content and operational summaries are not live regions. Only the
++  pending mutation uses a polite status, and a failed mutation uses one shared
++  actionable alert, avoiding per-field announcement flooding.
++- Reconnecting copy is visible text and the existing runtime status region
++  remains polite. Failure, verification, recovery, and recommendation meaning
++  never depends on color alone.
++
++## Honest State and Privacy Review
++
++- Waiting approval, external blocker, expired connection, and provider
++  unavailable are rendered from typed attention requests without fabricated
++  actions.
++- Runtime unavailable and reconnecting are based only on health/browser events;
++  no progress, timing, or recovery estimate is invented.
++- Recoverable/permanent failure and verified/unverified completion are derived
++  from projected mission and verification state.
++- Interrupted/resumed display uses only the browser-safe projected recovery
++  summary. Raw activity detail remains hidden. Because the current contract
++  does not project checkpoint or replay fields, the UI states that those
++  details were not reported instead of inventing them.
++
++## Limitations
++
++- The orchestrator currently resolves only projected `approve` and `deny`
++  choices. Other contract-valid choices remain visible and submit explicitly,
++  but the current server rejects them safely with `INVALID_CHOICE`; the request
++  remains usable.
++- The health endpoint reports orchestrator availability only. Provider outages
++  are represented when the authoritative mission attention/API state reports
++  them; the browser does not probe providers independently.
++- The browser recovery projection has no structured interrupted target,
++  checkpoint, replay, or next-step fields. Task 10 therefore shows the safe
++  recovery summary and explicitly reports that missing detail.
++
++## Rollback
++
++Revert `feat(web): add honest attention and recovery states`. This removes only
++the Task 10 web API helper, attention/error/state components and tests,
++provider/Overview wiring, runtime reconnecting copy, styles, and this report.
++Persisted approvals, mission/controller state, contracts, shared UI,
++orchestrator behavior, and package output remain unchanged.
++
++## Review Hardening
++
++The review follow-up closes six failure and honesty gaps without changing the
++server contract, shared UI package, or persistence model:
++
++- An unknown destructive POST outcome now requires an authoritative mission
++  refresh. If the request has disappeared, the refreshed snapshot is cached
++  and the decision is never posted again. If it remains pending, destructive
++  confirmation is shown again before any new POST.
++- Attention resolution and recovery refreshes use one synchronous,
++  mission-scoped coordinator. While one card owns it, every choice and note in
++  that mission is disabled, preventing concurrent responses from arriving out
++  of order or resurrecting older attention state.
++- React 19 caught and uncaught root errors emit only a fixed message, error
++  kind, and local correlation ID. Raw errors, component stacks, secrets, and
++  paths are neither rendered nor logged by Morrow handlers.
++- Error cards no longer offer a placeholder diagnostics action. Failed
++  decisions offer the real `Refresh mission state` operation and never retry a
++  state-changing request automatically.
++- Recovery copy reports only the current snapshot verification enum and states
++  explicitly that post-recovery verification trust was not reported.
++- Error-boundary focus returns to healthy application content only after a
++  successful retry. A replacement fallback cancels stale animation-frame work
++  and keeps focus on the new error card; unmount also cancels pending work.
++
++### Review TDD Evidence
++
++The first focused RED run failed 10 new assertions across the four review
++suites. The persistent-boundary test was then strengthened separately and
++failed because `cancelAnimationFrame(42)` had not occurred. After implementing
++the first five fixes, the focused run reached 31 passing tests with three stale
++assertions; correcting those assertions produced 34/34 passing tests.
++
++The mission serialization test was added before its coordinator. Its RED run
++failed because the provider export was absent. After adding the shared lock and
++wiring the mission attention list, the focused attention suite passed 13/13.
++The combined review suite then passed 35/35.
++
++### Review Verification
++
++Fresh checks after all hardening changes:
++
++```text
++pnpm --filter @morrow/web test
++PASS — 11 files, 149 tests
++
++pnpm --filter @morrow/web check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/web build
++PASS — Vite 8.1.3, 2018 modules transformed
++       dist/index.html: 0.50 kB (0.31 kB gzip)
++       JS: 452.48 kB (134.74 kB gzip)
++       CSS: 17.13 kB (3.55 kB gzip)
++```
++
++Security impact is limited to safer client-side handling: no new data leaves
++the browser, no permission boundary changes, and no raw exception data is
++persisted or emitted by the new handlers. The authoritative refresh uses the
++existing mission-owned read endpoint and validates all nested mission IDs.
++
++Accessibility impact: mission-wide busy state is reflected by disabled native
++controls; destructive confirmation remains explicit; successful retry focus
++targets only healthy main content; persistent errors retain alert focus.
++
++Known limitation: the current response contract has no idempotency key or
++operation-status endpoint. A lost mutation response therefore requires an
++explicit authoritative refresh before the user can decide whether to act
++again. Post-recovery verification provenance is also not projected, so the UI
++reports that limitation instead of inferring trust.
++
++Rollback the review hardening with
++`git revert <fix(web): harden attention and recovery safety commit>`. This
++restores the original Task 10 client behavior without changing server data,
++contracts, or durable attention decisions.
+diff --git a/apps/web/src/api/attention.ts b/apps/web/src/api/attention.ts
+new file mode 100644
+index 0000000..f7d2fce
+--- /dev/null
++++ b/apps/web/src/api/attention.ts
+@@ -0,0 +1,61 @@
++import {
++  ResolveWebAttentionSchema,
++  WebMissionSnapshotSchema,
++  type ResolveWebAttentionInput,
++  type WebMissionSnapshot,
++} from "@morrow/contracts";
++import { ApiClientError, api } from "./client.js";
++
++function belongsToMission(
++  snapshot: WebMissionSnapshot,
++  missionId: string,
++): boolean {
++  return (
++    snapshot.summary.id === missionId &&
++    snapshot.attention.every((item) => item.missionId === missionId) &&
++    snapshot.artifacts.every((item) => item.missionId === missionId) &&
++    snapshot.recentActivity.every((item) => item.missionId === missionId)
++  );
++}
++
++export async function resolveMissionAttention(
++  missionId: string,
++  attentionId: string,
++  input: ResolveWebAttentionInput,
++): Promise<WebMissionSnapshot> {
++  const body = ResolveWebAttentionSchema.parse(input);
++  const snapshot = await api.post(
++    `/api/web/missions/${encodeURIComponent(missionId)}/attention/${encodeURIComponent(attentionId)}/resolve`,
++    body,
++    WebMissionSnapshotSchema,
++  );
++
++  if (!belongsToMission(snapshot, missionId)) {
++    throw new ApiClientError(
++      409,
++      "MISSION_RESPONSE_MISMATCH",
++      "The response did not match the mission being updated.",
++      null,
++    );
++  }
++
++  return snapshot;
++}
++
++export async function readAuthoritativeMission(
++  missionId: string,
++): Promise<WebMissionSnapshot> {
++  const snapshot = await api.get(
++    `/api/web/missions/${encodeURIComponent(missionId)}`,
++    WebMissionSnapshotSchema,
++  );
++  if (!belongsToMission(snapshot, missionId)) {
++    throw new ApiClientError(
++      409,
++      "MISSION_RESPONSE_MISMATCH",
++      "The response did not match the mission being refreshed.",
++      null,
++    );
++  }
++  return snapshot;
++}
+diff --git a/apps/web/src/app/app-shell.tsx b/apps/web/src/app/app-shell.tsx
+index b0d7e18..d207816 100644
+--- a/apps/web/src/app/app-shell.tsx
++++ b/apps/web/src/app/app-shell.tsx
+@@ -37,26 +37,28 @@ const primaryNavigation: NavigationItem[] = [
+ const secondaryNavigation: NavigationItem[] = [
+   { icon: BookOpen, label: "Workspace", to: "/workspace" },
+   { icon: Cable, label: "Connections", to: "/connections" },
+   { icon: Settings, label: "Settings", to: "/settings" },
+ ];
+ 
+ const runtimeLabels = {
+   checking: "Checking runtime",
+   offline: "Runtime offline",
+   online: "Runtime online",
++  reconnecting: "Runtime reconnecting",
+ } as const;
+ 
+ const runtimeVariants = {
+   checking: "neutral",
+   offline: "warning",
+   online: "success",
++  reconnecting: "warning",
+ } as const;
+ 
+ function getRouteTitle(pathname: string): string {
+   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
+   const routePath = normalizedPath.startsWith("/app")
+     ? normalizedPath.slice("/app".length) || "/"
+     : normalizedPath;
+ 
+   if (/^\/missions\/[^/]+$/.test(routePath)) {
+     return "Mission workspace";
+@@ -142,19 +144,20 @@ export function AppShell() {
+         <div className="morrow-sidebar__footer">
+           <StatusPill variant={runtimeVariants[status]}>
+             {runtimeLabels[status]}
+           </StatusPill>
+           <span className="morrow-profile">Local profile</span>
+         </div>
+       </aside>
+ 
+       <main
+         className="morrow-main"
++        data-error-boundary-focus-target="true"
+         id="main-content"
+         ref={mainRef}
+         tabIndex={-1}
+       >
+         <Outlet />
+       </main>
+     </div>
+   );
+ }
+diff --git a/apps/web/src/app/error-boundary.test.tsx b/apps/web/src/app/error-boundary.test.tsx
+new file mode 100644
+index 0000000..641a127
+--- /dev/null
++++ b/apps/web/src/app/error-boundary.test.tsx
+@@ -0,0 +1,188 @@
++import { ErrorCard } from "@morrow/ui";
++import { fireEvent, render, screen, waitFor } from "@testing-library/react";
++import { Component, type ReactNode } from "react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { ApiClientError } from "../api/client.js";
++import {
++  ActionableErrorCard,
++  GlobalErrorBoundary,
++  toErrorCard,
++} from "./error-boundary.js";
++
++class ThrowingChild extends Component<{ shouldThrow: () => boolean }> {
++  override render(): ReactNode {
++    if (this.props.shouldThrow()) {
++      throw new Error(
++        "Bearer super-secret-token at C:\\private\\source.ts:42",
++      );
++    }
++    return (
++      <main
++        data-error-boundary-focus-target="true"
++        id="main-content"
++        tabIndex={-1}
++      >
++        Mission state restored
++      </main>
++    );
++  }
++}
++
++afterEach(() => {
++  vi.restoreAllMocks();
++});
++
++describe("error card conversion", () => {
++  it.each([
++    [
++      new ApiClientError(
++        503,
++        "RUNTIME_UNAVAILABLE",
++        "The local service is offline.",
++        "trace-runtime",
++      ),
++      "Morrow is not connected",
++      true,
++      "trace-runtime",
++    ],
++    [
++      new ApiClientError(
++        503,
++        "SERVICE_UNAVAILABLE",
++        "The service could not finish.",
++        "trace-server",
++      ),
++      "Morrow could not complete that action",
++      true,
++      "trace-server",
++    ],
++    [
++      new ApiClientError(
++        400,
++        "INVALID_CHOICE",
++        "Bearer client-secret must never render.",
++        "trace-client",
++      ),
++      "Morrow could not complete that action",
++      false,
++      "trace-client",
++    ],
++    [
++      new Error("Bearer unknown-secret"),
++      "Morrow could not complete that action",
++      true,
++      null,
++    ],
++  ])(
++    "maps runtime, server, permanent client, and unknown errors safely",
++    (error, title, retryable, traceId) => {
++      expect(toErrorCard(error)).toMatchObject({
++        retryable,
++        title,
++        traceId,
++      });
++      expect(JSON.stringify(toErrorCard(error))).not.toMatch(
++        /unknown-secret|client-secret/,
++      );
++    },
++  );
++
++  it("renders the complete shared error-card contract and a safe trace reference", () => {
++    const refresh = vi.fn();
++    const retry = vi.fn();
++    render(
++      <ActionableErrorCard
++        error={
++          new ApiClientError(
++            503,
++            "SERVICE_UNAVAILABLE",
++            "The service could not finish.",
++            "trace-safe-42",
++          )
++        }
++        onRefresh={refresh}
++        onRetry={retry}
++      />,
++    );
++
++    expect(screen.getByRole("alert")).toBeVisible();
++    expect(screen.getByText(/synchronized work remains available/i)).toBeVisible();
++    expect(screen.getByText(/what happens next/i)).toBeVisible();
++    expect(screen.getByText(/trace-safe-42/i)).toBeVisible();
++    const action = screen.getByRole("button", {
++      name: "Refresh mission state",
++    });
++    expect(action).toBeEnabled();
++    expect(
++      screen.queryByRole("button", { name: /diagnostics/i }),
++    ).not.toBeInTheDocument();
++    fireEvent.click(action);
++    expect(refresh).toHaveBeenCalledOnce();
++    expect(retry).not.toHaveBeenCalled();
++    expect(screen.getByText(/reload authoritative state/i)).toBeVisible();
++  });
++
++  it("never promises a diagnostics action in generic fallback copy", () => {
++    expect(JSON.stringify(toErrorCard(new Error("private")))).not.toMatch(
++      /diagnostics/i,
++    );
++  });
++});
++
++describe("GlobalErrorBoundary", () => {
++  it("hides render error details, focuses recovery, and restores focus after retry", async () => {
++    vi.spyOn(console, "error").mockImplementation(() => undefined);
++    let shouldThrow = true;
++    const view = render(
++      <GlobalErrorBoundary>
++        <ThrowingChild shouldThrow={() => shouldThrow} />
++      </GlobalErrorBoundary>,
++    );
++
++    const alert = await screen.findByRole("alert");
++    expect(alert).toHaveFocus();
++    expect(screen.queryByText(/super-secret-token/i)).not.toBeInTheDocument();
++    expect(screen.queryByText(/source\.ts/i)).not.toBeInTheDocument();
++    expect(screen.getByText(/mission state is still safe/i)).toBeVisible();
++
++    shouldThrow = false;
++    fireEvent.click(screen.getByRole("button", { name: "Retry Morrow" }));
++
++    expect(await screen.findByText("Mission state restored")).toBeVisible();
++    await waitFor(() => {
++      expect(document.getElementById("main-content")).toHaveFocus();
++    });
++
++    view.unmount();
++  });
++
++  it("keeps focus on the replacement error card when retry rethrows", async () => {
++    vi.spyOn(console, "error").mockImplementation(() => undefined);
++    const requestFrame = vi
++      .spyOn(window, "requestAnimationFrame")
++      .mockImplementation(() => 42);
++    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame");
++    const view = render(
++      <GlobalErrorBoundary>
++        <ThrowingChild shouldThrow={() => true} />
++      </GlobalErrorBoundary>,
++    );
++
++    expect(await screen.findByRole("alert")).toHaveFocus();
++    fireEvent.click(screen.getByRole("button", { name: "Retry Morrow" }));
++
++    await waitFor(() => {
++      expect(screen.getByRole("alert")).toHaveFocus();
++    });
++    expect(requestFrame).toHaveBeenCalled();
++    expect(cancelFrame).toHaveBeenCalledWith(42);
++    expect(
++      document.querySelector('[data-error-boundary-focus-target="true"]'),
++    ).not.toBeInTheDocument();
++    view.unmount();
++  });
++});
++
++// Keep the package import exercised: Task 10 must compose the shared primitive,
++// not replace it with a web-only error presentation.
++void ErrorCard;
+diff --git a/apps/web/src/app/error-boundary.tsx b/apps/web/src/app/error-boundary.tsx
+new file mode 100644
+index 0000000..75bfe16
+--- /dev/null
++++ b/apps/web/src/app/error-boundary.tsx
+@@ -0,0 +1,214 @@
++import { ErrorCard } from "@morrow/ui";
++import {
++  Component,
++  createRef,
++  type ErrorInfo,
++  type ReactNode,
++  type Ref,
++} from "react";
++import { ApiClientError } from "../api/client.js";
++
++export interface ErrorCardModel {
++  attempted: readonly string[];
++  continuation: string;
++  explanation: string;
++  preservedMessage: string;
++  retryable: boolean;
++  title: string;
++  traceId: string | null;
++}
++
++const SAFE_TRACE_ID = /^[a-zA-Z0-9._:-]{1,120}$/;
++
++function safeTraceId(traceId: string | null): string | null {
++  return traceId && SAFE_TRACE_ID.test(traceId) ? traceId : null;
++}
++
++function safeApiExplanation(error: ApiClientError): string {
++  if (error.code === "RUNTIME_UNAVAILABLE") {
++    return "The local Morrow runtime could not be reached.";
++  }
++  if (error.status >= 500) {
++    return "The service could not complete the request. No raw server details were added to this page.";
++  }
++  const knownClientMessages: Record<string, string> = {
++    ATTENTION_ALREADY_RESOLVED:
++      "That attention request no longer accepts a decision. Refresh authoritative mission state before acting again.",
++    INVALID_CHOICE:
++      "That choice is not supported by the current runtime. The attention request remains unchanged.",
++    MISSION_RESPONSE_MISMATCH:
++      "The service response did not match the mission being updated. No response data was applied.",
++    NOT_FOUND:
++      "The requested mission item is no longer available in this workspace.",
++  };
++  return (
++    knownClientMessages[error.code] ??
++    "The request was rejected. Refresh mission state before trying different work."
++  );
++}
++
++export function toErrorCard(error: unknown): ErrorCardModel {
++  if (error instanceof ApiClientError) {
++    const runtimeUnavailable = error.code === "RUNTIME_UNAVAILABLE";
++    const retryable = error.status >= 500 || runtimeUnavailable;
++    const outcomeUnknown = error.status >= 500;
++    return {
++      attempted: [],
++      continuation: retryable
++        ? "Reload authoritative state before choosing whether to try the action again."
++        : "Refresh authoritative state and review the request. Morrow will not repeat this action automatically.",
++      explanation: safeApiExplanation(error),
++      preservedMessage: outcomeUnknown
++        ? "Your synchronized work remains available, but the decision outcome is not confirmed."
++        : "Your work is preserved and the rejected request did not apply a decision.",
++      retryable,
++      title: runtimeUnavailable
++        ? "Morrow is not connected"
++        : "Morrow could not complete that action",
++      traceId: safeTraceId(error.traceId),
++    };
++  }
++
++  return {
++    attempted: [],
++    continuation:
++      "Reload authoritative state before choosing whether to try the action again.",
++    explanation:
++      "Your mission state is still safe, but the action outcome could not be confirmed.",
++    preservedMessage:
++      "Your synchronized work remains available. No automatic retry was started.",
++    retryable: true,
++    title: "Morrow could not complete that action",
++    traceId: null,
++  };
++}
++
++interface ActionableErrorCardProps {
++  cardRef?: Ref<HTMLElement>;
++  error: unknown;
++  onRefresh?: () => void;
++  onRetry?: () => void;
++  retryLabel?: string;
++}
++
++export function ActionableErrorCard({
++  cardRef,
++  error,
++  onRefresh,
++  onRetry,
++  retryLabel = "Retry request",
++}: ActionableErrorCardProps) {
++  const model = toErrorCard(error);
++  const recommendedAction = onRefresh
++    ? { label: "Refresh mission state", onClick: onRefresh }
++    : { label: retryLabel, onClick: onRetry ?? (() => undefined) };
++
++  return (
++    <ErrorCard
++      attempted={model.attempted}
++      continuation={
++        <>
++          <span>{model.continuation}</span>
++          {model.traceId ? (
++            <span className="morrow-error-reference">
++              Reference: {model.traceId}
++            </span>
++          ) : null}
++        </>
++      }
++      explanation={model.explanation}
++      preservedMessage={model.preservedMessage}
++      recommendedAction={recommendedAction}
++      ref={cardRef}
++      tabIndex={-1}
++      title={model.title}
++    />
++  );
++}
++
++interface GlobalErrorBoundaryProps {
++  children: ReactNode;
++}
++
++interface GlobalErrorBoundaryState {
++  failed: boolean;
++}
++
++export class GlobalErrorBoundary extends Component<
++  GlobalErrorBoundaryProps,
++  GlobalErrorBoundaryState
++> {
++  override state: GlobalErrorBoundaryState = { failed: false };
++  private readonly fallbackRef = createRef<HTMLElement>();
++  private errorGeneration = 0;
++  private restorationFrame: number | null = null;
++
++  static getDerivedStateFromError(): GlobalErrorBoundaryState {
++    return { failed: true };
++  }
++
++  override componentDidCatch(_error: unknown, _errorInfo: ErrorInfo): void {
++    // React owns developer diagnostics. The browser fallback intentionally
++    // neither stores nor renders the raw exception, stack, or component trace.
++    this.errorGeneration += 1;
++    this.cancelRestorationFrame();
++    const generation = this.errorGeneration;
++    queueMicrotask(() => {
++      if (this.state.failed && this.errorGeneration === generation) {
++        this.fallbackRef.current?.focus();
++      }
++    });
++  }
++
++  override componentWillUnmount(): void {
++    this.cancelRestorationFrame();
++  }
++
++  private readonly cancelRestorationFrame = () => {
++    if (this.restorationFrame === null) return;
++    window.cancelAnimationFrame(this.restorationFrame);
++    this.restorationFrame = null;
++  };
++
++  private readonly retry = () => {
++    this.cancelRestorationFrame();
++    const retryGeneration = this.errorGeneration;
++    this.setState({ failed: false }, () => {
++      this.restorationFrame = window.requestAnimationFrame(() => {
++        this.restorationFrame = null;
++        if (this.state.failed || this.errorGeneration !== retryGeneration) {
++          this.fallbackRef.current?.focus();
++          return;
++        }
++        document
++          .querySelector<HTMLElement>(
++            '[data-error-boundary-focus-target="true"]',
++          )
++          ?.focus();
++      });
++      if (
++        this.state.failed ||
++        this.errorGeneration !== retryGeneration ||
++        this.fallbackRef.current
++      ) {
++        this.cancelRestorationFrame();
++        this.fallbackRef.current?.focus();
++      }
++    });
++  };
++
++  override render() {
++    if (!this.state.failed) return this.props.children;
++
++    return (
++      <main className="morrow-global-error" id="main-content">
++        <ActionableErrorCard
++          cardRef={this.fallbackRef}
++          error={null}
++          onRetry={this.retry}
++          retryLabel="Retry Morrow"
++        />
++      </main>
++    );
++  }
++}
+diff --git a/apps/web/src/app/providers.tsx b/apps/web/src/app/providers.tsx
+index 8f32f10..3c609a2 100644
+--- a/apps/web/src/app/providers.tsx
++++ b/apps/web/src/app/providers.tsx
+@@ -1,26 +1,29 @@
+ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+ import { useState, type ReactNode } from "react";
+ import { RuntimeStatusProvider } from "../state/runtime-status.js";
+ import { ThemeProvider } from "../state/theme.js";
++import { GlobalErrorBoundary } from "./error-boundary.js";
+ 
+ export function AppProviders({ children }: { children: ReactNode }) {
+   const [queryClient] = useState(
+     () =>
+       new QueryClient({
+         defaultOptions: {
+           queries: {
+             refetchOnWindowFocus: false,
+             retry: false,
+           },
+         },
+       }),
+   );
+ 
+   return (
+     <QueryClientProvider client={queryClient}>
+       <ThemeProvider>
+-        <RuntimeStatusProvider>{children}</RuntimeStatusProvider>
++        <RuntimeStatusProvider>
++          <GlobalErrorBoundary>{children}</GlobalErrorBoundary>
++        </RuntimeStatusProvider>
+       </ThemeProvider>
+     </QueryClientProvider>
+   );
+ }
+diff --git a/apps/web/src/features/missions/attention-card.test.tsx b/apps/web/src/features/missions/attention-card.test.tsx
+new file mode 100644
+index 0000000..7d03b28
+--- /dev/null
++++ b/apps/web/src/features/missions/attention-card.test.tsx
+@@ -0,0 +1,493 @@
++import type { WebAttentionRequest, WebMissionSnapshot } from "@morrow/contracts";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import {
++  act,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++  within,
++} from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { missionKeys } from "../../api/query-keys.js";
++import {
++  AttentionCard,
++  AttentionResolutionCoordinator,
++} from "./attention-card.js";
++
++function attention(
++  overrides: Partial<WebAttentionRequest> = {},
++): WebAttentionRequest {
++  return {
++    canContinueElsewhere: true,
++    choices: [
++      {
++        description: "Morrow will continue with the approved command.",
++        destructive: false,
++        id: "approve",
++        label: "Approve",
++        recommended: true,
++      },
++      {
++        description: "The command will not run and this mission may remain blocked.",
++        destructive: true,
++        id: "deny",
++        label: "Deny",
++        recommended: false,
++      },
++    ],
++    createdAt: "2026-07-21T13:30:00.000Z",
++    explanation: "The command can change files in the selected workspace.",
++    id: "attention-1",
++    kind: "approval",
++    missionId: "mission-42",
++    recommendation: "Approve only after reviewing the command consequences.",
++    title: "Run the report command",
++    ...overrides,
++  };
++}
++
++function snapshot(
++  request: WebAttentionRequest | null = null,
++): WebMissionSnapshot {
++  return {
++    artifacts: [],
++    attention: request ? [request] : [],
++    currentWork: "Waiting for a decision.",
++    milestones: [],
++    recentActivity: [],
++    summary: {
++      attentionCount: request ? 1 : 0,
++      completedMilestones: 0,
++      createdAt: "2026-07-21T13:00:00.000Z",
++      currentPhase: request ? "Waiting for approval" : "Continuing",
++      id: "mission-42",
++      latestActivity: null,
++      objective: "Prepare an evidence-backed report.",
++      projectId: "project-1",
++      state: request ? "needs_input" : "working",
++      title: "Prepare the report",
++      totalMilestones: 0,
++      updatedAt: request
++        ? "2026-07-21T13:30:00.000Z"
++        : "2026-07-21T13:31:00.000Z",
++      version: 1,
++      workspaceId: "workspace-personal-project-1",
++    },
++    verification: {
++      caveats: [],
++      evidenceCount: 0,
++      state: "not_ready",
++      summary: "Work is not ready for verification.",
++    },
++    version: 1,
++  };
++}
++
++function structuredError(status: number, code: string, message: string) {
++  return Response.json(
++    { version: 1, error: { code, message } },
++    { headers: { "x-trace-id": `trace-${status}` }, status },
++  );
++}
++
++interface Deferred<T> {
++  promise: Promise<T>;
++  resolve(value: T): void;
++}
++
++function deferred<T>(): Deferred<T> {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((onResolve) => {
++    resolve = onResolve;
++  });
++  return { promise, resolve };
++}
++
++function renderCard(request = attention()) {
++  const queryClient = new QueryClient({
++    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
++  });
++  queryClient.setQueryData(missionKeys.detail("mission-42"), snapshot(request));
++  const view = render(
++    <QueryClientProvider client={queryClient}>
++      <AttentionResolutionCoordinator missionId="mission-42">
++        <AttentionCard missionId="mission-42" request={request} />
++      </AttentionResolutionCoordinator>
++    </QueryClientProvider>,
++  );
++  return { ...view, queryClient };
++}
++
++afterEach(() => {
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("AttentionCard", () => {
++  it("renders the complete attention contract without selecting or invoking the recommendation", () => {
++    const fetchMock = vi.fn();
++    vi.stubGlobal("fetch", fetchMock);
++
++    renderCard();
++
++    expect(screen.getByText("Waiting for your approval")).toBeVisible();
++    expect(screen.getByText("What happened")).toBeVisible();
++    expect(screen.getByText("Run the report command")).toBeVisible();
++    expect(
++      screen.getByText("The command can change files in the selected workspace."),
++    ).toBeVisible();
++    expect(
++      screen.getByText("Approve only after reviewing the command consequences."),
++    ).toBeVisible();
++    expect(
++      screen.getByText("Morrow will continue with the approved command."),
++    ).toBeVisible();
++    expect(screen.getByText(/unrelated work can continue/i)).toBeVisible();
++
++    const recommended = screen.getByRole("button", { name: /approve/i });
++    expect(recommended).toHaveAttribute("data-recommended", "true");
++    expect(recommended).not.toHaveAttribute("aria-pressed", "true");
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++
++  it.each([
++    ["approval", "Waiting for your approval"],
++    ["blocker", "External blocker"],
++    ["connection", "Connection required"],
++  ] as const)("maps %s attention to an honest named surface", (kind, label) => {
++    renderCard(
++      attention({
++        choices: kind === "approval" ? attention().choices : [],
++        kind,
++        title:
++          kind === "connection"
++            ? "GitHub connection expired"
++            : kind === "blocker"
++              ? "Provider unavailable"
++              : attention().title,
++      }),
++    );
++
++    expect(screen.getByText(label)).toBeVisible();
++    if (kind === "connection") {
++      expect(screen.getByText("GitHub connection expired")).toBeVisible();
++    }
++    if (kind === "blocker") {
++      expect(screen.getByText("Provider unavailable")).toBeVisible();
++      expect(screen.getByText(/no safe choice was provided/i)).toBeVisible();
++    }
++  });
++
++  it("posts an explicit non-destructive decision once with encoded ownership and caches the authoritative snapshot", async () => {
++    const response = deferred<Response>();
++    const fetchMock = vi.fn<
++      (_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>
++    >(() => response.promise);
++    vi.stubGlobal("fetch", fetchMock);
++    const request = attention({
++      id: "attention/#1",
++      missionId: "mission/42 ?",
++    });
++    const queryClient = new QueryClient({
++      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
++    });
++    const invalidate = vi
++      .spyOn(queryClient, "invalidateQueries")
++      .mockResolvedValue(undefined);
++    const view = render(
++      <QueryClientProvider client={queryClient}>
++        <AttentionResolutionCoordinator missionId="mission/42 ?">
++          <AttentionCard missionId="mission/42 ?" request={request} />
++        </AttentionResolutionCoordinator>
++      </QueryClientProvider>,
++    );
++    const user = userEvent.setup();
++
++    await user.type(
++      screen.getByRole("textbox", { name: /decision note/i }),
++      "Reviewed locally",
++    );
++    const approve = screen.getByRole("button", { name: /approve/i });
++    fireEvent.click(approve);
++    fireEvent.click(approve);
++
++    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
++    expect(fetchMock.mock.calls[0]?.[0]).toBe(
++      "/api/web/missions/mission%2F42%20%3F/attention/attention%2F%231/resolve",
++    );
++    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
++      choiceId: "approve",
++      note: "Reviewed locally",
++    });
++    expect(screen.getByRole("button", { name: /approve/i })).toBeDisabled();
++    expect(screen.getByRole("button", { name: /deny/i })).toBeDisabled();
++
++    const resolved = snapshot(null);
++    resolved.summary.id = "mission/42 ?";
++    await act(async () => {
++      response.resolve(Response.json(resolved));
++      await response.promise;
++    });
++
++    await waitFor(() => {
++      expect(
++        queryClient.getQueryData(missionKeys.detail("mission/42 ?")),
++      ).toEqual(resolved);
++    });
++    expect(invalidate).toHaveBeenCalledWith({ queryKey: missionKeys.all });
++    view.unmount();
++  });
++
++  it("serializes attention resolution across every card in one mission", async () => {
++    const firstRequest = attention({
++      id: "attention-1",
++      title: "Approve the report command",
++    });
++    const secondRequest = attention({
++      id: "attention-2",
++      title: "Approve the release command",
++    });
++    const firstResponse = deferred<Response>();
++    const secondResponse = deferred<Response>();
++    const fetchMock = vi
++      .fn<
++        (_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>
++      >()
++      .mockImplementationOnce(() => firstResponse.promise)
++      .mockImplementationOnce(() => secondResponse.promise);
++    vi.stubGlobal("fetch", fetchMock);
++
++    const queryClient = new QueryClient({
++      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
++    });
++    const initial = snapshot(firstRequest);
++    initial.attention = [firstRequest, secondRequest];
++    initial.summary.attentionCount = 2;
++    queryClient.setQueryData(missionKeys.detail("mission-42"), initial);
++    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
++
++    render(
++      <QueryClientProvider client={queryClient}>
++        <AttentionResolutionCoordinator missionId="mission-42">
++          <AttentionCard missionId="mission-42" request={firstRequest} />
++          <AttentionCard missionId="mission-42" request={secondRequest} />
++        </AttentionResolutionCoordinator>
++      </QueryClientProvider>,
++    );
++
++    const firstCard = screen
++      .getByText("Approve the report command")
++      .closest("article");
++    const secondCard = screen
++      .getByText("Approve the release command")
++      .closest("article");
++    expect(firstCard).not.toBeNull();
++    expect(secondCard).not.toBeNull();
++
++    fireEvent.click(
++      within(firstCard as HTMLElement).getByRole("button", { name: /approve/i }),
++    );
++    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
++    expect(
++      within(secondCard as HTMLElement).getByRole("button", { name: /approve/i }),
++    ).toBeDisabled();
++    expect(
++      within(secondCard as HTMLElement).getByRole("textbox", {
++        name: /decision note/i,
++      }),
++    ).toBeDisabled();
++    fireEvent.click(
++      within(secondCard as HTMLElement).getByRole("button", { name: /approve/i }),
++    );
++    expect(fetchMock).toHaveBeenCalledOnce();
++
++    const afterFirst = snapshot(secondRequest);
++    await act(async () => {
++      firstResponse.resolve(Response.json(afterFirst));
++      await firstResponse.promise;
++    });
++    await waitFor(() =>
++      expect(
++        within(secondCard as HTMLElement).getByRole("button", {
++          name: /approve/i,
++        }),
++      ).toBeEnabled(),
++    );
++
++    fireEvent.click(
++      within(secondCard as HTMLElement).getByRole("button", { name: /approve/i }),
++    );
++    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
++    const afterSecond = snapshot(null);
++    await act(async () => {
++      secondResponse.resolve(Response.json(afterSecond));
++      await secondResponse.promise;
++    });
++    await waitFor(() =>
++      expect(queryClient.getQueryData(missionKeys.detail("mission-42"))).toEqual(
++        afterSecond,
++      ),
++    );
++  });
++
++  it("requires accessible destructive confirmation with cancel, Escape, focus restoration, and one confirmation", async () => {
++    const response = deferred<Response>();
++    const fetchMock = vi.fn<
++      (_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>
++    >(() => response.promise);
++    vi.stubGlobal("fetch", fetchMock);
++    renderCard();
++    const user = userEvent.setup();
++    const deny = screen.getByRole("button", { name: /deny/i });
++
++    await user.click(deny);
++    const dialog = screen.getByRole("alertdialog", {
++      name: /confirm deny/i,
++    });
++    expect(dialog).toHaveAttribute("aria-modal", "true");
++    expect(fetchMock).not.toHaveBeenCalled();
++    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
++
++    await user.keyboard("{Escape}");
++    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
++    expect(deny).toHaveFocus();
++
++    await user.click(deny);
++    await user.click(screen.getByRole("button", { name: "Cancel" }));
++    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
++    expect(deny).toHaveFocus();
++
++    await user.click(deny);
++    const confirm = screen.getByRole("button", { name: "Confirm deny" });
++    fireEvent.click(confirm);
++    fireEvent.click(confirm);
++    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
++    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
++      choiceId: "deny",
++    });
++  });
++
++  it.each([
++    [409, "ATTENTION_ALREADY_RESOLVED", "That request was already resolved."],
++    [404, "NOT_FOUND", "That attention request was not found."],
++    [503, "HTTP_ERROR", "Bearer secret-value must not be shown"],
++  ])(
++    "preserves the request and choices after a %s resolution failure",
++    async (status, code, message) => {
++      vi.stubGlobal(
++        "fetch",
++        vi.fn(async () => structuredError(status, code, message)),
++      );
++      renderCard();
++      const user = userEvent.setup();
++      await user.type(
++        screen.getByRole("textbox", { name: /decision note/i }),
++        "Keep this note",
++      );
++
++      await user.click(screen.getByRole("button", { name: /approve/i }));
++
++      expect(await screen.findByRole("alert")).toBeVisible();
++      expect(
++        screen.getByRole("button", { name: "Refresh mission state" }),
++      ).toBeEnabled();
++      expect(
++        screen.queryByRole("button", { name: /diagnostics/i }),
++      ).not.toBeInTheDocument();
++      expect(screen.getByText("Run the report command")).toBeVisible();
++      expect(screen.getByRole("button", { name: /approve/i })).toBeEnabled();
++      expect(screen.getByRole("button", { name: /deny/i })).toBeEnabled();
++      expect(screen.getByRole("textbox", { name: /decision note/i })).toHaveValue(
++        "Keep this note",
++      );
++      if (status >= 500) {
++        expect(screen.queryByText(/secret-value/i)).not.toBeInTheDocument();
++      }
++    },
++  );
++
++  it("refreshes authoritative state after a lost destructive response and never reposts a resolved request", async () => {
++    const request = attention();
++    const resolved = snapshot(null);
++    const fetchMock = vi.fn(
++      async (_input: RequestInfo | URL, init?: RequestInit) => {
++        if (init?.method === "POST") {
++          return structuredError(
++            503,
++            "SERVICE_UNAVAILABLE",
++            "The response was lost after the server handled it.",
++          );
++        }
++        return Response.json(resolved);
++      },
++    );
++    vi.stubGlobal("fetch", fetchMock);
++    const { queryClient } = renderCard(request);
++    const user = userEvent.setup();
++
++    await user.click(screen.getByRole("button", { name: /deny/i }));
++    await user.click(screen.getByRole("button", { name: "Confirm deny" }));
++    const alert = await screen.findByRole("alert");
++    expect(alert).toHaveTextContent(/decision outcome is not confirmed/i);
++
++    await user.click(
++      screen.getByRole("button", { name: "Refresh mission state" }),
++    );
++
++    expect(
++      await screen.findByText(/attention request is no longer pending/i),
++    ).toBeVisible();
++    expect(
++      queryClient.getQueryData(missionKeys.detail("mission-42")),
++    ).toEqual(resolved);
++    expect(
++      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
++    ).toHaveLength(1);
++    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
++  });
++
++  it("reopens destructive confirmation after refresh proves a lost-response request is still pending", async () => {
++    const request = attention();
++    const fetchMock = vi.fn(
++      async (_input: RequestInfo | URL, init?: RequestInit) => {
++        if (init?.method === "POST") {
++          return structuredError(
++            503,
++            "SERVICE_UNAVAILABLE",
++            "The response was lost before its outcome was known.",
++          );
++        }
++        return Response.json(snapshot(request));
++      },
++    );
++    vi.stubGlobal("fetch", fetchMock);
++    renderCard(request);
++    const user = userEvent.setup();
++
++    await user.click(screen.getByRole("button", { name: /deny/i }));
++    await user.click(screen.getByRole("button", { name: "Confirm deny" }));
++    await screen.findByRole("alert");
++    await user.click(
++      screen.getByRole("button", { name: "Refresh mission state" }),
++    );
++
++    expect(
++      await screen.findByRole("alertdialog", { name: /confirm deny/i }),
++    ).toBeVisible();
++    expect(
++      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
++    ).toHaveLength(1);
++  });
++
++  it("renders a mismatched mission request inert and never posts cross-mission identifiers", async () => {
++    const fetchMock = vi.fn();
++    vi.stubGlobal("fetch", fetchMock);
++    renderCard(attention({ missionId: "another-mission" }));
++
++    expect(screen.getByText(/could not verify this request/i)).toBeVisible();
++    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
++    expect(fetchMock).not.toHaveBeenCalled();
++  });
++});
+diff --git a/apps/web/src/features/missions/attention-card.tsx b/apps/web/src/features/missions/attention-card.tsx
+new file mode 100644
+index 0000000..f7975d2
+--- /dev/null
++++ b/apps/web/src/features/missions/attention-card.tsx
+@@ -0,0 +1,481 @@
++import {
++  ResolveWebAttentionSchema,
++  type ResolveWebAttentionInput,
++  type WebAttentionRequest,
++  type WebMissionSnapshot,
++} from "@morrow/contracts";
++import { Button } from "@morrow/ui";
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import {
++  createContext,
++  useCallback,
++  useContext,
++  useEffect,
++  useId,
++  useMemo,
++  useRef,
++  useState,
++  type KeyboardEvent,
++  type ReactNode,
++} from "react";
++import {
++  readAuthoritativeMission,
++  resolveMissionAttention,
++} from "../../api/attention.js";
++import { missionKeys } from "../../api/query-keys.js";
++import { ActionableErrorCard } from "../../app/error-boundary.js";
++
++const kindLabels: Record<WebAttentionRequest["kind"], string> = {
++  approval: "Waiting for your approval",
++  blocker: "External blocker",
++  connection: "Connection required",
++  decision: "Decision needed",
++};
++
++type WebAttentionChoice = WebAttentionRequest["choices"][number];
++
++interface AttentionResolutionContextValue {
++  acquire: (attentionId: string) => boolean;
++  activeAttentionId: string | null;
++  missionId: string;
++  release: (attentionId: string) => void;
++}
++
++const AttentionResolutionContext =
++  createContext<AttentionResolutionContextValue | null>(null);
++
++export function AttentionResolutionCoordinator({
++  children,
++  missionId,
++}: {
++  children: ReactNode;
++  missionId: string;
++}) {
++  const activeAttentionRef = useRef<string | null>(null);
++  const [activeAttentionId, setActiveAttentionId] = useState<string | null>(
++    null,
++  );
++
++  const acquire = useCallback((attentionId: string) => {
++    if (activeAttentionRef.current !== null) return false;
++    activeAttentionRef.current = attentionId;
++    setActiveAttentionId(attentionId);
++    return true;
++  }, []);
++
++  const release = useCallback((attentionId: string) => {
++    if (activeAttentionRef.current !== attentionId) return;
++    activeAttentionRef.current = null;
++    setActiveAttentionId(null);
++  }, []);
++
++  const value = useMemo(
++    () => ({ acquire, activeAttentionId, missionId, release }),
++    [acquire, activeAttentionId, missionId, release],
++  );
++
++  return (
++    <AttentionResolutionContext.Provider value={value}>
++      {children}
++    </AttentionResolutionContext.Provider>
++  );
++}
++
++function useAttentionResolution(missionId: string) {
++  const coordinator = useContext(AttentionResolutionContext);
++  if (!coordinator || coordinator.missionId !== missionId) {
++    throw new Error(
++      "AttentionCard must be rendered inside its mission attention coordinator.",
++    );
++  }
++  return coordinator;
++}
++
++function isNewerSnapshot(
++  current: WebMissionSnapshot | undefined,
++  incoming: WebMissionSnapshot,
++): boolean {
++  if (!current) return false;
++  const currentCursor = Math.max(
++    0,
++    ...current.recentActivity.map((activity) => activity.cursor),
++  );
++  const incomingCursor = Math.max(
++    0,
++    ...incoming.recentActivity.map((activity) => activity.cursor),
++  );
++  if (currentCursor !== incomingCursor) return currentCursor > incomingCursor;
++  return (
++    Date.parse(current.summary.updatedAt) > Date.parse(incoming.summary.updatedAt)
++  );
++}
++
++interface ConfirmationDialogProps {
++  choice: WebAttentionChoice;
++  onCancel: () => void;
++  onConfirm: () => void;
++}
++
++function ConfirmationDialog({
++  choice,
++  onCancel,
++  onConfirm,
++}: ConfirmationDialogProps) {
++  const cancelRef = useRef<HTMLButtonElement>(null);
++  const confirmRef = useRef<HTMLButtonElement>(null);
++  const titleId = useId();
++  const descriptionId = useId();
++
++  useEffect(() => {
++    cancelRef.current?.focus();
++  }, []);
++
++  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
++    if (event.key === "Escape") {
++      event.preventDefault();
++      onCancel();
++      return;
++    }
++    if (event.key !== "Tab") return;
++
++    const target = event.target;
++    if (event.shiftKey && target === cancelRef.current) {
++      event.preventDefault();
++      confirmRef.current?.focus();
++    } else if (!event.shiftKey && target === confirmRef.current) {
++      event.preventDefault();
++      cancelRef.current?.focus();
++    }
++  };
++
++  return (
++    <div className="morrow-attention-dialog-backdrop">
++      <div
++        aria-describedby={descriptionId}
++        aria-labelledby={titleId}
++        aria-modal="true"
++        className="morrow-attention-dialog"
++        onKeyDown={handleKeyDown}
++        role="alertdialog"
++      >
++        <h4 id={titleId}>Confirm {choice.label.toLowerCase()}</h4>
++        <p id={descriptionId}>
++          {choice.description ??
++            "Morrow did not provide additional consequences for this destructive choice."}
++        </p>
++        <div className="morrow-attention-dialog__actions">
++          <Button onClick={onCancel} ref={cancelRef} variant="secondary">
++            Cancel
++          </Button>
++          <Button onClick={onConfirm} ref={confirmRef} variant="danger">
++            Confirm {choice.label.toLowerCase()}
++          </Button>
++        </div>
++      </div>
++    </div>
++  );
++}
++
++export function AttentionCard({
++  missionId,
++  request,
++}: {
++  missionId: string;
++  request: WebAttentionRequest;
++}) {
++  const queryClient = useQueryClient();
++  const resolution = useAttentionResolution(missionId);
++  const [note, setNote] = useState("");
++  const [confirmation, setConfirmation] =
++    useState<WebAttentionChoice | null>(null);
++  const [failedInput, setFailedInput] =
++    useState<ResolveWebAttentionInput | null>(null);
++  const [refreshError, setRefreshError] = useState<unknown | null>(null);
++  const [refreshPending, setRefreshPending] = useState(false);
++  const [resolutionConfirmed, setResolutionConfirmed] = useState(false);
++  const choiceRefs = useRef(new Map<string, HTMLButtonElement>());
++  const confirmationSubmitting = useRef(false);
++  const submissionPending = useRef(false);
++  const choicesId = useId();
++  const noteId = useId();
++
++  const mutation = useMutation({
++    mutationFn: (input: ResolveWebAttentionInput) =>
++      resolveMissionAttention(missionId, request.id, input),
++    onError: (_error, input) => {
++      setFailedInput(input);
++    },
++    onSuccess: (resolved) => {
++      setFailedInput(null);
++      setRefreshError(null);
++      queryClient.setQueryData<WebMissionSnapshot>(
++        missionKeys.detail(missionId),
++        (current) => (isNewerSnapshot(current, resolved) ? current : resolved),
++      );
++      void queryClient.invalidateQueries({ queryKey: missionKeys.all });
++    },
++    onSettled: () => {
++      submissionPending.current = false;
++      confirmationSubmitting.current = false;
++      resolution.release(request.id);
++    },
++  });
++
++  const closeConfirmation = (restoreFocus = true) => {
++    const choiceId = confirmation?.id;
++    setConfirmation(null);
++    if (restoreFocus && choiceId) choiceRefs.current.get(choiceId)?.focus();
++  };
++
++  const submit = (choice: WebAttentionChoice) => {
++    if (submissionPending.current || resolution.activeAttentionId !== null) {
++      return;
++    }
++    const trimmedNote = note.trim();
++    const input = ResolveWebAttentionSchema.parse(
++      {
++        choiceId: choice.id,
++        ...(trimmedNote ? { note: trimmedNote } : {}),
++      },
++    );
++    if (!resolution.acquire(request.id)) return;
++    submissionPending.current = true;
++    mutation.reset();
++    setRefreshError(null);
++    mutation.mutate(input);
++  };
++
++  const selectChoice = (choice: WebAttentionChoice) => {
++    if (submissionPending.current || resolution.activeAttentionId !== null) {
++      return;
++    }
++    if (choice.destructive) {
++      confirmationSubmitting.current = false;
++      setConfirmation(choice);
++      return;
++    }
++    submit(choice);
++  };
++
++  const confirmChoice = () => {
++    if (
++      !confirmation ||
++      confirmationSubmitting.current ||
++      resolution.activeAttentionId !== null
++    ) {
++      return;
++    }
++    confirmationSubmitting.current = true;
++    const choice = confirmation;
++    closeConfirmation();
++    submit(choice);
++  };
++
++  const refreshAfterFailure = async () => {
++    if (
++      submissionPending.current ||
++      refreshPending ||
++      resolution.activeAttentionId !== null ||
++      !resolution.acquire(request.id)
++    ) {
++      return;
++    }
++    submissionPending.current = true;
++    setRefreshPending(true);
++    setRefreshError(null);
++
++    try {
++      const authoritative = await readAuthoritativeMission(missionId);
++      queryClient.setQueryData(
++        missionKeys.detail(missionId),
++        authoritative,
++      );
++      await queryClient.invalidateQueries({
++        queryKey: missionKeys.all,
++        refetchType: "none",
++      });
++
++      const pendingRequest = authoritative.attention.find(
++        (candidate) => candidate.id === request.id,
++      );
++      mutation.reset();
++      setFailedInput(null);
++      if (!pendingRequest) {
++        closeConfirmation(false);
++        setResolutionConfirmed(true);
++        return;
++      }
++
++      const failedChoice = pendingRequest.choices.find(
++        (candidate) => candidate.id === failedInput?.choiceId,
++      );
++      if (failedChoice?.destructive) {
++        setConfirmation(failedChoice);
++      }
++    } catch (error: unknown) {
++      setRefreshError(error);
++    } finally {
++      submissionPending.current = false;
++      setRefreshPending(false);
++      resolution.release(request.id);
++    }
++  };
++
++  if (request.missionId !== missionId) {
++    return (
++      <article className="morrow-attention-card morrow-attention-card--inert">
++        <h3>Attention request unavailable</h3>
++        <p>
++          Morrow could not verify this request against the current mission. No
++          decision can be sent from this page.
++        </p>
++      </article>
++    );
++  }
++
++  if (resolutionConfirmed) {
++    return (
++      <article className="morrow-attention-card" data-kind={request.kind}>
++        <h3>Attention request refreshed</h3>
++        <p aria-live="polite" role="status">
++          This attention request is no longer pending. Authoritative mission
++          state was refreshed, and the decision was not posted again.
++        </p>
++      </article>
++    );
++  }
++
++  const operationPending =
++    mutation.isPending ||
++    refreshPending ||
++    resolution.activeAttentionId !== null;
++  const displayedError =
++    refreshError ?? (mutation.isError ? mutation.error : null);
++
++  return (
++    <article className="morrow-attention-card" data-kind={request.kind}>
++      <h3 className="morrow-attention-card__kind">
++        {kindLabels[request.kind]}
++      </h3>
++      <dl className="morrow-attention-card__contract">
++        <div>
++          <dt>What happened</dt>
++          <dd>{request.title}</dd>
++        </div>
++        <div>
++          <dt>Why this matters</dt>
++          <dd>{request.explanation}</dd>
++        </div>
++        <div>
++          <dt>Morrow&apos;s recommendation</dt>
++          <dd>
++            {request.recommendation ??
++              "Morrow did not provide a recommendation for this request."}
++          </dd>
++        </div>
++        <div>
++          <dt>Unrelated work</dt>
++          <dd>
++            {request.canContinueElsewhere
++              ? "Unrelated work can continue while this request waits."
++              : "Unrelated work cannot continue until this request is resolved."}
++          </dd>
++        </div>
++      </dl>
++
++      {request.choices.length > 0 ? (
++        <>
++          <div className="morrow-attention-card__note">
++            <label htmlFor={noteId}>Decision note (optional)</label>
++            <textarea
++              disabled={operationPending}
++              id={noteId}
++              maxLength={1000}
++              onChange={(event) => setNote(event.target.value)}
++              placeholder="Add context for the durable decision. Do not include credentials."
++              rows={3}
++              value={note}
++            />
++          </div>
++          <div
++            aria-labelledby={choicesId}
++            className="morrow-attention-card__choices"
++            role="group"
++          >
++            <h4 id={choicesId}>Choices and consequences</h4>
++            {request.choices.map((choice, index) => {
++              const consequenceId = `${choicesId}-choice-${index}`;
++              return (
++                <div
++                  className="morrow-attention-choice"
++                  key={`${choice.id}-${index}`}
++                >
++                  <Button
++                    aria-describedby={consequenceId}
++                    data-recommended={choice.recommended ? "true" : "false"}
++                    disabled={operationPending}
++                    onClick={() => selectChoice(choice)}
++                    ref={(node) => {
++                      if (node) choiceRefs.current.set(choice.id, node);
++                      else choiceRefs.current.delete(choice.id);
++                    }}
++                    variant={
++                      choice.destructive
++                        ? "danger"
++                        : choice.recommended
++                          ? "primary"
++                          : "secondary"
++                    }
++                  >
++                    {choice.label}
++                    {choice.recommended ? (
++                      <span className="morrow-attention-choice__recommended">
++                        Recommended
++                      </span>
++                    ) : null}
++                  </Button>
++                  <p id={consequenceId}>
++                    {choice.description ??
++                      "No additional consequence was provided."}
++                  </p>
++                </div>
++              );
++            })}
++          </div>
++        </>
++      ) : (
++        <p className="morrow-attention-card__no-choice">
++          No safe choice was provided for this request. Review the mission
++          activity or required connection before continuing.
++        </p>
++      )}
++
++      {mutation.isPending ? (
++        <p aria-live="polite" role="status">
++          Submitting this decision…
++        </p>
++      ) : null}
++
++      {refreshPending ? (
++        <p aria-live="polite" role="status">
++          Refreshing authoritative mission state…
++        </p>
++      ) : null}
++
++      {displayedError ? (
++        <ActionableErrorCard
++          error={displayedError}
++          onRefresh={() => void refreshAfterFailure()}
++        />
++      ) : null}
++
++      {confirmation ? (
++        <ConfirmationDialog
++          choice={confirmation}
++          onCancel={() => closeConfirmation()}
++          onConfirm={confirmChoice}
++        />
++      ) : null}
++    </article>
++  );
++}
+diff --git a/apps/web/src/features/missions/mission-overview.tsx b/apps/web/src/features/missions/mission-overview.tsx
+index 9d53fa3..bb6c15a 100644
+--- a/apps/web/src/features/missions/mission-overview.tsx
++++ b/apps/web/src/features/missions/mission-overview.tsx
+@@ -1,16 +1,21 @@
+ import type {
+   WebAttentionRequest,
+   WebMissionMilestone,
+   WebMissionSnapshot,
+ } from "@morrow/contracts";
+ import { Surface } from "@morrow/ui";
++import { MissionStatusSummary } from "../../state/mission-status.js";
++import {
++  AttentionCard,
++  AttentionResolutionCoordinator,
++} from "./attention-card.js";
+ 
+ const milestoneStateLabels: Record<WebMissionMilestone["state"], string> = {
+   pending: "Pending",
+   running: "Running",
+   completed: "Completed",
+   failed: "Failed",
+   skipped: "Skipped",
+ };
+ 
+ function MilestoneList({ milestones }: { milestones: WebMissionMilestone[] }) {
+@@ -24,57 +29,60 @@ function MilestoneList({ milestones }: { milestones: WebMissionMilestone[] }) {
+             data-state={milestone.state}
+           >
+             {milestoneStateLabels[milestone.state]}
+           </span>
+         </li>
+       ))}
+     </ul>
+   );
+ }
+ 
+-function AttentionList({ attention }: { attention: WebAttentionRequest[] }) {
++function AttentionList({
++  attention,
++  missionId,
++}: {
++  attention: WebAttentionRequest[];
++  missionId: string;
++}) {
+   if (attention.length === 0) {
+     return <p>No attention is needed right now.</p>;
+   }
+ 
+   return (
+-    <ul className="morrow-mission-attention-list">
+-      {attention.map((request) => (
+-        <li key={request.id}>
+-          <strong>{request.title}</strong>
+-          <p>{request.explanation}</p>
+-          {request.recommendation ? (
+-            <p>
+-              <span className="morrow-sr-only">Recommendation: </span>
+-              {request.recommendation}
+-            </p>
+-          ) : null}
+-        </li>
+-      ))}
+-    </ul>
++    <AttentionResolutionCoordinator missionId={missionId}>
++      <ul className="morrow-mission-attention-list">
++        {attention.map((request) => (
++          <li key={request.id}>
++            <AttentionCard missionId={missionId} request={request} />
++          </li>
++        ))}
++      </ul>
++    </AttentionResolutionCoordinator>
+   );
+ }
+ 
+ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) {
+   const completed = snapshot.milestones.filter(
+     (milestone) => milestone.state === "completed",
+   );
+   const remaining = snapshot.milestones.filter(
+     (milestone) =>
+       milestone.state !== "completed" && milestone.state !== "skipped",
+   );
+   const skipped = snapshot.milestones.filter(
+     (milestone) => milestone.state === "skipped",
+   );
+ 
+   return (
+     <div className="morrow-mission-overview">
++      <MissionStatusSummary snapshot={snapshot} />
++
+       <Surface className="morrow-mission-overview__objective" padding="large">
+         <h2>Objective</h2>
+         <p>{snapshot.summary.objective}</p>
+       </Surface>
+ 
+       <p className="morrow-mission-milestone-count" aria-label="Milestone progress">
+         {completed.length} completed · {remaining.length} remaining ·{" "}
+         {skipped.length} skipped · {snapshot.milestones.length} total
+       </p>
+ 
+@@ -113,15 +121,18 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot })
+       <Surface padding="large">
+         <h2>Current work</h2>
+         <p>{snapshot.currentWork ?? "No current work is reported."}</p>
+         <p className="morrow-mission-secondary-copy">
+           Current phase: {snapshot.summary.currentPhase}
+         </p>
+       </Surface>
+ 
+       <Surface padding="large">
+         <h2>Attention needed</h2>
+-        <AttentionList attention={snapshot.attention} />
++        <AttentionList
++          attention={snapshot.attention}
++          missionId={snapshot.summary.id}
++        />
+       </Surface>
+     </div>
+   );
+ }
+diff --git a/apps/web/src/features/missions/mission-page.test.tsx b/apps/web/src/features/missions/mission-page.test.tsx
+index d57a64f..5787bb3 100644
+--- a/apps/web/src/features/missions/mission-page.test.tsx
++++ b/apps/web/src/features/missions/mission-page.test.tsx
+@@ -63,21 +63,29 @@ function snapshot(): WebMissionSnapshot {
+         missionId: "mission-42",
+         openPath: null,
+         preview: "A safe artifact preview.",
+         title: "Launch brief",
+         version: 1,
+       },
+     ],
+     attention: [
+       {
+         canContinueElsewhere: true,
+-        choices: [],
++        choices: [
++          {
++            description: "Continue with the reviewed draft.",
++            destructive: false,
++            id: "approve",
++            label: "Approve draft",
++            recommended: true,
++          },
++        ],
+         createdAt: "2026-07-21T13:30:00.000Z",
+         explanation: "Choose whether the final draft should be published.",
+         id: "attention-1",
+         kind: "decision",
+         missionId: "mission-42",
+         recommendation: "Review the draft first.",
+         title: "Publication decision",
+       },
+     ],
+     currentWork: "Comparing the draft against the launch checklist.",
+@@ -218,31 +226,49 @@ describe("MissionPage", () => {
+     ).toBeVisible();
+     expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
+     expect(screen.getByRole("heading", { name: "Completed" })).toBeVisible();
+     expect(screen.getByText("Gather requirements")).toBeVisible();
+     expect(screen.getByRole("heading", { name: "Current work" })).toBeVisible();
+     expect(
+       screen.getByText("Comparing the draft against the launch checklist."),
+     ).toBeVisible();
+     expect(screen.getByRole("heading", { name: "Attention needed" })).toBeVisible();
+     expect(screen.getByText("Publication decision")).toBeVisible();
++    expect(screen.getByRole("button", { name: /approve draft/i })).toHaveAttribute(
++      "data-recommended",
++      "true",
++    );
+     expect(screen.getByRole("heading", { name: "Remaining milestones" })).toBeVisible();
+     expect(screen.getByText("Review the evidence")).toBeVisible();
+     expect(screen.getByText("Running")).toBeVisible();
+     expect(screen.getByText("Pending")).toBeVisible();
+     expect(screen.getByText("Failed")).toBeVisible();
+     expect(
+       screen.getByText("2 completed · 3 remaining · 0 skipped · 5 total"),
+     ).toBeVisible();
+     expect(document.body).not.toHaveTextContent(/\d+\s*%|estimated|time remaining/i);
+   });
+ 
++  it("integrates truthful failure state without inventing a background retry", async () => {
++    const failed = snapshot();
++    failed.summary.state = "failed_recoverable";
++    failed.verification.state = "failed";
++    failed.verification.summary = "The required checks did not pass.";
++    installApi(() => json(failed));
++    renderMission();
++
++    expect(
++      await screen.findByRole("heading", { name: "Failed but recoverable" }),
++    ).toBeVisible();
++    expect(screen.getByText(/no retry is running in the background/i)).toBeVisible();
++  });
++
+   it("accounts for skipped milestones separately and reconciles every milestone with the total", async () => {
+     const withSkipped = snapshot();
+     withSkipped.milestones.push({
+       evidenceIds: [],
+       id: "m6",
+       state: "skipped",
+       title: "Publish an obsolete draft",
+     });
+     withSkipped.summary.totalMilestones = 6;
+     installApi(() => json(withSkipped));
+@@ -413,51 +439,55 @@ describe("MissionPage", () => {
+     expect(error).toHaveTextContent("Mission not found");
+     expect(error).toHaveTextContent("This mission is unavailable or no longer exists.");
+     expect(error).toHaveTextContent("Your synchronized mission data remains unchanged.");
+     await user.click(screen.getByRole("button", { name: "Retry mission" }));
+     expect(
+       await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
+     ).toBeVisible();
+     expect(missionRequests).toBe(2);
+   });
+ 
+-  it("preserves a structured API failure message without inventing recovery details", async () => {
++  it("converts a runtime API failure without exposing raw details and preserves a safe trace", async () => {
+     installApi(() =>
+       json(
+         {
+           error: {
+             code: "RUNTIME_UNAVAILABLE",
+-            message: "The local runtime is unavailable.",
++            message: "Bearer private-runtime-token at C:\\runtime\\server.ts",
+           },
+           version: 1,
+         },
+         503,
++        { "x-trace-id": "trace-runtime-42" },
+       ),
+     );
+     renderMission();
+ 
+     const error = await screen.findByRole("alert");
+-    expect(error).toHaveTextContent("Mission could not be loaded");
+-    expect(error).toHaveTextContent("The local runtime is unavailable.");
++    expect(error).toHaveTextContent("Morrow is not connected");
++    expect(error).toHaveTextContent("The local Morrow runtime could not be reached.");
++    expect(error).toHaveTextContent("trace-runtime-42");
++    expect(error).not.toHaveTextContent("private-runtime-token");
++    expect(error).not.toHaveTextContent("server.ts");
+     expect(error).not.toHaveTextContent("restarted");
+   });
+ 
+   it("retains synchronized mission data and the live stream when a background refetch fails", async () => {
+     let missionRequests = 0;
+     installApi(() => {
+       missionRequests += 1;
+       if (missionRequests === 2) {
+         return json(
+           {
+             error: {
+               code: "RUNTIME_UNAVAILABLE",
+-              message: "The local runtime is unavailable.",
++              message: "Bearer private-background-token",
+             },
+             version: 1,
+           },
+           503,
+         );
+       }
+       return json(snapshot());
+     });
+     const user = userEvent.setup();
+     renderMission();
+@@ -466,21 +496,22 @@ describe("MissionPage", () => {
+       await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
+     ).toBeVisible();
+     const source = FakeEventSource.instances[0];
+     act(() => source?.emit("open"));
+     act(() => source?.emit("mission.updated", streamEnvelope(1)));
+ 
+     const warning = await screen.findByRole("status", {
+       name: "Mission synchronization warning",
+     });
+     expect(warning).toHaveTextContent("Mission updates could not be synchronized.");
+-    expect(warning).toHaveTextContent("The local runtime is unavailable.");
++    expect(warning).toHaveTextContent("The local Morrow runtime could not be reached.");
++    expect(warning).not.toHaveTextContent("private-background-token");
+     expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
+     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+     expect(FakeEventSource.instances).toHaveLength(1);
+     expect(source?.closed).toBe(false);
+     expect(screen.getByText("Synchronized")).toBeVisible();
+ 
+     await user.click(screen.getByRole("button", { name: "Retry synchronization" }));
+     await waitFor(() => expect(missionRequests).toBe(3));
+     await waitFor(() => {
+       expect(
+diff --git a/apps/web/src/features/missions/mission-page.tsx b/apps/web/src/features/missions/mission-page.tsx
+index 6f3a523..f0ae69b 100644
+--- a/apps/web/src/features/missions/mission-page.tsx
++++ b/apps/web/src/features/missions/mission-page.tsx
+@@ -5,20 +5,24 @@ import { useParams } from "@tanstack/react-router";
+ import {
+   useEffect,
+   useId,
+   useRef,
+   useState,
+   type KeyboardEvent,
+ } from "react";
+ import { ApiClientError } from "../../api/client.js";
+ import { useMissionStream } from "../../api/mission-stream.js";
+ import { missionQueries } from "../../api/query-keys.js";
++import {
++  ActionableErrorCard,
++  toErrorCard,
++} from "../../app/error-boundary.js";
+ import { MissionActivity } from "./mission-activity.js";
+ import { MissionOverview } from "./mission-overview.js";
+ import { ResultTab } from "./result-tab.js";
+ import { WorkTab } from "./work-tab.js";
+ 
+ const tabs = ["Overview", "Activity", "Work", "Result"] as const;
+ type MissionTab = (typeof tabs)[number];
+ 
+ const missionStateLabels: Record<WebMissionUiState, string> = {
+   draft: "Draft",
+@@ -39,59 +43,62 @@ function MissionLoadError({ error, retry }: { error: unknown; retry: () => void
+   const notFound = typed?.status === 404 || typed?.code === "NOT_FOUND";
+ 
+   return (
+     <section aria-labelledby="mission-error-heading" className="morrow-page">
+       <div className="morrow-page__heading">
+         <p className="morrow-eyebrow">Mission</p>
+         <h1 id="mission-error-heading">
+           {notFound ? "Mission not found" : "Mission could not be loaded"}
+         </h1>
+       </div>
+-      <ErrorCard
+-        attempted={[]}
+-        continuation="Retry the authoritative mission snapshot when the local service is available."
+-        explanation={
+-          notFound
+-            ? "This mission is unavailable or no longer exists."
+-            : (typed?.message ?? "The request could not be completed.")
+-        }
+-        preservedMessage="Your synchronized mission data remains unchanged."
+-        recommendedAction={{ label: "Retry mission", onClick: retry }}
+-        title={notFound ? "Mission not found" : "Mission could not be loaded"}
+-      />
++      {notFound ? (
++        <ErrorCard
++          attempted={[]}
++          continuation="Retry the authoritative mission snapshot if this mission should still exist."
++          explanation="This mission is unavailable or no longer exists."
++          preservedMessage="Your synchronized mission data remains unchanged."
++          recommendedAction={{ label: "Retry mission", onClick: retry }}
++          title="Mission not found"
++        />
++      ) : (
++        <ActionableErrorCard
++          error={error}
++          onRetry={retry}
++          retryLabel="Retry mission"
++        />
++      )}
+     </section>
+   );
+ }
+ 
+ function MissionSynchronizationWarning({
+   error,
+   retry,
+ }: {
+   error: unknown;
+   retry: () => void;
+ }) {
++  const model = toErrorCard(error);
+   return (
+     <Surface
+       aria-atomic="true"
+       aria-label="Mission synchronization warning"
+       aria-live="polite"
+       className="morrow-mission-sync-warning"
+       padding="medium"
+       role="status"
+       variant="subtle"
+     >
+       <div>
+         <h2>Mission updates could not be synchronized.</h2>
+         <p>
+-          {error instanceof ApiClientError
+-            ? error.message
+-            : "The latest mission state could not be loaded."}{" "}
++          {model.explanation}{" "}
+           Showing the last synchronized state.
+         </p>
+       </div>
+       <Button onClick={retry} variant="secondary">
+         Retry synchronization
+       </Button>
+     </Surface>
+   );
+ }
+ 
+diff --git a/apps/web/src/features/placeholders/connections-page.tsx b/apps/web/src/features/placeholders/connections-page.tsx
+index 6450193..65d6957 100644
+--- a/apps/web/src/features/placeholders/connections-page.tsx
++++ b/apps/web/src/features/placeholders/connections-page.tsx
+@@ -1,17 +1,18 @@
+ import { Button, Surface } from "@morrow/ui";
+ import { useRuntimeStatus } from "../../state/runtime-status.js";
+ 
+ const statusCopy = {
+   checking: "Checking the local Morrow runtime.",
+   offline: "The local Morrow runtime is unavailable.",
+   online: "The local Morrow runtime is connected.",
++  reconnecting: "Reconnecting to the local Morrow runtime.",
+ } as const;
+ 
+ export function ConnectionsPage() {
+   const { refresh, status } = useRuntimeStatus();
+ 
+   return (
+     <section aria-labelledby="connections-heading" className="morrow-page">
+       <div className="morrow-page__heading">
+         <p className="morrow-eyebrow">Local runtime</p>
+         <h1 id="connections-heading">Connections</h1>
+diff --git a/apps/web/src/main.test.tsx b/apps/web/src/main.test.tsx
+new file mode 100644
+index 0000000..b4cb447
+--- /dev/null
++++ b/apps/web/src/main.test.tsx
+@@ -0,0 +1,59 @@
++import type { Root, RootOptions } from "react-dom/client";
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++const rootMocks = vi.hoisted(() => {
++  const render = vi.fn();
++  const createRoot = vi.fn(
++    (
++      _container: Element | DocumentFragment,
++      _options?: RootOptions,
++    ): Root => ({ render }) as unknown as Root,
++  );
++  return { createRoot, render };
++});
++
++vi.mock("react-dom/client", () => ({ createRoot: rootMocks.createRoot }));
++vi.mock("./app/router.js", () => ({ createAppRouter: vi.fn(() => ({})) }));
++
++afterEach(() => {
++  document.body.innerHTML = "";
++  rootMocks.createRoot.mockClear();
++  rootMocks.render.mockClear();
++  vi.restoreAllMocks();
++  vi.resetModules();
++});
++
++describe("React root error handling", () => {
++  it("wires caught and uncaught handlers that never log raw error or component details", async () => {
++    document.body.innerHTML = '<div id="root"></div>';
++    const consoleError = vi
++      .spyOn(console, "error")
++      .mockImplementation(() => undefined);
++
++    await import("./main.js");
++
++    const options = rootMocks.createRoot.mock.calls[0]?.[1];
++    expect(options?.onCaughtError).toBeTypeOf("function");
++    expect(options?.onUncaughtError).toBeTypeOf("function");
++
++    options?.onCaughtError?.(
++      new Error("Bearer caught-secret at C:\\private\\caught.ts"),
++      {
++        componentStack: "C:\\private\\Component.tsx\nBearer component-secret",
++        errorBoundary: undefined,
++      },
++    );
++    options?.onUncaughtError?.(
++      new Error("sk-uncaught-secret at C:\\private\\uncaught.ts"),
++      { componentStack: "Bearer uncaught-component-secret" },
++    );
++
++    const logged = JSON.stringify(consoleError.mock.calls);
++    expect(consoleError).toHaveBeenCalledTimes(2);
++    expect(logged).toMatch(/Morrow interface error/);
++    expect(logged).toMatch(/correlationId/);
++    expect(logged).not.toMatch(
++      /caught-secret|uncaught-secret|component-secret|private|\.tsx|\.ts/,
++    );
++  });
++});
+diff --git a/apps/web/src/main.tsx b/apps/web/src/main.tsx
+index 8588e75..fd9206d 100644
+--- a/apps/web/src/main.tsx
++++ b/apps/web/src/main.tsx
+@@ -7,17 +7,30 @@ import { createAppRouter } from "./app/router.js";
+ import "./styles/app.css";
+ 
+ const root = document.getElementById("root");
+ 
+ if (!root) {
+   throw new Error("The Morrow application root was not found.");
+ }
+ 
+ const router = createAppRouter();
+ 
+-createRoot(root).render(
++let rootErrorSequence = 0;
++
++function reportSafeRootError(kind: "caught" | "uncaught"): void {
++  rootErrorSequence += 1;
++  console.error("Morrow interface error.", {
++    correlationId: `ui-${Date.now().toString(36)}-${rootErrorSequence.toString(36)}`,
++    kind,
++  });
++}
++
++createRoot(root, {
++  onCaughtError: (_error, _errorInfo) => reportSafeRootError("caught"),
++  onUncaughtError: (_error, _errorInfo) => reportSafeRootError("uncaught"),
++}).render(
+   <StrictMode>
+     <AppProviders>
+       <RouterProvider router={router} />
+     </AppProviders>
+   </StrictMode>,
+ );
+diff --git a/apps/web/src/state/mission-status.tsx b/apps/web/src/state/mission-status.tsx
+new file mode 100644
+index 0000000..e407256
+--- /dev/null
++++ b/apps/web/src/state/mission-status.tsx
+@@ -0,0 +1,101 @@
++import type { WebMissionSnapshot } from "@morrow/contracts";
++import { Surface } from "@morrow/ui";
++
++interface StateCopy {
++  detail: string;
++  title: string;
++}
++
++function stateCopy(snapshot: WebMissionSnapshot): StateCopy | null {
++  switch (snapshot.summary.state) {
++    case "failed_recoverable":
++      return {
++        detail:
++          "Synchronized mission state is preserved. Use an available recovery action explicitly; no retry is running in the background.",
++        title: "Failed but recoverable",
++      };
++    case "failed":
++      return {
++        detail:
++          "Morrow has no safe automatic continuation to report. Review the recorded failure before starting different work.",
++        title: "Mission failed permanently",
++      };
++    case "completed_verified":
++      return snapshot.verification.state === "passed"
++        ? {
++            detail: `${snapshot.verification.evidenceCount} evidence item${snapshot.verification.evidenceCount === 1 ? "" : "s"} support this result.`,
++            title: "Completed and verified",
++          }
++        : {
++            detail:
++              "The mission reports completion, but required verification has not passed. Treat the result as unverified.",
++            title: "Completed, verification incomplete",
++          };
++    case "completed_with_caveats":
++      return {
++        detail:
++          snapshot.verification.state === "passed" ||
++          snapshot.verification.state === "passed_with_caveats"
++            ? "Review the recorded caveats before relying on this result."
++            : "The mission reports completion, but required verification has not passed. Treat the result as unverified.",
++        title:
++          snapshot.verification.state === "passed" ||
++          snapshot.verification.state === "passed_with_caveats"
++            ? "Completed with caveats"
++            : "Completed, verification incomplete",
++      };
++    default:
++      return null;
++  }
++}
++
++function verificationTrust(snapshot: WebMissionSnapshot): string {
++  const labels: Record<WebMissionSnapshot["verification"]["state"], string> = {
++    failed: "Failed",
++    in_progress: "In progress",
++    not_ready: "Not ready",
++    passed: "Passed",
++    passed_with_caveats: "Passed with caveats",
++  };
++  return `Current snapshot verification: ${labels[snapshot.verification.state]}. Post-recovery verification trust was not reported.`;
++}
++
++export function MissionStatusSummary({
++  snapshot,
++}: {
++  snapshot: WebMissionSnapshot;
++}) {
++  const status = stateCopy(snapshot);
++  let recovery: WebMissionSnapshot["recentActivity"][number] | undefined;
++  for (let index = snapshot.recentActivity.length - 1; index >= 0; index -= 1) {
++    const activity = snapshot.recentActivity[index];
++    if (activity?.kind === "recovery") {
++      recovery = activity;
++      break;
++    }
++  }
++
++  if (!status && !recovery) return null;
++
++  return (
++    <div className="morrow-mission-operational-state">
++      {status ? (
++        <Surface padding="large">
++          <h2>{status.title}</h2>
++          <p>{status.detail}</p>
++          <p>{snapshot.verification.summary}</p>
++        </Surface>
++      ) : null}
++      {recovery ? (
++        <Surface padding="large">
++          <h2>Recovery recorded</h2>
++          <p>{recovery.summary}</p>
++          <p>
++            Checkpoint and replay details were not reported in browser-safe
++            mission state. {verificationTrust(snapshot)}
++          </p>
++        </Surface>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/apps/web/src/state/runtime-status.test.tsx b/apps/web/src/state/runtime-status.test.tsx
+index a342bd6..d3282f9 100644
+--- a/apps/web/src/state/runtime-status.test.tsx
++++ b/apps/web/src/state/runtime-status.test.tsx
+@@ -1,21 +1,23 @@
+ import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+ } from "@testing-library/react";
+ import { StrictMode } from "react";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { ConnectionsPage } from "../features/placeholders/connections-page.js";
++import { MissionStatusSummary } from "./mission-status.js";
+ import { RuntimeStatusProvider } from "./runtime-status.js";
++import type { WebMissionSnapshot } from "@morrow/contracts";
+ 
+ interface Deferred<T> {
+   promise: Promise<T>;
+   reject: (reason?: unknown) => void;
+   resolve: (value: T) => void;
+ }
+ 
+ function deferred<T>(): Deferred<T> {
+   let resolve!: (value: T) => void;
+   let reject!: (reason?: unknown) => void;
+@@ -163,11 +165,174 @@ describe("RuntimeStatusProvider", () => {
+     );
+ 
+     renderConnections();
+ 
+     await waitFor(() => {
+       expect(screen.getByRole("status")).toHaveTextContent(
+         "The local Morrow runtime is unavailable.",
+       );
+     });
+   });
++
++  it("reports reconnecting after an offline browser returns online", async () => {
++    const reconnect = deferred<Response>();
++    const fetchMock = vi
++      .fn<(_input: RequestInfo | URL, _init?: RequestInit) => Promise<Response>>()
++      .mockResolvedValueOnce(healthResponse())
++      .mockImplementationOnce(() => reconnect.promise);
++    vi.stubGlobal("fetch", fetchMock);
++    renderConnections();
++    await waitFor(() => {
++      expect(screen.getByRole("status")).toHaveTextContent(
++        "The local Morrow runtime is connected.",
++      );
++    });
++
++    act(() => window.dispatchEvent(new Event("offline")));
++    expect(screen.getByRole("status")).toHaveTextContent(
++      "The local Morrow runtime is unavailable.",
++    );
++    act(() => window.dispatchEvent(new Event("online")));
++    expect(screen.getByRole("status")).toHaveTextContent(
++      "Reconnecting to the local Morrow runtime.",
++    );
++
++    await act(async () => {
++      reconnect.resolve(healthResponse());
++      await reconnect.promise;
++    });
++    expect(screen.getByRole("status")).toHaveTextContent(
++      "The local Morrow runtime is connected.",
++    );
++  });
++});
++
++function missionSnapshot(
++  state: WebMissionSnapshot["summary"]["state"],
++  verification: WebMissionSnapshot["verification"]["state"],
++  recoverySummary?: string,
++): WebMissionSnapshot {
++  return {
++    artifacts: [],
++    attention: [],
++    currentWork: null,
++    milestones: [],
++    recentActivity: recoverySummary
++      ? [
++          {
++            actor: { kind: "system", name: "Morrow" },
++            artifactIds: [],
++            createdAt: "2026-07-21T14:00:00.000Z",
++            cursor: 1,
++            detail: "PRIVATE recovery internals",
++            id: "recovery-1",
++            kind: "recovery",
++            missionId: "mission-42",
++            summary: recoverySummary,
++          },
++        ]
++      : [],
++    summary: {
++      attentionCount: 0,
++      completedMilestones: 0,
++      createdAt: "2026-07-21T13:00:00.000Z",
++      currentPhase: "Recorded state",
++      id: "mission-42",
++      latestActivity: recoverySummary ?? null,
++      objective: "Complete the mission.",
++      projectId: "project-1",
++      state,
++      title: "Mission",
++      totalMilestones: 0,
++      updatedAt: "2026-07-21T14:00:00.000Z",
++      version: 1,
++      workspaceId: "workspace-personal-project-1",
++    },
++    verification: {
++      caveats: [],
++      evidenceCount: verification === "passed" ? 2 : 0,
++      state: verification,
++      summary:
++        verification === "passed"
++          ? "Required evidence passed."
++          : "Verification has not passed.",
++    },
++    version: 1,
++  };
++}
++
++describe("MissionStatusSummary", () => {
++  it.each([
++    ["failed_recoverable", "failed", "Failed but recoverable"],
++    ["failed", "failed", "Mission failed permanently"],
++    [
++      "completed_with_caveats",
++      "not_ready",
++      "Completed, verification incomplete",
++    ],
++    ["completed_verified", "passed", "Completed and verified"],
++  ] as const)(
++    "renders %s with %s verification honestly",
++    (state, verification, expected) => {
++      render(
++        <MissionStatusSummary
++          snapshot={missionSnapshot(state, verification)}
++        />,
++      );
++      expect(screen.getByRole("heading", { name: expected })).toBeVisible();
++    },
++  );
++
++  it("renders a browser-safe interrupted/resumed recovery record without private detail or invented checkpoint data", () => {
++    render(
++      <MissionStatusSummary
++        snapshot={missionSnapshot(
++          "working",
++          "in_progress",
++          "Resumed after the local runtime interrupted the mission.",
++        )}
++      />,
++    );
++
++    expect(
++      screen.getByRole("heading", { name: "Recovery recorded" }),
++    ).toBeVisible();
++    expect(
++      screen.getByText(
++        "Resumed after the local runtime interrupted the mission.",
++      ),
++    ).toBeVisible();
++    expect(screen.queryByText(/PRIVATE recovery internals/i)).not.toBeInTheDocument();
++    expect(screen.getByText(/checkpoint and replay details were not reported/i)).toBeVisible();
++  });
++
++  it.each([
++    ["passed", "Passed"],
++    ["passed_with_caveats", "Passed with caveats"],
++  ] as const)(
++    "reports only current %s snapshot verification after recovery",
++    (verification, label) => {
++      render(
++        <MissionStatusSummary
++          snapshot={missionSnapshot(
++            "working",
++            verification,
++            "Resumed from a recorded interruption.",
++          )}
++        />,
++      );
++
++      const recoverySurface = screen.getByRole("heading", {
++        name: "Recovery recorded",
++      }).parentElement;
++      expect(recoverySurface).toHaveTextContent(
++        `Current snapshot verification: ${label}.`,
++      );
++      expect(recoverySurface).toHaveTextContent(
++        /post-recovery verification trust was not reported/i,
++      );
++      expect(document.body).not.toHaveTextContent(
++        /remains passed|retains recorded/i,
++      );
++    },
++  );
+ });
+diff --git a/apps/web/src/state/runtime-status.tsx b/apps/web/src/state/runtime-status.tsx
+index 6091c92..3d79752 100644
+--- a/apps/web/src/state/runtime-status.tsx
++++ b/apps/web/src/state/runtime-status.tsx
+@@ -13,21 +13,25 @@ import { api } from "../api/client.js";
+ 
+ const RuntimeHealthSchema = z
+   .object({
+     ok: z.literal(true),
+     service: z.literal("morrow-orchestrator"),
+   })
+   .passthrough();
+ 
+ const RUNTIME_HEALTH_TIMEOUT_MS = 5_000;
+ 
+-export type RuntimeConnectionStatus = "checking" | "online" | "offline";
++export type RuntimeConnectionStatus =
++  | "checking"
++  | "online"
++  | "offline"
++  | "reconnecting";
+ 
+ interface RuntimeStatusContextValue {
+   refresh: () => Promise<void>;
+   status: RuntimeConnectionStatus;
+ }
+ 
+ const RuntimeStatusContext = createContext<RuntimeStatusContextValue | null>(
+   null,
+ );
+ 
+@@ -44,69 +48,71 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
+ 
+   const cancelActiveRequest = useCallback(() => {
+     const request = activeRequest.current;
+     if (!request) return;
+ 
+     activeRequest.current = null;
+     window.clearTimeout(request.timeoutId);
+     request.controller.abort();
+   }, []);
+ 
+-  const refresh = useCallback(async () => {
++  const check = useCallback(async (pendingStatus: "checking" | "reconnecting") => {
+     cancelActiveRequest();
+ 
+     const id = ++nextRequestId.current;
+     const controller = new AbortController();
+     const timeoutId = window.setTimeout(() => {
+       if (activeRequest.current?.id === id) {
+         controller.abort();
+       }
+     }, RUNTIME_HEALTH_TIMEOUT_MS);
+     activeRequest.current = { controller, id, timeoutId };
+-    setStatus("checking");
++    setStatus(pendingStatus);
+ 
+     try {
+       await api.get("/api/health", RuntimeHealthSchema, {
+         signal: controller.signal,
+       });
+       if (activeRequest.current?.id === id) {
+         setStatus("online");
+       }
+     } catch {
+       if (activeRequest.current?.id === id) {
+         setStatus("offline");
+       }
+     } finally {
+       window.clearTimeout(timeoutId);
+       if (activeRequest.current?.id === id) {
+         activeRequest.current = null;
+       }
+     }
+   }, [cancelActiveRequest]);
+ 
++  const refresh = useCallback(() => check("checking"), [check]);
++
+   useEffect(() => {
+     void refresh();
+ 
+     const handleOffline = () => {
+       cancelActiveRequest();
+       setStatus("offline");
+     };
+-    const handleOnline = () => void refresh();
++    const handleOnline = () => void check("reconnecting");
+     window.addEventListener("offline", handleOffline);
+     window.addEventListener("online", handleOnline);
+ 
+     return () => {
+       window.removeEventListener("offline", handleOffline);
+       window.removeEventListener("online", handleOnline);
+       cancelActiveRequest();
+     };
+-  }, [cancelActiveRequest, refresh]);
++  }, [cancelActiveRequest, check, refresh]);
+ 
+   const value = useMemo(() => ({ refresh, status }), [refresh, status]);
+ 
+   return (
+     <RuntimeStatusContext.Provider value={value}>
+       {children}
+     </RuntimeStatusContext.Provider>
+   );
+ }
+ 
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index e59fd52..deb1a87 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -328,24 +328,30 @@ a {
+   font-size: 1rem;
+ }
+ 
+ .morrow-mission-overview {
+   display: grid;
+   grid-template-columns: repeat(2, minmax(0, 1fr));
+   gap: var(--morrow-space-4);
+ }
+ 
+ .morrow-mission-overview__objective,
+-.morrow-mission-milestone-count {
++.morrow-mission-milestone-count,
++.morrow-mission-operational-state {
+   grid-column: 1 / -1;
+ }
+ 
++.morrow-mission-operational-state {
++  display: grid;
++  gap: var(--morrow-space-4);
++}
++
+ .morrow-mission-milestone-count {
+   margin: 0;
+   color: var(--morrow-text-muted);
+   font-size: 0.875rem;
+   font-weight: 650;
+ }
+ 
+ .morrow-mission-milestones,
+ .morrow-mission-attention-list,
+ .morrow-mission-activity,
+@@ -363,24 +369,140 @@ a {
+ }
+ 
+ .morrow-mission-milestones li {
+   display: flex;
+   align-items: center;
+   justify-content: space-between;
+   gap: var(--morrow-space-3);
+ }
+ 
+ .morrow-mission-attention-list li {
++  min-width: 0;
++}
++
++.morrow-attention-card {
+   display: grid;
+-  gap: var(--morrow-space-2);
+-  padding-left: var(--morrow-space-3);
++  gap: var(--morrow-space-3);
++  padding: var(--morrow-space-4);
++  border: 1px solid var(--morrow-border);
+   border-left: 3px solid var(--morrow-warning);
++  border-radius: var(--morrow-radius-md);
++}
++
++.morrow-attention-card h3,
++.morrow-attention-card h4,
++.morrow-attention-card p,
++.morrow-attention-card dl,
++.morrow-attention-card dd {
++  margin: 0;
++}
++
++.morrow-attention-card__kind {
++  color: var(--morrow-warning);
++  font-size: 0.75rem;
++  font-weight: 750;
++  letter-spacing: 0.04em;
++  text-transform: uppercase;
++}
++
++.morrow-attention-card__contract,
++.morrow-attention-card__contract div,
++.morrow-attention-card__choices,
++.morrow-attention-card__note,
++.morrow-attention-choice {
++  display: grid;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-attention-card__contract {
++  gap: var(--morrow-space-3);
++}
++
++.morrow-attention-card__contract dt,
++.morrow-attention-card__note label {
++  font-weight: 700;
++}
++
++.morrow-attention-card__contract dd,
++.morrow-attention-choice p,
++.morrow-attention-card__no-choice {
++  color: var(--morrow-text-muted);
++}
++
++.morrow-attention-card__note textarea {
++  width: 100%;
++  min-height: 76px;
++  padding: var(--morrow-space-3);
++  color: var(--morrow-text);
++  background: var(--morrow-surface);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  font: inherit;
++  resize: vertical;
++}
++
++.morrow-attention-choice {
++  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
++  align-items: start;
++}
++
++.morrow-attention-choice .morrow-button {
++  display: inline-flex;
++  flex-wrap: wrap;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-attention-choice__recommended {
++  font-size: 0.7rem;
++  font-weight: 750;
++}
++
++.morrow-attention-dialog-backdrop {
++  position: fixed;
++  z-index: 20;
++  inset: 0;
++  display: grid;
++  padding: var(--morrow-space-4);
++  background: rgb(0 0 0 / 0.48);
++  place-items: center;
++}
++
++.morrow-attention-dialog {
++  display: grid;
++  width: min(100%, 32rem);
++  gap: var(--morrow-space-4);
++  padding: var(--morrow-space-5);
++  color: var(--morrow-text);
++  background: var(--morrow-surface);
++  border-radius: var(--morrow-radius-md);
++  box-shadow: var(--morrow-shadow-sm);
++}
++
++.morrow-attention-dialog__actions {
++  display: flex;
++  justify-content: flex-end;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-error-reference {
++  display: block;
++  margin-top: var(--morrow-space-2);
++  color: var(--morrow-text-muted);
++  font-family: ui-monospace, monospace;
++  font-size: 0.8125rem;
++  overflow-wrap: anywhere;
++}
++
++.morrow-global-error {
++  width: min(100% - 2 * var(--morrow-space-4), 48rem);
++  padding-block: var(--morrow-space-7);
++  margin-inline: auto;
+ }
+ 
+ .morrow-mission-secondary-copy {
+   font-size: 0.875rem;
+ }
+ 
+ .morrow-mission-activity details {
+   border-bottom: 1px solid var(--morrow-border);
+ }
+ 
+@@ -486,11 +608,15 @@ a {
+   }
+ 
+   .morrow-mission-sync-warning {
+     align-items: stretch;
+     flex-direction: column;
+   }
+ 
+   .morrow-mission-overview {
+     grid-template-columns: 1fr;
+   }
++
++  .morrow-attention-choice {
++    grid-template-columns: 1fr;
++  }
+ }

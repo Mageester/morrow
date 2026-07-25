@@ -12,6 +12,10 @@ const logs = join(install, "logs");
 const runtime = join(app, "runtime", "node.exe");
 const entry = join(app, "orchestrator", "dist", "src", "index.js");
 const skillsDir = join(app, "skills");
+// The bundled web app (served by the orchestrator at /app). Present in packaged
+// installs; the orchestrator only serves /app when this directory has an
+// index.html, so an older package without it degrades to CLI-only cleanly.
+const webRoot = join(app, "web");
 // The bundled CLI (product surface). It is co-located under orchestrator/ so its
 // `@morrow/*` and runtime dependencies resolve from the orchestrator's flat
 // node_modules with no extra wiring. Present in packaged installs; when absent
@@ -22,6 +26,16 @@ const logFile = join(logs, "orchestrator.log");
 const host = "127.0.0.1";
 const port = 4317;
 const url = `http://${host}:${port}`;
+/**
+ * The bundled web UI's address, or null when this package has no web bundle.
+ *
+ * The launcher used to report only `url`, which is the JSON API root. A new
+ * user who installed Morrow, read "Morrow is ready at http://127.0.0.1:4317",
+ * and opened it got a page of raw JSON — the web UI they had just installed was
+ * never mentioned anywhere. Checked against the real bundle so an older package
+ * without one never advertises a UI that cannot load.
+ */
+const appUrl = existsSync(join(webRoot, "index.html")) ? `${url}/app` : null;
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
 
 /** Environment that points the delegated CLI at THIS packaged install/service. */
@@ -30,6 +44,7 @@ function cliEnv() {
     ...process.env,
     MORROW_HOME: data,
     MORROW_SKILLS_DIR: skillsDir,
+    MORROW_WEB_ROOT: webRoot,
     MORROW_BIND_HOST: host,
     PORT: String(port),
     // The launcher owns the service; the CLI must never try to spawn its own.
@@ -59,7 +74,7 @@ function pid() { try { return Number(readFileSync(pidFile, "utf8")); } catch { r
 async function health() { try { const response = await fetch(url + "/api/health"); return response.ok ? await response.json() : null; } catch { return null; } }
 async function healthy() { return isMorrowHealth(await health()); }
 async function waitForHealth() { for (let i = 0; i < 45; i++) { if (await healthy()) return true; await new Promise(resolve => setTimeout(resolve, 1000)); } return false; }
-function open() { execFileSync("cmd.exe", ["/c", "start", "", url], { stdio: "ignore" }); }
+function open() { execFileSync("cmd.exe", ["/c", "start", "", url + "/app/"], { stdio: "ignore" }); }
 function printHelp() {
   // Delegate to the CLI's full help when available so the two never drift; fall
   // back to the launcher-only surface for packages without the bundled CLI.
@@ -67,25 +82,35 @@ function printHelp() {
     delegateToCli(["--help"]);
     return;
   }
-  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow                        open the terminal agent shell\n  morrow ask|fix|plan|yolo "…"  run the agent\n  morrow mission                open Mission Control\n  morrow cortex                 inspect repository intelligence\n  morrow start|stop|restart     manage the local service\n  morrow status                 service status\n  morrow doctor                 environment checks\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
+  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow                        open the terminal agent shell\n  morrow open                   open the web app in your browser\n  morrow ask|fix|plan|yolo "…"  run the agent\n  morrow mission                open Mission Control\n  morrow cortex                 inspect repository intelligence\n  morrow start|stop|restart     manage the local service\n  morrow status                 service status\n  morrow doctor                 environment checks\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
 }
 function printUninstallHelp() {
   console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data | --keep-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - interactively asks whether to also delete ALL your data (conversations,\n    memory, provider keys, backups, logs, cache)\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt; keep data unless --purge-data is also given\n  --purge-data  delete local user data as well (no prompt)\n  --keep-data   keep local user data (no prompt)`);
 }
 
 async function start() {
-  if (await healthy()) return console.log("Morrow is already running at " + url);
+  if (await healthy()) return console.log(readyMessage("Morrow is already running"));
   if (!existsSync(runtime)) throw new Error("Bundled Node runtime is missing. Run the installer again.");
   // Capture the service's stdout/stderr to a real log file. Discarding it
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, NODE_ENV: "production" } });
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
   }
-  console.log("Morrow is ready at " + url);
+  console.log(readyMessage("Morrow is ready"));
+}
+
+/** Report the service address, and the web UI address when one is bundled. */
+function readyMessage(prefix) {
+  const lines = [`${prefix} at ${url}`];
+  if (appUrl) {
+    lines.push(`  Web app:   ${appUrl}   (or run: morrow open)`);
+    lines.push(`  Terminal:  morrow`);
+  }
+  return lines.join("\n");
 }
 function tailLog() {
   try {
@@ -122,7 +147,7 @@ function processOwnsPackagedService(value) {
     return false;
   }
 }
-async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
+async function status() { const ok = await healthy(); console.log(ok ? readyMessage("Morrow is running") : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");

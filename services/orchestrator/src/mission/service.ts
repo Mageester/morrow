@@ -185,32 +185,63 @@ export class MissionService {
   }
 
   // ── criteria ───────────────────────────────────────────────────────────
-  /** Generate measurable criteria from the objective. Provider-backed with a
-   *  deterministic heuristic fallback so this never hard-depends on a model. */
-  async generateCriteria(missionId: string, repoSummary: string): Promise<Mission> {
-    const mission = this.get(missionId);
-    if (mission.criteria.length > 0) return mission; // idempotent
+  /** Shared drafting core for both the initial proposal and a user-requested
+   *  revision: provider-backed with a deterministic heuristic fallback so
+   *  neither path ever hard-depends on a model being configured. */
+  private async draftCriteria(mission: Mission, objective: string, repoSummary: string): Promise<DraftCriterion[]> {
     let drafts: DraftCriterion[] = [];
     if (this.deps.completion) {
       try {
         const messages: ChatMessage[] = [
           { role: "system", content: "You output only JSON. No prose." },
-          { role: "user", content: buildCriteriaPrompt(mission.objective, repoSummary) },
+          { role: "user", content: buildCriteriaPrompt(objective, repoSummary) },
         ];
         const res = await this.deps.completion(messages, { purpose: "planning", temperature: 0.1 });
         drafts = parseCriteriaFromModel(res.text);
         drafts = this.sanitizeModelCriteria(drafts, this.deps.getWorkspacePath(mission.projectId));
-        if (res.usdCost) this.addSpend(missionId, res.usdCost);
+        if (res.usdCost) this.addSpend(mission.id, res.usdCost);
       } catch {
         drafts = [];
       }
     }
-    if (drafts.length === 0) drafts = this.heuristicCriteria(mission.objective, repoSummary, this.deps.getWorkspacePath(mission.projectId));
+    if (drafts.length === 0) drafts = this.heuristicCriteria(objective, repoSummary, this.deps.getWorkspacePath(mission.projectId));
+    return drafts;
+  }
+
+  /** Generate measurable criteria from the objective. Provider-backed with a
+   *  deterministic heuristic fallback so this never hard-depends on a model. */
+  async generateCriteria(missionId: string, repoSummary: string): Promise<Mission> {
+    const mission = this.get(missionId);
+    if (mission.criteria.length > 0) return mission; // idempotent
+    const drafts = await this.draftCriteria(mission, mission.objective, repoSummary);
     this.repo.addCriteria(missionId, drafts.map((d) => ({ id: `crit-${randomUUID()}`, description: d.description, verification: d.verification, state: "proposed" as MissionCriterionState })), this.now());
     this.repo.appendEvent(missionId, "mission.criteria_generated", `Generated ${drafts.length} success criteria`, { count: drafts.length }, this.now());
     // Auto-approve missions display AND persist the approved contract.
     if (mission.autoApprove) return this.approveCriteria(missionId);
     if (mission.status === "draft") this.transition(missionId, "awaiting_criteria_approval");
+    return this.get(missionId);
+  }
+
+  /** User-requested change to a plan that has not been approved yet. Clears
+   *  the proposed criteria and redrafts them with the feedback folded into the
+   *  planning prompt; the mission stays `awaiting_criteria_approval` the whole
+   *  time, so nothing starts executing until the revised plan is approved. */
+  async requestPlanRevision(missionId: string, feedback: string): Promise<Mission> {
+    const mission = this.get(missionId);
+    if (mission.status !== "awaiting_criteria_approval") {
+      throw new MissionError(`Mission ${missionId} is not awaiting plan approval`, "plan_not_awaiting_approval");
+    }
+    for (const criterion of mission.criteria) this.repo.removeCriterion(criterion.id);
+    const objectiveWithFeedback = `${mission.objective}\n\nThe user reviewed the previously proposed plan and asked for this change:\n${feedback}`;
+    const drafts = await this.draftCriteria(mission, objectiveWithFeedback, "");
+    this.repo.addCriteria(missionId, drafts.map((d) => ({ id: `crit-${randomUUID()}`, description: d.description, verification: d.verification, state: "proposed" as MissionCriterionState })), this.now());
+    this.repo.appendEvent(
+      missionId,
+      "mission.plan_revised",
+      `Plan revised at your request: ${feedback.slice(0, 160)}`,
+      { trigger: "user_requested_change", feedback: feedback.slice(0, 2000) },
+      this.now(),
+    );
     return this.get(missionId);
   }
 
