@@ -2599,6 +2599,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const completedToolSignatures: string[] = [];
     const repeatedToolSignatures: string[] = [];
     let loopDetected: { signature: string; count: number } | null = null;
+    // Set when a tool's argument-correction budget is spent and the model sent
+    // yet another invalid call anyway. Until this existed, `retryExhausted`
+    // only swapped the instruction string for "stop cleanly" and trusted the
+    // model to comply â€” a model that ignored it kept going, which is how a
+    // single missing `create_file` path reached six attempts against a limit
+    // of two, re-sending a 15k-token payload each time.
+    let argumentBudgetSpent: { toolName: string; attempts: number } | null = null;
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
     let currentReasoningContent = "";
@@ -3243,6 +3250,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
             malformedArgAttemptsByTool.set(tc.name, attempts);
             const retryExhausted = attempts >= 2;
+            if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
             event("tool.arguments_rejected", { toolName: tc.name, reason: parsedArgs.reason, attempts, retryExhausted });
             throw new AgentToolFailure("Invalid tool arguments format", {
               error: "Invalid tool arguments format",
@@ -3278,6 +3286,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
               malformedArgAttemptsByTool.set(tc.name, attempts);
               const retryExhausted = attempts >= 2;
+              if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
               throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
                 error: `Invalid argument "${problem.field}" for ${tc.name}`,
@@ -4109,6 +4118,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       canonicalFinalText = responseContent.slice(responseLengthAtTurnStart);
       completedWithoutMoreTools = true;
       break;
+    }
+
+    if (argumentBudgetSpent) {
+      const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;
+      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
+      failCurrentSegment("tool_arguments_unrecoverable");
+      transitionAgentState("interrupted", { reason: "tool_arguments_unrecoverable", message, turns: turn });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "tool_arguments_unrecoverable", message, turns: turn } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
     }
 
     if (loopDetected) {
