@@ -136,6 +136,14 @@ export const ProviderStatusSchema=z.object({
   supportsOAuth:z.boolean().optional(),
   /** True when the provider documents a no-cost tier. */
   hasFreeTier:z.boolean().optional(),
+  /**
+   * The endpoint Morrow uses when the operator has not overridden it.
+   *
+   * Setup UIs need the complete URL, including any version path. Reconstructing
+   * it from `endpointHost` silently drops the path — "http://127.0.0.1:1234"
+   * instead of "http://127.0.0.1:1234/v1" — which is not a working endpoint.
+   */
+  defaultBaseUrl:z.string().nullable().optional(),
 }).strict();
 
 export const ModelSpeedClassSchema=z.enum(["fast","balanced","powerful","unknown"]);

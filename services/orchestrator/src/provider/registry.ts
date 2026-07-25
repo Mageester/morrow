@@ -145,14 +145,14 @@ interface ProviderDescriptor {
  * `oauth-flow.ts`, so a client can stop hardcoding its own list and silently
  * drift out of sync with what actually works.
  */
-const BUILTIN_PRESENTATION: Partial<Record<ProviderId, { category: ProviderCategory; keyUrl?: string; supportsOAuth?: boolean; hasFreeTier?: boolean }>> = {
-  openai: { category: "assistant", keyUrl: "https://platform.openai.com/api-keys", supportsOAuth: true },
-  anthropic: { category: "assistant", keyUrl: "https://console.anthropic.com/settings/keys", supportsOAuth: true },
-  gemini: { category: "assistant", keyUrl: "https://aistudio.google.com/apikey", hasFreeTier: true },
-  openrouter: { category: "gateway", keyUrl: "https://openrouter.ai/keys", hasFreeTier: true },
-  deepseek: { category: "frontier", keyUrl: "https://platform.deepseek.com/api_keys" },
+const BUILTIN_PRESENTATION: Partial<Record<ProviderId, { category: ProviderCategory; keyUrl?: string; supportsOAuth?: boolean; hasFreeTier?: boolean; defaultBaseUrl?: string }>> = {
+  openai: { category: "assistant", keyUrl: "https://platform.openai.com/api-keys", supportsOAuth: true, defaultBaseUrl: "https://api.openai.com/v1" },
+  anthropic: { category: "assistant", keyUrl: "https://console.anthropic.com/settings/keys", supportsOAuth: true, defaultBaseUrl: "https://api.anthropic.com" },
+  gemini: { category: "assistant", keyUrl: "https://aistudio.google.com/apikey", hasFreeTier: true, defaultBaseUrl: "https://generativelanguage.googleapis.com" },
+  openrouter: { category: "gateway", keyUrl: "https://openrouter.ai/keys", hasFreeTier: true, defaultBaseUrl: "https://openrouter.ai/api/v1" },
+  deepseek: { category: "frontier", keyUrl: "https://platform.deepseek.com/api_keys", defaultBaseUrl: "https://api.deepseek.com/v1" },
   "openai-compatible": { category: "custom" },
-  ollama: { category: "local" },
+  ollama: { category: "local", defaultBaseUrl: "http://127.0.0.1:11434/v1" },
   mock: { category: "testing" },
 };
 
@@ -165,6 +165,7 @@ function withPresentation(status: ProviderStatus): ProviderStatus {
         ...(catalog.keyUrl ? { keyUrl: catalog.keyUrl } : {}),
         supportsOAuth: false,
         hasFreeTier: catalog.hasFreeTier ?? false,
+        defaultBaseUrl: catalog.defaultBaseUrl,
       }
     : BUILTIN_PRESENTATION[status.id];
   if (!meta) return status;
@@ -174,6 +175,7 @@ function withPresentation(status: ProviderStatus): ProviderStatus {
     keyUrl: meta.keyUrl ?? null,
     supportsOAuth: meta.supportsOAuth ?? false,
     hasFreeTier: meta.hasFreeTier ?? false,
+    defaultBaseUrl: meta.defaultBaseUrl ?? null,
   };
 }
 

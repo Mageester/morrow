@@ -1189,6 +1189,120 @@ a {
   gap: var(--morrow-space-4) !important;
 }
 
+/* Provider catalog — the browsable list of every supported provider. */
+.morrow-connections-page__group {
+  display: grid;
+  gap: var(--morrow-space-4);
+  margin-top: var(--morrow-space-6);
+  /* Grid children default to min-width:auto, so a long provider note would
+     stretch the column and push the page into horizontal overflow. */
+  min-width: 0;
+}
+
+.morrow-connections-page__group > h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.morrow-connections-page__search-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.morrow-connections-page__group input[type="search"] {
+  width: 100%;
+  min-width: 0;
+  padding: var(--morrow-space-3);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  background: var(--morrow-surface);
+  color: inherit;
+  font: inherit;
+}
+
+.morrow-connections-page__category {
+  display: grid;
+  gap: var(--morrow-space-2);
+  min-width: 0;
+}
+
+.morrow-connections-page__category > h3 {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--morrow-text-muted);
+}
+
+.morrow-connections-page__catalog {
+  display: grid;
+  gap: var(--morrow-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.morrow-connections-page__catalog > li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-4);
+  padding: var(--morrow-space-3);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-md);
+  background: var(--morrow-surface);
+  min-width: 0;
+}
+
+/* Keep every row's action aligned in one column regardless of name length. */
+.morrow-connections-page__catalog > li > button {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.morrow-connections-page__catalog > li > div {
+  display: grid;
+  gap: var(--morrow-space-1);
+  /* Without this the flex child refuses to shrink and long notes overflow. */
+  min-width: 0;
+}
+
+.morrow-connections-page__catalog-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+  margin: 0;
+  font-weight: 600;
+}
+
+.morrow-connections-page__catalog-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--morrow-text-muted);
+  /* Long provider descriptions wrap rather than widening the row. */
+  overflow-wrap: anywhere;
+}
+
+/* On narrow viewports the action drops below the description instead of
+   squeezing the label into a one-word-per-line column. */
+@media (max-width: 560px) {
+  .morrow-connections-page__catalog > li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* The status pill is two short words; letting it wrap ("Not / connected")
+   made the card header look broken at narrow card widths. */
+.morrow-connection__heading > .morrow-status-pill {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .morrow-connection__heading {
   display: flex;
   align-items: flex-start;

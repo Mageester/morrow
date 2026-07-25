@@ -378,3 +378,39 @@ describe("Connectivity distinguishes reachable from verified", () => {
     );
   });
 });
+
+describe("Provider status exposes what a setup UI needs", () => {
+  /**
+   * A setup form needs the complete endpoint, including any version path.
+   * Reconstructing it from `endpointHost` silently drops the path — a web
+   * form pre-filled with "http://127.0.0.1:1234" instead of
+   * "http://127.0.0.1:1234/v1" saves an endpoint that cannot serve a request.
+   */
+  it("publishes the full default endpoint, not just its host", () => {
+    const lmstudio = getProviderStatus("lmstudio", {})!;
+    expect(lmstudio.defaultBaseUrl).toBe("http://127.0.0.1:1234/v1");
+    expect(lmstudio.endpointHost).toBe("127.0.0.1:1234");
+
+    for (const p of PROVIDER_CATALOG) {
+      const status = getProviderStatus(p.id, {})!;
+      expect(status.defaultBaseUrl, `${p.id} must publish its default endpoint`).toBe(p.defaultBaseUrl);
+      // The published URL has to be usable as-is.
+      expect(() => new URL(status.defaultBaseUrl!)).not.toThrow();
+    }
+  });
+
+  it("tells a setup UI how to group, pay for, and sign in to each provider", () => {
+    const zen = getProviderStatus("opencode-zen", {})!;
+    expect(zen.category).toBe("gateway");
+    expect(zen.keyUrl).toBe("https://opencode.ai/auth");
+    // OpenCode Zen is API-key only per its official docs.
+    expect(zen.supportsOAuth).toBe(false);
+    expect(zen.hasFreeTier).toBe(true);
+
+    const anthropic = getProviderStatus("anthropic", {})!;
+    expect(anthropic.category).toBe("assistant");
+    expect(anthropic.supportsOAuth).toBe(true);
+
+    expect(getProviderStatus("lmstudio", {})!.category).toBe("local");
+  });
+});
