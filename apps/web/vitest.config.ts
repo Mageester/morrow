@@ -9,5 +9,13 @@ export default defineConfig({
     // @playwright/test specs.
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**", "dist/**"],
+    // These suites pass comfortably on their own but sit right at the 5s
+    // default when `pnpm test` runs every package's suite concurrently during
+    // a release build, where jsdom rendering competes with the orchestrator
+    // and CLI suites for CPU. Three of them timed out in the release gate and
+    // passed standalone in the same commit, so the ceiling is contention, not
+    // the assertions. apps/cli/test/bin.test.ts already carries a per-test
+    // override for the same reason.
+    testTimeout: 20000,
   },
 });
