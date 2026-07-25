@@ -45,6 +45,7 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
@@ -3136,7 +3137,40 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
-        if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
+        if (loop.looping && !loopDetected) {
+          loopDetected = { signature: loop.signature, count: loop.count };
+          // §7: when a tool-call signature repeats past the threshold, stop
+          // retrying the same operation. Classify the failure, derive a
+          // recovery plan, and emit a single decision event so the activity
+          // panel shows the diagnosis + next action instead of a flood of
+          // identical rows.
+          if (missionRepo && taskMissionId) {
+            try {
+              const category = categorizeFailure(tc.name, `repeated tool call signature=${loop.signature} count=${loop.count}`);
+              const signature = normalizeSignature(category, loop.signature);
+              const recovery = planRecovery(category, loop.count, 4);
+              missionRepo.appendEvent(taskMissionId, "mission.loop_detected", `Repeated ${tc.name} (${loop.count}×) — strategy switch`, {
+                toolName: tc.name,
+                toolCallSignature: loop.signature,
+                normalizedSignature: signature,
+                count: loop.count,
+                category,
+                decision: recovery.strategy,
+                steps: recovery.steps,
+                exhausted: recovery.exhausted,
+                evidence: {
+                  toolName: tc.name,
+                  count: loop.count,
+                  window: loop.count,
+                  message: `${tc.name} repeated ${loop.count} times without a different signature; bounded retry limit reached.`,
+                },
+                nextAction: recovery.steps[0] ?? "Stop retrying this tool call",
+              }, now());
+            } catch {
+              // Best-effort: a logging failure must not block the loop detector.
+            }
+          }
+        }
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name, ...displayTarget(tc.name, tc.arguments) });
 
