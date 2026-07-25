@@ -1,4 +1,5 @@
 import type { Conversation, WebMissionSummary } from "@morrow/contracts";
+import { providerQueries } from "../../api/providers.js";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { MessageSquare, Workflow } from "lucide-react";
@@ -32,6 +33,11 @@ function formatWhen(iso: string): string {
 
 export function HomePage() {
   const projects = useActiveProject();
+  const providers = useQuery(providerQueries.list());
+  // A brand-new install has neither a project nor a provider; the empty state
+  // must be able to point at whichever is still missing.
+  const noProviderConnected =
+    providers.isSuccess && providers.data.filter((provider) => provider.configured && provider.id !== "mock").length === 0;
   const activeProject = projects.activeProject;
   const conversations = useQuery({
     ...conversationQueries.list(activeProject?.id ?? "", false),
@@ -74,6 +80,16 @@ export function HomePage() {
         <div className="morrow-empty">
           <h2>No local project yet</h2>
           <p>Create a local project and Morrow will keep your chats and work here.</p>
+          {/*
+            This empty state replaces the composer, which is where the
+            "connect a model" prompt lives — so on a fresh install a new user
+            was told what was missing and given no way to fix either thing.
+            Both first-run steps are actionable from here.
+          */}
+          <p className="morrow-empty__actions">
+            <Link to="/projects">Create a project</Link>
+            {noProviderConnected ? <> · <Link to="/connections">Connect a model</Link></> : null}
+          </p>
         </div>
       ) : (
         <>

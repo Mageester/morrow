@@ -2930,3 +2930,13 @@ a {
   gap: 2px;
   padding-left: var(--morrow-space-4);
 }
+
+/* Actions inside an empty state: the way out of a first-run dead end. */
+.morrow-empty__actions {
+  margin-top: var(--morrow-space-3);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--morrow-space-2);
+  justify-content: center;
+  align-items: center;
+}
