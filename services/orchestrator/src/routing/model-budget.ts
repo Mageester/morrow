@@ -4,6 +4,7 @@ import { resolveModelMetadata, resolveReasoningCapability } from "./models.js";
 import {
   resolveEffectiveContext,
   type EffectiveContextEndpointInput,
+  type RouteFallbackIdentity,
 } from "./effective-context.js";
 
 /**
@@ -65,6 +66,17 @@ export interface ModelBudget {
    * target for the first-pass deterministic history trim, never a provider
    * constraint — it must never be used to reject a request outright. */
   compactionTargetTokens: number;
+
+  /**
+   * Demarcates which unverified-route category the conservative fallback was
+   * sourced from. Surfaced in `morrow models inspect` and mission telemetry so
+   * the operator can tell apart "OpenCode Zen fallback" from "OpenCode Go
+   * fallback" from "custom-compatible fallback" — without ever fabricating a
+   * per-slug context limit. Only the live provider discovery path (highest-
+   * precedence metadata source per §1) or an explicit user override can
+   * legitimately replace the conservative safe number with a verified one.
+   */
+  routeFallbackIdentity: RouteFallbackIdentity;
 }
 
 export function resolveModelBudget(input: {
@@ -143,5 +155,6 @@ export function resolveModelBudget(input: {
     totalReserveTokens,
     usableInputTokens,
     compactionTargetTokens,
+    routeFallbackIdentity: effective.routeFallbackIdentity,
   };
 }

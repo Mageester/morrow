@@ -136,7 +136,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelStatuses } from "./routing/models.js";
 import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
@@ -276,11 +276,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   }
   const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
     cacheDir: join(resolveMorrowHome(process.env), "catalog"),
-    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+    // Default public metadata source. Provider discovery still solely decides
+    // account availability; catalog rows supply capabilities only.
+    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || "https://models.dev/api.json",
     bundledModels: BUILT_IN_MODELS,
   });
-  installModelCatalog(modelCatalog.current().models);
-  void modelCatalog.refresh().then((snapshot) => installModelCatalog(snapshot.models)).catch(() => undefined);
+  installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, modelCatalog.current().models));
+  // Catalog refresh is operator-triggered. Starting a Private Local session
+  // must not make an outbound metadata request before any routing choice.
+  const refreshModelCatalog = async () => {
+    const snapshot = await modelCatalog.refresh();
+    installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
+    return snapshot;
+  };
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -2052,7 +2060,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
     const id = parsed.data;
-    if (!providerEnvMapping(id)) {
+    const mapping = providerEnvMapping(id);
+    if (!mapping) {
       throw new ApiError(400, `Provider "${id}" cannot be configured in-app.`, "PROVIDER_NOT_CONFIGURABLE");
     }
     if (!deps.secretsFile) {
@@ -2075,6 +2084,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       .parse((request.body ?? {}) as unknown);
     if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined && body.endpointContextLimit === undefined) {
       throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
+    }
+    if (body.baseUrl !== undefined && !mapping.baseUrlEnv) {
+      throw new ApiError(400, `Provider "${id}" does not support a custom endpoint.`, "CUSTOM_ENDPOINT_UNSUPPORTED");
     }
     if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
       try {
@@ -2155,6 +2167,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
     return resolveModelStatuses(statuses, providerModelDiscovery.list());
+  });
+
+  // Explicit refresh makes public catalog egress visible to the operator. It
+  // is deliberately not a startup side effect so local-only mode stays local.
+  app.post("/api/models/refresh", async () => {
+    try {
+      const snapshot = await refreshModelCatalog();
+      return { ...snapshot, refreshed: true };
+    } catch {
+      throw new ApiError(502, "Model catalog refresh failed; cached metadata remains active.", "MODEL_CATALOG_REFRESH_FAILED");
+    }
   });
 
   /**

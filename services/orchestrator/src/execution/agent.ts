@@ -45,11 +45,14 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
+import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
+import { externalizeToolResult, renderExternalizedForContext } from "./artifact-externalization.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
@@ -300,9 +303,19 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
   return { languages: [...languages], frameworks: [...frameworks] };
 }
 
-function capToolResult(toolName: string, result: string): string {
+function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
   if (bytes <= TOOL_RESULT_BYTE_LIMIT) return result;
+  // §3+§4: when the tool result is larger than the inline limit, store the
+  // complete content in the durable tool_artifacts store and return a small
+  // metadata reference (id, hash, excerpt, retrieval hint) for the model.
+  // The full payload no longer poisons future turns. Identical content
+  // (same hash + kind) deduplicates into a single row with an incremented
+  // refcount. The fallback (no externalizer wired) is the legacy head/tail
+  // fragment, retained only for tests.
+  if (externalizer) {
+    return externalizer(result, toolName);
+  }
   try {
     const parsed = JSON.parse(result) as any;
     if (Array.isArray(parsed.entries)) {
@@ -581,6 +594,12 @@ export async function executeAgentChatTask({
   // failure ledger (loop detection, recovery ladder, /failures). Non-mission
   // tasks get a no-op reporter.
   const taskMissionId = (task as { missionId?: string | null }).missionId ?? null;
+  // Capture a single mission-repository handle for the checkpoint-emit path
+  // (L2214 area). The MissionService instance created for the
+  // mission-failures reporter uses the same repo; reusing it here keeps the
+  // checkpoint/rollover events on the same durable log the activity panel
+  // already reads.
+  const missionRepo = taskMissionId ? missionsRepository(db) : null;
   const missionFailures = createMissionToolFailureReporter({
     service: taskMissionId
       ? new MissionService({
@@ -2209,6 +2228,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       ...currentFence(),
       now: now(),
     });
+    // §5+§6: when this checkpoint is part of a mission, emit a durable
+    // mission event so the activity panel and decision log show the rollover.
+    // Two distinct kinds are emitted so the UI can collapse the high-frequency
+    // "context checkpoint" events while still showing "rollover" as a
+    // first-class transition.
+    if (missionRepo && taskMissionId) {
+      try {
+        const eventType = phase === "context_compaction" ? "mission.checkpoint_created" : "mission.checkpoint_created";
+        const summary = phase === "context_compaction"
+          ? "Context checkpoint created; large outputs externalized; continuing in a fresh execution session"
+          : `Execution checkpoint (${phase})`;
+        missionRepo.appendEvent(taskMissionId, eventType, summary, {
+          taskId,
+          segmentId: currentSegment.id,
+          checkpointId,
+          phase,
+          decision: "Continuing in a fresh execution session",
+          currentPhase: snapshot.currentPhase,
+          completedWorkCount: snapshot.completedWork.length,
+          filesChangedCount: snapshot.filesChanged.length,
+          unresolvedFailuresCount: snapshot.unresolvedFailures.length,
+        }, now());
+      } catch {
+        // Best-effort: a failed event append must not block the checkpoint.
+      }
+    }
     executionCheckpointIds.push(checkpointId);
     return checkpointId;
   };
@@ -3092,7 +3137,40 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
-        if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
+        if (loop.looping && !loopDetected) {
+          loopDetected = { signature: loop.signature, count: loop.count };
+          // §7: when a tool-call signature repeats past the threshold, stop
+          // retrying the same operation. Classify the failure, derive a
+          // recovery plan, and emit a single decision event so the activity
+          // panel shows the diagnosis + next action instead of a flood of
+          // identical rows.
+          if (missionRepo && taskMissionId) {
+            try {
+              const category = categorizeFailure(tc.name, `repeated tool call signature=${loop.signature} count=${loop.count}`);
+              const signature = normalizeSignature(category, loop.signature);
+              const recovery = planRecovery(category, loop.count, 4);
+              missionRepo.appendEvent(taskMissionId, "mission.loop_detected", `Repeated ${tc.name} (${loop.count}×) — strategy switch`, {
+                toolName: tc.name,
+                toolCallSignature: loop.signature,
+                normalizedSignature: signature,
+                count: loop.count,
+                category,
+                decision: recovery.strategy,
+                steps: recovery.steps,
+                exhausted: recovery.exhausted,
+                evidence: {
+                  toolName: tc.name,
+                  count: loop.count,
+                  window: loop.count,
+                  message: `${tc.name} repeated ${loop.count} times without a different signature; bounded retry limit reached.`,
+                },
+                nextAction: recovery.steps[0] ?? "Stop retrying this tool call",
+              }, now());
+            } catch {
+              // Best-effort: a logging failure must not block the loop detector.
+            }
+          }
+        }
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name, ...displayTarget(tc.name, tc.arguments) });
 
@@ -3832,7 +3910,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
         }
 
-        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
+        // §3+§4: oversized tool results are stored in the durable tool_artifacts
+        // store and the model receives a small metadata reference instead of
+        // the full payload. The next turn re-references the artifact (refcount
+        // increments) rather than re-inlining the bytes, so a 100 KB build log
+        // can never poison the request budget again.
+        const externalizer = (text: string, kind: string): string => {
+          const repo = toolArtifactsRepository(db);
+          const result = externalizeToolResult(repo, text, {
+            toolName: tc.name,
+            kind,
+            contentType: "application/json",
+            taskId,
+            now: now(),
+          });
+          return renderExternalizedForContext(result);
+        };
+        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr, externalizer) : resultStr;
         if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
 
         // Complete tool call record. The database keeps raw output for /output;

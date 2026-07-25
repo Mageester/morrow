@@ -1,6 +1,6 @@
 import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
-export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama"]);
+export const ProviderIdSchema=z.enum(["deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","opencode-go","ollama"]);
 export const TaskStatusSchema=z.enum(["queued","running","completed","verified","failed","cancelled","interrupted"]);
 export const AgentExecutionStateSchema=z.enum(["idle","understanding","planning","waiting_for_approval","executing_tool","observing","proposing_changes","applying_changes","verifying","completed","failed","cancelled","interrupted"]);
 export const ApprovalKindSchema=z.enum(["command","change_set"]);
@@ -70,7 +70,7 @@ export const ProviderCapabilitiesSchema=z.object({
 export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applicable","unavailable"]);
 export const ProviderAuthModeSchema=z.enum([
   "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
-  "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+  "openrouter-api-key","deepseek-api-key","opencode-zen","opencode-go-api-key","ollama","custom-compatible","mock","unknown",
 ]);
 export const ProviderStatusSchema=z.object({
   version:SchemaVersionSchema,

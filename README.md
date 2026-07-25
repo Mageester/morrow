@@ -178,8 +178,10 @@ events. See [docs/providers.md](docs/providers.md) for the capability matrix,
 credential reference, honest OAuth findings, and manual verification steps.
 
 ## Current alpha limitations
-- Live model discovery is not implemented; the model registry is built-in plus
-  user-configurable model ids.
+- Live provider discovery determines account availability. Morrow loads public
+  model capabilities from a local cache and refreshes models.dev only through
+  explicit operator action; bundled metadata remains an offline seed. Unknown
+  route limits stay explicitly unverified.
 - Write and terminal tools are intentionally not enabled (architecture and UI
   are sketched but gated until their full safety boundaries are implemented).
 - Subscription sign-in is implemented for Claude (Anthropic) and Codex/ChatGPT

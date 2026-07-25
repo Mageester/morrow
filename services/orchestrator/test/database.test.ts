@@ -13,7 +13,11 @@ describe("database", () => {
 
   it("installs the durable mission runtime ledger and provider discovery schema", () => {
     const db = openDatabase(":memory:");
-    expect(migrations.at(-1)?.id).toBe(36);
+    // The latest migration id evolves over time; the durable mission runtime
+    // ledger and provider discovery schema are introduced by id 36. We assert
+    // ≥ 36 rather than pinning the exact number so future migrations (e.g.
+    // tool_artifacts for §3+§4 externalization) can extend the schema.
+    expect(migrations.at(-1)!.id).toBeGreaterThanOrEqual(36);
     const missionColumns = (db.prepare("PRAGMA table_info(missions)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(missionColumns).toContain("execution_json");
     const tables = (db.prepare(`SELECT name FROM sqlite_master
