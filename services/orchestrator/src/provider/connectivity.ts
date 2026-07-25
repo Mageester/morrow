@@ -216,6 +216,13 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       if (env.OPENAI_COMPAT_API_KEY) headers.Authorization = `Bearer ${env.OPENAI_COMPAT_API_KEY}`;
       return { configured: true, request: { url: `${baseUrl.replace(/\/$/, "")}/models`, headers, host: safeHostOf(baseUrl) } };
     }
+    case "opencode-go": {
+      // OpenCode Go credentials are only sent to its published endpoint.
+      const apiKey = env.OPENCODE_GO_API_KEY?.trim();
+      if (!apiKey) return { configured: false, reason: "opencode-go is not configured (OPENCODE_GO_API_KEY missing)." };
+      const baseUrl = "https://opencode.ai/zen/go/v1";
+      return { configured: true, request: { url: `${baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${apiKey}` }, host: safeHostOf(baseUrl) } };
+    }
     case "ollama": {
       const c = resolveLocalCredential(env, { baseUrlEnv: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434/v1" });
       if (!c.configured) return { configured: false, reason: "ollama is not enabled (set OLLAMA_BASE_URL to a running server)." };

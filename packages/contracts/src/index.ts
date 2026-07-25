@@ -2,7 +2,7 @@ import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
 export const ProviderIdSchema=z.enum([
   // Internal / bespoke adapters (native protocols, OAuth, or special handling).
-  "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama",
+  "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","opencode-go","ollama",
   // Catalog providers — all OpenAI-compatible. Kept in sync with
   // services/orchestrator/src/provider/catalog.ts (a test asserts both lists match).
   "opencode-zen","vercel-ai-gateway","github-models",
@@ -120,7 +120,7 @@ export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applic
 export const ProviderCategorySchema=z.enum(["assistant","gateway","frontier","inference","local","custom","testing"]);
 export const ProviderAuthModeSchema=z.enum([
   "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
-  "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+  "openrouter-api-key","deepseek-api-key","opencode-zen","opencode-go-api-key","ollama","custom-compatible","mock","unknown",
   // Catalog providers: an API key over an OpenAI-compatible endpoint, or a
   // keyless local server the user points Morrow at.
   "catalog-api-key","catalog-local",

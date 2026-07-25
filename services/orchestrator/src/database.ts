@@ -1137,6 +1137,26 @@ export const migrations:Migration[]=[
   ,{id:39,name:"task_idempotency_fingerprint",sql:`
     ALTER TABLE tasks ADD COLUMN idempotency_fingerprint TEXT;
   `}
+  // Artifact-backed externalization for oversized tool results. This is 40
+  // because beta.34 already uses migrations 37-39 for independent schemas.
+  ,{id:40,name:"tool_artifacts",sql:`
+    CREATE TABLE tool_artifacts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT,
+      tool_name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT 'text/plain',
+      bytes INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      excerpt TEXT NOT NULL,
+      content BLOB NOT NULL,
+      refcount INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX tool_artifacts_task_idx ON tool_artifacts(task_id, created_at DESC);
+    CREATE INDEX tool_artifacts_hash_idx ON tool_artifacts(content_hash, kind, content_type);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

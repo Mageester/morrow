@@ -225,6 +225,36 @@ describe("interactive session: streaming, cancellation, resize", () => {
     await done;
   });
 
+  it("copies a completed long final answer to native scrollback exactly once", async () => {
+    const io = new FakeTermIO();
+    const stdin = fakeStdin();
+    const gate = new EventGate();
+    const app = new InteractiveSession({
+      io, stdin, out: plain, unicode: false, meta, settings,
+      backend: makeBackend(gate, () => {}), now: () => Date.now(), maxFps: 120,
+    });
+    const done = app.run();
+    const answer = Array.from({ length: 18 }, (_, i) => `durable line ${i + 1}`).join("\n");
+
+    typeText(stdin, "long answer");
+    enter(stdin);
+    await tick();
+    gate.push({ id: "turn-start", sequence: 1, type: "assistant.turn_started", payload: { turnId: "final-1" } } as any);
+    gate.push({ id: "turn-text", sequence: 2, type: "evidence.persisted", payload: { turnId: "final-1", deltaText: answer } } as any);
+    gate.push({ id: "turn-end", sequence: 3, type: "assistant.turn_completed", payload: { turnId: "final-1", final: true } } as any);
+    gate.push({ id: "task-end", sequence: 4, type: "task.completed", payload: {} } as any);
+    gate.end();
+    await tick();
+
+    const output = io.writes.join("");
+    expect(output.split("# Morrow Final Answer").length - 1).toBe(1);
+    expect(output).toContain("durable line 18");
+
+    ctrlC(stdin);
+    ctrlC(stdin);
+    await done;
+  });
+
   it("Ctrl+C cancels a running task, then a second Ctrl+C exits", async () => {
     const io = new FakeTermIO();
     const stdin = fakeStdin();
