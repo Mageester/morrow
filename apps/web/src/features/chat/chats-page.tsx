@@ -51,6 +51,11 @@ export function ChatsPage() {
         <div className="morrow-empty">
           <h2>No local project yet</h2>
           <p>Create a local project and your conversations will collect here.</p>
+          {/* An empty state that names what is missing must also offer the way
+              to fix it; otherwise the user has to go find the right page. */}
+          <p className="morrow-empty__actions">
+            <Link to="/projects">Add a project</Link>
+          </p>
         </div>
       ) : (
         <>

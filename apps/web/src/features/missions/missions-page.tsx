@@ -1,6 +1,7 @@
 import type { WebMissionSummary } from "@morrow/contracts";
 import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { missionQueries } from "../../api/query-keys.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { MissionCardList } from "./mission-card.js";
@@ -87,6 +88,9 @@ export function MissionsPage() {
           <h2>No local project yet</h2>
           <p>
             Create or open a local project before asking Morrow to begin work.
+          </p>
+          <p className="morrow-empty__actions">
+            <Link to="/projects">Add a project</Link>
           </p>
         </Surface>
       ) : null}

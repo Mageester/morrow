@@ -9,6 +9,18 @@ function safeError(error: unknown, fallback: string): string {
   return error instanceof ApiClientError ? error.message : fallback;
 }
 
+/**
+ * An example folder path that matches the user's platform. A hardcoded
+ * "C:\code\my-app" reads as broken on macOS and Linux, and this field is one
+ * of the first things a new user types into.
+ */
+export function folderPlaceholder(): string {
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform || "";
+  if (/win/i.test(platform)) return "C:\\code\\my-app";
+  if (/mac/i.test(platform)) return "/Users/you/code/my-app";
+  return "/home/you/code/my-app";
+}
+
 export function ProjectsPage() {
   const { projects, activeProject, isPending, isError, refetch, selectProject } = useActiveProject();
   const queryClient = useQueryClient();
@@ -59,7 +71,7 @@ export function ProjectsPage() {
             <input
               name="project-path"
               onChange={(event) => setWorkspacePath(event.target.value)}
-              placeholder="C:\code\my-app"
+              placeholder={folderPlaceholder()}
               value={workspacePath}
             />
           </label>

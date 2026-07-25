@@ -65,11 +65,36 @@ async function status(ctx: Context, api: MorrowApi): Promise<number> {
     ctx.out.data(providers.map((p) => ({ id: p.id, configured: p.configured, authStatus: p.authStatus, endpointHost: p.endpointHost })));
     return EXIT.OK;
   }
+  // Answer the question actually being asked — "what is set up right now?" —
+  // rather than printing all 30 providers with their environment-variable
+  // instructions. On a fresh install that was 60 lines of setup lecture for a
+  // user who has a guided `providers configure` command available.
+  const selectable = providers.filter((p) => p.id !== "mock" && p.id !== "deterministic-local");
+  const configured = selectable.filter((p) => p.configured);
+
   ctx.out.heading("Provider status");
-  for (const p of providers) {
-    const mark = p.configured ? ctx.out.green("● configured") : ctx.out.gray("○ not configured");
-    ctx.out.print(`  ${mark}  ${ctx.out.bold(p.id)} ${ctx.out.gray("(" + p.authStatus + ")")}`);
-    if (!p.configured && p.setupHint) ctx.out.print(ctx.out.gray(`    ${p.setupHint}`));
+  if (configured.length === 0) {
+    ctx.out.print(`  ${ctx.out.gray("○")} No provider is connected yet.`);
+    ctx.out.print();
+    ctx.out.print(`  ${selectable.length} providers are available, including local ones that keep everything on this machine.`);
+    ctx.out.print(`  Set one up:  ${ctx.out.cyan("morrow providers configure")}`);
+    ctx.out.print(`  Browse all:  ${ctx.out.cyan("morrow providers list")}`);
+    return EXIT.OK;
+  }
+
+  for (const p of configured) {
+    const model = p.defaultModel ? ctx.out.gray(` · ${p.defaultModel}`) : "";
+    const where = p.endpointHost ? ctx.out.gray(` · ${p.endpointHost}`) : "";
+    ctx.out.print(`  ${ctx.out.green("●")} ${ctx.out.bold(p.label)}${model}${where}`);
+    if (!p.defaultModel) {
+      ctx.out.print(ctx.out.gray(`      No default model selected — run \`morrow providers configure ${p.id}\` to pick one.`));
+    }
+  }
+
+  const remaining = selectable.length - configured.length;
+  if (remaining > 0) {
+    ctx.out.print();
+    ctx.out.print(ctx.out.gray(`  ${remaining} more available — \`morrow providers list\` to browse, \`morrow providers configure\` to add one.`));
   }
   return EXIT.OK;
 }

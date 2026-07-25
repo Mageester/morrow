@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActiveProjectProvider } from "../../state/active-project.js";
-import { ProjectsPage } from "./projects-page.js";
+import { ProjectsPage, folderPlaceholder } from "./projects-page.js";
 
 const now = "2026-07-23T12:00:00.000Z";
 const projectA = { id: "project-a", name: "Alpha", version: 1, workspacePath: "C:\\code\\alpha", createdAt: now };
@@ -93,5 +93,28 @@ describe("ProjectsPage", () => {
     });
 
     expect(await screen.findByText(/not accessible right now/i)).toBeVisible();
+  });
+});
+
+describe("folder path example", () => {
+  /**
+   * The folder field is one of the first things a new user types into, and it
+   * shipped a hardcoded "C:\code\my-app" — which reads as broken on macOS and
+   * Linux, where no such path exists.
+   */
+  it("shows an example path that matches the user's platform", () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "platform");
+    const setPlatform = (value: string) =>
+      Object.defineProperty(navigator, "platform", { value, configurable: true });
+    try {
+      setPlatform("MacIntel");
+      expect(folderPlaceholder()).toBe("/Users/you/code/my-app");
+      setPlatform("Win32");
+      expect(folderPlaceholder()).toBe("C:\\code\\my-app");
+      setPlatform("Linux x86_64");
+      expect(folderPlaceholder()).toBe("/home/you/code/my-app");
+    } finally {
+      if (original) Object.defineProperty(navigator, "platform", original);
+    }
   });
 });
