@@ -27,6 +27,7 @@ artifacts/
 .env
 .env.*
 !.env.example
+!apps/dashboard/.env.production
 *.local
 *.db
 *.db-shm
@@ -34,6 +35,12 @@ artifacts/
 .morrow/
 .hermes/
 MEMORY/
+
+# Cloudflare Workers (services/hosted-api)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.wrangler/
 
 # Editors and OS
 .DS_Store

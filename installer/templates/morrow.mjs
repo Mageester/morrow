@@ -26,6 +26,11 @@ const logFile = join(logs, "orchestrator.log");
 const host = "127.0.0.1";
 const port = 4317;
 const url = `http://${host}:${port}`;
+// Packaged-install default for account/billing/device-pairing (Plans/
+// generic-sprouting-dragon.md Phase 4/6). Not a secret — it's a public Workers
+// URL. Only applies if the user hasn't already set their own (self-host/
+// advanced override) — see the spread order in start() below.
+const DEFAULT_HOSTED_API_URL = "https://morrow-hosted-api.aidan-magee2.workers.dev";
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
 
 /** Environment that points the delegated CLI at THIS packaged install/service. */
@@ -85,7 +90,7 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, NODE_ENV: "production" } });
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { MORROW_HOSTED_API_URL: DEFAULT_HOSTED_API_URL, ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());

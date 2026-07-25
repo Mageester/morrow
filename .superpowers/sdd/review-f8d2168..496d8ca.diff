@@ -1,0 +1,1215 @@
+# Review package: f8d2168..496d8ca
+
+## Commits
+496d8ca feat(web): add resilient chat composer
+
+## Files changed
+ apps/web/e2e/composer.spec.ts                     |  92 ++++++
+ apps/web/src/features/chat/chat-composer.test.tsx | 220 +++++++++++++
+ apps/web/src/features/chat/chat-composer.tsx      | 356 ++++++++++++++++++++++
+ apps/web/src/features/chat/draft-store.test.ts    |  52 ++++
+ apps/web/src/features/chat/draft-store.ts         |  66 ++++
+ apps/web/src/features/home/home-page.test.tsx     |  17 ++
+ apps/web/src/features/home/mission-composer.tsx   |  27 +-
+ apps/web/src/styles/app.css                       | 173 +++++++++++
+ 8 files changed, 1001 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/apps/web/e2e/composer.spec.ts b/apps/web/e2e/composer.spec.ts
+new file mode 100644
+index 0000000..7c88300
+--- /dev/null
++++ b/apps/web/e2e/composer.spec.ts
+@@ -0,0 +1,92 @@
++import { expect, test } from "@playwright/test";
++
++test("composer preserves browser-native editing, IME input, and the draft across reload", async ({ context, page }) => {
++  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
++  let submissions = 0;
++  await page.route("**/api/web/missions", async (route) => {
++    if (route.request().method() !== "POST") return route.continue();
++    submissions += 1;
++    return route.fulfill({
++      status: 503,
++      json: {
++        version: 1,
++        error: {
++          code: "PROVIDER_UNAVAILABLE",
++          message: "Morrow could not reach the model. Check the connection and try again.",
++        },
++      },
++    });
++  });
++
++  await page.goto("/app/");
++  const input = page.getByRole("textbox", { name: "Mission objective" });
++  await expect(input).toBeFocused();
++
++  const nativeDraft = "Fast typing: https://example.test `const answer = 42` 😀";
++  await input.pressSequentially(nativeDraft, { delay: 0 });
++  await input.press("Home");
++  await input.press("ArrowRight");
++  await input.press("End");
++  await input.press("Shift+Home");
++  const selected = await input.evaluate((node) => ({
++    end: (node as HTMLTextAreaElement).selectionEnd,
++    start: (node as HTMLTextAreaElement).selectionStart,
++  }));
++  expect(selected.end).toBeGreaterThan(selected.start);
++
++  await input.press("Control+a");
++  await input.press("Control+c");
++  await input.press("Control+x");
++  await expect(input).toHaveValue("");
++  await input.press("Control+v");
++  await expect(input).toHaveValue(nativeDraft);
++  await input.press("Control+z");
++  await input.press("Control+y");
++
++  await input.fill("line one\nline two\n貼り付け: https://example.test/path?q=1 😀");
++  await page.reload();
++  await expect(input).toHaveValue("line one\nline two\n貼り付け: https://example.test/path?q=1 😀");
++
++  await input.evaluate((node) => {
++    const textarea = node as HTMLTextAreaElement;
++    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "漢字" }));
++    textarea.setRangeText("漢字", textarea.value.length, textarea.value.length, "end");
++    textarea.dispatchEvent(new InputEvent("input", {
++      bubbles: true,
++      data: "漢字",
++      inputType: "insertCompositionText",
++      isComposing: true,
++    }));
++    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "漢字" }));
++  });
++  await expect(input).toHaveValue(/😀漢字$/);
++
++  await input.press("Shift+Enter");
++  await expect(input).toHaveValue(/漢字\n$/);
++  const beforeRejectedSend = await input.inputValue();
++  await input.press("Enter");
++  await expect(page.getByText("Morrow could not reach the model. Check the connection and try again.")).toBeVisible();
++  await expect(input).toHaveValue(beforeRejectedSend);
++  expect(submissions).toBe(1);
++
++  const stored = await page.evaluate(() =>
++    Object.entries(localStorage).filter(([key]) => key.startsWith("morrow.chat-draft.v1")),
++  );
++  expect(stored).toHaveLength(1);
++  expect(stored[0]?.[1]).not.toContain("providerId");
++});
++
++test("composer remains reachable above a mobile viewport with touch-sized controls", async ({ page }) => {
++  await page.setViewportSize({ width: 390, height: 844 });
++  await page.goto("/app/");
++  const input = page.getByRole("textbox", { name: "Mission objective" });
++  await input.fill("Mobile draft 😀");
++  await page.reload();
++  await expect(input).toHaveValue("Mobile draft 😀");
++
++  const send = page.getByRole("button", { name: "Start mission" });
++  const box = await send.boundingBox();
++  expect(box).not.toBeNull();
++  expect(box!.height).toBeGreaterThanOrEqual(44);
++  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
++});
+diff --git a/apps/web/src/features/chat/chat-composer.test.tsx b/apps/web/src/features/chat/chat-composer.test.tsx
+new file mode 100644
+index 0000000..5030358
+--- /dev/null
++++ b/apps/web/src/features/chat/chat-composer.test.tsx
+@@ -0,0 +1,220 @@
++import { fireEvent, render, screen, waitFor } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { useState } from "react";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import {
++  ChatComposer,
++  type ChatComposerSubmission,
++} from "./chat-composer.js";
++import { loadChatDraft, saveChatDraft } from "./draft-store.js";
++
++const scope = { projectId: "project-1", conversationId: "conversation-1" };
++const projects = [
++  { id: "project-1", name: "Morrow" },
++  { id: "project-2", name: "Personal" },
++];
++const routes = [
++  { id: "balanced", label: "Balanced route", preset: "balanced" as const },
++  {
++    id: "openrouter:model-a",
++    label: "Model A via OpenRouter",
++    providerId: "openrouter" as const,
++    model: "vendor/model-a",
++  },
++];
++
++beforeEach(() => localStorage.clear());
++
++describe("ChatComposer", () => {
++  it("supports native fast typing, editing, selection, clipboard-shaped input, and stable parent rerenders", async () => {
++    const user = userEvent.setup();
++    let rerenderParent!: () => void;
++    function Parent() {
++      const [, setTick] = useState(0);
++      rerenderParent = () => setTick((value) => value + 1);
++      return <ChatComposer autoFocus draftScope={scope} onSubmit={vi.fn()} />;
++    }
++    render(<Parent />);
++
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" }) as HTMLTextAreaElement;
++    await waitFor(() => expect(textbox).toHaveFocus());
++    await user.type(textbox, "Fast https://example.test `code()` 😀");
++    textbox.setSelectionRange(5, 25, "forward");
++    const sameNode = textbox;
++    rerenderParent();
++
++    expect(screen.getByRole("textbox", { name: "Message Morrow" })).toBe(sameNode);
++    expect(textbox.selectionStart).toBe(5);
++    expect(textbox.selectionEnd).toBe(25);
++
++    fireEvent.input(textbox, { target: { value: "line one\nline two\n貼り付け 😀" } });
++    expect(textbox).toHaveValue("line one\nline two\n貼り付け 😀");
++    expect(loadChatDraft(scope)).toBe("line one\nline two\n貼り付け 😀");
++  });
++
++  it("does not submit Enter during composition and uses Shift+Enter as a newline", async () => {
++    const user = userEvent.setup();
++    const onSubmit = vi.fn().mockResolvedValue({ accepted: true });
++    render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++
++    await user.type(textbox, "こんにちは");
++    fireEvent.compositionStart(textbox);
++    fireEvent.keyDown(textbox, { key: "Enter", isComposing: true });
++    fireEvent.compositionEnd(textbox);
++    expect(onSubmit).not.toHaveBeenCalled();
++
++    await user.keyboard("{Shift>}{Enter}{/Shift}");
++    expect(textbox).toHaveValue("こんにちは\n");
++    await user.keyboard("{Enter}");
++    expect(onSubmit).toHaveBeenCalledTimes(1);
++  });
++
++  it("leaves native editing, selection, clipboard, undo, and redo shortcuts untouched", () => {
++    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++
++    for (const key of ["Backspace", "ArrowLeft", "ArrowRight", "Home", "End"]) {
++      expect(fireEvent.keyDown(textbox, { key })).toBe(true);
++    }
++    for (const key of ["a", "c", "x", "v", "z", "y"]) {
++      expect(fireEvent.keyDown(textbox, { ctrlKey: true, key })).toBe(true);
++    }
++    expect(fireEvent.paste(textbox)).toBe(true);
++  });
++
++  it("keeps send disabled for whitespace-only text", () => {
++    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++    fireEvent.input(textbox, { target: { value: "  \n  " } });
++    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
++  });
++
++  it("maps modes and real route/project selections into the submission callback", async () => {
++    const user = userEvent.setup();
++    const onSubmit = vi.fn().mockResolvedValue({ accepted: false });
++    const onProjectChange = vi.fn();
++    render(
++      <ChatComposer
++        draftScope={scope}
++        modelRoutes={routes}
++        onProjectChange={onProjectChange}
++        onSubmit={onSubmit}
++        projectId="project-1"
++        projects={projects}
++      />,
++    );
++
++    await user.click(screen.getByRole("button", { name: "Build Auto" }));
++    await user.selectOptions(screen.getByLabelText("Model route"), "openrouter:model-a");
++    await user.selectOptions(screen.getByLabelText("Project"), "project-2");
++    expect(onProjectChange).toHaveBeenCalledWith("project-2");
++    await user.type(screen.getByRole("textbox", { name: "Message Morrow" }), "Ship it");
++    await user.click(screen.getByRole("button", { name: "Send message" }));
++
++    expect(onSubmit).toHaveBeenCalledWith({
++      autoApprove: true,
++      content: "Ship it",
++      conversationId: "conversation-1",
++      mode: "agent",
++      model: "vendor/model-a",
++      projectId: "project-1",
++      providerId: "openrouter",
++    } satisfies ChatComposerSubmission);
++  });
++
++  it("clears draft only after acceptance and blocks rapid duplicate sends", async () => {
++    const user = userEvent.setup();
++    let accept!: (value: { accepted: true }) => void;
++    const onSubmit = vi.fn(() => new Promise<{ accepted: true }>((resolve) => { accept = resolve; }));
++    render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++    await user.type(textbox, "Keep until accepted");
++
++    fireEvent.keyDown(textbox, { key: "Enter" });
++    fireEvent.keyDown(textbox, { key: "Enter" });
++    expect(onSubmit).toHaveBeenCalledTimes(1);
++    expect(textbox).toHaveValue("Keep until accepted");
++    expect(screen.getByRole("button", { name: "Sending message" })).toBeDisabled();
++
++    accept({ accepted: true });
++    await waitFor(() => expect(textbox).toHaveValue(""));
++    expect(loadChatDraft(scope)).toBe("");
++  });
++
++  it("retains exact draft and selection on rejection or error with an actionable status", async () => {
++    const user = userEvent.setup();
++    const onSubmit = vi
++      .fn()
++      .mockResolvedValueOnce({ accepted: false, error: "Connect a model and try again." })
++      .mockRejectedValueOnce(new Error("network detail"));
++    render(<ChatComposer draftScope={scope} onSubmit={onSubmit} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" }) as HTMLTextAreaElement;
++    await user.type(textbox, "Preserve   this exactly");
++    textbox.setSelectionRange(3, 11);
++
++    await user.click(screen.getByRole("button", { name: "Send message" }));
++    expect(await screen.findByRole("alert")).toHaveTextContent("Connect a model and try again.");
++    expect(textbox).toHaveValue("Preserve   this exactly");
++    expect(textbox.selectionStart).toBe(3);
++    expect(textbox.selectionEnd).toBe(11);
++
++    await user.click(screen.getByRole("button", { name: "Send message" }));
++    expect(await screen.findByRole("alert")).toHaveTextContent("Message was not accepted. Try again.");
++    expect(textbox).toHaveValue("Preserve   this exactly");
++  });
++
++  it("restores and switches scoped drafts without replacing the textarea", async () => {
++    const other = { projectId: "project-1", conversationId: "conversation-2" };
++    saveChatDraft(scope, "first conversation");
++    saveChatDraft(other, "second conversation");
++    const { rerender } = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++    expect(textbox).toHaveValue("first conversation");
++
++    rerender(<ChatComposer draftScope={other} onSubmit={vi.fn()} />);
++    expect(screen.getByRole("textbox", { name: "Message Morrow" })).toBe(textbox);
++    await waitFor(() => expect(textbox).toHaveValue("second conversation"));
++  });
++
++  it("shows the 32,000-character boundary without truncating over-limit input", () => {
++    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" });
++    fireEvent.input(textbox, { target: { value: "x".repeat(32_001) } });
++
++    expect(textbox).toHaveValue("x".repeat(32_001));
++    expect(textbox).toHaveAttribute("aria-invalid", "true");
++    expect(screen.getByText("32,001 / 32,000 characters")).toBeVisible();
++    expect(screen.getByRole("alert")).toHaveTextContent("1 character over the limit");
++    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
++  });
++
++  it("autosizes to a cap and then enables internal scrolling", () => {
++    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    const textbox = screen.getByRole("textbox", { name: "Message Morrow" }) as HTMLTextAreaElement;
++    Object.defineProperty(textbox, "scrollHeight", { configurable: true, value: 420 });
++    fireEvent.input(textbox, { target: { value: "many\nlines" } });
++    expect(textbox.style.height).toBe("192px");
++    expect(textbox.style.overflowY).toBe("auto");
++  });
++
++  it("only shows stop and attachment affordances when they are actionable", async () => {
++    const user = userEvent.setup();
++    const onStop = vi.fn().mockResolvedValue(undefined);
++    const { rerender } = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
++    expect(screen.queryByRole("button", { name: "Stop generation" })).not.toBeInTheDocument();
++    expect(screen.queryByRole("button", { name: /attach/i })).not.toBeInTheDocument();
++    expect(screen.getByText(/Attachments are unavailable/)).toBeVisible();
++
++    rerender(
++      <ChatComposer
++        activeTaskId="task-1"
++        draftScope={scope}
++        onStop={onStop}
++        onSubmit={vi.fn()}
++      />,
++    );
++    await user.click(screen.getByRole("button", { name: "Stop generation" }));
++    expect(onStop).toHaveBeenCalledWith("task-1");
++  });
++});
+diff --git a/apps/web/src/features/chat/chat-composer.tsx b/apps/web/src/features/chat/chat-composer.tsx
+new file mode 100644
+index 0000000..c34adb6
+--- /dev/null
++++ b/apps/web/src/features/chat/chat-composer.tsx
+@@ -0,0 +1,356 @@
++import type { AgentMode, PresetId, ProviderId } from "@morrow/contracts";
++import { Send, Square } from "lucide-react";
++import {
++  useEffect,
++  useId,
++  useRef,
++  useState,
++  type FormEvent,
++  type InputEvent,
++  type KeyboardEvent,
++} from "react";
++import {
++  clearChatDraft,
++  loadChatDraft,
++  saveChatDraft,
++  type ChatDraftScope,
++} from "./draft-store.js";
++
++export const CHAT_PROMPT_MAX_LENGTH = 32_000;
++const TEXTAREA_MAX_HEIGHT = 192;
++
++type ComposerMode = "ask" | "plan" | "build" | "build-auto";
++
++export interface ChatComposerModelRoute {
++  id: string;
++  label: string;
++  preset?: PresetId | undefined;
++  providerId?: ProviderId | undefined;
++  model?: string | undefined;
++}
++
++export interface ChatComposerSubmission {
++  content: string;
++  projectId: string;
++  conversationId?: string | undefined;
++  mode: AgentMode;
++  autoApprove: boolean;
++  preset?: PresetId | undefined;
++  providerId?: ProviderId | undefined;
++  model?: string | undefined;
++}
++
++export interface ChatComposerSubmitResult {
++  accepted: boolean;
++  error?: string | undefined;
++}
++
++export interface ChatComposerProps {
++  draftScope: ChatDraftScope;
++  onSubmit: (submission: ChatComposerSubmission) => Promise<ChatComposerSubmitResult>;
++  autoFocus?: boolean | undefined;
++  disabled?: boolean | undefined;
++  placeholder?: string | undefined;
++  projects?: ReadonlyArray<{ id: string; name: string }> | undefined;
++  projectId?: string | undefined;
++  onProjectChange?: ((projectId: string) => void) | undefined;
++  modelRoutes?: ReadonlyArray<ChatComposerModelRoute> | undefined;
++  activeTaskId?: string | undefined;
++  onStop?: ((taskId: string) => Promise<void>) | undefined;
++}
++
++const DEFAULT_ROUTE: ChatComposerModelRoute = {
++  id: "balanced",
++  label: "Balanced route",
++  preset: "balanced",
++};
++
++const MODES: ReadonlyArray<{ id: ComposerMode; label: string }> = [
++  { id: "ask", label: "Ask" },
++  { id: "plan", label: "Plan" },
++  { id: "build", label: "Build" },
++  { id: "build-auto", label: "Build Auto" },
++];
++
++function mapMode(mode: ComposerMode): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
++  if (mode === "ask") return { mode: "read-only", autoApprove: false };
++  if (mode === "plan") return { mode: "plan-only", autoApprove: false };
++  return { mode: "agent", autoApprove: mode === "build-auto" };
++}
++
++function scopeId(scope: ChatDraftScope): string {
++  return `${scope.projectId}\u0000${scope.conversationId ?? ""}`;
++}
++
++export function ChatComposer({
++  draftScope,
++  onSubmit,
++  autoFocus = false,
++  disabled = false,
++  placeholder = "Ask anything, or describe something for Morrow to take on…",
++  projects = [],
++  projectId = draftScope.projectId,
++  onProjectChange,
++  modelRoutes = [DEFAULT_ROUTE],
++  activeTaskId,
++  onStop,
++}: ChatComposerProps) {
++  const id = useId();
++  const inputId = `morrow-chat-message-${id}`;
++  const helpId = `morrow-chat-help-${id}`;
++  const limitId = `morrow-chat-limit-${id}`;
++  const initialDraft = useRef(loadChatDraft(draftScope));
++  const textareaRef = useRef<HTMLTextAreaElement>(null);
++  const composing = useRef(false);
++  const sendingRef = useRef(false);
++  const currentScopeId = scopeId(draftScope);
++  const priorScopeId = useRef(currentScopeId);
++  const currentScope = useRef(draftScope);
++  currentScope.current = draftScope;
++
++  const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
++  const [mode, setMode] = useState<ComposerMode>("ask");
++  const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
++  const [length, setLength] = useState(() => initialDraft.current.length);
++  const [hasContent, setHasContent] = useState(() => Boolean(initialDraft.current.trim()));
++  const [sending, setSending] = useState(false);
++  const [stopping, setStopping] = useState(false);
++  const [message, setMessage] = useState<string | null>(null);
++
++  const resize = (textarea: HTMLTextAreaElement) => {
++    textarea.style.height = "auto";
++    const height = Math.min(textarea.scrollHeight, TEXTAREA_MAX_HEIGHT);
++    textarea.style.height = `${height}px`;
++    textarea.style.overflowY = textarea.scrollHeight > TEXTAREA_MAX_HEIGHT ? "auto" : "hidden";
++  };
++
++  useEffect(() => {
++    const textarea = textareaRef.current;
++    if (!textarea) return;
++    if (priorScopeId.current !== currentScopeId) {
++      textarea.value = loadChatDraft(draftScope);
++      setLength(textarea.value.length);
++      setHasContent(Boolean(textarea.value.trim()));
++      setMessage(null);
++      priorScopeId.current = currentScopeId;
++    }
++    resize(textarea);
++  }, [currentScopeId, draftScope]);
++
++  useEffect(() => {
++    if (autoFocus && !disabled) textareaRef.current?.focus();
++  }, [autoFocus, disabled]);
++
++  function handleInput(event: InputEvent<HTMLTextAreaElement>) {
++    const textarea = event.currentTarget;
++    setLength(textarea.value.length);
++    setHasContent(Boolean(textarea.value.trim()));
++    setMessage(null);
++    saveChatDraft(currentScope.current, textarea.value);
++    resize(textarea);
++  }
++
++  async function submit() {
++    const textarea = textareaRef.current;
++    if (!textarea || disabled || sendingRef.current) return;
++    const content = textarea.value;
++    if (!content.trim() || content.length > CHAT_PROMPT_MAX_LENGTH) return;
++
++    sendingRef.current = true;
++    setSending(true);
++    setMessage(null);
++    const submittedScope = currentScope.current;
++    const submittedScopeId = scopeId(submittedScope);
++    const selectedRoute = availableRoutes.find((route) => route.id === routeId) ?? availableRoutes[0]!;
++    const routing = selectedRoute.providerId
++      ? {
++          providerId: selectedRoute.providerId,
++          ...(selectedRoute.model ? { model: selectedRoute.model } : {}),
++        }
++      : selectedRoute.preset
++        ? { preset: selectedRoute.preset }
++        : {};
++
++    try {
++      const result = await onSubmit({
++        content,
++        projectId: submittedScope.projectId,
++        ...(submittedScope.conversationId
++          ? { conversationId: submittedScope.conversationId }
++          : {}),
++        ...mapMode(mode),
++        ...routing,
++      });
++      if (!result.accepted) {
++        setMessage(result.error ?? "Message was not accepted. Review the details and try again.");
++        return;
++      }
++      clearChatDraft(submittedScope);
++      if (textareaRef.current && submittedScopeId === scopeId(currentScope.current)) {
++        textareaRef.current.value = "";
++        setLength(0);
++        setHasContent(false);
++        resize(textareaRef.current);
++        textareaRef.current.focus();
++      }
++      setMessage("Message accepted.");
++    } catch {
++      setMessage("Message was not accepted. Try again.");
++    } finally {
++      sendingRef.current = false;
++      setSending(false);
++    }
++  }
++
++  function handleSubmit(event: FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    void submit();
++  }
++
++  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
++    if (
++      event.key === "Enter" &&
++      !event.shiftKey &&
++      !composing.current &&
++      !event.nativeEvent.isComposing
++    ) {
++      event.preventDefault();
++      void submit();
++    }
++  }
++
++  async function stop() {
++    if (!activeTaskId || !onStop || stopping) return;
++    setStopping(true);
++    setMessage(null);
++    try {
++      await onStop(activeTaskId);
++      setMessage("Stop requested.");
++    } catch {
++      setMessage("Morrow could not stop generation. Try again.");
++    } finally {
++      setStopping(false);
++    }
++  }
++
++  const overLimit = Math.max(0, length - CHAT_PROMPT_MAX_LENGTH);
++  const showCounter = length >= 30_000;
++  const cannotSend = disabled || sending || !hasContent || overLimit > 0;
++
++  return (
++    <form
++      aria-busy={sending || stopping ? "true" : undefined}
++      className="morrow-chat-composer"
++      onSubmit={handleSubmit}
++    >
++      <label className="morrow-sr-only" htmlFor={inputId}>
++        Message Morrow
++      </label>
++      <textarea
++        aria-describedby={overLimit > 0 ? limitId : helpId}
++        aria-invalid={overLimit > 0 ? "true" : undefined}
++        autoComplete="on"
++        className="morrow-chat-composer__input"
++        defaultValue={initialDraft.current}
++        disabled={disabled || sending}
++        enterKeyHint="send"
++        id={inputId}
++        onCompositionEnd={() => { composing.current = false; }}
++        onCompositionStart={() => { composing.current = true; }}
++        onInput={handleInput}
++        onKeyDown={handleKeyDown}
++        placeholder={placeholder}
++        ref={textareaRef}
++        rows={1}
++      />
++
++      <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
++        {MODES.map((item) => (
++          <button
++            aria-pressed={mode === item.id}
++            className={mode === item.id ? "is-active" : undefined}
++            disabled={disabled || sending}
++            key={item.id}
++            onClick={() => setMode(item.id)}
++            type="button"
++          >
++            {item.label}
++          </button>
++        ))}
++      </div>
++
++      <div className="morrow-chat-composer__toolbar">
++        {projects.length > 1 && onProjectChange ? (
++          <label className="morrow-chat-composer__select">
++            <span>Project</span>
++            <select
++              disabled={disabled || sending}
++              onChange={(event) => onProjectChange(event.target.value)}
++              value={projectId}
++            >
++              {projects.map((project) => (
++                <option key={project.id} value={project.id}>{project.name}</option>
++              ))}
++            </select>
++          </label>
++        ) : null}
++
++        <label className="morrow-chat-composer__select">
++          <span>Model route</span>
++          <select
++            disabled={disabled || sending}
++            onChange={(event) => setRouteId(event.target.value)}
++            value={availableRoutes.some((route) => route.id === routeId) ? routeId : availableRoutes[0]!.id}
++          >
++            {availableRoutes.map((route) => (
++              <option key={route.id} value={route.id}>{route.label}</option>
++            ))}
++          </select>
++        </label>
++
++        {activeTaskId && onStop ? (
++          <button
++            aria-label="Stop generation"
++            className="morrow-chat-composer__stop"
++            disabled={stopping}
++            onClick={() => { void stop(); }}
++            type="button"
++          >
++            <Square aria-hidden="true" size={15} />
++            <span>{stopping ? "Stopping…" : "Stop"}</span>
++          </button>
++        ) : (
++          <button
++            aria-label={sending ? "Sending message" : "Send message"}
++            className="morrow-chat-composer__send"
++            disabled={cannotSend}
++            type="submit"
++          >
++            <Send aria-hidden="true" size={18} />
++          </button>
++        )}
++      </div>
++
++      <div className="morrow-chat-composer__meta">
++        <p id={helpId}>
++          Attachments are unavailable because the message API does not accept files yet.
++        </p>
++        {showCounter ? (
++          <p aria-live="polite" className="morrow-chat-composer__counter">
++            {length.toLocaleString("en-US")} / {CHAT_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters
++          </p>
++        ) : null}
++      </div>
++      {overLimit > 0 ? (
++        <p id={limitId} role="alert">
++          {overLimit.toLocaleString("en-US")} {overLimit === 1 ? "character" : "characters"} over the limit. Shorten the message to send it.
++        </p>
++      ) : null}
++      {message ? (
++        <p aria-live="polite" role={message === "Message accepted." || message === "Stop requested." ? "status" : "alert"}>
++          {message}
++        </p>
++      ) : null}
++    </form>
++  );
++}
+diff --git a/apps/web/src/features/chat/draft-store.test.ts b/apps/web/src/features/chat/draft-store.test.ts
+new file mode 100644
+index 0000000..292796e
+--- /dev/null
++++ b/apps/web/src/features/chat/draft-store.test.ts
+@@ -0,0 +1,52 @@
++import { beforeEach, describe, expect, it } from "vitest";
++import {
++  clearChatDraft,
++  loadChatDraft,
++  saveChatDraft,
++  type ChatDraftScope,
++} from "./draft-store.js";
++
++const first: ChatDraftScope = { projectId: "project/a", conversationId: "chat:1" };
++const second: ChatDraftScope = { projectId: "project/a", conversationId: "chat:2" };
++
++beforeEach(() => localStorage.clear());
++
++describe("chat draft storage", () => {
++  it("keeps text isolated by project and conversation without storing routing data", () => {
++    saveChatDraft(first, "private draft text");
++    saveChatDraft(second, "another draft");
++
++    expect(loadChatDraft(first)).toBe("private draft text");
++    expect(loadChatDraft(second)).toBe("another draft");
++    expect(Object.values(localStorage).join(" ")).not.toContain("provider");
++  });
++
++  it("uses a separate project-scoped key before a conversation exists", () => {
++    const newChat = { projectId: "project/a" };
++    saveChatDraft(newChat, "new conversation draft");
++
++    expect(loadChatDraft(newChat)).toBe("new conversation draft");
++    expect(loadChatDraft(first)).toBe("");
++  });
++
++  it("fails closed on malformed or unsupported stored values", () => {
++    localStorage.setItem("morrow.chat-draft.v1.project%2Fa.chat%3A1", "not-json");
++    expect(loadChatDraft(first)).toBe("");
++
++    localStorage.setItem(
++      "morrow.chat-draft.v1.project%2Fa.chat%3A1",
++      JSON.stringify({ version: 99, text: "stale" }),
++    );
++    expect(loadChatDraft(first)).toBe("");
++  });
++
++  it("removes empty and explicitly cleared drafts", () => {
++    saveChatDraft(first, "temporary");
++    saveChatDraft(first, "");
++    expect(loadChatDraft(first)).toBe("");
++
++    saveChatDraft(first, "temporary");
++    clearChatDraft(first);
++    expect(loadChatDraft(first)).toBe("");
++  });
++});
+diff --git a/apps/web/src/features/chat/draft-store.ts b/apps/web/src/features/chat/draft-store.ts
+new file mode 100644
+index 0000000..059d679
+--- /dev/null
++++ b/apps/web/src/features/chat/draft-store.ts
+@@ -0,0 +1,66 @@
++export interface ChatDraftScope {
++  projectId: string;
++  conversationId?: string | undefined;
++}
++
++const DRAFT_PREFIX = "morrow.chat-draft.v1";
++
++function draftKey(scope: ChatDraftScope): string {
++  const conversation = scope.conversationId ?? "new";
++  return `${DRAFT_PREFIX}.${encodeURIComponent(scope.projectId)}.${encodeURIComponent(conversation)}`;
++}
++
++function browserStorage(): Storage | null {
++  try {
++    return typeof window === "undefined" ? null : window.localStorage;
++  } catch {
++    return null;
++  }
++}
++
++export function loadChatDraft(scope: ChatDraftScope): string {
++  try {
++    const raw = browserStorage()?.getItem(draftKey(scope));
++    if (!raw) return "";
++    const stored: unknown = JSON.parse(raw);
++    if (
++      typeof stored !== "object" ||
++      stored === null ||
++      !("version" in stored) ||
++      stored.version !== 1 ||
++      !("text" in stored) ||
++      typeof stored.text !== "string"
++    ) {
++      return "";
++    }
++    return stored.text;
++  } catch {
++    return "";
++  }
++}
++
++export function saveChatDraft(scope: ChatDraftScope, text: string): void {
++  try {
++    const storage = browserStorage();
++    if (!storage) return;
++    const key = draftKey(scope);
++    if (!text) {
++      storage.removeItem(key);
++      return;
++    }
++    // Product requirement: user-authored draft text is retained locally.
++    // Provider credentials and routing metadata must never enter this record.
++    storage.setItem(key, JSON.stringify({ version: 1, text }));
++  } catch {
++    // Draft persistence is best-effort. Storage denial/corruption must not make
++    // the composer unusable or discard the live textarea value.
++  }
++}
++
++export function clearChatDraft(scope: ChatDraftScope): void {
++  try {
++    browserStorage()?.removeItem(draftKey(scope));
++  } catch {
++    // See saveChatDraft: the live editor remains authoritative if storage fails.
++  }
++}
+diff --git a/apps/web/src/features/home/home-page.test.tsx b/apps/web/src/features/home/home-page.test.tsx
+index 2f5035f..9f68aca 100644
+--- a/apps/web/src/features/home/home-page.test.tsx
++++ b/apps/web/src/features/home/home-page.test.tsx
+@@ -243,20 +243,37 @@ describe("HomePage", () => {
+     ).toHaveLength(0);
+ 
+     await user.keyboard("{Enter}");
+     await waitFor(() => {
+       expect(
+         fetchMock.mock.calls.filter(([path]) => path === "/api/web/missions"),
+       ).toHaveLength(1);
+     });
+   });
+ 
++  it("restores the project-scoped objective after navigation remounts Home", async () => {
++    installApi(standardHandler());
++    const user = userEvent.setup();
++    const { router } = renderHome();
++    const objective = await screen.findByRole("textbox", {
++      name: "Mission objective",
++    });
++    await user.type(objective, "Draft survives navigation");
++
++    await router.navigate({ to: "/library" });
++    await router.navigate({ to: "/" });
++
++    expect(
++      await screen.findByRole("textbox", { name: "Mission objective" }),
++    ).toHaveValue("Draft survives navigation");
++  });
++
+   it("uses one stable idempotency key for rapid double submission and caches the created mission", async () => {
+     const created = deferred<Response>();
+     const fetchMock = installApi((path) => {
+       if (path === "/api/health") {
+         return json({ ok: true, service: "morrow-orchestrator" });
+       }
+       if (path === "/api/projects") return json([project]);
+       if (path.startsWith("/api/web/missions?")) return json([]);
+       if (path === "/api/web/missions") return created.promise;
+       throw new Error(`Unexpected request: ${path}`);
+diff --git a/apps/web/src/features/home/mission-composer.tsx b/apps/web/src/features/home/mission-composer.tsx
+index 0cad964..114abd0 100644
+--- a/apps/web/src/features/home/mission-composer.tsx
++++ b/apps/web/src/features/home/mission-composer.tsx
+@@ -10,20 +10,25 @@ import {
+   useEffect,
+   useRef,
+   useState,
+   type FormEvent,
+   type KeyboardEvent,
+ } from "react";
+ import { Link } from "@tanstack/react-router";
+ import { api, ApiClientError } from "../../api/client.js";
+ import { missionKeys } from "../../api/query-keys.js";
+ import { providerQueries } from "../../api/providers.js";
++import {
++  clearChatDraft,
++  loadChatDraft,
++  saveChatDraft,
++} from "../chat/draft-store.js";
+ 
+ type Autonomy = CreateWebMissionInput["autonomy"];
+ 
+ function createIdempotencyKey(): string {
+   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+     return `web-${crypto.randomUUID()}`;
+   }
+   return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+ }
+ 
+@@ -51,48 +56,61 @@ export function MissionComposer({
+     : [];
+   const noProviderConnected = providers.isSuccess && configuredProviders.length === 0;
+   // When exactly one provider is connected, name the model that will run; with
+   // several, the router chooses per preset, so summarise instead of guessing.
+   const singleProvider = configuredProviders.length === 1 ? configuredProviders[0] : null;
+   const currentIdempotencyKey = useRef(createIdempotencyKey());
+   const failedSubmission = useRef(false);
+   const isCurrent = useRef(false);
+   const submissionInFlight = useRef(false);
+   const objectiveInput = useRef<HTMLTextAreaElement>(null);
++  const priorProjectId = useRef<string | undefined>(undefined);
+ 
+   useEffect(() => {
+     isCurrent.current = true;
+     return () => {
+       isCurrent.current = false;
+     };
+   }, []);
+ 
+   useEffect(() => {
+-    if (activeProjectId) objectiveInput.current?.focus();
++    if (!activeProjectId) return;
++    const storedDraft = loadChatDraft({ projectId: activeProjectId });
++    const liveDraft = objectiveInput.current?.value ?? "";
++    const nextDraft = priorProjectId.current === undefined && liveDraft
++      ? liveDraft
++      : storedDraft;
++    setDraft(nextDraft);
++    if (nextDraft && nextDraft !== storedDraft) {
++      saveChatDraft({ projectId: activeProjectId }, nextDraft);
++    }
++    priorProjectId.current = activeProjectId;
++    objectiveInput.current?.focus();
+   }, [activeProjectId]);
+ 
+   const createMission = useMutation({
+     mutationFn: (input: CreateWebMissionInput) =>
+       api.post("/api/web/missions", input, WebMissionSnapshotSchema),
+     onError: (error) => {
+       failedSubmission.current = true;
+       setRequestError(errorMessage(error));
+     },
+     onSuccess: (snapshot) => {
+       queryClient.setQueryData(
+         missionKeys.detail(snapshot.summary.id),
+         snapshot,
+       );
+       if (!isCurrent.current) return;
+ 
+       failedSubmission.current = false;
+       currentIdempotencyKey.current = createIdempotencyKey();
++      if (activeProjectId) clearChatDraft({ projectId: activeProjectId });
+       setDraft("");
+       setObjectiveValidationError(null);
+       setRequestError(null);
+       void navigate({
+         params: { missionId: snapshot.summary.id },
+         to: "/missions/$missionId",
+       });
+     },
+     onSettled: () => {
+       submissionInFlight.current = false;
+@@ -100,21 +118,23 @@ export function MissionComposer({
+   });
+ 
+   function resetFailedSubmissionForEdit() {
+     if (!failedSubmission.current) return;
+     currentIdempotencyKey.current = createIdempotencyKey();
+     failedSubmission.current = false;
+     setRequestError(null);
+   }
+ 
+   function submit() {
+-    const objective = draft.trim();
++    // Read the live control so an immediate Enter after a large paste or
++    // browser autofill cannot race React's state update.
++    const objective = (objectiveInput.current?.value ?? draft).trim();
+     if (!objective || !activeProjectId) return;
+     if (objective.length > 8_000) {
+       setObjectiveValidationError(
+         "Mission objectives must be 8,000 characters or fewer.",
+       );
+       return;
+     }
+ 
+     const parsed = CreateWebMissionSchema.safeParse({
+       autonomy,
+@@ -183,20 +203,23 @@ export function MissionComposer({
+           }
+           aria-invalid={objectiveValidationError ? true : undefined}
+           className="morrow-composer__objective"
+           id="mission-objective"
+           onChange={(event) => {
+             const nextDraft = event.target.value;
+             if (nextDraft !== draft) setObjectiveValidationError(null);
+             if (failedSubmission.current && nextDraft !== draft) {
+               resetFailedSubmissionForEdit();
+             }
++            if (activeProjectId) {
++              saveChatDraft({ projectId: activeProjectId }, nextDraft);
++            }
+             setDraft(nextDraft);
+           }}
+           onKeyDown={handleKeyDown}
+           placeholder="For example: compare these options and recommend the best next step."
+           ref={objectiveInput}
+           rows={5}
+           value={draft}
+         />
+         <details className="morrow-composer__advanced">
+           <summary>Advanced mission options</summary>
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index 7f2eea1..3348da7 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -287,20 +287,193 @@ a {
+ .morrow-composer__advanced-note {
+   margin: 0;
+   color: var(--morrow-text-muted);
+   font-size: 0.875rem;
+ }
+ 
+ .morrow-composer__actions {
+   display: flex;
+ }
+ 
++/* ── Shared chat composer ───────────────────────────────────────────────── */
++.morrow-chat-composer {
++  display: grid;
++  width: min(100%, 760px);
++  padding: var(--morrow-space-3) var(--morrow-space-4);
++  gap: var(--morrow-space-3);
++  background: var(--morrow-surface);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-lg);
++  box-shadow: var(--morrow-shadow-sm);
++}
++
++.morrow-chat-composer__input {
++  width: 100%;
++  min-height: 48px;
++  max-height: 192px;
++  padding: var(--morrow-space-2) 0;
++  color: var(--morrow-text);
++  background: transparent;
++  border: 0;
++  outline: 0;
++  font: inherit;
++  font-size: 1rem;
++  line-height: 1.5;
++  overflow-y: hidden;
++  resize: none;
++}
++
++.morrow-chat-composer__input::placeholder {
++  color: var(--morrow-text-muted);
++}
++
++.morrow-chat-composer:focus-within {
++  border-color: var(--morrow-focus);
++  outline: 2px solid var(--morrow-focus);
++  outline-offset: 2px;
++}
++
++.morrow-chat-composer__modes {
++  display: inline-grid;
++  width: fit-content;
++  padding: 3px;
++  gap: 2px;
++  grid-template-columns: repeat(4, auto);
++  background: var(--morrow-surface-subtle);
++  border-radius: var(--morrow-radius-sm);
++}
++
++.morrow-chat-composer__modes button,
++.morrow-chat-composer__stop,
++.morrow-chat-composer__send {
++  min-width: 44px;
++  min-height: 44px;
++  color: var(--morrow-text-muted);
++  background: transparent;
++  border: 0;
++  border-radius: var(--morrow-radius-sm);
++  cursor: pointer;
++  font: inherit;
++  font-size: 0.8125rem;
++  font-weight: 600;
++}
++
++.morrow-chat-composer__modes button.is-active {
++  color: var(--morrow-text);
++  background: var(--morrow-surface);
++  box-shadow: var(--morrow-shadow-sm);
++}
++
++.morrow-chat-composer__toolbar {
++  display: flex;
++  align-items: end;
++  gap: var(--morrow-space-2);
++}
++
++.morrow-chat-composer__select {
++  display: grid;
++  min-width: 0;
++  gap: 2px;
++  color: var(--morrow-text-muted);
++  font-size: 0.6875rem;
++  font-weight: 650;
++}
++
++.morrow-chat-composer__select select {
++  min-width: 0;
++  min-height: 44px;
++  padding: 0 var(--morrow-space-3);
++  color: var(--morrow-text);
++  background: var(--morrow-surface-subtle);
++  border: 1px solid var(--morrow-border);
++  border-radius: var(--morrow-radius-sm);
++  font: inherit;
++  font-size: 0.8125rem;
++}
++
++.morrow-chat-composer__send {
++  display: grid;
++  flex: 0 0 44px;
++  place-items: center;
++  margin-left: auto;
++  color: var(--morrow-on-accent);
++  background: var(--morrow-accent);
++}
++
++.morrow-chat-composer__stop {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  padding: 0 var(--morrow-space-3);
++  gap: var(--morrow-space-2);
++  margin-left: auto;
++  color: var(--morrow-warning);
++  border: 1px solid var(--morrow-border);
++}
++
++.morrow-chat-composer button:disabled,
++.morrow-chat-composer select:disabled,
++.morrow-chat-composer textarea:disabled {
++  cursor: not-allowed;
++  opacity: 0.58;
++}
++
++.morrow-chat-composer__meta {
++  display: flex;
++  justify-content: space-between;
++  gap: var(--morrow-space-3);
++  color: var(--morrow-text-muted);
++  font-size: 0.75rem;
++}
++
++.morrow-chat-composer__meta p,
++.morrow-chat-composer > [role="alert"],
++.morrow-chat-composer > [role="status"] {
++  margin: 0;
++}
++
++.morrow-chat-composer__counter {
++  flex: 0 0 auto;
++  font-variant-numeric: tabular-nums;
++}
++
++@media (max-width: 640px) {
++  .morrow-chat-composer {
++    padding: var(--morrow-space-3);
++    padding-bottom: max(var(--morrow-space-3), env(safe-area-inset-bottom));
++  }
++
++  .morrow-chat-composer__modes {
++    width: 100%;
++    grid-template-columns: repeat(4, minmax(0, 1fr));
++  }
++
++  .morrow-chat-composer__toolbar {
++    display: grid;
++    align-items: end;
++    grid-template-columns: minmax(0, 1fr) auto;
++  }
++
++  .morrow-chat-composer__select:first-child:not(:last-child) {
++    grid-column: 1 / -1;
++  }
++
++  .morrow-chat-composer__send,
++  .morrow-chat-composer__stop {
++    margin-left: 0;
++  }
++
++  .morrow-chat-composer__meta {
++    display: grid;
++  }
++}
++
+ /* ── Mission sections and cards ─────────────────────────────────────────── */
+ .morrow-mission-section {
+   display: grid;
+   gap: var(--morrow-space-3);
+ }
+ 
+ .morrow-mission-section > h2 {
+   margin: 0;
+   font-size: 1.25rem;
+   letter-spacing: -0.01em;

@@ -34,28 +34,32 @@ describe("useActiveProject", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => vi.restoreAllMocks());
 
-  it("falls back to the first-created project when nothing has ever been selected", async () => {
+  it("has no active project and needs a deliberate selection when nothing has ever been chosen", async () => {
     stubProjectsFetch([projectA, projectB]);
     const { result } = renderActiveProject();
 
-    await waitFor(() => expect(result.current.activeProject?.id).toBe("project-a"));
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.activeProject).toBeUndefined();
+    expect(result.current.needsSelection).toBe(true);
+    expect(result.current.staleSelection).toBe(false);
     expect(result.current.projects).toHaveLength(2);
   });
 
-  it("honors an explicit selection over the first project", async () => {
+  it("honors an explicit selection", async () => {
     stubProjectsFetch([projectA, projectB]);
     const { result } = renderActiveProject();
-    await waitFor(() => expect(result.current.activeProject?.id).toBe("project-a"));
+    await waitFor(() => expect(result.current.isPending).toBe(false));
 
     act(() => result.current.selectProject("project-b"));
 
     await waitFor(() => expect(result.current.activeProject?.id).toBe("project-b"));
+    expect(result.current.needsSelection).toBe(false);
   });
 
   it("persists the selection across a remount via localStorage", async () => {
     stubProjectsFetch([projectA, projectB]);
     const first = renderActiveProject();
-    await waitFor(() => expect(first.result.current.activeProject?.id).toBe("project-a"));
+    await waitFor(() => expect(first.result.current.isPending).toBe(false));
     act(() => first.result.current.selectProject("project-b"));
     await waitFor(() => expect(first.result.current.activeProject?.id).toBe("project-b"));
     first.unmount();
@@ -64,11 +68,33 @@ describe("useActiveProject", () => {
     await waitFor(() => expect(second.result.current.activeProject?.id).toBe("project-b"));
   });
 
-  it("falls back to the first project when the stored selection no longer exists", async () => {
+  it("never silently substitutes another project when the stored selection no longer exists", async () => {
     localStorage.setItem("morrow-active-project", "project-deleted");
     stubProjectsFetch([projectA, projectB]);
     const { result } = renderActiveProject();
 
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.activeProject).toBeUndefined();
+    expect(result.current.needsSelection).toBe(true);
+    expect(result.current.staleSelection).toBe(true);
+  });
+
+  it("auto-resolves the sole project when nothing has ever been chosen", async () => {
+    stubProjectsFetch([projectA]);
+    const { result } = renderActiveProject();
+
     await waitFor(() => expect(result.current.activeProject?.id).toBe("project-a"));
+    expect(result.current.needsSelection).toBe(false);
+  });
+
+  it("does not auto-substitute the sole remaining project when the stored selection is stale", async () => {
+    localStorage.setItem("morrow-active-project", "project-deleted");
+    stubProjectsFetch([projectA]);
+    const { result } = renderActiveProject();
+
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.activeProject).toBeUndefined();
+    expect(result.current.needsSelection).toBe(true);
+    expect(result.current.staleSelection).toBe(true);
   });
 });

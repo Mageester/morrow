@@ -2157,6 +2157,11 @@ a {
   display: grid;
   gap: var(--morrow-space-3);
 }
+.morrow-projects__create-note {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.85rem;
+}
 .morrow-projects__form {
   display: flex;
   flex-wrap: wrap;
@@ -2262,6 +2267,10 @@ a {
   flex: none;
   color: var(--morrow-danger);
 }
+.morrow-projects__open-build {
+  color: var(--morrow-accent);
+  font-weight: 500;
+}
 
 /* Shared: empty, inline error, theme choice */
 .morrow-empty {
@@ -2285,6 +2294,11 @@ a {
 .morrow-empty--soft {
   padding: var(--morrow-space-5) var(--morrow-space-4);
   background: none;
+}
+.morrow-empty__action {
+  justify-self: center;
+  color: var(--morrow-accent);
+  font-weight: 500;
 }
 .morrow-inline-error {
   display: grid;
@@ -2815,4 +2829,63 @@ a {
   display: grid;
   gap: 2px;
   padding-left: var(--morrow-space-4);
+}
+
+.morrow-pairing-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  margin-bottom: var(--morrow-space-4);
+  color: var(--morrow-text-muted);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.875rem;
+}
+.morrow-pairing-banner a {
+  font-weight: 650;
+}
+.morrow-pairing-banner--warn {
+  color: var(--morrow-text);
+  background: color-mix(in srgb, var(--morrow-warning) 9%, transparent);
+  border-color: color-mix(in srgb, var(--morrow-warning) 35%, var(--morrow-border));
+}
+
+.morrow-pair__form-surface {
+  max-width: 420px;
+}
+.morrow-pair__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--morrow-space-3);
+}
+.morrow-pair__field {
+  display: grid;
+  flex: 1 1 220px;
+  min-width: 200px;
+  gap: var(--morrow-space-1);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.morrow-pair__field input {
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+.morrow-pair__field input:focus-visible {
+  border-color: var(--morrow-focus);
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 0;
+}
+.morrow-pair__result {
+  max-width: 420px;
 }

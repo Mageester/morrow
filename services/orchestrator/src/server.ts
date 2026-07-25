@@ -148,6 +148,11 @@ import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
 import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+import { PairingStatusResponseSchema, RedeemPairingCodeSchema, RedeemPairingCodeResultSchema } from "@morrow/contracts";
+import { redeemPairingCode } from "./hosted/pairing-client.js";
+import { writeHostedPairing } from "./hosted/pairing-store.js";
+import type { EntitlementPoller } from "./hosted/entitlement-poller.js";
+import { hostname } from "node:os";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
@@ -220,6 +225,13 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
+  /**
+   * Tracks this install's hosted-account pairing/entitlement state (Plans/
+   * generic-sprouting-dragon.md Phase 4). When absent, /api/pairing/status
+   * reports "unpaired" and /api/pairing/redeem is unavailable — matches how
+   * `secretsFile` being absent degrades the provider-configuration routes.
+   */
+  entitlementPoller?: EntitlementPoller;
   /**
    * Absolute path to the built web bundle (the directory containing
    * `index.html`). When provided, the orchestrator serves the local Morrow web
@@ -2468,6 +2480,51 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { removed } = removeProviderCredentials(deps.secretsFile, id, process.env);
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
     reply.send({ ok: true, provider: id, removed, status });
+  });
+
+  // Read-only snapshot of this install's hosted-account pairing (Plans/
+  // generic-sprouting-dragon.md Phase 4). Never contacts hosted-api directly —
+  // reports whatever the background EntitlementPoller last observed. A missing
+  // poller (e.g. tests) degrades to a plain "unpaired" snapshot rather than an
+  // error, matching how secretsFile-absent degrades the provider routes above.
+  app.get("/api/pairing/status", async () => {
+    const snapshot = deps.entitlementPoller?.getSnapshot() ?? {
+      status: "unpaired" as const,
+      accountId: null,
+      planId: null,
+      checkedAt: null,
+      lastError: null,
+    };
+    return PairingStatusResponseSchema.parse({ version: 1, ...snapshot });
+  });
+
+  // Redeem a one-time pairing code (shown on the hosted dashboard) against
+  // hosted-api. Outbound only — never accepts an inbound connection from the
+  // dashboard, so the loopback-only local-guard above is untouched.
+  app.post("/api/pairing/redeem", async (request, reply) => {
+    if (!deps.secretsFile) {
+      throw new ApiError(503, "Pairing is unavailable on this server.", "SECRETS_UNAVAILABLE");
+    }
+    const hostedApiUrl = process.env.MORROW_HOSTED_API_URL?.trim();
+    if (!hostedApiUrl) {
+      throw new ApiError(503, "This install is not configured to reach a hosted Morrow account (MORROW_HOSTED_API_URL unset).", "HOSTED_API_UNAVAILABLE");
+    }
+    const body = RedeemPairingCodeSchema.parse(request.body ?? {});
+    const result = await redeemPairingCode(
+      { hostedApiUrl },
+      { code: body.code, deviceLabel: body.deviceLabel?.trim() || hostname() },
+    );
+    if (!result.ok) {
+      const statusCode = result.status === 404 ? 404 : result.status >= 400 && result.status < 500 ? result.status : 502;
+      throw new ApiError(statusCode, result.message, result.code);
+    }
+    writeHostedPairing(deps.secretsFile, {
+      deviceToken: result.deviceToken,
+      accountId: result.accountId,
+      pairedAgentId: result.pairedAgentId,
+    });
+    void deps.entitlementPoller?.checkNow();
+    reply.send(RedeemPairingCodeResultSchema.parse({ version: 1, paired: true, accountId: result.accountId }));
   });
 
   // Safe read-only tool catalog and the enforced permission profile.

@@ -73,7 +73,8 @@ export function parseSecretsFile(content: string): Record<string, string> {
   return out;
 }
 
-function readSecretsFileSafe(path: string): Record<string, string> {
+/** Read-only, generic — used by any module persisting to the shared secrets file (not just providers). */
+export function readSecretsFileSafe(path: string): Record<string, string> {
   try {
     if (!existsSync(path)) return {};
     return parseSecretsFile(readFileSync(path, "utf-8"));
@@ -103,7 +104,8 @@ export function applyWindowsCredentialAcl(path: string): boolean {
   }
 }
 
-function writeSecretsFile(path: string, entries: Record<string, string>, options: CredentialFileOptions = {}): { securePermissions: boolean; credentialProtection: "windows-user-acl" | "posix-mode" } {
+/** Generic — used by any module persisting to the shared secrets file (not just providers). */
+export function writeSecretsFile(path: string, entries: Record<string, string>, options: CredentialFileOptions = {}): { securePermissions: boolean; credentialProtection: "windows-user-acl" | "posix-mode" } {
   mkdirSync(dirname(path), { recursive: true });
   const body =
     "# Morrow secrets — plaintext, not encrypted. Keep this file private.\n" +

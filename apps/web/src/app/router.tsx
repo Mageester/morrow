@@ -13,6 +13,7 @@ import { ConnectionsPage } from "../features/connections/connections-page.js";
 import { ProjectsPage } from "../features/projects/projects-page.js";
 import { ChatsPage } from "../features/chat/chats-page.js";
 import { ConversationPage } from "../features/chat/conversation-page.js";
+import { PairPage } from "../features/pairing/pair-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
 import { AppShell } from "./app-shell.js";
 
@@ -75,6 +76,12 @@ const settingsRoute = createRoute({
   path: "/settings",
 });
 
+const pairRoute = createRoute({
+  component: PairPage,
+  getParentRoute: () => rootRoute,
+  path: "/pair",
+});
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   chatsRoute,
@@ -85,6 +92,7 @@ export const routeTree = rootRoute.addChildren([
   libraryRoute,
   connectionsRoute,
   settingsRoute,
+  pairRoute,
 ]);
 
 export function createAppRouter(history: RouterHistory = createBrowserHistory()) {

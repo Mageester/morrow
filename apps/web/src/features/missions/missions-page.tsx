@@ -1,6 +1,7 @@
 import type { WebMissionSummary } from "@morrow/contracts";
 import { Surface } from "@morrow/ui";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { missionQueries } from "../../api/query-keys.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { MissionCardList } from "./mission-card.js";
@@ -82,12 +83,24 @@ export function MissionsPage() {
       {missions.isError ? (
         <p role="alert">Missions could not be loaded.</p>
       ) : null}
-      {!projects.isPending && !projects.isError && !activeProject ? (
+      {!projects.isPending && !projects.isError && projects.needsSelection ? (
+        <Surface padding="large">
+          <h2>{projects.staleSelection ? "Your project selection needs a refresh" : "Select a project"}</h2>
+          <p>
+            {projects.staleSelection
+              ? "The project Morrow last used here is no longer available."
+              : "Choose which local project Morrow should work in."}
+          </p>
+          <Link to="/projects">Go to Projects</Link>
+        </Surface>
+      ) : null}
+      {!projects.isPending && !projects.isError && !activeProject && !projects.needsSelection ? (
         <Surface padding="large">
           <h2>No local project yet</h2>
           <p>
             Create or open a local project before asking Morrow to begin work.
           </p>
+          <Link to="/projects">Add a project</Link>
         </Surface>
       ) : null}
       <MissionGroup

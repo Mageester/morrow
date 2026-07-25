@@ -70,10 +70,25 @@ export function HomePage() {
             Try again
           </button>
         </div>
+      ) : projects.needsSelection ? (
+        <div className="morrow-empty">
+          <h2>{projects.staleSelection ? "Your project selection needs a refresh" : "Select a project"}</h2>
+          <p>
+            {projects.staleSelection
+              ? "The project Morrow last used here is no longer available."
+              : "Choose which local project Morrow should work in."}
+          </p>
+          <Link className="morrow-empty__action" to="/projects">
+            Go to Projects
+          </Link>
+        </div>
       ) : !activeProject ? (
         <div className="morrow-empty">
           <h2>No local project yet</h2>
           <p>Create a local project and Morrow will keep your chats and work here.</p>
+          <Link className="morrow-empty__action" to="/projects">
+            Add a project
+          </Link>
         </div>
       ) : (
         <>

@@ -50,6 +50,21 @@ export const ChatStreamEnvelopeSchema=z.object({
 }).strict();
 export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
 
+// Local orchestrator <-> hosted-api pairing (Plans/generic-sprouting-dragon.md
+// Phase 4). These describe what apps/web can learn from the LOCAL orchestrator
+// about its own pairing/entitlement state — never a direct hosted-api call
+// from the browser. "unknown" covers paired-but-hosted-api-unreachable, which
+// must never be treated as inactive (a network blip can't brick local work).
+export const PairingStatusSchema=z.enum(["unpaired","active","inactive","unknown"]);
+export const PairingStatusResponseSchema=z.object({version:SchemaVersionSchema,status:PairingStatusSchema,accountId:z.string().nullable(),planId:z.enum(["free","plus"]).nullable(),checkedAt:z.string().datetime().nullable(),lastError:z.string().nullable()}).strict();
+export const RedeemPairingCodeSchema=z.object({code:z.string().trim().min(1).max(32),deviceLabel:z.string().trim().min(1).max(120).optional()}).strict();
+export const RedeemPairingCodeResultSchema=z.object({version:SchemaVersionSchema,paired:z.boolean(),accountId:z.string().nullable()}).strict();
+
+export type PairingStatus=z.infer<typeof PairingStatusSchema>;
+export type PairingStatusResponse=z.infer<typeof PairingStatusResponseSchema>;
+export type RedeemPairingCodeInput=z.infer<typeof RedeemPairingCodeSchema>;
+export type RedeemPairingCodeResult=z.infer<typeof RedeemPairingCodeResultSchema>;
+
 export type Project=z.infer<typeof ProjectSchema>;
 export type Task=z.infer<typeof TaskSchema>;
 export type TaskEvent=z.infer<typeof TaskEventSchema>;

@@ -10,6 +10,7 @@ import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 import { processesRepository } from "./repositories/processes.js";
+import { EntitlementPoller } from "./hosted/entitlement-poller.js";
 
 // In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
 // skills directory. When running from source (pnpm dev) fall back to the repo's
@@ -47,12 +48,21 @@ if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliati
 // development), Vite serves the app on its own port and no /app surface is
 // registered here.
 const webRoot = process.env.MORROW_WEB_ROOT?.trim();
+const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
+
+// Unset by default — pairing/entitlement is inert (always "unpaired") until an
+// operator configures MORROW_HOSTED_API_URL. Poller runs regardless so
+// /api/pairing/status always has a real snapshot to report, even unpaired.
+const entitlementPoller = new EntitlementPoller(secretsFile, process.env.MORROW_HOSTED_API_URL?.trim() || undefined);
+entitlementPoller.start(5 * 60 * 1000);
+
 const app = buildServer({
   db,
   runner,
   missionControllerRunner,
   supervisor,
-  secretsFile: join(resolveMorrowHome(process.env), "secrets.env"),
+  secretsFile,
+  entitlementPoller,
   ...(webRoot ? { webRoot } : {}),
 });
 
@@ -65,7 +75,7 @@ if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;
 
-app.listen({ host: "127.0.0.1", port }).then((address) => {
+app.listen({ host: "0.0.0.0", port }).then((address) => {
   console.log(`Server listening at ${address}`);
 }).catch(err => {
   console.error(err);

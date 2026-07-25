@@ -6,9 +6,16 @@ import { resolve } from "node:path";
 const runFile = promisify(execFile);
 
 describe("morrow executable", () => {
-  it("launches on Windows-compatible absolute paths", async () => {
-    const bin = resolve(process.cwd(), "bin", "morrow.mjs");
-    const result = await runFile(process.execPath, [bin, "--version"]);
-    expect(result.stdout.trim()).toBe("0.1.0-beta.31");
-  });
+  it(
+    "launches on Windows-compatible absolute paths",
+    async () => {
+      const bin = resolve(process.cwd(), "bin", "morrow.mjs");
+      const result = await runFile(process.execPath, [bin, "--version"]);
+      expect(result.stdout.trim()).toBe("0.1.0-beta.31");
+    },
+    // Spawns a real node.exe child process — the 5s default is too tight
+    // under full-monorepo parallel test load (package-release.mjs's pnpm test
+    // step runs all 14 packages' suites concurrently).
+    20000,
+  );
 });
