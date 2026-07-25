@@ -1,6 +1,6 @@
 import { SignIn } from "@clerk/react";
 
-const CLERK_APPEARANCE = { variables: { colorPrimary: "#6558d9", borderRadius: "8px" } };
+const CLERK_APPEARANCE = { variables: { colorPrimary: "#bb5836", borderRadius: "8px" } };
 
 // Clerk's <SignIn/> already renders its own full card (heading, OAuth
 // buttons, form, footer) — wrapping it in a second branded card duplicated

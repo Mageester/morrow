@@ -128,7 +128,10 @@ describe("ChatComposer", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Build Auto" }));
+    // Build plus the approval switch is what "Build Auto" used to mean; the
+    // wire payload it produces must be identical.
+    await user.click(screen.getByRole("button", { name: "Build" }));
+    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
     await user.selectOptions(screen.getByLabelText("Model route"), "openrouter:model-a");
     await user.selectOptions(screen.getByLabelText("Project"), "project-2");
     expect(onProjectChange).toHaveBeenCalledWith("project-2");
@@ -324,7 +327,7 @@ describe("ChatComposer", () => {
     fireEvent.submit(textbox.closest("form")!);
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Stop generation" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Chat" })).toBeDisabled();
     expect(screen.getByLabelText("Model route")).toBeDisabled();
   });
 });

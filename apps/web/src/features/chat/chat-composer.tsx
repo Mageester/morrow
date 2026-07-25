@@ -21,7 +21,7 @@ import {
 export const CHAT_PROMPT_MAX_LENGTH = 32_000;
 const TEXTAREA_MAX_HEIGHT = 192;
 
-type ComposerMode = "ask" | "plan" | "build" | "build-auto";
+type ComposerMode = "chat" | "build";
 
 export interface ChatComposerModelRoute {
   id: string;
@@ -70,17 +70,30 @@ const DEFAULT_ROUTE: ChatComposerModelRoute = {
   preset: "balanced",
 };
 
-const MODES: ReadonlyArray<{ id: ComposerMode; label: string }> = [
-  { id: "ask", label: "Ask" },
-  { id: "plan", label: "Plan" },
-  { id: "build", label: "Build" },
-  { id: "build-auto", label: "Build Auto" },
+/**
+ * Two modes, not four.
+ *
+ * The previous set — Ask, Plan, Build, Build Auto — asked people to make two
+ * unrelated decisions through one control. Build and Build Auto were the same
+ * mode differing only by `autoApprove`, which is a question about supervision,
+ * not about what Morrow should do; and Plan sat between them describing an
+ * output format rather than a capability. What is left is the one real choice
+ * (may Morrow change my files?) with approval as its own visible switch.
+ *
+ * The wire contract is unchanged: the orchestrator still receives
+ * read-only / plan-only / agent plus autoApprove.
+ */
+const MODES: ReadonlyArray<{ id: ComposerMode; label: string; hint: string }> = [
+  { id: "chat", label: "Chat", hint: "Answers and reads your project. Changes nothing." },
+  { id: "build", label: "Build", hint: "Makes changes to your project." },
 ];
 
-function mapMode(mode: ComposerMode): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
-  if (mode === "ask") return { mode: "read-only", autoApprove: false };
-  if (mode === "plan") return { mode: "plan-only", autoApprove: false };
-  return { mode: "agent", autoApprove: mode === "build-auto" };
+function mapMode(
+  mode: ComposerMode,
+  autoApprove: boolean,
+): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
+  if (mode === "chat") return { mode: "read-only", autoApprove: false };
+  return { mode: "agent", autoApprove };
 }
 
 function scopeId(scope: ChatDraftScope): string {
@@ -123,7 +136,8 @@ export function ChatComposer({
   } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
-  const [mode, setMode] = useState<ComposerMode>("ask");
+  const [mode, setMode] = useState<ComposerMode>("chat");
+  const [autoApprove, setAutoApprove] = useState(false);
   const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
   const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
@@ -230,7 +244,7 @@ export function ChatComposer({
         ...(submittedScope.conversationId
           ? { conversationId: submittedScope.conversationId }
           : {}),
-        ...mapMode(mode),
+        ...mapMode(mode, autoApprove),
         ...routing,
       });
       if (!result.accepted) {
@@ -328,20 +342,45 @@ export function ChatComposer({
         rows={1}
       />
 
-      <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
-        {MODES.map((item) => (
-          <button
-            aria-pressed={mode === item.id}
-            className={mode === item.id ? "is-active" : undefined}
-            disabled={interactionDisabled}
-            key={item.id}
-            onClick={() => setMode(item.id)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="morrow-chat-composer__modes-row">
+        <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
+          {MODES.map((item) => (
+            <button
+              aria-pressed={mode === item.id}
+              className={mode === item.id ? "is-active" : undefined}
+              disabled={interactionDisabled}
+              key={item.id}
+              onClick={() => setMode(item.id)}
+              title={item.hint}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Supervision is only a question once Morrow can actually change
+            something, so the switch appears with Build rather than sitting
+            inert next to Chat. */}
+        {mode === "build" ? (
+          <label className="morrow-chat-composer__auto-approve">
+            <input
+              checked={autoApprove}
+              disabled={interactionDisabled}
+              onChange={(event) => setAutoApprove(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Approve changes automatically</span>
+          </label>
+        ) : null}
       </div>
+      <p className="morrow-chat-composer__mode-hint">
+        {mode === "build"
+          ? autoApprove
+            ? "Morrow will edit files and run commands without stopping to ask."
+            : "Morrow will ask before it applies changes."
+          : "Morrow will answer and read your project, but will not change anything."}
+      </p>
 
       <div className="morrow-chat-composer__toolbar">
         {projects.length > 1 && onProjectChange ? (

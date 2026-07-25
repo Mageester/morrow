@@ -1,6 +1,6 @@
 import { SignUp } from "@clerk/react";
 
-const CLERK_APPEARANCE = { variables: { colorPrimary: "#6558d9", borderRadius: "8px" } };
+const CLERK_APPEARANCE = { variables: { colorPrimary: "#bb5836", borderRadius: "8px" } };
 
 // See login-page.tsx — Clerk's own card replaces our redundant wrapper card.
 export function SignupPage() {
