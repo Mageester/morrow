@@ -124,10 +124,31 @@ export class Output {
   table(headers: string[], rows: string[][]) {
     if (this.json) return;
     const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => stripAnsi(r[i] ?? "").length)));
+
+    // Fit the table to the terminal. Columns were sized purely by their longest
+    // value, so one long cell — a filesystem path in `doctor`, say — pushed the
+    // row past the window and every line wrapped into an unreadable stagger.
+    // The widest column gives up the excess and its cells are elided instead.
+    const gap = 2;
+    const available = terminalColumns();
+    const total = () => widths.reduce((sum, w) => sum + w, 0) + gap * (widths.length - 1);
+    while (total() > available) {
+      const widest = widths.indexOf(Math.max(...widths));
+      // Never squeeze a column below something still readable; if we cannot get
+      // under the limit, print wide rather than shred every column.
+      if ((widths[widest] ?? 0) <= 12) break;
+      widths[widest] = (widths[widest] ?? 0) - 1;
+    }
+
     const fmtRow = (cells: string[]) =>
-      cells.map((c, i) => pad(c, widths[i] ?? 0)).join("  ");
+      cells
+        // The last column is never padded: trailing whitespace is invisible on
+        // screen but shows up the moment output is copied or diffed.
+        .map((c, i) => (i === cells.length - 1 ? elide(c, widths[i] ?? 0) : pad(elide(c, widths[i] ?? 0), widths[i] ?? 0)))
+        .join(" ".repeat(gap))
+        .trimEnd();
     this.print(this.bold(fmtRow(headers)));
-    this.print(this.gray(widths.map((w) => "─".repeat(w)).join("  ")));
+    this.print(this.gray(widths.map((w) => "─".repeat(w)).join(" ".repeat(gap))));
     for (const r of rows) this.print(fmtRow(r));
   }
 
@@ -167,4 +188,29 @@ export function resolveColor(opts: { noColorFlag: boolean; json: boolean; env: N
   if (opts.env.MORROW_NO_COLOR === "1") return false;
   if (opts.env.FORCE_COLOR && opts.env.FORCE_COLOR !== "0") return true;
   return opts.isTTY;
+}
+
+/** Usable terminal width, with a sane default when there is no TTY. */
+export function terminalColumns(env: NodeJS.ProcessEnv = process.env, columns = process.stdout.columns): number {
+  const fromEnv = Number(env.COLUMNS);
+  if (Number.isInteger(fromEnv) && fromEnv > 20) return fromEnv;
+  if (Number.isInteger(columns) && (columns ?? 0) > 20) return columns as number;
+  // Piped output has no width. 100 keeps tables readable in a log or a paste
+  // without truncating aggressively for people on a normal 80-column terminal.
+  return 100;
+}
+
+/**
+ * Shorten a cell to `width`, ending with an ellipsis so truncation is visible
+ * rather than looking like the value itself.
+ *
+ * Cells carrying ANSI colour are left alone: cutting one mid-escape would leak
+ * the sequence into the rest of the line, and coloured cells are short status
+ * words in practice, never the long paths this exists to contain.
+ */
+export function elide(cell: string, width: number): string {
+  if (width <= 0) return cell;
+  if (cell !== stripAnsi(cell)) return cell;
+  if (cell.length <= width) return cell;
+  return width <= 1 ? cell.slice(0, width) : `${cell.slice(0, width - 1)}…`;
 }
