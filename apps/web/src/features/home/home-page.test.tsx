@@ -29,10 +29,12 @@ function renderHome(fetchImpl: (input: RequestInfo | URL) => Promise<Response>) 
     component: () => null,
   });
   const missions = createRoute({ getParentRoute: () => root, path: "/missions", component: () => null });
+  const projects = createRoute({ getParentRoute: () => root, path: "/projects", component: () => null });
+  const connections = createRoute({ getParentRoute: () => root, path: "/connections", component: () => null });
   const mission = createRoute({ getParentRoute: () => root, path: "/missions/$missionId", component: () => null });
   const router = createRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
-    routeTree: root.addChildren([home, chats, conversationRoute, missions, mission]),
+    routeTree: root.addChildren([home, chats, conversationRoute, missions, mission, projects, connections]),
   });
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -109,5 +111,34 @@ describe("HomePage", () => {
 
     expect(await screen.findByText(/No local project yet/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "New chat" })).toBeDisabled();
+  });
+});
+
+describe("first run", () => {
+  const emptyWorkspace = (providers: unknown[]) => async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith("/api/providers")) return Response.json(providers);
+    return Response.json([]);
+  };
+
+  /**
+   * With no project the empty state replaces the composer — and the composer is
+   * where the "connect a model" prompt lives. A brand-new user was therefore
+   * told a project was missing, never told a provider was missing, and given no
+   * way to do either. Both first-run steps must be actionable from here.
+   */
+  it("offers a way out when there is neither a project nor a provider", async () => {
+    renderHome(emptyWorkspace([]));
+
+    expect(await screen.findByRole("heading", { name: "No local project yet" })).toBeVisible();
+    expect(await screen.findByRole("link", { name: "Create a project" })).toBeVisible();
+    expect(await screen.findByRole("link", { name: "Connect a model" })).toBeVisible();
+  });
+
+  it("stops asking for a provider once one is connected", async () => {
+    renderHome(emptyWorkspace([{ id: "groq", configured: true }]));
+
+    expect(await screen.findByRole("link", { name: "Create a project" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Connect a model" })).not.toBeInTheDocument());
   });
 });

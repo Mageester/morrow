@@ -3,6 +3,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./model-picker.js";
+import { ProviderIdSchema } from "@morrow/contracts";
+import { providerName } from "./model-picker.js";
 
 function status(over: {
   id: string;
@@ -92,5 +94,25 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("button", { name: /Retired Model.*Unavailable/ })).toBeVisible();
     await user.click(screen.getByRole("button", { name: /Retired Model/ }));
     expect(screen.getByRole("status")).toHaveTextContent(/no longer available/i);
+  });
+});
+
+describe("provider labels", () => {
+  /**
+   * The label map is intentionally non-exhaustive so a new engine provider
+   * cannot break the web build. This test is what replaces that compile-time
+   * wall: every provider the engine knows about must render as something a
+   * person would recognise, never a raw slug.
+   */
+  it("renders a presentable label for every known provider id", () => {
+    for (const id of ProviderIdSchema.options) {
+      const label = providerName(id);
+      expect(label.length, `${id} has no label`).toBeGreaterThan(0);
+      expect(label, `${id} renders as a raw slug`).not.toMatch(/-/);
+    }
+  });
+
+  it("degrades gracefully for a provider it has never heard of", () => {
+    expect(providerName("brand-new-host" as never)).toBe("Brand new host");
   });
 });

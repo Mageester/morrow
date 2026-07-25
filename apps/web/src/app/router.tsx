@@ -14,6 +14,7 @@ import { ProjectsPage } from "../features/projects/projects-page.js";
 import { ChatsPage } from "../features/chat/chats-page.js";
 import { ConversationPage } from "../features/chat/conversation-page.js";
 import { PairPage } from "../features/pairing/pair-page.js";
+import { NotFoundPage } from "../features/placeholders/not-found-page.js";
 import { SettingsPage } from "../features/placeholders/settings-page.js";
 import { AppShell } from "./app-shell.js";
 
@@ -98,6 +99,9 @@ export const routeTree = rootRoute.addChildren([
 export function createAppRouter(history: RouterHistory = createBrowserHistory()) {
   return createRouter({
     basepath: "/app",
+    // Without this an unrecognised address rendered the shell around an empty
+    // content region — no heading, no explanation, no way back.
+    defaultNotFoundComponent: NotFoundPage,
     defaultPreload: "intent",
     history,
     routeTree,

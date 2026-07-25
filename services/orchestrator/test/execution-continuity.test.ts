@@ -74,8 +74,17 @@ describe("durable segmented execution migration", () => {
           insertMigration.run(migration.id, migration.name, at);
         })();
       }
-      projectRepository(legacy).createProject({ id: "legacy-p", name: "Legacy", workspacePath: "/tmp/legacy", createdAt: at });
-      taskRepository(legacy).createTask({ id: "legacy-t", projectId: "legacy-p", kind: "agent_chat", status: "interrupted", createdAt: at });
+      // Seed the legacy rows with raw SQL against the migration-31 schema.
+      // Using today's repositories here wrote columns that do not exist yet at
+      // this migration level (`tasks.idempotency_fingerprint` arrives in
+      // migration 39), so the test failed before it could assert anything about
+      // the upgrade. A migration test has to speak the old schema.
+      legacy
+        .prepare("INSERT INTO projects (id, schema_version, name, workspace_path, created_at, updated_at) VALUES (?,1,?,?,?,?)")
+        .run("legacy-p", "Legacy", "/tmp/legacy", at, at);
+      legacy
+        .prepare("INSERT INTO tasks (id, schema_version, project_id, type, status, created_at, updated_at) VALUES (?,1,?,?,?,?,?)")
+        .run("legacy-t", "legacy-p", "agent_chat", "interrupted", at, at);
       legacy.close();
 
       const upgraded = openDatabase(dbPath);

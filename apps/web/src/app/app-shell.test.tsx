@@ -195,3 +195,23 @@ describe("Morrow application shell", () => {
     expect(await screen.findByText("Runtime online")).toBeInTheDocument();
   });
 });
+
+describe("unknown addresses", () => {
+  /**
+   * A stale bookmark, a mistyped path, or an area that exists in the product
+   * map but is not built yet (Memory) used to render the shell around an empty
+   * content region: no heading, no explanation, no way back — and no landmark
+   * for a screen reader to find.
+   */
+  beforeEach(() => {
+    localStorage.clear();
+    stubFetch();
+  });
+
+  it("explains an unrecognised address and offers a way back", async () => {
+    renderAt("/memory");
+
+    expect(await screen.findByRole("heading", { level: 1, name: /isn’t here/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Go to Home" })).toBeVisible();
+  });
+});

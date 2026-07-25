@@ -196,3 +196,169 @@ describe("ConnectionsPage", () => {
     expect(screen.getByText("Not connected", { exact: true })).toBeVisible();
   });
 });
+
+describe("ConnectionsPage — the full provider catalog", () => {
+  const catalog = [
+    provider({ id: "openrouter", label: "OpenRouter", category: "gateway", hasFreeTier: true, note: "Aggregates many upstream models behind one endpoint." }),
+    provider({ id: "anthropic", label: "Anthropic", category: "assistant", supportsOAuth: true, authMode: "anthropic-api-key" }),
+    provider({ id: "opencode-zen", label: "OpenCode Zen", category: "gateway", hasFreeTier: true, keyUrl: "https://opencode.ai/auth", note: "Curated model gateway from the OpenCode project." }),
+    provider({ id: "groq", label: "Groq", category: "inference", hasFreeTier: true, note: "Open-weight models on Groq's LPU inference hardware." }),
+    provider({
+      id: "lmstudio", label: "LM Studio (local)", category: "local", kind: "local", endpointHost: null,
+      capabilities: { streaming: true, toolCalls: true, systemMessages: true, vision: false, customEndpoint: true, local: true },
+      note: "Local inference through LM Studio's OpenAI-compatible server.",
+    }),
+    provider({ id: "mock", label: "Mock provider", category: "testing" }),
+  ];
+
+  function installCatalog(extra?: (path: string, init?: RequestInit) => Response | undefined) {
+    return installApi((path, init) => {
+      const override = extra?.(path, init);
+      if (override) return override;
+      if (path === "/api/providers") return json(catalog);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+  }
+
+  /**
+   * The page was hardcoded to OpenRouter — its API client literally asserted
+   * `z.literal("openrouter")` — so 29 of the 30 providers the engine supports
+   * could not be connected from the web app at all.
+   */
+  it("offers every supported provider, grouped so the list is navigable", async () => {
+    installCatalog();
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Major assistants" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /Gateways/ })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /Fast inference hosts/ })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /Local/ })).toBeVisible();
+
+    for (const label of ["Anthropic", "OpenCode Zen", "Groq", "LM Studio (local)"]) {
+      expect(screen.getByRole("button", { name: `Connect ${label}` })).toBeVisible();
+    }
+  });
+
+  it("hides the internal testing provider from the catalog", async () => {
+    installCatalog();
+    renderPage();
+    await screen.findByRole("button", { name: "Connect Groq" });
+    expect(screen.queryByText("Mock provider")).not.toBeInTheDocument();
+  });
+
+  it("marks which providers offer subscription sign-in and a free tier", async () => {
+    installCatalog();
+    renderPage();
+
+    const anthropic = (await screen.findByText("Anthropic")).closest("li")!;
+    expect(within(anthropic).getByText("Sign in with a subscription")).toBeVisible();
+
+    const groq = screen.getByText("Groq").closest("li")!;
+    expect(within(groq).getByText("Free tier")).toBeVisible();
+    // OpenCode Zen is API-key only; it must not advertise a sign-in that does
+    // not exist for it.
+    const zen = screen.getByText("OpenCode Zen").closest("li")!;
+    expect(within(zen).queryByText("Sign in with a subscription")).not.toBeInTheDocument();
+  });
+
+  it("filters the catalog by name and description", async () => {
+    installCatalog();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText("Search providers"), "groq");
+    expect(screen.getByRole("button", { name: "Connect Groq" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Connect Anthropic" })).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Search providers"));
+    await user.type(screen.getByLabelText("Search providers"), "local inference");
+    expect(screen.getByRole("button", { name: "Connect LM Studio (local)" })).toBeVisible();
+  });
+
+  it("configures a provider other than OpenRouter through its own endpoint", async () => {
+    let configuredId: string | null = null;
+    const fetchMock = installCatalog((path) => {
+      if (path === "/api/providers/groq/configure") {
+        configuredId = "groq";
+        return json({ ok: true, provider: "groq", status: provider({ id: "groq", label: "Groq", category: "inference", configured: true, available: true, authStatus: "configured" }), securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
+      }
+      return undefined;
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Connect Groq" }));
+    await user.type(screen.getByLabelText("Groq API key"), secret);
+    await user.click(screen.getByRole("button", { name: "Save connection" }));
+
+    await waitFor(() => expect(configuredId).toBe("groq"));
+    const configureCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/groq/configure"));
+    expect(configureCall?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
+    expect(await screen.findByText(/Groq is connected/i)).toBeVisible();
+  });
+
+  it("asks a local server for a URL and treats its key as optional", async () => {
+    let body: string | undefined;
+    installCatalog((path, init) => {
+      if (path === "/api/providers/lmstudio/configure") {
+        body = String(init?.body);
+        return json({ ok: true, provider: "lmstudio", status: provider({ id: "lmstudio", label: "LM Studio (local)", configured: true, available: true }), securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
+      }
+      return undefined;
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Connect LM Studio (local)" }));
+    await user.type(screen.getByLabelText("LM Studio (local) base URL"), "http://127.0.0.1:1234/v1");
+    // A local server usually needs no key, so saving without one must work.
+    await user.click(screen.getByRole("button", { name: "Save connection" }));
+
+    await waitFor(() => expect(body).toBe(JSON.stringify({ baseUrl: "http://127.0.0.1:1234/v1" })));
+  });
+
+  it("links to the provider's key page instead of leaving the user to find it", async () => {
+    installCatalog();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Connect OpenCode Zen" }));
+    const link = screen.getByRole("link", { name: /Create one at opencode\.ai/i });
+    expect(link).toHaveAttribute("href", "https://opencode.ai/auth");
+    // Opening an external page must not hand it a window reference back.
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("does not show two connect buttons for the provider being set up", async () => {
+    installCatalog();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Connect Groq" }));
+    // The card is now on screen; the catalog entry for it must be gone, or the
+    // same action is offered twice and is ambiguous to assistive technology.
+    expect(screen.queryAllByRole("button", { name: /Connect Groq/ })).toHaveLength(0);
+    expect(screen.getByLabelText("Groq API key")).toBeVisible();
+  });
+
+  it("says plainly when reachability could not prove the credential", async () => {
+    installCatalog((path) => {
+      if (path === "/api/providers/opencode-zen/test") {
+        return json(result({ id: "opencode-zen", ok: true, credentialVerified: false, detail: "Reachable" }));
+      }
+      return undefined;
+    });
+    const connected = [...catalog];
+    connected[2] = provider({ id: "opencode-zen", label: "OpenCode Zen", category: "gateway", configured: true, available: true, authStatus: "configured" });
+    installApi((path) => {
+      if (path === "/api/providers") return json(connected);
+      if (path === "/api/providers/opencode-zen/test") return json(result({ id: "opencode-zen", ok: true, credentialVerified: false }));
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText(/lists models without a key/i)).toBeVisible();
+  });
+});

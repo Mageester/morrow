@@ -18,7 +18,11 @@ describe("provider connectivity", () => {
     const result = await testProviderConnectivity("openai", { OPENAI_API_KEY: "test-key" });
 
     expect(result).toMatchObject({ ok: true, configured: true, modelsSample: [] });
-    expect(cancel).toHaveBeenCalledOnce();
+    // The oversized body must be cancelled rather than read, on every response
+    // the check receives — the authenticated probe and the credential-free
+    // repeat that decides whether the endpoint enforces the key.
+    expect(cancel).toHaveBeenCalled();
+    expect(result.modelsSample).toEqual([]);
   });
 
   it("returns normalized provider-reported metadata without truncating to the display sample", async () => {
@@ -96,7 +100,9 @@ describe("provider connectivity", () => {
 
     const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "invalid-candidate" });
 
-    expect(result).toMatchObject({ ok: false, configured: false, status: 401, errorKind: "auth" });
+    // `configured` reports that a credential is present, not that it is valid;
+    // the rejection is carried by ok:false + errorKind:"auth".
+    expect(result).toMatchObject({ ok: false, configured: true, status: 401, errorKind: "auth" });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://openrouter.ai/api/v1/models/user");
   });
@@ -104,7 +110,7 @@ describe("provider connectivity", () => {
   it("rejects a 200 OpenRouter response that is not an authenticated user-catalogue schema", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ id: "public/model" }] }), { status: 200 })));
     const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "candidate" });
-    expect(result).toMatchObject({ ok: false, configured: false, errorKind: "provider" });
+    expect(result).toMatchObject({ ok: false, configured: true, errorKind: "provider" });
   });
 
   it("classifies non-token OpenRouter charges and incomplete pricing conservatively", async () => {
@@ -144,7 +150,7 @@ describe("provider connectivity", () => {
 
     const result = await testProviderConnectivity("openrouter", { OPENROUTER_API_KEY: "openrouter-secret-value" });
 
-    expect(result).toMatchObject({ ok: false, configured: false, status, errorKind });
+    expect(result).toMatchObject({ ok: false, configured: true, status, errorKind });
     expect(JSON.stringify(result)).not.toContain("openrouter-secret-value");
   });
 

@@ -15,6 +15,7 @@ import { dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { ProviderId } from "@morrow/contracts";
+import { PROVIDER_CATALOG } from "./catalog.js";
 
 export interface ProviderEnvMapping {
   /** Env var holding the API key, if the provider authenticates with one. */
@@ -42,6 +43,21 @@ export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
   deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
   "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
   ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },
+  // Catalog providers derive their mapping from the single catalog table, so a
+  // new provider can never be half-added (configurable but unreadable, or the
+  // reverse) the way four hand-maintained parallel lists allow.
+  ...Object.fromEntries(
+    PROVIDER_CATALOG.map((p) => [
+      p.id,
+      {
+        ...(p.apiKeyEnv ? { apiKeyEnv: p.apiKeyEnv } : {}),
+        baseUrlEnv: p.baseUrlEnv,
+        modelEnv: p.modelEnv,
+        contextLimitEnv: p.contextLimitEnv,
+        ...(p.local ? { local: true } : {}),
+      } satisfies ProviderEnvMapping,
+    ])
+  ),
 };
 
 export function providerEnvMapping(id: ProviderId): ProviderEnvMapping | null {

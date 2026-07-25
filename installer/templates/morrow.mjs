@@ -31,6 +31,16 @@ const url = `http://${host}:${port}`;
 // URL. Only applies if the user hasn't already set their own (self-host/
 // advanced override) — see the spread order in start() below.
 const DEFAULT_HOSTED_API_URL = "https://morrow-hosted-api.aidan-magee2.workers.dev";
+/**
+ * The bundled web UI's address, or null when this package has no web bundle.
+ *
+ * The launcher used to report only `url`, which is the JSON API root. A new
+ * user who installed Morrow, read "Morrow is ready at http://127.0.0.1:4317",
+ * and opened it got a page of raw JSON — the web UI they had just installed was
+ * never mentioned anywhere. Checked against the real bundle so an older package
+ * without one never advertises a UI that cannot load.
+ */
+const appUrl = existsSync(join(webRoot, "index.html")) ? `${url}/app` : null;
 for (const name of ["data", "config", "logs", "browser", "cache", "backup"]) mkdirSync(join(install, name), { recursive: true });
 
 /** Environment that points the delegated CLI at THIS packaged install/service. */
@@ -77,14 +87,14 @@ function printHelp() {
     delegateToCli(["--help"]);
     return;
   }
-  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow                        open the terminal agent shell\n  morrow ask|fix|plan|yolo "…"  run the agent\n  morrow mission                open Mission Control\n  morrow cortex                 inspect repository intelligence\n  morrow start|stop|restart     manage the local service\n  morrow status                 service status\n  morrow doctor                 environment checks\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
+  console.log(`Morrow packaged launcher\n\nUsage:\n  morrow                        open the terminal agent shell\n  morrow open                   open the web app in your browser\n  morrow ask|fix|plan|yolo "…"  run the agent\n  morrow mission                open Mission Control\n  morrow cortex                 inspect repository intelligence\n  morrow start|stop|restart     manage the local service\n  morrow status                 service status\n  morrow doctor                 environment checks\n  morrow uninstall [--yes] [--purge-data]\n\nUninstall:\n  morrow uninstall              Ask for confirmation, remove app/runtime files, preserve user data\n  morrow uninstall --yes        Remove app/runtime files without prompting, preserve user data\n  morrow uninstall --purge-data Remove app/runtime files and local user data`);
 }
 function printUninstallHelp() {
   console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data | --keep-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - interactively asks whether to also delete ALL your data (conversations,\n    memory, provider keys, backups, logs, cache)\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt; keep data unless --purge-data is also given\n  --purge-data  delete local user data as well (no prompt)\n  --keep-data   keep local user data (no prompt)`);
 }
 
 async function start() {
-  if (await healthy()) return console.log("Morrow is already running at " + url);
+  if (await healthy()) return console.log(readyMessage("Morrow is already running"));
   if (!existsSync(runtime)) throw new Error("Bundled Node runtime is missing. Run the installer again.");
   // Capture the service's stdout/stderr to a real log file. Discarding it
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
@@ -95,7 +105,17 @@ async function start() {
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
   }
-  console.log("Morrow is ready at " + url);
+  console.log(readyMessage("Morrow is ready"));
+}
+
+/** Report the service address, and the web UI address when one is bundled. */
+function readyMessage(prefix) {
+  const lines = [`${prefix} at ${url}`];
+  if (appUrl) {
+    lines.push(`  Web app:   ${appUrl}   (or run: morrow open)`);
+    lines.push(`  Terminal:  morrow`);
+  }
+  return lines.join("\n");
 }
 function tailLog() {
   try {
@@ -132,7 +152,7 @@ function processOwnsPackagedService(value) {
     return false;
   }
 }
-async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
+async function status() { const ok = await healthy(); console.log(ok ? readyMessage("Morrow is running") : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");
