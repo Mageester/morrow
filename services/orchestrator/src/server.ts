@@ -136,7 +136,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelStatuses } from "./routing/models.js";
 import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
@@ -276,11 +276,13 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   }
   const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
     cacheDir: join(resolveMorrowHome(process.env), "catalog"),
-    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+    // Default public metadata source. Provider discovery still solely decides
+    // account availability; catalog rows supply capabilities only.
+    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || "https://models.dev/api.json",
     bundledModels: BUILT_IN_MODELS,
   });
-  installModelCatalog(modelCatalog.current().models);
-  void modelCatalog.refresh().then((snapshot) => installModelCatalog(snapshot.models)).catch(() => undefined);
+  installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, modelCatalog.current().models));
+  void modelCatalog.refresh().then((snapshot) => installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models))).catch(() => undefined);
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,

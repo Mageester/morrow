@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelInfoSchema, type ModelInfo } from "@morrow/contracts";
+import { ModelInfoSchema, type ModelInfo, type ProviderId } from "@morrow/contracts";
 import { z } from "zod";
 import { BUNDLED_MODEL_CATALOG_VERSION } from "./models.js";
 
-const MAX_CATALOG_BYTES = 1_048_576;
+/** models.dev's signed-free public catalog is currently a little over 3 MiB. */
+const MAX_CATALOG_BYTES = 4 * 1_024 * 1_024;
 const DEFAULT_TIMEOUT_MS = 3_000;
 
 async function readBoundedText(response: Response): Promise<string> {
@@ -71,6 +72,101 @@ const CacheSchema = z.object({
 
 type CatalogDocument = z.infer<typeof CatalogDocumentSchema>;
 
+const ModelsDevModelSchema = z.object({
+  id: z.string().trim().min(1).max(300),
+  name: z.string().trim().min(1).max(300),
+  family: z.string().trim().max(300).optional(),
+  limit: z.object({
+    context: z.number().int().positive().optional(),
+    output: z.number().int().positive().optional(),
+  }).passthrough().optional(),
+  tool_call: z.boolean().optional(),
+  attachment: z.boolean().optional(),
+  modalities: z.object({ input: z.array(z.string()).optional() }).passthrough().optional(),
+}).passthrough();
+
+const ModelsDevProviderSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  models: z.record(z.string(), ModelsDevModelSchema),
+}).passthrough();
+
+const ModelsDevDocumentSchema = z.record(z.string(), ModelsDevProviderSchema);
+
+const MODELS_DEV_PROVIDER_IDS: Record<string, ProviderId> = {
+  openai: "openai",
+  anthropic: "anthropic",
+  google: "gemini",
+  openrouter: "openrouter",
+  deepseek: "deepseek",
+  "opencode-go": "opencode-go",
+};
+
+function sourceVersion(response: Response, fetchedAt: string): string {
+  return `models.dev:${response.headers.get("etag") ?? response.headers.get("last-modified") ?? fetchedAt}`.slice(0, 120);
+}
+
+function normalizeModelsDev(raw: unknown, response: Response): CatalogDocument | null {
+  const parsed = ModelsDevDocumentSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  if (Object.keys(parsed.data).length > 400 || Object.values(parsed.data).some((provider) => Object.keys(provider.models).length > 2_000)) return null;
+  const fetchedAt = new Date().toISOString();
+  const metadataVersion = sourceVersion(response, fetchedAt);
+  const models: ModelInfo[] = [];
+  for (const [sourceProviderId, provider] of Object.entries(parsed.data)) {
+    const providerId = MODELS_DEV_PROVIDER_IDS[sourceProviderId];
+    if (!providerId) continue;
+    for (const source of Object.values(provider.models)) {
+      const supportsVision = source.attachment === true || source.modalities?.input?.includes("image") === true;
+      models.push({
+        version: 1,
+        id: source.id,
+        providerModelId: source.id,
+        canonicalId: source.id,
+        aliases: [],
+        providerId,
+        label: source.name,
+        family: source.family ?? null,
+        generation: null,
+        lifecycle: "current",
+        contextWindow: source.limit?.context ?? null,
+        maxOutputTokens: source.limit?.output ?? null,
+        pricing: null,
+        tokenUsage: true,
+        streamingUsage: true,
+        capabilities: { streaming: true, toolCalls: source.tool_call ?? false, vision: supportsVision },
+        capabilitySource: "remote-catalog",
+        speedClass: "unknown",
+        costClass: "unknown",
+        privacy: "remote",
+        builtIn: false,
+        metadataSource: "remote-catalog",
+        metadataVersion,
+        fetchedAt,
+        confidence: "verified",
+        // models.dev reports whether a model reasons, but not a stable Morrow
+        // request-control contract. Do not invent one from that boolean.
+        reasoning: { control: "none", efforts: [], budgets: [], source: "unknown" },
+      });
+    }
+  }
+  return CatalogDocumentSchema.safeParse({
+    schemaVersion: 1,
+    catalogVersion: metadataVersion,
+    generatedAt: fetchedAt,
+    models,
+  }).success
+    ? { schemaVersion: 1, catalogVersion: metadataVersion, generatedAt: fetchedAt, models }
+    : null;
+}
+
+function parseCatalog(raw: unknown, response: Response): CatalogDocument {
+  const normalized = CatalogDocumentSchema.safeParse(raw);
+  if (normalized.success) return normalized.data;
+  const modelsDev = normalizeModelsDev(raw, response);
+  if (modelsDev) return modelsDev;
+  throw new Error(`Invalid model catalog: ${normalized.error.issues[0]?.message ?? "schema mismatch"}`);
+}
+
 export interface ModelCatalogSnapshot {
   source: "remote-cache" | "bundled";
   catalogVersion: string;
@@ -129,11 +225,10 @@ export class ModelCatalog {
       const text = await readBoundedText(response);
       let raw: unknown;
       try { raw = JSON.parse(text); } catch { throw new Error("Invalid model catalog JSON"); }
-      const parsed = CatalogDocumentSchema.safeParse(raw);
-      if (!parsed.success) throw new Error(`Invalid model catalog: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`);
+      const document = parseCatalog(raw, response);
       const cache = {
         schemaVersion: 1 as const,
-        document: parsed.data,
+        document,
         etag: response.headers.get("etag"),
         lastModified: response.headers.get("last-modified"),
       };
@@ -141,7 +236,7 @@ export class ModelCatalog {
       const temporary = `${this.path}.tmp`;
       writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
       renameSync(temporary, this.path);
-      return this.snapshot(parsed.data, "remote-cache");
+      return this.snapshot(document, "remote-cache");
     } finally {
       clearTimeout(timer);
     }

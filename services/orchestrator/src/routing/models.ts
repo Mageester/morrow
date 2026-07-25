@@ -143,6 +143,7 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   model("ollama", "qwen2.5", "Qwen 2.5 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
   model("ollama", "mistral", "Mistral (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
   model("ollama", "phi3", "Phi-3 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "fast", cost: "free", privacy: "local" }),
+
 ];
 
 let activeCatalogModels: ModelInfo[] = BUILT_IN_MODELS;
@@ -155,6 +156,18 @@ export function installModelCatalog(models: ModelInfo[]): void {
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Remote catalog rows override same-route bundled seed rows. Seed rows remain
+ * available for offline startup and for provider routes that catalog does not
+ * cover, but never replace verified remote metadata.
+ */
+export function mergeModelCatalog(seed: ModelInfo[], remote: ModelInfo[]): ModelInfo[] {
+  const merged = new Map<string, ModelInfo>();
+  for (const model of seed) merged.set(`${model.providerId}\u0000${model.canonicalId}`, model);
+  for (const model of remote) merged.set(`${model.providerId}\u0000${model.canonicalId}`, model);
+  return [...merged.values()];
 }
 
 export function unknownModel(providerId: string, id: string): ModelInfo {
