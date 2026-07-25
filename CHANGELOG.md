@@ -6,6 +6,52 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.34] - 2026-07-25
+
+### Fixed - provider credentials could fail to save entirely
+
+`applyWindowsCredentialAcl` invoked `whoami.exe` and `icacls.exe` by bare name,
+letting PATH choose the binary. Git for Windows ships a Unix `whoami` and places
+it ahead of System32, so the SID lookup failed and saving any provider key threw
+"Unable to apply the current-user Windows ACL". On an affected machine no API
+key could be stored at all. Both tools now resolve against `%SystemRoot%`.
+
+This was also the cause of 17 of the 20 orchestrator test failures previously
+carried as pre-existing; the suite now runs 1268 passing.
+
+### Fixed - agent failures that gave no usable reason
+
+- A request containing an image with no vision-capable route reported a context
+  size error, so the remedy it implied could never work. It now names the real
+  cause and the routes tried.
+- The context admission failure named neither route nor size. Because
+  compaction has already reduced the request to system, checkpoint, and the most
+  recent group, the remaining cause is a single oversized message. The error now
+  reports measured tokens against the verified limit per route.
+- Reading a workspace file enforced an allowlist of "supported" extensions, so
+  ordinary source files were rejected outright: a project containing `.prisma`,
+  `.vue`, `.svelte`, `.kt`, or `.tf` could not be read. It is now a denylist of
+  binary formats. Workspace containment, credential-name checks, and null-byte
+  detection are unchanged.
+- A `create_file` call missing `path` was answered with "fix the arguments",
+  and the model regenerated the whole file body each time. The correction now
+  names the missing argument and says to reuse the content already produced.
+- The tool-argument retry limit was advisory: exceeding it only changed the
+  instruction text, so a model that ignored it kept going, reaching six attempts
+  against a limit of two. Exhaustion now interrupts the task.
+
+### Changed - clay accent, and two composer modes instead of four
+
+The accent moves off indigo to Claude clay: `#d97757` in dark, and `#bb5836` in
+light, where the accent carries white text and true clay measures 3.1:1 against
+white — below the 4.5:1 the accessibility gate requires.
+
+The composer offered Ask, Plan, Build, and Build Auto, where Build and Build
+Auto were the same mode differing only by auto-approval. It now offers Chat and
+Build, with approval as its own switch shown only once Morrow can change
+something, and a line stating what the current selection will do. The wire
+contract is unchanged.
+
 ## [0.1.0-beta.33] - 2026-07-25
 
 ### Added - the web app can use every provider, and ships in the package

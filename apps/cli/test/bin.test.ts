@@ -11,7 +11,7 @@ describe("morrow executable", () => {
     async () => {
       const bin = resolve(process.cwd(), "bin", "morrow.mjs");
       const result = await runFile(process.execPath, [bin, "--version"]);
-      expect(result.stdout.trim()).toBe("0.1.0-beta.33");
+      expect(result.stdout.trim()).toBe("0.1.0-beta.34");
     },
     // Spawns a real node.exe child process — the 5s default is too tight
     // under full-monorepo parallel test load (package-release.mjs's pnpm test
