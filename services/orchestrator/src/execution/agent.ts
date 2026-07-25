@@ -593,6 +593,12 @@ export async function executeAgentChatTask({
   // failure ledger (loop detection, recovery ladder, /failures). Non-mission
   // tasks get a no-op reporter.
   const taskMissionId = (task as { missionId?: string | null }).missionId ?? null;
+  // Capture a single mission-repository handle for the checkpoint-emit path
+  // (L2214 area). The MissionService instance created for the
+  // mission-failures reporter uses the same repo; reusing it here keeps the
+  // checkpoint/rollover events on the same durable log the activity panel
+  // already reads.
+  const missionRepo = taskMissionId ? missionsRepository(db) : null;
   const missionFailures = createMissionToolFailureReporter({
     service: taskMissionId
       ? new MissionService({
@@ -2221,6 +2227,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       ...currentFence(),
       now: now(),
     });
+    // §5+§6: when this checkpoint is part of a mission, emit a durable
+    // mission event so the activity panel and decision log show the rollover.
+    // Two distinct kinds are emitted so the UI can collapse the high-frequency
+    // "context checkpoint" events while still showing "rollover" as a
+    // first-class transition.
+    if (missionRepo && taskMissionId) {
+      try {
+        const eventType = phase === "context_compaction" ? "mission.checkpoint_created" : "mission.checkpoint_created";
+        const summary = phase === "context_compaction"
+          ? "Context checkpoint created; large outputs externalized; continuing in a fresh execution session"
+          : `Execution checkpoint (${phase})`;
+        missionRepo.appendEvent(taskMissionId, eventType, summary, {
+          taskId,
+          segmentId: currentSegment.id,
+          checkpointId,
+          phase,
+          decision: "Continuing in a fresh execution session",
+          currentPhase: snapshot.currentPhase,
+          completedWorkCount: snapshot.completedWork.length,
+          filesChangedCount: snapshot.filesChanged.length,
+          unresolvedFailuresCount: snapshot.unresolvedFailures.length,
+        }, now());
+      } catch {
+        // Best-effort: a failed event append must not block the checkpoint.
+      }
+    }
     executionCheckpointIds.push(checkpointId);
     return checkpointId;
   };
