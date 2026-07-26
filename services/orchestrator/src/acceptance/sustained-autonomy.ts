@@ -8,7 +8,7 @@ import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { executionContinuityRepository } from "../repositories/execution-continuity.js";
 import { MissionService } from "../mission/service.js";
 import { TaskRunner } from "../runner.js";
-import { createDefaultMissionControllerRunner, isMissionRuntimeTerminal } from "../mission/controller-runner.js";
+import { createDefaultMissionControllerRunner } from "../mission/controller-runner.js";
 import { reconcileMissionsOnStartup } from "../recovery.js";
 import { executeAgentChatTask } from "../execution/agent.js";
 import type { AiProvider, ChatMessage, ProviderChunk } from "../provider/base.js";
@@ -183,7 +183,7 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
       stack.controller.run(mission.id);
       while (Date.now() < deadline && !done()) {
         const runtime = missionRuntimeRepository(db).get(mission.id)!;
-        if (isMissionRuntimeTerminal(runtime)) break;
+        if (["cancelled", "abandoned", "superseded"].includes(runtime.state)) break;
         await stack.controller.waitFor(mission.id);
         const activeTaskId = missionRuntimeRepository(db).get(mission.id)?.activeTaskId;
         if (activeTaskId && stack.runner.isActive(activeTaskId)) await stack.runner.waitFor(activeTaskId);
@@ -192,17 +192,29 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
       }
     };
     const settleActive = async (stack: Stack): Promise<void> => {
-      await stack.controller.waitFor(mission.id);
-      for (const id of missionTaskIds()) {
-        if (stack.runner.isActive(id)) await stack.runner.waitFor(id);
+      while (true) {
+        await stack.controller.waitFor(mission.id);
+        const activeTaskIds = missionTaskIds().filter((id) => stack.runner.isActive(id));
+        if (activeTaskIds.length === 0) {
+          await Promise.resolve();
+          if (!stack.controller.isActive(mission.id)
+            && !missionTaskIds().some((id) => stack.runner.isActive(id))) return;
+          continue;
+        }
+        for (const id of activeTaskIds) {
+          await stack.runner.waitFor(id);
+        }
       }
-      await stack.controller.waitFor(mission.id);
+    };
+    const quiesce = async (stack: Stack): Promise<void> => {
+      await stack.controller.stop(mission.id);
+      await settleActive(stack);
     };
     const rejected = () => missionRuntimeRepository(db).listTransitions(mission.id).some((t) => t.cause === "guardian_rejected");
 
     let stack = buildStack("break", "controller-before-restart");
     await drive(stack, () => script.readUnits >= WORK_UNITS && rejected(), 60_000);
-    await settleActive(stack);
+    await quiesce(stack);
 
     const beforeRestartOps = missionRuntimeRepository(db).listOperations(mission.id)
       .filter((o) => o.status === "completed").map((o) => o.idempotencyKey);
@@ -216,8 +228,8 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
     const reconciliation = reconcileMissionsOnStartup({ db, runner: stack.runner, controllerRunner: stack.controller });
     if (reconciliation.missionsResumed !== 1) throw new Error(`Startup reconciliation resumed ${reconciliation.missionsResumed} mission(s), expected exactly 1`);
 
-    await drive(stack, () => isMissionRuntimeTerminal(missionRuntimeRepository(db).get(mission.id)!), 60_000);
-    await settleActive(stack);
+    await drive(stack, () => missionRuntimeRepository(db).get(mission.id)?.state === "completed", 60_000);
+    await quiesce(stack);
 
     const runtimeRepo = missionRuntimeRepository(db);
     const runtime = runtimeRepo.get(mission.id)!;

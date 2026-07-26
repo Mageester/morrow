@@ -11,6 +11,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "env": ["MORROW_SKIP_LIVE_OPENCODE_GO"],
       "outputs": ["coverage/**"]
     },
     "dev": {

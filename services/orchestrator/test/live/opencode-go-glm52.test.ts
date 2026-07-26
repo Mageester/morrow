@@ -118,22 +118,25 @@ describe("live: OpenCode Go provider — GLM-5.2 completes a real request", () =
           // Honest reporting — do not pass on a failure to fetch.
           throw new Error(`OpenCode Go /v1/chat/completions HTTP ${response.status}: ${body.slice(0, 200)}`);
         }
-        json = (await response.json()) as ChatResponse;
-        const content = json.choices[0]?.message?.content;
+        const candidate = (await response.json()) as ChatResponse | null;
+        json = candidate;
+        const content = candidate?.choices?.[0]?.message?.content;
         if (typeof content === "string" && content.length > 0) break;
         if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
+      if (!json) throw new Error("OpenCode Go /v1/chat/completions returned a null JSON response");
+      const payload = json;
       // The model must come back as glm-5.2 (or be a model the provider
       // routes the call to). The body must be a non-empty string.
-      expect(typeof json.model).toBe("string");
+      expect(typeof payload.model).toBe("string");
       // Log the wire-level evidence (model id, finish_reason, content
       // length) so the live test produces a paper trail in the test log
       // without ever printing the key. NEVER log the Authorization header
       // or the body verbatim — it could be echoed back by the provider.
       // eslint-disable-next-line no-console
-      console.log(`[live] opencode-go glm-5.2 response: model=${json.model} finish=${json.choices[0]?.finish_reason} contentLength=${json.choices[0]?.message?.content.length ?? 0}`);
-      expect(json.choices.length).toBeGreaterThan(0);
-      const content = json.choices[0]!.message.content;
+      console.log(`[live] opencode-go glm-5.2 response: model=${payload.model} finish=${payload.choices[0]?.finish_reason} contentLength=${payload.choices[0]?.message?.content.length ?? 0}`);
+      expect(payload.choices.length).toBeGreaterThan(0);
+      const content = payload.choices[0]!.message.content;
       expect(typeof content).toBe("string");
       expect(content.length).toBeGreaterThan(0);
       // §9 acceptance: the model the user requested (glm-5.2) is what
@@ -142,7 +145,7 @@ describe("live: OpenCode Go provider — GLM-5.2 completes a real request", () =
       // include "glm-5.2" OR the request must have been routed to a
       // OpenCode Go model (which we've already confirmed by reaching the
       // /v1/chat/completions endpoint behind the opencode-go auth).
-      expect(json.model.toLowerCase()).toMatch(/glm[-_.]?5[._-]?2/);
+      expect(payload.model.toLowerCase()).toMatch(/glm[-_.]?5[._-]?2/);
       // §9 acceptance: a real completion was returned through the OpenCode
       // Go path. We do NOT assert the literal "4" because the model may
       // respond with "4" or "4." or "The answer is 4." — all are real
