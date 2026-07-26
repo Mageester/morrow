@@ -192,4 +192,31 @@ describe("durable provider projection", () => {
     expect(projection).toContain("read_file: completed");
     expect(projection).not.toContain("source contents source contents");
   });
+
+  it("bounds dependency-heavy checkpoint file and git status data", () => {
+    const noisySnapshot = {
+      ...snapshot,
+      filesChanged: Array.from({ length: 1_000 }, (_, index) => `node_modules/package-${index}/dist/generated-file.js`),
+      gitStatus: Array.from({ length: 1_000 }, (_, index) => `?? node_modules/package-${index}/dist/generated-file.js`).join("\n"),
+    };
+    const result = projectProviderRequest({
+      checkpoint: noisySnapshot,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [{ role: "user", content: "history ".repeat(50_000) }, { role: "user", content: "run build and tests" }],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+    expect(result.admission.ok).toBe(true);
+    const projection = result.envelope.messages.map((message) => message.content).join("\n");
+    expect(projection).toContain("package-999");
+    expect(projection).not.toContain("package-100/");
+    expect(Buffer.byteLength(projection, "utf8")).toBeLessThan(20_000);
+  });
 });

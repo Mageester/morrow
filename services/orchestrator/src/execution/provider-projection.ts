@@ -100,26 +100,29 @@ function groupDurableMessages(messages: ChatMessage[]): { system: ChatMessage[];
 /** Serialize only mission-owned checkpoint state. Provider continuation row IDs
  * and provider-owned opaque values are deliberately excluded from projection. */
 function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
+  const boundedList = (values: string[], limit: number, itemLimit = 500): string[] =>
+    values.slice(-limit).map((value) => value.slice(0, itemLimit));
+  const boundedGitStatus = snapshot.gitStatus.split(/\r?\n/).slice(-80).join("\n").slice(0, 4_000);
   const publicSnapshot = {
     version: snapshot.version,
     missionContract: {
-      originalMission: snapshot.originalMission,
-      hardRequirements: snapshot.hardRequirements,
-      prohibitedActions: snapshot.prohibitedActions,
-      acceptanceCriteria: snapshot.acceptanceCriteria,
+      originalMission: snapshot.originalMission.slice(0, 4_000),
+      hardRequirements: boundedList(snapshot.hardRequirements, 30),
+      prohibitedActions: boundedList(snapshot.prohibitedActions, 30),
+      acceptanceCriteria: boundedList(snapshot.acceptanceCriteria, 30),
     },
     execution: {
-      decisions: snapshot.decisions,
-      completedWork: snapshot.completedWork,
+      decisions: boundedList(snapshot.decisions, 30),
+      completedWork: boundedList(snapshot.completedWork, 40),
       currentPhase: snapshot.currentPhase,
-      filesChanged: snapshot.filesChanged,
-      gitStatus: snapshot.gitStatus,
-      tests: snapshot.tests,
-      unresolvedFailures: snapshot.unresolvedFailures,
-      recoveryAttempts: snapshot.recoveryAttempts,
-      pendingWork: snapshot.pendingWork,
+      filesChanged: boundedList(snapshot.filesChanged, 40, 300),
+      gitStatus: boundedGitStatus,
+      tests: snapshot.tests.slice(-20).map((test) => ({ ...test, command: test.command.slice(0, 500), result: test.result.slice(0, 1_000) })),
+      unresolvedFailures: boundedList(snapshot.unresolvedFailures, 20, 1_000),
+      recoveryAttempts: boundedList(snapshot.recoveryAttempts, 20, 1_000),
+      pendingWork: boundedList(snapshot.pendingWork, 30),
       approvals: snapshot.approvals,
-      evidenceRequired: snapshot.evidenceRequired,
+      evidenceRequired: boundedList(snapshot.evidenceRequired, 30),
     },
     identity: { taskId: snapshot.taskId, missionId: snapshot.missionId },
     routing: snapshot.providerRouting,
