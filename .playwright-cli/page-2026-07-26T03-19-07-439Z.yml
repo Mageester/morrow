@@ -1,0 +1,60 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - strong [ref=e11]: Morrow
+    - button "New chat" [ref=e291] [cursor=pointer]
+    - navigation "Primary" [ref=e18]:
+      - generic [ref=e19]:
+        - link "Home" [ref=e20] [cursor=pointer]:
+          - /url: /app/
+        - link "Chats" [ref=e25] [cursor=pointer]:
+          - /url: /app/chats
+        - link "Projects" [ref=e29] [cursor=pointer]:
+          - /url: /app/projects
+        - link "Missions" [ref=e33] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Library" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+        - button "Memory — coming soon" [disabled] [ref=e43]:
+          - generic [ref=e47]: Memory
+          - generic [ref=e48]: Soon
+        - link "Connections" [ref=e49] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e55] [cursor=pointer]:
+          - /url: /app/settings
+    - generic [ref=e60]:
+      - status [ref=e61]: Runtime online
+      - generic [ref=e62]: Local profile
+  - main [ref=e63]:
+    - status [ref=e64]:
+      - generic [ref=e65]: Not connected to an account. Pairing is optional and only affects billing sync.
+      - link "Pair this install" [ref=e66] [cursor=pointer]:
+        - /url: /app/pair
+    - region [ref=e303]:
+      - generic [ref=e304]:
+        - heading "New Conversation" [level=1] [ref=e305]
+        - generic "Conversation actions" [ref=e306]:
+          - button "Rename conversation" [ref=e307] [cursor=pointer]
+          - button "Archive conversation" [ref=e311] [cursor=pointer]
+          - button "Delete conversation" [ref=e315] [cursor=pointer]
+      - paragraph [ref=e319]:
+        - generic [ref=e320]: Morrow release candidate
+        - generic [ref=e321]: C:\Morrow\worktrees\morrow-release-candidate
+        - generic [ref=e322]: codex/release-candidate-latest
+      - button "Start a mission from this chat" [ref=e324] [cursor=pointer]
+      - generic [ref=e326]:
+        - heading "Start this conversation" [level=2] [ref=e327]
+        - paragraph [ref=e328]: Ask a question or choose Plan when you want a thoughtful approach without changes.
+      - generic [ref=e330]:
+        - generic [ref=e331]: Message Morrow
+        - textbox "Message Morrow" [active] [ref=e332]:
+          - /placeholder: Reply to Morrow…
+        - group "How Morrow should work" [ref=e334]:
+          - button "Chat" [pressed] [ref=e335] [cursor=pointer]
+          - button "Build" [ref=e336] [cursor=pointer]
+        - paragraph [ref=e337]: Morrow will answer and read your project, but will not change anything.
+        - generic [ref=e338]:
+          - button "Auto — recommended" [ref=e340] [cursor=pointer]
+          - button "Send message" [disabled] [ref=e346]
+        - paragraph [ref=e351]: Attachments are unavailable because the message API does not accept files yet.

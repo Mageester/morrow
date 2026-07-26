@@ -434,9 +434,9 @@ type Dependencies = {
 
 class AgentToolFailure extends Error {
   readonly resultJson: string;
-  readonly errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode";
+  readonly errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" | "invalid_tool_arguments";
 
-  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" = "tool_failed") {
+  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" | "invalid_tool_arguments" = "tool_failed") {
     super(message);
     this.name = "AgentToolFailure";
     this.resultJson = JSON.stringify(result);
@@ -2204,9 +2204,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
       if (call.toolName === "run_command") {
         try {
-          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)) continue;
+          // A host-side argument/schema rejection is never skipped: the model's
+          // action never executed, so an "I'm done" after it is unverified.
+          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)
+            && call.errorType !== "invalid_tool_arguments") continue;
         } catch {
-          continue;
+          if (call.errorType !== "invalid_tool_arguments") continue;
         }
       }
       // A call denied purely because the current mode forbids it (read-only /
@@ -3745,7 +3748,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             // a clear, retryable tool error here rather than crashing later inside
             // command-policy's `args.map(...)` with an opaque host-side TypeError.
             if (rawArgs !== undefined && (!Array.isArray(rawArgs) || !rawArgs.every((a) => typeof a === "string"))) {
-              throw new Error(`Invalid argument: "args" must be an array of strings, got ${JSON.stringify(rawArgs)}`);
+              const detail = `Invalid argument: "args" must be an array of strings, got ${JSON.stringify(rawArgs)}`;
+              throw new AgentToolFailure(detail, { error: detail }, "invalid_tool_arguments");
             }
             const cmdArgs: string[] = rawArgs ?? [];
 
@@ -4243,7 +4247,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // completed" hole. Treat mutations/verifications that either threw or
         // exited non-zero as an outstanding failure; a clean one clears it.
         const gatesCompletion = WORKSPACE_WRITE_TOOLS.has(tc.name)
-          || (tc.name === "run_command" && runCommandIsVerification(args));
+          || (tc.name === "run_command" && runCommandIsVerification(args))
+          || (tc.name === "run_command" && errorType === "invalid_tool_arguments");
         if (gatesCompletion && errorType !== "tool_not_permitted_in_mode") {
           let failedOutcome: string | null = null;
           if (!isSuccess) {
@@ -4473,7 +4478,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         stagnantTurns: noProgressTurns,
         availableStrategyFingerprints: [
           strategyFingerprint,
-          ...(fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : [])),
+          // Only a mission controller can act on strategy_change_required. A
+          // standalone task cannot adopt a different provider mid-run, so
+          // listing untried fallbacks here would loop "change strategy"
+          // forever without ever reaching the standalone exhaustion ladder.
+          ...(taskMissionId
+            ? (fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : []))
+            : []),
         ],
         blocker: lastVerificationFailure ? `${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : null,
       });
@@ -4521,7 +4532,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             attempt: stagnationRecoveryAttempts,
           });
           noProgressTurns = 0;
-          diagnosisCompleted = false;
+          // Escalation must stay monotonic: resetting diagnosisCompleted here
+          // would re-open a full focused-diagnosis cycle AFTER the final
+          // recovery, letting read-only roaming buy two more stall cycles.
+          // The final recovery is the last chance; continued stagnation now
+          // interrupts.
           progressWindowStart = progressHistory.length;
           continue;
         }
