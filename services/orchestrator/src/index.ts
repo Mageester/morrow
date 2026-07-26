@@ -11,6 +11,7 @@ import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 import { processesRepository } from "./repositories/processes.js";
 import { EntitlementPoller } from "./hosted/entitlement-poller.js";
+import { hydrateProviderEnvFromSecrets } from "./provider/secrets.js";
 
 // In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
 // skills directory. When running from source (pnpm dev) fall back to the repo's
@@ -22,6 +23,8 @@ if (!process.env.MORROW_SKILLS_DIR) {
 }
 
 const dbPath = resolveDefaultDatabasePath(process.env);
+const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
+hydrateProviderEnvFromSecrets(secretsFile, process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
 const db = openDatabase(dbPath);
 
@@ -48,8 +51,6 @@ if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliati
 // development), Vite serves the app on its own port and no /app surface is
 // registered here.
 const webRoot = process.env.MORROW_WEB_ROOT?.trim();
-const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
-
 // Unset by default — pairing/entitlement is inert (always "unpaired") until an
 // operator configures MORROW_HOSTED_API_URL. Poller runs regardless so
 // /api/pairing/status always has a real snapshot to report, even unpaired.

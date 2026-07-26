@@ -103,6 +103,30 @@ export function readSecretsFileSafe(path: string): Record<string, string> {
   }
 }
 
+/** Restore persisted provider configuration into a fresh orchestrator process.
+ * Explicit process environment always wins. Returns names only, never values. */
+export function hydrateProviderEnvFromSecrets(
+  secretsFile: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { loaded: string[] } {
+  const stored = readSecretsFileSafe(secretsFile);
+  const allowedNames = new Set(
+    Object.values(PROVIDER_ENV).flatMap((mapping) =>
+      mapping
+        ? [mapping.apiKeyEnv, mapping.baseUrlEnv, mapping.modelEnv, mapping.contextLimitEnv].filter((name): name is string => Boolean(name))
+        : [],
+    ),
+  );
+  const loaded: string[] = [];
+  for (const name of allowedNames) {
+    const value = stored[name]?.trim();
+    if (!value || env[name]?.trim()) continue;
+    env[name] = value;
+    loaded.push(name);
+  }
+  return { loaded };
+}
+
 export interface CredentialFileOptions {
   platform?: NodeJS.Platform;
   applyWindowsAcl?: (path: string) => boolean;
