@@ -121,6 +121,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
       args: { type: "array", items: { type: "string" }, description: "Arguments passed to the executable" },
       cwd: { type: "string", description: "Optional working directory relative to project root" },
       purpose: { type: "string", description: "Explain why this command is being run" },
+      timeoutMs: { type: "number", description: "Optional shorter timeout in milliseconds; cannot exceed the command-policy ceiling" },
       background: { type: "boolean", description: "Start a long-running process (e.g. a dev server) without waiting for it to exit. Returns a processId instead of exit output." }
     },
     constraints: [

@@ -33,7 +33,6 @@ const skip = !process.env.MORROW_RUN_INSTALL_ITEST
     : false;
 
 // Required files, relative to the package root, that install.ps1 validates.
-// Morrow is CLI-only: no web/index.html, but dispatch.mjs is bundled.
 const REQUIRED = ["morrow.mjs", "dispatch.mjs", "runtime\\node.exe", "orchestrator\\dist\\src\\index.js"];
 
 /** Build a minimal synthetic package whose morrow.cmd is a valid no-op launcher. */
@@ -45,6 +44,12 @@ function makePackage(dir, versionTag) {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, versionTag);
   }
+  mkdirSync(join(dir, "web", "assets"), { recursive: true });
+  writeFileSync(
+    join(dir, "web", "index.html"),
+    '<!doctype html><div id="root"></div><script type="module" src="/app/assets/app.js"></script>',
+  );
+  writeFileSync(join(dir, "web", "assets", "app.js"), `console.log(${JSON.stringify(versionTag)});\n`);
 }
 
 /** Run install.ps1's activation hook against a staged package + install root. */
@@ -87,6 +92,28 @@ test("fresh activation installs the app and creates the data directories", { ski
       assert.ok(existsSync(join(root, d)), `data dir ${d} created`);
     }
     assert.ok(existsSync(join(root, "bin", "morrow.cmd")), "bin shim written");
+    assert.ok(existsSync(join(root, "bin", "morrow-open.vbs")), "windowless app launcher written");
+  } finally {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test("activation rejects a web bundle whose index references a missing asset", { skip }, () => {
+  const work = mkdtempSync(join(tmpdir(), "morrow-act-"));
+  try {
+    const root = join(work, "InstallRoot");
+    makePackage(join(work, "pkg1"), "v1");
+    assert.equal(activate(join(work, "pkg1"), root).code, 0);
+    writeFileSync(join(root, "data", "morrow.db"), "USERDATA");
+
+    const broken = join(work, "pkg2");
+    makePackage(broken, "v2");
+    rmSync(join(broken, "web", "assets", "app.js"), { force: true });
+    const result = activate(broken, root);
+
+    assert.notEqual(result.code, 0, "package with a broken web asset reference must fail activation");
+    assert.equal(readFileSync(join(root, "app", "morrow.mjs"), "utf8"), "v1", "previous app remains active");
+    assert.equal(readFileSync(join(root, "data", "morrow.db"), "utf8"), "USERDATA", "mission data remains intact");
   } finally {
     rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }

@@ -2,7 +2,7 @@ import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage, W
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Archive, Pencil, Trash2 } from "lucide-react";
+import { Archive, ListTree, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
 import { useMissionStream } from "../../api/mission-stream.js";
@@ -20,6 +20,7 @@ import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
+import { ActivityPanel } from "./activity-panel.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -136,6 +137,8 @@ export function ConversationPageContent({
   const [renameTitle, setRenameTitle] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const activityButtonRef = useRef<HTMLButtonElement>(null);
   const renameButtonRef = useRef<HTMLButtonElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
@@ -192,6 +195,10 @@ export function ConversationPageContent({
   const closeDelete = () => {
     restoreDeleteFocus.current = true;
     setDeleteOpen(false);
+  };
+  const closeActivity = () => {
+    setActivityOpen(false);
+    window.setTimeout(() => activityButtonRef.current?.focus(), 0);
   };
   const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>, close: () => void) => {
     if (event.key === "Escape") {
@@ -369,6 +376,17 @@ export function ConversationPageContent({
       <header className="morrow-conversation-header">
         <h1 id="conversation-heading">{value.title}</h1>
         <div aria-label="Conversation actions" className="morrow-conversation-actions">
+          <button
+            aria-label="Activity / Inspect"
+            aria-pressed={activityOpen}
+            className="morrow-conversation-actions__activity"
+            onClick={() => setActivityOpen((open) => !open)}
+            ref={activityButtonRef}
+            type="button"
+          >
+            <ListTree aria-hidden="true" size={16} />
+            <span>Activity</span>
+          </button>
           <button aria-label="Rename conversation" disabled={actionBusy} onClick={openRename} ref={renameButtonRef} type="button"><Pencil aria-hidden="true" size={16} /></button>
           <button aria-label={value.archived ? "Restore conversation" : "Archive conversation"} disabled={actionBusy} onClick={() => { void toggleArchive(); }} type="button"><Archive aria-hidden="true" size={16} /></button>
           <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={16} /></button>
@@ -376,6 +394,14 @@ export function ConversationPageContent({
       </header>
 
       <WorkspaceStatusLine projectId={projectId} />
+
+      {activityOpen ? (
+        <ActivityPanel
+          conversationId={conversationId}
+          onClose={closeActivity}
+          projectId={projectId}
+        />
+      ) : null}
 
       {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
         <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>

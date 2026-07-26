@@ -85,11 +85,21 @@ export function useChatTaskStream(identity: ChatTaskStreamIdentity) {
     let terminalPending = restored.terminal;
 
     const messagesKey = conversationKeys.messages(projectId, conversationId);
-    const reconcile = () => queryClient.invalidateQueries({ queryKey: messagesKey });
-    const reconcileTerminal = () => queryClient.refetchQueries(
-      { queryKey: messagesKey, exact: true },
-      { throwOnError: true },
-    );
+    const activityKey = conversationKeys.activity(projectId, conversationId);
+    const reconcile = () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: messagesKey }),
+      queryClient.invalidateQueries({ queryKey: activityKey }),
+    ]);
+    const reconcileTerminal = () => Promise.all([
+      queryClient.refetchQueries(
+        { queryKey: messagesKey, exact: true },
+        { throwOnError: true },
+      ),
+      queryClient.refetchQueries(
+        { queryKey: activityKey, exact: true, type: "active" },
+        { throwOnError: true },
+      ),
+    ]);
     const clearTimer = () => {
       if (reconnectTimer === null) return;
       window.clearTimeout(reconnectTimer);

@@ -66,14 +66,14 @@ describe("useChatTaskStream", () => {
       source.emit("message.updated", signal);
       source.emit("message.updated", signal);
     });
-    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2)); // open reconciliation + one unique signal
-    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: conversationKeys.messages("project-1", "conversation-1") });
+    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(4)); // open reconciliation + one unique signal
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: conversationKeys.activity("project-1", "conversation-1") });
 
     act(() => source.emit("task.terminal", { ...signal, cursor: 2, eventType: "task.terminal", payload: { eventId: "event-2" } }));
     await waitFor(() => expect(source.closed).toBe(true));
     await waitFor(() => expect(result.current.terminal).toBe(true));
-    expect(invalidate).toHaveBeenCalledTimes(2);
-    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledTimes(4);
+    expect(refetch).toHaveBeenCalledTimes(2);
     expect(sessionStorage.getItem(chatStreamCursorKey({ projectId: "project-1", conversationId: "conversation-1", taskId: "task-1" }))).toBeNull();
     unmount();
   });

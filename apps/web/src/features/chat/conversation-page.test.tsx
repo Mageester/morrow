@@ -62,6 +62,98 @@ afterEach(() => {
 });
 
 describe("ConversationPage", () => {
+  it("opens a durable Activity / Inspect panel and renders completed entries oldest to newest", async () => {
+    const activity = {
+      version: 1,
+      projectId: "project-1",
+      conversationId: conversation.id,
+      entries: [
+        {
+          version: 1,
+          id: "task-1:event:plan",
+          taskId: "task-1",
+          sequence: 1,
+          kind: "plan",
+          status: "completed",
+          summary: "Plan created",
+          detail: "3 planned steps",
+          target: null,
+          toolName: null,
+          durationMs: null,
+          exitCode: null,
+          resultCount: 3,
+          createdAt: "2026-07-22T12:00:01.000Z",
+          updatedAt: "2026-07-22T12:00:01.000Z",
+        },
+        {
+          version: 1,
+          id: "task-1:tool:tool-1",
+          taskId: "task-1",
+          sequence: 2,
+          kind: "command",
+          status: "failed",
+          summary: "Command failed",
+          detail: "tool failed",
+          target: "pnpm test",
+          toolName: "run_command",
+          durationMs: 812,
+          exitCode: 1,
+          resultCount: null,
+          createdAt: "2026-07-22T12:00:02.000Z",
+          updatedAt: "2026-07-22T12:00:04.000Z",
+        },
+        {
+          version: 1,
+          id: "task-1:event:recovery",
+          taskId: "task-1",
+          sequence: 5,
+          kind: "recovery",
+          status: "completed",
+          summary: "Recovery strategy changed",
+          detail: "Switched to isolated test",
+          target: null,
+          toolName: "run_command",
+          durationMs: null,
+          exitCode: null,
+          resultCount: null,
+          createdAt: "2026-07-22T12:00:05.000Z",
+          updatedAt: "2026-07-22T12:00:05.000Z",
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.endsWith("/messages")) return json([message({ taskId: null, taskStatus: null, routing: null })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: conversation.title });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Activity / Inspect" }));
+
+    const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
+    const items = within(panel).getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector("summary")?.textContent)).toEqual([
+      expect.stringContaining("Plan created"),
+      expect.stringContaining("Command failed"),
+      expect.stringContaining("Recovery strategy changed"),
+    ]);
+    expect(within(panel).getByText("pnpm test")).not.toBeVisible();
+    await user.click(within(panel).getByText("Command failed"));
+    expect(within(panel).getByText("pnpm test")).toBeVisible();
+    expect(within(panel).getByText("Exit 1")).toBeVisible();
+    expect(within(panel).getByText("812 ms")).toBeVisible();
+    expect(within(panel).getByText(/Completed events remain in this saved history\./)).toBeVisible();
+
+    await user.click(within(panel).getByRole("button", { name: "Close Activity / Inspect" }));
+    expect(screen.queryByRole("complementary", { name: "Activity / Inspect" })).not.toBeInTheDocument();
+  });
+
   it("retains input until the server accepts, then renders one canonical user and assistant row", async () => {
     let accept!: (response: Response) => void;
     const sendResponse = new Promise<Response>((resolve) => { accept = resolve; });

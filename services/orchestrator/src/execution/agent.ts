@@ -22,6 +22,7 @@ import { contextSummariesRepository } from "../repositories/context-summaries.js
 import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinuityRepository, type ExecutionCheckpointSnapshot, type MissionWorkerOutcome } from "../repositories/execution-continuity.js";
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
+import { actionAttemptsRepository, actionEnvironmentFingerprint, normalizeActionSignature } from "../repositories/action-attempts.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
 import { assessExhaustion, assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
@@ -434,9 +435,29 @@ type Dependencies = {
 
 class AgentToolFailure extends Error {
   readonly resultJson: string;
-  readonly errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" | "invalid_tool_arguments";
+  readonly errorType:
+    | "tool_failed"
+    | "safe_read_rejected"
+    | "tool_not_permitted_in_mode"
+    | "invalid_tool_arguments"
+    | "command_exit_nonzero"
+    | "command_timeout"
+    | "command_cancelled"
+    | "repeated_strategy";
 
-  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" | "invalid_tool_arguments" = "tool_failed") {
+  constructor(
+    message: string,
+    result: unknown,
+    errorType:
+      | "tool_failed"
+      | "safe_read_rejected"
+      | "tool_not_permitted_in_mode"
+      | "invalid_tool_arguments"
+      | "command_exit_nonzero"
+      | "command_timeout"
+      | "command_cancelled"
+      | "repeated_strategy" = "tool_failed",
+  ) {
     super(message);
     this.name = "AgentToolFailure";
     this.resultJson = JSON.stringify(result);
@@ -1650,16 +1671,93 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // the default 30s ceiling was too tight for `npm install` / `npm run build`
       // and made ordinary project setup time out. Give those a generous ceiling
       // while keeping short-lived commands snappy.
+      const policyTimeoutMs = longRunningCommandTimeoutMs(exec, cmdArgs);
+      const requestedTimeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
+        ? Math.max(10, Math.floor(args.timeoutMs))
+        : policyTimeoutMs;
       const runOptions: Parameters<typeof runProcessSafe>[4] = {
-        timeoutMs: longRunningCommandTimeoutMs(exec, cmdArgs),
+        // Models may request a shorter timeout for bounded probes. They can
+        // never raise the command-policy ceiling.
+        timeoutMs: Math.min(requestedTimeoutMs, policyTimeoutMs),
         maxOutputBytes: 65536,
       };
       if (abortSignal) {
         runOptions.abortSignal = abortSignal;
       }
-      const result = await runProcessSafe(exec, cmdArgs, resolvedCwd, process.env, runOptions);
+
+      // Durable retry memory: repeating an identical command that already
+      // failed twice with no intervening success is suppressed before it can
+      // burn another turn, and the model is told to change strategy instead.
+      // The attempt row is written either way so the mission record shows the
+      // full command history, including the suppressed call.
+      const actionAttempts = actionAttemptsRepository(db);
+      const actionSignature = normalizeActionSignature("run_command", {
+        executable: exec,
+        args: cmdArgs,
+        cwd: cmdCwd,
+        background: false,
+      });
+      const suppression = actionAttempts.shouldSuppress(taskId, taskMissionId, actionSignature);
+      const attempt = actionAttempts.start({
+        id: randomUUID(),
+        taskId,
+        missionId: taskMissionId,
+        toolCallId: tcId,
+        actionKind: "run_command",
+        normalizedSignature: actionSignature,
+        command: { executable: exec, args: cmdArgs },
+        cwd: cmdCwd || null,
+        environmentFingerprint: actionEnvironmentFingerprint(process.env),
+        strategy: runCommandIsVerification({ executable: exec, args: cmdArgs, purpose }) ? "verification" : "command",
+        createdAt: now(),
+      });
+      if (suppression.suppress) {
+        actionAttempts.finish(attempt.id, {
+          status: "suppressed",
+          exitStatus: null,
+          terminationReason: "suppressed_duplicate",
+          failureCategory: "repeated_strategy",
+          failureFingerprint: null,
+          progressFingerprint: null,
+          completedAt: now(),
+        });
+        event("tool.strategy_switch", {
+          toolName: "run_command",
+          tool: "run_command",
+          from: "repeat_failed_command",
+          to: "change_strategy",
+          failedAttempts: suppression.failedAttempts,
+          reason: "repeated_failure",
+        });
+        throw new AgentToolFailure(
+          `Suppressed identical retried command. ${suppression.reason}`,
+          { suppressed: true, failedAttempts: suppression.failedAttempts, classification: "repeated_strategy" },
+          "repeated_strategy",
+        );
+      }
+      const finishAttempt = (
+        status: "succeeded" | "failed",
+        outcome: { exitStatus: number | null; terminationReason: string | null; failureCategory: string | null },
+      ) => actionAttempts.finish(attempt.id, {
+        status,
+        exitStatus: outcome.exitStatus,
+        terminationReason: outcome.terminationReason,
+        failureCategory: outcome.failureCategory,
+        failureFingerprint: null,
+        progressFingerprint: null,
+        completedAt: now(),
+      });
+
+      let result: Awaited<ReturnType<typeof runProcessSafe>>;
+      try {
+        result = await runProcessSafe(exec, cmdArgs, resolvedCwd, process.env, runOptions);
+      } catch (runError) {
+        finishAttempt("failed", { exitStatus: null, terminationReason: "error", failureCategory: "tool_failed" });
+        throw runError;
+      }
 
       if (result.terminationReason === "error") {
+        finishAttempt("failed", { exitStatus: null, terminationReason: "error", failureCategory: "tool_failed" });
         throw new Error(result.error || "Process execution failed");
       }
 
@@ -1684,6 +1782,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         createdAt: now()
       });
 
+      if (result.terminationReason === "timeout") {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: "timeout", failureCategory: "command_timeout" });
+        throw new AgentToolFailure(
+          `Command ${exec} timed out after ${result.durationMs}ms.`,
+          JSON.parse(resultStr),
+          "command_timeout",
+        );
+      }
+      if (result.terminationReason === "cancelled") {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: "cancelled", failureCategory: "command_cancelled" });
+        throw new AgentToolFailure(
+          `Command ${exec} was cancelled before completion.`,
+          JSON.parse(resultStr),
+          "command_cancelled",
+        );
+      }
+      if (result.exitCode !== 0) {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: "command_exit_nonzero" });
+        throw new AgentToolFailure(
+          `Command ${exec} exited with status ${result.exitCode ?? "unknown"}.`,
+          JSON.parse(resultStr),
+          "command_exit_nonzero",
+        );
+      }
+
+      finishAttempt("succeeded", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: null });
       return resultStr;
     } else if (toolName === "propose_patch") {
       const patch = args.patch;
@@ -2226,6 +2350,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             if (result.exitCode !== 0) failedOutcome = `command exited ${result.exitCode}`;
           }
         } catch { /* malformed raw results cannot establish passed verification */ }
+      } else if (call.toolName === "run_command" && call.status === "failed") {
+        // Throw-classified command failures (non-zero exit, timeout, cancel)
+        // never reach the completed branch above. Leaving verification
+        // "missing" here would let a later successful workspace write clear
+        // the outstanding failure â€” the classic "tests failed, file saved,
+        // task claimed done" hole. Keep the failure outstanding until a clean
+        // verification run replaces it.
+        let exitCode: number | undefined;
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
+          if (typeof result.exitCode === "number") exitCode = result.exitCode;
+        } catch { /* no durable exit code; the failure classification still stands */ }
+        verification = exitCode === undefined
+          ? { status: "failed", toolCallId: call.id }
+          : { status: "failed", toolCallId: call.id, exitCode };
       } else if (call.status === "completed") {
         const requiresVerification = taskMissionId !== null || verification.status !== "missing";
         if (requiresVerification) {
@@ -4236,7 +4375,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             : err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
           errorMessage = err.message || "Unknown error";
           resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
-          event("tool.failed", { toolName: tc.name, message: errorMessage });
+          let failureDetails: Record<string, unknown> = {};
+          if (err instanceof AgentToolFailure) {
+            try {
+              const parsed = JSON.parse(err.resultJson) as Record<string, unknown>;
+              failureDetails = {
+                ...(typeof parsed.exitCode === "number" ? { exitCode: parsed.exitCode } : {}),
+                ...(typeof parsed.durationMs === "number" ? { durationMs: parsed.durationMs } : {}),
+                ...(typeof parsed.terminationReason === "string" ? { terminationReason: parsed.terminationReason } : {}),
+              };
+            } catch { /* the bounded result stays on the durable tool-call row */ }
+          }
+          event("tool.failed", {
+            toolName: tc.name,
+            message: errorMessage,
+            classification: errorType,
+            ...failureDetails,
+          });
           missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);

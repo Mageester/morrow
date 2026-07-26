@@ -90,12 +90,19 @@ test("forbidden-content contract rejects dev/acceptance cruft in Morrow's own fi
 });
 
 test("package layout resolver handles root-level and single-top-dir shapes", () => {
-  const atRoot = REQUIRED_PACKAGE_FILES.slice();
+  const webAsset = "web/assets/app.js";
+  const atRoot = [...REQUIRED_PACKAGE_FILES, webAsset];
   assert.equal(resolvePackageRoot(atRoot), "");
 
-  const nested = REQUIRED_PACKAGE_FILES.map((f) => `Morrow-v9.9.9-windows-x64/${f}`);
+  const nested = atRoot.map((f) => `Morrow-v9.9.9-windows-x64/${f}`);
   assert.equal(resolvePackageRoot(nested), "Morrow-v9.9.9-windows-x64/");
 
   const incomplete = nested.filter((f) => !f.endsWith("morrow.cmd"));
   assert.equal(resolvePackageRoot(incomplete), null);
+
+  assert.equal(
+    resolvePackageRoot(REQUIRED_PACKAGE_FILES),
+    null,
+    "an index without a JavaScript asset is not a usable web bundle",
+  );
 });

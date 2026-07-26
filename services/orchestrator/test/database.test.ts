@@ -35,6 +35,23 @@ describe("database", () => {
     expect(memoryColumns).toEqual(expect.arrayContaining(["normalized_content", "type", "lifecycle", "evidence_references_json", "sensitivity", "expires_at"]));
     const providerDiscoveryColumns = (db.prepare("PRAGMA table_info(provider_model_discovery)").all() as Array<{ name: string }>).map((column) => column.name);
     expect(providerDiscoveryColumns).toEqual(expect.arrayContaining(["expires_at", "last_success_at", "credential_identity"]));
+    const actionAttemptColumns = (db.prepare("PRAGMA table_info(action_attempts)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(actionAttemptColumns).toEqual(expect.arrayContaining([
+      "task_id",
+      "mission_id",
+      "tool_call_id",
+      "normalized_signature",
+      "environment_fingerprint",
+      "attempt_number",
+      "strategy",
+      "status",
+      "exit_status",
+      "termination_reason",
+      "failure_category",
+      "failure_fingerprint",
+      "progress_fingerprint",
+      "completed_at",
+    ]));
     db.close();
   });
 

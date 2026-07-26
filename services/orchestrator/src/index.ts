@@ -75,8 +75,9 @@ if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
 }
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;
+const host = process.env.MORROW_BIND_HOST?.trim() || "127.0.0.1";
 
-app.listen({ host: "0.0.0.0", port }).then((address) => {
+app.listen({ host, port }).then((address) => {
   console.log(`Server listening at ${address}`);
 }).catch(err => {
   console.error(err);

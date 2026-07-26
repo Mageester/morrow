@@ -139,7 +139,7 @@ describe("project-scoped conversation API", () => {
       method: "GET",
       url: `/api/projects/project-a/conversations/${conversation.id}/messages`,
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     const body = response.json();
     expect(body).toHaveLength(2);
     expect(body.find((entry: { id: string }) => entry.id === "assistant-message")).toMatchObject({
@@ -152,6 +152,160 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
     expect(JSON.stringify(body)).not.toContain("private artifact contents");
     expect(JSON.stringify(body)).not.toContain("secret.txt");
+  });
+
+  it("projects chronological durable activity without exposing raw arguments, secrets, output, or private reasoning", async () => {
+    const conversation = await create("Inspect durable work");
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    const records = taskRecordsRepository(db);
+    tasks.createTask({
+      id: "task-activity",
+      projectId: "project-a",
+      kind: "agent_chat",
+      status: "running",
+      createdAt: NOW,
+      startedAt: NOW,
+    });
+    conversations.appendMessage({
+      id: "assistant-activity",
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "Working",
+      taskId: "task-activity",
+      streamingState: "streaming",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    records.appendEvent({
+      id: "activity-plan",
+      taskId: "task-activity",
+      type: "plan.created",
+      payload: { stepCount: 3, prompt: "PRIVATE USER PROMPT" },
+      createdAt: "2026-07-22T12:00:01.000Z",
+    });
+    records.appendEvent({
+      id: "activity-tool-start",
+      taskId: "task-activity",
+      type: "tool.started",
+      payload: {
+        id: "tool-1",
+        toolName: "run_command",
+        target: "pnpm test --token sk-super-secret-value",
+        verification: true,
+        arguments: { token: "must-not-leak" },
+      },
+      createdAt: "2026-07-22T12:00:02.000Z",
+    });
+    records.appendEvent({
+      id: "activity-tool-failed",
+      taskId: "task-activity",
+      type: "tool.failed",
+      payload: {
+        toolName: "run_command",
+        message: "Bearer should-never-leak-through-browser",
+        classification: "tool_failed",
+        exitCode: 1,
+      },
+      createdAt: "2026-07-22T12:00:03.000Z",
+    });
+    records.appendEvent({
+      id: "activity-tool-complete",
+      taskId: "task-activity",
+      type: "tool.completed",
+      payload: {
+        id: "tool-1",
+        toolName: "run_command",
+        status: "failed",
+        elapsedMs: 812,
+        exitCode: 1,
+        summary: "stdout includes private artifact contents",
+        outputRef: "private-output-reference",
+      },
+      createdAt: "2026-07-22T12:00:04.000Z",
+    });
+    records.appendEvent({
+      id: "activity-recovery",
+      taskId: "task-activity",
+      type: "tool.strategy_switch",
+      payload: {
+        tool: "run_command",
+        from: "repeat",
+        to: "isolated_test",
+        reason: "repeated_failure",
+        privateReasoning: "PRIVATE CHAIN OF THOUGHT",
+      },
+      createdAt: "2026-07-22T12:00:05.000Z",
+    });
+    records.appendEvent({
+      id: "activity-evidence",
+      taskId: "task-activity",
+      type: "evidence.persisted",
+      payload: {
+        action: "patched",
+        path: "src/app.ts",
+        deltaText: "PRIVATE MODEL OUTPUT",
+      },
+      createdAt: "2026-07-22T12:00:06.000Z",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/project-a/conversations/${conversation.id}/activity`,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      version: 1,
+      projectId: "project-a",
+      conversationId: conversation.id,
+      entries: [
+        { kind: "plan", status: "completed", summary: "Plan created" },
+        {
+          id: "task-activity:tool:tool-1",
+          kind: "command",
+          status: "failed",
+          summary: "Command failed",
+          target: "pnpm test --token [redacted]",
+          durationMs: 812,
+          exitCode: 1,
+        },
+        {
+          kind: "recovery",
+          status: "completed",
+          summary: "Recovery strategy changed",
+        },
+        {
+          kind: "file",
+          status: "completed",
+          summary: "File modified",
+          target: "src/app.ts",
+        },
+      ],
+    });
+    const serialized = response.body;
+    for (const privateValue of [
+      "PRIVATE USER PROMPT",
+      "sk-super-secret-value",
+      "must-not-leak",
+      "should-never-leak",
+      "private artifact contents",
+      "private-output-reference",
+      "PRIVATE CHAIN OF THOUGHT",
+      "PRIVATE MODEL OUTPUT",
+      "arguments",
+      "privateReasoning",
+      "deltaText",
+    ]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+
+    const foreign = await app.inject({
+      method: "GET",
+      url: `/api/projects/project-b/conversations/${conversation.id}/activity`,
+    });
+    expect(foreign.statusCode).toBe(404);
   });
 
   it.each(["failed", "interrupted"] as const)("retries a %s response after its prior terminal cursor", async (terminalState) => {

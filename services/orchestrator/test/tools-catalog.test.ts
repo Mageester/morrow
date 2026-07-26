@@ -22,5 +22,9 @@ describe("tool catalog", () => {
     ]);
     expect(TOOL_CATALOG.find((tool) => tool.name === "browser_open")?.constraints.join(" ")).toMatch(/origin.*approval/i);
     expect(TOOL_CATALOG.find((tool) => tool.name === "browser_screenshot")?.constraints.join(" ")).toMatch(/vision/i);
+    expect(TOOL_CATALOG.find((tool) => tool.name === "run_command")?.parameters.timeoutMs).toMatchObject({
+      type: "number",
+      description: expect.stringMatching(/shorter.*ceiling/i),
+    });
   });
 });

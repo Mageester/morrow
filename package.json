@@ -9,7 +9,10 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "turbo dev --parallel",
+    "dev": "pnpm dev:app",
+    "dev:app": "node -e \"console.log('Morrow app: http://127.0.0.1:4318/app/\\nMorrow API: http://127.0.0.1:4317\\nMarketing site: pnpm dev:site\\nHosted account surfaces: pnpm dev:hosted')\" && turbo dev --parallel --filter=@morrow/web --filter=@morrow/orchestrator",
+    "dev:site": "node -e \"console.log('Morrow marketing site (not the app): Vite URL shown below')\" && pnpm --filter @morrow/landing dev",
+    "dev:hosted": "node -e \"console.log('Morrow hosted account dashboard: http://127.0.0.1:4322\\nHosted API: http://127.0.0.1:8787\\nLocal Morrow app is separate: pnpm dev:app')\" && turbo dev --parallel --filter=@morrow/dashboard --filter=@morrow/hosted-api",
     "build": "turbo build",
     "check": "turbo check && node scripts/validate-repository.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",

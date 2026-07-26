@@ -161,6 +161,7 @@ import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+import { projectConversationActivity } from "./web/activity-projection.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -956,6 +957,25 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
     ownedConversation(projectId, conversationId);
     return webMessages(conversationId);
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/activity", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const taskRows = deps.db.prepare(
+      `SELECT DISTINCT message.task_id AS taskId, message.created_at AS createdAt, message.id AS messageId
+         FROM conversation_messages message
+        WHERE message.conversation_id = ? AND message.task_id IS NOT NULL
+        ORDER BY message.created_at ASC, message.id ASC`,
+    ).all(conversationId) as Array<{ taskId: string; createdAt: string; messageId: string }>;
+    return projectConversationActivity({
+      projectId,
+      conversationId,
+      tasks: taskRows.map((row) => ({
+        taskId: row.taskId,
+        events: records.listEvents(row.taskId),
+      })),
+    });
   });
 
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {

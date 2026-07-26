@@ -222,6 +222,238 @@ a {
   text-transform: uppercase;
 }
 
+/* ── Durable activity inspector ─────────────────────────────────────────── */
+.morrow-conversation-actions__activity {
+  width: auto;
+  gap: var(--morrow-space-2);
+  padding-inline: var(--morrow-space-3);
+}
+
+.morrow-conversation-actions__activity span {
+  font-size: 0.75rem;
+  font-weight: 680;
+}
+
+.morrow-activity-panel {
+  position: fixed;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  display: flex;
+  width: min(440px, calc(100vw - 208px));
+  height: 100dvh;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--morrow-space-4);
+  padding: var(--morrow-space-5);
+  overflow: hidden;
+  background: var(--morrow-surface);
+  border-inline-start: 1px solid var(--morrow-border);
+  box-shadow: -20px 0 48px rgb(31 31 29 / 0.12);
+}
+
+.morrow-activity-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-activity-panel__header h2,
+.morrow-activity-panel__header p {
+  margin: 0;
+}
+
+.morrow-activity-panel__header h2 {
+  margin-top: var(--morrow-space-1);
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.morrow-activity-panel__header button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  place-items: center;
+}
+
+.morrow-activity-panel__contract,
+.morrow-activity-panel__empty,
+.morrow-activity-panel__error p {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.morrow-activity-timeline {
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+.morrow-activity-timeline li {
+  position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+.morrow-activity-timeline li::before {
+  position: absolute;
+  top: 30px;
+  bottom: -8px;
+  left: 7px;
+  width: 1px;
+  background: var(--morrow-border);
+  content: "";
+}
+
+.morrow-activity-timeline li:last-child::before {
+  display: none;
+}
+
+.morrow-activity-timeline details {
+  padding-block: var(--morrow-space-2);
+}
+
+.morrow-activity-timeline summary {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: var(--morrow-space-3);
+  align-items: start;
+  padding: var(--morrow-space-2);
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.morrow-activity-timeline summary:hover {
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-activity-timeline summary::-webkit-details-marker {
+  display: none;
+}
+
+.morrow-activity-entry__marker {
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  background: var(--morrow-text-muted);
+  border: 2px solid var(--morrow-surface);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--morrow-border);
+}
+
+.morrow-activity-timeline li[data-status="running"] .morrow-activity-entry__marker {
+  background: var(--morrow-accent);
+}
+
+.morrow-activity-timeline li[data-status="failed"] .morrow-activity-entry__marker,
+.morrow-activity-timeline li[data-status="blocked"] .morrow-activity-entry__marker {
+  background: var(--morrow-danger);
+}
+
+.morrow-activity-entry__main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.morrow-activity-entry__summary {
+  color: var(--morrow-text);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.morrow-activity-entry__meta,
+.morrow-activity-timeline summary time {
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  text-transform: capitalize;
+}
+
+.morrow-activity-timeline summary time {
+  white-space: nowrap;
+}
+
+.morrow-activity-entry__details {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-2) var(--morrow-space-2) var(--morrow-space-4) 36px;
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-activity-entry__details p,
+.morrow-activity-entry__details dl {
+  margin: 0;
+}
+
+.morrow-activity-entry__details dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--morrow-space-2);
+}
+
+.morrow-activity-entry__details dl div,
+.morrow-activity-entry__target {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.morrow-activity-entry__details dt,
+.morrow-activity-entry__target > span {
+  color: var(--morrow-text-muted);
+  font-weight: 650;
+}
+
+.morrow-activity-entry__details dd {
+  margin: 0;
+  color: var(--morrow-text);
+}
+
+.morrow-activity-entry__target code {
+  max-width: 100%;
+  padding: var(--morrow-space-2);
+  overflow-x: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .morrow-activity-panel {
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    height: min(78dvh, 720px);
+    padding: var(--morrow-space-4);
+    border-top: 1px solid var(--morrow-border);
+    border-inline-start: 0;
+    border-radius: var(--morrow-radius-lg) var(--morrow-radius-lg) 0 0;
+    box-shadow: 0 -20px 48px rgb(31 31 29 / 0.16);
+  }
+
+  .morrow-conversation-actions__activity span {
+    display: none;
+  }
+}
+
 /* ── Universal mission composer ─────────────────────────────────────────── */
 .morrow-composer {
   display: grid;

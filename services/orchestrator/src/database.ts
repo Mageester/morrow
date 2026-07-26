@@ -1157,6 +1157,35 @@ export const migrations:Migration[]=[
     CREATE INDEX tool_artifacts_task_idx ON tool_artifacts(task_id, created_at DESC);
     CREATE INDEX tool_artifacts_hash_idx ON tool_artifacts(content_hash, kind, content_type);
   `}
+  ,{id:41,name:"durable_action_attempts",sql:`
+    CREATE TABLE action_attempts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      mission_id TEXT REFERENCES missions(id) ON DELETE CASCADE,
+      tool_call_id TEXT NOT NULL,
+      action_kind TEXT NOT NULL,
+      normalized_signature TEXT NOT NULL,
+      command_json TEXT,
+      cwd TEXT,
+      environment_fingerprint TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      strategy TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','suppressed')),
+      exit_status INTEGER,
+      termination_reason TEXT,
+      failure_category TEXT,
+      failure_fingerprint TEXT,
+      progress_fingerprint TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      UNIQUE(task_id, tool_call_id)
+    );
+    CREATE INDEX action_attempts_task_idx ON action_attempts(task_id, created_at, id);
+    CREATE INDEX action_attempts_mission_signature_idx
+      ON action_attempts(mission_id, normalized_signature, attempt_number);
+    CREATE INDEX action_attempts_task_signature_idx
+      ON action_attempts(task_id, normalized_signature, attempt_number);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
