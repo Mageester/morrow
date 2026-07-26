@@ -134,6 +134,25 @@ function hashEnvelope(envelope: ProviderRequestEnvelope): string {
   return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
 }
 
+/** Last tool batch may itself be wider than a provider's usable input. Keep
+ * durable checkpoint state plus a terse operation ledger, never raw arguments
+ * or observations. The original turns and artifacts remain available locally. */
+function compactLatestBatch(groups: ChatMessage[][]): ChatMessage {
+  const latest = groups.at(-1) ?? [];
+  const entries = latest.map((message) => {
+    if (message.role === "tool") return `- ${message.name ?? "tool"}: completed`;
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      return `- assistant called: ${message.toolCalls.map((call) => call.function.name).join(", ")}`;
+    }
+    const text = message.content.replace(/\s+/g, " ").slice(0, 1_200);
+    return `- ${message.role}: ${text || "completed"}`;
+  });
+  return {
+    role: "system",
+    content: `Morrow compacted the latest completed execution batch to fit this route. Full tool records remain durable; continue from checkpoint and inspect narrowly if needed.\n${entries.join("\n")}`,
+  };
+}
+
 /**
  * Apply the one route-aware admission rule to a complete provider envelope.
  * Once the configurable pressure threshold is reached, replace old raw history
@@ -174,8 +193,15 @@ export function projectProviderRequest(input: {
   if (!ordering.ok) {
     throw new Error(`Durable provider projection is invalid: ${ordering.reason} (${ordering.detail})`);
   }
-  const envelope = { ...input.envelope, messages };
-  const admission = admitProviderRequest(envelope, input.resolution);
+  let envelope = { ...input.envelope, messages };
+  let admission = admitProviderRequest(envelope, input.resolution);
+  // A batch can contain many individually-safe reads/writes. If their combined
+  // newest group still cannot fit, compact that completed group too instead of
+  // failing after claiming automatic compaction succeeded.
+  if (!admission.ok) {
+    envelope = { ...input.envelope, messages: [...system, checkpointMessage(input.checkpoint), compactLatestBatch(groups)] };
+    admission = admitProviderRequest(envelope, input.resolution);
+  }
   return {
     envelope,
     admission,

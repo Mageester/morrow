@@ -159,4 +159,37 @@ describe("durable provider projection", () => {
     expect(result.originalMeasurement.components.toolSchemas).toBeGreaterThan(20_000);
     expect(result.compacted).toBe(true);
   });
+
+  it("compacts an oversized newest tool batch instead of rejecting the route", () => {
+    const calls = Array.from({ length: 12 }, (_, index) => ({
+      id: `read-${index}`,
+      type: "function" as const,
+      function: { name: "read_file", arguments: JSON.stringify({ path: `${index}.ts` }) },
+    }));
+    const result = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "rules" },
+          { role: "user", content: "old context ".repeat(35_000) },
+          { role: "assistant", content: "Read every source file", toolCalls: calls },
+          ...calls.map((call) => ({ role: "tool" as const, name: "read_file", toolCallId: call.id, content: "source contents ".repeat(3_000) })),
+        ],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+    expect(result.compacted).toBe(true);
+    expect(result.admission.ok).toBe(true);
+    const projection = result.envelope.messages.map((message) => message.content).join("\n");
+    expect(projection).toContain("latest completed execution batch");
+    expect(projection).toContain("read_file: completed");
+    expect(projection).not.toContain("source contents source contents");
+  });
 });
