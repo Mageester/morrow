@@ -335,9 +335,12 @@ function capToolResult(toolName: string, result: string, externalizer?: (text: s
 
 function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
   const bytes = Buffer.byteLength(rawArguments, "utf8");
-  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   try {
     const parsed = JSON.parse(rawArguments) as Record<string, unknown>;
+    // Write payloads are already applied and durable. Repeating their full
+    // content in a later provider turn is pure context debt: a single batch
+    // can create many ordinary-sized files whose combined arguments exceed a
+    // small route even though no individual argument crosses the byte cap.
     if (toolName === "create_file" && typeof parsed.content === "string") {
       return JSON.stringify({
         ...parsed,
@@ -354,9 +357,11 @@ function capToolArgumentsForContext(toolName: string, rawArguments: string): str
         originalArgumentBytes: bytes,
       });
     }
+    if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   } catch {
     // Fall through to a compact opaque placeholder.
   }
+  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalArgumentBytes: bytes });
 }
 
