@@ -221,7 +221,9 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, projectId
   return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
 }
 
-const TOOL_RESULT_BYTE_LIMIT = 24 * 1024;
+// Match artifact externalization: recent raw tool groups must fit a small
+// route after all tool schemas and request reserves are counted.
+const TOOL_RESULT_BYTE_LIMIT = 8 * 1024;
 const TOP_LEVEL_ENTRY_LIMIT = 80;
 
 async function buildWorkspaceDiscovery(

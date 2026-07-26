@@ -18,7 +18,11 @@ import type { ToolArtifactRepository } from "../repositories/tool-artifacts.js";
  * itself is opaque bytes; the agent's redaction layer is upstream.)
  */
 
-export const DEFAULT_INLINE_BYTE_LIMIT = 24 * 1024;
+// A compacted request keeps its most recent tool group. Keeping multiple
+// 24 KiB observations inline can still exceed smaller free-route windows,
+// even after older history is summarized. Eight KiB keeps enough immediate
+// evidence while preserving the complete output in the artifact store.
+export const DEFAULT_INLINE_BYTE_LIMIT = 8 * 1024;
 
 export type ExternalizedToolResult =
   | { kind: "inline"; text: string; bytes: number }
