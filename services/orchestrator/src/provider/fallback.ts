@@ -41,19 +41,26 @@ export interface OpenStreamResult {
 
 /** Heuristic: transient/transport failures are retryable; client/request errors are not. */
 export function isRetryableProviderError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // Compatible gateways sometimes tunnel an upstream 5xx through their own
+  // HTTP 400 envelope. Explicit upstream-outage text is stronger evidence than
+  // that wrapper status and is safe to retry within the bounded recovery cap.
+  if (/(upstream (?:request )?failed|upstream error)/.test(message)) return true;
   if (err instanceof ProviderError) {
     if (err.kind === "cancelled") return false;
     if (err.kind === "rate_limit" || err.kind === "timeout" || err.kind === "network") return true;
     if (err.kind === "auth" || err.kind === "invalid_request") return false;
-    if (err.kind === "provider") return err.retryable;
+    if (err.kind === "provider" && err.retryable) return true;
+    // Some compatible gateways label transient upstream outages as a generic
+    // non-retryable provider error. Fall through to message classification;
+    // auth and invalid-request errors already returned false above.
     // "unknown": no usable classification — fall through to the message heuristic.
   }
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   if (!message) return false;
   // Cancellation is never a fallback trigger — the user asked to stop.
   if (/(abort|cancel)/.test(message)) return false;
   if (/(429|rate.?limit|too many requests|quota)/.test(message)) return true;
-  if (/(econnrefused|econnreset|enotfound|etimedout|eai_again|timeout|timed out|socket hang up|network|fetch failed|unavailable|overloaded|\b50[0234]\b)/.test(message)) {
+  if (/(econnrefused|econnreset|enotfound|etimedout|eai_again|timeout|timed out|socket hang up|network|fetch failed|upstream (?:request )?failed|upstream error|unavailable|overloaded|\b50[0234]\b)/.test(message)) {
     return true;
   }
   return false;

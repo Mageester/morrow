@@ -9,7 +9,7 @@ import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { approvalsRepository } from "../src/repositories/approvals.js";
 import { changeSetsRepository } from "../src/repositories/change-sets.js";
 import { MockProvider } from "../src/provider/mock.js";
-import { executeAgentChatTask } from "../src/execution/agent.js";
+import { capToolArgumentsForContext, executeAgentChatTask } from "../src/execution/agent.js";
 import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -47,6 +47,63 @@ describe("agent file creation under YOLO", () => {
   let ws: string;
   beforeEach(() => { ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-create-"))); db = openDatabase(":memory:"); });
   afterEach(() => { try { db.close(); } catch {} rmSync(ws, { recursive: true, force: true }); });
+
+  it("removes applied write bodies from provider context without creating copyable content placeholders", () => {
+    const normalized = JSON.parse(capToolArgumentsForContext("create_file", JSON.stringify({
+      path: "src/index.ts",
+      content: "export const ready = true;\n",
+    })));
+
+    expect(normalized.path).toBe("src/index.ts");
+    expect(normalized).not.toHaveProperty("content");
+    expect(normalized._morrowAppliedWrite).toMatchObject({
+      kind: "create_file",
+      contentBytes: 27,
+      instruction: "Historical applied write. Read workspace file for current content.",
+    });
+    expect(normalized._morrowAppliedWrite.contentSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("refuses to write a generated context omission marker into a workspace file", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: "src/index.ts", content: "[omitted 56 bytes already provided to create_file]" }), done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(existsSync(join(ws, "src", "index.ts"))).toBe(false);
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((row: any) => row.id === "f1");
+    expect(call?.status).toBe("failed");
+    expect(JSON.parse(call!.resultJson!).kind).toBe("context_placeholder_rejected");
+  });
+
+  it("refuses auxiliary placeholder files used only to manufacture progress", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("probe", "create_file", {
+          path: "test/placeholder.txt",
+          content: "placeholder to verify create_file works\n",
+          purpose: "test file creation",
+        }), done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(existsSync(join(ws, "test", "placeholder.txt"))).toBe(false);
+    const call = conversationsRepository(db).listToolCallsForTask("t").find((row: any) => row.id === "probe");
+    expect(JSON.parse(call!.resultJson!).kind).toBe("auxiliary_progress_probe_rejected");
+  });
 
   it("creates directories and files, runs a command, and reflects them in change sets — no human, no crash", async () => {
     seedYolo(db, ws);
@@ -188,6 +245,33 @@ describe("agent file creation under YOLO", () => {
     const changeSets = changeSetsRepository(db).listByTask("t");
     const editChange = changeSets.find((cs) => Object.keys(cs.postApplyHashes ?? {}).includes("keep.txt") && Object.keys(cs.backupReferences ?? {}).includes("keep.txt"));
     expect(editChange, "the overwrite should be captured as a backed-up change set").toBeTruthy();
+  });
+
+  it("rejects repeated whole-file rewrites of one target instead of counting fake progress", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("f1", "create_file", { path: "package.json", content: '{"name":"first"}\n' }), done],
+        [tool("f2", "create_file", { path: "package.json", content: '{"name":"second"}\n' }), done],
+        [tool("f3", "create_file", { path: "package.json", content: '{"name":"third"}\n' }), done],
+        [tool("f4", "create_file", { path: "src/index.ts", content: "export const ready = true;\n" }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(readFileSync(join(ws, "package.json"), "utf8")).toBe('{"name":"second"}\n');
+    expect(readFileSync(join(ws, "src/index.ts"), "utf8")).toBe("export const ready = true;\n");
+    const calls = conversationsRepository(db).listToolCallsForTask("t").filter((c: any) => c.toolName === "create_file");
+    expect(calls.map((call: any) => call.status)).toEqual(["completed", "completed", "failed", "completed"]);
+    expect(JSON.parse(calls[2]!.resultJson!)).toMatchObject({
+      kind: "repeated_file_overwrite_rejected",
+      targetFile: "package.json",
+      successfulWritesThisTask: 2,
+    });
   });
 
   it("reports patch_no_effect when an edit would leave an existing file unchanged", async () => {

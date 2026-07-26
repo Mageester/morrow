@@ -32,6 +32,15 @@ export interface DurableToolObservation {
   id: string;
   toolName: string;
   result: string;
+  status?: "completed" | "failed";
+}
+
+const CHECKPOINT_PREFIX = "Morrow durable execution checkpoint.";
+const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution batch";
+
+function isGeneratedProjectionMessage(message: ChatMessage): boolean {
+  return message.role === "system"
+    && (message.content.startsWith(CHECKPOINT_PREFIX) || message.content.startsWith(COMPACTED_BATCH_PREFIX));
 }
 
 /**
@@ -54,14 +63,22 @@ export function buildProviderProjection(input: {
       role: "assistant",
       content: turn.assistantText,
       ...(turn.toolCalls.length > 0 ? {
-        toolCalls: turn.toolCalls.map((call) => ({
-          id: call.id,
-          type: "function" as const,
-          function: {
-            name: call.name,
-            arguments: input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments,
-          },
-        })),
+      toolCalls: turn.toolCalls.map((call) => {
+          const observation = results.get(call.id);
+          return {
+            id: call.id,
+            type: "function" as const,
+            function: {
+              name: call.name,
+              // Failed write calls need their original body on the next turn
+              // so provider can repair one bad field. Compact only calls whose
+              // effect completed durably.
+              arguments: observation?.status === "failed"
+                ? call.arguments
+                : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments,
+            },
+          };
+        }),
       } : {}),
       ...(turn.providerContinuation ? { providerContinuation: turn.providerContinuation } : {}),
       ...(turn.providerContinuationRouteFingerprint ? { providerContinuationRouteFingerprint: turn.providerContinuationRouteFingerprint } : {}),
@@ -87,7 +104,9 @@ export function projectionFingerprint(messages: ChatMessage[]): string {
 }
 
 function groupDurableMessages(messages: ChatMessage[]): { system: ChatMessage[]; groups: ChatMessage[][] } {
-  const system = messages.filter((message) => message.role === "system");
+  // Projection output can become next segment's input. Replace old generated
+  // checkpoint/batch messages instead of preserving and stacking them forever.
+  const system = messages.filter((message) => message.role === "system" && !isGeneratedProjectionMessage(message));
   const groups: ChatMessage[][] = [];
   for (const message of messages) {
     if (message.role === "system") continue;
@@ -100,9 +119,9 @@ function groupDurableMessages(messages: ChatMessage[]): { system: ChatMessage[];
 /** Serialize only mission-owned checkpoint state. Provider continuation row IDs
  * and provider-owned opaque values are deliberately excluded from projection. */
 function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
-  const boundedList = (values: string[], limit: number, itemLimit = 500): string[] =>
+  const boundedList = (values: string[], limit: number, itemLimit = 300): string[] =>
     values.slice(-limit).map((value) => value.slice(0, itemLimit));
-  const boundedGitStatus = snapshot.gitStatus.split(/\r?\n/).slice(-80).join("\n").slice(0, 4_000);
+  const boundedGitStatus = snapshot.gitStatus.split(/\r?\n/).slice(-40).join("\n").slice(0, 2_000);
   const publicSnapshot = {
     version: snapshot.version,
     missionContract: {
@@ -112,15 +131,15 @@ function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
       acceptanceCriteria: boundedList(snapshot.acceptanceCriteria, 30),
     },
     execution: {
-      decisions: boundedList(snapshot.decisions, 30),
-      completedWork: boundedList(snapshot.completedWork, 40),
+      decisions: boundedList(snapshot.decisions, 20),
+      completedWork: boundedList(snapshot.completedWork, 20),
       currentPhase: snapshot.currentPhase,
-      filesChanged: boundedList(snapshot.filesChanged, 40, 300),
+      filesChanged: boundedList(snapshot.filesChanged, 20, 200),
       gitStatus: boundedGitStatus,
-      tests: snapshot.tests.slice(-20).map((test) => ({ ...test, command: test.command.slice(0, 500), result: test.result.slice(0, 1_000) })),
-      unresolvedFailures: boundedList(snapshot.unresolvedFailures, 20, 1_000),
-      recoveryAttempts: boundedList(snapshot.recoveryAttempts, 20, 1_000),
-      pendingWork: boundedList(snapshot.pendingWork, 30),
+      tests: snapshot.tests.slice(-10).map((test) => ({ ...test, command: test.command.slice(0, 200), result: test.result.slice(0, 500) })),
+      unresolvedFailures: boundedList(snapshot.unresolvedFailures, 10, 500),
+      recoveryAttempts: boundedList(snapshot.recoveryAttempts, 10, 500),
+      pendingWork: boundedList(snapshot.pendingWork, 20),
       approvals: snapshot.approvals,
       evidenceRequired: boundedList(snapshot.evidenceRequired, 30),
     },
@@ -129,7 +148,7 @@ function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
   };
   return {
     role: "system",
-    content: `Morrow durable execution checkpoint. Continue the same mission; this is not a new task and is not completion.\n${JSON.stringify(publicSnapshot)}`,
+    content: `${CHECKPOINT_PREFIX} Continue the same mission; this is not a new task and is not completion.\n${JSON.stringify(publicSnapshot)}`,
   };
 }
 
@@ -152,7 +171,7 @@ function compactLatestBatch(groups: ChatMessage[][]): ChatMessage {
   });
   return {
     role: "system",
-    content: `Morrow compacted the latest completed execution batch to fit this route. Full tool records remain durable; continue from checkpoint and inspect narrowly if needed.\n${entries.join("\n")}`,
+    content: `${COMPACTED_BATCH_PREFIX} to fit this route. Full tool records remain durable; continue from checkpoint and inspect narrowly if needed.\n${entries.join("\n")}`,
   };
 }
 

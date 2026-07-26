@@ -189,6 +189,27 @@ describe("agent completion gate", () => {
     expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after transient empty provider response");
   });
 
+  it("recovers when a reasoning-heavy provider needs multiple empty continuations", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [done],
+        [done],
+        [done],
+        [text("verified after output-limit continuations"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after output-limit continuations");
+    expect(taskRecordsRepository(db).listEvents("t").filter((event) => event.payload.reason === "empty_provider_response"))
+      .toHaveLength(3);
+  });
+
   it("does not report completed when a final node --check exits non-zero", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({

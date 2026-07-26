@@ -9,8 +9,9 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { MockProvider } from "../src/provider/mock.js";
 import type { ProviderChunk } from "../src/provider/base.js";
-import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executeAgentChatTask, runCommandIsVerification, toolCallPassedVerification } from "../src/execution/agent.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 
 describe("agent loop detection", () => {
   let db: Database.Database;
@@ -43,6 +44,23 @@ describe("agent loop detection", () => {
     conversationsRepository(db).appendMessage({ id: "msg-assistant", conversationId: "c1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: ts, updatedAt: ts });
   }
 
+  it("does not count a completed command transport with nonzero exit as passed verification", () => {
+    expect(toolCallPassedVerification({
+      status: "completed",
+      toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "npm", args: ["test"], purpose: "verification" }),
+      resultJson: JSON.stringify({ exitCode: 2 }),
+    })).toBe(false);
+    expect(toolCallPassedVerification({
+      status: "completed",
+      toolName: "run_command",
+      argsJson: JSON.stringify({ executable: "npm", args: ["test"], purpose: "verification" }),
+      resultJson: JSON.stringify({ exitCode: 0 }),
+    })).toBe(true);
+    expect(runCommandIsVerification({ executable: "type", args: ["src/index.ts"], purpose: "Read source file" })).toBe(false);
+    expect(runCommandIsVerification({ executable: "npm", args: ["run", "build"], purpose: "Compile project" })).toBe(true);
+  });
+
   // One turn that always requests the identical tool call. Repeated across turns
   // this is exactly the pathological loop the detector must catch.
   const repeatTurn = (): ProviderChunk[] => [
@@ -57,7 +75,7 @@ describe("agent loop detection", () => {
 
   it("interrupts a repeated identical tool call with reason loop_detected and does not mark success", async () => {
     seed();
-    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
+    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
@@ -70,10 +88,33 @@ describe("agent loop detection", () => {
 
     const events = records.listEvents("task-1") as Array<{ type: string; payload: any }>;
     expect(events.some((e) => e.payload?.reason === "loop_detected")).toBe(true);
+    expect(events.some((e) => e.payload?.reason === "loop_recovery")).toBe(true);
 
     const msg = conversationsRepository(db).getMessage("msg-assistant");
     expect(msg?.streamingState).toBe("interrupted");
     expect(msg?.content).toContain("Loop detected");
+  });
+
+  it("uses one bounded recovery turn when the provider changes strategy", async () => {
+    seed();
+    writeFileSync(join(tempDir, "other.md"), "Other");
+    const provider = new MockProvider({
+      chunks: [
+        repeatTurn(),
+        repeatTurn(),
+        repeatTurn(),
+        [
+          { type: "tool_call", toolCalls: [{ id: "other", index: 0, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "other.md" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "Recovered and finished." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "loop_recovery")).toBe(true);
   });
 
   it("does not interrupt when the model varies its tool calls and then answers", async () => {
@@ -98,9 +139,34 @@ describe("agent loop detection", () => {
     expect(finalTask?.status).toBe("completed");
   });
 
+  it("counts a repeated signature once per turn instead of treating one parallel batch as a loop", async () => {
+    seed();
+    const repeatedBatch: ProviderChunk[] = [
+      {
+        type: "tool_call",
+        toolCalls: ["a", "b", "c"].map((id, index) => ({
+          id,
+          index,
+          type: "function" as const,
+          function: { name: "read_file", arguments: JSON.stringify({ path: "readme.md" }) },
+        })),
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [repeatedBatch, [{ type: "text", text: "File inspected." }, { type: "done" }]],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "loop_detected"))
+      .toBe(false);
+  });
+
   it("returns a mission loop to the controller as a strategy change", async () => {
     seed(true);
-    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
+    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
@@ -139,5 +205,74 @@ describe("agent loop detection", () => {
     expect(events.some((event) => event.payload?.reason === "turn_budget_reached")).toBe(false);
     expect(executionContinuityRepository(db).listSegments("task-1").at(-1)?.boundaryReason)
       .toBe("candidate_answer_ready");
+  });
+
+  it("does not treat turn-budget checkpoints as progress during post-delivery read roaming", async () => {
+    seed();
+    taskRoutingRepository(db).upsert({
+      taskId: "task-1",
+      presetId: "coding",
+      providerId: "mock",
+      model: "mock-model",
+      useMemory: false,
+      decision: {
+        version: 1,
+        presetId: "coding",
+        providerId: "mock",
+        model: "mock-model",
+        reason: "test",
+        fallbackUsed: false,
+        overridden: false,
+        privacy: "cloud",
+        candidates: [],
+        mode: "agent",
+        autoApprove: true,
+      },
+      createdAt: new Date().toISOString(),
+    });
+
+    const turns: ProviderChunk[][] = [[
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id: "deliver",
+          index: 0,
+          type: "function",
+          function: { name: "create_file", arguments: JSON.stringify({ path: "delivered.txt", content: "done\n" }) },
+        }],
+      },
+      { type: "done" },
+    ]];
+    for (let index = 0; index < 20; index++) {
+      const path = `roam-${index}.txt`;
+      writeFileSync(join(tempDir, path), `roam ${index}`);
+      turns.push([
+        {
+          type: "tool_call",
+          toolCalls: [{
+            id: `roam-${index}`,
+            index: 0,
+            type: "function",
+            function: { name: "read_file", arguments: JSON.stringify({ path }) },
+          }],
+        },
+        { type: "done" },
+      ]);
+    }
+    turns.push([{ type: "text", text: "Finished after roaming." }, { type: "done" }]);
+
+    await executeAgentChatTask({
+      db,
+      taskId: "task-1",
+      provider: new MockProvider({ chunks: turns }),
+      maxTurns: 6,
+    });
+
+    const reads = conversationsRepository(db).listToolCallsForTask("task-1")
+      .filter((call) => call.toolName === "read_file");
+    expect(reads.length).toBeLessThan(20);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "stalled"))
+      .toBe(true);
   });
 });

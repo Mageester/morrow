@@ -10,7 +10,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
-import type { AiProvider, ProviderChunk } from "../src/provider/base.js";
+import { ProviderError, type AiProvider, type ProviderChunk } from "../src/provider/base.js";
 
 /** A provider that always fails to start with a retryable transport error. */
 function throwingProvider(message: string): AiProvider {
@@ -66,6 +66,58 @@ describe("agent live provider fallback", () => {
       { providerId: "mock", status: "checkpointed" },
       { providerId: "secondary", status: "completed" },
     ]);
+  });
+
+  it("treats a provider console upstream failure as transient and recovers", async () => {
+    const secondary = new MockProvider({ chunks: [[{ type: "text", text: "recovered after upstream failure" }, { type: "done" }]] });
+    (secondary as unknown as { id: string }).id = "secondary";
+
+    await executeAgentChatTask({
+      db,
+      taskId: "t1",
+      provider: throwingProvider("Error from provider (Console): Upstream request failed"),
+      fallbackProviders: [secondary],
+    });
+
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")?.content).toBe("recovered after upstream failure");
+  });
+
+  it("recovers when a compatible gateway mislabels an upstream outage as non-retryable", async () => {
+    const primary: AiProvider = {
+      async *streamChat(): AsyncIterable<ProviderChunk> {
+        throw new ProviderError("provider_error", "Error from provider (Console): Upstream request failed", {
+          kind: "provider",
+          retryable: false,
+        });
+      },
+    };
+    const secondary = new MockProvider({ chunks: [[{ type: "text", text: "recovered from mislabeled outage" }, { type: "done" }]] });
+    (secondary as unknown as { id: string }).id = "secondary";
+
+    await executeAgentChatTask({ db, taskId: "t1", provider: primary, fallbackProviders: [secondary] });
+
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")?.content).toBe("recovered from mislabeled outage");
+  });
+
+  it("recovers when a gateway wraps an upstream outage in HTTP 400", async () => {
+    const primary: AiProvider = {
+      async *streamChat(): AsyncIterable<ProviderChunk> {
+        throw new ProviderError("invalid_request", "Error from provider (Console): Upstream request failed", {
+          kind: "invalid_request",
+          retryable: false,
+          status: 400,
+        });
+      },
+    };
+    const secondary = new MockProvider({ chunks: [[{ type: "text", text: "recovered from wrapped upstream outage" }, { type: "done" }]] });
+    (secondary as unknown as { id: string }).id = "secondary";
+
+    await executeAgentChatTask({ db, taskId: "t1", provider: primary, fallbackProviders: [secondary] });
+
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")?.content).toBe("recovered from wrapped upstream outage");
   });
 
   it("fails the task when the primary error is fatal (non-retryable) — no masking via fallback", async () => {

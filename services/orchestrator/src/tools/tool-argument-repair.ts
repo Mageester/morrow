@@ -54,6 +54,88 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function tokenizeCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let started = false;
+
+  for (const char of command.trim()) {
+    if (escaped) {
+      token += char;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (quote && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      else token += char;
+      started = true;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (started) {
+        tokens.push(token);
+        token = "";
+        started = false;
+      }
+      continue;
+    }
+    token += char;
+    started = true;
+  }
+
+  if (quote || escaped) return null;
+  if (started) tokens.push(token);
+  return tokens.length > 0 ? tokens : null;
+}
+
+/**
+ * Normalize one common provider dialect without invoking a shell. Several
+ * OpenAI-compatible models emit run_command as `{ command, working_directory }`
+ * even when given Morrow's `{ executable, args, cwd }` schema. Tokenize that
+ * command into an argv vector. Ignore an absolute legacy working directory:
+ * Morrow commands remain rooted in the project unless a safe relative cwd was
+ * supplied.
+ */
+export function normalizeToolArguments(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    toolName !== "run_command"
+    || typeof args.executable === "string"
+    || typeof args.command !== "string"
+    || args.args !== undefined
+  ) {
+    return args;
+  }
+
+  const tokens = tokenizeCommand(args.command);
+  if (!tokens) return args;
+
+  const normalized = { ...args };
+  delete normalized.command;
+  normalized.executable = tokens[0]!;
+  normalized.args = tokens.slice(1);
+
+  if (
+    normalized.cwd === undefined
+    && typeof normalized.working_directory === "string"
+    && !isAnyAbsolutePath(normalized.working_directory)
+  ) {
+    normalized.cwd = normalized.working_directory;
+  }
+  delete normalized.working_directory;
+  return normalized;
+}
+
 /**
  * Scan for balanced top-level `{...}` objects while respecting string literals
  * and escapes. Returns the substrings plus whether the input ended while still

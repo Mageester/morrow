@@ -149,6 +149,21 @@ describe("ChatComposer", () => {
     } satisfies ChatComposerSubmission);
   });
 
+  it("keeps Build supervision selected across composer remounts", async () => {
+    const user = userEvent.setup();
+    const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Build" }));
+    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
+    first.unmount();
+
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("checkbox", { name: "Approve changes automatically" })).toBeChecked();
+    expect(screen.getByText("Morrow will edit files and run commands without stopping to ask.")).toBeVisible();
+  });
+
   it("clears draft only after acceptance and blocks rapid duplicate sends", async () => {
     const user = userEvent.setup();
     let accept!: (value: { accepted: true }) => void;

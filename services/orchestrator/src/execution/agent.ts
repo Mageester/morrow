@@ -23,14 +23,14 @@ import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinu
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
-import { assessExhaustion, assessProgress, type MissionProgressSnapshot } from "./progress.js";
+import { assessExhaustion, assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
 import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
-import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
+import { repairAndParseToolArguments, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { processesRepository } from "../repositories/processes.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
@@ -47,6 +47,7 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
 import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
@@ -333,7 +334,7 @@ function capToolResult(toolName: string, result: string, externalizer?: (text: s
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: bytes, head, tail });
 }
 
-function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
+export function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
   const bytes = Buffer.byteLength(rawArguments, "utf8");
   try {
     const parsed = JSON.parse(rawArguments) as Record<string, unknown>;
@@ -342,17 +343,31 @@ function capToolArgumentsForContext(toolName: string, rawArguments: string): str
     // can create many ordinary-sized files whose combined arguments exceed a
     // small route even though no individual argument crosses the byte cap.
     if (toolName === "create_file" && typeof parsed.content === "string") {
+      const content = parsed.content;
+      const { content: _content, ...rest } = parsed;
       return JSON.stringify({
-        ...parsed,
-        content: `[omitted ${Buffer.byteLength(parsed.content, "utf8")} bytes already provided to create_file]`,
+        ...rest,
+        _morrowAppliedWrite: {
+          kind: "create_file",
+          contentBytes: Buffer.byteLength(content, "utf8"),
+          contentSha256: createHash("sha256").update(content).digest("hex"),
+          instruction: "Historical applied write. Read workspace file for current content.",
+        },
         truncatedForContext: true,
         originalArgumentBytes: bytes,
       });
     }
     if (toolName === "propose_patch" && typeof parsed.patch === "string") {
+      const patch = parsed.patch;
+      const { patch: _patch, ...rest } = parsed;
       return JSON.stringify({
-        ...parsed,
-        patch: `[omitted ${Buffer.byteLength(parsed.patch, "utf8")} bytes already provided to propose_patch]`,
+        ...rest,
+        _morrowAppliedWrite: {
+          kind: "propose_patch",
+          patchBytes: Buffer.byteLength(patch, "utf8"),
+          patchSha256: createHash("sha256").update(patch).digest("hex"),
+          instruction: "Historical applied patch. Read workspace file or git diff for current content.",
+        },
         truncatedForContext: true,
         originalArgumentBytes: bytes,
       });
@@ -363,6 +378,28 @@ function capToolArgumentsForContext(toolName: string, rawArguments: string): str
   }
   if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalArgumentBytes: bytes });
+}
+
+export function runCommandIsVerification(args: Record<string, unknown>): boolean {
+  const purpose = typeof args.purpose === "string" ? args.purpose : "";
+  const executable = typeof args.executable === "string" ? args.executable : "";
+  const argv = Array.isArray(args.args) ? args.args.filter((item): item is string => typeof item === "string") : [];
+  const intent = `${purpose} ${executable} ${argv.join(" ")}`;
+  return /\b(?:build|test|verify|verification|check|lint|typecheck|compile)\b/i.test(intent)
+    || /\b(?:tsc|vitest|jest|pytest)\b/i.test(executable);
+}
+
+export function toolCallPassedVerification(call: Pick<ToolCallRecord, "status" | "toolName" | "resultJson" | "argsJson">): boolean {
+  if (call.status !== "completed") return false;
+  if (call.toolName !== "run_command") return true;
+  try {
+    const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+    if (!runCommandIsVerification(args)) return false;
+    const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
 }
 
 function duplicateToolResult(toolName: string, previousBytes: number): string {
@@ -1262,6 +1299,7 @@ export async function executeAgentChatTask({
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
   const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+  const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(latestUserPrompt);
@@ -1939,6 +1977,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let previousProgressSnapshot: MissionProgressSnapshot | null = null;
   let progressWindowStart = 0;
   let diagnosisCompleted = false;
+  let stagnationRecoveryAttempts = 0;
+  let loopRecoveryAttempts = 0;
+  let novelPostDeliveryReadTurns = 0;
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
@@ -1947,13 +1988,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // keeps emitting differently-broken diffs for the same file never trips the
   // per-hash ceiling; this counter drives the escalation to create_file.
   const patchFailureCountsByFile = new Map<string, number>();
+  // create_file may repair one target once, but repeated whole-file rewrites
+  // are not meaningful delivery progress.
+  const createFileWritesByPath = new Map<string, number>();
   // Bounded correction budget for malformed / schema-invalid tool arguments,
   // keyed by tool name so a provider that keeps emitting broken JSON for the
   // same tool is stopped after one corrective retry instead of looping.
   const malformedArgAttemptsByTool = new Map<string, number>();
+  const toolArgumentAttemptKey = (toolName: string, rawArguments: string, field = "format", parsed?: Record<string, unknown>) => {
+    const parsedPath = typeof parsed?.path === "string" ? parsed.path : null;
+    const rawPath = rawArguments.match(/"path"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+    const target = parsedPath ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
+    return `${toolName}:${field}:${target}`;
+  };
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
+  const resetTransientToolTracking = () => {
+    // Provider projection replaced earlier raw tool observations. A read that
+    // existed only in removed context must be allowed again in fresh segment;
+    // otherwise duplicate suppression returns no content and creates a loop.
+    seenToolSignatures.clear();
+    toolResultBytesBySignature.clear();
+    loopDetector.reset();
+  };
   let responseContent = assistantMessageRow.content || "";
 
   // Turn-boundary tracking. `responseContent` stays a whole-task accumulator
@@ -2144,6 +2202,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
+      if (call.toolName === "run_command") {
+        try {
+          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)) continue;
+        } catch {
+          continue;
+        }
+      }
       // A call denied purely because the current mode forbids it (read-only /
       // plan-only) is an expected constraint, not a failed verification â€” it
       // must not block completion. See the matching skip in the live-path
@@ -2206,7 +2271,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     chatMessages.push(...buildProviderProjection({
       prefixMessages: [],
       turns: turnsForProjection,
-      toolResults: finalToolCalls.map((call) => ({ id: call.id, toolName: call.toolName, result: call.resultJson || "" })),
+      toolResults: finalToolCalls.map((call) => ({
+        id: call.id,
+        toolName: call.toolName,
+        result: call.resultJson || "",
+        status: call.status === "failed" ? "failed" as const : "completed" as const,
+      })),
       normalizeToolArguments: capToolArgumentsForContext,
     }));
   } else if (finalToolCalls.length > 0) {
@@ -2272,6 +2342,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let providerRecoverySegments = 0;
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
+  let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -2425,7 +2496,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       completedToolSignatures: [...seenProgressFingerprints],
       verifications: calls
         .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName))
-        .map((call) => ({ id: call.id, passed: call.status === "completed" })),
+        .map((call) => ({ id: call.id, passed: toolCallPassedVerification(call) })),
       unresolvedFailures: calls
         .filter((call) => call.status === "failed")
         .map((call) => `${call.toolName}: ${call.errorMessage ?? call.status}`),
@@ -2650,6 +2721,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     event("assistant.turn_started", { turnId: currentTurnId });
     const completedToolSignatures: string[] = [];
     const repeatedToolSignatures: string[] = [];
+    const loopSignaturesRecordedThisTurn = new Set<string>();
+    const argumentProblemsRecordedThisTurn = new Set<string>();
     let loopDetected: { signature: string; count: number } | null = null;
     // Set when a tool's argument-correction budget is spent and the model sent
     // yet another invalid call anyway. Until this existed, `retryExhausted`
@@ -2762,6 +2835,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         // Full records remain durable in conversation/tool/turn tables. Only
         // the transient provider projection is replaced by the verified-fit
         // compacted projection, making repeated rebuilds idempotent.
@@ -2976,6 +3050,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         openedFreshSegment = true;
         chatMessages.splice(0, chatMessages.length, ...selectedProjection.envelope.messages);
         turn = 1;
@@ -3006,6 +3081,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             generation: currentSegment.generation,
             now: now(),
           });
+          resetTransientToolTracking();
           openedFreshSegment = true;
           await onSegmentBoundary?.("provider_failure");
         }
@@ -3153,9 +3229,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       closeCurrentTurn({ final: false, aborted: true });
-      if ((isRetryableProviderError(e) || isProviderContextRejection(e)) && providerRecoverySegments < 2) {
+      const retryableProviderError = isRetryableProviderError(e);
+      const providerContextRejection = isProviderContextRejection(e);
+      event("provider.error_classified", {
+        errorName: e instanceof Error ? e.name : typeof e,
+        message: e instanceof Error ? e.message : String(e),
+        ...(e instanceof ProviderError ? { kind: e.kind, retryableFlag: e.retryable, status: e.status ?? null } : {}),
+        retryable: retryableProviderError,
+        contextRejection: providerContextRejection,
+        recoveryAttemptsUsed: providerRecoverySegments,
+      });
+      if ((retryableProviderError || providerContextRejection) && providerRecoverySegments < 2) {
         providerRecoverySegments++;
-        forceProviderCompaction = isProviderContextRejection(e);
+        forceProviderCompaction = providerContextRejection;
         const checkpointId = await persistExecutionCheckpoint("provider_recovery");
         if (interruptAtSegmentLimit(checkpointId)) return;
         const failedProvider = currentServedBy;
@@ -3170,6 +3256,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         event("provider.fallback", {
           from: [failedProvider],
           servedBy: providerType,
@@ -3202,6 +3289,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return;
     }
 
+    // Some compatible routes emit XML-shaped tool calls as assistant text
+    // despite receiving structured tool schemas. Recover only trailing calls
+    // for tools exposed on this request; normal execution policy still applies.
+    if (!hasToolCalls && activeToolProfile !== "none") {
+      const streamedTurnText = responseContent.slice(responseLengthAtTurnStart);
+      const normalized = normalizeTrailingLegacyToolCalls(
+        streamedTurnText,
+        new Set(exposedTools.map((tool) => tool.name)),
+      );
+      if (normalized) {
+        responseContent = responseContent.slice(0, responseLengthAtTurnStart) + normalized.text;
+        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "streaming", now());
+        normalized.toolCalls.forEach((toolCall) => {
+          currentToolCalls.push({ id: `legacy-${randomUUID()}`, ...toolCall });
+        });
+        hasToolCalls = true;
+        event("provider.tool_syntax_normalized", {
+          format: "xml",
+          toolCount: normalized.toolCalls.length,
+          toolNames: normalized.toolCalls.map((call) => call.name),
+        });
+      }
+    }
+
     // The stream for this turn ended normally: it produced either tool calls
     // (an intermediate turn) or none (this is the final, user-facing turn).
     // Close it now, before tool execution or a cancellation check can run â€”
@@ -3231,6 +3342,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
 
     if (hasToolCalls && currentToolCalls.length > 0) {
+      emptyFinalResponseRetries = 0;
       transitionAgentState("executing_tool", { toolCount: currentToolCalls.length });
       // Transition step to Read Workspace
       if (workspaceStep && activeStepId !== workspaceStep.id) {
@@ -3244,7 +3356,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const toolOutputs: ChatMessage[] = [];
 
       // Append assistant message with tool calls to prompt history
-      chatMessages.push({
+      const providerAssistantTurn: ChatMessage = {
         role: "assistant",
         // Provider history is a projection of discrete turns. `responseContent`
         // is only the cumulative presentation buffer for the single UI row;
@@ -3257,9 +3369,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         toolCalls: currentToolCalls.map(tc => ({
           id: tc.id,
           type: "function",
-          function: { name: tc.name, arguments: capToolArgumentsForContext(tc.name, tc.arguments) }
+          // Keep raw arguments until execution succeeds. Failed calls must
+          // retain full bodies so provider can correct one field next turn.
+          function: { name: tc.name, arguments: tc.arguments }
         }))
-      });
+      };
+      chatMessages.push(providerAssistantTurn);
 
       for (const tc of currentToolCalls) {
         if (!tc.id || !tc.name) continue;
@@ -3284,8 +3399,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const dynamicBrowserObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
-        const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
-        if (loop.looping && !loopDetected) {
+        const loopSignature = toolCallSignature(tc.name, tc.arguments);
+        const loop = loopSignaturesRecordedThisTurn.has(loopSignature)
+          ? null
+          : loopDetector.record(loopSignature);
+        loopSignaturesRecordedThisTurn.add(loopSignature);
+        if (loop?.looping && !loopDetected) {
           loopDetected = { signature: loop.signature, count: loop.count };
           // Â§7: when a tool-call signature repeats past the threshold, stop
           // retrying the same operation. Classify the failure, derive a
@@ -3332,8 +3451,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           const toolDef = tools.find((t) => t.name === tc.name);
           const parsedArgs = repairAndParseToolArguments(tc.arguments);
           if (!parsedArgs.ok) {
-            const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
-            malformedArgAttemptsByTool.set(tc.name, attempts);
+            const attemptKey = toolArgumentAttemptKey(tc.name, tc.arguments);
+            const priorAttempts = malformedArgAttemptsByTool.get(attemptKey) ?? 0;
+            const attempts = argumentProblemsRecordedThisTurn.has(attemptKey) ? priorAttempts : priorAttempts + 1;
+            argumentProblemsRecordedThisTurn.add(attemptKey);
+            malformedArgAttemptsByTool.set(attemptKey, attempts);
             const retryExhausted = attempts >= 2;
             if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
             event("tool.arguments_rejected", { toolName: tc.name, reason: parsedArgs.reason, attempts, retryExhausted });
@@ -3352,7 +3474,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });
           }
-          args = parsedArgs.value;
+          args = normalizeToolArguments(tc.name, parsedArgs.value);
 
           // Reject required-field, wrong-type, and absolute-path defects for the
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
@@ -3368,8 +3490,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             };
             const problem = validateToolArguments(toolDef, args, criticalRequired[tc.name]);
             if (problem) {
-              const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
-              malformedArgAttemptsByTool.set(tc.name, attempts);
+              const attemptKey = toolArgumentAttemptKey(tc.name, tc.arguments, problem.field, args);
+              const priorAttempts = malformedArgAttemptsByTool.get(attemptKey) ?? 0;
+              const attempts = argumentProblemsRecordedThisTurn.has(attemptKey) ? priorAttempts : priorAttempts + 1;
+              argumentProblemsRecordedThisTurn.add(attemptKey);
+              malformedArgAttemptsByTool.set(attemptKey, attempts);
               const retryExhausted = attempts >= 2;
               if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
@@ -3724,11 +3849,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
-              convs.upsertToolCall({
-                id: tc.id, messageId: assistantMessageRow.id, taskId,
-                toolName: tc.name, argsJson: tc.arguments, status: "running",
-                createdAt: toolCallRecord.createdAt, startedAt: now(),
-              });
+            convs.upsertToolCall({
+              id: tc.id, messageId: assistantMessageRow.id, taskId,
+              toolName: tc.name, argsJson: JSON.stringify(args), status: "running",
+              createdAt: toolCallRecord.createdAt, startedAt: now(),
+            });
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
           } else if (tc.name === "propose_patch" || tc.name === "create_file") {
@@ -3747,6 +3872,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const relPath = args.path;
               if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
               if (typeof args.content !== "string") throw new Error("Missing required argument: content");
+              const auxiliaryProbe = /(^|[\\/])(?:placeholder|scratch|temp(?:orary)?)(?:[._-]|$)/i.test(relPath)
+                && /\b(?:placeholder|scratch|temp(?:orary)?|verify|test)\b/i.test(`${args.purpose ?? ""}\n${args.content.slice(0, 500)}`)
+                && !latestUserPrompt.toLowerCase().includes(relPath.toLowerCase());
+              if (auxiliaryProbe) {
+                throw new AgentToolFailure(`Refusing auxiliary progress-probe file ${relPath}`, {
+                  error: `Refusing auxiliary progress-probe file ${relPath}`,
+                  kind: "auxiliary_progress_probe_rejected",
+                  targetFile: relPath,
+                  instruction: "Create or repair a deliverable required by original request, or run required verification. Do not create placeholder/scratch/temp files to test tools or manufacture progress.",
+                });
+              }
+              if (/^\[omitted \d+ bytes already provided to create_file\]$/.test(args.content.trim())) {
+                throw new AgentToolFailure(`Refusing to write Morrow context placeholder to ${relPath}`, {
+                  error: `Refusing to write Morrow context placeholder to ${relPath}`,
+                  kind: "context_placeholder_rejected",
+                  targetFile: relPath,
+                  instruction: `Read ${relPath} for current content, then call create_file with complete intended file text. Never copy context omission markers into workspace files.`,
+                });
+              }
               assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
               // Fail fast with a clear message on containment/denied-name before
               // synthesizing a diff. Parent directories are created on apply.
@@ -3759,6 +3903,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // as patch_no_effect at apply time, which is the honest signal.)
               const createDest = assertContainedRealPath(project.workspacePath, relPath);
               if (existsSync(createDest)) {
+                const priorWrites = createFileWritesByPath.get(relPath) ?? 0;
+                if (priorWrites >= 2) {
+                  throw new AgentToolFailure(`Refusing repeated create_file overwrite of ${relPath}`, {
+                    error: `Refusing repeated create_file overwrite of ${relPath}`,
+                    kind: "repeated_file_overwrite_rejected",
+                    targetFile: relPath,
+                    successfulWritesThisTask: priorWrites,
+                    instruction: `Stop rewriting ${relPath}. Continue with another deliverable required by the original request. Use propose_patch only if a later verification failure proves ${relPath} needs another edit.`,
+                  });
+                }
                 // Only a *regular file* may be auto-overwritten. A directory (or
                 // other special node) at the path is a hard error, never a
                 // silent clobber.
@@ -3991,6 +4145,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 createdAt: toolCallRecord.createdAt, startedAt: now(),
               });
               resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
+              if (tc.name === "create_file" && typeof files[0] === "string") {
+                createFileWritesByPath.set(files[0], (createFileWritesByPath.get(files[0]) ?? 0) + 1);
+              }
               // Report the createâ†’edit conversion in the tool result so the model
               // (and /output) see that create_file landed as a backed-up edit of
               // an existing file rather than a fresh creation.
@@ -4085,7 +4242,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // verification* â€” the classic "tests failed yet the task said
         // completed" hole. Treat mutations/verifications that either threw or
         // exited non-zero as an outstanding failure; a clean one clears it.
-        if (VERIFY_OR_WRITE_TOOLS.has(tc.name) && errorType !== "tool_not_permitted_in_mode") {
+        const gatesCompletion = WORKSPACE_WRITE_TOOLS.has(tc.name)
+          || (tc.name === "run_command" && runCommandIsVerification(args));
+        if (gatesCompletion && errorType !== "tool_not_permitted_in_mode") {
           let failedOutcome: string | null = null;
           if (!isSuccess) {
             failedOutcome = errorMessage ?? "tool failed";
@@ -4133,6 +4292,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           lastVerificationFailure = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id)).failure;
         }
         if (isSuccess) {
+          const projectedCall = providerAssistantTurn.toolCalls?.find((call) => call.id === tc.id);
+          if (projectedCall) projectedCall.function.arguments = capToolArgumentsForContext(tc.name, tc.arguments);
           const progressFingerprint = toolProgressFingerprint(tc.name, args, contextResultStr);
           if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
           else seenProgressFingerprints.add(progressFingerprint);
@@ -4142,6 +4303,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // bounded Git read instead of guessing.
           if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
           else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
+          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) deliveryStarted = true;
         }
         let summary = isSuccess ? "completed" : "failed";
         try {
@@ -4193,15 +4355,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // empty provider turn as completion loses the mission outcome while
       // falsely presenting successful tools as a verified task.
       if (responseContent.length === responseLengthAtTurnStart) {
-        // Some live providers occasionally finish a post-tool turn with only
-        // usage metadata. Retry that empty turn once before recording an
-        // incomplete task; no tool ran in this branch, so the retry has no
-        // duplicate workspace side effect.
-        if (emptyFinalResponseRetries < 1) {
+        // Reasoning-heavy compatible routes can consume their whole output
+        // allowance before emitting visible text. Retry with a terse recovery
+        // instruction instead of blindly replaying the same prompt. No tool ran
+        // in this branch, so continuation cannot duplicate a side effect.
+        if (emptyFinalResponseRetries < 3) {
           emptyFinalResponseRetries++;
+          chatMessages.push({
+            role: "user",
+            content: lastVerificationFailure
+              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
+              : "Your prior response reached its output limit without a usable action or final answer. Do not repeat analysis. Call the next required tool now, or if work is complete, return a concise final result under 500 words.",
+          });
           event("task.progress_warning", {
             reason: "empty_provider_response",
-            message: "Provider returned no answer after tool completion; retrying the final response once.",
+            message: `Provider returned no usable answer after tool completion; requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
             turns: turn,
           });
           continue;
@@ -4234,6 +4402,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
     if (loopDetected) {
       const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
+      if (loopRecoveryAttempts < 1) {
+        loopRecoveryAttempts++;
+        loopDetector.reset();
+        event("task.progress_warning", {
+          reason: "loop_recovery",
+          message: `${message} One bounded recovery attempt remains.`,
+          turns: turn,
+          recoveryAttempt: loopRecoveryAttempts,
+        });
+        chatMessages.push({
+          role: "user",
+          content: `MORROW RECOVERY: ${message}\nDo not repeat that action. Continue directly with an unfinished deliverable or required verification from ORIGINAL REQUEST. If nothing useful remains, give the final result now.\n\nORIGINAL REQUEST:\n${latestUserPrompt}`,
+        });
+        continue;
+      }
       if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
       failCurrentSegment("loop_detected");
       transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
@@ -4249,11 +4432,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // stagnation instead of resetting it.
     const strategyFingerprint = `worker:${providerType}:${contextModel}`;
     const progressObservations = await observeTurnProgress(strategyFingerprint);
-    // Any observation is a real delta: assessProgress only emits when something
-    // new appeared, so a novel tool result counts while a repeated one, an
-    // unchanged file, and pure narration all produce nothing. Whether that
-    // delta is *meaningful* decides escalation, not whether the turn stalled.
-    const madeProgress = progressObservations.length > 0;
+    // Novel activity is not necessarily progress. In particular, reading a
+    // different file produces tool_result_observed but must not reset the
+    // stagnation clock forever. Only artifact/evidence/uncertainty/checkpoint/
+    // criterion deltas recognized by progress.ts justify continued autonomy.
+    const meaningfulDelta = progressObservations.some((observation) =>
+      (
+        isMeaningfulProgress(observation.kind)
+        // A rollover preserves work; it is not new work. Counting its own
+        // checkpoint as post-delivery progress lets read-only roaming reset
+        // forever at every adaptive turn boundary.
+        && (!deliveryStarted || observation.kind !== "checkpoint_created")
+      )
+      // During initial discovery, novel observations can legitimately narrow
+      // an unknown workspace. Post-delivery reads use a separate bounded
+      // allowance below.
+      || (!deliveryStarted && observation.kind === "tool_result_observed")
+    );
+    // After first write, allow a bounded evidence-gathering phase. This keeps
+    // legitimate multi-file diagnosis and restart recovery alive, while still
+    // stopping providers that endlessly roam through new paths.
+    const boundedNovelRead = deliveryStarted
+      && novelPostDeliveryReadTurns < postDeliveryReadTurnLimit
+      && completedToolSignatures.length > repeatedToolSignatures.length
+      && currentToolCalls.some((call) => READ_ONLY_TOOL_NAMES.has(call.name));
+    const madeProgress = meaningfulDelta || boundedNovelRead;
+    if (meaningfulDelta) novelPostDeliveryReadTurns = 0;
+    else if (boundedNovelRead) novelPostDeliveryReadTurns++;
     noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
     if (noProgressTurns === 2) {
       event("task.progress_warning", {
@@ -4282,11 +4487,44 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // Bounded ladder: diagnose once, then hand a strategy change to the
         // durable controller when one is available. Standalone tasks keep
         // working locally because no controller can replan for them.
-        if (exhaustion.next === "focused_diagnosis") diagnosisCompleted = true;
+        if (exhaustion.next === "focused_diagnosis") {
+          diagnosisCompleted = true;
+          chatMessages.push({
+            role: "user",
+            content: `Autonomous recovery: inspection is no longer progress. Continue original request below. Change a REQUIRED deliverable or run REQUIRED verification now. Do not create placeholder, scratch, temp, or tool-probe files. Do not repeat list_files, search_text, read_file, or narration unless a current verification error names that exact file.${lastVerificationFailure ? ` Latest verification failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
+          });
+          event("task.progress_warning", {
+            reason: "autonomous_recovery",
+            message: "Injected focused action instruction after observable stagnation.",
+            turns: turn,
+            attempt: stagnationRecoveryAttempts + 1,
+          });
+        }
         else if (await returnMissionWorkerOutcome("strategy_change_required", exhaustion.reason)) return;
         noProgressTurns = 0;
         progressWindowStart = progressHistory.length;
       } else {
+        // Standalone tasks have no mission controller to replan them. Give one
+        // final, explicit action-only recovery before interrupting. Warnings
+        // alone are event metadata and never reach provider context; without
+        // this instruction weaker routes keep inspecting until forced stop.
+        if (!taskMissionId && stagnationRecoveryAttempts < 1) {
+          stagnationRecoveryAttempts++;
+          chatMessages.push({
+            role: "user",
+            content: `Final autonomous recovery (${stagnationRecoveryAttempts}/1): stop inspecting. Finish REQUIRED deliverables from original request below, then run its test/build commands and fix failures. Do not create placeholder, scratch, temp, or tool-probe files. If deliverables already satisfy request, run verification now and return concise final answer. Do not call list_files, search_text, or read_file again unless a new verification error names a specific file.${lastVerificationFailure ? ` Current failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
+          });
+          event("task.progress_warning", {
+            reason: "autonomous_recovery",
+            message: "Injected final action-only recovery before interruption.",
+            turns: turn,
+            attempt: stagnationRecoveryAttempts,
+          });
+          noProgressTurns = 0;
+          diagnosisCompleted = false;
+          progressWindowStart = progressHistory.length;
+          continue;
+        }
         const message = exhaustion.reason;
         if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
         failCurrentSegment("stalled");
@@ -4312,6 +4550,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         generation: currentSegment.generation,
         now: now(),
       });
+      resetTransientToolTracking();
       event("context.compaction_completed", {
         checkpointId,
         reason: "turn_budget",

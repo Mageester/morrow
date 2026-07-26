@@ -20,8 +20,34 @@ import {
 
 export const CHAT_PROMPT_MAX_LENGTH = 32_000;
 const TEXTAREA_MAX_HEIGHT = 192;
+const COMPOSER_MODE_STORAGE_KEY = "morrow.chat.composer-mode.v1";
 
 type ComposerMode = "chat" | "build";
+
+interface ComposerModePreference {
+  mode: ComposerMode;
+  autoApprove: boolean;
+}
+
+function loadComposerModePreference(): ComposerModePreference {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_MODE_STORAGE_KEY) ?? "null") as Partial<ComposerModePreference> | null;
+    if (saved?.mode === "build") {
+      return { mode: "build", autoApprove: saved.autoApprove === true };
+    }
+  } catch {
+    // Corrupt or unavailable browser storage must not block chat.
+  }
+  return { mode: "chat", autoApprove: false };
+}
+
+function saveComposerModePreference(preference: ComposerModePreference): void {
+  try {
+    localStorage.setItem(COMPOSER_MODE_STORAGE_KEY, JSON.stringify(preference));
+  } catch {
+    // Storage can be disabled; current-session state still works.
+  }
+}
 
 export interface ChatComposerModelRoute {
   id: string;
@@ -136,8 +162,9 @@ export function ChatComposer({
   } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
-  const [mode, setMode] = useState<ComposerMode>("chat");
-  const [autoApprove, setAutoApprove] = useState(false);
+  const [initialModePreference] = useState(loadComposerModePreference);
+  const [mode, setMode] = useState<ComposerMode>(initialModePreference.mode);
+  const [autoApprove, setAutoApprove] = useState(initialModePreference.autoApprove);
   const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
   const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
@@ -146,6 +173,10 @@ export function ChatComposer({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    saveComposerModePreference({ mode, autoApprove: mode === "build" && autoApprove });
+  }, [mode, autoApprove]);
 
   const resize = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = "auto";
