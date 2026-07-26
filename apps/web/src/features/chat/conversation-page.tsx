@@ -13,6 +13,7 @@ import {
   pendingWebMessage,
 } from "../../api/conversations.js";
 import { modelQueries } from "../../api/models.js";
+import { Markdown } from "../../components/markdown.js";
 import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
@@ -415,13 +416,15 @@ export function ConversationPageContent({
               key={message.id}
             >
               {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
-              <div className="morrow-conversation-message__content">
-                {waiting ? <p>Morrow is responding…</p> : <p>{message.content}</p>}
+              <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
+                {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
+                  <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
+                ) : <p>{message.content}</p>}
               </div>
               {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
               {message.toolActivity.length > 0 ? (
                 <ul aria-label="Tool activity" className="morrow-conversation-tools">
-                  {message.toolActivity.map((tool) => <li key={tool.id}>{tool.toolName.replaceAll("_", " ")} · {tool.status}</li>)}
+                  {message.toolActivity.map((tool) => <li data-status={tool.status} key={tool.id}>{tool.toolName.replaceAll("_", " ")} · {tool.status}</li>)}
                 </ul>
               ) : null}
               {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (

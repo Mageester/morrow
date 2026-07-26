@@ -4574,7 +4574,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       await onSegmentBoundary?.("turn_budget");
       turn = 0;
-      noProgressTurns = 0;
+      // Preserve post-delivery stagnation across adaptive turn-budget segments.
+      // Resetting here lets read-only roaming evade the no-progress ladder forever.
+      if (!deliveryStarted) noProgressTurns = 0;
     }
   }
 

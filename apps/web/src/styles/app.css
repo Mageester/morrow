@@ -661,6 +661,11 @@ a {
   overflow-wrap: anywhere;
 }
 
+.morrow-conversation-message__content--markdown {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
 .morrow-conversation-message__route,
 .morrow-conversation-tools,
 .morrow-chat-warning,
@@ -3045,3 +3050,222 @@ a {
   justify-content: center;
   align-items: center;
 }
+
+/* --------------------------------------------------------------------------
+ * Markdown rendering (assistant prose + markdown artifacts)
+ * Token-driven so dark/light themes stay correct. Layout containment:
+ * nothing inside .morrow-markdown may overflow its column horizontally.
+ * ----------------------------------------------------------------------- */
+
+:root {
+  --morrow-font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+.morrow-markdown {
+  color: var(--morrow-text);
+  line-height: 1.65;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+.morrow-markdown > :first-child { margin-top: 0; }
+.morrow-markdown > :last-child { margin-bottom: 0; }
+
+.morrow-markdown p {
+  margin: 0 0 var(--morrow-space-3);
+}
+
+.morrow-markdown h1,
+.morrow-markdown h2,
+.morrow-markdown h3,
+.morrow-markdown h4,
+.morrow-markdown h5,
+.morrow-markdown h6 {
+  margin: var(--morrow-space-5) 0 var(--morrow-space-2);
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.morrow-markdown h1:first-child,
+.morrow-markdown h2:first-child,
+.morrow-markdown h3:first-child,
+.morrow-markdown h4:first-child {
+  margin-top: 0;
+}
+
+.morrow-markdown h1 { font-size: 1.375rem; }
+.morrow-markdown h2 { font-size: 1.1875rem; }
+.morrow-markdown h3 { font-size: 1.0625rem; }
+.morrow-markdown h4,
+.morrow-markdown h5,
+.morrow-markdown h6 { font-size: 1rem; }
+
+.morrow-markdown ul,
+.morrow-markdown ol {
+  margin: 0 0 var(--morrow-space-3);
+  padding-left: var(--morrow-space-5);
+}
+
+.morrow-markdown li { margin: var(--morrow-space-1) 0; }
+.morrow-markdown li > ul,
+.morrow-markdown li > ol { margin: var(--morrow-space-1) 0; }
+
+.morrow-markdown li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: calc(-1 * var(--morrow-space-5));
+  padding-left: var(--morrow-space-1);
+}
+
+.morrow-markdown input[type="checkbox"] {
+  margin-right: var(--morrow-space-2);
+  accent-color: var(--morrow-accent);
+  vertical-align: -0.1em;
+}
+
+.morrow-markdown blockquote {
+  margin: 0 0 var(--morrow-space-3);
+  padding: var(--morrow-space-1) var(--morrow-space-4);
+  border-left: 3px solid var(--morrow-border);
+  color: var(--morrow-text-muted);
+}
+
+.morrow-markdown blockquote > :last-child { margin-bottom: 0; }
+
+.morrow-markdown hr {
+  border: none;
+  border-top: 1px solid var(--morrow-border);
+  margin: var(--morrow-space-4) 0;
+}
+
+.morrow-markdown a,
+.morrow-markdown__link {
+  color: var(--morrow-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.morrow-markdown code {
+  font-family: var(--morrow-font-mono);
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--morrow-text) 7%, transparent);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.morrow-markdown__codeblock {
+  margin: 0 0 var(--morrow-space-3);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  background: var(--morrow-surface-subtle);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.morrow-markdown__codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-2);
+  padding: var(--morrow-space-1) var(--morrow-space-2) var(--morrow-space-1) var(--morrow-space-3);
+  border-bottom: 1px solid var(--morrow-border);
+  background: color-mix(in srgb, var(--morrow-text) 4%, transparent);
+}
+
+.morrow-markdown__codeblock-lang {
+  font-family: var(--morrow-font-mono);
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+  user-select: none;
+}
+
+.morrow-markdown__copy {
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px var(--morrow-space-2);
+  cursor: pointer;
+}
+
+.morrow-markdown__copy:hover {
+  color: var(--morrow-text);
+  border-color: var(--morrow-border);
+}
+
+.morrow-markdown__copy:focus-visible {
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 1px;
+}
+
+.morrow-markdown__pre {
+  margin: 0;
+  padding: var(--morrow-space-3);
+  overflow-x: auto;
+  font-family: var(--morrow-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.morrow-markdown__pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+  white-space: pre;
+}
+
+.morrow-markdown__table-scroll {
+  margin: 0 0 var(--morrow-space-3);
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.morrow-markdown th,
+.morrow-markdown td {
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  border-bottom: 1px solid var(--morrow-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.morrow-markdown th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--morrow-text) 4%, transparent);
+}
+
+.morrow-markdown tr:last-child td { border-bottom: none; }
+
+.morrow-markdown img { max-width: 100%; height: auto; }
+
+/* Tool activity: visually distinct from assistant prose. */
+.morrow-conversation-tools li {
+  display: flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  font-family: var(--morrow-font-mono);
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+}
+
+.morrow-conversation-tools li::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--morrow-text-muted);
+  flex: none;
+}
+
+.morrow-conversation-tools li[data-status="completed"]::before { background: var(--morrow-success); }
+.morrow-conversation-tools li[data-status="failed"]::before { background: var(--morrow-danger); }
+.morrow-conversation-tools li[data-status="running"]::before { background: var(--morrow-accent); }

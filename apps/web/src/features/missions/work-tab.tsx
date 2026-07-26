@@ -1,6 +1,7 @@
 import type { WebMissionArtifact } from "@morrow/contracts";
 import { ArtifactFrame } from "@morrow/ui";
 import type { ReactNode } from "react";
+import { Markdown } from "../../components/markdown.js";
 
 type ArtifactHeadingLevel = 2 | 3 | 4 | 5 | 6;
 type ArtifactRenderer = (
@@ -41,12 +42,26 @@ function ArtifactMetadata({ artifact }: { artifact: WebMissionArtifact }) {
 function SafeTextPreview({
   preview,
   title,
-}: Pick<WebMissionArtifact, "preview"> & { title: string }) {
+  mimeType,
+}: Pick<WebMissionArtifact, "preview" | "mimeType"> & { title: string }) {
   if (!preview?.trim()) {
     return (
       <p className="morrow-artifact-preview__empty">
         No preview is available for this file yet.
       </p>
+    );
+  }
+
+  if (mimeType === "text/markdown") {
+    return (
+      <div
+        aria-label={`Preview of ${title}`}
+        className="morrow-artifact-preview"
+        role="region"
+        tabIndex={0}
+      >
+        <Markdown text={preview} />
+      </div>
     );
   }
 
@@ -77,7 +92,7 @@ function ArtifactShell({
       metadata={<ArtifactMetadata artifact={artifact} />}
       title={title}
     >
-      <SafeTextPreview preview={artifact.preview} title={title} />
+      <SafeTextPreview mimeType={artifact.mimeType} preview={artifact.preview} title={title} />
     </ArtifactFrame>
   );
 }
