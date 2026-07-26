@@ -40,6 +40,11 @@ const resolution = resolveModelBudget({
   outputBudgetTokens: 16_384,
 });
 
+const PRESSURE_FIXTURE_NAMES = [
+  "read_file", "search_text", "list_files", "run_command", "create_file",
+  "propose_patch", "git_status", "git_diff", "read_process_output", "stop_process",
+];
+
 describe("durable provider projection", () => {
   it("exposes one deterministic durable-turn reconstruction boundary", () => {
     expect((providerProjectionModule as any).buildProviderProjection).toBeTypeOf("function");
@@ -218,5 +223,35 @@ describe("durable provider projection", () => {
     expect(projection).toContain("package-999");
     expect(projection).not.toContain("package-100/");
     expect(Buffer.byteLength(projection, "utf8")).toBeLessThan(20_000);
+  });
+
+  it("reduces optional tool schemas when compacted core still exceeds a small route", () => {
+    const smallResolution = resolveModelBudget({
+      providerId: "opencode-zen",
+      selectedModel: "deepseek-v4-flash-free",
+      endpoint: { kind: "default", host: "opencode.ai", protocol: "openai-chat", limitTokens: 32_768, limitSource: "provider-metadata" },
+      outputBudgetTokens: 4_096,
+    });
+    const result = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "opencode-zen",
+        model: "deepseek-v4-flash-free",
+        protocol: "openai-chat",
+        messages: [{ role: "user", content: "history ".repeat(30_000) }, { role: "user", content: "finish build and tests" }],
+        tools: Array.from({ length: 30 }, (_, index) => ({
+          name: PRESSURE_FIXTURE_NAMES[index] ?? `optional_${index}`,
+          description: "schema detail ".repeat(250),
+          parameters: { type: "object", properties: { value: { type: "string", description: "x".repeat(100) } } },
+        })),
+        outputReserveTokens: 4_096,
+      },
+      resolution: smallResolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+    expect(result.admission.ok).toBe(true);
+    expect(result.envelope.tools.length).toBeLessThan(30);
+    expect(result.envelope.tools.map((tool) => tool.name)).toContain("run_command");
   });
 });

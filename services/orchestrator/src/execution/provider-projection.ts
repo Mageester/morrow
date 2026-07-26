@@ -156,6 +156,30 @@ function compactLatestBatch(groups: ChatMessage[][]): ChatMessage {
   };
 }
 
+const PRESSURE_TOOL_PRIORITY = [
+  "read_file",
+  "search_text",
+  "list_files",
+  "run_command",
+  "create_file",
+  "propose_patch",
+  "git_status",
+  "git_diff",
+  "read_process_output",
+  "stop_process",
+] as const;
+
+function pressureToolSets(envelope: ProviderRequestEnvelope, groups: ChatMessage[][]): ProviderRequestEnvelope["tools"][] {
+  const recentNames = groups.slice(-1).flat().flatMap((message) => message.toolCalls?.map((call) => call.function.name) ?? []);
+  const priority = [...new Set([...recentNames, ...PRESSURE_TOOL_PRIORITY])];
+  const byName = new Map(envelope.tools.map((tool) => [tool.name, tool]));
+  const ordered = priority.flatMap((name) => {
+    const tool = byName.get(name);
+    return tool ? [tool] : [];
+  });
+  return [12, 8, 5, 0].map((limit) => ordered.slice(0, limit));
+}
+
 /**
  * Apply the one route-aware admission rule to a complete provider envelope.
  * Once the configurable pressure threshold is reached, replace old raw history
@@ -204,6 +228,18 @@ export function projectProviderRequest(input: {
   if (!admission.ok) {
     envelope = { ...input.envelope, messages: [...system, checkpointMessage(input.checkpoint), compactLatestBatch(groups)] };
     admission = admitProviderRequest(envelope, input.resolution);
+  }
+  // Tool schemas are part of the wire request. Small routes cannot carry every
+  // optional tool plus checkpoint state indefinitely. Reduce to a deterministic
+  // coding core, remeasure each set, and send exactly the measured set.
+  if (!admission.ok && envelope.tools.length > 0) {
+    for (const tools of pressureToolSets(envelope, groups)) {
+      const candidate = { ...envelope, tools };
+      const candidateAdmission = admitProviderRequest(candidate, input.resolution);
+      envelope = candidate;
+      admission = candidateAdmission;
+      if (candidateAdmission.ok) break;
+    }
   }
   return {
     envelope,

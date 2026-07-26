@@ -2916,7 +2916,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           projectionHash: projection.contentHash,
         });
         return admission.ok
-          ? [{ ...candidate, request: { messages: projection.envelope.messages, options: candidateOptions, routeFingerprint } }]
+          ? [{ ...candidate, request: { messages: projection.envelope.messages, options: { ...candidateOptions, tools: projection.envelope.tools }, routeFingerprint } }]
           : [];
       });
       if (admittedCandidates.length === 0) {
