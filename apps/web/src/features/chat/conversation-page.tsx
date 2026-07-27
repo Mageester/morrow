@@ -21,6 +21,7 @@ import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel } from "./activity-panel.js";
+import { PendingApprovals } from "./pending-approvals.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -164,6 +165,10 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  const conversationTaskIds = useMemo(
+    () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
+    [history],
+  );
 
   useEffect(() => {
     if (renameOpen) {
@@ -464,6 +469,13 @@ export function ConversationPageContent({
       {activeMessages.map((message) => (
         <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
       ))}
+
+      <PendingApprovals
+        active={activeTaskId !== undefined}
+        conversationId={conversationId}
+        conversationTaskIds={conversationTaskIds}
+        projectId={projectId}
+      />
 
       <div className="morrow-conversation-composer">
         <ChatComposer

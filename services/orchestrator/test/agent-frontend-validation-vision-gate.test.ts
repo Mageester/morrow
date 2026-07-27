@@ -126,6 +126,38 @@ describe("frontend-validation completion gate — vision requirement", () => {
     expect(finalMessage?.content ?? "").not.toContain("[Incomplete:");
   });
 
+  it("treats completed browser-validation steps as progress instead of stalling mid-validation", async () => {
+    // Regression for the live stall: a static-site run served the workspace,
+    // then gathered browser evidence one step per turn. Browser calls counted
+    // as neither verification evidence nor bounded reads, so the stagnation
+    // clock interrupted the run after 3 turns — mid-validation.
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        [tool("bo", "browser_open", { url: "http://127.0.0.1:4173/" }), done],
+        [tool("bs", "browser_snapshot", {}), done],
+        [tool("bc", "browser_console", {}), done],
+        [tool("bi", "browser_click", { ref: "e1" }), done],
+        [tool("bd", "browser_viewport", { preset: "desktop" }), done],
+        [tool("bds", "browser_screenshot", { label: "desktop" }), done],
+        [tool("bt", "browser_viewport", { preset: "tablet" }), done],
+        [tool("bts", "browser_screenshot", { label: "tablet" }), done],
+        [tool("bm", "browser_viewport", { preset: "mobile" }), done],
+        [tool("bms", "browser_screenshot", { label: "mobile" }), done],
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 24 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.reason === "stalled")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("still requires vision-attached screenshots on a route that genuinely supports vision (no regression)", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "openai", "gpt-5.6-sol");
     const provider = new MockProvider({

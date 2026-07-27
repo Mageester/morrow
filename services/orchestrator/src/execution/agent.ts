@@ -69,15 +69,17 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "../skills
  * of a bare tool name. Never throws: mid-stream arguments may be malformed,
  * in which case no target is reported.
  */
-function displayTarget(toolName: string, argsJson: string): { target?: string; verification?: boolean } {
+function displayTarget(toolName: string, argsJson: string): { target?: string; cwd?: string; verification?: boolean } {
   try {
     const args = JSON.parse(argsJson) as Record<string, unknown>;
     const pick = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
     let target: string | undefined;
+    let cwd: string | undefined;
     if (toolName === "run_command") {
       const executable = pick(args.executable);
       const rest = Array.isArray(args.args) ? args.args.filter((a): a is string => typeof a === "string").join(" ") : "";
       target = executable ? `${executable}${rest ? " " + rest : ""}` : undefined;
+      cwd = pick(args.cwd);
     } else {
       target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
     }
@@ -85,6 +87,7 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; v
     const verification = toolName === "run_command" && purpose !== undefined && /\b(?:verify|verification|test|check|lint|typecheck|build)\b/i.test(purpose);
     return {
       ...(target ? { target: target.length > 80 ? target.slice(0, 79) + "â€¦" : target } : {}),
+      ...(cwd ? { cwd: cwd.length > 160 ? cwd.slice(0, 159) + "â€¦" : cwd } : {}),
       ...(verification ? { verification: true } : {}),
     };
   } catch {
@@ -1365,7 +1368,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   if (activeToolProfile === "agent" && requestsFrontendBrowserValidation(latestUserPrompt)) {
     chatMessages.push({
       role: "system",
-      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. Completion is deterministically blocked when any evidence class is missing."
+      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. Completion is deterministically blocked when any evidence class is missing. For a static site with no dev server: node is ALWAYS available â€” never probe runtimes with --version and never use npx/npm/yarn serve (their interactive install prompt hangs until timeout). Start the server yourself with one run_command: executable node, args [-e, STATIC_SERVER_SCRIPT], background true, where STATIC_SERVER_SCRIPT is exactly: const http=require(\"http\"),fs=require(\"fs\"),path=require(\"path\");const types={\".html\":\"text/html\",\".css\":\"text/css\",\".js\":\"text/javascript\",\".json\":\"application/json\",\".svg\":\"image/svg+xml\",\".png\":\"image/png\",\".jpg\":\"image/jpeg\",\".ico\":\"image/x-icon\",\".woff2\":\"font/woff2\"};http.createServer((req,res)=>{try{const p=decodeURIComponent((req.url||\"/\").split(\"?\")[0]);const file=path.join(process.cwd(),p===\"/\"?\"index.html\":p.replace(/^\\/+/,\"\"));if(!file.startsWith(process.cwd())){res.writeHead(403);res.end();return}fs.stat(file,(e,st)=>{if(e||!st.isFile()){res.writeHead(404);res.end();return}res.writeHead(200,{\"content-type\":types[path.extname(file).toLowerCase()]||\"application/octet-stream\"});fs.createReadStream(file).pipe(res)})}catch{res.writeHead(500);res.end()}}).listen(4173,\"127.0.0.1\") â€” then browser_open http://127.0.0.1:4173/ (browser_open accepts HTTP(S) only, never file://). If that port is taken, retry the same script with a different port. Mentally re-reading the files you wrote is not verification: only the browser evidence above counts.",
     });
   }
 
@@ -1626,6 +1629,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // approval was created). Rejects absolute paths, traversal, and symlink
       // escape.
       const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
+
+      // A package-script verification (npm test, npm run build, pnpm test, â€¦)
+      // cannot succeed in a directory with no package.json. Without this guard
+      // the model got a bare non-zero exit, tried the identical command again,
+      // then claimed the deliverables were fine anyway. Fail fast with guidance
+      // toward a verification that matches the actual workspace.
+      const packageManagerMatch = /(?:^|[/\\])(npm|pnpm|yarn)(?:\.cmd|\.exe|\.bat)?$/i.exec(exec);
+      if (
+        packageManagerMatch
+        && /^(?:test|run)$/i.test(cmdArgs[0] ?? "")
+        && !existsSync(join(resolvedCwd, "package.json"))
+      ) {
+        throw new AgentToolFailure(
+          `Cannot run "${exec} ${cmdArgs.join(" ")}" here: ${cmdCwd || "the workspace root"} has no package.json, so there are no package scripts to run. Choose a verification that matches this workspace instead: for a static site, start a local static server (run_command with background true) and validate it with the browser tools, or syntax-check JavaScript with node --check. Do not retry this command unchanged.`,
+          { error: "missing_package_json", executable: exec, args: cmdArgs, cwd: cmdCwd || null },
+          "tool_failed",
+        );
+      }
 
       transitionAgentState("executing_tool", { tool: "run_command" });
 
@@ -2272,6 +2293,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // Distinct from VERIFY_OR_WRITE_TOOLS: run_command can verify without ever
   // changing the workspace, so it is not durable delivery evidence on its own.
   const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "create_directory"]);
+  // Completed browser-validation steps are evidence work the frontend
+  // completion gate explicitly demands. Keeping them out of progress
+  // accounting let the stagnation clock interrupt healthy frontend
+  // validation mid-run â€” the live "static site served, browser evidence
+  // underway" failure that motivated this set.
+  const BROWSER_EVIDENCE_TOOLS = new Set([
+    "browser_open", "browser_snapshot", "browser_console", "browser_screenshot",
+    "browser_viewport", "browser_click", "browser_type", "browser_key", "browser_select",
+  ]);
   // A small, deterministic (no model call, no NLP) classifier for "this
   // request's own wording asks for a workspace change" â€” the same
   // regex-over-the-prompt technique already used above for acceptance
@@ -2637,7 +2667,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
       completedToolSignatures: [...seenProgressFingerprints],
       verifications: calls
-        .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName))
+        .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName) || BROWSER_EVIDENCE_TOOLS.has(call.toolName))
         .map((call) => ({ id: call.id, passed: toolCallPassedVerification(call) })),
       unresolvedFailures: calls
         .filter((call) => call.status === "failed")

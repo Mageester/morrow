@@ -436,6 +436,115 @@ a {
   overflow-wrap: anywhere;
 }
 
+/* Blocking approvals surface inside the conversation, where the user already
+   is. Without it a paused run was invisible and the chat simply stalled. */
+.morrow-approvals {
+  display: grid;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 var(--morrow-space-4);
+  gap: var(--morrow-space-3);
+}
+
+.morrow-approvals__card {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-warning);
+  border-radius: var(--morrow-radius-lg);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-approvals__card header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--morrow-space-3);
+  color: var(--morrow-warning);
+}
+
+.morrow-approvals__card header svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.morrow-approvals__card h3 {
+  margin: 0;
+  color: var(--morrow-text);
+  font-size: 0.9375rem;
+  letter-spacing: -0.01em;
+}
+
+.morrow-approvals__eyebrow {
+  margin: 0 0 2px;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-approvals__target {
+  max-width: 100%;
+  padding: var(--morrow-space-2);
+  overflow-x: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.morrow-approvals__hint {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.morrow-approvals__card [role="alert"] {
+  margin: 0;
+  color: var(--morrow-danger);
+  font-size: 0.8125rem;
+}
+
+.morrow-approvals__actions {
+  display: flex;
+  gap: var(--morrow-space-2);
+  justify-content: flex-end;
+}
+
+.morrow-approvals__actions button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--morrow-space-4);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 650;
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+}
+
+.morrow-approvals__allow {
+  color: var(--morrow-surface);
+  background: var(--morrow-accent);
+  border: 1px solid var(--morrow-accent);
+}
+
+.morrow-approvals__deny {
+  color: var(--morrow-text);
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+}
+
+.morrow-approvals__actions button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 @media (max-width: 720px) {
   .morrow-activity-panel {
     top: auto;

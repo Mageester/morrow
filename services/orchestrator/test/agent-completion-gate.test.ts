@@ -112,6 +112,28 @@ describe("agent completion gate", () => {
     )).toBe(true);
   });
 
+  it("rejects a package-script verification when the workspace has no package.json", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("npm-guard", "run_command", { executable: "npm", args: ["test"], purpose: "verify" }), done],
+        [text("cannot verify with npm here"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    const command = conversationsRepository(db).listToolCallsForTask("t")
+      .find((call: any) => call.id === "npm-guard");
+    expect(command).toMatchObject({ status: "failed", errorType: "tool_failed" });
+    expect(command?.errorMessage).toContain("no package.json");
+    // The guard fires before execution: no process ever ran, so no retry-memory
+    // attempt exists and the failure cannot be misread as a flaky command.
+    expect(actionAttemptsRepository(db).listForTask("t")).toEqual([]);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
   it("durably suppresses a third identical failed command and requests a strategy change", async () => {
     seedYolo(db, ws, "recover without repeating the same failed command", true);
     const failedCommand = { executable: "node", args: ["-e", "process.exit(7)"], purpose: "verify" };

@@ -232,11 +232,13 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       const toolName = identifier(payload.toolName);
       const kind = toolKind(toolName);
       const toolCallId = identifier(payload.id) ?? event.id;
+      const cwd = redactActivityTarget(payload.cwd);
       return entry(taskId, event, {
         id: `${taskId}:tool:${toolCallId}`,
         kind,
         status: "running",
         summary: toolSummary(kind, "running"),
+        detail: cwd ? `Working directory: ${cwd}` : null,
         target: redactActivityTarget(payload.target),
         toolName,
       });
@@ -381,7 +383,9 @@ function updateToolEntry(
     ...current,
     status,
     summary: toolSummary(current.kind, status),
-    detail: identifier(event.payload.classification)?.replaceAll("_", " ") ?? current.detail,
+    // Keep the richer started-state detail (e.g. working directory) when one
+    // exists; the failed status already conveys the outcome classification.
+    detail: current.detail ?? identifier(event.payload.classification)?.replaceAll("_", " ") ?? null,
     durationMs: nonnegativeInteger(event.payload.elapsedMs) ?? current.durationMs,
     exitCode: integer(event.payload.exitCode) ?? current.exitCode,
     updatedAt: event.createdAt,
