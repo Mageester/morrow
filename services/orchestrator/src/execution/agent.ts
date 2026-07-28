@@ -81,7 +81,7 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; c
       target = executable ? `${executable}${rest ? " " + rest : ""}` : undefined;
       cwd = pick(args.cwd);
     } else {
-      target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
+      target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? pick(args.skill_id) ?? pick(args.skillId) ?? pick(args.name) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
       // Patches carry their affected paths inside unified-diff headers rather
       // than a top-level `path`. Extract only headers: patch body must never
       // become browser-visible activity data.

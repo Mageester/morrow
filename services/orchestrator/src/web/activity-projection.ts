@@ -114,6 +114,17 @@ function toolKind(toolName: string | null): WebActivityKind {
   return "tool";
 }
 
+/** Keep chat transcript legible. Low-level reads, listings, and repository
+ * probes remain in durable event storage but do not each become a chat row. */
+function isTranscriptTool(toolName: string | null): boolean {
+  return toolName === "run_command"
+    || toolName === "propose_patch"
+    || toolName === "create_file"
+    || toolName === "create_directory"
+    || toolName === "load_skill"
+    || toolName === "find_skill";
+}
+
 function toolSummary(
   kind: WebActivityKind,
   status: WebActivityStatus,
@@ -127,6 +138,8 @@ function toolSummary(
     : toolName?.startsWith("search_") ? ["Searching", "Searched"]
     : toolName?.startsWith("git_") ? ["Inspecting Git", "Inspected Git"]
     : toolName === "propose_patch" ? ["Editing", "Edited"]
+    : toolName === "load_skill" ? ["Loading skill", "Used skill"]
+    : toolName === "find_skill" ? ["Finding skill", "Found skill"]
     : kind === "command" ? ["Running", "Ran"]
     : kind === "process" ? ["Starting process", "Process finished"]
     : ["Using tool", "Used tool"];
@@ -160,45 +173,17 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
   const resultCount = nonnegativeInteger(payload.resultCount ?? payload.evidenceCount ?? payload.count);
   switch (event.type) {
     case "task.created":
-      return entry(taskId, event, { kind: "system", status: "pending", summary: "Task queued" });
     case "task.running":
-      return entry(taskId, event, { kind: "system", status: "running", summary: "Task started" });
     case "plan.created":
-      return entry(taskId, event, {
-        kind: "plan",
-        status: "completed",
-        summary: "Plan created",
-        detail: nonnegativeInteger(payload.stepCount) === null
-          ? null
-          : `${nonnegativeInteger(payload.stepCount)} planned steps`,
-        resultCount: nonnegativeInteger(payload.stepCount),
-      });
     case "step.started":
-      return entry(taskId, event, { kind: "plan", status: "running", summary: "Plan step started" });
     case "step.completed":
-      return entry(taskId, event, { kind: "plan", status: "completed", summary: "Plan step completed" });
-    case "workspace.inspected": {
-      const operation = identifier(payload.kind);
-      const kind: WebActivityKind =
-        operation?.startsWith("git_diff") ? "diff"
-        : operation?.startsWith("search_") || operation?.startsWith("git_") ? "search"
-        : operation?.includes("process") ? "process"
-        : "search";
-      const summary =
-        kind === "diff" ? "Diff inspected"
-        : kind === "process" ? "Process inspected"
-        : operation?.startsWith("search_") ? "Repository search completed"
-        : "Workspace inspected";
-      return entry(taskId, event, {
-        kind,
-        status: "completed",
-        summary,
-        target: redactActivityTarget(payload.path),
-        resultCount,
-      });
-    }
+      // Task and plan lifecycle is durable audit data, not chat activity.
+      return null;
+    case "workspace.inspected":
+      return null;
     case "evidence.persisted": {
       const action = identifier(payload.action);
+      if (action !== "patched" && action !== "created_directory") return null;
       const presentation = evidencePresentation(action);
       return entry(taskId, event, {
         ...presentation,
@@ -208,22 +193,17 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       });
     }
     case "assistant.turn_started":
-      return entry(taskId, event, { kind: "assistant", status: "running", summary: "Morrow is working" });
     case "assistant.turn_completed":
-      return entry(taskId, event, { kind: "assistant", status: "completed", summary: "Morrow finished this response" });
+      return null;
     case "agent.state_changed": {
       const state = identifier(payload.state);
-      const presentation: Partial<Record<string, string>> = {
-        understanding: "Morrow is reviewing request",
-        planning: "Morrow is planning next step",
-        executing_tool: "Morrow is preparing tool call",
-        observing: "Morrow is reviewing tool result",
-        proposing_changes: "Morrow is preparing changes",
-        applying_changes: "Morrow is applying changes",
-        verifying: "Morrow is verifying work",
+      const reasoning: Partial<Record<string, string>> = {
+        understanding: "Reviewing request",
+        planning: "Planning next step",
+        proposing_changes: "Preparing changes",
       };
-      const summary = state ? presentation[state] : null;
-      return summary ? entry(taskId, event, { kind: "assistant", status: "running", summary }) : null;
+      const detail = state ? reasoning[state] : null;
+      return detail ? entry(taskId, event, { kind: "assistant", status: "running", summary: "Thinking", detail }) : null;
     }
     case "approval.requested":
       return entry(taskId, event, {
@@ -233,20 +213,17 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
         detail: identifier(payload.kind) ? `${identifier(payload.kind)} approval` : null,
       });
     case "approval.resolved":
+      if (identifier(payload.decision) !== "deny") return null;
       return entry(taskId, event, {
         kind: "approval",
         status: identifier(payload.decision) === "deny" ? "cancelled" : "completed",
         summary: "Approval resolved",
       });
     case "verification.completed":
-      return entry(taskId, event, {
-        kind: "validation",
-        status: "completed",
-        summary: "Validation completed",
-        resultCount,
-      });
+      return null;
     case "tool.started": {
       const toolName = identifier(payload.toolName);
+      if (!isTranscriptTool(toolName)) return null;
       const kind = toolKind(toolName);
       const toolCallId = identifier(payload.id) ?? event.id;
       const cwd = redactActivityTarget(payload.cwd);
@@ -314,18 +291,10 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
     case "provider.rate_limited":
       return entry(taskId, event, { kind: "provider", status: "warning", summary: "Provider rate limit detected" });
     case "provider.tool_syntax_normalized":
-      return entry(taskId, event, { kind: "recovery", status: "completed", summary: "Tool syntax normalized" });
+      return null;
     case "context.compaction_started":
-      return entry(taskId, event, { kind: "context", status: "running", summary: "Context compaction started" });
     case "context.compaction_completed":
-      return entry(taskId, event, {
-        kind: "context",
-        status: "completed",
-        summary: "Context compacted",
-        detail: nonnegativeInteger(payload.compactedTokens ?? payload.inputTokensAfter) === null
-          ? null
-          : `${nonnegativeInteger(payload.compactedTokens ?? payload.inputTokensAfter)?.toLocaleString("en-US")} tokens retained`,
-      });
+      return null;
     case "context.compaction_failed":
       return entry(taskId, event, { kind: "context", status: "failed", summary: "Context compaction failed" });
     case "context.history_trimmed":
@@ -336,22 +305,11 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
     case "context.minimum_viable_context_exceeded":
       return entry(taskId, event, { kind: "context", status: "blocked", summary: "Context limit blocked this request" });
     case "process.started":
-      return entry(taskId, event, {
-        kind: "process",
-        status: "running",
-        summary: "Background process started",
-        target: redactActivityTarget(payload.command ?? payload.target),
-      });
     case "process.exited":
-      return entry(taskId, event, {
-        kind: "process",
-        status: integer(payload.exitCode) === 0 ? "completed" : "failed",
-        summary: integer(payload.exitCode) === 0 ? "Background process exited" : "Background process failed",
-        exitCode: integer(payload.exitCode),
-      });
+      return null;
     default: {
       const terminal = TERMINAL_STATUS[event.type];
-      if (terminal) {
+      if (terminal && terminal !== "completed") {
         const summary =
           event.type === "task.verified" ? "Task completed with evidence"
           : event.type === "task.completed" ? "Task completed"
@@ -429,7 +387,14 @@ export function projectConversationActivity(
   for (const { taskId, event } of orderedEvents) {
     if (updateToolEntry(entries, taskId, event)) continue;
     const projected = projectEvent(taskId, event);
-    if (projected) entries.push(projected);
+    if (!projected) continue;
+
+    const previous = entries.at(-1);
+    if (projected.kind === "assistant" && previous?.taskId === taskId && previous.kind === "assistant") {
+      entries[entries.length - 1] = projected;
+      continue;
+    }
+    entries.push(projected);
   }
 
   return WebConversationActivitySchema.parse({

@@ -292,6 +292,8 @@ a {
 }
 
 .morrow-activity-timeline {
+  display: grid;
+  gap: 2px;
   min-height: 0;
   padding: 0;
   margin: 0;
@@ -302,35 +304,21 @@ a {
 }
 
 .morrow-activity-timeline li {
-  position: relative;
   content-visibility: auto;
-  contain-intrinsic-size: auto 64px;
-}
-
-.morrow-activity-timeline li::before {
-  position: absolute;
-  top: 30px;
-  bottom: -8px;
-  left: 7px;
-  width: 1px;
-  background: var(--morrow-border);
-  content: "";
-}
-
-.morrow-activity-timeline li:last-child::before {
-  display: none;
+  contain-intrinsic-size: auto 42px;
 }
 
 .morrow-activity-timeline details {
-  padding-block: var(--morrow-space-2);
+  border-radius: var(--morrow-radius-sm);
 }
 
 .morrow-activity-timeline summary {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: var(--morrow-space-3);
-  align-items: start;
-  padding: var(--morrow-space-2);
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  gap: var(--morrow-space-2);
+  align-items: center;
+  min-height: 38px;
+  padding: 6px var(--morrow-space-2);
   border-radius: var(--morrow-radius-sm);
   cursor: pointer;
   list-style: none;
@@ -344,24 +332,25 @@ a {
   display: none;
 }
 
-.morrow-activity-entry__marker {
-  z-index: 1;
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
-  background: var(--morrow-text-muted);
-  border: 2px solid var(--morrow-surface);
-  border-radius: 999px;
-  box-shadow: 0 0 0 1px var(--morrow-border);
+.morrow-activity-timeline details[open] summary {
+  background: var(--morrow-surface-subtle);
 }
 
-.morrow-activity-timeline li[data-status="running"] .morrow-activity-entry__marker {
-  background: var(--morrow-accent);
+.morrow-activity-entry__icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  color: var(--morrow-text-muted);
+  place-items: center;
 }
 
-.morrow-activity-timeline li[data-status="failed"] .morrow-activity-entry__marker,
-.morrow-activity-timeline li[data-status="blocked"] .morrow-activity-entry__marker {
-  background: var(--morrow-danger);
+.morrow-activity-timeline li[data-status="running"] .morrow-activity-entry__icon {
+  color: var(--morrow-accent);
+}
+
+.morrow-activity-timeline li[data-status="failed"] .morrow-activity-entry__icon,
+.morrow-activity-timeline li[data-status="blocked"] .morrow-activity-entry__icon {
+  color: var(--morrow-danger);
 }
 
 .morrow-activity-entry__main {
@@ -372,25 +361,28 @@ a {
 
 .morrow-activity-entry__summary {
   color: var(--morrow-text);
-  font-size: 0.875rem;
-  font-weight: 650;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
-.morrow-activity-entry__meta,
-.morrow-activity-timeline summary time {
+.morrow-activity-entry__meta {
   color: var(--morrow-text-muted);
   font-size: 0.6875rem;
-  text-transform: capitalize;
 }
 
-.morrow-activity-timeline summary time {
-  white-space: nowrap;
+.morrow-activity-entry__chevron {
+  color: var(--morrow-text-muted);
+  transition: transform 120ms ease;
+}
+
+.morrow-activity-timeline details[open] .morrow-activity-entry__chevron {
+  transform: rotate(90deg);
 }
 
 .morrow-activity-entry__details {
   display: grid;
-  gap: var(--morrow-space-3);
-  padding: var(--morrow-space-2) var(--morrow-space-2) var(--morrow-space-4) 36px;
+  gap: var(--morrow-space-2);
+  padding: 2px var(--morrow-space-2) var(--morrow-space-3) 28px;
   color: var(--morrow-text-muted);
   font-size: 0.75rem;
 }
@@ -402,7 +394,7 @@ a {
 
 .morrow-activity-entry__details dl {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, max-content));
   gap: var(--morrow-space-2);
 }
 
@@ -438,26 +430,11 @@ a {
 
 .morrow-conversation-activity {
   max-width: min(100%, 46rem);
-  margin: 0 0 var(--morrow-space-3);
-  border-top: 1px solid var(--morrow-border);
-  border-bottom: 1px solid var(--morrow-border);
-}
-
-.morrow-conversation-activity > p {
-  margin: var(--morrow-space-2) 0 0;
-  color: var(--morrow-text-muted);
-  font-size: 0.75rem;
-  font-weight: 650;
+  margin: 0 0 var(--morrow-space-2);
 }
 
 .morrow-conversation-activity .morrow-activity-timeline {
-  max-height: 18rem;
-  margin-top: var(--morrow-space-1);
-  overflow: auto;
-}
-
-.morrow-conversation-activity .morrow-activity-timeline li::before {
-  bottom: -6px;
+  overflow: visible;
 }
 
 /* Blocking approvals surface inside the conversation, where the user already

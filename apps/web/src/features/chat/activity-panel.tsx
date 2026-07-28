@@ -1,19 +1,21 @@
 import type { WebConversationActivityEntry } from "@morrow/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { Brain, ChevronRight, FileCode2, Terminal, Wrench, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { conversationQueries } from "../../api/conversations.js";
 
-function formatTime(timestamp: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(timestamp));
+function activityIcon(kind: WebConversationActivityEntry["kind"]) {
+  if (kind === "assistant") return <Brain aria-hidden="true" size={15} />;
+  if (kind === "file" || kind === "diff") return <FileCode2 aria-hidden="true" size={15} />;
+  if (kind === "command" || kind === "process") return <Terminal aria-hidden="true" size={15} />;
+  return <Wrench aria-hidden="true" size={15} />;
 }
 
-function formatKind(kind: WebConversationActivityEntry["kind"]): string {
-  return kind.charAt(0).toUpperCase() + kind.slice(1);
+function activityMeta(item: WebConversationActivityEntry): string | null {
+  if (item.kind === "assistant") return item.detail;
+  if (item.status === "failed" || item.status === "blocked") return "Needs attention";
+  if (item.status === "running") return "Working";
+  return item.toolName?.replaceAll("_", " ") ?? null;
 }
 
 export function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
@@ -31,7 +33,6 @@ export function ActivityDetails({ item }: { item: WebConversationActivityEntry }
         {item.durationMs !== null ? <div><dt>Duration</dt><dd>{item.durationMs.toLocaleString("en-US")} ms</dd></div> : null}
         {item.exitCode !== null ? <div><dt>Exit status</dt><dd>Exit {item.exitCode}</dd></div> : null}
         {item.resultCount !== null ? <div><dt>Results</dt><dd>{item.resultCount.toLocaleString("en-US")}</dd></div> : null}
-        <div><dt>Recorded</dt><dd><time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time></dd></div>
       </dl>
     </div>
   );
@@ -50,14 +51,12 @@ export function ActivityTimeline({
         <li data-kind={item.kind} data-status={item.status} key={item.id}>
           <details>
             <summary>
-              <span className="morrow-activity-entry__marker" />
+              <span className="morrow-activity-entry__icon">{activityIcon(item.kind)}</span>
               <span className="morrow-activity-entry__main">
                 <span className="morrow-activity-entry__summary">{item.summary}</span>
-                <span className="morrow-activity-entry__meta">
-                  {formatKind(item.kind)} · {item.status}
-                </span>
+                {activityMeta(item) ? <span className="morrow-activity-entry__meta">{activityMeta(item)}</span> : null}
               </span>
-              <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
+              <ChevronRight aria-hidden="true" className="morrow-activity-entry__chevron" size={15} />
             </summary>
             <ActivityDetails item={item} />
           </details>
@@ -74,7 +73,6 @@ export function ConversationActivity({ entries }: { entries: readonly WebConvers
   if (entries.length === 0) return null;
   return (
     <section aria-label="Morrow activity" className="morrow-conversation-activity">
-      <p>Morrow activity</p>
       <ActivityTimeline entries={entries} label="Morrow activity" />
     </section>
   );

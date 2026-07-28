@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("ConversationPage", () => {
-  it("opens a durable Activity / Inspect panel and renders completed entries oldest to newest", async () => {
+  it("opens compact activity details for reasoning, files, and skills", async () => {
     const activity = {
       version: 1,
       projectId: "project-1",
@@ -70,49 +70,49 @@ describe("ConversationPage", () => {
       entries: [
         {
           version: 1,
-          id: "task-1:event:plan",
+          id: "task-1:event:thinking",
           taskId: "task-1",
           sequence: 1,
-          kind: "plan",
-          status: "completed",
-          summary: "Plan created",
-          detail: "3 planned steps",
+          kind: "assistant",
+          status: "running",
+          summary: "Thinking",
+          detail: "Preparing changes",
           target: null,
           toolName: null,
           durationMs: null,
           exitCode: null,
-          resultCount: 3,
+          resultCount: null,
           createdAt: "2026-07-22T12:00:01.000Z",
           updatedAt: "2026-07-22T12:00:01.000Z",
         },
         {
           version: 1,
-          id: "task-1:tool:tool-1",
+          id: "task-1:tool:file-1",
           taskId: "task-1",
           sequence: 2,
-          kind: "command",
-          status: "failed",
-          summary: "Command failed",
-          detail: "tool failed",
-          target: "pnpm test",
-          toolName: "run_command",
+          kind: "file",
+          status: "completed",
+          summary: "Created src/activity.ts",
+          detail: null,
+          target: "src/activity.ts",
+          toolName: "create_file",
           durationMs: 812,
-          exitCode: 1,
+          exitCode: 0,
           resultCount: null,
           createdAt: "2026-07-22T12:00:02.000Z",
           updatedAt: "2026-07-22T12:00:04.000Z",
         },
         {
           version: 1,
-          id: "task-1:event:recovery",
+          id: "task-1:tool:skill-1",
           taskId: "task-1",
-          sequence: 5,
-          kind: "recovery",
+          sequence: 3,
+          kind: "tool",
           status: "completed",
-          summary: "Recovery strategy changed",
-          detail: "Switched to isolated test",
-          target: null,
-          toolName: "run_command",
+          summary: "Used skill playwright",
+          detail: null,
+          target: "playwright",
+          toolName: "load_skill",
           durationMs: null,
           exitCode: null,
           resultCount: null,
@@ -141,14 +141,14 @@ describe("ConversationPage", () => {
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
     const items = within(panel).getAllByRole("listitem");
     expect(items.map((item) => item.querySelector("summary")?.textContent)).toEqual([
-      expect.stringContaining("Plan created"),
-      expect.stringContaining("Command failed"),
-      expect.stringContaining("Recovery strategy changed"),
+      expect.stringContaining("Thinking"),
+      expect.stringContaining("Created src/activity.ts"),
+      expect.stringContaining("Used skill playwright"),
     ]);
-    expect(within(panel).getByText("pnpm test")).not.toBeVisible();
-    await user.click(within(panel).getByText("Command failed"));
-    expect(within(panel).getByText("pnpm test")).toBeVisible();
-    expect(within(panel).getByText("Exit 1")).toBeVisible();
+    expect(within(panel).getByText("src/activity.ts")).not.toBeVisible();
+    await user.click(within(panel).getByText("Created src/activity.ts"));
+    expect(within(panel).getByText("src/activity.ts")).toBeVisible();
+    expect(within(panel).getByText("Exit 0")).toBeVisible();
     expect(within(panel).getByText("812 ms")).toBeVisible();
     expect(within(panel).getByText(/Completed events remain in this saved history\./)).toBeVisible();
 
