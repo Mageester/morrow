@@ -1,0 +1,48 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - generic [ref=e11]:
+      - strong [ref=e12]: Morrow
+      - generic [ref=e13]: Personal workspace
+    - navigation "Primary" [ref=e14]:
+      - generic [ref=e15]:
+        - link "Home" [ref=e16] [cursor=pointer]:
+          - /url: /app/
+        - link "Missions" [ref=e21] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Connections" [ref=e27] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e33] [cursor=pointer]:
+          - /url: /app/settings
+      - generic [ref=e38]:
+        - link "Library Soon" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+          - generic [ref=e42]: Library
+          - generic [ref=e43]: Soon
+        - link "Automations Soon" [ref=e44] [cursor=pointer]:
+          - /url: /app/automations
+          - generic [ref=e49]: Automations
+          - generic [ref=e50]: Soon
+        - link "Workspace Soon" [ref=e51] [cursor=pointer]:
+          - /url: /app/workspace
+          - generic [ref=e54]: Workspace
+          - generic [ref=e55]: Soon
+    - generic [ref=e56]:
+      - status [ref=e57]: Runtime online
+      - generic [ref=e58]: Local profile
+  - main [ref=e59]:
+    - region [ref=e60]:
+      - generic [ref=e61]:
+        - paragraph [ref=e62]: Connections
+        - heading "Connect a model" [level=1] [ref=e63]
+        - paragraph [ref=e64]: Start with OpenRouter. Morrow only stores a verified key on this computer, and never returns it to this browser.
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - generic [ref=e67]:
+            - paragraph [ref=e68]: Cloud models
+            - heading "OpenRouter" [level=2] [ref=e69]
+            - paragraph [ref=e70]: Connect once to make your available OpenRouter models ready for chat.
+          - status [ref=e71]: Not connected
+        - paragraph [ref=e72]: Morrow verifies a new key with OpenRouter before saving it, so connected always means an authenticated account check succeeded.
+        - button "Connect OpenRouter" [ref=e74] [cursor=pointer]

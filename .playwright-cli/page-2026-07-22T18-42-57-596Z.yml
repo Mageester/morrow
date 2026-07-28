@@ -1,0 +1,57 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - generic [ref=e11]:
+      - strong [ref=e12]: Morrow
+      - generic [ref=e13]: Personal workspace
+    - navigation "Primary" [ref=e14]:
+      - generic [ref=e15]:
+        - link "Home" [ref=e16] [cursor=pointer]:
+          - /url: /app/
+        - link "Missions" [ref=e21] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Connections" [ref=e27] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e33] [cursor=pointer]:
+          - /url: /app/settings
+      - generic [ref=e38]:
+        - link "Library Soon" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+          - generic [ref=e42]: Library
+          - generic [ref=e43]: Soon
+        - link "Automations Soon" [ref=e44] [cursor=pointer]:
+          - /url: /app/automations
+          - generic [ref=e49]: Automations
+          - generic [ref=e50]: Soon
+        - link "Workspace Soon" [ref=e51] [cursor=pointer]:
+          - /url: /app/workspace
+          - generic [ref=e54]: Workspace
+          - generic [ref=e55]: Soon
+    - generic [ref=e56]:
+      - status [ref=e57]: Runtime online
+      - generic [ref=e58]: Local profile
+  - main [ref=e59]:
+    - region [ref=e60]:
+      - generic [ref=e61]:
+        - paragraph [ref=e62]: Your private agent
+        - heading "Home" [level=1] [ref=e63]
+        - paragraph [ref=e64]: Start and resume durable work with Morrow.
+      - region [ref=e65]:
+        - generic [ref=e66]:
+          - generic [ref=e67]:
+            - heading "What should Morrow accomplish?" [level=2] [ref=e68]
+            - paragraph [ref=e69]: Describe the outcome. Morrow will determine the capabilities needed.
+          - status [ref=e70]:
+            - text: No AI model is connected yet, so missions will wait until one is added.
+            - link "Connect a model" [ref=e71] [cursor=pointer]:
+              - /url: /app/connections
+          - generic [ref=e72]: Mission objective
+          - textbox "Mission objective" [active] [ref=e73]:
+            - /placeholder: "For example: compare these options and recommend the best next step."
+          - group [ref=e74]:
+            - generic "Advanced mission options" [ref=e75] [cursor=pointer]
+            - option "Ask before risky actions"
+            - option "Use Morrow’s recommendations" [selected]
+            - option "Proceed autonomously"
+          - button "Start mission" [disabled] [ref=e77]

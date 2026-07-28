@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { HealthResponseSchema } from "@morrow/hosted-contracts";
+import { HealthResponseSchema, ApiErrorSchema } from "@morrow/hosted-contracts";
+import { corsMiddleware, withCors } from "./lib/cors.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 
@@ -17,34 +17,33 @@ export type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// apps/dashboard (Cloudflare Pages) is a different origin from this Worker —
-// dev uses vite.config.ts's proxy instead (same-origin, no CORS needed), so
-// this only matters in production. Named allowlist, not a wildcard: this API
-// issues Bearer-token-authenticated responses, never safe to allow any origin.
-const ALLOWED_ORIGINS = [
-  "http://localhost:4322",
-  "https://app.getaxiom.ca",
-  // Cloudflare-assigned Pages domain (pages.dev names are globally unique,
-  // so ours got a random suffix rather than the bare project name).
-  "https://morrow-app-65l.pages.dev",
-];
-const PAGES_PREVIEW_ORIGIN = /^https:\/\/[a-z0-9-]+\.morrow-app-65l\.pages\.dev$/;
-
-app.use(
-  "/api/*",
-  cors({
-    origin: (origin) => {
-      if (!origin) return undefined;
-      if (ALLOWED_ORIGINS.includes(origin) || PAGES_PREVIEW_ORIGIN.test(origin)) return origin;
-      return undefined;
-    },
-    allowHeaders: ["authorization", "content-type"],
-    allowMethods: ["GET", "POST"],
-  }),
-);
+// Centralized CORS: applied to EVERY route so every response — success,
+// validation failure, auth failure, 404, internal error, and OPTIONS
+// preflight — carries the correct headers. OPTIONS is short-circuited inside
+// this middleware BEFORE requireAuth or any route logic runs (see lib/cors.ts),
+// so preflight can never fail behind authentication. The allowlist lives in
+// lib/cors.ts and echoes only a validated origin, never a wildcard.
+app.use("*", corsMiddleware());
 
 app.get("/health", (c) => c.json(HealthResponseSchema.parse({ status: "ok" })));
 app.route("/api", pairingRoutes);
 app.route("/api", webhookRoutes);
+
+// notFound and onError produce responses outside the normal middleware
+// post-processing path, so stamp CORS headers on them explicitly.
+app.notFound((c) =>
+  withCors(
+    c.json(ApiErrorSchema.parse({ error: { code: "NOT_FOUND", message: "Resource not found." } }), 404),
+    c.req.header("origin"),
+  ),
+);
+
+app.onError((err, c) => {
+  console.error("hosted-api unhandled error:", err);
+  return withCors(
+    c.json(ApiErrorSchema.parse({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } }), 500),
+    c.req.header("origin"),
+  );
+});
 
 export default app;
