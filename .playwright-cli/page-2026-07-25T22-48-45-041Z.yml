@@ -1,0 +1,51 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - strong [ref=e11]: Morrow
+    - generic [ref=e13]:
+      - button "New chat" [disabled] [ref=e14]
+      - paragraph [ref=e17]: Open a local project before starting a chat.
+    - navigation "Primary" [ref=e18]:
+      - generic [ref=e19]:
+        - link "Home" [ref=e20] [cursor=pointer]:
+          - /url: /app/
+        - link "Chats" [ref=e25] [cursor=pointer]:
+          - /url: /app/chats
+        - link "Projects" [ref=e29] [cursor=pointer]:
+          - /url: /app/projects
+        - link "Missions" [ref=e33] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Library" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+        - button "Memory — coming soon" [disabled] [ref=e43]:
+          - generic [ref=e47]: Memory
+          - generic [ref=e48]: Soon
+        - link "Connections" [ref=e49] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e55] [cursor=pointer]:
+          - /url: /app/settings
+    - generic [ref=e60]:
+      - status [ref=e61]: Runtime online
+      - generic [ref=e62]: Local profile
+  - main [ref=e63]:
+    - status [ref=e64]:
+      - generic [ref=e65]: Not connected to an account. Pairing is optional and only affects billing sync.
+      - link "Pair this install" [ref=e66] [cursor=pointer]:
+        - /url: /app/pair
+    - region [ref=e67]:
+      - generic [ref=e68]:
+        - heading "Good evening." [level=1] [ref=e69]
+        - paragraph [ref=e70]: What should we work on?
+        - generic [ref=e72]:
+          - button "New chat" [disabled] [ref=e73]
+          - paragraph [ref=e76]: Open a local project before starting a chat.
+      - generic [ref=e77]:
+        - heading "No local project yet" [level=2] [ref=e78]
+        - paragraph [ref=e79]: Create a local project and Morrow will keep your chats and work here.
+        - paragraph [ref=e80]:
+          - link "Create a project" [ref=e81] [cursor=pointer]:
+            - /url: /app/projects
+          - text: ·
+          - link "Connect a model" [ref=e82] [cursor=pointer]:
+            - /url: /app/connections
