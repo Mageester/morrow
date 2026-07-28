@@ -1,4 +1,4 @@
-import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
+import type { Conversation, ModelStatus, PresetStatus, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -20,7 +20,7 @@ import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
-import { ActivityPanel } from "./activity-panel.js";
+import { ActivityPanel, ConversationActivity } from "./activity-panel.js";
 import { PendingApprovals } from "./pending-approvals.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
@@ -133,6 +133,7 @@ export function ConversationPageContent({
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
+  const activity = useQuery(conversationQueries.activity(projectId, conversationId));
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
@@ -165,6 +166,13 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  const activityByTask = useMemo(() => {
+    const grouped = new Map<string, WebConversationActivityEntry[]>();
+    for (const entry of activity.data?.entries ?? []) {
+      grouped.set(entry.taskId, [...(grouped.get(entry.taskId) ?? []), entry]);
+    }
+    return grouped;
+  }, [activity.data]);
   const conversationTaskIds = useMemo(
     () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
     [history],
@@ -447,17 +455,15 @@ export function ConversationPageContent({
               key={message.id}
             >
               {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
+              {message.role === "assistant" && message.taskId ? (
+                <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
+              ) : null}
               <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
                 {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
                   <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
                 ) : <p>{message.content}</p>}
               </div>
               {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
-              {message.toolActivity.length > 0 ? (
-                <ul aria-label="Tool activity" className="morrow-conversation-tools">
-                  {message.toolActivity.map((tool) => <li data-status={tool.status} key={tool.id}>{tool.toolName.replaceAll("_", " ")} · {tool.status}</li>)}
-                </ul>
-              ) : null}
               {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
                 <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>
               ) : null}

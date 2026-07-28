@@ -114,21 +114,24 @@ function toolKind(toolName: string | null): WebActivityKind {
   return "tool";
 }
 
-function toolSummary(kind: WebActivityKind, status: WebActivityStatus): string {
-  const subject = kind === "command"
-    ? "Command"
-    : kind === "diff"
-      ? "Diff"
-      : kind === "file"
-        ? "File operation"
-        : kind === "search"
-          ? "Search"
-          : kind === "process"
-            ? "Process operation"
-            : "Tool";
-  if (status === "running") return `${subject} started`;
-  if (status === "failed") return `${subject} failed`;
-  return `${subject} completed`;
+function toolSummary(
+  kind: WebActivityKind,
+  status: WebActivityStatus,
+  toolName: string | null,
+  target: string | null,
+): string {
+  const verb = toolName === "read_file" ? ["Reading", "Read"]
+    : toolName === "create_file" ? ["Creating", "Created"]
+    : toolName === "create_directory" ? ["Creating directory", "Created directory"]
+    : toolName === "list_files" ? ["Listing files", "Listed files"]
+    : toolName?.startsWith("search_") ? ["Searching", "Searched"]
+    : toolName?.startsWith("git_") ? ["Inspecting Git", "Inspected Git"]
+    : toolName === "propose_patch" ? ["Editing", "Edited"]
+    : kind === "command" ? ["Running", "Ran"]
+    : kind === "process" ? ["Starting process", "Process finished"]
+    : ["Using tool", "Used tool"];
+  if (status === "failed") return `${verb[1]}${target ? ` ${target}` : ""} — failed`;
+  return `${status === "running" ? verb[0] : verb[1]}${target ? ` ${target}` : ""}`;
 }
 
 function evidencePresentation(action: string | null): {
@@ -205,9 +208,23 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       });
     }
     case "assistant.turn_started":
-      return entry(taskId, event, { kind: "assistant", status: "running", summary: "Model response started" });
+      return entry(taskId, event, { kind: "assistant", status: "running", summary: "Morrow is working" });
     case "assistant.turn_completed":
-      return entry(taskId, event, { kind: "assistant", status: "completed", summary: "Model response received" });
+      return entry(taskId, event, { kind: "assistant", status: "completed", summary: "Morrow finished this response" });
+    case "agent.state_changed": {
+      const state = identifier(payload.state);
+      const presentation: Partial<Record<string, string>> = {
+        understanding: "Morrow is reviewing request",
+        planning: "Morrow is planning next step",
+        executing_tool: "Morrow is preparing tool call",
+        observing: "Morrow is reviewing tool result",
+        proposing_changes: "Morrow is preparing changes",
+        applying_changes: "Morrow is applying changes",
+        verifying: "Morrow is verifying work",
+      };
+      const summary = state ? presentation[state] : null;
+      return summary ? entry(taskId, event, { kind: "assistant", status: "running", summary }) : null;
+    }
     case "approval.requested":
       return entry(taskId, event, {
         kind: "approval",
@@ -233,13 +250,14 @@ function projectEvent(taskId: string, event: TaskEvent): WebConversationActivity
       const kind = toolKind(toolName);
       const toolCallId = identifier(payload.id) ?? event.id;
       const cwd = redactActivityTarget(payload.cwd);
+      const target = redactActivityTarget(payload.target);
       return entry(taskId, event, {
         id: `${taskId}:tool:${toolCallId}`,
         kind,
         status: "running",
-        summary: toolSummary(kind, "running"),
+        summary: toolSummary(kind, "running", toolName, target),
         detail: cwd ? `Working directory: ${cwd}` : null,
-        target: redactActivityTarget(payload.target),
+        target,
         toolName,
       });
     }
@@ -382,7 +400,7 @@ function updateToolEntry(
   entries[index] = {
     ...current,
     status,
-    summary: toolSummary(current.kind, status),
+    summary: toolSummary(current.kind, status, current.toolName, current.target),
     // Keep the richer started-state detail (e.g. working directory) when one
     // exists; the failed status already conveys the outcome classification.
     detail: current.detail ?? identifier(event.payload.classification)?.replaceAll("_", " ") ?? null,

@@ -436,6 +436,30 @@ a {
   overflow-wrap: anywhere;
 }
 
+.morrow-conversation-activity {
+  max-width: min(100%, 46rem);
+  margin: 0 0 var(--morrow-space-3);
+  border-top: 1px solid var(--morrow-border);
+  border-bottom: 1px solid var(--morrow-border);
+}
+
+.morrow-conversation-activity > p {
+  margin: var(--morrow-space-2) 0 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.morrow-conversation-activity .morrow-activity-timeline {
+  max-height: 18rem;
+  margin-top: var(--morrow-space-1);
+  overflow: auto;
+}
+
+.morrow-conversation-activity .morrow-activity-timeline li::before {
+  bottom: -6px;
+}
+
 /* Blocking approvals surface inside the conversation, where the user already
    is. Without it a paused run was invisible and the chat simply stalled. */
 .morrow-approvals {
@@ -1008,20 +1032,10 @@ a {
 }
 
 .morrow-conversation-message__route,
-.morrow-conversation-tools,
 .morrow-chat-warning,
 .morrow-chat-sync {
   margin: 0;
   font-size: 0.8125rem;
-}
-
-.morrow-conversation-tools {
-  display: grid;
-  padding: var(--morrow-space-2) var(--morrow-space-3);
-  gap: var(--morrow-space-1);
-  list-style: none;
-  background: var(--morrow-surface-subtle);
-  border-radius: var(--morrow-radius-sm);
 }
 
 .morrow-chat-warning,
@@ -3587,26 +3601,3 @@ a {
 .morrow-markdown tr:last-child td { border-bottom: none; }
 
 .morrow-markdown img { max-width: 100%; height: auto; }
-
-/* Tool activity: visually distinct from assistant prose. */
-.morrow-conversation-tools li {
-  display: flex;
-  align-items: center;
-  gap: var(--morrow-space-2);
-  font-family: var(--morrow-font-mono);
-  font-size: 0.75rem;
-  color: var(--morrow-text-muted);
-}
-
-.morrow-conversation-tools li::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--morrow-text-muted);
-  flex: none;
-}
-
-.morrow-conversation-tools li[data-status="completed"]::before { background: var(--morrow-success); }
-.morrow-conversation-tools li[data-status="failed"]::before { background: var(--morrow-danger); }
-.morrow-conversation-tools li[data-status="running"]::before { background: var(--morrow-accent); }

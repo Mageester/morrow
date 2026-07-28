@@ -88,6 +88,9 @@ destination. Private Local startup never triggers this request.
   access-restricted with task state, excluded from public events, logs,
   summaries, full-text search, exports, and API responses, and never presented
 as model reasoning.
+- Activity views show only redacted execution facts: phase, tool name, target,
+  status, timing, and bounded result metadata. They never expose raw provider
+  reasoning, tool arguments, or tool output.
 
 Automatic memory retrieval increments a local usage counter so influence remains
 auditable. Retrieval is limited to the current project/conversation scope and

@@ -16,7 +16,7 @@ function formatKind(kind: WebConversationActivityEntry["kind"]): string {
   return kind.charAt(0).toUpperCase() + kind.slice(1);
 }
 
-function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
+export function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
   return (
     <div className="morrow-activity-entry__details">
       {item.detail ? <p>{item.detail}</p> : null}
@@ -34,6 +34,49 @@ function ActivityDetails({ item }: { item: WebConversationActivityEntry }) {
         <div><dt>Recorded</dt><dd><time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time></dd></div>
       </dl>
     </div>
+  );
+}
+
+export function ActivityTimeline({
+  entries,
+  label = "Activity timeline",
+}: {
+  entries: readonly WebConversationActivityEntry[];
+  label?: string;
+}) {
+  return (
+    <ol aria-label={label} className="morrow-activity-timeline">
+      {entries.map((item) => (
+        <li data-kind={item.kind} data-status={item.status} key={item.id}>
+          <details>
+            <summary>
+              <span className="morrow-activity-entry__marker" />
+              <span className="morrow-activity-entry__main">
+                <span className="morrow-activity-entry__summary">{item.summary}</span>
+                <span className="morrow-activity-entry__meta">
+                  {formatKind(item.kind)} · {item.status}
+                </span>
+              </span>
+              <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
+            </summary>
+            <ActivityDetails item={item} />
+          </details>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Claude-style execution rail placed directly beside the response it produced.
+ * Browser-visible data remains the same redacted, allow-listed projection used
+ * by the full inspector. */
+export function ConversationActivity({ entries }: { entries: readonly WebConversationActivityEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <section aria-label="Morrow activity" className="morrow-conversation-activity">
+      <p>Morrow activity</p>
+      <ActivityTimeline entries={entries} label="Morrow activity" />
+    </section>
   );
 }
 
@@ -91,27 +134,7 @@ export function ActivityPanel({ conversationId, onClose, projectId }: ActivityPa
       {activity.data?.entries.length === 0 ? (
         <p className="morrow-activity-panel__empty">Work events will appear here after Morrow starts this conversation.</p>
       ) : null}
-      {activity.data && activity.data.entries.length > 0 ? (
-        <ol aria-label="Activity timeline" className="morrow-activity-timeline">
-          {activity.data.entries.map((item) => (
-            <li data-kind={item.kind} data-status={item.status} key={item.id}>
-              <details>
-                <summary>
-                  <span className="morrow-activity-entry__marker" />
-                  <span className="morrow-activity-entry__main">
-                    <span className="morrow-activity-entry__summary">{item.summary}</span>
-                    <span className="morrow-activity-entry__meta">
-                      {formatKind(item.kind)} · {item.status}
-                    </span>
-                  </span>
-                  <time dateTime={item.createdAt}>{formatTime(item.createdAt)}</time>
-                </summary>
-                <ActivityDetails item={item} />
-              </details>
-            </li>
-          ))}
-        </ol>
-      ) : null}
+      {activity.data && activity.data.entries.length > 0 ? <ActivityTimeline entries={activity.data.entries} /> : null}
     </aside>
   );
 }

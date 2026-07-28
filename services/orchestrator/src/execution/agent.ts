@@ -82,6 +82,16 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; c
       cwd = pick(args.cwd);
     } else {
       target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
+      // Patches carry their affected paths inside unified-diff headers rather
+      // than a top-level `path`. Extract only headers: patch body must never
+      // become browser-visible activity data.
+      if (!target && toolName === "propose_patch") {
+        const patch = pick(args.patch);
+        const files = patch
+          ? [...patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n]+)$/gm)].map((match) => match[1]!).filter((path) => path !== "/dev/null")
+          : [];
+        target = files.length > 0 ? [...new Set(files)].join(", ") : undefined;
+      }
     }
     const purpose = pick(args.purpose);
     const verification = toolName === "run_command" && purpose !== undefined && /\b(?:verify|verification|test|check|lint|typecheck|build)\b/i.test(purpose);

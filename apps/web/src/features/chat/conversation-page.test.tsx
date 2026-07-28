@@ -125,7 +125,7 @@ describe("ConversationPage", () => {
       const path = String(input);
       if (path.endsWith("/activity")) return json(activity);
       if (path.includes("/approvals")) return json([]);
-      if (path.endsWith("/messages")) return json([message({ taskId: null, taskStatus: null, routing: null })]);
+      if (path.endsWith("/messages")) return json([message({ toolActivity: [{ id: "tool-1", toolName: "run_command", status: "failed", startedAt: now, completedAt: now }] })]);
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
       throw new Error(`Unexpected request ${path}`);
     });
@@ -134,7 +134,8 @@ describe("ConversationPage", () => {
     renderPage();
 
     await screen.findByRole("heading", { name: conversation.title });
-    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(false);
+    await screen.findByRole("region", { name: "Morrow activity" });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(true);
     await user.click(screen.getByRole("button", { name: "Activity / Inspect" }));
 
     const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
