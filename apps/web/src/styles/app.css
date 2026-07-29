@@ -3076,6 +3076,75 @@ a {
   color: var(--morrow-text-muted);
   font-size: 0.8125rem;
 }
+/* First-run setup checklist on Home. Retires itself once the required steps
+   report done, so it needs no dismissed-state persistence. */
+.morrow-getting-started {
+  margin-bottom: var(--morrow-space-5);
+}
+.morrow-getting-started__head h2 {
+  margin: var(--morrow-space-1) 0 var(--morrow-space-2);
+}
+.morrow-getting-started__steps {
+  display: grid;
+  gap: var(--morrow-space-3);
+  margin: var(--morrow-space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-getting-started__step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--morrow-space-3);
+  align-items: start;
+}
+.morrow-getting-started__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--morrow-text-muted);
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+}
+.morrow-getting-started__step[data-done] .morrow-getting-started__mark {
+  color: var(--morrow-success, var(--morrow-text));
+  border-color: currentcolor;
+}
+.morrow-getting-started__body {
+  display: grid;
+  gap: 2px;
+}
+.morrow-getting-started__title {
+  display: flex;
+  gap: var(--morrow-space-2);
+  align-items: center;
+  font-weight: 600;
+}
+.morrow-getting-started__optional {
+  padding: 0 6px;
+  color: var(--morrow-text-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+}
+.morrow-getting-started__detail {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-getting-started__status {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+.morrow-getting-started__action {
+  justify-self: start;
+  margin-top: var(--morrow-space-1);
+  font-size: 0.8125rem;
+}
+
 .morrow-visually-hidden {
   position: absolute;
   width: 1px;

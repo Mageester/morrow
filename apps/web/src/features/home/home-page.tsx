@@ -7,6 +7,7 @@ import { conversationQueries } from "../../api/conversations.js";
 import { missionQueries } from "../../api/query-keys.js";
 import { useActiveProject } from "../projects/use-active-project.js";
 import { NewChatButton } from "../chat/new-chat-button.js";
+import { GettingStarted } from "../onboarding/getting-started.js";
 
 const ACTIVE_MISSION_STATES = new Set([
   "draft",
@@ -65,6 +66,12 @@ export function HomePage() {
         </div>
       </div>
 
+      {/* Setup guidance sits above every other state. The branch below only
+          prompted for a model inside the "no project yet" case, so an install
+          with a project and no connected provider was sent straight to a
+          composer where every send failed. */}
+      <GettingStarted />
+
       {projects.isPending ? (
         <p aria-live="polite" role="status">
           Getting your workspace ready…
@@ -93,14 +100,14 @@ export function HomePage() {
           <h2>No local project yet</h2>
           <p>Create a local project and Morrow will keep your chats and work here.</p>
           {/*
-            This empty state replaces the composer, which is where the
-            "connect a model" prompt lives — so on a fresh install a new user
-            was told what was missing and given no way to fix either thing.
-            Both first-run steps are actionable from here.
+            Only the project action lives here now. The missing-provider prompt
+            this used to carry has moved into the setup checklist above, which
+            covers both first-run steps in one place and in a fixed order —
+            two separate "Connect a model" calls to action competing on the
+            same screen was worse than the gap it was added to close.
           */}
           <p className="morrow-empty__actions">
             <Link to="/projects">Create a project</Link>
-            {noProviderConnected ? <> · <Link to="/connections">Connect a model</Link></> : null}
           </p>
         </div>
       ) : (
