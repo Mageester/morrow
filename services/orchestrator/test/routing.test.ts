@@ -201,7 +201,7 @@ describe("Preset router", () => {
   it("reports unavailable when no provider is configured", () => {
     const res = routePreset("balanced", {});
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reason).toContain("no configured provider");
+    if (!res.ok) expect(res.reason).toContain("no connected provider");
   });
 
   it("does not route to an arbitrary account model when no reviewed preset preference is available", () => {
@@ -292,7 +292,7 @@ describe("Preset router", () => {
     expect(statuses.length).toBe(listPresets().length);
     const privateLocal = statuses.find((s) => s.preset.id === "private-local")!;
     expect(privateLocal.available).toBe(false);
-    expect(privateLocal.unavailableReason).toContain("local provider");
+    expect(privateLocal.unavailableReason).toContain("local model");
     const balanced = statuses.find((s) => s.preset.id === "balanced")!;
     expect(balanced.available).toBe(true);
     expect(balanced.resolved?.providerId).toBe("openai");

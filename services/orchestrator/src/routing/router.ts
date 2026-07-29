@@ -161,9 +161,13 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
         reason: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} connected but no model has been chosen yet. Choose one to continue.`,
       };
     }
+    // Same rule as the modelless branch above: these strings are rendered as
+    // the "why not" line under every unavailable entry in the web model
+    // picker, where a `morrow providers configure` invocation is not something
+    // the reader can act on.
     const reason = preset.requiresLocal
-      ? `Preset "${preset.label}" requires a local provider. Start a local server (Ollama, LM Studio, llama.cpp, vLLM, or Jan) and point Morrow at it with \`morrow providers configure\`.`
-      : `Preset "${preset.label}" has no configured provider. Configure one with \`morrow providers configure\`.`;
+      ? `"${preset.label}" runs only on a local model. Start Ollama, LM Studio, llama.cpp, vLLM or Jan, then connect it.`
+      : `"${preset.label}" has no connected provider to run on. Connect one to use it.`;
     return { ok: false, reason };
   }
 

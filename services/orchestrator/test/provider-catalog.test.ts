@@ -291,16 +291,21 @@ describe("Routing reaches catalog providers", () => {
     const result = routePreset("balanced", { GROQ_API_KEY: "k" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toContain("groq");
-    expect(result.reason).toMatch(/no model is selected/i);
-    expect(result.reason).not.toMatch(/has no configured provider/i);
+    // Named by its display label, not its internal id, and with no CLI
+    // invocation: this string reaches the web composer verbatim, where
+    // "Run `morrow providers configure groq`" is not something the reader can
+    // act on. Each surface supplies its own affordance.
+    expect(result.reason).toContain("Groq");
+    expect(result.reason).toMatch(/no model has been chosen/i);
+    expect(result.reason).not.toMatch(/no connected provider to run on/i);
+    expect(result.reason).not.toMatch(/morrow providers/i);
   });
 
   it("still reports an empty environment as nothing configured", () => {
     const result = routePreset("balanced", {});
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/no configured provider/i);
+    expect(result.reason).toMatch(/no connected provider/i);
   });
 });
 

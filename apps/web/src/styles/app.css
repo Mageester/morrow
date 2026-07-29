@@ -3076,6 +3076,37 @@ a {
   color: var(--morrow-text-muted);
   font-size: 0.8125rem;
 }
+/* Why a model cannot be picked, shown inline rather than as a hover title so
+   it is readable on touch and by a screen reader. */
+.morrow-model-picker__option-reason {
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-model-picker__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+/* Collapses the ~90% of the catalogue belonging to unconnected providers. */
+.morrow-model-picker__toggle {
+  width: 100%;
+  padding: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--morrow-border);
+  cursor: pointer;
+}
+.morrow-model-picker__toggle:hover,
+.morrow-model-picker__toggle:focus-visible {
+  color: var(--morrow-text);
+  background: var(--morrow-surface-hover, transparent);
+}
 
 /* ── Slice 8: mission inside chat ────────────────────────────────────────── */
 .morrow-conversation-mission {
