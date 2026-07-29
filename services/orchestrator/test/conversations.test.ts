@@ -261,13 +261,18 @@ describe("project-scoped conversation API", () => {
       version: 1,
       projectId: "project-a",
       conversationId: conversation.id,
+      // No plan entry: activity-projection.ts deliberately drops task and plan
+      // lifecycle ("durable audit data, not chat activity") as of the compact
+      // activity rail in d4f8059. This assertion still described the pre-refactor
+      // shape and had been failing on the branch ever since; the redaction
+      // assertions below — the actual subject of this test — never stopped
+      // passing.
       entries: [
-        { kind: "plan", status: "completed", summary: "Plan created" },
         {
           id: "task-activity:tool:tool-1",
           kind: "command",
           status: "failed",
-          summary: "Command failed",
+          summary: "Ran pnpm test --token [redacted] — failed",
           detail: "Working directory: apps/site",
           target: "pnpm test --token [redacted]",
           durationMs: 812,
