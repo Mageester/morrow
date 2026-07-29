@@ -80,6 +80,7 @@ function getRouteTitle(pathname: string): string {
     "/connections": "Connections",
     "/library": "Library",
     "/missions": "Missions",
+    "/pair": "Pair this install",
     "/projects": "Projects",
     "/settings": "Settings",
   };

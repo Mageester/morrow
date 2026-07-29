@@ -1,6 +1,14 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  type AnyRouter,
+} from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "./connections-page.js";
 
@@ -19,13 +27,38 @@ function result(overrides: Record<string, unknown> = {}) {
   return { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 12, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: ["anthropic/claude-sonnet-4"], models: [], ...overrides };
 }
 
+// The page links to /pair (the only permanent route to the pairing screen), so
+// it now needs a router in scope. A memory router with a stub /pair keeps every
+// existing assertion untouched.
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return { queryClient, ...render(<QueryClientProvider client={queryClient}><ConnectionsPage /></QueryClientProvider>) };
+  const root = createRootRoute();
+  const connections = createRoute({ getParentRoute: () => root, path: "/", component: ConnectionsPage });
+  const pair = createRoute({ getParentRoute: () => root, path: "/pair", component: () => null });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: root.addChildren([connections, pair]),
+  });
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router as unknown as AnyRouter} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function installApi(handler: (path: string, init?: RequestInit) => Response | Promise<Response>) {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init));
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    // Account status is ambient page furniture, not the subject of any test
+    // here — answer it once centrally so each case keeps its own tight handler.
+    if (path === "/api/pairing/status") {
+      return json({ version: 1, status: "unpaired", accountId: null, planId: null, checkedAt: null, lastError: null });
+    }
+    return handler(path, init);
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -57,7 +90,11 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("Connected", { exact: true })).toBeVisible();
     expect(await screen.findByText(/could not confirm owner-restricted permissions/i)).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
-    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
+    // Matched by path, not call index: the page makes other ambient requests
+    // (account status), and pinning this to position 1 made an unrelated added
+    // request look like a credential regression.
+    const configureCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/providers/openrouter/configure");
+    expect(configureCall?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
     expect(screen.queryByText(secret)).not.toBeInTheDocument();
     expect(JSON.stringify(queryClient.getQueryData(["providers"]))).not.toContain(secret);
   });

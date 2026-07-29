@@ -149,7 +149,8 @@ import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
 import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
 import { PairingStatusResponseSchema, RedeemPairingCodeSchema, RedeemPairingCodeResultSchema } from "@morrow/contracts";
-import { redeemPairingCode } from "./hosted/pairing-client.js";
+import { normalizePairingCode, redeemPairingCode } from "./hosted/pairing-client.js";
+import { resolveHostedApiUrl } from "./hosted/hosted-api-url.js";
 import { writeHostedPairing } from "./hosted/pairing-store.js";
 import type { EntitlementPoller } from "./hosted/entitlement-poller.js";
 import { hostname } from "node:os";
@@ -2617,14 +2618,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (!deps.secretsFile) {
       throw new ApiError(503, "Pairing is unavailable on this server.", "SECRETS_UNAVAILABLE");
     }
-    const hostedApiUrl = process.env.MORROW_HOSTED_API_URL?.trim();
-    if (!hostedApiUrl) {
-      throw new ApiError(503, "This install is not configured to reach a hosted Morrow account (MORROW_HOSTED_API_URL unset).", "HOSTED_API_UNAVAILABLE");
-    }
+    const hostedApiUrl = resolveHostedApiUrl(process.env);
     const body = RedeemPairingCodeSchema.parse(request.body ?? {});
     const result = await redeemPairingCode(
       { hostedApiUrl },
-      { code: body.code, deviceLabel: body.deviceLabel?.trim() || hostname() },
+      { code: normalizePairingCode(body.code), deviceLabel: body.deviceLabel?.trim() || hostname() },
     );
     if (!result.ok) {
       const statusCode = result.status === 404 ? 404 : result.status >= 400 && result.status < 500 ? result.status : 502;

@@ -23,6 +23,21 @@ async function parseErrorBody(response: Response): Promise<{ code: string; messa
   };
 }
 
+/**
+ * Make a hand-copied pairing code match what hosted-api stored.
+ *
+ * Codes are generated from an uppercase alphabet with no separators, but
+ * people type them lowercase, paste them with a trailing space out of the
+ * dashboard, or insert a dash because short codes usually have one. Every one
+ * of those produced a flat "Code not recognized or expired." — the same error
+ * as a genuinely wrong code, so the user retyped a correct code and watched it
+ * fail again. Normalising here keeps that judgement in one place, on the way
+ * out to hosted-api.
+ */
+export function normalizePairingCode(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 export type RedeemResult =
   | { ok: true; pairedAgentId: string; deviceToken: string; accountId: string }
   | { ok: false; status: number; code: string; message: string };

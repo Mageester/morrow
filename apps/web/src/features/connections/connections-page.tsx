@@ -1,8 +1,10 @@
 import type { ProviderId, ProviderStatus, ProviderTestResult } from "@morrow/contracts";
 import { Button, StatusPill, Surface } from "@morrow/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
+import { pairingQueries } from "../../api/pairing.js";
 import {
   providerApi,
   providerKeys,
@@ -46,6 +48,49 @@ function resultCopy(result: ProviderTestResult, label: string): Feedback {
     return { tone: "error", text: `Morrow could not reach ${label}. Your existing connection was not changed.` };
   }
   return { tone: "error", text: `${label} could not complete that check. Your existing connection was not changed.` };
+}
+
+/**
+ * Morrow account (device pairing) status, with the only permanent route to
+ * /pair in the product.
+ *
+ * Before this the pair screen was reachable *only* from PairingBanner, which
+ * renders nothing when the status is "active" or "unknown" — and "unknown" is
+ * what every paired install reports the moment hosted-api is briefly
+ * unreachable. There was no nav entry, so the screen became unreachable
+ * exactly when someone would want to re-check it. Connections is where a user
+ * already goes to attach outside services, so the account lives here too.
+ */
+function MorrowAccountSection() {
+  const pairing = useQuery(pairingQueries.status());
+  const status = pairing.data?.status ?? "unpaired";
+
+  const summary: Record<typeof status, { pill: "success" | "neutral" | "warning"; label: string; body: string }> = {
+    active: { pill: "success", label: "Linked", body: "This install is linked to your Morrow account." },
+    inactive: { pill: "warning", label: "Subscription inactive", body: "Your local work is unaffected." },
+    unpaired: { pill: "neutral", label: "Not linked", body: "Linking is optional — it only syncs billing and entitlement. Morrow runs entirely on this machine either way." },
+    unknown: { pill: "neutral", label: "Linked · not verified", body: "This install is linked but Morrow could not reach the account service. Local work is unaffected." },
+  };
+  const current = summary[status];
+
+  return (
+    <div className="morrow-connections-page__group">
+      <h2>Morrow account</h2>
+      <Surface>
+        <p>
+          <StatusPill variant={current.pill}>{current.label}</StatusPill>
+        </p>
+        <p>{current.body}</p>
+        <p>
+          <Link to="/pair">{status === "unpaired" ? "Link this install" : "Enter a new pairing code"}</Link>
+          {" · "}
+          <a href="https://morrowapp.getaxiom.ca" rel="noreferrer" target="_blank">
+            Open your account dashboard
+          </a>
+        </p>
+      </Surface>
+    </div>
+  );
 }
 
 function formatCheckTime(value: string | null | undefined): string | null {
@@ -415,6 +460,8 @@ export function ConnectionsPage() {
           ))}
         </div>
       ) : null}
+
+      <MorrowAccountSection />
 
       <div className="morrow-connections-page__group">
         <h2>{connected.length > 0 ? "Add another provider" : "Choose a provider"}</h2>

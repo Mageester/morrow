@@ -28,11 +28,36 @@ describe("PairPage", () => {
     });
 
     const user = userEvent.setup();
-    await user.type(screen.getByRole("textbox", { name: /code from your morrow account dashboard/i }), "XKQ-9F2");
+    // Typed the way a person actually copies a six-character code off the
+    // dashboard: lowercase, with a separator they assumed was part of it.
+    // Codes carry no separator, so passing this through verbatim produced the
+    // same "Code not recognized or expired." as a genuinely wrong code.
+    await user.type(screen.getByRole("textbox", { name: /code from your morrow account dashboard/i }), "xkq-9f2");
     await user.click(screen.getByRole("button", { name: /connect/i }));
 
     expect(await screen.findByText(/this install is now paired/i)).toBeVisible();
-    expect(redeemedWith).toEqual({ code: "XKQ-9F2" });
+    expect(redeemedWith).toEqual({ code: "XKQ9F2" });
+  });
+
+  it("keeps all six characters when the typed code contains a separator", async () => {
+    let redeemedWith: unknown = null;
+    renderPairPage(async (input, init) => {
+      if (String(input) === "/api/pairing/redeem" && init?.method === "POST") {
+        redeemedWith = JSON.parse(String(init.body));
+        return Response.json({ version: 1, paired: true, accountId: "acct-1" });
+      }
+      throw new Error(`unexpected ${String(input)}`);
+    });
+
+    const user = userEvent.setup();
+    // "ABC-234" is seven keystrokes for a six-character code. A maxLength of 6
+    // on the input consumed the separator against the budget and silently
+    // dropped the trailing "4", so a correctly copied code failed to redeem.
+    await user.type(screen.getByRole("textbox", { name: /code from your morrow account dashboard/i }), "ABC-234");
+    await user.click(screen.getByRole("button", { name: /connect/i }));
+
+    expect(await screen.findByText(/this install is now paired/i)).toBeVisible();
+    expect(redeemedWith).toEqual({ code: "ABC234" });
   });
 
   it("surfaces an invalid/expired code as a real error, not a silent failure", async () => {

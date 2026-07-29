@@ -228,6 +228,43 @@ describe("Preset router", () => {
     }
   });
 
+  it("routes a discovery-only gateway to its first advertised model when nothing has set a default", () => {
+    // OpenCode Zen has no built-in default model and no preset curates it, so
+    // before this it reported a live 60-model catalog and still routed to
+    // nothing — the web composer refused every send and pointed the user at a
+    // CLI command. A connected provider with a usable catalog must route.
+    installProviderModelDiscoveries([{
+      providerId: "opencode-zen",
+      authMode: "catalog-api-key",
+      status: "available",
+      models: [
+        { providerModelId: "zen-flagship", displayName: "Zen Flagship", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: null, vision: null }, metadataSource: "provider-reported" },
+        { providerModelId: "zen-small", displayName: "Zen Small", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: null, vision: null }, metadataSource: "provider-reported" },
+      ],
+      errorKind: null,
+      fetchedAt: "2026-07-29T15:00:00.000Z",
+    }]);
+    try {
+      const result = routePreset("balanced", { OPENCODE_ZEN_API_KEY: "k" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.decision.providerId).toBe("opencode-zen");
+        expect(result.decision.model).toBe("zen-flagship");
+      }
+    } finally {
+      installProviderModelDiscoveries([]);
+    }
+  });
+
+  it("names the provider without prescribing a CLI when a connected provider still has no model", () => {
+    const result = routePreset("balanced", { OPENCODE_ZEN_API_KEY: "k" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("OpenCode Zen");
+      expect(result.reason).not.toContain("morrow providers");
+    }
+  });
+
   it("only routes private-local to a local provider", () => {
     expect(routePreset("private-local", {}).ok).toBe(false);
     const res = routePreset("private-local", { OLLAMA_BASE_URL: "http://127.0.0.1:11434/v1" });
