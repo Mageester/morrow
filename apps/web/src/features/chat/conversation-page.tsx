@@ -22,6 +22,7 @@ import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
 import { ActivityPanel, ConversationActivity } from "./activity-panel.js";
 import { PendingApprovals } from "./pending-approvals.js";
+import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -166,6 +167,11 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  const transcript = useMemo(
+    () => history.map(({ content, id, streamingState, updatedAt }) => `${id}\u0000${content}\u0000${streamingState}\u0000${updatedAt}`).join("\u0001"),
+    [history],
+  );
+  const { resume: resumeAutoscroll, sentinelRef } = useConversationAutoscroll({ history, transcript, activeTaskId });
   const activityByTask = useMemo(() => {
     const grouped = new Map<string, WebConversationActivityEntry[]>();
     for (const entry of activity.data?.entries ?? []) {
@@ -239,6 +245,7 @@ export function ConversationPageContent({
   };
 
   async function submit(submission: ChatComposerSubmission) {
+    resumeAutoscroll();
     try {
       const result = await conversationApi.sendMessage(projectId, conversationId, {
         content: submission.content,
@@ -494,6 +501,8 @@ export function ConversationPageContent({
           placeholder="Reply to Morrow…"
         />
       </div>
+
+      <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
 
       {renameOpen ? (
         <div aria-labelledby="rename-conversation-heading" aria-modal="true" className="morrow-conversation-dialog-backdrop" onKeyDown={(event) => onDialogKeyDown(event, closeRename)} role="dialog">

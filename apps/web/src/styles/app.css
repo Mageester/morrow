@@ -1022,6 +1022,11 @@ a {
   border-radius: var(--morrow-radius-sm);
 }
 
+.morrow-conversation-autoscroll-sentinel {
+  height: 1px;
+  scroll-margin-block-end: 9rem;
+}
+
 .morrow-conversation-composer {
   position: sticky;
   bottom: 0;

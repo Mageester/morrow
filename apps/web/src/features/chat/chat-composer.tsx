@@ -204,7 +204,7 @@ export function ChatComposer({
   }, [currentScopeId]);
 
   useEffect(() => {
-    if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus();
+    if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus({ preventScroll: true });
   }, [activeTaskId, autoFocus, disabled, sending]);
 
   // Transient confirmations announce to assistive tech through the polite live
