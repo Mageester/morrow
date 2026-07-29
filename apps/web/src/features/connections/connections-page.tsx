@@ -51,6 +51,65 @@ function resultCopy(result: ProviderTestResult, label: string): Feedback {
 }
 
 /**
+ * Choose which of a connected provider's models Morrow should use by default.
+ *
+ * The backend has accepted `model` on POST /api/providers/:id/configure all
+ * along; nothing in the web app ever sent it. So a provider could report "60
+ * available models" and "No default model selected" side by side, with no
+ * control to resolve it, and the only instruction anywhere in the product was
+ * a CLI command printed inside a failed send. A provider that has discovered
+ * a catalogue now routes without this (routing falls back to the first
+ * advertised model), so this is a preference, not a prerequisite — which is
+ * why it reads as a plain select rather than a setup gate.
+ */
+function ActiveModelChooser({ provider }: { provider: ProviderStatus }) {
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const models = provider.models ?? [];
+
+  if (models.length === 0) {
+    return <>{provider.defaultModel ? `Active model: ${provider.defaultModel}` : "No models discovered yet — use Refresh models."}</>;
+  }
+
+  async function choose(model: string) {
+    setPending(true);
+    setError(null);
+    try {
+      await providerApi(provider.id).configure({ model });
+      await queryClient.invalidateQueries({ queryKey: providerKeys.all });
+    } catch (caught) {
+      setError(caught instanceof ApiClientError ? caught.message : "Morrow could not save that choice.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <label className="morrow-connection__model-label">
+        <span className="morrow-visually-hidden">Active model for {provider.label}</span>
+        <select
+          disabled={pending}
+          onChange={(event) => { void choose(event.target.value); }}
+          value={provider.defaultModel ?? ""}
+        >
+          {/* An explicit placeholder rather than silently preselecting the
+              first model, which would misreport an unset default as a choice
+              the user had made. */}
+          <option disabled value="">Choose a model…</option>
+          {models.map((model) => (
+            <option key={model} value={model}>{model}</option>
+          ))}
+        </select>
+      </label>
+      {pending ? <span role="status"> Saving…</span> : null}
+      {error ? <span role="alert"> {error}</span> : null}
+    </>
+  );
+}
+
+/**
  * Morrow account (device pairing) status, with the only permanent route to
  * /pair in the product.
  *
@@ -310,7 +369,10 @@ function ProviderConnection({ provider, autoOpen, onDisconnected }: { provider: 
       {provider.configured ? (
         <dl className="morrow-connection__details">
           <div><dt>Models</dt><dd>{modelCount} available model{modelCount === 1 ? "" : "s"}</dd></div>
-          <div><dt>Active model</dt><dd>{provider.defaultModel ? `Active model: ${provider.defaultModel}` : "No default model selected"}</dd></div>
+          <div>
+            <dt>Active model</dt>
+            <dd><ActiveModelChooser provider={provider} /></dd>
+          </div>
           <div><dt>Health</dt><dd>{lastCheck ? `Last successful health check: ${lastCheck}` : "Connected after an authenticated account check"}</dd></div>
         </dl>
       ) : (

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveInvocation, run } from "../src/main.js";
+import { MORROW_VERSION } from "../src/service/update.js";
 
 describe("morrow root command", () => {
   const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -43,7 +44,9 @@ describe("morrow root command", () => {
 
   it("prints package version without contacting service", async () => {
     await expect(run(["--version"])).resolves.toBe(0);
-    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain("0.1.0-beta.34");
+    // Not a literal — see bin.test.ts. Version drift is enforced by
+    // scripts/validate-repository.mjs, not by restating the number here.
+    expect(stdout.mock.calls.map(([value]) => String(value)).join("")).toContain(MORROW_VERSION);
   });
 
   it("reports a corrupt config as JSON instead of failing before doctor starts", async () => {
