@@ -1,5 +1,6 @@
 import type { AgentMode, ModelStatus, PresetId, PresetStatus, ProviderId } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
+import { ContextMeter } from "./context-meter.js";
 import { ModelPicker } from "./model-picker.js";
 import {
   useEffect,
@@ -87,6 +88,11 @@ export interface ChatComposerProps {
    * with the searchable model picker. */
   modelCatalogue?: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } | undefined;
   activeTaskId?: string | undefined;
+  /** The most recent task in this conversation, running or finished. The
+   * context meter reads usage from it; activeTaskId alone would blank the
+   * meter the moment a turn completed, which is exactly when the reader wants
+   * to know how much of the window that turn consumed. */
+  contextTaskId?: string | undefined;
   onStop?: ((taskId: string) => Promise<void>) | undefined;
 }
 
@@ -144,6 +150,7 @@ export function ChatComposer({
   modelRoutes = [DEFAULT_ROUTE],
   modelCatalogue,
   activeTaskId,
+  contextTaskId,
   onStop,
 }: ChatComposerProps) {
   const id = useId();
@@ -451,6 +458,8 @@ export function ChatComposer({
             </select>
           </label>
         )}
+
+        <ContextMeter taskId={contextTaskId ?? activeTaskId} />
 
         {activeTaskId && onStop ? (
           <button

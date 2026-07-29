@@ -3076,6 +3076,54 @@ a {
   color: var(--morrow-text-muted);
   font-size: 0.8125rem;
 }
+.morrow-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Context-window usage ring in the composer. The title attribute carries the
+   full figure; the ring itself is decorative, with the same text repeated for
+   assistive tech because a title on an <svg> is not reliably announced. */
+.morrow-context-meter {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.morrow-context-meter__track,
+.morrow-context-meter__fill {
+  fill: none;
+  stroke-width: 2;
+}
+.morrow-context-meter__track {
+  stroke: var(--morrow-border);
+}
+.morrow-context-meter__fill {
+  stroke: var(--morrow-text-muted);
+  stroke-linecap: round;
+  transition: stroke-dasharray 240ms ease;
+}
+.morrow-context-meter[data-tone="warning"] .morrow-context-meter__fill {
+  stroke: var(--morrow-warning);
+}
+.morrow-context-meter[data-tone="critical"] .morrow-context-meter__fill {
+  stroke: var(--morrow-danger, var(--morrow-warning));
+}
+/* An estimated count is drawn dashed so a derived number never reads as a
+   measured one. */
+.morrow-context-meter[data-estimated="true"] .morrow-context-meter__fill {
+  stroke-dashoffset: 0;
+  opacity: 0.7;
+}
+
 /* Why a model cannot be picked, shown inline rather than as a hover title so
    it is readable on touch and by a screen reader. */
 .morrow-model-picker__option-reason {

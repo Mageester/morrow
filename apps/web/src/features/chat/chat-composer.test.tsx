@@ -1,12 +1,24 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as baseRender, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ChatComposer,
   type ChatComposerSubmission,
 } from "./chat-composer.js";
 import { loadChatDraft, saveChatDraft } from "./draft-store.js";
+
+// The composer embeds the context meter, which reads task usage through React
+// Query. Every case here renders the composer directly, so the provider is
+// supplied once at the render boundary rather than threaded through ~18 call
+// sites. rerender() is wrapped too, or a rerender would drop the provider.
+function render(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrap = (node: ReactNode) => <QueryClientProvider client={client}>{node}</QueryClientProvider>;
+  const result = baseRender(wrap(ui));
+  return { ...result, rerender: (next: ReactNode) => result.rerender(wrap(next)) };
+}
 
 const scope = { projectId: "project-1", conversationId: "conversation-1" };
 const projects = [

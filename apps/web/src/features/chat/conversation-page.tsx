@@ -167,6 +167,9 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  // Latest task regardless of state — the context meter should keep reporting
+  // the last turn's usage after that turn finishes, not blank out.
+  const latestTaskId = [...history].reverse().find((message) => message.taskId)?.taskId ?? undefined;
   const transcript = useMemo(
     () => history.map(({ content, id, streamingState, updatedAt }) => `${id}\u0000${content}\u0000${streamingState}\u0000${updatedAt}`).join("\u0001"),
     [history],
@@ -494,6 +497,7 @@ export function ConversationPageContent({
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus
+          contextTaskId={latestTaskId}
           draftScope={{ projectId, conversationId }}
           modelCatalogue={modelCatalogue}
           onStop={stop}
