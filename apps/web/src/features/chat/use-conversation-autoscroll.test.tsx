@@ -59,4 +59,18 @@ describe("useConversationAutoscroll", () => {
     rerender(<Harness activeTaskId="task-1" history="fourth" transcript="fourth" />);
     expect(scrollIntoView).toHaveBeenCalledTimes(4);
   });
+
+  it("stops when page position moved above its prior bottom between transcript updates", () => {
+    scrollIntoView.mockClear();
+    let scrollTop = 900;
+    Object.defineProperties(document.documentElement, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, get: () => scrollTop },
+    });
+    const { rerender } = render(<Harness activeTaskId="task-1" history="first" transcript="first" />);
+    scrollTop = 300;
+    rerender(<Harness activeTaskId="task-1" history="second" transcript="second" />);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
 });

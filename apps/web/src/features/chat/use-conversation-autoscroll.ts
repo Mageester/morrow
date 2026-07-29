@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 export interface ConversationAutoscrollInput {
   history: unknown;
@@ -22,6 +22,9 @@ export function useConversationAutoscroll({
 }: ConversationAutoscrollInput): ConversationAutoscroll {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pinnedToLatest = useRef(true);
+  const previousScrollHeight = useRef<number | null>(null);
+
+  const scrollRoot = () => document.scrollingElement ?? document.documentElement;
 
   const scrollToLatest = useCallback(() => {
     sentinelRef.current?.scrollIntoView({ block: "end" });
@@ -36,8 +39,8 @@ export function useConversationAutoscroll({
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const updatePinnedState = () => {
-      const bounds = sentinel.getBoundingClientRect();
-      pinnedToLatest.current = bounds.top >= 0 && bounds.bottom <= window.innerHeight;
+      const root = scrollRoot();
+      pinnedToLatest.current = root.scrollTop + root.clientHeight >= root.scrollHeight - 2;
     };
     const pauseFollowing = () => { pinnedToLatest.current = false; };
     const pauseForKeyboardScroll = (event: KeyboardEvent) => {
@@ -62,8 +65,14 @@ export function useConversationAutoscroll({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const root = scrollRoot();
+    const previousHeight = previousScrollHeight.current;
+    if (previousHeight !== null && root.scrollTop + root.clientHeight < previousHeight - 2) {
+      pinnedToLatest.current = false;
+    }
     if (pinnedToLatest.current) scrollToLatest();
+    previousScrollHeight.current = root.scrollHeight;
   }, [activeTaskId, history, scrollToLatest, transcript]);
 
   return { sentinelRef, resume };
