@@ -108,6 +108,20 @@ describe("conservative extraction", () => {
     expect(requirements).toEqual([]);
   });
 
+  it("ignores obligations on the run rather than on the deliverable", () => {
+    // "the mission must survive a service restart" is an instruction about how
+    // the work is carried out. Lifting it yields a criterion with nothing to
+    // verify, which then blocks completion forever.
+    expect(extractObjectiveRequirements("Repair a syntax error; the mission must survive a service restart.")).toEqual([]);
+    expect(extractObjectiveRequirements("You must not stop until it works.")).toEqual([]);
+  });
+
+  it("still lifts obligations on the deliverable itself", () => {
+    const requirements = extractObjectiveRequirements("The app must start with npm start and serve the UI.");
+    expect(requirements).toHaveLength(1);
+    expect(requirements[0]!.verification.command).toBe("npm start");
+  });
+
   it("is bounded so a very long objective cannot produce unbounded criteria", () => {
     const long = Array.from({ length: 40 }, (_, i) => `Requirement${i}: the system must satisfy condition number ${i} exactly.`).join(" ");
     expect(extractObjectiveRequirements(long).length).toBeLessThanOrEqual(12);

@@ -136,6 +136,19 @@ function verificationFor(statement: string, category: ObjectiveRequirementCatego
  * Everything else is prose framing and is deliberately not lifted into an
  * authoritative criterion.
  */
+/**
+ * An obligation on the run rather than on the thing being built.
+ *
+ * "The app must start with npm start" is a requirement of the deliverable and
+ * belongs in the contract. "The mission must survive a service restart" is an
+ * instruction about how the work is carried out; lifting it produces a
+ * criterion with nothing to verify, which then blocks completion forever.
+ */
+function isProcessDirective(sentence: string): boolean {
+  return /\b(?:the\s+)?(?:mission|agent|assistant|worker|session|you|morrow)\s+(?:\w+\s+){0,2}(?:must|shall|should)\b/i.test(sentence)
+    || /^\s*(?:you|do not stop|never stop)\b/i.test(sentence);
+}
+
 function requirementClauses(objective: string): string[] {
   const clauses: string[] = [];
   const normalized = objective.replace(/\r\n/g, "\n");
@@ -153,13 +166,13 @@ function requirementClauses(objective: string): string[] {
       clauses.push(`${labelled[1]!.trim()}: ${labelled[2]!.trim()}`);
       continue;
     }
-    if (/\bmust\b/i.test(sentence) && sentence.length >= 16) {
+    if (/\bmust\b/i.test(sentence) && sentence.length >= 16 && !isProcessDirective(sentence)) {
       clauses.push(sentence);
       continue;
     }
     // A prohibition is a requirement wherever it appears in the sentence:
     // "Use only the standard library; do not require a database server."
-    if (/\b(?:do not|don't|must not|shall not|never)\b/i.test(sentence) && sentence.length >= 12) {
+    if (/\b(?:do not|don't|must not|shall not|never)\b/i.test(sentence) && sentence.length >= 12 && !isProcessDirective(sentence)) {
       clauses.push(sentence);
     }
   }

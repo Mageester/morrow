@@ -34,6 +34,15 @@ describe("isGeneratedArtifactPath", () => {
     }
   });
 
+  it("never hides a security-relevant path from review", () => {
+    // .git/.morrow/.hermes are discovery noise but are the opposite of noise
+    // in change tracking: the Guardian's protected-path check must still see a
+    // write under .morrow, or a leaked secret passes review unseen.
+    for (const path of [".morrow/secrets.json", ".morrow/credentials/token", ".git/config", ".env", ".env.production"]) {
+      expect(isGeneratedArtifactPath(path), path).toBe(false);
+    }
+  });
+
   it("keeps real source, config, docs and lockfiles visible", () => {
     for (const path of [
       "src/server.js",
