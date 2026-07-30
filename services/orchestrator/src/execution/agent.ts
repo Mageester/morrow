@@ -52,7 +52,7 @@ import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
 import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
-import { externalizeToolResult, renderExternalizedForContext } from "./artifact-externalization.js";
+import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
@@ -302,6 +302,16 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
   }
   return { languages: [...languages], frameworks: [...frameworks] };
 }
+
+/**
+ * Tools a read-only (`ask`) turn may see. Module scope so the context-budget
+ * tool count is derived from this one list instead of a hand-maintained
+ * literal that silently drifts whenever a read-only tool is added.
+ */
+const READ_ONLY_TOOL_NAMES = new Set([
+  "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
+  "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
+]);
 
 function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
@@ -839,7 +849,7 @@ export async function executeAgentChatTask({
     },
     presetContextBudgetBytes: contextBytesLimit,
     outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
-    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : 11,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
   });
   const primaryRouteFingerprint = providerRouteFingerprint({
     providerId: providerType,
@@ -1086,6 +1096,19 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "read_artifact",
+      description: "Read a byte range of an oversized tool result Morrow stored as an artifact. When a tool result is returned as an artifact reference, call this with that artifactId to read the sections you need. Returns at most 16 KB per call; use offset to page through.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The artifactId reported in an earlier tool result" },
+          offset: { type: "number", description: "Byte offset to start at (default 0)" },
+          length: { type: "number", description: "Bytes to return (default and maximum 16384)" }
+        },
+        required: ["id"]
+      }
+    },
+    {
       name: "load_skill",
       description: "Load the full instructions for a skill by ID. After finding a relevant skill with find_skill, call this to read its complete workflow and follow its instructions step by step.",
       parameters: {
@@ -1187,9 +1210,6 @@ export async function executeAgentChatTask({
   // The exposed tool set is dictated by the mode. Inspect (read-only) never
   // sees run_command/propose_patch; plan-only sees nothing; only agent mode
   // exposes execution and write tools.
-  const READ_ONLY_TOOL_NAMES = new Set([
-    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
-  ]);
   // Load conversation messages before this task's assistant message
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
@@ -1835,6 +1855,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
+  // Artifact ids this task was actually handed. `read_artifact` serves only
+  // these, so a task can never enumerate the store or reach another task's
+  // captured output. Seeded from durable tool results below so the permission
+  // survives a restart exactly as it survives a turn.
+  const offeredArtifactIds = new Set<string>();
   const patchFailureCountsByHash = new Map<string, number>();
   // Failed diff attempts keyed by TARGET FILE (not patch hash). A model that
   // keeps emitting differently-broken diffs for the same file never trips the
@@ -2058,6 +2083,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+  for (const id of collectOfferedArtifactIds(finalToolCalls.map((call) => call.resultJson ?? ""))) offeredArtifactIds.add(id);
   const durableTurns = continuity.listProviderTurns(taskId);
   absoluteTurn = durableTurns.length;
   if (durableTurns.length > 0) {
@@ -2684,7 +2710,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             limitSource: route.endpointLimitSource,
           },
           outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
-          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : 11,
+          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
         });
         const routeFingerprint = providerRouteFingerprint({
           providerId: candidate.id,
@@ -3867,6 +3893,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               });
               resultStr = await executeApprovedTool("create_directory", dirArgs, tc.id);
             }
+          } else if (tc.name === "read_artifact") {
+            // Read-only retrieval of Morrow's own already-captured tool output,
+            // restricted to the artifact ids this task was shown. No approval:
+            // the bytes were produced by a tool call the user already approved.
+            const read = readArtifactRange(toolArtifactsRepository(db), offeredArtifactIds, args);
+            if (!read.ok) throw new AgentToolFailure(read.error, { error: read.error, kind: "artifact_not_readable", toolName: tc.name });
+            resultStr = JSON.stringify(read.payload);
           } else if (tc.name === "find_skill" || tc.name === "load_skill") {
             // Read-only skill discovery/loading: no approval needed. (These were
             // advertised to the model but never dispatched here, so the model's
@@ -3924,6 +3957,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             taskId,
             now: now(),
           });
+          // Handing the model a reference is what authorizes reading it back.
+          if (result.kind === "artifact") offeredArtifactIds.add(result.id);
           return renderExternalizedForContext(result);
         };
         const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr, externalizer) : resultStr;

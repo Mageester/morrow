@@ -20,6 +20,9 @@ import type { ToolArtifactRepository } from "../repositories/tool-artifacts.js";
 
 export const DEFAULT_INLINE_BYTE_LIMIT = 24 * 1024;
 
+/** Largest slice one `read_artifact` call may return to the model. */
+export const MAX_ARTIFACT_READ_BYTES = 16 * 1024;
+
 export type ExternalizedToolResult =
   | { kind: "inline"; text: string; bytes: number }
   | {
@@ -96,4 +99,71 @@ export function renderExternalizedForContext(result: ExternalizedToolResult): st
     retrieval: result.retrieval,
     hint: `Full content (${result.bytes} bytes) is stored as artifact ${result.id}. Use read_artifact with id=${result.id} (or a byte range) to fetch specific sections; do not request the full payload unless you genuinely need it.`,
   });
+}
+
+/** Every artifact id this run has actually handed to the model. */
+export function collectOfferedArtifactIds(renderedToolResults: Iterable<string>): Set<string> {
+  const ids = new Set<string>();
+  for (const rendered of renderedToolResults) {
+    if (!rendered || !rendered.includes("artifactId")) continue;
+    for (const match of rendered.matchAll(/"artifactId"\s*:\s*"([^"]+)"/g)) {
+      if (match[1]) ids.add(match[1]);
+    }
+  }
+  return ids;
+}
+
+export type ArtifactReadResult =
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/**
+ * Serve one bounded range of an artifact the model was already given a
+ * reference to.
+ *
+ * `renderExternalizedForContext` tells the model to call `read_artifact`, so
+ * the tool has to exist — otherwise a compliant model hits the runtime's
+ * `Forbidden tool` branch, which is what produced the observed
+ * `Forbidden tool: read_artifact` failures. Adding it grants no new reach:
+ * artifacts are Morrow's own already-captured tool output, and `offeredIds`
+ * restricts a task to the exact ids it was shown. A task can never enumerate
+ * the artifact store or read another task's captured output, and the response
+ * is capped so a large artifact cannot be pulled back inline in one call.
+ */
+export function readArtifactRange(
+  repo: Pick<ToolArtifactRepository, "get" | "getContent">,
+  offeredIds: ReadonlySet<string>,
+  input: { id?: unknown; offset?: unknown; length?: unknown },
+): ArtifactReadResult {
+  const id = typeof input.id === "string" ? input.id.trim() : "";
+  if (!id) return { ok: false, error: "read_artifact requires the string \"id\" of an artifact referenced in an earlier tool result." };
+  if (!offeredIds.has(id)) {
+    return { ok: false, error: `Artifact ${id} was not referenced in this task's tool results. Only artifact ids Morrow reported back to you can be read.` };
+  }
+  const row = repo.get(id);
+  const content = repo.getContent(id);
+  if (!row || !content) return { ok: false, error: `Artifact ${id} is no longer stored.` };
+
+  const rawOffset = typeof input.offset === "number" ? input.offset : 0;
+  if (!Number.isFinite(rawOffset) || rawOffset < 0) return { ok: false, error: "\"offset\" must be a non-negative byte offset." };
+  const offset = Math.min(Math.floor(rawOffset), row.bytes);
+  const rawLength = typeof input.length === "number" ? input.length : MAX_ARTIFACT_READ_BYTES;
+  if (!Number.isFinite(rawLength) || rawLength <= 0) return { ok: false, error: "\"length\" must be a positive byte count." };
+  const length = Math.min(Math.floor(rawLength), MAX_ARTIFACT_READ_BYTES);
+  const end = Math.min(offset + length, row.bytes);
+
+  return {
+    ok: true,
+    payload: {
+      artifactId: row.id,
+      toolName: row.toolName,
+      contentType: row.contentType,
+      totalBytes: row.bytes,
+      offset,
+      returnedBytes: end - offset,
+      truncated: end < row.bytes,
+      ...(end < row.bytes ? { nextOffset: end } : {}),
+      content: content.subarray(offset, end).toString("utf8"),
+    },
+  };
 }
