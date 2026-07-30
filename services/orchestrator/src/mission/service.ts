@@ -13,7 +13,7 @@ import { assertMissionTransition, canTransitionMission, gradeMission, isTerminal
 import type { MissionsRepository } from "../repositories/missions.js";
 import type { ChatMessage } from "../provider/base.js";
 import { buildCriteriaPrompt, parseCriteriaFromModel, isVagueCriterion, rewriteVague, type DraftCriterion } from "./criteria.js";
-import { mergeCriteria, objectiveRequirementCriteria } from "./objective-requirements.js";
+import { mergeCriteria, objectiveRequirementCriteria, propagateServiceCommand } from "./objective-requirements.js";
 import { runVerification, type RunOptions } from "./evidence-runner.js";
 import { categorizeFailure, normalizeSignature, planRecovery, type RecoveryPlan } from "./failures.js";
 import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candidateFiles, isGitRepo } from "./checkpoints.js";
@@ -212,7 +212,7 @@ export class MissionService {
     // persistence, viewports and documentation could be reduced to "no
     // unrelated changes" plus "a reviewer approves" — and then graded complete
     // with none of it true.
-    drafts = mergeCriteria(objectiveRequirementCriteria(mission.objective), drafts);
+    drafts = propagateServiceCommand(mergeCriteria(objectiveRequirementCriteria(mission.objective), drafts));
     this.repo.addCriteria(missionId, drafts.map((d) => ({ id: `crit-${randomUUID()}`, description: d.description, verification: d.verification, state: "proposed" as MissionCriterionState })), this.now());
     this.repo.appendEvent(missionId, "mission.criteria_generated", `Generated ${drafts.length} success criteria`, { count: drafts.length }, this.now());
     // Auto-approve missions display AND persist the approved contract.
@@ -330,20 +330,23 @@ export class MissionService {
   }
 
   /** Verify every approved/in-progress criterion whose strategy is executable. */
-  async verifyAll(missionId: string): Promise<Mission> {
+  async verifyAll(missionId: string, opts?: { revisePlanOnFailure?: boolean }): Promise<Mission> {
     const mission = this.get(missionId);
     const failedNow: string[] = [];
     for (const c of mission.criteria) {
       if (c.state === "waived" || c.state === "verified") continue;
-      // Manual/browser/review strategies cannot be auto-proven here.
-      if (c.verification.kind === "manual" || c.verification.kind === "browser") continue;
+      // Manual/review strategies cannot be auto-proven here. `browser` is
+      // executable when the runner has a browser factory and the strategy
+      // carries a URL; `runVerification` reports `inconclusive` otherwise,
+      // which is still evidence that the criterion was not proven.
+      if (c.verification.kind === "manual") continue;
       if (c.verification.kind === "review") continue; // proven by the reviewer phase
       const { criterion } = await this.verifyCriterion(missionId, c.id);
       if (criterion.state === "failed") failedNow.push(`${criterion.description.slice(0, 120)} — ${criterion.failureReason?.slice(0, 120) ?? "failed"}`);
     }
     // Evidence contradicted the plan's assumption of completion: one revision
     // for the whole verification pass, listing what must actually change.
-    if (failedNow.length > 0) {
+    if (failedNow.length > 0 && opts?.revisePlanOnFailure !== false) {
       this.revisePlan(missionId, {
         trigger: "test_contradiction",
         triggerDetail: `${failedNow.length} criterion(s) failed evidence-backed verification`,
@@ -1130,6 +1133,53 @@ export class MissionService {
       diffChecked: true,
       protectedPathViolations: changedFiles.filter(isProtectedMissionPath),
     });
+  }
+
+  /**
+   * Close the accountability loop when execution stops without a Guardian pass.
+   *
+   * Producing the artifact and proving it are separate problems. Observed live:
+   * a mission built a complete, working, tested app, then exhausted its
+   * automatic recovery strategies — and because every evidence gate hung off
+   * the Guardian-pass path, which needs a worker task to reach `completed`, the
+   * mission recorded ZERO evidence and sat at status `running` forever. Giving
+   * up is a legitimate outcome; giving up *silently and ungraded* is not.
+   *
+   * So before the runtime parks in its terminal state, the executable gates are
+   * run once against what is actually on disk, the evidence is recorded against
+   * the criteria it proves, and the mission is graded from that ledger. The
+   * grade can only ever go as high as the evidence supports: this records
+   * proof, it does not manufacture it, and a criterion with no passing evidence
+   * stays unsatisfied exactly as before.
+   *
+   * The verification pass here deliberately does NOT revise the plan on
+   * failure — the mission is being closed out, not replanned, and a revision
+   * at this point could trip the revision limit and strand the mission in a
+   * bare `blocked` status with no result at all.
+   */
+  async concludeWithoutSuccess(missionId: string, reason: string): Promise<Mission> {
+    const mission = this.get(missionId);
+    if (isTerminalMissionStatus(mission.status)) return mission;
+    this.repo.appendEvent(missionId, "mission.conclusion_started", `Closing out without a Guardian pass: ${reason}`.slice(0, 500), { reason }, this.now());
+    try {
+      await this.verifyAll(missionId, { revisePlanOnFailure: false });
+    } catch (error) {
+      // A gate that throws must not strand the mission mid-close. The failure
+      // is recorded and grading proceeds on whatever evidence did land.
+      this.repo.appendEvent(
+        missionId,
+        "mission.conclusion_gate_failed",
+        `Verification pass errored during close-out: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`,
+        {},
+        this.now(),
+      );
+    }
+    const current = this.get(missionId);
+    // A give-up path (loop detection, revision limit) may have already driven
+    // the mission terminal while the gates ran. Its status stands; the evidence
+    // recorded above is still durably attached to the criteria it proves.
+    if (isTerminalMissionStatus(current.status)) return current;
+    return this.finalize(missionId);
   }
 
   /** Grade the mission from criteria + review and set the terminal status. */

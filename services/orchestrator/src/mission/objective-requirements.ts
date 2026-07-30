@@ -105,6 +105,20 @@ function commandIn(statement: string): string | null {
 }
 
 /**
+ * A command that starts a server rather than finishing.
+ *
+ * This distinction decides whether a criterion is provable at all. `npm start`
+ * was being emitted as `{ kind: "command", expectExitCode: 0 }`, and a working
+ * server never exits, so the check could only ever run out its timeout — the
+ * requirement the user cared most about was unprovable by construction.
+ */
+const SERVICE_SCRIPTS = /\b(start|dev|serve|preview|watch)\b/;
+
+export function isServiceCommand(command: string): boolean {
+  return SERVICE_SCRIPTS.test(command) && !/\b(test|build|install|ci|lint)\b/.test(command);
+}
+
+/**
  * Choose the strongest verification the statement itself justifies.
  *
  * A command the user named is runnable evidence and is used directly. Anything
@@ -114,11 +128,19 @@ function commandIn(statement: string): string | null {
  */
 function verificationFor(statement: string, category: ObjectiveRequirementCategory): MissionVerificationStrategy {
   const command = commandIn(statement);
+  const uiCategory = category === "responsive" || category === "frontend" || category === "accessibility";
+  if (command && isServiceCommand(command)) {
+    // Prove it by starting it and asking it for a response, not by waiting for
+    // an exit that a healthy service never makes.
+    return uiCategory
+      ? { kind: "browser", command, service: true, describe: statement.slice(0, 500) }
+      : { kind: "runtime", command, service: true, describe: statement.slice(0, 500) };
+  }
   if (command) {
     const kind = /test/.test(command) ? "test" : /build/.test(command) ? "build" : "command";
     return { kind, command, expectExitCode: 0, describe: `${command} exits 0` };
   }
-  if (category === "responsive" || category === "frontend" || category === "accessibility") {
+  if (uiCategory) {
     return { kind: "browser", describe: statement.slice(0, 500) };
   }
   if (category === "api" || category === "runtime" || category === "persistence") {
@@ -207,6 +229,31 @@ export function objectiveRequirementCriteria(objective: string): DraftCriterion[
     description: requirement.statement.length > 300 ? `${requirement.statement.slice(0, 297)}...` : requirement.statement,
     verification: requirement.verification,
   }));
+}
+
+/**
+ * Give every service-dependent criterion the service the objective already
+ * named.
+ *
+ * An objective states the startup command once — "The app must start with npm
+ * start and serve both the UI and the API" — and then states the UI and API
+ * requirements separately, without repeating it. Those criteria are about a
+ * running app, so with no command they have nothing to run and stay
+ * permanently inconclusive: a browser gate with no address to open.
+ *
+ * This reuses the command the user wrote; it never invents one. When the
+ * objective names no service, service-dependent criteria are left exactly as
+ * they were, and remain unproven rather than falsely proven.
+ */
+export function propagateServiceCommand(drafts: DraftCriterion[]): DraftCriterion[] {
+  const service = drafts.find((draft) => draft.verification.service && draft.verification.command)?.verification.command;
+  if (!service) return drafts;
+  return drafts.map((draft) => {
+    const verification = draft.verification;
+    if (verification.command) return draft;
+    if (verification.kind !== "browser" && verification.kind !== "runtime") return draft;
+    return { ...draft, verification: { ...verification, command: service, service: true } };
+  });
 }
 
 /**

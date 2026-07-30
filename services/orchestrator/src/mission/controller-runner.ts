@@ -24,6 +24,7 @@ import { AutomaticMemoryService } from "../cortex/automatic-memory.js";
 import { AutomaticSkillService } from "../cortex/automatic-skills.js";
 import { listProviderStatuses } from "../provider/registry.js";
 import { decideWorkerRecovery, type ProviderFailureDetails } from "./worker-recovery.js";
+import { playwrightController, resolvePlaywrightChannel } from "../browser/playwright.js";
 
 type MissionRuntimeRepository = ReturnType<typeof missionRuntimeRepository>;
 
@@ -201,6 +202,17 @@ export function createDefaultMissionControllerRunner(
     backupDir: join(resolveMorrowHome(env), "mission-checkpoints"),
     now,
     cortex,
+    runOptions: {
+      // Browser gates render the mission's own service, so the policy is opened
+      // exactly as far as loopback and no further. `isLoopbackUrl` in the
+      // evidence runner rejects anything else before we get here.
+      browser: () => playwrightController({
+        headless: true,
+        allowPrivateNetwork: true,
+        allowedDomains: ["localhost", "127.0.0.1"],
+        ...(resolvePlaywrightChannel(undefined, env) ? { browser: resolvePlaywrightChannel(undefined, env)! } : {}),
+      }),
+    },
   });
   const controller = new MissionController({
     runtime,
@@ -314,6 +326,7 @@ export function createDefaultMissionControllerRunner(
       return { taskId: result.task.id };
     },
     finalizeMission: (missionId) => missionService.finalize(missionId),
+    concludeMission: (missionId, reason) => missionService.concludeWithoutSuccess(missionId, reason),
     validateMission: (missionId) => missionService.verifyAll(missionId),
     reviewMission: (missionId) => missionService.runReview(missionId),
     resolveApproval: (approvalId) => approvals.resolve(approvalId, {

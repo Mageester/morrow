@@ -736,6 +736,10 @@ export const MissionVerificationStrategySchema=z.object({
   // For http: a URL to probe and the expected status.
   url:z.string().max(2000).optional(),
   expectStatus:z.number().int().optional(),
+  // The command starts a long-running service rather than exiting. Such a
+  // command can never satisfy an exit-code check — a working server does not
+  // exit — so the gate starts it, probes it, and always stops it again.
+  service:z.boolean().optional(),
   // For diff: a path glob that changes are expected to stay within.
   pathScope:z.string().max(500).optional(),
   // Human-readable description of what evidence proves this criterion.
@@ -921,6 +925,9 @@ export const MissionEventTypeSchema=z.enum([
   "mission.review_started",  "mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
   "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned","mission.cortex_ready",
   "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
+  // Close-out without a Guardian pass: the gates still run and the mission is
+  // still graded, so the give-up itself is on the record.
+  "mission.conclusion_started","mission.conclusion_gate_failed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({
