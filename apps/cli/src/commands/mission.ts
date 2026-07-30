@@ -77,6 +77,55 @@ export async function missionCommand(ctx: Context, sub: string | undefined, args
   return runMission(ctx, api, objective);
 }
 
+/**
+ * `morrow build "<objective>" [--in <directory>]` — the packaged build verb.
+ *
+ * Build is the Verified Mission lifecycle aimed at a workspace rather than at
+ * the current directory: `--in` names where the software should be built and
+ * is created and registered when it does not exist yet. Everything after the
+ * objective (criteria, approval gate, evidence, Guardian review) is identical
+ * to `morrow mission`, so `build` adds a scoping verb, not a second engine.
+ *
+ * The approval gate is deliberately unchanged: an interactive build still
+ * shows its criteria and stops unless `--yes`/`--yolo` was passed.
+ */
+export async function buildCommand(ctx: Context, sub: string | undefined, args: string[]): Promise<number> {
+  if (sub === "help" || flagBool(ctx.flags, "help")) return printBuildHelp(ctx.out);
+  const objective = [sub, ...args].filter((value): value is string => Boolean(value)).join(" ").trim();
+  if (!objective) {
+    throw usageError(
+      "Usage: morrow build \"<objective>\" [--in <directory>]",
+      "Example: morrow build \"Build a task tracker with a REST API and tests\" --in ./taskflow",
+    );
+  }
+  await ensureRunning(ctx);
+  return runMission(ctx, ctx.api(), objective);
+}
+
+export function printBuildHelp(out: Output): number {
+  const help = [
+    "Morrow Build",
+    "",
+    "Usage:",
+    "  morrow build \"<objective>\" [--in <directory>]",
+    "",
+    "Options:",
+    "  --in <directory>     build in this directory; created and registered when missing",
+    "  --provider <id>      pin the model provider for this build",
+    "  --model <id>         pin the model for this build",
+    "  --preset <id>        routing preset",
+    "  --yes | --yolo       approve the criteria and execute without stopping",
+    "  --detach             start the durable build and return immediately",
+    "",
+    "Build runs the Verified Mission lifecycle: criteria → approval → execution",
+    "→ evidence-backed verification → independent review → honest grade.",
+    "Inspect a running or finished build with `morrow mission show|evidence|result`.",
+  ].join("\n");
+  if (out.json) out.data({ help });
+  else out.print(help);
+  return EXIT.OK;
+}
+
 async function runMission(ctx: Context, api: MorrowApi, objective: string): Promise<number> {
   const project = await resolveProject(ctx, api, { required: true, autoCreateMissing: true });
   if (!project) return EXIT.NOT_FOUND;

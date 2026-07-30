@@ -23,7 +23,7 @@ import { processesCommand } from "./commands/processes.js";
 import { worktreesCommand } from "./commands/worktrees.js";
 import { integrationsCommand } from "./commands/integrations.js";
 import { symbolsCommand } from "./commands/symbols.js";
-import { missionCommand, printMissionHelp } from "./commands/mission.js";
+import { buildCommand, missionCommand, printBuildHelp, printMissionHelp } from "./commands/mission.js";
 import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
@@ -40,9 +40,12 @@ import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/up
 // update checker's notion of the current version.
 export const VERSION = MORROW_VERSION;
 
-const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
+// `in` must be a declared value flag: without it `--in --json` (or any value
+// that starts with `-`) would silently degrade to a boolean and the build
+// would run against the wrong workspace instead of failing loudly.
+const VALUE_FLAGS = ["project", "in", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "build", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
@@ -72,6 +75,7 @@ export async function run(argv: string[]): Promise<number> {
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return printCortexHelp(out);
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "acceptance") return printAcceptanceHelp(out);
+    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "build") return printBuildHelp(out);
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const invocation = resolveInvocation(parsed.positionals);
@@ -130,6 +134,7 @@ export async function run(argv: string[]): Promise<number> {
     switch (root) {
       case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
+      case "build": return await buildCommand(ctx, sub, args);
       case "yolo": { const p = promptOf(); return await chatWith({ build: true, yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
@@ -235,6 +240,7 @@ function printHelp(out: Output): number {
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow build "…" --in DIR    ${g("build software in a directory, verified end to end")}`,
     `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
     `  morrow cortex                ${g("inspect repository intelligence")}`,
     `  morrow acceptance            ${g("run packaged product acceptance checks")}`,
@@ -258,7 +264,7 @@ function printHelp(out: Output): number {
     `  ${g(SLASH_COMMANDS.map((c) => `/${c.name}`).join(" "))}`,
     "",
     g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
-    g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
+    g("Options: --json --no-color --project --in --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;

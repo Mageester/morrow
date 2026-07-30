@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import type { Project } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
 import { MorrowApi } from "../client/api.js";
@@ -30,6 +30,16 @@ export async function resolveProject(
   opts: { required?: boolean; autoCreateMissing?: boolean } = {},
 ): Promise<Project | null> {
   const flag = flagString(ctx.flags, "project");
+  const scope = flagString(ctx.flags, "in");
+  if (scope !== undefined) {
+    if (flag) {
+      throw usageError(
+        "--in and --project both select a workspace.",
+        "Pass only one: `--in <directory>` to scope a new build, or `--project <id|name|path>` for a registered project.",
+      );
+    }
+    return resolveWorkspaceScope(ctx, api, scope);
+  }
   const projects = await api.listProjects();
 
   // 1. Explicit --project always wins.
@@ -160,6 +170,48 @@ export function matchProjectByIdPrefix(
 function matchProjectByPath(projects: Project[], ref: string): Project | undefined {
   const canonical = canonicalDirectory(ref) ?? ref;
   return projects.find((p) => samePath(canonicalProjectPath(p.workspacePath), canonical));
+}
+
+/**
+ * Resolve the `--in <directory>` workspace scope.
+ *
+ * Unlike `--project`, which selects an already-registered workspace, `--in`
+ * names the directory a build should happen *in* — and that directory is
+ * usually brand new. So the directory is created when missing, then held to
+ * exactly the same safety bar as every other workspace: `isSafeProjectRoot`
+ * still refuses drive roots, home, and broad user folders, and `--force` is
+ * still the only way past it. Creating the directory never widens the scope a
+ * mission can touch; it only makes an explicitly named empty scope usable.
+ *
+ * An already-registered project at that path is reused rather than duplicated,
+ * so re-running a build against the same directory keeps one mission history.
+ */
+export async function resolveWorkspaceScope(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {
+  const requested = ref.trim();
+  if (!requested) throw usageError("--in requires a directory path.", "Example: morrow build \"…\" --in ./my-app");
+  const target = resolve(requested);
+  if (existsSync(target) && !statSync(target).isDirectory()) {
+    throw usageError(`--in must name a directory, but ${target} is a file.`);
+  }
+  const created = !existsSync(target);
+  if (created) {
+    const parsed = parse(target);
+    if (samePath(target, parsed.root)) throw usageError(`Refusing to use a drive root as a workspace: ${target}`);
+    try {
+      mkdirSync(target, { recursive: true });
+    } catch (error) {
+      throw usageError(`Could not create workspace directory ${target}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const canonical = validateProjectDirectory(target, { force: flagBool(ctx.flags, "force") });
+  const existing = matchProjectByPath(await api.listProjects(), canonical);
+  if (existing) {
+    ctx.out.diag(ctx.out.gray(`  workspace: ${existing.name}  ${canonical}`));
+    return existing;
+  }
+  const project = await api.createProject(basename(canonical) || canonical, canonical);
+  ctx.out.info(`${created ? "Created" : "Using"} workspace: ${project.name}  ${ctx.out.gray(canonical)}`);
+  return project;
 }
 
 async function autoCreateProjectForPath(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {
