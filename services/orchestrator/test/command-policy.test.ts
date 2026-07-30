@@ -112,3 +112,39 @@ describe("command policy", () => {
     expect(longRunningCommandTimeoutMs("npm", ["run", "start"])).toBe(30_000);
   });
 });
+
+/**
+ * Process-killing policy.
+ *
+ * Observed live during a packaged build against a real model: the agent ran
+ * `taskkill /F /IM node.exe` with the stated purpose "Kill all Node.js
+ * processes to get a clean slate". Under auto-approval it executed, killed
+ * every node.exe on the host — including Morrow's bundled runtime\node.exe —
+ * and terminated the controller supervising that very mission, plus an
+ * unrelated Morrow service belonging to a different worktree.
+ */
+describe("process-killing commands", () => {
+  it("denies a machine-wide kill by image name", () => {
+    const decision = classifyCommand("taskkill", ["/F", "/IM", "node.exe"]);
+    expect(decision.risk).toBe("denied");
+    expect(decision.reason).toMatch(/whole machine/i);
+  });
+
+  it("denies the Unix equivalents that select by name", () => {
+    for (const [executable, args] of [["pkill", ["-f", "node"]], ["killall", ["node"]], ["tskill", ["node"]]] as const) {
+      expect(classifyCommand(executable, [...args]).risk, executable).toBe("denied");
+    }
+  });
+
+  it("never auto-approves even a single-pid kill", () => {
+    // Killing one pid is legitimate cleanup, but it reaches outside the
+    // workspace, so it is a decision for the user rather than the agent.
+    expect(classifyCommand("taskkill", ["/PID", "1234", "/T"]).risk).toBe("approval_required");
+    expect(classifyCommand("kill", ["-9", "1234"]).risk).toBe("approval_required");
+  });
+
+  it("leaves ordinary build and test commands untouched", () => {
+    expect(classifyCommand("node", ["--test"]).risk).not.toBe("denied");
+    expect(classifyCommand("npm", ["test"]).risk).not.toBe("denied");
+  });
+});
