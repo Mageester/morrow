@@ -33,6 +33,7 @@ import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, as
 import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
+import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, MAX_CHAT_IMAGE_BYTES, type ChatImage } from "../provider/base.js";
@@ -860,6 +861,16 @@ export async function executeAgentChatTask({
     endpointIdentityHash: primaryRoute.endpointIdentityHash,
   });
 
+  // A route the user pinned (`--provider` and/or `--model`, persisted as
+  // decision.overridden) is a instruction, not a preference. Alternate stream
+  // candidates are constructed with `createProvider(id, env)` and served with
+  // `getProviderDefaultModel(id)`, so leaving them in place meant a request for
+  // a specific model could be answered by a different provider running a
+  // different model with nothing surfaced but a `provider.fallback` event.
+  // A pinned route therefore has exactly one candidate; when it cannot serve
+  // the turn, the task fails with the typed provider outcome instead.
+  const routePinned = routing?.decision.overridden === true;
+
   // Stream candidates for live fallback: the primary first, then any injected
   // fallbacks (tests) or — on the real registry path — every other *configured*
   // routing candidate, in order. A candidate we cannot construct is skipped.
@@ -869,13 +880,39 @@ export async function executeAgentChatTask({
       streamCandidates.push({ id: ((fp as { id?: ProviderId }).id ?? `fallback-${i}`) as string, provider: fp });
     });
   } else if (!provider && providerType !== "mock") {
-    for (const cand of routing?.decision.candidates ?? []) {
-      if (!cand.configured || cand.providerId === providerType || cand.providerId === "mock") continue;
+    for (const candidateId of eligibleFallbackProviderIds({ pinned: routePinned, primaryProviderId: providerType, candidates: routing?.decision.candidates })) {
       try {
-        streamCandidates.push({ id: cand.providerId, provider: createProvider(cand.providerId, process.env) });
+        streamCandidates.push({ id: candidateId, provider: createProvider(candidateId, process.env) });
       } catch {
         /* unconfigurable candidate (e.g. missing key) — skip it */
       }
+    }
+  }
+
+  // Durable route evidence: what was asked for, what was resolved, and whether
+  // this run is allowed to substitute anything. Recorded before the first
+  // provider call so the answer survives a crash and a later review can tell a
+  // pinned route from an automatically chosen one.
+  event("provider.route_selected", {
+    presetId: routing?.decision.presetId ?? null,
+    providerId: providerType,
+    model: contextModel,
+    pinned: routePinned,
+    overridden: routing?.decision.overridden ?? false,
+    fallbackUsed: routing?.decision.fallbackUsed ?? false,
+    alternateCandidates: streamCandidates.slice(1).map((candidate) => candidate.id),
+  });
+  if (taskMissionId) {
+    try {
+      missionsRepository(db).appendEvent(
+        taskMissionId,
+        "mission.route_selected",
+        `${routePinned ? "Pinned" : "Resolved"} route: ${providerType} / ${contextModel}`,
+        { taskId, providerId: providerType, model: contextModel, pinned: routePinned, alternateCandidates: streamCandidates.slice(1).map((candidate) => candidate.id) },
+        now(),
+      );
+    } catch {
+      // Route evidence is durable bookkeeping; it must never block execution.
     }
   }
 
