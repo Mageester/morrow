@@ -30,7 +30,7 @@ import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs 
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
-import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
+import { repairAndParseToolArguments, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { missionsRepository } from "../repositories/missions.js";
 import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js";
@@ -3266,7 +3266,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
                 : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });
           }
-          args = parsedArgs.value;
+          // One explicit normalization boundary, between parsing and
+          // validation: bring an unambiguous call to the tool's declared shape
+          // (alias field names, lines-as-array content, a single file given as
+          // a bare string) without changing what it means. Everything after
+          // this point — required fields, types, absolute-path refusal — is
+          // validated exactly as strictly as before.
+          const normalized = normalizeToolArguments(tc.name, parsedArgs.value);
+          args = normalized.args;
+          if (normalized.applied.length > 0) {
+            event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });
+          }
 
           // Reject required-field, wrong-type, and absolute-path defects for the
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file

@@ -101,7 +101,7 @@ describe("dispatchAgentTask: CLI flags reach the persisted route", () => {
       { db, runner: { run: (taskId: string) => void ran.push(taskId) }, env },
       { conversationId: "c1", content: "Build a task tracker", mode: "agent", ...body } as never,
     );
-    return { result, ran };
+    return { result: { ...result, routing: result.routing! }, ran };
   }
 
   it("persists a --provider/--model build as a pinned route with a single candidate", () => {
