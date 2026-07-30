@@ -13,6 +13,7 @@ import { assertMissionTransition, canTransitionMission, gradeMission, isTerminal
 import type { MissionsRepository } from "../repositories/missions.js";
 import type { ChatMessage } from "../provider/base.js";
 import { buildCriteriaPrompt, parseCriteriaFromModel, isVagueCriterion, rewriteVague, type DraftCriterion } from "./criteria.js";
+import { mergeCriteria, objectiveRequirementCriteria } from "./objective-requirements.js";
 import { runVerification, type RunOptions } from "./evidence-runner.js";
 import { categorizeFailure, normalizeSignature, planRecovery, type RecoveryPlan } from "./failures.js";
 import { captureCheckpoint, rollbackToCheckpoint, describeCheckpointDiff, candidateFiles, isGitRepo } from "./checkpoints.js";
@@ -206,6 +207,12 @@ export class MissionService {
       }
     }
     if (drafts.length === 0) drafts = this.heuristicCriteria(mission.objective, repoSummary, this.deps.getWorkspacePath(mission.projectId));
+    // The requirements the user actually wrote are authoritative, whether or
+    // not a planning model ran. Without this, an objective naming tests,
+    // persistence, viewports and documentation could be reduced to "no
+    // unrelated changes" plus "a reviewer approves" — and then graded complete
+    // with none of it true.
+    drafts = mergeCriteria(objectiveRequirementCriteria(mission.objective), drafts);
     this.repo.addCriteria(missionId, drafts.map((d) => ({ id: `crit-${randomUUID()}`, description: d.description, verification: d.verification, state: "proposed" as MissionCriterionState })), this.now());
     this.repo.appendEvent(missionId, "mission.criteria_generated", `Generated ${drafts.length} success criteria`, { count: drafts.length }, this.now());
     // Auto-approve missions display AND persist the approved contract.
