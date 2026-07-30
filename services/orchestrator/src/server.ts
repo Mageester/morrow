@@ -429,6 +429,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
       ownerPid: process.pid,
+      // Which install this service belongs to. A packaged launcher checks this
+      // before adopting an already-healthy service on its port: without it,
+      // "something answers /api/health" was the whole test, so a freshly
+      // installed build would silently drive an unrelated orchestrator from
+      // another install or worktree — and every check run against it would be
+      // measuring the wrong code.
+      serviceRoot: process.env.MORROW_HOME ?? null,
+      serviceEntry: process.argv[1] ?? null,
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };

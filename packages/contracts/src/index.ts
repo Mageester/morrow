@@ -686,6 +686,12 @@ export const HealthSchema=z.object({
   // The CLI uses this only for a local service to recover an interrupted or
   // deleted pid file. It is intentionally not a credential or user identifier.
   ownerPid:z.number().int().positive().optional(),
+  // Install identity, so a launcher can tell "a Morrow is running here" from
+  // "MY Morrow is running here" before adopting the service on its port.
+  // Local paths, never sent anywhere: the launcher and the service are the
+  // same machine by construction.
+  serviceRoot:z.string().nullable().optional(),
+  serviceEntry:z.string().nullable().optional(),
   migrations:z.object({applied:z.number().int(),latest:z.number().int().nullable()}).strict(),
   time:z.string(),
 }).strict();

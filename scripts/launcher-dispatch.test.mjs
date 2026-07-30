@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canAdoptServicePid, classify, isMorrowHealth, needsService, LAUNCHER_LIFECYCLE } from "../installer/templates/dispatch.mjs";
+import { canAdoptServicePid, classify, isMorrowHealth, needsService, serviceOwnership, LAUNCHER_LIFECYCLE } from "../installer/templates/dispatch.mjs";
 
 test("bare invocation opens the interactive terminal shell", () => {
   assert.deepEqual(classify([]), { action: "interactive", command: undefined, args: [] });
@@ -67,4 +67,52 @@ test("pid recovery requires both Morrow health identity and process ownership", 
   assert.equal(canAdoptServicePid(health, true), 12345);
   assert.equal(canAdoptServicePid(health, false), 0);
   assert.equal(canAdoptServicePid({ ...health, service: "other" }, true), 0);
+});
+
+// ── Service ownership ────────────────────────────────────────────────────────
+//
+// Every Morrow install and every dev worktree answers /api/health on the same
+// fixed port. A launcher that adopted anything healthy would silently drive an
+// unrelated orchestrator, so a freshly installed build — and any packaged proof
+// run against it — would be exercising a different build entirely. Reproduced
+// live: a dev orchestrator from C:\Morrow\worktrees\... held port 4317 and the
+// packaged launcher adopted it without a word.
+
+const OURS = { dataDir: "C:\Installs\Morrow\data", entry: "C:\Installs\Morrow\app\orchestrator\dist\src\index.js" };
+
+test("service ownership accepts our own service by data root or entry", () => {
+  assert.equal(serviceOwnership(
+    { ok: true, service: "morrow-orchestrator", apiVersion: 1, serviceRoot: OURS.dataDir, serviceEntry: null },
+    OURS,
+  ), "ours");
+  assert.equal(serviceOwnership(
+    { ok: true, service: "morrow-orchestrator", apiVersion: 1, serviceRoot: null, serviceEntry: OURS.entry },
+    OURS,
+  ), "ours");
+});
+
+test("service ownership tolerates trailing separators and case", () => {
+  assert.equal(serviceOwnership(
+    { ok: true, service: "morrow-orchestrator", apiVersion: 1, serviceRoot: "c:\installs\morrow\data\\" },
+    OURS,
+  ), "ours");
+});
+
+test("service ownership rejects another install or a dev worktree on our port", () => {
+  assert.equal(serviceOwnership(
+    { ok: true, service: "morrow-orchestrator", apiVersion: 1, serviceRoot: "C:\Users\me\.morrow", serviceEntry: "C:\Morrow\worktrees\other\src\index.ts" },
+    OURS,
+  ), "foreign");
+});
+
+test("service ownership reports undecidable for a service that does not disclose its install", () => {
+  assert.equal(serviceOwnership(
+    { ok: true, service: "morrow-orchestrator", apiVersion: 1, ownerPid: 4242 },
+    OURS,
+  ), "undecidable");
+});
+
+test("service ownership still rejects a non-Morrow responder outright", () => {
+  assert.equal(serviceOwnership({ ok: true, service: "other", apiVersion: 1 }, OURS), "not-morrow");
+  assert.equal(serviceOwnership(null, OURS), "not-morrow");
 });
