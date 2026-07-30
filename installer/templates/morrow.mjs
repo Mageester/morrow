@@ -160,7 +160,22 @@ function processOwnsPackagedService(value) {
     return false;
   }
 }
-async function status() { const ok = await healthy(); console.log(ok ? "Morrow is running at " + url : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
+async function status() {
+  const state = await health();
+  const ownership = serviceOwnership(state, { dataDir: data, entry });
+  if (ownership === "ours") { console.log("Morrow is running at " + url); process.exitCode = 0; return; }
+  if (ownership === "not-morrow") { console.log("Morrow is stopped."); process.exitCode = 1; return; }
+  // Reporting a foreign or unidentifiable service as "running" is how a user
+  // ends up believing this install is serving them when it is not.
+  const ownerPid = Number.isSafeInteger(state?.ownerPid) ? state.ownerPid : 0;
+  if (ownership === "undecidable" && ownerPid > 0 && processOwnsPackagedService(ownerPid)) {
+    console.log("Morrow is running at " + url);
+    process.exitCode = 0;
+    return;
+  }
+  console.log(`Morrow is stopped. Port ${port} is serving a different Morrow install${ownerPid ? ` (pid ${ownerPid})` : ""}.`);
+  process.exitCode = 1;
+}
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");
