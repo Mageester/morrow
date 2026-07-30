@@ -9,6 +9,7 @@ touched until the design is explicitly approved.
 | File | What it shows |
 | --- | --- |
 | [`execution-transcript.html`](execution-transcript.html) | The primary task screen at 1440×900 — sidebar, ordered transcript, inspector, composer. |
+| [`transcript-states.html`](transcript-states.html) | The states that stress the ordering: approval gate, failed step, recovery, grouped failures, blocked, final grade. |
 
 Open directly in a browser. Self-contained: no build step, no network requests,
 no external fonts.
@@ -71,10 +72,6 @@ breakdown beneath: `3 complete · 1 running · 1 pending`.
 
 ## Still to prototype
 
-The ordering design has only been tested against the healthy path. The states
-that stress it are not yet drawn:
-
-- a failed step, with error and recovery in sequence
-- the criteria-approval gate (`awaiting_criteria_approval`) before execution
-- no-provider recovery
-- a hard-failure group, distinct from the retry group already shown
+- narrow / responsive behaviour below 1100px, where the inspector has to collapse
+- the conversation list when a project has many tasks
+- streaming: how a partially-written step reads before it resolves

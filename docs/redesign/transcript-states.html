@@ -1,0 +1,587 @@
+<title>Morrow — Transcript States</title>
+
+<style>
+  /* Tokens are duplicated from execution-transcript.html on purpose: each
+     prototype stays standalone and openable with no build step. When this
+     moves into apps/web these become one shared token layer. */
+  :root {
+    --page-bg: #EFEFF3;
+    --page-fg: #3C4050;
+    --page-line: #D8D9E2;
+
+    --bg:      #0B0C10;
+    --surface: #121319;
+    --raised:  #171A23;
+    --sunk:    #0E0F14;
+    --line:    #242734;
+    --line-soft: #1C1F29;
+
+    --text:    #E6E8F0;
+    --text-2:  #B4B9CA;
+    --muted:   #8D93A6;
+    --faint:   #6E7488;
+
+    --iris:    #7C6BF5;
+    --iris-dim:#5A4CC4;
+    --iris-wash: rgba(124, 107, 245, 0.13);
+    --iris-line: rgba(124, 107, 245, 0.34);
+
+    --pass:    #3FB950;
+    --pass-wash: rgba(63, 185, 80, 0.12);
+    --pend:    #D2A24C;
+    --pend-wash: rgba(210, 162, 76, 0.12);
+    --fail:    #F0616D;
+    --fail-wash: rgba(240, 97, 109, 0.11);
+    --fail-line: rgba(240, 97, 109, 0.3);
+
+    --ui: ui-sans-serif, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", "Menlo", Consolas, monospace;
+
+    --fs-xs: 10.5px;
+    --fs-sm: 11.5px;
+    --fs-base: 13px;
+    --fs-md: 14px;
+    --fs-code: 12px;
+
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 9px;
+
+    --rail-x: 21px;
+    --gutter: 46px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --page-bg: #06070A; --page-fg: #9AA0B2; --page-line: #1A1D26; }
+  }
+  :root[data-theme="dark"] { --page-bg: #06070A; --page-fg: #9AA0B2; --page-line: #1A1D26; }
+  :root[data-theme="light"] { --page-bg: #EFEFF3; --page-fg: #3C4050; --page-line: #D8D9E2; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet { max-width: 1100px; margin: 0 auto; padding: 34px 24px 64px; display: grid; gap: 30px; }
+
+  .sheet-head { display: grid; gap: 8px; }
+  .sheet-head h1 { margin: 0; font-size: 21px; font-weight: 620; letter-spacing: -0.015em; color: var(--page-fg); }
+  .sheet-head p { margin: 0; max-width: 62ch; line-height: 1.6; opacity: 0.82; }
+  .sheet-head .kicker {
+    font-family: var(--mono); font-size: var(--fs-sm);
+    letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6;
+  }
+
+  /* Each state is presented as: what it is, when it fires, then the render. */
+  .state { display: grid; gap: 0; border: 1px solid var(--page-line); border-radius: 11px; overflow: hidden; }
+  .state-meta {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 12px;
+    padding: 13px 16px;
+    background: color-mix(in srgb, var(--page-bg) 84%, var(--page-fg) 16%);
+    border-bottom: 1px solid var(--page-line);
+  }
+  .state-meta .num {
+    font-family: var(--mono); font-size: var(--fs-sm); font-weight: 650;
+    font-variant-numeric: tabular-nums; opacity: 0.5; padding-top: 1px;
+  }
+  .state-meta h2 { margin: 0 0 3px; font-size: var(--fs-md); font-weight: 620; color: var(--page-fg); }
+  .state-meta p { margin: 0; font-size: var(--fs-sm); line-height: 1.55; opacity: 0.78; max-width: 74ch; }
+  .state-meta code {
+    font-family: var(--mono); font-size: var(--fs-xs);
+    padding: 1px 5px; border-radius: 3px;
+    background: color-mix(in srgb, var(--page-bg) 60%, var(--page-fg) 14%);
+  }
+
+  /* The dark render surface, at the transcript's real column width. */
+  .render { background: var(--bg); padding: 22px 24px; color: var(--text); }
+  .render-inner { max-width: 720px; }
+
+  /* ── Transcript atoms (shared with the main prototype) ─────────────── */
+  .eyebrow { font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.11em; text-transform: uppercase; color: var(--faint); }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .btn {
+    font: inherit; font-size: var(--fs-sm);
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: var(--r-sm);
+    border: 1px solid var(--line); background: var(--raised); color: var(--text-2);
+    cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { border-color: #313545; color: var(--text); }
+  .btn:focus-visible { outline: 2px solid var(--iris); outline-offset: 2px; }
+  .btn-primary { background: var(--iris); border-color: var(--iris); color: #fff; font-weight: 550; }
+  .btn-primary:hover { background: #8A7BF7; border-color: #8A7BF7; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 7px; border-radius: 100px;
+    font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .pill-pass { background: var(--pass-wash); color: var(--pass); border-color: rgba(63,185,80,0.25); }
+  .pill-fail { background: var(--fail-wash); color: #F08088; border-color: var(--fail-line); }
+  .pill-pend { background: var(--pend-wash); color: var(--pend); border-color: rgba(210,162,76,0.25); }
+  .pill-active { background: var(--iris-wash); color: #A99BFF; border-color: var(--iris-line); }
+  .pill-need { background: var(--iris-wash); color: #B7ABFF; border-color: var(--iris-line); }
+
+  .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+
+  .step {
+    position: relative;
+    display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr);
+    align-items: start; padding-bottom: 18px;
+  }
+  .step::before {
+    content: ""; position: absolute; left: var(--rail-x);
+    top: 26px; bottom: 0; width: 1px; background: var(--line);
+  }
+  .step:last-child { padding-bottom: 0; }
+  .step:last-child::before { display: none; }
+
+  .node {
+    position: relative; width: 26px; height: 26px;
+    margin-left: calc(var(--rail-x) - 13px);
+    border-radius: 50%; display: grid; place-items: center;
+    font-family: var(--mono); font-size: var(--fs-xs); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    background: var(--bg); border: 1px solid var(--line); color: var(--faint);
+    z-index: 1;
+  }
+  .step-done .node { border-color: rgba(63,185,80,0.4); color: var(--pass); background: var(--sunk); }
+  .step-fail .node { border-color: var(--fail-line); color: #F08088; background: #1A1114; }
+  .step-active .node { border-color: var(--iris); color: #B7ABFF; background: #14121F; }
+  .step-need .node { border-color: var(--iris); color: #B7ABFF; background: #14121F; }
+  .step-pending .node { border-style: dashed; }
+
+  .step-body { min-width: 0; }
+  .step-head { display: flex; align-items: center; gap: 9px; min-height: 26px; flex-wrap: wrap; }
+  .step-title { font-size: var(--fs-md); font-weight: 570; color: var(--text); }
+  .step-title code { font-family: var(--mono); font-size: var(--fs-code); }
+  .step-time { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+
+  .panel {
+    margin-top: 9px; border: 1px solid var(--line);
+    border-radius: var(--r-md); background: var(--surface); overflow: hidden;
+  }
+  .panel-fail { border-color: var(--fail-line); }
+  .panel-need { border-color: var(--iris-line); }
+
+  .panel-head {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 11px; border-bottom: 1px solid var(--line-soft); background: var(--raised);
+  }
+  .panel-head .path { font-family: var(--mono); font-size: var(--fs-code); color: var(--text); }
+  .panel-tools { margin-left: auto; display: flex; gap: 5px; }
+  .panel-tools .btn { padding: 3px 8px; font-size: var(--fs-xs); }
+
+  .cmd {
+    display: flex; align-items: center; gap: 9px; padding: 8px 11px;
+    font-family: var(--mono); font-size: var(--fs-code);
+    background: var(--sunk); color: var(--text); border-bottom: 1px solid var(--line-soft);
+  }
+  .cmd .prompt { color: var(--iris); user-select: none; }
+
+  .out {
+    margin: 0; padding: 8px 11px;
+    font-family: var(--mono); font-size: var(--fs-code); line-height: 1.7;
+    color: var(--muted); background: var(--surface);
+    overflow-x: auto; font-variant-numeric: tabular-nums; white-space: pre;
+  }
+  .out .bad { color: #F2A2AA; }
+  .out .ok { color: var(--pass); }
+
+  .verdict {
+    display: flex; align-items: center; gap: 8px; padding: 7px 11px;
+    border-top: 1px solid var(--line-soft); font-size: var(--fs-sm); font-weight: 550;
+  }
+  .verdict-pass { background: var(--pass-wash); color: #86D68F; }
+  .verdict-fail { background: var(--fail-wash); color: #F2A2AA; }
+
+  /* Labelled rationale — operational reasoning, never raw private deliberation */
+  .rationale > div {
+    display: grid; grid-template-columns: 76px minmax(0, 1fr);
+    gap: 12px; padding: 7px 11px; align-items: baseline;
+  }
+  .rationale > div + div { border-top: 1px solid var(--line-soft); }
+  .rationale dt { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); }
+  .rationale dd { margin: 0; color: var(--text-2); }
+  .rationale .quote { font-family: var(--mono); font-size: var(--fs-code); color: #E8909A; }
+  .rationale .strong { color: var(--text); }
+
+  /* Recovery: the strategy actually changed, and the change is the content */
+  .recovery {
+    margin-top: 9px; border: 1px solid rgba(210,162,76,0.3);
+    background: var(--pend-wash); border-radius: var(--r-md); overflow: hidden;
+  }
+  .recovery-head {
+    display: flex; align-items: center; gap: 8px; padding: 7px 11px;
+    font-size: var(--fs-sm); font-weight: 600; color: #E0B972;
+    border-bottom: 1px solid rgba(210,162,76,0.22);
+  }
+  .recovery-head .cat {
+    margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs);
+    font-weight: 500; color: #A98543;
+  }
+  .strategy {
+    display: grid; grid-template-columns: minmax(0,1fr) 22px minmax(0,1fr);
+    gap: 10px; align-items: center; padding: 10px 11px;
+  }
+  .strategy .card {
+    border: 1px solid var(--line); border-radius: var(--r-sm);
+    background: var(--sunk); padding: 7px 9px; min-width: 0;
+  }
+  .strategy .k { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+  .strategy .v {
+    font-family: var(--mono); font-size: var(--fs-code); color: var(--text-2);
+    margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .strategy .from .v { color: #C08289; text-decoration: line-through; text-decoration-color: rgba(240,97,109,0.5); }
+  .strategy .to { border-color: rgba(210,162,76,0.35); }
+  .strategy .to .v { color: #E0B972; }
+  .strategy .arrow { text-align: center; color: #A98543; font-family: var(--mono); }
+  .recovery-note {
+    padding: 0 11px 10px; font-size: var(--fs-sm); color: #C7A05C; line-height: 1.55;
+  }
+
+  /* Grouped failures — one event, not a flood */
+  .grouped {
+    margin-top: 9px;
+    border: 1px solid var(--fail-line); background: var(--fail-wash); border-radius: var(--r-md);
+  }
+  .grouped > summary {
+    list-style: none; cursor: pointer; padding: 7px 11px;
+    display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: #F08088;
+  }
+  .grouped > summary::-webkit-details-marker { display: none; }
+  .grouped > summary:focus-visible { outline: 2px solid var(--iris); outline-offset: 1px; }
+  .grouped .chev { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: #B4636B; }
+  .grouped[open] .chev { transform: rotate(90deg); }
+  .grouped .rows { border-top: 1px solid var(--fail-line); padding: 7px 11px; display: grid; gap: 5px; }
+  .grouped .row {
+    display: grid; grid-template-columns: 62px minmax(0,1fr) auto; gap: 10px;
+    font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted);
+  }
+  .grouped .row .n { color: var(--faint); }
+  .grouped .row .r { color: #C08289; }
+
+  /* Blocked — needs the user; the whole point is the action */
+  .blocked-body { padding: 11px; display: grid; gap: 10px; }
+  .blocked-body p { margin: 0; color: var(--text); font-size: var(--fs-md); }
+  .blocked-body .why { color: var(--muted); font-size: var(--fs-base); line-height: 1.55; }
+  .blocked-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+  details.tech { border-top: 1px solid var(--line-soft); }
+  details.tech > summary {
+    list-style: none; cursor: pointer; padding: 7px 11px;
+    font-size: var(--fs-sm); color: var(--faint);
+    display: flex; align-items: center; gap: 7px;
+  }
+  details.tech > summary::-webkit-details-marker { display: none; }
+  details.tech > summary:hover { color: var(--muted); }
+  details.tech > summary:focus-visible { outline: 2px solid var(--iris); outline-offset: -2px; }
+  details.tech .body {
+    padding: 0 11px 10px; font-family: var(--mono); font-size: var(--fs-code);
+    color: var(--muted); line-height: 1.7; white-space: pre-wrap;
+  }
+
+  /* Criteria approval gate */
+  .gate-body { padding: 11px; display: grid; gap: 10px; }
+  .gate-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .gate-list li {
+    display: grid; grid-template-columns: 20px minmax(0,1fr) auto;
+    gap: 9px; align-items: center;
+    padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sunk);
+  }
+  .gate-list .idx { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+  .gate-list .txt { color: var(--text-2); font-size: var(--fs-base); }
+  .gate-list .how {
+    font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint);
+    padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; white-space: nowrap;
+  }
+  .gate-actions { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+  .gate-actions .hint { margin-left: auto; font-size: var(--fs-sm); color: var(--faint); }
+
+  /* Final result */
+  .result { margin-top: 9px; border: 1px solid rgba(210,162,76,0.32); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
+  .result-head {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: var(--pend-wash); border-bottom: 1px solid rgba(210,162,76,0.22);
+  }
+  .result-grade { font-size: var(--fs-md); font-weight: 620; color: #E0B972; }
+  .result-head .meta { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: #A98543; }
+  .ledger { display: grid; }
+  .ledger-row {
+    display: grid; grid-template-columns: 18px minmax(0,1fr) auto;
+    gap: 10px; align-items: center; padding: 8px 12px; font-size: var(--fs-base); color: var(--text-2);
+  }
+  .ledger-row + .ledger-row { border-top: 1px solid var(--line-soft); }
+  .ledger-row .m { font-family: var(--mono); font-size: var(--fs-sm); text-align: center; }
+  .ledger-row.ok .m { color: var(--pass); }
+  .ledger-row.no .m { color: var(--pend); }
+  .ledger-row .ev { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+
+  .caveat {
+    padding: 9px 12px; border-top: 1px solid var(--line-soft);
+    font-size: var(--fs-base); color: var(--text-2); line-height: 1.55; background: var(--sunk);
+  }
+  .caveat b { color: #E0B972; font-weight: 600; }
+</style>
+
+<div class="sheet">
+
+  <header class="sheet-head">
+    <div class="kicker">Morrow · redesign · states</div>
+    <h1>Transcript states</h1>
+    <p>
+      The primary screen shows the healthy path. These are the states that
+      actually stress the ordering: a step that fails, a recovery that has to
+      prove it changed something, a run that stops and needs the user, and an
+      honest final grade. Each is rendered at the transcript's real column
+      width, on the real ground, using the same tokens.
+    </p>
+  </header>
+
+  <!-- 01 — Approval gate -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">01</div>
+      <div>
+        <h2>Criteria approval gate</h2>
+        <p>Mission status <code>awaiting_criteria_approval</code>. Morrow has drafted the contract and stopped before doing any substantial work. This is the last cheap moment to correct the objective, so the criteria are editable in place and the run cannot start until the user acts.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-need">
+        <div><div class="node">◆</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Proposed acceptance criteria</span>
+            <span class="pill pill-need">Needs you</span>
+            <span class="step-time">waiting</span>
+          </div>
+          <div class="panel panel-need">
+            <div class="gate-body">
+              <ol class="gate-list">
+                <li><span class="idx">1</span><span class="txt">App builds successfully</span><span class="how">npm run build</span></li>
+                <li><span class="idx">2</span><span class="txt">No nested-router runtime error</span><span class="how">browser</span></li>
+                <li><span class="idx">3</span><span class="txt">Main route renders in browser</span><span class="how">browser</span></li>
+                <li><span class="idx">4</span><span class="txt">Exact file changes remain visible</span><span class="how">diff</span></li>
+              </ol>
+              <div class="gate-actions">
+                <button class="btn btn-primary" type="button">Approve &amp; run</button>
+                <button class="btn" type="button">Edit criteria</button>
+                <button class="btn" type="button">Cancel</button>
+                <span class="hint">Nothing has been changed yet</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- 02 — Failed step -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">02</div>
+      <div>
+        <h2>Step failed</h2>
+        <p>A verification that ran and returned non-zero. The distinction that matters: the tool call <em>succeeded</em>, the check <em>failed</em>. Output stays inline at the point of failure rather than being summarised away, and the failing assertion is the thing the eye lands on.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-fail">
+        <div><div class="node">03</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Run <code>npm test</code></span>
+            <span class="pill pill-fail">Failed</span>
+            <span class="step-time">2.1s</span>
+          </div>
+          <div class="panel panel-fail">
+            <div class="cmd"><span class="prompt">$</span><span>npm test</span></div>
+            <pre class="out">14 passing
+<span class="bad">1 failing</span>
+
+<span class="bad">  Taskflow API › PATCH /api/tasks/:id toggles done
+    AssertionError: expected 200 to equal 404
+      at test/api.test.js:118:12</span></pre>
+            <div class="verdict verdict-fail"><span aria-hidden="true">✗</span> 1 of 15 tests failed · exit 1</div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- 03 — Recovery -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">03</div>
+      <div>
+        <h2>Recovery — strategy changed</h2>
+        <p>Recovery is only meaningful if the next attempt is materially different, so the change itself is the content: what was tried, what is being tried instead, and why. A strategy already attempted for this failure category is never re-dispatched — when nothing different remains, the run stops instead of looping.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-active">
+        <div><div class="node">↻</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Recovering</span>
+            <span class="pill pill-pend">Attempt 2 of 3</span>
+            <span class="step-time">0:04</span>
+          </div>
+          <div class="recovery">
+            <div class="recovery-head">
+              <span aria-hidden="true">↻</span> Strategy changed
+              <span class="cat">verification_failure</span>
+            </div>
+            <div class="strategy">
+              <div class="card from">
+                <div class="k">Tried</div>
+                <div class="v">retry_same_patch</div>
+              </div>
+              <div class="arrow" aria-hidden="true">→</div>
+              <div class="card to">
+                <div class="k">Next</div>
+                <div class="v">reread_target · smaller_patch</div>
+              </div>
+            </div>
+            <p class="recovery-note">
+              The same patch failed twice with an identical signature. Re-reading
+              <span class="mono">src/routes/tasks.js</span> before proposing a narrower change to the
+              PATCH handler only.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- 04 — Grouped failures -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">04</div>
+      <div>
+        <h2>Repeated failures, grouped</h2>
+        <p>Identical failures collapse into one event so the sequence stays readable. The group is closed by default and carries the count in its label; expanding it shows every occurrence with timestamps. This is distinct from the amber retry group on the healthy path — these did not resolve.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-fail">
+        <div><div class="node">04</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Verify in browser</span>
+            <span class="pill pill-fail">Failed</span>
+            <span class="step-time">0:38</span>
+          </div>
+          <details class="grouped">
+            <summary>
+              <span aria-hidden="true">✗</span>
+              3 identical failures grouped · navigation timeout
+              <span class="chev" aria-hidden="true">›</span>
+            </summary>
+            <div class="rows">
+              <div class="row"><span class="n">12:06:02</span><span>Navigation to /exoplanets timed out after 10s</span><span class="r">attempt 1</span></div>
+              <div class="row"><span class="n">12:06:14</span><span>Navigation to /exoplanets timed out after 10s</span><span class="r">attempt 2</span></div>
+              <div class="row"><span class="n">12:06:26</span><span>Navigation to /exoplanets timed out after 10s</span><span class="r">attempt 3</span></div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- 05 — Blocked -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">05</div>
+      <div>
+        <h2>Blocked — needs the user</h2>
+        <p>Runtime state <code>blocked</code>. The run stopped for a reason the agent cannot resolve on its own. The card leads with the action rather than the error string; the raw provider message stays available behind a disclosure so it informs without being the headline.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-need">
+        <div><div class="node">!</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Stopped</span>
+            <span class="pill pill-need">Needs you</span>
+            <span class="step-time">12:07:41</span>
+          </div>
+          <div class="panel panel-need">
+            <div class="blocked-body">
+              <p>Connect an AI model to continue</p>
+              <p class="why">
+                This build was pinned to <span class="mono">openai-compatible / deepseek-v4-flash-free</span>,
+                and that provider is not configured. The route was pinned deliberately, so Morrow
+                did not substitute a different model. Work completed so far is saved.
+              </p>
+              <div class="blocked-actions">
+                <button class="btn btn-primary" type="button">Connect a provider</button>
+                <button class="btn" type="button">Try again</button>
+                <button class="btn" type="button">Change model</button>
+              </div>
+            </div>
+            <details class="tech">
+              <summary><span aria-hidden="true">›</span> Technical details</summary>
+              <div class="body">provider_failure · not_configured
+Preset "Balanced" has no configured provider. Configure one of: openai-compatible, anthropic, openrouter.
+route.pinned = true · fallback_candidates = []</div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- 06 — Final result -->
+  <section class="state">
+    <div class="state-meta">
+      <div class="num">06</div>
+      <div>
+        <h2>Final result — graded honestly</h2>
+        <p>The closing event resolves every acceptance criterion against real evidence. A criterion with no passing evidence is not satisfied, so a run that did most of the work grades <code>completed_with_caveats</code> rather than claiming success. The caveat says exactly what is missing.</p>
+      </div>
+    </div>
+    <div class="render"><div class="render-inner">
+      <div class="step step-done">
+        <div><div class="node">05</div></div>
+        <div class="step-body">
+          <div class="step-head">
+            <span class="step-title">Final evidence</span>
+            <span class="pill pill-pend">With caveats</span>
+            <span class="step-time">04:58</span>
+          </div>
+          <div class="result">
+            <div class="result-head">
+              <span class="result-grade">Completed with caveats</span>
+              <span class="meta">3 / 4 criteria verified</span>
+            </div>
+            <div class="ledger">
+              <div class="ledger-row ok"><span class="m">✓</span><span>App builds successfully</span><span class="ev">build · exit 0</span></div>
+              <div class="ledger-row ok"><span class="m">✓</span><span>No nested-router runtime error</span><span class="ev">console · 0 errors</span></div>
+              <div class="ledger-row ok"><span class="m">✓</span><span>Main route renders in browser</span><span class="ev">screenshot · 12:04:31</span></div>
+              <div class="ledger-row no"><span class="m">○</span><span>Exact file changes remain visible</span><span class="ev">no evidence</span></div>
+            </div>
+            <p class="caveat">
+              <b>Not verified:</b> the changed-file summary was never captured, so the
+              fourth criterion has no evidence behind it. Everything else passed with
+              recorded proof. <span class="mono">2 files · +2 −6</span>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+</div>
