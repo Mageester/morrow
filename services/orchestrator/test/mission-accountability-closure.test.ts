@@ -67,7 +67,7 @@ function controllerHarness(state: MissionRuntimeState, snapshot: Partial<Control
   runtime.create({ missionId: "mission-1", state, now });
   const fence = runtime.claimLease({ missionId: "mission-1", ownerId: "controller-1", now, expiresAt: "2026-07-30T12:01:00.000Z" })!;
   const current: ControllerSnapshot = { tasks: [], approvals: [], guardianDecision: failedGuardian, recovery: null, ...snapshot };
-  const concludeMission = vi.fn(async () => undefined);
+  const concludeMission = vi.fn(async (_missionId: string, _reason: string) => undefined);
   const controller = new MissionController({
     runtime,
     loadSnapshot: () => current,
