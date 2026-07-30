@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Project } from "@morrow/contracts";
@@ -134,6 +134,37 @@ describe("morrow build: --in workspace scoping", () => {
     expect(created).toHaveLength(1);
     expect(created[0]!.name).toBe("taskflow");
     expect(project.workspacePath.toLowerCase()).toContain("taskflow");
+  });
+
+  it("makes a fresh build workspace reviewable: git repository plus starter ignore rules", async () => {
+    const target = join(tempRoot(), "taskflow");
+    const { ctx } = fakeCtx({ in: target });
+    const { api } = fakeApi([]);
+
+    await resolveWorkspaceScope(ctx, api, target);
+
+    // Without a repository, `candidateFiles` reports no changes at all and the
+    // Guardian reviews a mission that wrote an application against an empty
+    // change set.
+    expect(existsSync(join(target, ".git"))).toBe(true);
+    const ignore = readFileSync(join(target, ".gitignore"), "utf8");
+    // Written before any dependency install, so node_modules never enters the
+    // mission's change set in the first place.
+    expect(ignore).toContain("node_modules/");
+    expect(ignore).toContain("dist/");
+    expect(ignore).toContain(".env");
+  });
+
+  it("never overwrites an existing .gitignore or re-initializes an existing repository", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, ".gitignore"), "# mine\nsecrets.txt\n", "utf8");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    const { ctx } = fakeCtx({ in: root });
+    const { api } = fakeApi([]);
+
+    await resolveWorkspaceScope(ctx, api, root);
+
+    expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe("# mine\nsecrets.txt\n");
   });
 
   it("reuses an already-registered project instead of duplicating it", async () => {

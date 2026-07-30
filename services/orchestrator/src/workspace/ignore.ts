@@ -51,6 +51,30 @@ export function isBuiltInIgnoredPath(path: string): boolean {
   return parts.some((part, index) => isBuiltInIgnoredName(part, index < parts.length - 1));
 }
 
+/**
+ * Machine-generated debris that must never be presented as a change the
+ * mission made: installed dependencies, build output, caches, and captured
+ * media such as verification screenshots.
+ *
+ * Deliberately narrower than `isBuiltInIgnoredPath`: lockfiles stay visible.
+ * A changed `package-lock.json` is a real, reviewable consequence of the work,
+ * whereas the 30,000 files under `node_modules/` are not — and when a
+ * just-created project has no `.gitignore` yet, they are exactly what crowds
+ * genuine source out of a bounded change list.
+ */
+export function isGeneratedArtifactPath(path: string): boolean {
+  const parts = normalizePath(path).split("/").filter(Boolean);
+  if (parts.length === 0) return false;
+  for (let index = 0; index < parts.length - 1; index++) {
+    if (IGNORED_DIR_NAMES.has(parts[index]!.toLowerCase())) return true;
+  }
+  const leaf = parts[parts.length - 1]!.toLowerCase();
+  // A trailing directory name (paths ending in "/") is still a directory.
+  if (path.endsWith("/") || path.endsWith("\\")) return IGNORED_DIR_NAMES.has(leaf);
+  const dot = leaf.lastIndexOf(".");
+  return dot >= 0 && IGNORED_EXTENSIONS.has(leaf.slice(dot));
+}
+
 // ── .gitignore matcher ────────────────────────────────────────────────
 //
 // We implement a minimal but correct .gitignore matcher that handles:

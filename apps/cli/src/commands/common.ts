@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import type { Project } from "@morrow/contracts";
 import type { Context } from "../cli/context.js";
 import { MorrowApi } from "../client/api.js";
@@ -204,6 +205,7 @@ export async function resolveWorkspaceScope(ctx: Context, api: MorrowApi, ref: s
     }
   }
   const canonical = validateProjectDirectory(target, { force: flagBool(ctx.flags, "force") });
+  prepareFreshWorkspace(ctx, canonical);
   const existing = matchProjectByPath(await api.listProjects(), canonical);
   if (existing) {
     ctx.out.diag(ctx.out.gray(`  workspace: ${existing.name}  ${canonical}`));
@@ -212,6 +214,54 @@ export async function resolveWorkspaceScope(ctx: Context, api: MorrowApi, ref: s
   const project = await api.createProject(basename(canonical) || canonical, canonical);
   ctx.out.info(`${created ? "Created" : "Using"} workspace: ${project.name}  ${ctx.out.gray(canonical)}`);
   return project;
+}
+
+/** Ignore rules a generated project needs before its first dependency install. */
+const STARTER_GITIGNORE = [
+  "# Created by Morrow when this workspace was scoped for a build.",
+  "node_modules/",
+  "dist/",
+  "build/",
+  "out/",
+  "coverage/",
+  ".next/",
+  ".nuxt/",
+  ".turbo/",
+  ".cache/",
+  ".vite/",
+  "*.log",
+  ".env",
+  ".env.*",
+  ".DS_Store",
+  "",
+].join("\n");
+
+/**
+ * Make an empty build workspace reviewable.
+ *
+ * Mission change tracking, checkpoints, and rollback are all derived from
+ * `git status`. A directory that is not a repository reports no changes at
+ * all, so a mission that wrote an entire application would be reviewed against
+ * an empty change set — and once `npm install` runs without a `.gitignore`,
+ * `node_modules` floods what little is reported. Initializing the repository
+ * and writing starter ignore rules is ordinary project setup, done only for a
+ * directory Morrow just created and never to an existing repository or an
+ * existing `.gitignore`.
+ */
+function prepareFreshWorkspace(ctx: Context, canonical: string): void {
+  const gitignore = join(canonical, ".gitignore");
+  if (!existsSync(gitignore)) {
+    try {
+      writeFileSync(gitignore, STARTER_GITIGNORE, "utf8");
+    } catch {
+      ctx.out.warn(`Could not write ${gitignore}; generated files may appear as mission changes.`);
+    }
+  }
+  if (existsSync(join(canonical, ".git"))) return;
+  const init = spawnSync("git", ["init"], { cwd: canonical, encoding: "utf8", windowsHide: true });
+  if (init.status !== 0) {
+    ctx.out.warn("Could not initialize a Git repository here; mission change tracking and rollback will be limited.");
+  }
 }
 
 async function autoCreateProjectForPath(ctx: Context, api: MorrowApi, ref: string): Promise<Project> {

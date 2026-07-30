@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
+import { isGeneratedArtifactPath } from "../workspace/ignore.js";
 
 /**
  * Mission checkpoints and safe rollback.
@@ -33,9 +34,18 @@ export function gitHeadRef(workspace: string): string | null {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
-/** Files git considers modified or untracked (bounded), workspace-relative. */
+/**
+ * Files git considers modified or untracked (bounded), workspace-relative.
+ *
+ * Generated debris is dropped before the bound is applied. `git status` hides
+ * ignored paths, but a project the mission just created may not have written
+ * its `.gitignore` before `npm install` ran — and then tens of thousands of
+ * `node_modules` entries consume the whole limit, so the Guardian and the
+ * reviewer inspect dependencies instead of the source the mission wrote.
+ * Filtering first means the bound applies to meaningful changes.
+ */
 export function candidateFiles(workspace: string, limit = 500): string[] {
-  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: workspace, encoding: "utf8", windowsHide: true });
+  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: workspace, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   if (r.status !== 0) return [];
   return r.stdout.split("\n")
     .map((l) => l.slice(3).trim())
@@ -43,6 +53,7 @@ export function candidateFiles(workspace: string, limit = 500): string[] {
     .map((f) => f.replace(/^"|"$/g, ""))
     // A rename line is "old -> new"; keep the new path.
     .map((f) => (f.includes(" -> ") ? f.split(" -> ")[1]! : f))
+    .filter((f) => !isGeneratedArtifactPath(f))
     .slice(0, limit);
 }
 
