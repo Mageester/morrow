@@ -32,7 +32,7 @@ describe("durable mission worker recovery", () => {
       category: "provider_failure",
       action: "switch_provider",
       exhausted: false,
-      nextStrategyFingerprint: "provider:fallback",
+      nextStrategyFingerprint: "strategy:provider_failure:switch_provider:provider:fallback",
     });
   });
 
@@ -77,9 +77,9 @@ describe("durable mission worker recovery", () => {
     expect(decideWorkerRecovery({
       ...input,
       priorDecisions: [
-        { category: "provider_failure" },
-        { category: "provider_failure" },
-        { category: "provider_failure" },
+        { category: "provider_failure", action: "retry_same_provider", nextStrategyFingerprint: "strategy:provider_failure:retry_same_provider:provider:retry" },
+        { category: "provider_failure", action: "compact_context", nextStrategyFingerprint: "strategy:provider_failure:compact_context:context:compact" },
+        { category: "provider_failure", action: "replan", nextStrategyFingerprint: "strategy:provider_failure:replan:worker:alternate-strategy" },
       ],
     })).toMatchObject({ action: "block_precisely", exhausted: true });
   });
@@ -109,9 +109,9 @@ describe("durable mission worker recovery", () => {
       message: "Orchestrator restart",
       provider: null,
       priorDecisions: [
-        { category: "process_interruption" },
-        { category: "process_interruption" },
-        { category: "process_interruption" },
+        { category: "process_interruption", action: "restore_checkpoint", nextStrategyFingerprint: "strategy:process_interruption:restore_checkpoint:worker:replacement" },
+        { category: "process_interruption", action: "replan", nextStrategyFingerprint: "strategy:process_interruption:replan:worker:alternate-strategy" },
+        { category: "process_interruption", action: "compact_context", nextStrategyFingerprint: "strategy:process_interruption:compact_context:context:compact" },
       ],
       alternateProviders: 0,
     });
