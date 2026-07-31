@@ -6,6 +6,50 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.36] - 2026-07-31
+
+### Fixed - autonomous `morrow build` reliability, and mission closure
+
+- Nine root causes behind unreliable autonomous `morrow build` runs, each with
+  regression tests: packaged `morrow build` + `--in` workspace scoping now
+  creates and scopes the directory it names; `read_artifact` is authorized
+  through the read-only boundary; a route the user pinned no longer falls back
+  silently; tool arguments are normalized at exactly one boundary; change
+  tracking stays on meaningful source; recovery strategy fingerprints reflect
+  real strategy changes, not just a new task id; the launcher no longer adopts
+  another install's service on a shared port; machine-wide process kills are
+  denied; and requirements the user actually stated in the objective are now
+  authoritative criteria instead of being reducible to two generic ones. See
+  `docs/decisions/0008-autonomous-build-reliability-boundaries.md`.
+- A mission that exhausted automatic recovery previously parked at `blocked`
+  with zero evidence and no grade, forever — Guardian, evidence recording, and
+  grading all lived behind a path that required an active worker task to reach
+  `completed`, which never happened once recovery gave up. The mission now
+  runs its verification gates once, records evidence against the criteria they
+  prove, and grades honestly before reaching its terminal state.
+- Service commands (`npm start` and equivalents) were graded by exit code, and
+  a working server does not exit — the check could only ever run out its
+  timeout. Service criteria now start the command, discover the URL it
+  announces, probe it, and always stop it. Browser criteria render at 1280x800
+  and 375x812 and fail on a blank page or a console error. See
+  `docs/decisions/0009-mission-closure-and-service-gates.md`, which also
+  documents a second, separate give-up path found during live proof that
+  remains open.
+
+### Fixed - provider credentials could fail to save entirely, again
+
+- `applyWindowsCredentialAcl` invoked `whoami.exe` and `icacls.exe` by bare
+  name, letting PATH decide which binary ran. Git for Windows ships a Unix
+  `whoami` and places it ahead of System32, so the SID lookup failed and
+  saving any provider key threw "Unable to apply the current-user Windows
+  ACL" outright. This was already fixed once (beta.34) and silently lost in a
+  later merge; both tools now resolve against `%SystemRoot%` again.
+- OpenRouter's pinned-endpoint rejection (`OPENROUTER_ENDPOINT_PINNED`) could
+  never actually fire: the generic "this provider has no configurable
+  endpoint" check ran first and always won, since OpenRouter has no
+  `baseUrlEnv` precisely because its endpoint is pinned. The specific,
+  informative message now takes priority.
+
 ## [0.1.0-beta.33] - 2026-07-25
 
 ### Added - the web app can use every provider, and ships in the package

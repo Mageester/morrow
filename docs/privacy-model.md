@@ -45,6 +45,17 @@ Each category requires an explicit scope and retention rule.
 - External destinations recorded
 - Provider fallback cannot silently change privacy behavior
 
+### Public model metadata refresh
+
+Morrow refreshes the public models.dev catalog only when an operator explicitly
+requests a model-metadata refresh. This request sends no Morrow credentials,
+conversation content, project paths, memory, or provider keys; normal network
+metadata such as the client IP reaches models.dev. The normalized response is
+cached locally and a last-known-good cache is retained on refresh failure.
+Provider account availability remains a separate authenticated provider request.
+Redirects are rejected, so catalog metadata cannot select a second network
+destination. Private Local startup never triggers this request.
+
 ### Custom
 
 - Per-project and per-agent rules

@@ -191,6 +191,11 @@ export const TOOL_CATALOG: ToolSpec[] = [
     constraints: ["Workspace-contained paths only", "Denied names remain blocked", "Requires explicit approval unless agent auto-approval was selected"],
   },
   {
+    name: "read_artifact", title: "Read stored tool output", description: "Read a byte range of an oversized tool result Morrow stored as an artifact.", sideEffect: "read-only", enabled: true,
+    parameters: { id: { type: "string" }, offset: { type: "number" }, length: { type: "number" } },
+    constraints: ["Only artifact ids referenced in this task's own tool results", "Returns at most 16 KB per call", "Reads Morrow-captured tool output, never the filesystem"],
+  },
+  {
     name: "find_skill", title: "Find skill", description: "Search installed project and Morrow skills by keyword.", sideEffect: "read-only", enabled: true,
     parameters: { query: { type: "string" } }, constraints: ["Reads manifests only from configured skill roots", "Returns at most 10 results"],
   },
@@ -254,7 +259,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
 export const IMPLEMENTED_TOOL_NAMES = [
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "run_command", "read_process_output", "stop_process", "propose_patch", "create_file", "create_directory",
-  "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
+  "read_artifact", "find_skill", "load_skill", "create_skill", "browser_open", "browser_snapshot", "browser_console", "browser_click",
   "browser_type", "browser_key", "browser_select", "browser_viewport", "browser_screenshot", "browser_download", "browser_close",
 ] as const;
 

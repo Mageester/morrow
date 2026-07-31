@@ -66,6 +66,7 @@ function apiKeyAuthMode(id: ProviderId): ProviderAuthMode {
     gemini: "gemini-api-key",
     openrouter: "openrouter-api-key",
     deepseek: "deepseek-api-key",
+    "opencode-go": "opencode-go-api-key",
   } as Partial<Record<ProviderId, ProviderAuthMode>>)[id] ?? "unknown";
 }
 
@@ -397,6 +398,50 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
       if (!resolvedModel) throw new ProviderError("not_configured", "OpenAI-compatible endpoint requires a model (set OPENAI_COMPAT_MODEL or pass an override)", { kind: "invalid_request" });
       const cfg: any = { id: "openai-compatible", baseUrl, defaultModel: resolvedModel, includeUsage: true };
       if (env.OPENAI_COMPAT_API_KEY) cfg.apiKey = env.OPENAI_COMPAT_API_KEY;
+      cfg.route = routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "custom", endpointHost: safeHost(baseUrl) });
+      return new OpenAiCompatibleProvider(cfg);
+    },
+  },
+  {
+    id: "opencode-go",
+    label: "OpenCode Go",
+    kind: "api-key",
+    capabilities: caps({ customEndpoint: false }),
+    defaultModel: "glm-5.2",
+    models: [],
+    setupHint:
+      "Set OPENCODE_GO_API_KEY (one subscription key from https://opencode.ai/auth). Optionally set OPENCODE_GO_MODEL (default glm-5.2).",
+    note:
+      "OpenCode Go subscription (https://opencode.ai/docs/zen) — distinct from OpenCode Zen. Use `morrow providers test opencode-go` to verify and `morrow providers refresh opencode-go` to update the live model catalog.",
+    status(env) {
+      const baseUrl = "https://opencode.ai/zen/go/v1";
+      const hasKey = !!env.OPENCODE_GO_API_KEY?.trim();
+      const configured = hasKey;
+      const model = env.OPENCODE_GO_MODEL?.trim() || this.defaultModel;
+      return {
+        version: 1,
+        id: this.id,
+        label: this.label,
+        kind: this.kind,
+        configured,
+        available: configured,
+        endpointType: "custom",
+        endpointHost: safeHost(baseUrl),
+        authStatus: configured ? "configured" : "missing",
+        authMode: "opencode-go-api-key",
+        capabilities: this.capabilities,
+        models: model ? [model] : [],
+        defaultModel: model,
+        note: this.note,
+        setupHint: this.setupHint,
+      };
+    },
+    build(env, model) {
+      const baseUrl = "https://opencode.ai/zen/go/v1";
+      const apiKey = env.OPENCODE_GO_API_KEY?.trim() || "";
+      if (!apiKey) throw new ProviderError("not_configured", "OpenCode Go requires OPENCODE_GO_API_KEY", { kind: "invalid_request" });
+      const resolvedModel = model || env.OPENCODE_GO_MODEL?.trim() || this.defaultModel;
+      const cfg: any = { id: "opencode-go", baseUrl, defaultModel: resolvedModel, includeUsage: true, apiKey };
       cfg.route = routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "custom", endpointHost: safeHost(baseUrl) });
       return new OpenAiCompatibleProvider(cfg);
     },

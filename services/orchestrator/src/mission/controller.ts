@@ -44,6 +44,9 @@ export interface MissionControllerDependencies {
   loadSnapshot(missionId: string): ControllerSnapshot;
   dispatchWorker(input: { missionId: string; idempotencyKey: string }): Promise<{ taskId: string }> | { taskId: string };
   finalizeMission(missionId: string): Promise<unknown> | unknown;
+  /** Close the accountability loop when no automatic strategy remains: run the
+   *  evidence gates once and grade the mission from what they prove. */
+  concludeMission?(missionId: string, reason: string): Promise<unknown> | unknown;
   validateMission?(missionId: string): Promise<unknown> | unknown;
   reviewMission?(missionId: string): Promise<unknown> | unknown;
   resolveApproval?(approvalId: string): Promise<unknown> | unknown;
@@ -152,7 +155,14 @@ export class MissionController {
       case "validating":
         return this.validationTick(missionId, runtime, snapshot, fence, now);
       case "recovering":
-        if (snapshot.recovery?.exhausted) return transition("blocked", "strategies_exhausted");
+        if (snapshot.recovery?.exhausted) {
+          // Exhaustion is where a mission stops trying, and it used to be where
+          // accountability stopped too: the runtime parked in `blocked` while
+          // the mission status stayed `running`, with no gates run and no
+          // grade. Close the loop first, then park.
+          await this.concludeExhausted(missionId, snapshot);
+          return transition("blocked", "strategies_exhausted");
+        }
         this.dependencies.runtime.setActiveTask({ missionId, taskId: null, fence, now });
         return transition("replanning", "recovery_selected");
       case "blocked":
@@ -484,6 +494,22 @@ export class MissionController {
         now,
       });
       return this.result(missionId, `recover:${kind}`, true, false);
+    }
+  }
+
+  /**
+   * Run the close-out once, and never let it keep the mission out of its
+   * terminal state. If grading itself throws, the mission still parks in
+   * `blocked` — an ungraded terminal state is bad, but a mission that cannot
+   * terminate at all is worse.
+   */
+  private async concludeExhausted(missionId: string, snapshot: ControllerSnapshot): Promise<void> {
+    if (!this.dependencies.concludeMission) return;
+    const reason = snapshot.recovery?.diagnosis ?? "No materially different automatic strategy remains.";
+    try {
+      await this.dependencies.concludeMission(missionId, reason);
+    } catch {
+      // Intentionally swallowed: see the note above.
     }
   }
 

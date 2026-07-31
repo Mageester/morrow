@@ -45,6 +45,34 @@ function isSafePowerShellNewItem(args: string[]): boolean {
   return true;
 }
 const DELETE_COMMANDS = new Set(["rm", "del", "rmdir", "remove-item", "erase", "rd", "sdelete"]);
+
+/**
+ * Process-killing tools. Ending processes is never scoped to the workspace:
+ * the blast radius is the whole machine, and Morrow's own controller runs as
+ * one of the processes these commands match.
+ *
+ * Observed live during a packaged build: an agent ran
+ * `taskkill /F /IM node.exe` "to get a clean slate", killed every node.exe on
+ * the host including Morrow's bundled `runtime\node.exe`, and terminated the
+ * controller that was supervising it — along with an unrelated Morrow service
+ * belonging to a different worktree. Cleaning up a dev server it started is a
+ * legitimate need; a machine-wide image kill is not the way to do it.
+ */
+const PROCESS_KILLERS = new Set(["taskkill", "kill", "pkill", "killall", "stop-process", "tskill"]);
+
+/** Image/name-wide kills, i.e. "every process called X" rather than one pid. */
+function killsByImageName(command: string, args: string[]): boolean {
+  const lower = args.map((arg) => arg.toLowerCase());
+  if (command === "taskkill") {
+    // /IM <image> and /FI <filter> both select by name/attribute, not identity.
+    return lower.some((arg) => arg === "/im" || arg.startsWith("/im:") || arg === "-im" || arg === "/fi" || arg === "/f?");
+  }
+  if (command === "pkill" || command === "killall" || command === "tskill") return true;
+  if (command === "stop-process") {
+    return lower.some((arg) => arg === "-name" || arg.startsWith("-name:"));
+  }
+  return false;
+}
 const DENIED_COMMANDS = new Set(["mimikatz", "psexec", "shutdown", "reboot", "halt", "poweroff", "init", "format"]);
 // Direct network-transfer tools are an exfiltration vector. They are denied
 // outright; legitimate dependency installation flows through the package
@@ -131,6 +159,20 @@ export function classifyCommand(executable: string, args: string[]): CommandPoli
   }
   if (NETWORK_EXFIL.has(command)) {
     return decision("denied", command, "Direct network-transfer tools are denied to prevent unauthorized data transfer and exfiltration.");
+  }
+  if (PROCESS_KILLERS.has(command)) {
+    if (killsByImageName(command, args)) {
+      return decision(
+        "denied",
+        `${command} image-wide`,
+        "Killing processes by image name affects the whole machine, including Morrow's own service and any unrelated work. Stop a process you started with the process tools (`morrow ps`), which track the pid, port, and logs of that process only.",
+      );
+    }
+    return decision(
+      "approval_required",
+      display,
+      "Ending a process is outside the workspace boundary and always requires explicit approval.",
+    );
   }
   if (redirectsWorkspace(command, args)) {
     return decision("denied", `${command} workspace-redirect`, "Redirecting a command outside the project workspace is denied.");

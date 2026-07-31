@@ -11,7 +11,7 @@
  * returns only a non-secret status, and reads never echo a stored value back.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { ProviderId } from "@morrow/contracts";
@@ -42,6 +42,10 @@ export const PROVIDER_ENV: Partial<Record<ProviderId, ProviderEnvMapping>> = {
   openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", modelEnv: "OPENROUTER_MODEL", contextLimitEnv: "OPENROUTER_CONTEXT_LIMIT" },
   deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", modelEnv: "DEEPSEEK_MODEL", contextLimitEnv: "DEEPSEEK_CONTEXT_LIMIT" },
   "openai-compatible": { apiKeyEnv: "OPENAI_COMPAT_API_KEY", baseUrlEnv: "OPENAI_COMPAT_BASE_URL", modelEnv: "OPENAI_COMPAT_MODEL", contextLimitEnv: "OPENAI_COMPAT_CONTEXT_LIMIT" },
+  // OpenCode Go keys are bound to its published endpoint. Unlike explicitly
+  // custom-endpoint providers, in-app configuration must not redirect a saved
+  // key to an arbitrary host.
+  "opencode-go": { apiKeyEnv: "OPENCODE_GO_API_KEY", modelEnv: "OPENCODE_GO_MODEL", contextLimitEnv: "OPENCODE_GO_CONTEXT_LIMIT" },
   ollama: { baseUrlEnv: "OLLAMA_BASE_URL", modelEnv: "OLLAMA_MODEL", contextLimitEnv: "OLLAMA_CONTEXT_LIMIT", local: true },
   // Catalog providers derive their mapping from the single catalog table, so a
   // new provider can never be half-added (configurable but unreadable, or the
@@ -103,13 +107,28 @@ export interface CredentialFileOptions {
   applyWindowsAcl?: (path: string) => boolean;
 }
 
+/**
+ * Absolute path to a System32 tool.
+ *
+ * These were invoked by bare name and resolved through PATH, so a Unix-style
+ * `whoami` earlier on PATH — Git for Windows ships one, and puts it there —
+ * shadowed the Windows tool. It rejects the Windows flags ("extra operand
+ * '/user'"), the SID lookup failed, and saving any provider credential threw
+ * outright: a user with Git installed could not store an API key at all.
+ * Resolving against %SystemRoot% removes PATH from the equation.
+ */
+function systemTool(name: string): string {
+  const root = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+  return join(root, "System32", name);
+}
+
 /** Restrict a file to the current Windows user and LocalSystem using SID ACLs. */
 export function applyWindowsCredentialAcl(path: string): boolean {
   try {
-    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const identity = execFileSync(systemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
     const sid = identity.match(/,"([^"]+)"\s*$/)?.[1];
     if (!sid || !/^S-1-\d+(?:-\d+)+$/i.test(sid)) return false;
-    execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
+    execFileSync(systemTool("icacls.exe"), [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
       stdio: "ignore",
       windowsHide: true,
     });

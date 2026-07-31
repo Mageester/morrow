@@ -1,0 +1,1136 @@
+<title>Morrow — Ordered Execution Transcript</title>
+
+<style>
+  /* ── Tokens ────────────────────────────────────────────────────────────
+     The app screen commits to one visual world: a dark developer tool.
+     Only the surrounding page chrome answers the viewer's theme, so the
+     mockup never renders as a washed-out inversion of itself.            */
+  :root {
+    --page-bg: #EFEFF3;
+    --page-fg: #3C4050;
+    --page-line: #D8D9E2;
+
+    --bg:      #0B0C10;
+    --surface: #121319;
+    --raised:  #171A23;
+    --sunk:    #0E0F14;
+    --line:    #242734;
+    --line-soft: #1C1F29;
+
+    --text:    #E6E8F0;
+    --text-2:  #B4B9CA;
+    --muted:   #8D93A6;
+    --faint:   #6E7488;
+
+    --iris:    #7C6BF5;
+    --iris-dim:#5A4CC4;
+    --iris-wash: rgba(124, 107, 245, 0.13);
+    --iris-line: rgba(124, 107, 245, 0.34);
+
+    --pass:    #3FB950;
+    --pass-wash: rgba(63, 185, 80, 0.12);
+    --pend:    #D2A24C;
+    --pend-wash: rgba(210, 162, 76, 0.12);
+    --fail:    #F0616D;
+    --fail-wash: rgba(240, 97, 109, 0.11);
+
+    --add-bg:  rgba(63, 185, 80, 0.10);
+    --add-mark:#57C767;
+    --del-bg:  rgba(240, 97, 109, 0.10);
+    --del-mark:#F07782;
+
+    --ui: ui-sans-serif, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", "Menlo", Consolas, monospace;
+
+    --fs-xs: 10.5px;
+    --fs-sm: 11.5px;
+    --fs-base: 13px;
+    --fs-md: 14px;
+    --fs-lg: 15px;
+    --fs-code: 12px;
+
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 9px;
+
+    --rail-x: 21px;
+    --gutter: 46px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --page-bg: #06070A; --page-fg: #9AA0B2; --page-line: #1A1D26; }
+  }
+  :root[data-theme="dark"] { --page-bg: #06070A; --page-fg: #9AA0B2; --page-line: #1A1D26; }
+  :root[data-theme="light"] { --page-bg: #EFEFF3; --page-fg: #3C4050; --page-line: #D8D9E2; }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 28px 20px 40px;
+  }
+
+  .page-note {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: var(--fs-sm);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--page-fg);
+    opacity: 0.72;
+    width: 100%;
+    max-width: 1440px;
+  }
+  .page-note b { font-weight: 600; letter-spacing: 0.02em; }
+  .page-note span { font-family: var(--mono); text-transform: none; letter-spacing: 0; opacity: 0.7; }
+
+  /* The frame is a fixed-size screen; if the viewport is narrower it scrolls
+     inside its own container rather than dragging the page sideways. */
+  .frame-scroll { width: 100%; max-width: 1440px; overflow-x: auto; }
+
+  .app {
+    width: 1440px;
+    height: 900px;
+    display: grid;
+    grid-template-columns: 236px minmax(0, 1fr) 300px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    overflow: hidden;
+    font-size: var(--fs-base);
+    line-height: 1.5;
+  }
+
+  /* ── Shared atoms ─────────────────────────────────────────────────── */
+  .eyebrow {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .btn {
+    font: inherit;
+    font-size: var(--fs-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--text-2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: #313545; color: var(--text); }
+  .btn:focus-visible { outline: 2px solid var(--iris); outline-offset: 2px; }
+  .btn-primary { background: var(--iris); border-color: var(--iris); color: #fff; font-weight: 550; }
+  .btn-primary:hover { background: #8A7BF7; border-color: #8A7BF7; color: #fff; }
+  .btn-danger { color: #E8909A; border-color: #3A2830; background: #1B1216; }
+  .btn-danger:hover { color: #F5A8B0; border-color: #55353F; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: 100px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .pill-pass { background: var(--pass-wash); color: var(--pass); border-color: rgba(63,185,80,0.25); }
+  .pill-active { background: var(--iris-wash); color: #A99BFF; border-color: var(--iris-line); }
+  .pill-pend { background: var(--pend-wash); color: var(--pend); border-color: rgba(210,162,76,0.25); }
+
+  .dot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+
+  /* ── Left sidebar ─────────────────────────────────────────────────── */
+  .side {
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    min-height: 0;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 16px 16px 13px;
+  }
+  .brand-mark {
+    width: 20px; height: 20px; flex: none;
+    border-radius: 5px;
+    background: linear-gradient(150deg, var(--iris) 0%, var(--iris-dim) 100%);
+    position: relative;
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute; inset: 5px 5px auto auto;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--surface);
+  }
+  .wordmark {
+    font-size: var(--fs-md);
+    font-weight: 640;
+    letter-spacing: 0.15em;
+    color: var(--text);
+  }
+  .brand-ver {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    color: var(--faint);
+  }
+
+  .side-action { padding: 0 12px 14px; }
+  .side-action .btn { width: 100%; justify-content: center; padding: 7px 10px; font-size: var(--fs-base); }
+
+  .side-scroll { overflow-y: auto; padding: 0 8px 8px; min-height: 0; }
+  .side-group { padding: 10px 8px 5px; display: flex; align-items: center; justify-content: space-between; }
+  .side-group .count { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: var(--fs-base);
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+    border: 1px solid transparent;
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+    min-width: 0;
+  }
+  .nav-item:hover { background: var(--raised); color: var(--text); }
+  .nav-item:focus-visible { outline: 2px solid var(--iris); outline-offset: -1px; }
+  .nav-item .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-item[aria-current="true"] {
+    background: var(--iris-wash);
+    border-color: var(--iris-line);
+    color: var(--text);
+    font-weight: 550;
+  }
+  .nav-item .meta { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+
+  .side-foot {
+    border-top: 1px solid var(--line);
+    padding: 11px 16px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+
+  /* ── Center column ────────────────────────────────────────────────── */
+  /* Three explicit rows: the composer owns a row of its own, so it can
+     never sit on top of transcript content. */
+  .center {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  .task-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 13px 24px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .task-head h1 { margin: 0; font-size: var(--fs-lg); font-weight: 600; letter-spacing: -0.005em; }
+  .task-sub {
+    display: flex; align-items: center; gap: 7px;
+    font-size: var(--fs-sm); color: var(--muted); margin-top: 2px;
+  }
+  .task-sub .step-ptr { font-family: var(--mono); color: #A99BFF; }
+  .head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .elapsed {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .transcript {
+    overflow-y: auto;
+    min-height: 0;
+    /* Bottom padding clears the floating "jump to live" pill, so transcript
+       content is never sitting underneath it. */
+    padding: 20px 24px 30px;
+    scrollbar-gutter: stable;
+  }
+  .transcript-inner { max-width: 720px; }
+
+  /* ── The contract: premise, not a step ────────────────────────────── */
+  .contract { margin-bottom: 22px; }
+
+  .req {
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    align-items: start;
+  }
+  .req-avatar {
+    /* Centred on the same rail axis the step nodes sit on. */
+    margin-left: calc(var(--rail-x) - 11px);
+    width: 22px; height: 22px; border-radius: var(--r-sm);
+    background: var(--raised); border: 1px solid var(--line);
+    display: grid; place-items: center;
+    font-size: var(--fs-xs); font-weight: 700; color: var(--muted);
+    letter-spacing: 0.02em;
+  }
+  .req-body {
+    background: var(--raised);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: 11px 14px;
+  }
+  .req-body p { margin: 3px 0 0; font-size: var(--fs-md); color: var(--text); }
+
+  .contract-grid {
+    margin: 12px 0 0 var(--gutter);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--iris-dim);
+    border-radius: var(--r-md);
+    background: var(--sunk);
+    padding: 12px 14px;
+    display: grid;
+    gap: 12px;
+  }
+  .contract-grid p { margin: 4px 0 0; color: var(--text-2); }
+
+  .criteria { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 5px; }
+  .criteria li { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-base); color: var(--text-2); }
+  .cri-mark { font-family: var(--mono); font-size: var(--fs-sm); flex: none; width: 12px; }
+  .cri-pass .cri-mark { color: var(--pass); }
+  .cri-run .cri-mark { color: #A99BFF; }
+  .cri-run { color: var(--text); }
+
+  /* ── Timeline ─────────────────────────────────────────────────────── */
+  .timeline { padding-bottom: 12px; }
+
+  .step {
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    align-items: start;
+    padding-bottom: 18px;
+  }
+  /* Each step draws its own connector down to the next node, so the rail is
+     self-sizing and can never overshoot the final step. */
+  .step::before {
+    content: "";
+    position: absolute;
+    left: var(--rail-x);
+    top: 26px;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+  .step:last-child::before { display: none; }
+
+  .node {
+    position: relative;
+    width: 26px; height: 26px;
+    margin-left: calc(var(--rail-x) - 13px);
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--faint);
+    z-index: 1;
+  }
+  .step-done .node { border-color: rgba(63,185,80,0.4); color: var(--pass); background: var(--sunk); }
+  .step-active .node { border-color: var(--iris); color: #B7ABFF; background: #14121F; }
+  .step-active .node::after {
+    content: "";
+    position: absolute; inset: -4px;
+    border-radius: 50%;
+    border: 1px solid var(--iris-line);
+    animation: ring 2.4s ease-out infinite;
+  }
+  @keyframes ring { 0% { opacity: 0.9; transform: scale(0.92); } 70%, 100% { opacity: 0; transform: scale(1.14); } }
+  @media (prefers-reduced-motion: reduce) {
+    .step-active .node::after { animation: none; opacity: 0.55; }
+    .bar-fill-active::after { animation: none; }
+  }
+  .step-pending .node { border-style: dashed; }
+
+  .step-body { min-width: 0; }
+  .step-head { display: flex; align-items: center; gap: 9px; min-height: 26px; }
+  .step-title { font-size: var(--fs-md); font-weight: 570; color: var(--text); }
+  .step-title code { font-family: var(--mono); font-size: var(--fs-code); color: var(--text); }
+  .step-time { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+  .step-pending .step-title { color: var(--muted); font-weight: 500; }
+
+  .panel {
+    margin-top: 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 11px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--raised);
+  }
+  .panel-head .path { font-family: var(--mono); font-size: var(--fs-code); color: var(--text); }
+  .panel-tools { margin-left: auto; display: flex; gap: 5px; }
+  .panel-tools .btn { padding: 3px 8px; font-size: var(--fs-xs); }
+
+  /* Decision summary — labelled reasoning, never raw private deliberation */
+  .rationale { display: grid; gap: 0; }
+  .rationale > div {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 12px;
+    padding: 7px 11px;
+    align-items: baseline;
+  }
+  .rationale > div + div { border-top: 1px solid var(--line-soft); }
+  .rationale dt { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); }
+  .rationale dd { margin: 0; color: var(--text-2); }
+  .rationale .quote { font-family: var(--mono); font-size: var(--fs-code); color: #E8909A; }
+  .rationale .outcome { color: var(--text); }
+
+  /* Diff */
+  .diff-stat { font-family: var(--mono); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .diff-stat .plus { color: var(--add-mark); }
+  .diff-stat .minus { color: var(--del-mark); }
+
+  .diff { overflow-x: auto; background: var(--sunk); }
+  .diff table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: var(--fs-code); line-height: 1.65; }
+  .diff td { padding: 0; white-space: pre; }
+  .ln {
+    width: 34px;
+    padding: 0 8px 0 0 !important;
+    text-align: right;
+    color: #575D71;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    background: rgba(255,255,255,0.014);
+  }
+  .mk { width: 16px; text-align: center; user-select: none; color: #575D71; }
+  .code { padding-right: 14px !important; color: var(--text-2); }
+  tr.del { background: var(--del-bg); }
+  tr.del .mk, tr.del .code { color: #F2A2AA; }
+  tr.add { background: var(--add-bg); }
+  tr.add .mk, tr.add .code { color: #86D68F; }
+  .tok-key { color: #B7ABFF; }
+  .tok-str { color: #86D68F; }
+  .tok-tag { color: #6FB4E8; }
+  .tok-com { color: #5D6377; }
+
+  /* Command block */
+  .cmd {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 11px;
+    font-family: var(--mono);
+    font-size: var(--fs-code);
+    background: var(--sunk);
+    color: var(--text);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .cmd .prompt { color: var(--iris); user-select: none; }
+  .cmd .btn { margin-left: auto; padding: 2px 7px; font-size: var(--fs-xs); }
+
+  .out {
+    margin: 0;
+    padding: 8px 11px;
+    font-family: var(--mono);
+    font-size: var(--fs-code);
+    line-height: 1.7;
+    color: var(--muted);
+    background: var(--surface);
+    overflow-x: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .out .ok { color: var(--pass); }
+
+  .verdict {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 11px;
+    border-top: 1px solid var(--line-soft);
+    background: var(--pass-wash);
+    font-size: var(--fs-sm);
+    color: #86D68F;
+    font-weight: 550;
+  }
+
+  /* Active step */
+  .step-active .panel { border-color: rgba(124,107,245,0.3); }
+  .progress-strip { height: 2px; background: var(--line-soft); overflow: hidden; }
+  .progress-strip i {
+    display: block; height: 100%; width: 38%;
+    background: linear-gradient(90deg, transparent, var(--iris), transparent);
+    animation: sweep 1.9s ease-in-out infinite;
+  }
+  @keyframes sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(365%); } }
+  @media (prefers-reduced-motion: reduce) { .progress-strip i { animation: none; width: 100%; opacity: 0.4; } }
+
+  .now { display: flex; align-items: center; gap: 9px; padding: 9px 11px; }
+  .now .label { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); }
+  .now .value { font-family: var(--mono); font-size: var(--fs-code); color: var(--text); }
+
+  .observe {
+    display: grid;
+    grid-template-columns: 148px minmax(0, 1fr);
+    gap: 12px;
+    padding: 0 11px 11px;
+    align-items: start;
+  }
+  /* Flat content thumbnail — deliberately no browser chrome or device frame */
+  .shot {
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: #0A0D14;
+    padding: 8px;
+    display: grid;
+    gap: 5px;
+    height: 92px;
+    overflow: hidden;
+  }
+  .shot-title { height: 6px; width: 62%; border-radius: 2px; background: #6FB4E8; opacity: 0.75; }
+  .shot-sub { height: 4px; width: 40%; border-radius: 2px; background: #2E3444; }
+  .shot-row { display: grid; grid-template-columns: 1fr 26px; gap: 6px; align-items: center; }
+  .shot-row i { display: block; height: 4px; border-radius: 2px; background: #232838; }
+  .shot-row i.v { background: #2C6B3A; }
+  .shot-cap { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); margin-top: 5px; }
+
+  .observe-body { display: grid; gap: 8px; }
+  .observe-line { display: flex; align-items: baseline; gap: 8px; }
+  .observe-line .k { font-size: var(--fs-xs); font-weight: 650; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); flex: none; }
+  .observe-line .v { color: var(--text); }
+
+  /* Grouped recovery */
+  .grouped {
+    border: 1px solid rgba(210,162,76,0.26);
+    background: var(--pend-wash);
+    border-radius: var(--r-sm);
+  }
+  .grouped > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 10px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: var(--fs-sm);
+    color: #E0B972;
+  }
+  .grouped > summary::-webkit-details-marker { display: none; }
+  .grouped > summary:focus-visible { outline: 2px solid var(--iris); outline-offset: 1px; }
+  .grouped .chev { margin-left: auto; font-family: var(--mono); font-size: var(--fs-xs); color: #A98543; }
+  .grouped[open] .chev { transform: rotate(90deg); }
+  .grouped .retries { border-top: 1px solid rgba(210,162,76,0.2); padding: 7px 10px; display: grid; gap: 5px; }
+  .retry { display: grid; grid-template-columns: 46px minmax(0,1fr) auto; gap: 10px; font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); }
+  .retry .n { color: var(--faint); }
+  .retry .r { color: #C7A05C; }
+
+  /* Pending evidence checklist */
+  .checklist { list-style: none; margin: 0; padding: 9px 11px; display: grid; gap: 6px; }
+  .checklist li { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: var(--fs-base); }
+  .box { width: 12px; height: 12px; border-radius: 3px; border: 1px dashed #3A3F52; flex: none; }
+
+  /* ── Composer ─────────────────────────────────────────────────────── */
+  .composer-wrap { border-top: 1px solid var(--line); background: var(--surface); padding: 10px 24px 13px; position: relative; }
+
+  .follow {
+    position: absolute;
+    top: -34px; left: 50%; transform: translateX(-50%);
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 4px 11px;
+    border-radius: 100px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  }
+  .follow:hover { border-color: var(--iris-line); color: var(--text); }
+  .follow:focus-visible { outline: 2px solid var(--iris); outline-offset: 2px; }
+
+  .composer {
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--raised);
+    max-width: 720px;
+  }
+  .composer:focus-within { border-color: var(--iris-line); }
+  .composer-input {
+    padding: 10px 13px 4px;
+    color: var(--muted);
+    font-size: var(--fs-md);
+    min-height: 38px;
+  }
+  .composer-bar { display: flex; align-items: center; gap: 7px; padding: 7px 9px 8px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+  .seg button {
+    font: inherit; font-size: var(--fs-sm);
+    padding: 3px 10px; border: 0; background: none; color: var(--muted); cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--iris-wash); color: #B7ABFF; font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--iris); outline-offset: -2px; }
+  .composer-bar .spacer { margin-left: auto; }
+  .icon-btn { padding: 4px 8px; }
+
+  /* ── Right inspector ──────────────────────────────────────────────── */
+  .inspector {
+    background: var(--surface);
+    border-left: 1px solid var(--line);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tab {
+    flex: 1;
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 11px 4px 10px;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .tab:hover { color: var(--text-2); }
+  .tab:focus-visible { outline: 2px solid var(--iris); outline-offset: -2px; }
+  .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--iris); }
+
+  .tabpanel { overflow-y: auto; padding: 15px 16px; min-height: 0; }
+  .tabpanel[hidden] { display: none; }
+
+  .insp-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+  .insp-h .big { font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .insp-h .of { color: var(--faint); font-size: var(--fs-base); }
+
+  .bar { display: flex; gap: 3px; margin-bottom: 7px; }
+  .bar i { height: 3px; flex: 1; border-radius: 2px; background: var(--line); }
+  .bar i.done { background: var(--pass); }
+  .bar i.active { background: var(--iris); position: relative; overflow: hidden; }
+  .bar-legend { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 15px; }
+  .bar-legend b { color: var(--text-2); font-weight: 600; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .plan-list { display: grid; gap: 2px; }
+  .plan-step {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    gap: 9px;
+    align-items: center;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    font-size: var(--fs-base);
+    padding: 7px 8px;
+    border-radius: var(--r-sm);
+    border: 1px solid transparent;
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .plan-step:hover { background: var(--raised); }
+  .plan-step:focus-visible { outline: 2px solid var(--iris); outline-offset: -1px; }
+  .plan-step .idx { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+  .plan-step .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plan-step .st { font-family: var(--mono); font-size: var(--fs-xs); color: var(--faint); }
+  .plan-step.done .idx { color: var(--pass); }
+  .plan-step.current {
+    background: var(--iris-wash);
+    border-color: var(--iris-line);
+    color: var(--text);
+    font-weight: 550;
+  }
+  .plan-step.current .idx, .plan-step.current .st { color: #A99BFF; }
+
+  .file-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    padding: 8px;
+    border-radius: var(--r-sm);
+    border: 1px solid transparent;
+    background: none;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .file-row:hover { background: var(--raised); }
+  .file-row:focus-visible { outline: 2px solid var(--iris); outline-offset: -1px; }
+  /* No direction:rtl trick here — it reorders the slashes in a path. */
+  .file-row .fp { font-family: var(--mono); font-size: var(--fs-code); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .fs { font-family: var(--mono); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+
+  .totals {
+    margin-top: 10px; padding-top: 11px;
+    border-top: 1px solid var(--line);
+    display: flex; align-items: baseline; justify-content: space-between;
+    font-size: var(--fs-sm); color: var(--muted);
+  }
+  .totals .v { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+
+  .ev-row {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 0;
+    font-size: var(--fs-base);
+    color: var(--text-2);
+  }
+  .ev-row + .ev-row { border-top: 1px solid var(--line-soft); }
+  .ev-row .val { font-family: var(--mono); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; color: var(--text); }
+
+  .full { width: 100%; justify-content: center; margin-top: 12px; }
+  .side-scroll::-webkit-scrollbar, .transcript::-webkit-scrollbar, .tabpanel::-webkit-scrollbar { width: 9px; }
+  .side-scroll::-webkit-scrollbar-thumb, .transcript::-webkit-scrollbar-thumb, .tabpanel::-webkit-scrollbar-thumb {
+    background: #262A38; border-radius: 5px; border: 2px solid transparent; background-clip: content-box;
+  }
+</style>
+
+<div class="page">
+  <div class="page-note">
+    <b>Morrow</b> — ordered execution transcript <span>1440 × 900 · design mockup</span>
+  </div>
+
+  <div class="frame-scroll">
+  <div class="app">
+
+    <!-- ══ LEFT SIDEBAR ══════════════════════════════════════════════ -->
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div class="wordmark">MORROW</div>
+        <div class="brand-ver">0.1.0</div>
+      </div>
+
+      <div class="side-action">
+        <button class="btn btn-primary" type="button">
+          <span aria-hidden="true">+</span> New Task
+        </button>
+      </div>
+
+      <div class="side-scroll">
+        <div class="side-group"><span class="eyebrow">Projects</span><span class="count">3</span></div>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: var(--pass)"></span>
+          <span class="label">exoplanet-atlas</span>
+          <span class="meta">2</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">morrow-core</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">telemetry-api</span>
+        </button>
+
+        <div class="side-group"><span class="eyebrow">Recent</span></div>
+        <button class="nav-item" type="button" aria-current="true">
+          <span class="dot" style="background: var(--iris)"></span>
+          <span class="label">Repair blank application</span>
+          <span class="meta">now</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">Add pagination to results</span>
+          <span class="meta">2h</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">Migrate build to Vite 6</span>
+          <span class="meta">1d</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">Fix flaky auth test</span>
+          <span class="meta">2d</span>
+        </button>
+        <button class="nav-item" type="button">
+          <span class="dot" style="background: #3A3F52"></span>
+          <span class="label">Document transit endpoints</span>
+          <span class="meta">4d</span>
+        </button>
+      </div>
+
+      <div class="side-foot">
+        <span class="dot" style="background: var(--pass)"></span>
+        Runs on this machine
+      </div>
+    </aside>
+
+    <!-- ══ CENTER — ORDERED EXECUTION TRANSCRIPT ═════════════════════ -->
+    <main class="center">
+
+      <header class="task-head">
+        <div>
+          <h1>Repair blank application</h1>
+          <div class="task-sub">
+            <span class="step-ptr">Step 4 of 5</span>
+            <span aria-hidden="true">·</span>
+            <span>Browser verification</span>
+          </div>
+        </div>
+        <div class="head-right">
+          <span class="elapsed"><span class="dot" style="background: var(--iris)"></span>04:12</span>
+          <button class="btn btn-danger" type="button">Stop</button>
+        </div>
+      </header>
+
+      <div class="transcript" id="transcript">
+        <div class="transcript-inner">
+
+          <!-- The contract: request → objective → criteria -->
+          <section class="contract">
+            <div class="req">
+              <div><div class="req-avatar">AM</div></div>
+              <div class="req-body">
+                <span class="eyebrow">User request</span>
+                <p>Fix duplicate router and verify runtime.</p>
+              </div>
+            </div>
+
+            <div class="contract-grid">
+              <div>
+                <span class="eyebrow">Objective</span>
+                <p>Restore application rendering without changing navigation behavior.</p>
+              </div>
+              <div>
+                <span class="eyebrow">Acceptance criteria</span>
+                <ul class="criteria">
+                  <li class="cri-pass"><span class="cri-mark">✓</span> App builds successfully</li>
+                  <li class="cri-pass"><span class="cri-mark">✓</span> No nested-router runtime error</li>
+                  <li class="cri-run"><span class="cri-mark">▶</span> Main route renders in browser</li>
+                  <li class="cri-pass"><span class="cri-mark">✓</span> Exact file changes remain visible</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <!-- Numbered execution timeline -->
+          <section class="timeline">
+
+            <!-- 01 -->
+            <article class="step step-done" id="step-01">
+              <div><div class="node">01</div></div>
+              <div class="step-body">
+                <div class="step-head">
+                  <span class="step-title">Analyze error</span>
+                  <span class="pill pill-pass">Completed</span>
+                  <span class="step-time">0.8s</span>
+                </div>
+                <div class="panel">
+                  <dl class="rationale">
+                    <div>
+                      <dt>Why</dt>
+                      <dd>Runtime failed before route content rendered</dd>
+                    </div>
+                    <div>
+                      <dt>Evidence</dt>
+                      <dd class="quote">“You cannot render a &lt;Router&gt; inside another &lt;Router&gt;”</dd>
+                    </div>
+                    <div>
+                      <dt>Outcome</dt>
+                      <dd class="outcome">Duplicate <code class="mono">BrowserRouter</code> found in <code class="mono">src/main.tsx</code> and <code class="mono">src/App.tsx</code></dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+            </article>
+
+            <!-- 02 -->
+            <article class="step step-done" id="step-02">
+              <div><div class="node">02</div></div>
+              <div class="step-body">
+                <div class="step-head">
+                  <span class="step-title">Edit <code>src/main.tsx</code></span>
+                  <span class="pill pill-pass">Completed</span>
+                  <span class="step-time">0.3s</span>
+                </div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <span class="path">src/main.tsx</span>
+                    <span class="diff-stat"><span class="plus">+1</span> <span class="minus">−5</span></span>
+                    <span class="panel-tools">
+                      <button class="btn" type="button">Open file</button>
+                      <button class="btn" type="button">Expand</button>
+                      <button class="btn" type="button">Copy patch</button>
+                    </span>
+                  </div>
+                  <div class="diff">
+                    <table>
+                      <tbody>
+                        <tr><td class="ln">1</td><td class="ln">1</td><td class="mk"> </td><td class="code"><span class="tok-key">import</span> React <span class="tok-key">from</span> <span class="tok-str">"react"</span>;</td></tr>
+                        <tr><td class="ln">2</td><td class="ln">2</td><td class="mk"> </td><td class="code"><span class="tok-key">import</span> ReactDOM <span class="tok-key">from</span> <span class="tok-str">"react-dom/client"</span>;</td></tr>
+                        <tr class="del"><td class="ln">3</td><td class="ln"></td><td class="mk">−</td><td class="code">import { BrowserRouter } from "react-router-dom";</td></tr>
+                        <tr class="del"><td class="ln">4</td><td class="ln"></td><td class="mk">−</td><td class="code"> </td></tr>
+                        <tr><td class="ln">5</td><td class="ln">3</td><td class="mk"> </td><td class="code"><span class="tok-key">import</span> App <span class="tok-key">from</span> <span class="tok-str">"./App"</span>;</td></tr>
+                        <tr><td class="ln">6</td><td class="ln">4</td><td class="mk"> </td><td class="code"><span class="tok-key">import</span> <span class="tok-str">"./index.css"</span>;</td></tr>
+                        <tr><td class="ln">7</td><td class="ln">5</td><td class="mk"> </td><td class="code"> </td></tr>
+                        <tr><td class="ln">8</td><td class="ln">6</td><td class="mk"> </td><td class="code">ReactDOM.createRoot(document.getElementById(<span class="tok-str">"root"</span>)!).render(</td></tr>
+                        <tr><td class="ln">9</td><td class="ln">7</td><td class="mk"> </td><td class="code">  &lt;<span class="tok-tag">React.StrictMode</span>&gt;</td></tr>
+                        <tr class="del"><td class="ln">10</td><td class="ln"></td><td class="mk">−</td><td class="code">    &lt;BrowserRouter basename={import.meta.env.BASE_URL}&gt;</td></tr>
+                        <tr class="del"><td class="ln">11</td><td class="ln"></td><td class="mk">−</td><td class="code">      &lt;App /&gt;</td></tr>
+                        <tr class="del"><td class="ln">12</td><td class="ln"></td><td class="mk">−</td><td class="code">    &lt;/BrowserRouter&gt;</td></tr>
+                        <tr class="add"><td class="ln"></td><td class="ln">8</td><td class="mk">+</td><td class="code">    &lt;App /&gt;</td></tr>
+                        <tr><td class="ln">13</td><td class="ln">9</td><td class="mk"> </td><td class="code">  &lt;/<span class="tok-tag">React.StrictMode</span>&gt;,</td></tr>
+                        <tr><td class="ln">14</td><td class="ln">10</td><td class="mk"> </td><td class="code">);</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <!-- 03 -->
+            <article class="step step-done" id="step-03">
+              <div><div class="node">03</div></div>
+              <div class="step-body">
+                <div class="step-head">
+                  <span class="step-title">Run <code>npm run build</code></span>
+                  <span class="pill pill-pass">Completed</span>
+                  <span class="step-time">3.4s</span>
+                </div>
+                <div class="panel">
+                  <div class="cmd">
+                    <span class="prompt">$</span>
+                    <span>npm run build</span>
+                    <button class="btn" type="button">Copy</button>
+                  </div>
+                  <pre class="out">1580 modules transformed
+Build completed in 3.4s</pre>
+                  <div class="verdict"><span aria-hidden="true">✓</span> Build passed</div>
+                </div>
+              </div>
+            </article>
+
+            <!-- 04 — active -->
+            <article class="step step-active" id="step-04">
+              <div><div class="node">04</div></div>
+              <div class="step-body">
+                <div class="step-head">
+                  <span class="step-title">Verify in browser</span>
+                  <span class="pill pill-active"><span class="dot" style="background: currentColor"></span> Active</span>
+                  <span class="step-time">0:41</span>
+                </div>
+                <div class="panel">
+                  <div class="progress-strip"><i></i></div>
+                  <div class="now">
+                    <span class="label">Now</span>
+                    <span class="value">Opening /exoplanets/kepler-62f</span>
+                  </div>
+                  <div class="observe">
+                    <figure style="margin:0">
+                      <div class="shot" role="img" aria-label="Screenshot: the Kepler-62f page rendered with title, summary and data rows">
+                        <div class="shot-title"></div>
+                        <div class="shot-sub"></div>
+                        <div class="shot-row"><i></i><i class="v"></i></div>
+                        <div class="shot-row"><i></i><i class="v"></i></div>
+                        <div class="shot-row"><i></i><i></i></div>
+                        <div class="shot-row"><i></i><i></i></div>
+                      </div>
+                      <figcaption class="shot-cap">1440×900 · 12:04:31</figcaption>
+                    </figure>
+                    <div class="observe-body">
+                      <div class="observe-line">
+                        <span class="k">Observed</span>
+                        <span class="v">Application rendered successfully</span>
+                      </div>
+                      <details class="grouped">
+                        <summary>
+                          <span aria-hidden="true">↻</span>
+                          2 repeated retries grouped
+                          <span class="chev" aria-hidden="true">›</span>
+                        </summary>
+                        <div class="retries">
+                          <div class="retry"><span class="n">12:04:09</span><span>Navigation timed out after 10s</span><span class="r">retry 1</span></div>
+                          <div class="retry"><span class="n">12:04:20</span><span>Navigation timed out after 10s</span><span class="r">retry 2</span></div>
+                          <div class="retry"><span class="n">12:04:31</span><span>Loaded — waited for network idle instead</span><span class="r">resolved</span></div>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <!-- 05 — pending -->
+            <article class="step step-pending" id="step-05">
+              <div><div class="node">05</div></div>
+              <div class="step-body">
+                <div class="step-head">
+                  <span class="step-title">Final evidence</span>
+                  <span class="pill pill-pend">Pending</span>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><span class="eyebrow">Expected evidence</span></div>
+                  <ul class="checklist">
+                    <li><span class="box"></span> Build output</li>
+                    <li><span class="box"></span> Runtime screenshot</li>
+                    <li><span class="box"></span> Test results</li>
+                    <li><span class="box"></span> Changed-file summary</li>
+                  </ul>
+                </div>
+              </div>
+            </article>
+
+          </section>
+        </div>
+      </div>
+
+      <!-- Composer occupies its own grid row — it cannot overlap the transcript -->
+      <div class="composer-wrap">
+        <button class="follow" type="button">
+          <span aria-hidden="true">↓</span> Following paused · Jump to live
+        </button>
+        <div class="composer">
+          <div class="composer-input">Ask Morrow…</div>
+          <div class="composer-bar">
+            <div class="seg" role="group" aria-label="Mode">
+              <button type="button" aria-pressed="false">Ask</button>
+              <button type="button" aria-pressed="false">Plan</button>
+              <button type="button" aria-pressed="true">Build</button>
+            </div>
+            <button class="btn" type="button">claude-opus-5 <span aria-hidden="true" style="color:var(--faint)">▾</span></button>
+            <span class="spacer"></span>
+            <button class="btn icon-btn" type="button" aria-label="Attach a file">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9.8 4.2 5.3 8.7a1.9 1.9 0 0 0 2.7 2.7l5-5a3.3 3.3 0 0 0-4.7-4.7l-5 5a4.7 4.7 0 0 0 6.7 6.7l4.2-4.2" />
+              </svg>
+            </button>
+            <button class="btn btn-primary" type="button">Send <span aria-hidden="true">↵</span></button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ══ RIGHT INSPECTOR ═══════════════════════════════════════════ -->
+    <aside class="inspector">
+      <div class="tabs" role="tablist" aria-label="Inspector">
+        <button class="tab" role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="true" type="button">Plan</button>
+        <button class="tab" role="tab" id="tab-changes" aria-controls="panel-changes" aria-selected="false" type="button">Changes</button>
+        <button class="tab" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" type="button">Evidence</button>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="panel-plan" aria-labelledby="tab-plan">
+        <div class="insp-h">
+          <span class="big">Step 4<span class="of"> / 5</span></span>
+          <span class="pill pill-active">Running</span>
+        </div>
+        <div class="bar" aria-hidden="true">
+          <i class="done"></i><i class="done"></i><i class="done"></i><i class="active"></i><i></i>
+        </div>
+        <p class="bar-legend"><b>3</b> complete · <b>1</b> running · <b>1</b> pending</p>
+
+        <div class="plan-list">
+          <button class="plan-step done" type="button" data-goto="step-01"><span class="idx">01</span><span class="nm">Analyze error</span><span class="st">0.8s</span></button>
+          <button class="plan-step done" type="button" data-goto="step-02"><span class="idx">02</span><span class="nm">Edit src/main.tsx</span><span class="st">0.3s</span></button>
+          <button class="plan-step done" type="button" data-goto="step-03"><span class="idx">03</span><span class="nm">Run npm run build</span><span class="st">3.4s</span></button>
+          <button class="plan-step current" type="button" data-goto="step-04" aria-current="step"><span class="idx">04</span><span class="nm">Verify in browser</span><span class="st">0:41</span></button>
+          <button class="plan-step" type="button" data-goto="step-05"><span class="idx">05</span><span class="nm">Final evidence</span><span class="st">—</span></button>
+        </div>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="panel-changes" aria-labelledby="tab-changes" hidden>
+        <div class="insp-h">
+          <span class="big">2<span class="of"> files</span></span>
+          <span class="diff-stat"><span class="plus">+2</span> <span class="minus">−6</span></span>
+        </div>
+        <button class="file-row" type="button" data-goto="step-02">
+          <span class="fp">src/main.tsx</span>
+          <span class="fs"><span style="color:var(--add-mark)">+1</span> <span style="color:var(--del-mark)">−5</span></span>
+        </button>
+        <button class="file-row" type="button" data-goto="step-02">
+          <span class="fp">src/hooks/useApi.ts</span>
+          <span class="fs"><span style="color:var(--add-mark)">+1</span> <span style="color:var(--del-mark)">−1</span></span>
+        </button>
+        <div class="totals">
+          <span>Total</span>
+          <span class="v">2 files · +2 −6</span>
+        </div>
+        <button class="btn full" type="button">View cumulative diff</button>
+      </div>
+
+      <div class="tabpanel" role="tabpanel" id="panel-evidence" aria-labelledby="tab-evidence" hidden>
+        <div class="insp-h">
+          <span class="big">5<span class="of"> artifacts</span></span>
+        </div>
+        <div class="ev-row"><span>Build</span><span class="pill pill-pass">Passed</span></div>
+        <div class="ev-row"><span>Runtime</span><span class="pill pill-pass">Visible</span></div>
+        <div class="ev-row"><span>Tests</span><span class="pill pill-pend">Pending</span></div>
+        <div class="ev-row"><span>Screenshots</span><span class="val">1</span></div>
+        <div class="ev-row"><span>Commands</span><span class="val">3</span></div>
+        <button class="btn full" type="button">Open evidence ledger</button>
+      </div>
+    </aside>
+
+  </div>
+  </div>
+</div>
+
+<script>
+  // Inspector tabs
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      tabs.forEach((t) => {
+        const selected = t === tab;
+        t.setAttribute('aria-selected', String(selected));
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !selected;
+      });
+    });
+  });
+
+  // Inspector rows scroll the transcript — the panel summarizes, it never replaces
+  document.querySelectorAll('[data-goto]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const target = document.getElementById(el.dataset.goto);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  });
+</script>

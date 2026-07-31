@@ -142,7 +142,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, resolveModelStatuses } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelStatuses } from "./routing/models.js";
 import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
@@ -310,11 +310,19 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   }
   const modelCatalog = deps.modelCatalog ?? new ModelCatalog({
     cacheDir: join(resolveMorrowHome(process.env), "catalog"),
-    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || null,
+    // Default public metadata source. Provider discovery still solely decides
+    // account availability; catalog rows supply capabilities only.
+    remoteUrl: process.env.MORROW_MODEL_CATALOG_URL?.trim() || "https://models.dev/api.json",
     bundledModels: BUILT_IN_MODELS,
   });
-  installModelCatalog(modelCatalog.current().models);
-  void modelCatalog.refresh().then((snapshot) => installModelCatalog(snapshot.models)).catch(() => undefined);
+  installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, modelCatalog.current().models));
+  // Catalog refresh is operator-triggered. Starting a Private Local session
+  // must not make an outbound metadata request before any routing choice.
+  const refreshModelCatalog = async () => {
+    const snapshot = await modelCatalog.refresh();
+    installModelCatalog(mergeModelCatalog(BUILT_IN_MODELS, snapshot.models));
+    return snapshot;
+  };
   const intelligenceRepo = intelligenceRepository(deps.db);
   const cortexService = new CortexService({
     repo: intelligenceRepo,
@@ -485,6 +493,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       apiVersion: 1,
       mockProvider: process.env.MOCK_PROVIDER === "true",
       ownerPid: process.pid,
+      // Which install this service belongs to. A packaged launcher checks this
+      // before adopting an already-healthy service on its port: without it,
+      // "something answers /api/health" was the whole test, so a freshly
+      // installed build would silently drive an unrelated orchestrator from
+      // another install or worktree — and every check run against it would be
+      // measuring the wrong code.
+      serviceRoot: process.env.MORROW_HOME ?? null,
+      serviceEntry: process.argv[1] ?? null,
       migrations: { applied: Number(row.applied), latest: row.latest },
       time: new Date().toISOString(),
     };
@@ -2340,11 +2356,15 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       throw new ApiError(400, `Provider "${providerId}" does not support subscription OAuth.`, "OAUTH_UNSUPPORTED");
     }
     const body = z.object({ code: z.string().min(1).max(8192) }).strict().parse((request.body ?? {}) as unknown);
+    let result;
     try {
-      return await exchangeCode(providerId, body.code, process.env);
+      result = await exchangeCode(providerId, body.code, process.env);
     } catch (e: any) {
       throw new ApiError(400, e?.message || "Failed to complete sign-in.", "OAUTH_EXCHANGE_FAILED");
     }
+    const authMode = listProviderStatuses().find((item) => item.id === providerId)?.authMode;
+    void refreshProviderModelDiscovery(providerId as ProviderId, authMode);
+    return result;
   });
 
   // Sign out: remove stored tokens for a provider.
@@ -2387,7 +2407,8 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const parsed = ProviderIdSchema.safeParse(providerId);
     if (!parsed.success) throw new ApiError(400, `Unknown provider: ${providerId}`, "INVALID_PROVIDER");
     const id = parsed.data;
-    if (!providerEnvMapping(id)) {
+    const mapping = providerEnvMapping(id);
+    if (!mapping) {
       throw new ApiError(400, `Provider "${id}" cannot be configured in-app.`, "PROVIDER_NOT_CONFIGURABLE");
     }
     if (!deps.secretsFile) {
@@ -2411,6 +2432,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined && body.endpointContextLimit === undefined) {
       throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
     }
+    // OpenRouter's own pinned-endpoint rejection must win over the generic
+    // "this provider has no baseUrlEnv" check below — OpenRouter has no
+    // baseUrlEnv precisely because its endpoint is pinned, so the generic
+    // check would otherwise always fire first and the more specific, more
+    // informative OpenRouter message would be unreachable.
+    if (id === "openrouter" && body.baseUrl !== undefined) {
+      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
+    }
+    if (body.baseUrl !== undefined && !mapping.baseUrlEnv) {
+      throw new ApiError(400, `Provider "${id}" does not support a custom endpoint.`, "CUSTOM_ENDPOINT_UNSUPPORTED");
+    }
     if (body.baseUrl !== undefined && body.baseUrl.trim() !== "") {
       try {
         const u = new URL(body.baseUrl.trim());
@@ -2418,9 +2450,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       } catch {
         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
       }
-    }
-    if (id === "openrouter" && body.baseUrl !== undefined) {
-      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
     }
     let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
     let validatedCredentialIdentity: string | null = null;
@@ -2446,7 +2475,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     // connected — or while the network happens to be down.
     const touchesCredential = body.apiKey !== undefined || body.baseUrl !== undefined;
     const candidateEnv = touchesCredential ? buildProviderCandidateEnv(id, body, process.env) : process.env;
-    const mapping = providerEnvMapping(id);
     // Ask the credential layer directly rather than going through provider
     // status: status gates `configured` on stored model discovery matching the
     // credential, which is false for a brand-new candidate key and would skip
@@ -2588,6 +2616,17 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
   app.get("/api/models", async () => {
     const statuses = listProviderStatuses();
     return resolveModelStatuses(statuses, providerModelDiscovery.list());
+  });
+
+  // Explicit refresh makes public catalog egress visible to the operator. It
+  // is deliberately not a startup side effect so local-only mode stays local.
+  app.post("/api/models/refresh", async () => {
+    try {
+      const snapshot = await refreshModelCatalog();
+      return { ...snapshot, refreshed: true };
+    } catch {
+      throw new ApiError(502, "Model catalog refresh failed; cached metadata remains active.", "MODEL_CATALOG_REFRESH_FAILED");
+    }
   });
 
   /**

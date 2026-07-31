@@ -1123,8 +1123,8 @@ export const migrations:Migration[]=[
   ,{id:36,name:"durable_mission_execution_route",sql:`
     ALTER TABLE missions ADD COLUMN execution_json TEXT NOT NULL
       DEFAULT '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}';
-  `}
-  ,{id:37,name:"mission_idempotency_keys",sql:`
+  `},
+  {id:37,name:"mission_idempotency_keys",sql:`
     ALTER TABLE missions ADD COLUMN idempotency_key TEXT;
     CREATE UNIQUE INDEX missions_idempotency_key_idx ON missions(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
   `}
@@ -1136,6 +1136,31 @@ export const migrations:Migration[]=[
   `}
   ,{id:39,name:"task_idempotency_fingerprint",sql:`
     ALTER TABLE tasks ADD COLUMN idempotency_fingerprint TEXT;
+  `}
+  // ── Migration 40 ────────────────────────────────────────────────────────
+  // Artifact-backed externalization for oversized tool results (§3+§4). When
+  // a tool result exceeds the inline byte limit, the agent stores the complete
+  // content in `tool_artifacts` (durable, hash-indexed for dedup) and
+  // references it by id in the next provider request. The agent no longer
+  // inlines a 24 KB head/tail fragment into every future turn; instead the
+  // model sees a small metadata ref and can `read_artifact` to fetch ranges.
+  ,{id:40,name:"tool_artifacts",sql:`
+    CREATE TABLE tool_artifacts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT,
+      tool_name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT 'text/plain',
+      bytes INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      excerpt TEXT NOT NULL,
+      content BLOB NOT NULL,
+      refcount INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX tool_artifacts_task_idx ON tool_artifacts(task_id, created_at DESC);
+    CREATE INDEX tool_artifacts_hash_idx ON tool_artifacts(content_hash, kind, content_type);
   `}
 ];
 export function openDatabase(file:string){

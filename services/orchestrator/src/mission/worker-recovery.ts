@@ -19,7 +19,7 @@ export interface WorkerRecoveryInput {
   reason: string | null;
   message: string;
   provider: ProviderFailureDetails | null;
-  priorDecisions: Array<Pick<MissionRecoveryDecision, "category">>;
+  priorDecisions: Array<Pick<MissionRecoveryDecision, "category" | "action" | "nextStrategyFingerprint">>;
   alternateProviders: number;
   allowProviderSwitch?: boolean;
   allowModelSwitch?: boolean;
@@ -100,15 +100,84 @@ function actionFor(
   }
 }
 
+/**
+ * A fingerprint of the strategy itself, not of the worker that ran it.
+ *
+ * `worker:<taskId>` identified a *task*, and every retry gets a fresh task id,
+ * so two identical strategies never produced matching fingerprints and
+ * stagnation was undetectable by construction. Encoding the category, the
+ * action, and the substitution the action intends means "retry the same
+ * provider again" and "switch provider" are distinguishable, and repeating one
+ * is visible as a repeat.
+ */
+export function strategyFingerprint(
+  category: MissionRecoveryCategory,
+  action: MissionRecoveryAction,
+  detail: string | null,
+): string {
+  return `strategy:${category}:${action}${detail ? `:${detail}` : ""}`;
+}
+
+/**
+ * Escalation order used when the selected strategy would repeat one already
+ * tried for this category. Each step is a materially different approach —
+ * a different provider, a different model, a smaller context, a different plan,
+ * a restored checkpoint — ending in an explicit stop.
+ */
+function escalate(input: WorkerRecoveryInput, tried: ReadonlySet<string>, category: MissionRecoveryCategory):
+  { action: MissionRecoveryAction; next: string | null; retryCondition: string | null; exhausted: boolean } | null {
+  const ladder: Array<{ action: MissionRecoveryAction; next: string; permitted: boolean }> = [
+    { action: "switch_provider", next: "provider:fallback", permitted: input.allowProviderSwitch !== false && input.alternateProviders > 0 },
+    { action: "switch_model", next: "model:available-alternative", permitted: input.allowModelSwitch !== false },
+    { action: "compact_context", next: "context:compact", permitted: true },
+    { action: "replan", next: "worker:alternate-strategy", permitted: true },
+    { action: "restore_checkpoint", next: "worker:replacement", permitted: true },
+  ];
+  for (const step of ladder) {
+    if (!step.permitted) continue;
+    if (tried.has(strategyFingerprint(category, step.action, step.next))) continue;
+    return { action: step.action, next: step.next, retryCondition: null, exhausted: false };
+  }
+  return null;
+}
+
 export function decideWorkerRecovery(input: WorkerRecoveryInput): ControllerRecovery {
   const category = categoryFor(input);
-  const attempt = input.priorDecisions.filter((decision) => decision.category === category).length + 1;
-  const selected = actionFor(category, input, attempt);
+  const priorForCategory = input.priorDecisions.filter((decision) => decision.category === category);
+  const attempt = priorForCategory.length + 1;
+  const tried = new Set(priorForCategory.map((decision) =>
+    decision.nextStrategyFingerprint ?? strategyFingerprint(category, decision.action, null)));
+
+  let selected = actionFor(category, input, attempt);
+  let fingerprint = selected.next === null ? null : strategyFingerprint(category, selected.action, selected.next);
+  let escalated = false;
+
+  // Never re-dispatch a strategy this category already tried. `await_retry_condition`
+  // is the one exception: waiting out a provider cooldown is the correct response
+  // to a second rate limit, and it is bounded by MAX_AUTOMATIC_ATTEMPTS.
+  if (fingerprint && tried.has(fingerprint) && selected.action !== "await_retry_condition") {
+    const alternative = escalate(input, tried, category);
+    if (alternative) {
+      selected = alternative;
+      escalated = true;
+    } else {
+      selected = { action: "block_precisely", next: null, retryCondition: null, exhausted: true };
+    }
+    fingerprint = selected.next === null ? null : strategyFingerprint(category, selected.action, selected.next);
+  }
+
+  const stagnation = escalated
+    ? " Previous strategy repeated without progress; escalated to a materially different approach."
+    : selected.exhausted && attempt > MAX_AUTOMATIC_ATTEMPTS
+      ? " No materially different automatic strategy remains."
+      : "";
   return {
     category,
-    diagnosis: `${input.message || `Worker ended ${input.status}.`} (automatic recovery attempt ${attempt}/${MAX_AUTOMATIC_ATTEMPTS})`.slice(0, 2_000),
-    failedStrategyFingerprint: `worker:${input.taskId}`,
-    nextStrategyFingerprint: selected.next,
+    diagnosis: `${input.message || `Worker ended ${input.status}.`} (automatic recovery attempt ${attempt}/${MAX_AUTOMATIC_ATTEMPTS})${stagnation}`.slice(0, 2_000),
+    // What we are moving away from: the strategy the last attempt chose.
+    failedStrategyFingerprint: priorForCategory.at(-1)?.nextStrategyFingerprint
+      ?? strategyFingerprint(category, "retry_same_provider", `worker:${input.taskId}`),
+    nextStrategyFingerprint: fingerprint,
     action: selected.action,
     retryCondition: selected.retryCondition,
     exhausted: selected.exhausted,

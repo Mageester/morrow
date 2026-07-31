@@ -56,6 +56,23 @@ encryption.
 Provider status exposes only `configured`, the default model, and the endpoint
 *host*.
 
+## Model availability and capability metadata
+
+Provider discovery and model metadata are separate facts. A successful
+authenticated provider `/models` response proves that a model is available to
+that account; it does not supply context or output limits when that endpoint
+omits them. On startup Morrow loads a local cache. An operator can explicitly
+refresh normalized capability metadata from `https://models.dev/api.json` over
+HTTPS through `POST /api/models/refresh`; redirects are rejected. Bundled
+metadata remains offline seed data only. Cached catalog data is atomically
+updated and retained when refresh fails.
+
+For example, OpenCode Go can report that `glm-5.2` is available while models.dev
+supplies its context window and maximum output. Morrow labels that combination
+as live availability plus remote-catalog metadata. An unmatched model remains
+usable only with an explicit unverified conservative fallback; Morrow does not
+present that fallback as an authoritative model limit.
+
 For OpenRouter specifically, possession of a value is not reported as
 `configured`: Morrow reports connected/configured only after an authenticated
 `GET /api/v1/models/user` succeeds. The server normalizes the returned account

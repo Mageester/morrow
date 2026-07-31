@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSyn
 import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canAdoptServicePid, classify, isMorrowHealth, needsService } from "./dispatch.mjs";
+import { canAdoptServicePid, classify, isMorrowHealth, needsService, serviceOwnership } from "./dispatch.mjs";
 
 const app = dirname(fileURLToPath(import.meta.url));
 const install = dirname(app);
@@ -24,7 +24,10 @@ const cliEntry = join(app, "orchestrator", "cli", "bin", "morrow.mjs");
 const pidFile = join(data, "morrow.pid");
 const logFile = join(logs, "orchestrator.log");
 const host = "127.0.0.1";
-const port = 4317;
+// Fixed by default so `morrow` always finds its own service. MORROW_PORT lets a
+// second install (a release candidate being validated, a portable copy) run
+// beside an existing one instead of colliding on the shared port.
+const port = Number.parseInt(process.env.MORROW_PORT ?? "", 10) > 0 ? Number.parseInt(process.env.MORROW_PORT, 10) : 4317;
 const url = `http://${host}:${port}`;
 /**
  * The bundled web UI's address, or null when this package has no web bundle.
@@ -88,6 +91,38 @@ function printUninstallHelp() {
   console.log(`Morrow uninstall\n\nUsage:\n  morrow uninstall [--yes] [--purge-data | --keep-data]\n\nBehavior:\n  - stops the running Morrow service\n  - removes launcher/shim from PATH\n  - removes Start Menu and Desktop shortcuts\n  - removes app/runtime files\n  - interactively asks whether to also delete ALL your data (conversations,\n    memory, provider keys, backups, logs, cache)\n  - preserves user data by default\n\nOptions:\n  --yes         do not prompt; keep data unless --purge-data is also given\n  --purge-data  delete local user data as well (no prompt)\n  --keep-data   keep local user data (no prompt)`);
 }
 
+/**
+ * Ensure the service backing this install is the one on our port.
+ *
+ * Adopting "anything healthy" meant a newly installed build could silently be
+ * driven by an unrelated orchestrator — another install, or a dev worktree
+ * left running — so every command and every packaged check would exercise the
+ * wrong code while looking perfectly healthy.
+ */
+async function ensureOwnService() {
+  const state = await health();
+  const ownership = serviceOwnership(state, { dataDir: data, entry });
+  if (ownership === "ours") return;
+  if (ownership === "foreign") {
+    throw new Error(
+      `Port ${port} is serving a different Morrow install (pid ${state.ownerPid ?? "unknown"}${state.serviceRoot ? `, data ${state.serviceRoot}` : ""}).\n` +
+      `  This install would otherwise run against that service and report results for the wrong build.\n` +
+      `  Stop it with its own \`morrow stop\`, or run this install on another port: set MORROW_PORT.`
+    );
+  }
+  if (ownership === "undecidable") {
+    // An older service that does not report its install. Fall back to the same
+    // OS-level identity check `stop` already uses.
+    const ownerPid = Number.isSafeInteger(state?.ownerPid) ? state.ownerPid : 0;
+    if (ownerPid > 0 && processOwnsPackagedService(ownerPid)) return;
+    throw new Error(
+      `Port ${port} is serving a Morrow service that does not belong to this install.\n` +
+      `  Stop it first, or run this install on another port: set MORROW_PORT.`
+    );
+  }
+  await start();
+}
+
 async function start() {
   if (await healthy()) return console.log(readyMessage("Morrow is already running"));
   if (!existsSync(runtime)) throw new Error("Bundled Node runtime is missing. Run the installer again.");
@@ -95,7 +130,10 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, NODE_ENV: "production" } });
+  // PORT must be passed explicitly: the launcher may be running on MORROW_PORT,
+  // and a service that defaulted back to 4317 would never be found by its own
+  // launcher (and would collide with whatever is already there).
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, MORROW_BIND_HOST: host, PORT: String(port), NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());
@@ -147,7 +185,22 @@ function processOwnsPackagedService(value) {
     return false;
   }
 }
-async function status() { const ok = await healthy(); console.log(ok ? readyMessage("Morrow is running") : "Morrow is stopped."); process.exitCode = ok ? 0 : 1; }
+async function status() {
+  const state = await health();
+  const ownership = serviceOwnership(state, { dataDir: data, entry });
+  if (ownership === "ours") { console.log(readyMessage("Morrow is running")); process.exitCode = 0; return; }
+  if (ownership === "not-morrow") { console.log("Morrow is stopped."); process.exitCode = 1; return; }
+  // Reporting a foreign or unidentifiable service as "running" is how a user
+  // ends up believing this install is serving them when it is not.
+  const ownerPid = Number.isSafeInteger(state?.ownerPid) ? state.ownerPid : 0;
+  if (ownership === "undecidable" && ownerPid > 0 && processOwnsPackagedService(ownerPid)) {
+    console.log(readyMessage("Morrow is running"));
+    process.exitCode = 0;
+    return;
+  }
+  console.log(`Morrow is stopped. Port ${port} is serving a different Morrow install${ownerPid ? ` (pid ${ownerPid})` : ""}.`);
+  process.exitCode = 1;
+}
 async function uninstall() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) { printUninstallHelp(); return; }
   let purgeData = process.argv.includes("--purge-data") || process.argv.includes("--purge");
@@ -194,7 +247,7 @@ try {
 
   // Product commands and the interactive shell need the service up first; the
   // launcher owns starting it so the delegated CLI always finds it healthy.
-  if (needsService(action) && !(await healthy())) await start();
+  if (needsService(action)) await ensureOwnService();
 
   switch (action) {
     case "meta":

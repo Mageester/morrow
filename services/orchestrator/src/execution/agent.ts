@@ -30,11 +30,12 @@ import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs 
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
-import { repairAndParseToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
+import { repairAndParseToolArguments, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { processesRepository } from "../repositories/processes.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
 import { missionsRepository } from "../repositories/missions.js";
+import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, MAX_CHAT_IMAGE_BYTES, type ChatImage } from "../provider/base.js";
@@ -47,11 +48,14 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
 import { providerRouteFingerprint } from "../routing/effective-context.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import { resolveRequestUsage, accumulateUsage, EMPTY_CUMULATIVE_USAGE, type CumulativeUsage, type RequestUsage } from "../routing/usage-snapshot.js";
+import { toolArtifactsRepository } from "../repositories/tool-artifacts.js";
+import { collectOfferedArtifactIds, externalizeToolResult, readArtifactRange, renderExternalizedForContext } from "./artifact-externalization.js";
 import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, ReasoningConfiguration, LearnedSkill, MissionProgressObservation } from "@morrow/contracts";
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
@@ -302,9 +306,29 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
   return { languages: [...languages], frameworks: [...frameworks] };
 }
 
-function capToolResult(toolName: string, result: string): string {
+/**
+ * Tools a read-only (`ask`) turn may see. Module scope so the context-budget
+ * tool count is derived from this one list instead of a hand-maintained
+ * literal that silently drifts whenever a read-only tool is added.
+ */
+const READ_ONLY_TOOL_NAMES = new Set([
+  "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
+  "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
+]);
+
+function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
   if (bytes <= TOOL_RESULT_BYTE_LIMIT) return result;
+  // Â§3+Â§4: when the tool result is larger than the inline limit, store the
+  // complete content in the durable tool_artifacts store and return a small
+  // metadata reference (id, hash, excerpt, retrieval hint) for the model.
+  // The full payload no longer poisons future turns. Identical content
+  // (same hash + kind) deduplicates into a single row with an incremented
+  // refcount. The fallback (no externalizer wired) is the legacy head/tail
+  // fragment, retained only for tests.
+  if (externalizer) {
+    return externalizer(result, toolName);
+  }
   try {
     const parsed = JSON.parse(result) as any;
     if (Array.isArray(parsed.entries)) {
@@ -591,6 +615,12 @@ export async function executeAgentChatTask({
   // failure ledger (loop detection, recovery ladder, /failures). Non-mission
   // tasks get a no-op reporter.
   const taskMissionId = (task as { missionId?: string | null }).missionId ?? null;
+  // Capture a single mission-repository handle for the checkpoint-emit path
+  // (L2214 area). The MissionService instance created for the
+  // mission-failures reporter uses the same repo; reusing it here keeps the
+  // checkpoint/rollover events on the same durable log the activity panel
+  // already reads.
+  const missionRepo = taskMissionId ? missionsRepository(db) : null;
   const missionFailures = createMissionToolFailureReporter({
     service: taskMissionId
       ? new MissionService({
@@ -855,7 +885,7 @@ export async function executeAgentChatTask({
     },
     presetContextBudgetBytes: contextBytesLimit,
     outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
-    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : 11,
+    toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
   });
   const primaryRouteFingerprint = providerRouteFingerprint({
     providerId: providerType,
@@ -866,6 +896,16 @@ export async function executeAgentChatTask({
     endpointIdentityHash: primaryRoute.endpointIdentityHash,
   });
 
+  // A route the user pinned (`--provider` and/or `--model`, persisted as
+  // decision.overridden) is a instruction, not a preference. Alternate stream
+  // candidates are constructed with `createProvider(id, env)` and served with
+  // `getProviderDefaultModel(id)`, so leaving them in place meant a request for
+  // a specific model could be answered by a different provider running a
+  // different model with nothing surfaced but a `provider.fallback` event.
+  // A pinned route therefore has exactly one candidate; when it cannot serve
+  // the turn, the task fails with the typed provider outcome instead.
+  const routePinned = routing?.decision.overridden === true;
+
   // Stream candidates for live fallback: the primary first, then any injected
   // fallbacks (tests) or â€” on the real registry path â€” every other *configured*
   // routing candidate, in order. A candidate we cannot construct is skipped.
@@ -875,13 +915,39 @@ export async function executeAgentChatTask({
       streamCandidates.push({ id: ((fp as { id?: ProviderId }).id ?? `fallback-${i}`) as string, provider: fp });
     });
   } else if (!provider && providerType !== "mock") {
-    for (const cand of routing?.decision.candidates ?? []) {
-      if (!cand.configured || cand.providerId === providerType || cand.providerId === "mock") continue;
+    for (const candidateId of eligibleFallbackProviderIds({ pinned: routePinned, primaryProviderId: providerType, candidates: routing?.decision.candidates })) {
       try {
-        streamCandidates.push({ id: cand.providerId, provider: createProvider(cand.providerId, process.env) });
+        streamCandidates.push({ id: candidateId, provider: createProvider(candidateId, process.env) });
       } catch {
         /* unconfigurable candidate (e.g. missing key) â€” skip it */
       }
+    }
+  }
+
+  // Durable route evidence: what was asked for, what was resolved, and whether
+  // this run is allowed to substitute anything. Recorded before the first
+  // provider call so the answer survives a crash and a later review can tell a
+  // pinned route from an automatically chosen one.
+  event("provider.route_selected", {
+    presetId: routing?.decision.presetId ?? null,
+    providerId: providerType,
+    model: contextModel,
+    pinned: routePinned,
+    overridden: routing?.decision.overridden ?? false,
+    fallbackUsed: routing?.decision.fallbackUsed ?? false,
+    alternateCandidates: streamCandidates.slice(1).map((candidate) => candidate.id),
+  });
+  if (taskMissionId) {
+    try {
+      missionsRepository(db).appendEvent(
+        taskMissionId,
+        "mission.route_selected",
+        `${routePinned ? "Pinned" : "Resolved"} route: ${providerType} / ${contextModel}`,
+        { taskId, providerId: providerType, model: contextModel, pinned: routePinned, alternateCandidates: streamCandidates.slice(1).map((candidate) => candidate.id) },
+        now(),
+      );
+    } catch {
+      // Route evidence is durable bookkeeping; it must never block execution.
     }
   }
 
@@ -1128,6 +1194,19 @@ export async function executeAgentChatTask({
       }
     },
     {
+      name: "read_artifact",
+      description: "Read a byte range of an oversized tool result Morrow stored as an artifact. When a tool result is returned as an artifact reference, call this with that artifactId to read the sections you need. Returns at most 16 KB per call; use offset to page through.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The artifactId reported in an earlier tool result" },
+          offset: { type: "number", description: "Byte offset to start at (default 0)" },
+          length: { type: "number", description: "Bytes to return (default and maximum 16384)" }
+        },
+        required: ["id"]
+      }
+    },
+    {
       name: "load_skill",
       description: "Load the full instructions for a skill by ID. After finding a relevant skill with find_skill, call this to read its complete workflow and follow its instructions step by step.",
       parameters: {
@@ -1229,9 +1308,6 @@ export async function executeAgentChatTask({
   // The exposed tool set is dictated by the mode. Inspect (read-only) never
   // sees run_command/propose_patch; plan-only sees nothing; only agent mode
   // exposes execution and write tools.
-  const READ_ONLY_TOOL_NAMES = new Set([
-    "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols", "git_status", "git_diff", "git_log", "find_skill", "load_skill",
-  ]);
   // Load conversation messages before this task's assistant message
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
@@ -1916,6 +1992,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
+  // Artifact ids this task was actually handed. `read_artifact` serves only
+  // these, so a task can never enumerate the store or reach another task's
+  // captured output. Seeded from durable tool results below so the permission
+  // survives a restart exactly as it survives a turn.
+  const offeredArtifactIds = new Set<string>();
   const patchFailureCountsByHash = new Map<string, number>();
   // Failed diff attempts keyed by TARGET FILE (not patch hash). A model that
   // keeps emitting differently-broken diffs for the same file never trips the
@@ -2145,6 +2226,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+  for (const id of collectOfferedArtifactIds(finalToolCalls.map((call) => call.resultJson ?? ""))) offeredArtifactIds.add(id);
   const durableTurns = continuity.listProviderTurns(taskId);
   absoluteTurn = durableTurns.length;
   if (durableTurns.length > 0) {
@@ -2315,6 +2397,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       ...currentFence(),
       now: now(),
     });
+    // Â§5+Â§6: when this checkpoint is part of a mission, emit a durable
+    // mission event so the activity panel and decision log show the rollover.
+    // Two distinct kinds are emitted so the UI can collapse the high-frequency
+    // "context checkpoint" events while still showing "rollover" as a
+    // first-class transition.
+    if (missionRepo && taskMissionId) {
+      try {
+        const eventType = phase === "context_compaction" ? "mission.checkpoint_created" : "mission.checkpoint_created";
+        const summary = phase === "context_compaction"
+          ? "Context checkpoint created; large outputs externalized; continuing in a fresh execution session"
+          : `Execution checkpoint (${phase})`;
+        missionRepo.appendEvent(taskMissionId, eventType, summary, {
+          taskId,
+          segmentId: currentSegment.id,
+          checkpointId,
+          phase,
+          decision: "Continuing in a fresh execution session",
+          currentPhase: snapshot.currentPhase,
+          completedWorkCount: snapshot.completedWork.length,
+          filesChangedCount: snapshot.filesChanged.length,
+          unresolvedFailuresCount: snapshot.unresolvedFailures.length,
+        }, now());
+      } catch {
+        // Best-effort: a failed event append must not block the checkpoint.
+      }
+    }
     executionCheckpointIds.push(checkpointId);
     return checkpointId;
   };
@@ -2745,7 +2853,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             limitSource: route.endpointLimitSource,
           },
           outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
-          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : 11,
+          toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
         });
         const routeFingerprint = providerRouteFingerprint({
           providerId: candidate.id,
@@ -3198,7 +3306,40 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
-        if (loop.looping && !loopDetected) loopDetected = { signature: loop.signature, count: loop.count };
+        if (loop.looping && !loopDetected) {
+          loopDetected = { signature: loop.signature, count: loop.count };
+          // Â§7: when a tool-call signature repeats past the threshold, stop
+          // retrying the same operation. Classify the failure, derive a
+          // recovery plan, and emit a single decision event so the activity
+          // panel shows the diagnosis + next action instead of a flood of
+          // identical rows.
+          if (missionRepo && taskMissionId) {
+            try {
+              const category = categorizeFailure(tc.name, `repeated tool call signature=${loop.signature} count=${loop.count}`);
+              const signature = normalizeSignature(category, loop.signature);
+              const recovery = planRecovery(category, loop.count, 4);
+              missionRepo.appendEvent(taskMissionId, "mission.loop_detected", `Repeated ${tc.name} (${loop.count}Ã—) â€” strategy switch`, {
+                toolName: tc.name,
+                toolCallSignature: loop.signature,
+                normalizedSignature: signature,
+                count: loop.count,
+                category,
+                decision: recovery.strategy,
+                steps: recovery.steps,
+                exhausted: recovery.exhausted,
+                evidence: {
+                  toolName: tc.name,
+                  count: loop.count,
+                  window: loop.count,
+                  message: `${tc.name} repeated ${loop.count} times without a different signature; bounded retry limit reached.`,
+                },
+                nextAction: recovery.steps[0] ?? "Stop retrying this tool call",
+              }, now());
+            } catch {
+              // Best-effort: a logging failure must not block the loop detector.
+            }
+          }
+        }
         const toolStartedAt = Date.now();
         event("tool.started", { id: tc.id, toolName: tc.name, ...displayTarget(tc.name, tc.arguments) });
 
@@ -3231,7 +3372,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });
           }
-          args = parsedArgs.value;
+          // One explicit normalization boundary, between parsing and
+          // validation: bring an unambiguous call to the tool's declared shape
+          // (alias field names, lines-as-array content, a single file given as
+          // a bare string) without changing what it means. Everything after
+          // this point â€” required fields, types, absolute-path refusal â€” is
+          // validated exactly as strictly as before.
+          const normalized = normalizeToolArguments(tc.name, parsedArgs.value);
+          args = normalized.args;
+          if (normalized.applied.length > 0) {
+            event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });
+          }
 
           // Reject required-field, wrong-type, and absolute-path defects for the
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
@@ -3927,6 +4078,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               });
               resultStr = await executeApprovedTool("create_directory", dirArgs, tc.id);
             }
+          } else if (tc.name === "read_artifact") {
+            // Read-only retrieval of Morrow's own already-captured tool output,
+            // restricted to the artifact ids this task was shown. No approval:
+            // the bytes were produced by a tool call the user already approved.
+            const read = readArtifactRange(toolArtifactsRepository(db), offeredArtifactIds, args);
+            if (!read.ok) throw new AgentToolFailure(read.error, { error: read.error, kind: "artifact_not_readable", toolName: tc.name });
+            resultStr = JSON.stringify(read.payload);
           } else if (tc.name === "find_skill" || tc.name === "load_skill") {
             // Read-only skill discovery/loading: no approval needed. (These were
             // advertised to the model but never dispatched here, so the model's
@@ -3970,7 +4128,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
         }
 
-        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr) : resultStr;
+        // Â§3+Â§4: oversized tool results are stored in the durable tool_artifacts
+        // store and the model receives a small metadata reference instead of
+        // the full payload. The next turn re-references the artifact (refcount
+        // increments) rather than re-inlining the bytes, so a 100 KB build log
+        // can never poison the request budget again.
+        const externalizer = (text: string, kind: string): string => {
+          const repo = toolArtifactsRepository(db);
+          const result = externalizeToolResult(repo, text, {
+            toolName: tc.name,
+            kind,
+            contentType: "application/json",
+            taskId,
+            now: now(),
+          });
+          // Handing the model a reference is what authorizes reading it back.
+          if (result.kind === "artifact") offeredArtifactIds.add(result.id);
+          return renderExternalizedForContext(result);
+        };
+        const contextResultStr = isSuccess ? capToolResult(tc.name, resultStr, externalizer) : resultStr;
         if (isSuccess && !repeatedTool) toolResultBytesBySignature.set(toolSignature, Buffer.byteLength(contextResultStr, "utf8"));
 
         // Complete tool call record. The database keeps raw output for /output;

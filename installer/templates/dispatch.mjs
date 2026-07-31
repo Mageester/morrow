@@ -56,6 +56,30 @@ export function isMorrowHealth(value) {
   return Boolean(value && value.ok === true && value.service === "morrow-orchestrator" && value.apiVersion === 1);
 }
 
+/**
+ * Whether a healthy service on our port is OUR service.
+ *
+ * `isMorrowHealth` only asks "is something speaking the Morrow API here?".
+ * Every Morrow install and every dev worktree answers yes on the same fixed
+ * port, so a launcher that adopted anything healthy would silently drive an
+ * unrelated orchestrator — and every command, test, and packaged proof run
+ * against it would be measuring a different build than the one installed.
+ *
+ * The service reports its data root and entry script. Matching either proves
+ * the same install. When both are absent the service predates this field and
+ * we cannot tell; `undecidable` lets the caller fall back to an OS-level pid
+ * check rather than guess.
+ */
+export function serviceOwnership(health, expected) {
+  if (!isMorrowHealth(health)) return "not-morrow";
+  const root = typeof health.serviceRoot === "string" ? health.serviceRoot : null;
+  const entry = typeof health.serviceEntry === "string" ? health.serviceEntry : null;
+  if (root === null && entry === null) return "undecidable";
+  const same = (a, b) => typeof a === "string" && typeof b === "string"
+    && a.replace(/[\\/]+$/, "").toLowerCase() === b.replace(/[\\/]+$/, "").toLowerCase();
+  return same(root, expected.dataDir) || same(entry, expected.entry) ? "ours" : "foreign";
+}
+
 /** Return an adoptable owner pid only when both the API and OS process agree. */
 export function canAdoptServicePid(health, processIdentityMatches) {
   if (!isMorrowHealth(health) || !processIdentityMatches) return 0;

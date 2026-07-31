@@ -51,6 +51,48 @@ export function isBuiltInIgnoredPath(path: string): boolean {
   return parts.some((part, index) => isBuiltInIgnoredName(part, index < parts.length - 1));
 }
 
+/**
+ * Directories whose contents are machine-generated: installed dependencies,
+ * build output, and caches.
+ *
+ * This is an explicit list rather than a reuse of `IGNORED_DIR_NAMES`, which
+ * exists for *discovery* and also covers `.git`, `.morrow`, and `.hermes`.
+ * Those are the opposite of noise in change tracking — a write under
+ * `.morrow/` is precisely what the Guardian's protected-path check exists to
+ * catch, and filtering it here would hide a leaked secret from review.
+ */
+const GENERATED_DIR_NAMES = new Set([
+  "node_modules", "bower_components", "vendor",
+  "dist", "build", "out",
+  ".next", ".nuxt", ".svelte-kit", ".turbo", ".cache", ".vite",
+  "coverage", "target",
+  ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+  ".pnpm-store",
+]);
+
+/**
+ * Machine-generated debris that must never be presented as a change the
+ * mission made: installed dependencies, build output, caches, and captured
+ * media such as verification screenshots.
+ *
+ * Deliberately narrower than `isBuiltInIgnoredPath` in two ways. Lockfiles
+ * stay visible — a changed `package-lock.json` is a real, reviewable
+ * consequence of the work. And security-relevant directories stay visible, so
+ * change tracking can never conceal a write that review must see.
+ */
+export function isGeneratedArtifactPath(path: string): boolean {
+  const parts = normalizePath(path).split("/").filter(Boolean);
+  if (parts.length === 0) return false;
+  for (let index = 0; index < parts.length - 1; index++) {
+    if (GENERATED_DIR_NAMES.has(parts[index]!.toLowerCase())) return true;
+  }
+  const leaf = parts[parts.length - 1]!.toLowerCase();
+  // A trailing directory name (paths ending in "/") is still a directory.
+  if (path.endsWith("/") || path.endsWith("\\")) return GENERATED_DIR_NAMES.has(leaf);
+  const dot = leaf.lastIndexOf(".");
+  return dot > 0 && IGNORED_EXTENSIONS.has(leaf.slice(dot));
+}
+
 // ── .gitignore matcher ────────────────────────────────────────────────
 //
 // We implement a minimal but correct .gitignore matcher that handles:

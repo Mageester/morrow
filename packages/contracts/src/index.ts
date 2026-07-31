@@ -2,7 +2,7 @@ import { z } from "zod";
 export const SchemaVersionSchema=z.literal(1);
 export const ProviderIdSchema=z.enum([
   // Internal / bespoke adapters (native protocols, OAuth, or special handling).
-  "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","ollama",
+  "deterministic-local","mock","openai","anthropic","gemini","openrouter","deepseek","openai-compatible","opencode-go","ollama",
   // Catalog providers — all OpenAI-compatible. Kept in sync with
   // services/orchestrator/src/provider/catalog.ts (a test asserts both lists match).
   "opencode-zen","vercel-ai-gateway","github-models",
@@ -30,7 +30,7 @@ export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled"
 export const CreateWorktreeSchema=z.object({name:z.string().trim().min(1).max(81).optional(),taskId:z.string().optional(),agentId:z.string().optional(),baseRef:z.string().trim().min(1).max(200).optional()}).strict();
 export type CreateWorktreeInput=z.infer<typeof CreateWorktreeSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
-export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.fallback","provider.rate_limited","provider.usage","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
+export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.arguments_normalized","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.route_selected","provider.fallback","provider.rate_limited","provider.usage","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
@@ -105,7 +105,7 @@ export const ProviderAuthStatusSchema=z.enum(["configured","missing","not-applic
 export const ProviderCategorySchema=z.enum(["assistant","gateway","frontier","inference","local","custom","testing"]);
 export const ProviderAuthModeSchema=z.enum([
   "openai-api-key","codex-oauth","anthropic-api-key","anthropic-oauth","gemini-api-key",
-  "openrouter-api-key","deepseek-api-key","opencode-zen","ollama","custom-compatible","mock","unknown",
+  "openrouter-api-key","deepseek-api-key","opencode-zen","opencode-go-api-key","ollama","custom-compatible","mock","unknown",
   // Catalog providers: an API key over an OpenAI-compatible endpoint, or a
   // keyless local server the user points Morrow at.
   "catalog-api-key","catalog-local",
@@ -804,6 +804,12 @@ export const HealthSchema=z.object({
   // The CLI uses this only for a local service to recover an interrupted or
   // deleted pid file. It is intentionally not a credential or user identifier.
   ownerPid:z.number().int().positive().optional(),
+  // Install identity, so a launcher can tell "a Morrow is running here" from
+  // "MY Morrow is running here" before adopting the service on its port.
+  // Local paths, never sent anywhere: the launcher and the service are the
+  // same machine by construction.
+  serviceRoot:z.string().nullable().optional(),
+  serviceEntry:z.string().nullable().optional(),
   migrations:z.object({applied:z.number().int(),latest:z.number().int().nullable()}).strict(),
   time:z.string(),
 }).strict();
@@ -848,6 +854,10 @@ export const MissionVerificationStrategySchema=z.object({
   // For http: a URL to probe and the expected status.
   url:z.string().max(2000).optional(),
   expectStatus:z.number().int().optional(),
+  // The command starts a long-running service rather than exiting. Such a
+  // command can never satisfy an exit-code check — a working server does not
+  // exit — so the gate starts it, probes it, and always stops it again.
+  service:z.boolean().optional(),
   // For diff: a path glob that changes are expected to stay within.
   pathScope:z.string().max(500).optional(),
   // Human-readable description of what evidence proves this criterion.
@@ -1029,10 +1039,13 @@ export type Mission=z.infer<typeof MissionSchema>;
 export const MissionEventTypeSchema=z.enum([
   "mission.created","mission.criteria_generated","mission.criteria_approved","mission.started",
   "mission.checkpoint_created","mission.evidence_recorded","mission.criterion_verified","mission.criterion_failed",
-  "mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
+  "mission.route_selected","mission.failure_recorded","mission.loop_detected","mission.recovery_applied","mission.rolled_back",
   "mission.review_started",  "mission.review_completed","mission.status_changed","mission.completed","mission.cancelled",
   "mission.plan_revised","mission.learnings_extracted","mission.impact_analyzed","mission.specialists_planned","mission.cortex_ready",
   "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
+  // Close-out without a Guardian pass: the gates still run and the mission is
+  // still graded, so the give-up itself is on the record.
+  "mission.conclusion_started","mission.conclusion_gate_failed",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({

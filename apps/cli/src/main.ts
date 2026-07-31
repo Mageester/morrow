@@ -41,9 +41,12 @@ import { checkForUpdate, fetchLatestVersion, MORROW_VERSION } from "./service/up
 // update checker's notion of the current version.
 export const VERSION = MORROW_VERSION;
 
-const VALUE_FLAGS = ["project", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
+// `in` must be a declared value flag: without it `--in --json` (or any value
+// that starts with `-`) would silently degrade to a boolean and the build
+// would run against the wrong workspace instead of failing loudly.
+const VALUE_FLAGS = ["project", "in", "provider", "model", "preset", "timeout", "host", "port", "url", "db", "path", "name", "title", "out", "format", "key", "scope", "content", "limit", "value", "resume", "lines", "worktree", "base", "task", "agent", "status", "target"];
 const ALIASES = { h: "help", v: "version", q: "quiet" };
-export const COMMANDS = new Set(["ask", "fix", "plan", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
+export const COMMANDS = new Set(["ask", "fix", "plan", "build", "yolo", "new", "mission", "cortex", "acceptance", "provenance", "capabilities", "auth", "model", "settings", "start", "stop", "restart", "status", "doctor", "update", "onboard", "serve", "uninstall", "logs", "config", "projects", "init", "chat", "run", "conversations", "conversation", "sessions", "session", "resume", "providers", "models", "presets", "tools", "permissions", "audit", "memory", "panic", "skills", "schedule", "schedules", "import", "processes", "ps", "worktrees", "worktree", "integrate", "integrations", "symbols", "symbol-index"]);
 const LIFECYCLE_COMMANDS = ["install", "uninstall", "repair", "update", "start", "stop", "restart", "status", "doctor", "serve", "logs"];
 
 type Invocation =
@@ -238,6 +241,7 @@ function printHelp(out: Output): number {
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
     `  morrow fix "…"               ${g("approval-gated coding workflow")}`,
+    `  morrow build "…" --in DIR    ${g("build software in a directory, verified end to end")}`,
     `  morrow yolo "…"              ${g("agent that auto-approves edits & commands")}`,
     `  morrow cortex                ${g("inspect repository intelligence")}`,
     `  morrow acceptance            ${g("run packaged product acceptance checks")}`,
@@ -262,7 +266,7 @@ function printHelp(out: Output): number {
     `  ${g(SLASH_COMMANDS.map((c) => `/${c.name}`).join(" "))}`,
     "",
     g("More: morrow projects | conversations | presets | tools | symbols | audit | skills | import hermes | serve | logs"),
-    g("Options: --json --no-color --project --provider --model --preset --plan --read-only --yolo"),
+    g("Options: --json --no-color --project --in --provider --model --preset --plan --read-only --yolo"),
   ].join("\n");
   if (out.json) out.data({ version: VERSION, help }); else out.print(help);
   return EXIT.OK;

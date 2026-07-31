@@ -36,6 +36,42 @@ function frameFor(input: InputState, columns: number, rows: number) {
   });
 }
 
+// Regression recovered from commit 3127bea. A frame taller than its terminal
+// scrolls on every repaint, leaving ghost copies and hiding the active input
+// region. Transcript scrolling must never weaken this clamp.
+describe("viewport clamp: frames never exceed terminal rows", () => {
+  const modelItems = [{
+    kind: "auto" as const,
+    id: "auto",
+    providerId: null,
+    label: "Auto — preset routing",
+    available: true,
+    isDefault: false,
+    reasoning: { control: "none" as const, efforts: [], budgets: [], source: "unknown" as const },
+  }];
+
+  function floodedState(): TerminalState {
+    const base = reduce(initialState(), { type: "session.started", meta });
+    let state = reduce(base, { type: "user.message", text: "start" });
+    for (let index = 0; index < 12; index += 1) {
+      state = reduce(state, { type: "notice", level: "info", text: `recovery notice ${index} with a long body occupying terminal rows` });
+    }
+    return state;
+  }
+
+  it("keeps overlay controls and cursor inside every tested viewport", () => {
+    const input = { ...initialInputState(), overlay: "model" as const, modelQuery: "", modelSelected: 0 };
+    for (const rows of [10, 12, 16, 24, 40]) {
+      const frame = composeApp(floodedState(), input, plain, false, { commands: [], paletteItems: [], modelItems }, {
+        columns: 80, rows, tick: 0, promptLabel: "› ", promptWidth: 2,
+      });
+      expect(frame.lines.length, `rows ${rows}`).toBeLessThanOrEqual(rows);
+      expect(frame.cursor.row, `rows ${rows}`).toBeLessThan(frame.lines.length);
+      expect(frame.lines.join("\n"), `rows ${rows}`).toContain("Select model");
+    }
+  });
+});
+
 /** Type a literal string one printable key at a time, as readline would deliver it. */
 function type(state: InputState, text: string): InputState {
   let s = state;

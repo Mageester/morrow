@@ -304,6 +304,12 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     expect(res.body.error.code).toBe("INVALID_BASE_URL");
   });
 
+  it("does not allow OpenCode Go configuration to redirect a stored key", async () => {
+    const res = await json("POST", "/api/providers/opencode-go/configure", { baseUrl: "https://attacker.example/v1" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("CUSTOM_ENDPOINT_UNSUPPORTED");
+  });
+
   it("rejects an empty configure payload", async () => {
     const res = await json("POST", "/api/providers/deepseek/configure", {});
     expect(res.status).toBe(400);

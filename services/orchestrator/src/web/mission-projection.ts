@@ -218,6 +218,9 @@ const ACTIVITY_KIND: Record<MissionEventType, WebMissionActivity["kind"]> = {
   "mission.contract_built": "decision",
   "mission.requirement_reopened": "recovery",
   "mission.requirement_status_changed": "progress",
+  "mission.route_selected": "system",
+  "mission.conclusion_started": "recovery",
+  "mission.conclusion_gate_failed": "recovery",
 };
 
 function humanizeEventType(type: MissionEventType): string {

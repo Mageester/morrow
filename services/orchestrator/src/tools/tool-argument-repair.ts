@@ -229,6 +229,111 @@ export function repairAndParseToolArguments(raw: string | null | undefined): Too
   }
 }
 
+// ── Argument normalization ───────────────────────────────────────────────────
+//
+// Parsing yields a JSON object; it does not guarantee the object uses the
+// field names and container shapes the tool declares. Models routinely express
+// the *same* unambiguous call slightly differently — `file_path` for `path`,
+// `diff` for `patch`, content as an array of lines, a single changed file as a
+// bare string, or the whole argument object nested under `arguments`. Those
+// reached `validateToolArguments` as `missing`/`wrong_type` and surfaced as
+// `Invalid argument "content" for create_file`, `Invalid argument "path" for
+// create_file`, `Invalid argument "patch" for propose_patch`, and
+// `Invalid argument "files" for propose_patch` — a well-formed call refused
+// over spelling.
+//
+// The response is normalization, not tolerance. Every rule below is a lossless
+// rename or container coercion with exactly one possible reading. Nothing is
+// invented, no value is reinterpreted (a numeric `patch` stays a type error),
+// and a canonical field that is already present is never overwritten.
+// Validation afterwards is unchanged and still strict, so required fields,
+// types, and the absolute-path refusal all keep their force.
+
+const PATH_ALIASES = ["file_path", "filepath", "filePath", "file_name", "filename", "fileName", "file", "target_path", "targetPath", "destination", "dest"];
+const CONTENT_ALIASES = ["contents", "file_content", "file_contents", "fileContent", "text", "body", "data", "source"];
+const PATCH_ALIASES = ["diff", "unified_diff", "unifiedDiff", "patch_text", "patchText", "patch_content", "patchContent"];
+
+/** Sole-key wrappers a model may nest the real argument object inside. */
+const WRAPPER_KEYS = ["arguments", "args", "input", "parameters", "params", "tool_input", "toolInput"];
+
+const ALIAS_RULES: Record<string, Array<{ canonical: string; aliases: string[] }>> = {
+  create_file: [{ canonical: "path", aliases: PATH_ALIASES }, { canonical: "content", aliases: CONTENT_ALIASES }],
+  create_directory: [{ canonical: "path", aliases: PATH_ALIASES }],
+  read_file: [{ canonical: "path", aliases: PATH_ALIASES }],
+  propose_patch: [{ canonical: "patch", aliases: PATCH_ALIASES }],
+};
+
+export interface ToolArgNormalization {
+  field: string;
+  /** What the argument looked like before normalization. */
+  from: string;
+  kind: "renamed_alias" | "unwrapped" | "joined_lines" | "wrapped_in_array" | "objects_to_paths";
+}
+
+export interface ToolArgNormalizationResult {
+  args: Record<string, unknown>;
+  applied: ToolArgNormalization[];
+}
+
+function isBlank(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+}
+
+/**
+ * Bring parsed tool arguments to the tool's declared shape without changing
+ * what the call means. Returns the normalized object plus every rule applied,
+ * so a normalization is observable evidence rather than a silent rewrite.
+ */
+export function normalizeToolArguments(toolName: string, input: Record<string, unknown>): ToolArgNormalizationResult {
+  const applied: ToolArgNormalization[] = [];
+  let args: Record<string, unknown> = { ...input };
+
+  // A sole wrapper key holding the real object: unwrap it. Only when it is the
+  // *only* key, so a genuine `args` array on run_command is never touched.
+  const keys = Object.keys(args);
+  if (keys.length === 1 && WRAPPER_KEYS.includes(keys[0]!) && isPlainObject(args[keys[0]!])) {
+    applied.push({ field: keys[0]!, from: keys[0]!, kind: "unwrapped" });
+    args = { ...(args[keys[0]!] as Record<string, unknown>) };
+  }
+
+  for (const rule of ALIAS_RULES[toolName] ?? []) {
+    if (!isBlank(args[rule.canonical])) continue;
+    const alias = rule.aliases.find((candidate) => typeof args[candidate] === "string" && !isBlank(args[candidate]));
+    if (!alias) continue;
+    args[rule.canonical] = args[alias];
+    delete args[alias];
+    applied.push({ field: rule.canonical, from: alias, kind: "renamed_alias" });
+  }
+
+  // create_file content emitted as an array of lines. Lossless only when every
+  // element is a string; a mixed array stays a type error.
+  if (toolName === "create_file" && Array.isArray(args.content) && args.content.every((line) => typeof line === "string")) {
+    args.content = (args.content as string[]).join("\n");
+    applied.push({ field: "content", from: "string[]", kind: "joined_lines" });
+  }
+
+  if (toolName === "propose_patch") {
+    // A single changed file given as a bare string.
+    if (typeof args.files === "string" && !isBlank(args.files)) {
+      args.files = [args.files];
+      applied.push({ field: "files", from: "string", kind: "wrapped_in_array" });
+    } else if (Array.isArray(args.files) && args.files.length > 0 && args.files.every((entry) => isPlainObject(entry))) {
+      // `files: [{ path: "a.ts" }, …]` — take the path when every entry has
+      // exactly one usable path-like field, otherwise leave it for validation.
+      const paths = (args.files as Record<string, unknown>[]).map((entry) => {
+        const value = entry.path ?? entry.file ?? entry.filename ?? entry.file_path;
+        return typeof value === "string" && value.trim() !== "" ? value : null;
+      });
+      if (paths.every((value): value is string => value !== null)) {
+        args.files = paths;
+        applied.push({ field: "files", from: "object[]", kind: "objects_to_paths" });
+      }
+    }
+  }
+
+  return { args, applied };
+}
+
 export interface ToolSchemaLike {
   name: string;
   parameters?: {

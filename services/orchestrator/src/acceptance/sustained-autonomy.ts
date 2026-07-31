@@ -17,14 +17,19 @@ const WORK_UNITS = 96;
 
 /**
  * Small window so real context accounting reaches pressure on real history,
- * without needing thousands of turns to trigger a rollover.
+ * without needing thousands of turns to trigger a rollover. Deliberately not
+ * razor-thin: the exposed tool catalog grows as Morrow gains capabilities,
+ * and every tool schema costs real per-turn tokens, so a budget tuned to the
+ * catalog's exact size at some point in time gets narrower on its own as the
+ * product grows — with nothing about the actual rollover/compaction/recovery
+ * behavior under test having changed.
  */
 const ROUTE = {
   providerId: "mock" as const,
   protocol: "openai-chat" as const,
   endpointKind: "default" as const,
   endpointHost: null,
-  endpointLimitTokens: 24_000,
+  endpointLimitTokens: 32_000,
   endpointLimitSource: "provider-metadata" as const,
 };
 
