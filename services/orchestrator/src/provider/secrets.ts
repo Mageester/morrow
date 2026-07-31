@@ -11,7 +11,7 @@
  * returns only a non-secret status, and reads never echo a stored value back.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { ProviderId } from "@morrow/contracts";
@@ -107,13 +107,28 @@ export interface CredentialFileOptions {
   applyWindowsAcl?: (path: string) => boolean;
 }
 
+/**
+ * Absolute path to a System32 tool.
+ *
+ * These were invoked by bare name and resolved through PATH, so a Unix-style
+ * `whoami` earlier on PATH — Git for Windows ships one, and puts it there —
+ * shadowed the Windows tool. It rejects the Windows flags ("extra operand
+ * '/user'"), the SID lookup failed, and saving any provider credential threw
+ * outright: a user with Git installed could not store an API key at all.
+ * Resolving against %SystemRoot% removes PATH from the equation.
+ */
+function systemTool(name: string): string {
+  const root = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+  return join(root, "System32", name);
+}
+
 /** Restrict a file to the current Windows user and LocalSystem using SID ACLs. */
 export function applyWindowsCredentialAcl(path: string): boolean {
   try {
-    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const identity = execFileSync(systemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
     const sid = identity.match(/,"([^"]+)"\s*$/)?.[1];
     if (!sid || !/^S-1-\d+(?:-\d+)+$/i.test(sid)) return false;
-    execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
+    execFileSync(systemTool("icacls.exe"), [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)"], {
       stdio: "ignore",
       windowsHide: true,
     });

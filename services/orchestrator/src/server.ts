@@ -2432,6 +2432,14 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (body.apiKey === undefined && body.baseUrl === undefined && body.model === undefined && body.endpointContextLimit === undefined) {
       throw new ApiError(400, "Nothing to configure (provide apiKey, baseUrl, model, or endpointContextLimit).", "EMPTY_CONFIGURE");
     }
+    // OpenRouter's own pinned-endpoint rejection must win over the generic
+    // "this provider has no baseUrlEnv" check below — OpenRouter has no
+    // baseUrlEnv precisely because its endpoint is pinned, so the generic
+    // check would otherwise always fire first and the more specific, more
+    // informative OpenRouter message would be unreachable.
+    if (id === "openrouter" && body.baseUrl !== undefined) {
+      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
+    }
     if (body.baseUrl !== undefined && !mapping.baseUrlEnv) {
       throw new ApiError(400, `Provider "${id}" does not support a custom endpoint.`, "CUSTOM_ENDPOINT_UNSUPPORTED");
     }
@@ -2442,9 +2450,6 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
       } catch {
         throw new ApiError(400, "baseUrl must be a valid http(s) URL.", "INVALID_BASE_URL");
       }
-    }
-    if (id === "openrouter" && body.baseUrl !== undefined) {
-      throw new ApiError(400, "OpenRouter uses a pinned official endpoint and does not accept baseUrl overrides.", "OPENROUTER_ENDPOINT_PINNED");
     }
     let validatedResult: Awaited<ReturnType<typeof testProviderConnectivity>> | null = null;
     let validatedCredentialIdentity: string | null = null;
