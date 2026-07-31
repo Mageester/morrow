@@ -3,6 +3,7 @@ import { taskRepository } from "./repositories/tasks.js";
 import { taskRecordsRepository } from "./repositories/task-records.js";
 import { conversationsRepository } from "./repositories/conversations.js";
 import { ExecutionLeaseFenceError } from "./repositories/execution-continuity.js";
+import type { ProcessSupervisor } from "./processes/supervisor.js";
 
 export interface ExecutionLeaseClaim {
   segmentId: string;
@@ -24,7 +25,7 @@ export class TaskRunner {
   private settledListeners = new Set<(taskId: string) => void>();
   private executor: TaskExecutor;
 
-  constructor(private db: Database.Database, executor?: TaskExecutor) {
+  constructor(private db: Database.Database, executor?: TaskExecutor, supervisor?: ProcessSupervisor) {
     this.executor = executor || (async (deps) => {
       const task = taskRepository(db).getTaskById(deps.taskId);
       if (!task) throw new Error(`Task not found: ${deps.taskId}`);
@@ -34,7 +35,7 @@ export class TaskRunner {
         await executeInspectWorkspaceTask({ db, taskId: deps.taskId });
       } else if (task.kind === "agent_chat") {
         const { executeAgentChatTask } = await import("./execution/agent.js");
-        await executeAgentChatTask({ db, taskId: deps.taskId, ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}), ...(deps.recovery ? { recovery: deps.recovery } : {}) });
+        await executeAgentChatTask({ db, taskId: deps.taskId, ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}), ...(deps.recovery ? { recovery: deps.recovery } : {}), ...(supervisor ? { supervisor } : {}) });
       } else {
         throw new Error(`Unsupported task kind: ${task.kind}`);
       }

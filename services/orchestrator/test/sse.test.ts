@@ -6,6 +6,10 @@ import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as http from "node:http";
+import { projectRepository } from "../src/repositories/projects.js";
+import { taskRepository } from "../src/repositories/tasks.js";
+import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { conversationsRepository } from "../src/repositories/conversations.js";
 
 describe("SSE Streaming", () => {
   let db: any;
@@ -142,5 +146,53 @@ describe("SSE Streaming", () => {
     for (let i = 1; i < reconnectedEvents.length; i++) {
       expect(reconnectedEvents[i]).toBeGreaterThan(reconnectedEvents[i-1]);
     }
+  });
+
+  it("streams ordered resumable browser signals without raw task payloads", async () => {
+    const now = new Date().toISOString();
+    projectRepository(db).createProject({ id: "chat-project", name: "Chat", workspacePath: tempDir, createdAt: now });
+    conversationsRepository(db).createConversation({ id: "chat-conversation", projectId: "chat-project", title: "Chat", createdAt: now, updatedAt: now });
+    taskRepository(db).createTask({ id: "chat-task", projectId: "chat-project", kind: "agent_chat", status: "queued", createdAt: now });
+    conversationsRepository(db).appendMessage({
+      id: "assistant", conversationId: "chat-conversation", role: "assistant", content: "canonical",
+      taskId: "chat-task", streamingState: "queued", createdAt: now, updatedAt: now,
+    });
+    const records = taskRecordsRepository(db);
+    const first = records.appendEvent({
+      id: "private-1", taskId: "chat-task", type: "evidence.persisted",
+      payload: { deltaText: "secret token-shaped text", artifact: "raw private artifact" }, createdAt: now,
+    });
+    records.transitionTask("chat-task", "running", { id: "private-2", payload: { private: "do not expose" }, createdAt: now });
+    const terminal = records.transitionTask("chat-task", "completed", { id: "private-3", payload: { secret: "never" }, createdAt: now });
+
+    const all = await app.inject({
+      method: "GET",
+      url: "/api/projects/chat-project/conversations/chat-conversation/tasks/chat-task/stream?after=0",
+    });
+    expect(all.statusCode).toBe(200);
+    expect(all.headers["content-type"]).toContain("text/event-stream");
+    expect(all.body).toContain(`id: ${first.sequence}`);
+    expect(all.body).toContain("event: message.updated");
+    expect(all.body).toContain("event: task.terminal");
+    expect(all.body).not.toContain("secret token-shaped text");
+    expect(all.body).not.toContain("raw private artifact");
+    expect(all.body).not.toContain("do not expose");
+    expect(all.body).not.toContain('"secret":"never"');
+
+    const resumed = await app.inject({
+      method: "GET",
+      url: `/api/projects/chat-project/conversations/chat-conversation/tasks/chat-task/stream?after=${first.sequence}`,
+    });
+    const ids = [...resumed.body.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.every((id) => id > first.sequence)).toBe(true);
+    expect(ids.at(-1)).toBe(taskRecordsRepository(db).listEvents("chat-task").at(-1)?.sequence);
+
+    const foreign = await app.inject({
+      method: "GET",
+      url: "/api/projects/chat-project/conversations/missing/tasks/chat-task/stream",
+    });
+    expect(foreign.statusCode).toBe(404);
+    expect(terminal.status).toBe("completed");
   });
 });

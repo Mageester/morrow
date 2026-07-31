@@ -1,0 +1,1751 @@
+# Review package: 425944e2f324da305031888e68b71bfef507f84e..eb926cbd5c955ac34f33924d673cdf0cf25fe745
+
+## Commits
+eb926cb feat(web): add live mission overview and activity
+
+## Files changed
+ .superpowers/sdd/task-8-report.md                  | 191 +++++++++
+ apps/web/src/api/mission-stream.test.ts            | 263 +++++++++++++
+ apps/web/src/api/mission-stream.ts                 | 156 ++++++++
+ .../web/src/features/missions/mission-activity.tsx |  70 ++++
+ .../web/src/features/missions/mission-overview.tsx | 118 ++++++
+ .../src/features/missions/mission-page.test.tsx    | 426 +++++++++++++++++++++
+ apps/web/src/features/missions/mission-page.tsx    | 251 +++++++++++-
+ apps/web/src/styles/app.css                        | 171 +++++++++
+ 8 files changed, 1636 insertions(+), 10 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/task-8-report.md b/.superpowers/sdd/task-8-report.md
+new file mode 100644
+index 0000000..1aaa66a
+--- /dev/null
++++ b/.superpowers/sdd/task-8-report.md
+@@ -0,0 +1,191 @@
++# Task 8 Report — Live Mission Overview and Activity
++
++## Scope
++
++Implemented the Task 8 mission workspace slice:
++
++- authoritative, Zod-validated mission snapshot loading through the existing
++  `missionQueries.detail` query;
++- a resumable `useMissionStream(missionId)` EventSource client for the four
++  named server event categories;
++- Overview and Activity tabs backed only by the browser-safe web projection;
++- accessible Overview, Activity, Work, and Result tab wiring, with Work and
++  Result retained as honest later-slice placeholders;
++- loading, typed API failure, unknown-mission, retry, offline, reconnecting,
++  and synchronized states.
++
++No orchestrator, contract, shared UI, lockfile, authentication, permission, or
++Task 9 Work/Result behavior was changed.
++
++## TDD Evidence
++
++### RED
++
++The required page and stream tests were written before production code.
++
++```powershell
++pnpm --filter @morrow/web test -- mission-page.test.tsx mission-stream.test.ts
++```
++
++The first run exited `1`. All seven mission-page tests failed against the Task 6
++placeholder because the authoritative query, Overview, Activity, tabs, loading,
++error, retry, and live-announcement behavior did not exist.
++
++The stream test initially revealed a test-authoring syntax error: its required
++`.ts` filename contained JSX. The harness was corrected to use `createElement`
++without touching production code. The valid stream RED was then captured with:
++
++```powershell
++pnpm --filter @morrow/web test -- mission-stream.test.ts
++```
++
++It exited `1` because `./mission-stream.js` did not exist. This was the expected
++feature-missing failure.
++
++### GREEN
++
++After the minimal stream and workspace implementation:
++
++```text
++pnpm --filter @morrow/web test -- mission-page.test.tsx mission-stream.test.ts
++PASS — 2 files, 12 tests
++```
++
++The focused coverage proves:
++
++- all four custom named SSE categories are listened to rather than relying on
++  the default `message` event;
++- every envelope is parsed with `WebMissionStreamEnvelopeSchema` and rejected
++  when malformed, for another mission, mismatched to its event category,
++  duplicated, or older than the accepted cursor;
++- a duplicate cursor 4 is ignored and cursor 6 after cursor 4 performs the gap
++  invalidation plus the normal accepted-event invalidation;
++- reconnect starts at `?after=4`, mission IDs are URL encoded, retries are
++  exponential and capped at 15 seconds, and only one source/timer remains live;
++- source, timer, and browser listeners are cleaned on mission change/unmount;
++- offline mode refrains from connecting and uses the exact required status,
++  while online resumes from the last accepted cursor;
++- Overview answers objective, completed work, current work, attention, and
++  remaining work with milestone counts/states and no numeric percentage or
++  time estimate;
++- Activity is human readable and collapsed by default, and its technical view
++  exposes only actor, artifact references, event ID, cursor, and timestamp;
++- meaningful state/activity snapshot changes use one atomic polite
++  announcement, while default/heartbeat traffic produces no snapshot request
++  or announcement;
++- loading, empty data, typed API failure, unknown mission, and manual query
++  retry remain explicit and testable;
++- the four tabs implement named tablist/tab/tabpanel semantics, roving tab
++  focus, ArrowLeft/ArrowRight wrapping, Home/End, and honest placeholders.
++
++## Final Verification
++
++```text
++pnpm --filter @morrow/web test
++PASS — 6 files, 53 tests
++
++pnpm --filter @morrow/web check
++PASS — tsc -p tsconfig.json
++
++pnpm --filter @morrow/web build
++PASS — Vite 8.1.3, 2012 modules transformed, built in 1.93s
++       dist/index.html: 0.50 kB (0.31 kB gzip)
++       JS: 432.80 kB (129.57 kB gzip)
++       CSS: 13.41 kB (2.97 kB gzip)
++
++Test-Path apps/web/dist/index.html
++PASS — True
++
++git diff --check 425944e2f324da305031888e68b71bfef507f84e
++PASS — no whitespace errors across the cumulative Task 8 diff
++```
++
++## Stream Lifecycle Review
++
++- The stream keeps its accepted cursor inside one mission-scoped effect. It is
++  retained across reconnects but resets on mission change.
++- An EventSource error closes the browser-managed source before scheduling the
++  explicit retry, preventing native EventSource retry and application retry
++  from overlapping.
++- The retry timer is cleared before offline transitions and during cleanup.
++  Online events cannot create a second source or timer.
++- Each listener verifies that its source is still the active source, so closed
++  or superseded source callbacks cannot change state or invalidate queries.
++- Browser `Last-Event-ID` replay is harmless because any replayed cursor at or
++  below the last accepted cursor is ignored. The explicit `after` cursor is
++  also included on every newly created source, and the server selects the
++  larger resume cursor.
++- Heartbeat comments are not EventSource messages. No default `message`
++  listener exists, so heartbeats do not alter state or create announcements.
++
++## Accessibility Impact
++
++- Four named tabs use a named `tablist`, `tab`, `aria-selected`,
++  `aria-controls`, roving `tabIndex`, and labelled `tabpanel` relationship.
++- Arrow keys, Home, and End both select and focus the expected tab; click/touch
++  selection remains available with 44px minimum targets.
++- Loading and synchronization states are status regions. Typed load failures
++  use the existing accessible `ErrorCard` and a keyboard-operable retry.
++- Snapshot state and latest-activity changes are combined into one
++  `aria-live="polite"`, `aria-atomic="true"` update rather than announcing
++  every stream envelope or heartbeat.
++- Activity uses native collapsed `details`/`summary`, and milestone states are
++  expressed in text rather than color alone.
++- Responsive styles reduce the Overview grid to one column and keep tabs
++  horizontally reachable on narrow screens.
++
++## Privacy and Security Impact
++
++- The same-origin EventSource URL carries only an encoded mission ID and a
++  numeric cursor. No credential, token, content, or private state is placed in
++  the URL or browser storage.
++- Every SSE data envelope is JSON parsed and strictly schema validated before
++  use. The browser retains only the numeric accepted cursor in the live effect;
++  payload records are never copied into React state, query data, logs, or DOM.
++- Stream envelopes only invalidate the authoritative snapshot query. They do
++  not mutate the cached mission from untrusted payload data.
++- Activity `detail` is deliberately not rendered because it may contain raw
++  internal material. The technical inspector is allowlisted to actor name,
++  artifact IDs, projected activity/event ID, cursor, and timestamp.
++- Live announcements use only the projected mission UI state label and
++  `summary.latestActivity`; no raw payload or model reasoning is announced.
++- No telemetry, analytics, external inference, hosted dependency, storage key,
++  permission change, or new external data flow was added.
++
++## Deviations and Deliberate Exclusions
++
++- The approved mission header also anticipates elapsed time and mission control
++  actions. They were excluded because this slice requires no numeric time
++  estimate and the current web contract exposes no pause/resume/cancel action.
++- Attention is summarized read-only. Resolution controls and fuller recovery
++  stories remain assigned to Task 10.
++- Work and Result are ARIA-complete tab placeholders only; Task 9 owns their
++  real inspection, artifact, evidence, and result experiences.
++- Raw activity `detail`, provider metadata, cost/token data, commands, and tool
++  payloads are not exposed because the current browser-safe contract does not
++  provide a proven allowlisted projection for them.
++- No rendered browser screenshot was added. The isolated web test environment
++  has no persisted live mission fixture; semantic DOM, keyboard, stream, and
++  responsive behavior are covered by the focused tests, while packaged visual
++  QA remains a later end-to-end gate.
++
++## Limitations
++
++- The stream starts only after an authoritative mission snapshot succeeds, so
++  an unknown mission does not enter an infinite stream reconnect loop.
++- The cursor is intentionally in-memory and mission-scoped; a full page reload
++  starts at zero and the server supplies its durable backlog.
++- Reconnect status is intentionally coarse. It does not expose internal socket
++  errors or retry counts to the user.
++- The Activity tab is limited to the server-projected `recentActivity` window;
++  pagination or a complete history endpoint is not part of this slice.
++- Rich pause/resume/cancel controls, attention resolution, recovery actions,
++  artifacts, Work, and Result are deferred to their assigned tasks.
++
++## Rollback
++
++Revert `feat(web): add live mission overview and activity`. This restores the
++Task 6 mission placeholder and removes only the browser stream hook, Task 8
++mission components/tests/styles, and this report. The server stream, contracts,
++shared UI package, orchestrator state, persisted mission data, and lockfile are
++unchanged.
+diff --git a/apps/web/src/api/mission-stream.test.ts b/apps/web/src/api/mission-stream.test.ts
+new file mode 100644
+index 0000000..407e424
+--- /dev/null
++++ b/apps/web/src/api/mission-stream.test.ts
+@@ -0,0 +1,263 @@
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { act, render, screen } from "@testing-library/react";
++import { createElement } from "react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { missionKeys } from "./query-keys.js";
++import { useMissionStream } from "./mission-stream.js";
++
++const eventTypes = [
++  "mission.updated",
++  "attention.updated",
++  "artifact.updated",
++  "runtime.updated",
++] as const;
++
++type StreamEventType = (typeof eventTypes)[number];
++
++class FakeEventSource {
++  static instances: FakeEventSource[] = [];
++
++  readonly url: string;
++  closed = false;
++  private readonly listeners = new Map<string, Set<EventListener>>();
++
++  constructor(url: string | URL) {
++    this.url = String(url);
++    FakeEventSource.instances.push(this);
++  }
++
++  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    const callback =
++      typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
++    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
++    listeners.add(callback);
++    this.listeners.set(type, listeners);
++  }
++
++  removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    if (typeof listener === "function") this.listeners.get(type)?.delete(listener);
++  }
++
++  close() {
++    this.closed = true;
++  }
++
++  emit(type: string, data = "") {
++    const event = new MessageEvent(type, { data });
++    for (const listener of this.listeners.get(type) ?? []) listener(event);
++  }
++}
++
++function envelope(
++  cursor: number,
++  missionId = "mission-42",
++  eventType: StreamEventType = "mission.updated",
++) {
++  return JSON.stringify({
++    cursor,
++    emittedAt: "2026-07-21T14:00:00.000Z",
++    eventType,
++    missionId,
++    payload: { eventId: `event-${cursor}`, ignoredInternalData: "never render me" },
++    version: 1,
++  });
++}
++
++function setOnline(online: boolean) {
++  Object.defineProperty(navigator, "onLine", {
++    configurable: true,
++    value: online,
++  });
++}
++
++function renderStream(missionId = "mission-42") {
++  const queryClient = new QueryClient({
++    defaultOptions: { queries: { retry: false } },
++  });
++
++  function Harness({ id }: { id: string }) {
++    const { status, statusMessage } = useMissionStream(id);
++    return createElement("output", { "data-status": status }, statusMessage);
++  }
++
++  const view = render(
++    createElement(
++      QueryClientProvider,
++      { client: queryClient },
++      createElement(Harness, { id: missionId }),
++    ),
++  );
++
++  return {
++    ...view,
++    queryClient,
++    rerenderMission(id: string) {
++      view.rerender(
++        createElement(
++          QueryClientProvider,
++          { client: queryClient },
++          createElement(Harness, { id }),
++        ),
++      );
++    },
++  };
++}
++
++beforeEach(() => {
++  FakeEventSource.instances = [];
++  setOnline(true);
++  vi.stubGlobal("EventSource", FakeEventSource);
++});
++
++afterEach(() => {
++  setOnline(true);
++  vi.useRealTimers();
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("useMissionStream", () => {
++  it("accepts only validated, ordered custom events and refetches authoritatively across a cursor gap", () => {
++    const { queryClient } = renderStream();
++    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
++    const source = FakeEventSource.instances[0];
++    expect(source?.url).toBe("/api/web/missions/mission-42/stream?after=0");
++
++    act(() => {
++      source?.emit("message", envelope(1));
++      source?.emit("mission.updated", "not-json");
++      source?.emit("mission.updated", envelope(1, "another-mission"));
++      source?.emit("mission.updated", envelope(1, "mission-42", "runtime.updated"));
++    });
++    expect(invalidate).not.toHaveBeenCalled();
++
++    for (let cursor = 1; cursor <= 4; cursor += 1) {
++      const eventType = eventTypes[cursor - 1] ?? "mission.updated";
++      act(() => source?.emit(eventType, envelope(cursor, "mission-42", eventType)));
++    }
++    expect(invalidate).toHaveBeenCalledTimes(4);
++    expect(invalidate).toHaveBeenLastCalledWith({
++      queryKey: missionKeys.detail("mission-42"),
++    });
++
++    invalidate.mockClear();
++    act(() => {
++      source?.emit("mission.updated", envelope(4));
++      source?.emit("mission.updated", envelope(3));
++    });
++    expect(invalidate).not.toHaveBeenCalled();
++
++    act(() => source?.emit("mission.updated", envelope(6)));
++    expect(invalidate).toHaveBeenCalledTimes(2);
++    expect(invalidate).toHaveBeenNthCalledWith(1, {
++      queryKey: missionKeys.detail("mission-42"),
++    });
++    expect(invalidate).toHaveBeenNthCalledWith(2, {
++      queryKey: missionKeys.detail("mission-42"),
++    });
++  });
++
++  it("closes the failed source and reconnects once from the last accepted cursor", () => {
++    vi.useFakeTimers();
++    renderStream();
++    const first = FakeEventSource.instances[0];
++
++    act(() => {
++      for (let cursor = 1; cursor <= 4; cursor += 1) {
++        first?.emit("mission.updated", envelope(cursor));
++      }
++      first?.emit("error");
++    });
++
++    expect(first?.closed).toBe(true);
++    expect(screen.getByText("Reconnecting…")).toHaveAttribute(
++      "data-status",
++      "reconnecting",
++    );
++    expect(vi.getTimerCount()).toBe(1);
++
++    act(() => vi.advanceTimersByTime(999));
++    expect(FakeEventSource.instances).toHaveLength(1);
++    act(() => vi.advanceTimersByTime(1));
++    expect(FakeEventSource.instances).toHaveLength(2);
++    expect(FakeEventSource.instances[1]?.url).toBe(
++      "/api/web/missions/mission-42/stream?after=4",
++    );
++
++    act(() => FakeEventSource.instances[1]?.emit("open"));
++    expect(screen.getByText("Synchronized")).toHaveAttribute(
++      "data-status",
++      "synchronized",
++    );
++    expect(vi.getTimerCount()).toBe(0);
++  });
++
++  it("uses exponential reconnect delays capped at fifteen seconds without overlapping timers or sources", () => {
++    vi.useFakeTimers();
++    renderStream();
++
++    for (const delay of [1_000, 2_000, 4_000, 8_000, 15_000, 15_000]) {
++      const before = FakeEventSource.instances.length;
++      const active = FakeEventSource.instances.at(-1);
++      act(() => active?.emit("error"));
++      expect(active?.closed).toBe(true);
++      expect(vi.getTimerCount()).toBe(1);
++      act(() => vi.advanceTimersByTime(delay - 1));
++      expect(FakeEventSource.instances).toHaveLength(before);
++      act(() => vi.advanceTimersByTime(1));
++      expect(FakeEventSource.instances).toHaveLength(before + 1);
++      expect(vi.getTimerCount()).toBe(0);
++    }
++  });
++
++  it("refrains while offline, closes immediately on disconnect, and resumes online", () => {
++    vi.useFakeTimers();
++    setOnline(false);
++    renderStream();
++
++    expect(FakeEventSource.instances).toHaveLength(0);
++    expect(
++      screen.getByText("Offline — showing last synchronized state"),
++    ).toHaveAttribute("data-status", "offline");
++
++    setOnline(true);
++    act(() => window.dispatchEvent(new Event("online")));
++    expect(FakeEventSource.instances).toHaveLength(1);
++    expect(FakeEventSource.instances[0]?.url).toContain("?after=0");
++
++    const source = FakeEventSource.instances[0];
++    setOnline(false);
++    act(() => window.dispatchEvent(new Event("offline")));
++    expect(source?.closed).toBe(true);
++    expect(vi.getTimerCount()).toBe(0);
++    expect(
++      screen.getByText("Offline — showing last synchronized state"),
++    ).toBeVisible();
++  });
++
++  it("encodes mission ids and cleans the prior source, timer, and listeners on mission change or unmount", () => {
++    vi.useFakeTimers();
++    const view = renderStream("mission/one ?");
++    const first = FakeEventSource.instances[0];
++    expect(first?.url).toBe(
++      "/api/web/missions/mission%2Fone%20%3F/stream?after=0",
++    );
++
++    view.rerenderMission("mission-two");
++    expect(first?.closed).toBe(true);
++    expect(FakeEventSource.instances[1]?.url).toBe(
++      "/api/web/missions/mission-two/stream?after=0",
++    );
++
++    const second = FakeEventSource.instances[1];
++    act(() => second?.emit("error"));
++    expect(vi.getTimerCount()).toBe(1);
++    view.unmount();
++    expect(second?.closed).toBe(true);
++    expect(vi.getTimerCount()).toBe(0);
++
++    act(() => window.dispatchEvent(new Event("online")));
++    act(() => vi.advanceTimersByTime(15_000));
++    expect(FakeEventSource.instances).toHaveLength(2);
++  });
++});
+diff --git a/apps/web/src/api/mission-stream.ts b/apps/web/src/api/mission-stream.ts
+new file mode 100644
+index 0000000..e7b5fe1
+--- /dev/null
++++ b/apps/web/src/api/mission-stream.ts
+@@ -0,0 +1,156 @@
++import { WebMissionStreamEnvelopeSchema } from "@morrow/contracts";
++import { useQueryClient } from "@tanstack/react-query";
++import { useEffect, useState } from "react";
++import { missionKeys } from "./query-keys.js";
++
++const streamEventTypes = [
++  "mission.updated",
++  "attention.updated",
++  "artifact.updated",
++  "runtime.updated",
++] as const;
++
++export type MissionStreamStatus =
++  | "connecting"
++  | "synchronized"
++  | "reconnecting"
++  | "offline";
++
++const statusMessages: Record<MissionStreamStatus, string> = {
++  connecting: "Connecting…",
++  synchronized: "Synchronized",
++  reconnecting: "Reconnecting…",
++  offline: "Offline — showing last synchronized state",
++};
++
++export function useMissionStream(missionId: string) {
++  const queryClient = useQueryClient();
++  const [status, setStatus] = useState<MissionStreamStatus>(() =>
++    navigator.onLine ? "connecting" : "offline",
++  );
++
++  useEffect(() => {
++    let stopped = false;
++    let source: EventSource | null = null;
++    let reconnectTimer: number | null = null;
++    let reconnectAttempt = 0;
++    let lastCursor = 0;
++
++    const clearReconnectTimer = () => {
++      if (reconnectTimer === null) return;
++      window.clearTimeout(reconnectTimer);
++      reconnectTimer = null;
++    };
++
++    const closeSource = () => {
++      const current = source;
++      source = null;
++      current?.close();
++    };
++
++    const setCurrentStatus = (next: MissionStreamStatus) => {
++      if (!stopped) setStatus(next);
++    };
++
++    let connect: () => void;
++
++    const scheduleReconnect = () => {
++      closeSource();
++      if (stopped) return;
++      if (!navigator.onLine) {
++        clearReconnectTimer();
++        setCurrentStatus("offline");
++        return;
++      }
++
++      setCurrentStatus("reconnecting");
++      if (reconnectTimer !== null) return;
++      const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
++      reconnectAttempt += 1;
++      reconnectTimer = window.setTimeout(() => {
++        reconnectTimer = null;
++        connect();
++      }, delay);
++    };
++
++    connect = () => {
++      if (stopped || source || reconnectTimer !== null) return;
++      if (!navigator.onLine) {
++        setCurrentStatus("offline");
++        return;
++      }
++
++      const activeSource = new EventSource(
++        `/api/web/missions/${encodeURIComponent(missionId)}/stream?after=${lastCursor}`,
++      );
++      source = activeSource;
++
++      activeSource.addEventListener("open", () => {
++        if (stopped || source !== activeSource) return;
++        reconnectAttempt = 0;
++        setCurrentStatus("synchronized");
++      });
++      activeSource.addEventListener("error", () => {
++        if (stopped || source !== activeSource) return;
++        scheduleReconnect();
++      });
++
++      for (const eventType of streamEventTypes) {
++        activeSource.addEventListener(eventType, (event) => {
++          if (stopped || source !== activeSource) return;
++          try {
++            const parsed = WebMissionStreamEnvelopeSchema.safeParse(
++              JSON.parse(String((event as MessageEvent).data)),
++            );
++            if (
++              !parsed.success ||
++              parsed.data.missionId !== missionId ||
++              parsed.data.eventType !== eventType ||
++              parsed.data.cursor <= lastCursor
++            ) {
++              return;
++            }
++
++            if (parsed.data.cursor !== lastCursor + 1) {
++              void queryClient.invalidateQueries({
++                queryKey: missionKeys.detail(missionId),
++              });
++            }
++            lastCursor = parsed.data.cursor;
++            void queryClient.invalidateQueries({
++              queryKey: missionKeys.detail(missionId),
++            });
++          } catch {
++            // Malformed or private internal data never enters application state.
++          }
++        });
++      }
++    };
++
++    const handleOffline = () => {
++      clearReconnectTimer();
++      closeSource();
++      setCurrentStatus("offline");
++    };
++    const handleOnline = () => {
++      if (stopped || source || reconnectTimer !== null) return;
++      setCurrentStatus("reconnecting");
++      connect();
++    };
++
++    window.addEventListener("offline", handleOffline);
++    window.addEventListener("online", handleOnline);
++    setCurrentStatus(navigator.onLine ? "connecting" : "offline");
++    if (navigator.onLine) connect();
++
++    return () => {
++      stopped = true;
++      clearReconnectTimer();
++      closeSource();
++      window.removeEventListener("offline", handleOffline);
++      window.removeEventListener("online", handleOnline);
++    };
++  }, [missionId, queryClient]);
++
++  return { status, statusMessage: statusMessages[status] } as const;
++}
+diff --git a/apps/web/src/features/missions/mission-activity.tsx b/apps/web/src/features/missions/mission-activity.tsx
+new file mode 100644
+index 0000000..07eea44
+--- /dev/null
++++ b/apps/web/src/features/missions/mission-activity.tsx
+@@ -0,0 +1,70 @@
++import type { WebMissionActivity } from "@morrow/contracts";
++import { Surface } from "@morrow/ui";
++
++function formatTimestamp(timestamp: string) {
++  return new Intl.DateTimeFormat(undefined, {
++    dateStyle: "medium",
++    timeStyle: "short",
++  }).format(new Date(timestamp));
++}
++
++function TechnicalDetails({ activity }: { activity: WebMissionActivity }) {
++  return (
++    <dl className="morrow-mission-technical-details">
++      <div>
++        <dt>Actor</dt>
++        <dd>{activity.actor.name}</dd>
++      </div>
++      {activity.artifactIds.length > 0 ? (
++        <div>
++          <dt>Artifact references</dt>
++          <dd>
++            <ul>
++              {activity.artifactIds.map((artifactId) => (
++                <li key={artifactId}>{artifactId}</li>
++              ))}
++            </ul>
++          </dd>
++        </div>
++      ) : null}
++      <div>
++        <dt>Event ID</dt>
++        <dd>{activity.id}</dd>
++      </div>
++      <div>
++        <dt>Cursor</dt>
++        <dd>{activity.cursor}</dd>
++      </div>
++      <div>
++        <dt>Recorded</dt>
++        <dd>
++          <time dateTime={activity.createdAt}>
++            {formatTimestamp(activity.createdAt)}
++          </time>
++        </dd>
++      </div>
++    </dl>
++  );
++}
++
++export function MissionActivity({ activity }: { activity: WebMissionActivity[] }) {
++  return (
++    <Surface padding="large">
++      <h2>Activity</h2>
++      {activity.length === 0 ? (
++        <p>No meaningful activity has been recorded yet.</p>
++      ) : (
++        <ol aria-label="Mission activity" className="morrow-mission-activity">
++          {activity.map((item) => (
++            <li key={item.id}>
++              <details>
++                <summary>{item.summary}</summary>
++                <TechnicalDetails activity={item} />
++              </details>
++            </li>
++          ))}
++        </ol>
++      )}
++    </Surface>
++  );
++}
+diff --git a/apps/web/src/features/missions/mission-overview.tsx b/apps/web/src/features/missions/mission-overview.tsx
+new file mode 100644
+index 0000000..604dcff
+--- /dev/null
++++ b/apps/web/src/features/missions/mission-overview.tsx
+@@ -0,0 +1,118 @@
++import type {
++  WebAttentionRequest,
++  WebMissionMilestone,
++  WebMissionSnapshot,
++} from "@morrow/contracts";
++import { Surface } from "@morrow/ui";
++
++const milestoneStateLabels: Record<WebMissionMilestone["state"], string> = {
++  pending: "Pending",
++  running: "Running",
++  completed: "Completed",
++  failed: "Failed",
++  skipped: "Skipped",
++};
++
++function MilestoneList({ milestones }: { milestones: WebMissionMilestone[] }) {
++  return (
++    <ul className="morrow-mission-milestones">
++      {milestones.map((milestone) => (
++        <li key={milestone.id}>
++          <span>{milestone.title}</span>
++          <span
++            className="morrow-mission-milestone-state"
++            data-state={milestone.state}
++          >
++            {milestoneStateLabels[milestone.state]}
++          </span>
++        </li>
++      ))}
++    </ul>
++  );
++}
++
++function AttentionList({ attention }: { attention: WebAttentionRequest[] }) {
++  if (attention.length === 0) {
++    return <p>No attention is needed right now.</p>;
++  }
++
++  return (
++    <ul className="morrow-mission-attention-list">
++      {attention.map((request) => (
++        <li key={request.id}>
++          <strong>{request.title}</strong>
++          <p>{request.explanation}</p>
++          {request.recommendation ? (
++            <p>
++              <span className="morrow-sr-only">Recommendation: </span>
++              {request.recommendation}
++            </p>
++          ) : null}
++        </li>
++      ))}
++    </ul>
++  );
++}
++
++export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot }) {
++  const completed = snapshot.milestones.filter(
++    (milestone) => milestone.state === "completed",
++  );
++  const remaining = snapshot.milestones.filter(
++    (milestone) =>
++      milestone.state !== "completed" && milestone.state !== "skipped",
++  );
++
++  return (
++    <div className="morrow-mission-overview">
++      <Surface className="morrow-mission-overview__objective" padding="large">
++        <h2>Objective</h2>
++        <p>{snapshot.summary.objective}</p>
++      </Surface>
++
++      <p className="morrow-mission-milestone-count" aria-label="Milestone progress">
++        {completed.length} completed · {remaining.length} remaining ·{" "}
++        {snapshot.milestones.length} total
++      </p>
++
++      {snapshot.milestones.length === 0 ? (
++        <Surface padding="large">
++          <h2>Milestones</h2>
++          <p>No milestones have been defined yet.</p>
++        </Surface>
++      ) : (
++        <>
++          <Surface padding="large">
++            <h2>Completed</h2>
++            {completed.length > 0 ? (
++              <MilestoneList milestones={completed} />
++            ) : (
++              <p>No milestones have been completed yet.</p>
++            )}
++          </Surface>
++          <Surface padding="large">
++            <h2>Remaining milestones</h2>
++            {remaining.length > 0 ? (
++              <MilestoneList milestones={remaining} />
++            ) : (
++              <p>No milestones remain.</p>
++            )}
++          </Surface>
++        </>
++      )}
++
++      <Surface padding="large">
++        <h2>Current work</h2>
++        <p>{snapshot.currentWork ?? "No current work is reported."}</p>
++        <p className="morrow-mission-secondary-copy">
++          Current phase: {snapshot.summary.currentPhase}
++        </p>
++      </Surface>
++
++      <Surface padding="large">
++        <h2>Attention needed</h2>
++        <AttentionList attention={snapshot.attention} />
++      </Surface>
++    </div>
++  );
++}
+diff --git a/apps/web/src/features/missions/mission-page.test.tsx b/apps/web/src/features/missions/mission-page.test.tsx
+new file mode 100644
+index 0000000..e3c0a33
+--- /dev/null
++++ b/apps/web/src/features/missions/mission-page.test.tsx
+@@ -0,0 +1,426 @@
++import type { WebMissionSnapshot } from "@morrow/contracts";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import {
++  createMemoryHistory,
++  RouterProvider,
++  type AnyRouter,
++} from "@tanstack/react-router";
++import {
++  act,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++  within,
++} from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { createAppRouter } from "../../app/router.js";
++import { RuntimeStatusProvider } from "../../state/runtime-status.js";
++import { ThemeProvider } from "../../state/theme.js";
++
++class FakeEventSource {
++  static instances: FakeEventSource[] = [];
++  readonly url: string;
++  closed = false;
++  private readonly listeners = new Map<string, Set<EventListener>>();
++
++  constructor(url: string | URL) {
++    this.url = String(url);
++    FakeEventSource.instances.push(this);
++  }
++
++  addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    const callback =
++      typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
++    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
++    listeners.add(callback);
++    this.listeners.set(type, listeners);
++  }
++
++  removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
++    if (typeof listener === "function") this.listeners.get(type)?.delete(listener);
++  }
++
++  close() {
++    this.closed = true;
++  }
++
++  emit(type: string, data = "") {
++    const event = new MessageEvent(type, { data });
++    for (const listener of this.listeners.get(type) ?? []) listener(event);
++  }
++}
++
++function snapshot(): WebMissionSnapshot {
++  return {
++    artifacts: [
++      {
++        createdAt: "2026-07-21T13:20:00.000Z",
++        id: "artifact-1",
++        kind: "document",
++        mimeType: "text/markdown",
++        missionId: "mission-42",
++        openPath: null,
++        preview: "A safe artifact preview.",
++        title: "Launch brief",
++        version: 1,
++      },
++    ],
++    attention: [
++      {
++        canContinueElsewhere: true,
++        choices: [],
++        createdAt: "2026-07-21T13:30:00.000Z",
++        explanation: "Choose whether the final draft should be published.",
++        id: "attention-1",
++        kind: "decision",
++        missionId: "mission-42",
++        recommendation: "Review the draft first.",
++        title: "Publication decision",
++      },
++    ],
++    currentWork: "Comparing the draft against the launch checklist.",
++    milestones: [
++      { evidenceIds: ["evidence-1"], id: "m1", state: "completed", title: "Gather requirements" },
++      { evidenceIds: ["evidence-2"], id: "m2", state: "completed", title: "Draft launch brief" },
++      { evidenceIds: [], id: "m3", state: "running", title: "Review the evidence" },
++      { evidenceIds: [], id: "m4", state: "pending", title: "Prepare delivery" },
++      { evidenceIds: [], id: "m5", state: "failed", title: "Confirm publication" },
++    ],
++    recentActivity: [
++      {
++        actor: { kind: "specialist", name: "Researcher" },
++        artifactIds: ["artifact-1"],
++        createdAt: "2026-07-21T13:45:00.000Z",
++        cursor: 4,
++        detail: "PRIVATE CHAIN OF THOUGHT: internal scoring and hidden prompt",
++        id: "activity-4",
++        kind: "progress",
++        missionId: "mission-42",
++        summary: "Reviewed the launch evidence.",
++      },
++    ],
++    summary: {
++      attentionCount: 1,
++      completedMilestones: 2,
++      createdAt: "2026-07-21T13:00:00.000Z",
++      currentPhase: "Reviewing evidence",
++      id: "mission-42",
++      latestActivity: "Reviewed the launch evidence.",
++      objective: "Prepare an evidence-backed launch brief.",
++      projectId: "project-1",
++      state: "working",
++      title: "Prepare the launch",
++      totalMilestones: 5,
++      updatedAt: "2026-07-21T13:45:00.000Z",
++      version: 1,
++      workspaceId: "workspace-personal-project-1",
++    },
++    verification: {
++      caveats: [],
++      evidenceCount: 2,
++      state: "in_progress",
++      summary: "Evidence review is in progress.",
++    },
++    version: 1,
++  };
++}
++
++function json(body: unknown, status = 200, headers?: HeadersInit) {
++  return Response.json(body, { status, ...(headers ? { headers } : {}) });
++}
++
++interface Deferred<T> {
++  promise: Promise<T>;
++  resolve(value: T): void;
++}
++
++function deferred<T>(): Deferred<T> {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((onResolve) => {
++    resolve = onResolve;
++  });
++  return { promise, resolve };
++}
++
++function installApi(
++  missionHandler: () => Response | Promise<Response> = () => json(snapshot()),
++) {
++  const fetchMock = vi.fn((input: RequestInfo | URL) => {
++    const path = String(input);
++    if (path === "/api/health") {
++      return Promise.resolve(json({ ok: true, service: "morrow-orchestrator" }));
++    }
++    if (path === "/api/web/missions/mission-42") {
++      return Promise.resolve(missionHandler());
++    }
++    throw new Error(`Unexpected request: ${path}`);
++  });
++  vi.stubGlobal("fetch", fetchMock);
++  return fetchMock;
++}
++
++function renderMission() {
++  const queryClient = new QueryClient({
++    defaultOptions: { queries: { retry: false } },
++  });
++  const router = createAppRouter(
++    createMemoryHistory({ initialEntries: ["/app/missions/mission-42"] }),
++  );
++
++  render(
++    <QueryClientProvider client={queryClient}>
++      <ThemeProvider>
++        <RuntimeStatusProvider>
++          <RouterProvider router={router as AnyRouter} />
++        </RuntimeStatusProvider>
++      </ThemeProvider>
++    </QueryClientProvider>,
++  );
++
++  return { queryClient, router };
++}
++
++function streamEnvelope(cursor: number) {
++  return JSON.stringify({
++    cursor,
++    emittedAt: "2026-07-21T14:00:00.000Z",
++    eventType: "mission.updated",
++    missionId: "mission-42",
++    payload: { eventId: `event-${cursor}`, raw: "PRIVATE INTERNAL PAYLOAD" },
++    version: 1,
++  });
++}
++
++beforeEach(() => {
++  FakeEventSource.instances = [];
++  Object.defineProperty(navigator, "onLine", {
++    configurable: true,
++    value: true,
++  });
++  vi.stubGlobal("EventSource", FakeEventSource);
++});
++
++afterEach(() => {
++  localStorage.clear();
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("MissionPage", () => {
++  it("answers the five overview questions with milestone counts and states but no fabricated percentage or estimate", async () => {
++    installApi();
++    renderMission();
++
++    expect(
++      await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
++    ).toBeVisible();
++    expect(screen.getByText("Prepare an evidence-backed launch brief.")).toBeVisible();
++    expect(screen.getByRole("heading", { name: "Completed" })).toBeVisible();
++    expect(screen.getByText("Gather requirements")).toBeVisible();
++    expect(screen.getByRole("heading", { name: "Current work" })).toBeVisible();
++    expect(
++      screen.getByText("Comparing the draft against the launch checklist."),
++    ).toBeVisible();
++    expect(screen.getByRole("heading", { name: "Attention needed" })).toBeVisible();
++    expect(screen.getByText("Publication decision")).toBeVisible();
++    expect(screen.getByRole("heading", { name: "Remaining milestones" })).toBeVisible();
++    expect(screen.getByText("Review the evidence")).toBeVisible();
++    expect(screen.getByText("Running")).toBeVisible();
++    expect(screen.getByText("Pending")).toBeVisible();
++    expect(screen.getByText("Failed")).toBeVisible();
++    expect(screen.getByText("2 completed · 3 remaining · 5 total")).toBeVisible();
++    expect(document.body).not.toHaveTextContent(/\d+\s*%|estimated|time remaining/i);
++  });
++
++  it("provides four keyboard-operable tabs and honest later-slice placeholders", async () => {
++    installApi();
++    const user = userEvent.setup();
++    renderMission();
++
++    const overview = await screen.findByRole("tab", { name: "Overview" });
++    const activity = screen.getByRole("tab", { name: "Activity" });
++    const work = screen.getByRole("tab", { name: "Work" });
++    const result = screen.getByRole("tab", { name: "Result" });
++    expect(screen.getByRole("tablist", { name: "Mission views" })).toBeVisible();
++    expect(overview).toHaveAttribute("aria-selected", "true");
++    expect(overview).toHaveAttribute("tabindex", "0");
++    expect(activity).toHaveAttribute("tabindex", "-1");
++
++    overview.focus();
++    await user.keyboard("{ArrowRight}");
++    expect(activity).toHaveFocus();
++    expect(activity).toHaveAttribute("aria-selected", "true");
++    expect(screen.getByRole("tabpanel", { name: "Activity" })).toBeVisible();
++
++    await user.keyboard("{End}");
++    expect(result).toHaveFocus();
++    expect(
++      screen.getByText("A result will appear here only when the mission produces one."),
++    ).toBeVisible();
++
++    await user.keyboard("{Home}");
++    expect(overview).toHaveFocus();
++    await user.keyboard("{ArrowLeft}");
++    expect(result).toHaveFocus();
++
++    await user.click(work);
++    expect(
++      screen.getByText("Mission work inspection arrives in a later product slice."),
++    ).toBeVisible();
++  });
++
++  it("keeps activity collapsed and exposes only allowed technical metadata", async () => {
++    installApi();
++    const user = userEvent.setup();
++    renderMission();
++
++    await user.click(await screen.findByRole("tab", { name: "Activity" }));
++    const summary = screen.getByText("Reviewed the launch evidence.");
++    const details = summary.closest("details");
++    expect(details).not.toHaveAttribute("open");
++    expect(screen.getByText("Researcher")).not.toBeVisible();
++    expect(document.body).not.toHaveTextContent("PRIVATE CHAIN OF THOUGHT");
++    expect(document.body).not.toHaveTextContent("PRIVATE INTERNAL PAYLOAD");
++
++    await user.click(summary);
++    expect(details).toHaveAttribute("open");
++    expect(within(details as HTMLElement).getByText("Researcher")).toBeVisible();
++    expect(within(details as HTMLElement).getByText("artifact-1")).toBeVisible();
++    expect(within(details as HTMLElement).getByText("activity-4")).toBeVisible();
++    expect(within(details as HTMLElement).getByText("4")).toBeVisible();
++    expect(within(details as HTMLElement).getByText(/2026/)).toBeVisible();
++    expect(document.body).not.toHaveTextContent("PRIVATE CHAIN OF THOUGHT");
++  });
++
++  it("renders explicit empty milestone and activity states", async () => {
++    const empty = snapshot();
++    empty.milestones = [];
++    empty.recentActivity = [];
++    empty.attention = [];
++    empty.currentWork = null;
++    empty.summary.completedMilestones = 0;
++    empty.summary.totalMilestones = 0;
++    empty.summary.attentionCount = 0;
++    empty.summary.latestActivity = null;
++    installApi(() => json(empty));
++    const user = userEvent.setup();
++    renderMission();
++
++    expect(await screen.findByText("No milestones have been defined yet.")).toBeVisible();
++    expect(screen.getByText("No attention is needed right now.")).toBeVisible();
++    expect(screen.getByText("No current work is reported.")).toBeVisible();
++    await user.click(screen.getByRole("tab", { name: "Activity" }));
++    expect(screen.getByText("No meaningful activity has been recorded yet.")).toBeVisible();
++  });
++
++  it("shows loading, maps a typed unknown-mission error, and retries the authoritative query", async () => {
++    const first = deferred<Response>();
++    let missionRequests = 0;
++    installApi(() => {
++      missionRequests += 1;
++      return missionRequests === 1
++        ? first.promise
++        : json(snapshot());
++    });
++    const user = userEvent.setup();
++    renderMission();
++
++    expect(await screen.findByText("Loading mission…")).toHaveAttribute(
++      "role",
++      "status",
++    );
++    first.resolve(
++      json(
++        {
++          error: { code: "NOT_FOUND", message: "Mission not found" },
++          version: 1,
++        },
++        404,
++        { "x-trace-id": "trace-404" },
++      ),
++    );
++
++    const error = await screen.findByRole("alert");
++    expect(error).toHaveTextContent("Mission not found");
++    expect(error).toHaveTextContent("This mission is unavailable or no longer exists.");
++    expect(error).toHaveTextContent("Your synchronized mission data remains unchanged.");
++    await user.click(screen.getByRole("button", { name: "Retry mission" }));
++    expect(
++      await screen.findByRole("heading", { level: 1, name: "Prepare the launch" }),
++    ).toBeVisible();
++    expect(missionRequests).toBe(2);
++  });
++
++  it("preserves a structured API failure message without inventing recovery details", async () => {
++    installApi(() =>
++      json(
++        {
++          error: {
++            code: "RUNTIME_UNAVAILABLE",
++            message: "The local runtime is unavailable.",
++          },
++          version: 1,
++        },
++        503,
++      ),
++    );
++    renderMission();
++
++    const error = await screen.findByRole("alert");
++    expect(error).toHaveTextContent("Mission could not be loaded");
++    expect(error).toHaveTextContent("The local runtime is unavailable.");
++    expect(error).not.toHaveTextContent("restarted");
++  });
++
++  it("announces only meaningful synchronized state and activity changes, not heartbeat/default messages", async () => {
++    let missionRequests = 0;
++    const updated = snapshot();
++    updated.summary.state = "reviewing";
++    updated.summary.currentPhase = "Independent review";
++    updated.summary.latestActivity = "Requested independent verification.";
++    updated.summary.updatedAt = "2026-07-21T14:00:00.000Z";
++    updated.recentActivity = [
++      ...updated.recentActivity,
++      {
++        actor: { kind: "morrow", name: "Morrow" },
++        artifactIds: [],
++        createdAt: "2026-07-21T14:00:00.000Z",
++        cursor: 5,
++        detail: "PRIVATE REASONING MUST STAY HIDDEN",
++        id: "activity-5",
++        kind: "verification",
++        missionId: "mission-42",
++        summary: "Requested independent verification.",
++      },
++    ];
++    installApi(() => {
++      missionRequests += 1;
++      return json(missionRequests === 1 ? snapshot() : updated);
++    });
++    renderMission();
++
++    await screen.findByRole("heading", { name: "Prepare the launch" });
++    const source = FakeEventSource.instances[0];
++    const announcements = screen.getByLabelText("Mission updates");
++    expect(announcements).toBeEmptyDOMElement();
++
++    act(() => source?.emit("open"));
++    expect(screen.getByText("Synchronized")).toBeVisible();
++    act(() => source?.emit("message", streamEnvelope(1)));
++    expect(missionRequests).toBe(1);
++    expect(announcements).toBeEmptyDOMElement();
++    expect(screen.getByText("Synchronized")).toBeVisible();
++
++    act(() => source?.emit("mission.updated", streamEnvelope(1)));
++    await waitFor(() => expect(missionRequests).toBe(2));
++    expect(
++      await screen.findByText(
++        "Mission state changed to Reviewing. Activity update: Requested independent verification.",
++      ),
++    ).toHaveAttribute("aria-live", "polite");
++    expect(document.body).not.toHaveTextContent("PRIVATE REASONING");
++    expect(document.body).not.toHaveTextContent("PRIVATE INTERNAL PAYLOAD");
++  });
++});
+diff --git a/apps/web/src/features/missions/mission-page.tsx b/apps/web/src/features/missions/mission-page.tsx
+index 458e884..fdff411 100644
+--- a/apps/web/src/features/missions/mission-page.tsx
++++ b/apps/web/src/features/missions/mission-page.tsx
+@@ -1,20 +1,251 @@
+-import { Surface } from "@morrow/ui";
++import type { WebMissionSnapshot, WebMissionUiState } from "@morrow/contracts";
++import { ErrorCard, Surface } from "@morrow/ui";
++import { useQuery } from "@tanstack/react-query";
+ import { useParams } from "@tanstack/react-router";
++import {
++  useEffect,
++  useId,
++  useRef,
++  useState,
++  type KeyboardEvent,
++} from "react";
++import { ApiClientError } from "../../api/client.js";
++import { useMissionStream } from "../../api/mission-stream.js";
++import { missionQueries } from "../../api/query-keys.js";
++import { MissionActivity } from "./mission-activity.js";
++import { MissionOverview } from "./mission-overview.js";
+ 
+-export function MissionPage() {
+-  const { missionId } = useParams({ strict: false });
++const tabs = ["Overview", "Activity", "Work", "Result"] as const;
++type MissionTab = (typeof tabs)[number];
++
++const missionStateLabels: Record<WebMissionUiState, string> = {
++  draft: "Draft",
++  needs_input: "Needs input",
++  working: "Working",
++  reviewing: "Reviewing",
++  blocked: "Blocked",
++  failed_recoverable: "Failed, recoverable",
++  failed: "Failed",
++  completed_verified: "Completed and verified",
++  completed_with_caveats: "Completed with caveats",
++  cancelled: "Cancelled",
++  superseded: "Superseded",
++};
++
++function MissionLoadError({ error, retry }: { error: unknown; retry: () => void }) {
++  const typed = error instanceof ApiClientError ? error : null;
++  const notFound = typed?.status === 404 || typed?.code === "NOT_FOUND";
+ 
+   return (
+-    <section aria-labelledby="mission-heading" className="morrow-page">
++    <section aria-labelledby="mission-error-heading" className="morrow-page">
+       <div className="morrow-page__heading">
+         <p className="morrow-eyebrow">Mission</p>
+-        <h1 id="mission-heading">Mission workspace</h1>
+-        <p>Mission ID: {missionId}</p>
++        <h1 id="mission-error-heading">
++          {notFound ? "Mission not found" : "Mission could not be loaded"}
++        </h1>
+       </div>
+-      <Surface padding="large">
+-        <h2>Workspace ready</h2>
+-        <p>Overview and live activity arrive in a later product slice.</p>
+-      </Surface>
++      <ErrorCard
++        attempted={[]}
++        continuation="Retry the authoritative mission snapshot when the local service is available."
++        explanation={
++          notFound
++            ? "This mission is unavailable or no longer exists."
++            : (typed?.message ?? "The request could not be completed.")
++        }
++        preservedMessage="Your synchronized mission data remains unchanged."
++        recommendedAction={{ label: "Retry mission", onClick: retry }}
++        title={notFound ? "Mission not found" : "Mission could not be loaded"}
++      />
+     </section>
+   );
+ }
++
++function MissionPlaceholder({ tab }: { tab: "Work" | "Result" }) {
++  return (
++    <Surface padding="large">
++      <h2>{tab}</h2>
++      <p>
++        {tab === "Work"
++          ? "Mission work inspection arrives in a later product slice."
++          : "A result will appear here only when the mission produces one."}
++      </p>
++    </Surface>
++  );
++}
++
++function MissionWorkspace({ snapshot }: { snapshot: WebMissionSnapshot }) {
++  const [activeTab, setActiveTab] = useState<MissionTab>("Overview");
++  const [announcement, setAnnouncement] = useState("");
++  const tabIdPrefix = useId();
++  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
++  const previous = useRef({
++    activity: snapshot.summary.latestActivity,
++    missionId: snapshot.summary.id,
++    state: snapshot.summary.state,
++  });
++  const stream = useMissionStream(snapshot.summary.id);
++
++  useEffect(() => {
++    const last = previous.current;
++    if (last.missionId !== snapshot.summary.id) {
++      previous.current = {
++        activity: snapshot.summary.latestActivity,
++        missionId: snapshot.summary.id,
++        state: snapshot.summary.state,
++      };
++      setAnnouncement("");
++      return;
++    }
++
++    const updates: string[] = [];
++    if (last.state !== snapshot.summary.state) {
++      updates.push(
++        `Mission state changed to ${missionStateLabels[snapshot.summary.state]}.`,
++      );
++    }
++    if (
++      snapshot.summary.latestActivity &&
++      last.activity !== snapshot.summary.latestActivity
++    ) {
++      updates.push(`Activity update: ${snapshot.summary.latestActivity}`);
++    }
++    previous.current = {
++      activity: snapshot.summary.latestActivity,
++      missionId: snapshot.summary.id,
++      state: snapshot.summary.state,
++    };
++    if (updates.length > 0) setAnnouncement(updates.join(" "));
++  }, [snapshot.summary.id, snapshot.summary.latestActivity, snapshot.summary.state]);
++
++  const activateTab = (index: number, moveFocus: boolean) => {
++    const next = tabs[index];
++    if (!next) return;
++    setActiveTab(next);
++    if (moveFocus) tabRefs.current[index]?.focus();
++  };
++
++  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
++    const currentIndex = tabs.indexOf(activeTab);
++    let nextIndex: number | null = null;
++    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
++    if (event.key === "ArrowLeft") {
++      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
++    }
++    if (event.key === "Home") nextIndex = 0;
++    if (event.key === "End") nextIndex = tabs.length - 1;
++    if (nextIndex === null) return;
++    event.preventDefault();
++    activateTab(nextIndex, true);
++  };
++
++  return (
++    <section aria-labelledby="mission-heading" className="morrow-page morrow-mission-page">
++      <div className="morrow-mission-header">
++        <div className="morrow-page__heading">
++          <p className="morrow-eyebrow">Mission</p>
++          <h1 id="mission-heading">{snapshot.summary.title}</h1>
++        </div>
++        <div className="morrow-mission-header__status">
++          <span className="morrow-mission-state" data-state={snapshot.summary.state}>
++            {missionStateLabels[snapshot.summary.state]}
++          </span>
++          <span>{snapshot.summary.currentPhase}</span>
++          <span
++            aria-atomic="true"
++            aria-live="polite"
++            className="morrow-mission-sync"
++            data-state={stream.status}
++            role="status"
++          >
++            {stream.statusMessage}
++          </span>
++        </div>
++      </div>
++
++      <p
++        aria-atomic="true"
++        aria-label="Mission updates"
++        aria-live="polite"
++        className="morrow-sr-only"
++      >
++        {announcement}
++      </p>
++
++      <div aria-label="Mission views" className="morrow-mission-tabs" role="tablist">
++        {tabs.map((tab, index) => {
++          const selected = tab === activeTab;
++          return (
++            <button
++              aria-controls={`${tabIdPrefix}-panel-${tab.toLowerCase()}`}
++              aria-selected={selected}
++              id={`${tabIdPrefix}-tab-${tab.toLowerCase()}`}
++              key={tab}
++              onClick={() => activateTab(index, false)}
++              onKeyDown={handleTabKeyDown}
++              ref={(node) => {
++                tabRefs.current[index] = node;
++              }}
++              role="tab"
++              tabIndex={selected ? 0 : -1}
++              type="button"
++            >
++              {tab}
++            </button>
++          );
++        })}
++      </div>
++
++      <div
++        aria-labelledby={`${tabIdPrefix}-tab-${activeTab.toLowerCase()}`}
++        id={`${tabIdPrefix}-panel-${activeTab.toLowerCase()}`}
++        role="tabpanel"
++        tabIndex={0}
++      >
++        {activeTab === "Overview" ? <MissionOverview snapshot={snapshot} /> : null}
++        {activeTab === "Activity" ? (
++          <MissionActivity activity={snapshot.recentActivity} />
++        ) : null}
++        {activeTab === "Work" || activeTab === "Result" ? (
++          <MissionPlaceholder tab={activeTab} />
++        ) : null}
++      </div>
++    </section>
++  );
++}
++
++export function MissionPage() {
++  const { missionId } = useParams({ strict: false });
++  const mission = useQuery({
++    ...missionQueries.detail(missionId ?? ""),
++    enabled: Boolean(missionId),
++  });
++
++  if (mission.isPending) {
++    return (
++      <section aria-labelledby="mission-loading-heading" className="morrow-page">
++        <div className="morrow-page__heading">
++          <p className="morrow-eyebrow">Mission</p>
++          <h1 id="mission-loading-heading">Mission workspace</h1>
++        </div>
++        <Surface padding="large">
++          <p aria-live="polite" role="status">
++            Loading mission…
++          </p>
++        </Surface>
++      </section>
++    );
++  }
++
++  if (mission.isError) {
++    return (
++      <MissionLoadError
++        error={mission.error}
++        retry={() => {
++          void mission.refetch();
++        }}
++      />
++    );
++  }
++
++  return <MissionWorkspace snapshot={mission.data} />;
++}
+diff --git a/apps/web/src/styles/app.css b/apps/web/src/styles/app.css
+index 7101e20..7b97d35 100644
+--- a/apps/web/src/styles/app.css
++++ b/apps/web/src/styles/app.css
+@@ -178,20 +178,178 @@ a {
+ }
+ 
+ .morrow-eyebrow {
+   color: var(--morrow-accent);
+   font-size: 0.75rem;
+   font-weight: 750;
+   letter-spacing: 0.08em;
+   text-transform: uppercase;
+ }
+ 
++.morrow-mission-page {
++  gap: var(--morrow-space-5);
++}
++
++.morrow-mission-header {
++  display: flex;
++  align-items: end;
++  justify-content: space-between;
++  gap: var(--morrow-space-4);
++}
++
++.morrow-mission-header__status {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  justify-content: flex-end;
++  gap: var(--morrow-space-2);
++  color: var(--morrow-text-muted);
++  font-size: 0.875rem;
++}
++
++.morrow-mission-state,
++.morrow-mission-sync,
++.morrow-mission-milestone-state {
++  padding: var(--morrow-space-1) var(--morrow-space-2);
++  color: var(--morrow-text);
++  background: var(--morrow-surface-subtle);
++  border: 1px solid var(--morrow-border);
++  border-radius: 999px;
++  font-size: 0.75rem;
++  font-weight: 700;
++}
++
++.morrow-mission-state[data-state="completed_verified"],
++.morrow-mission-milestone-state[data-state="completed"],
++.morrow-mission-sync[data-state="synchronized"] {
++  color: var(--morrow-success);
++}
++
++.morrow-mission-state[data-state="blocked"],
++.morrow-mission-state[data-state="needs_input"],
++.morrow-mission-milestone-state[data-state="failed"],
++.morrow-mission-sync[data-state="offline"] {
++  color: var(--morrow-warning);
++}
++
++.morrow-mission-tabs {
++  display: flex;
++  gap: var(--morrow-space-1);
++  overflow-x: auto;
++  border-bottom: 1px solid var(--morrow-border);
++}
++
++.morrow-mission-tabs button {
++  min-width: 88px;
++  min-height: 44px;
++  padding: 0 var(--morrow-space-3);
++  color: var(--morrow-text-muted);
++  background: transparent;
++  border: 0;
++  border-bottom: 2px solid transparent;
++  font: inherit;
++  font-weight: 650;
++}
++
++.morrow-mission-tabs button[aria-selected="true"] {
++  color: var(--morrow-text);
++  border-bottom-color: var(--morrow-accent);
++}
++
++.morrow-mission-overview {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: var(--morrow-space-4);
++}
++
++.morrow-mission-overview__objective,
++.morrow-mission-milestone-count {
++  grid-column: 1 / -1;
++}
++
++.morrow-mission-milestone-count {
++  margin: 0;
++  color: var(--morrow-text-muted);
++  font-size: 0.875rem;
++  font-weight: 650;
++}
++
++.morrow-mission-milestones,
++.morrow-mission-attention-list,
++.morrow-mission-activity,
++.morrow-mission-technical-details ul {
++  padding: 0;
++  margin: 0;
++  list-style: none;
++}
++
++.morrow-mission-milestones,
++.morrow-mission-attention-list,
++.morrow-mission-activity {
++  display: grid;
++  gap: var(--morrow-space-3);
++}
++
++.morrow-mission-milestones li {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: var(--morrow-space-3);
++}
++
++.morrow-mission-attention-list li {
++  display: grid;
++  gap: var(--morrow-space-2);
++  padding-left: var(--morrow-space-3);
++  border-left: 3px solid var(--morrow-warning);
++}
++
++.morrow-mission-secondary-copy {
++  font-size: 0.875rem;
++}
++
++.morrow-mission-activity details {
++  border-bottom: 1px solid var(--morrow-border);
++}
++
++.morrow-mission-activity summary {
++  min-height: 44px;
++  padding: var(--morrow-space-3) 0;
++  color: var(--morrow-text);
++  cursor: pointer;
++  font-weight: 650;
++}
++
++.morrow-mission-technical-details {
++  display: grid;
++  gap: var(--morrow-space-3);
++  padding: 0 0 var(--morrow-space-4) var(--morrow-space-4);
++  margin: 0;
++}
++
++.morrow-mission-technical-details div {
++  display: grid;
++  grid-template-columns: minmax(110px, 0.3fr) 1fr;
++  gap: var(--morrow-space-3);
++}
++
++.morrow-mission-technical-details dt {
++  color: var(--morrow-text-muted);
++  font-size: 0.8125rem;
++  font-weight: 700;
++}
++
++.morrow-mission-technical-details dd {
++  margin: 0;
++  overflow-wrap: anywhere;
++}
++
+ @media (max-width: 760px) {
+   .morrow-app-shell {
+     grid-template-columns: 1fr;
+     padding-bottom: 76px;
+   }
+ 
+   .morrow-sidebar {
+     position: fixed;
+     z-index: 5;
+     top: auto;
+@@ -237,11 +395,24 @@ a {
+     flex-direction: column;
+     justify-content: center;
+     gap: 2px;
+     padding: var(--morrow-space-1);
+     font-size: 0.7rem;
+   }
+ 
+   .morrow-main {
+     padding: var(--morrow-space-5) var(--morrow-space-4);
+   }
++
++  .morrow-mission-header {
++    align-items: start;
++    flex-direction: column;
++  }
++
++  .morrow-mission-header__status {
++    justify-content: flex-start;
++  }
++
++  .morrow-mission-overview {
++    grid-template-columns: 1fr;
++  }
+ }

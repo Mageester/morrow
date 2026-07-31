@@ -30,11 +30,19 @@ export class MissionRuntimeTransitionError extends Error {
   }
 }
 
+/** The only cause that may leave `blocked`: an explicit, user-initiated retry. */
+export const MISSION_RUNTIME_USER_RETRY_CAUSE = "user_retry";
+
 export function canTransitionMissionRuntime(
   from: MissionRuntimeState,
   to: MissionRuntimeState,
   cause: string,
 ): boolean {
+  // `blocked` is terminal for the controller: it never resumes on its own.
+  // A human may explicitly revive it, which restarts the loop at replanning.
+  if (from === "blocked") {
+    return to === "replanning" && cause === MISSION_RUNTIME_USER_RETRY_CAUSE;
+  }
   if ((MISSION_RUNTIME_TERMINAL_STATES as readonly MissionRuntimeState[]).includes(from)) {
     return false;
   }

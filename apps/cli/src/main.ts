@@ -17,13 +17,14 @@ import { panicCommand } from "./commands/panic.js";
 import { skillsCommand } from "./commands/skills.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { providersCommand } from "./commands/providers.js";
+import { buildCommand } from "./commands/build.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { importCommand } from "./commands/import.js";
 import { processesCommand } from "./commands/processes.js";
 import { worktreesCommand } from "./commands/worktrees.js";
 import { integrationsCommand } from "./commands/integrations.js";
 import { symbolsCommand } from "./commands/symbols.js";
-import { buildCommand, missionCommand, printBuildHelp, printMissionHelp } from "./commands/mission.js";
+import { missionCommand, printMissionHelp } from "./commands/mission.js";
 import { cortexCommand, printCortexHelp } from "./commands/cortex.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
 import { uninstallCommand } from "./commands/uninstall.js";
@@ -75,7 +76,6 @@ export async function run(argv: string[]): Promise<number> {
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "cortex") return printCortexHelp(out);
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "mission") return printMissionHelp(out);
     if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "acceptance") return printAcceptanceHelp(out);
-    if (flagBool(parsed.flags, "help") && parsed.positionals[0] === "build") return printBuildHelp(out);
     if (parsed.positionals[0] === "help") return printHelp(out);
     if (flagBool(parsed.flags, "version")) return printVersion(out);
     const invocation = resolveInvocation(parsed.positionals);
@@ -134,7 +134,6 @@ export async function run(argv: string[]): Promise<number> {
     switch (root) {
       case "ask": { const p = promptOf(); return await chatWith({ "read-only": true, ...(p ? { message: p } : {}) }); }
       case "fix": { const p = promptOf(); return await chatWith({ ...(p ? { message: p } : {}) }); }
-      case "build": return await buildCommand(ctx, sub, args);
       case "yolo": { const p = promptOf(); return await chatWith({ build: true, yolo: true, ...(p ? { message: p } : {}) }); }
       case "plan": { const p = promptOf(); return await chatWith({ plan: true, ...(p ? { message: p } : {}) }); }
       case "new": return await chatWith({ new: true });
@@ -142,6 +141,7 @@ export async function run(argv: string[]): Promise<number> {
       case "acceptance": return await acceptanceCommand(ctx, sub, args);
       case "provenance": return await provenanceCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "capabilities": return await capabilitiesCommand(ctx);
+      case "build": return await buildCommand(ctx, [sub, ...args].filter((value): value is string => value !== undefined));
       case "mission": {
         // A bare `morrow mission` (no objective/subcommand) opens the interactive
         // shell / Mission Control; otherwise run the Verified Missions lifecycle.
@@ -236,6 +236,7 @@ function printHelp(out: Output): number {
     "",
     b("Start here"),
     `  morrow                       ${g("open the terminal agent shell")}`,
+    `  morrow build "…"             ${g("create a new project and build it end to end")}`,
     `  morrow mission               ${g("open Mission Control in the terminal")}`,
     `  morrow ask "…"               ${g("inspect and answer — never writes")}`,
     `  morrow plan "…"              ${g("produce a plan — no execution, no writes")}`,
@@ -251,6 +252,7 @@ function printHelp(out: Output): number {
     b("Setup"),
     `  morrow onboard               ${g("guided first-run setup")}`,
     `  morrow auth login|status     ${g("connect a model provider")}`,
+    `  morrow providers list        ${g("browse every supported model provider")}`,
     `  morrow model                 ${g("choose a model")}`,
     `  morrow settings              ${g("view or change preferences")}`,
     `  morrow doctor                ${g("check your environment")}`,

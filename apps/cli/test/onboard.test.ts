@@ -122,8 +122,8 @@ describe("CLI Onboarding Command", () => {
     vi.mocked(ask).mockResolvedValueOnce("Alex");
     // use case: select development (index 0)
     vi.mocked(select).mockResolvedValueOnce(0);
-    // provider setup: select skip (index 4)
-    vi.mocked(select).mockResolvedValueOnce(4);
+    // provider setup: press Enter at the catalog prompt to move on
+    vi.mocked(ask).mockResolvedValueOnce("");
     // agent mode: select Agent (index 2)
     vi.mocked(select).mockResolvedValueOnce(2);
     // skills selection: select enable all (index 0)
@@ -217,24 +217,28 @@ describe("CLI Onboarding Command", () => {
     config.set("user.onboardingStep", "provider", "user");
     vi.mocked(confirm).mockResolvedValueOnce(true); // resume
 
-    // Select OpenAI provider (index 0)
-    vi.mocked(select).mockResolvedValueOnce(0);
-    // Enter key
+    // Choose OpenAI by name at the catalog prompt.
+    vi.mocked(ask).mockResolvedValueOnce("openai");
+    // Decline subscription sign-in, use an API key instead.
+    vi.mocked(confirm).mockResolvedValueOnce(false);
     vi.mocked(askSecret).mockResolvedValueOnce("sk-invalid-key");
-    
+
     // Mock testProvider failure
-    const testMock = vi.fn().mockResolvedValue({ ok: false, detail: "API key invalid" });
+    const testMock = vi.fn().mockResolvedValue({ ok: false, detail: "API key invalid", errorKind: "auth", models: [] });
+    const removeMock = vi.fn().mockResolvedValue({ removed: ["OPENAI_API_KEY"] });
     ctx.api = () => ({
       listProviders: vi.fn().mockResolvedValue([
         { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
       ]),
+      configureProvider: vi.fn().mockResolvedValue({ written: ["OPENAI_API_KEY"], securePermissions: true, shadowedByEnv: [] }),
+      removeProviderCredentials: removeMock,
       testProvider: testMock,
       saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
     } as any);
 
-    // Prompted to keep key anyway? -> No
+    // Prompted to keep the credentials anyway? -> No
     vi.mocked(confirm).mockResolvedValueOnce(false);
-    // Configure another provider? -> No
+    // Set up another provider? -> No
     vi.mocked(confirm).mockResolvedValueOnce(false);
 
     // mode selection: Plan-only (index 0)
@@ -251,24 +255,51 @@ describe("CLI Onboarding Command", () => {
     const exitCode = await onboardCommand(ctx, "", []);
     expect(exitCode).toBe(EXIT.OK);
     expect(testMock).toHaveBeenCalledWith("openai");
+    // Declining to keep an unverified credential must actually remove it.
+    expect(removeMock).toHaveBeenCalledWith("openai");
   });
 
-  it("completes clean provider onboarding without restarting the packaged service", async () => {
+  /**
+   * Regression test for the first-run setup bug.
+   *
+   * Onboarding used to write the secrets file directly from the CLI process and
+   * then ask the already-running service to validate the key. The service had
+   * read its environment at startup and never re-read the file, so it validated
+   * a credential it did not have — a correct, freshly pasted key was reported
+   * as "Validation failed" to a brand-new user, who was then offered the chance
+   * to throw it away.
+   *
+   * The credential must be persisted through `configureProvider`, which both
+   * saves it and hot-applies it inside the service that performs the request,
+   * and that must happen BEFORE verification.
+   */
+  it("applies a new key in the running service before verifying it", async () => {
     const lifecycle = await import("../src/service/lifecycle.js");
+    const callOrder: string[] = [];
 
-    vi.mocked(ask).mockResolvedValueOnce("");
-    vi.mocked(ask).mockResolvedValueOnce("Alex");
-    vi.mocked(select).mockResolvedValueOnce(0);
-    vi.mocked(select).mockResolvedValueOnce(0);
+    vi.mocked(ask).mockResolvedValueOnce(""); // welcome
+    vi.mocked(ask).mockResolvedValueOnce("Alex"); // profile
+    vi.mocked(select).mockResolvedValueOnce(0); // use case
+    vi.mocked(ask).mockResolvedValueOnce("openai"); // pick provider by name
+    vi.mocked(confirm).mockResolvedValueOnce(false); // no subscription sign-in
     vi.mocked(askSecret).mockResolvedValueOnce("sk-test-clean-install");
-    vi.mocked(confirm).mockResolvedValueOnce(false);
-    vi.mocked(select).mockResolvedValueOnce(2);
-    vi.mocked(select).mockResolvedValueOnce(2);
-    vi.mocked(select).mockResolvedValueOnce(2);
-    vi.mocked(select).mockResolvedValueOnce(2);
-    vi.mocked(select).mockResolvedValueOnce(4);
+    vi.mocked(select).mockResolvedValueOnce(0); // default model from discovery
+    vi.mocked(confirm).mockResolvedValueOnce(false); // no further providers
+    vi.mocked(select).mockResolvedValueOnce(2); // mode
+    vi.mocked(select).mockResolvedValueOnce(2); // skills
+    vi.mocked(select).mockResolvedValueOnce(2); // project
+    vi.mocked(select).mockResolvedValueOnce(2); // no-project fallback
+    vi.mocked(select).mockResolvedValueOnce(4); // mission: finish
 
-    const testProvider = vi.fn().mockResolvedValue({ ok: true, latencyMs: 42 });
+    const configureProvider = vi.fn().mockImplementation(async () => {
+      callOrder.push("configure");
+      return { written: ["OPENAI_API_KEY"], securePermissions: true, shadowedByEnv: [] };
+    });
+    const testProvider = vi.fn().mockImplementation(async () => {
+      callOrder.push("test");
+      return { ok: true, latencyMs: 42, errorKind: null, models: [{ providerModelId: "gpt-5.6-sol" }] };
+    });
+
     ctx.api = () => ({
       health: vi.fn().mockResolvedValue({ ok: true }),
       listProjects: vi.fn().mockResolvedValue([]),
@@ -277,6 +308,7 @@ describe("CLI Onboarding Command", () => {
       listProviders: vi.fn().mockResolvedValue([
         { id: "openai", label: "OpenAI", configured: false, capabilities: {}, authStatus: "missing", models: [] }
       ]),
+      configureProvider,
       testProvider,
       saveOnboardingState: vi.fn().mockResolvedValue({ success: true }),
       createConversation: vi.fn().mockResolvedValue({ id: "c1", projectId: "p1", title: "First Mission" }),
@@ -285,7 +317,14 @@ describe("CLI Onboarding Command", () => {
     const exitCode = await onboardCommand(ctx, "", []);
 
     expect(exitCode).toBe(EXIT.OK);
+    // The key reached the service that will make the request…
+    expect(configureProvider).toHaveBeenCalledWith("openai", expect.objectContaining({ apiKey: "sk-test-clean-install" }));
+    // …and it got there before the verification that depends on it.
+    expect(callOrder.indexOf("configure")).toBeLessThan(callOrder.indexOf("test"));
     expect(testProvider).toHaveBeenCalledWith("openai");
+    // A model discovered from the provider is persisted as the default.
+    expect(configureProvider).toHaveBeenCalledWith("openai", { model: "gpt-5.6-sol" });
+    // Applying credentials must never require bouncing the service.
     expect(lifecycle.ensureRunning).toHaveBeenCalled();
     expect(lifecycle.stop).not.toHaveBeenCalled();
     expect(config.get("user.onboarded")).toBe(true);

@@ -16,7 +16,17 @@ iex (irm https://morrowproject.getaxiom.ca/install.ps1)
 
 The installer handles Node.js, downloads, checksum verification, shortcuts, and launch automatically. No Git, pnpm, or manual steps required.
 
-After install, run `morrow` to open the terminal agent shell, or `morrow onboard` for guided setup. Configure API keys with `morrow providers configure`; they are stored locally by Morrow and take effect without a restart.
+After install, run `morrow` to open the terminal agent shell, or `morrow onboard`
+for guided setup. To build something new from nothing, run
+`morrow build "<what you want>"` — it creates the project directory, registers
+it, and builds it end to end.
+
+Morrow supports 30 model providers. `morrow providers list` browses them grouped
+by kind; `morrow providers configure` runs a guided setup that offers
+subscription sign-in where one really exists, otherwise opens the provider's key
+page, verifies the credential, and lets you pick a default model from the models
+that key can actually reach. Credentials are stored locally and take effect
+without a restart. See [the provider reference](docs/providers.md).
 
 Beta.30 adds model and reasoning routing: an interactive `/model` picker with
 honest live status/context, and a normalized reasoning-effort control that is
@@ -133,6 +143,23 @@ a separate release gate. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 ### Running Individual Services
 - **Orchestrator**: `pnpm --filter @morrow/orchestrator start`
 - **Web App**: `pnpm --filter @morrow/web dev`
+
+### Local web app (`/app`)
+Morrow ships a local web application served by the orchestrator.
+
+- **Packaged install:** the orchestrator serves the app at
+  `http://127.0.0.1:4317/app`. `morrow open` opens it in your browser; the CLI
+  and terminal agent are unchanged.
+- **Source development:** run `pnpm --filter @morrow/web dev` and open the Vite
+  dev server at `http://127.0.0.1:4318/app` (it proxies `/api` to the
+  orchestrator on port 4317). The orchestrator only serves `/app` itself when
+  `MORROW_WEB_ROOT` points at a built bundle (`apps/web/dist`); the packaged
+  launcher sets this automatically.
+
+The app is a second presentation surface over the same authoritative mission
+endpoints — no provider secret, token, or credential is ever placed in browser
+storage or browser-visible payloads. See
+[ADR 0007](docs/decisions/0007-local-web-app-surface.md).
 
 ### Data Storage
 Morrow stores data locally. By default, global service state lives under `~/.morrow/`, including the primary SQLite database at `~/.morrow/morrow.db`. Project-local `.morrow/` remains available for workspace metadata.

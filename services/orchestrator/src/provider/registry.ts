@@ -1,4 +1,4 @@
-import type { ProviderAuthMode, ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } from "@morrow/contracts";
+import type { ProviderAuthMode, ProviderCategory, ProviderId, ProviderStatus, ProviderCapabilities, ProviderKind } from "@morrow/contracts";
 import { AiProvider, ProviderError, type ProviderProtocol, type ProviderRouteMetadata } from "./base.js";
 import { OpenAiCompatibleProvider } from "./openai-compatible.js";
 import { AnthropicProvider } from "./anthropic.js";
@@ -10,10 +10,12 @@ import {
   resolveLocalCredential,
   safeHost,
 } from "./credentials.js";
-import { providerEnvMapping } from "./secrets.js";
+import { providerCredentialIdentity, providerEnvMapping } from "./secrets.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
+import { PROVIDER_CATALOG, catalogProvider, catalogSetupHint, type CatalogProvider } from "./catalog.js";
 import { createHash } from "node:crypto";
 import type { ProviderModelDiscovery } from "../repositories/provider-model-discovery.js";
+import { OPENROUTER_API_BASE_URL } from "./connectivity.js";
 
 let modelDiscoveries: ProviderModelDiscovery[] = [];
 
@@ -21,18 +23,34 @@ export function installProviderModelDiscoveries(discoveries: ProviderModelDiscov
   modelDiscoveries = discoveries.map((item) => ({ ...item, models: [...item.models] }));
 }
 
-function withDiscovery(status: ProviderStatus): ProviderStatus {
+function withDiscovery(status: ProviderStatus, env: ProviderEnv): ProviderStatus {
   const authMode = status.authMode ?? "unknown";
   const discovery = modelDiscoveries.find((item) => item.providerId === status.id && item.authMode === authMode);
-  if (!discovery) return status;
-  if (discovery.status === "unavailable") return { ...status, available: false };
-  const models = discovery.models.map((model) => model.providerModelId);
-  if (models.length === 0) return { ...status, available: true };
-  return {
+  if (status.id === "openrouter" && discovery && discovery.credentialIdentity !== providerCredentialIdentity(status.id, env)) {
+    return { ...status, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (!discovery) return status.id === "openrouter" && status.configured
+    ? { ...status, configured: false, available: false, authStatus: "unavailable" }
+    : status;
+  const discoveredModels = discovery.models.map((model) => model.providerModelId);
+  const withDiscoveredModels: ProviderStatus = {
     ...status,
+    models: status.defaultModel && !discoveredModels.includes(status.defaultModel)
+      ? [status.defaultModel, ...discoveredModels]
+      : discoveredModels,
+    defaultModel: status.defaultModel,
+    lastSuccessAt: discovery.lastSuccessAt ?? null,
+  };
+  if (status.id === "openrouter" && (!discovery.expiresAt || Date.parse(discovery.expiresAt) <= Date.now())) {
+    return { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" };
+  }
+  if (discovery.status === "unavailable") return status.id === "openrouter"
+    ? { ...withDiscoveredModels, configured: false, available: false, authStatus: "unavailable" }
+    : { ...status, available: false };
+  if (discoveredModels.length === 0) return { ...withDiscoveredModels, available: true };
+  return {
+    ...withDiscoveredModels,
     available: true,
-    models,
-    defaultModel: status.defaultModel && models.includes(status.defaultModel) ? status.defaultModel : models[0] ?? null,
   };
 }
 
@@ -118,6 +136,50 @@ interface ProviderDescriptor {
   build(env: ProviderEnv, model?: string): AiProvider;
 }
 
+/**
+ * Presentation metadata for the bespoke providers, so setup UIs can group and
+ * explain them the same way they do catalog entries. Catalog providers derive
+ * theirs from the catalog table instead of repeating it here.
+ *
+ * `supportsOAuth` is the honest source of truth for "sign in with your
+ * subscription": it is true only for providers with a real implemented flow in
+ * `oauth-flow.ts`, so a client can stop hardcoding its own list and silently
+ * drift out of sync with what actually works.
+ */
+const BUILTIN_PRESENTATION: Partial<Record<ProviderId, { category: ProviderCategory; keyUrl?: string; supportsOAuth?: boolean; hasFreeTier?: boolean; defaultBaseUrl?: string }>> = {
+  openai: { category: "assistant", keyUrl: "https://platform.openai.com/api-keys", supportsOAuth: true, defaultBaseUrl: "https://api.openai.com/v1" },
+  anthropic: { category: "assistant", keyUrl: "https://console.anthropic.com/settings/keys", supportsOAuth: true, defaultBaseUrl: "https://api.anthropic.com" },
+  gemini: { category: "assistant", keyUrl: "https://aistudio.google.com/apikey", hasFreeTier: true, defaultBaseUrl: "https://generativelanguage.googleapis.com" },
+  openrouter: { category: "gateway", keyUrl: "https://openrouter.ai/keys", hasFreeTier: true, defaultBaseUrl: "https://openrouter.ai/api/v1" },
+  deepseek: { category: "frontier", keyUrl: "https://platform.deepseek.com/api_keys", defaultBaseUrl: "https://api.deepseek.com/v1" },
+  "openai-compatible": { category: "custom" },
+  ollama: { category: "local", defaultBaseUrl: "http://127.0.0.1:11434/v1" },
+  mock: { category: "testing" },
+};
+
+/** Attach presentation metadata without touching routing-relevant fields. */
+function withPresentation(status: ProviderStatus): ProviderStatus {
+  const catalog = catalogProvider(status.id);
+  const meta = catalog
+    ? {
+        category: catalog.category as ProviderCategory,
+        ...(catalog.keyUrl ? { keyUrl: catalog.keyUrl } : {}),
+        supportsOAuth: false,
+        hasFreeTier: catalog.hasFreeTier ?? false,
+        defaultBaseUrl: catalog.defaultBaseUrl,
+      }
+    : BUILTIN_PRESENTATION[status.id];
+  if (!meta) return status;
+  return {
+    ...status,
+    category: meta.category,
+    keyUrl: meta.keyUrl ?? null,
+    supportsOAuth: meta.supportsOAuth ?? false,
+    hasFreeTier: meta.hasFreeTier ?? false,
+    defaultBaseUrl: meta.defaultBaseUrl ?? null,
+  };
+}
+
 const caps = (over: Partial<ProviderCapabilities>): ProviderCapabilities => ({
   streaming: true,
   toolCalls: true,
@@ -155,12 +217,12 @@ function apiKeyStatus(
   };
 }
 
-const DESCRIPTORS: ProviderDescriptor[] = [
+const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "openai",
     label: "OpenAI",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "gpt-5.6-sol",
     models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     setupHint: "Set OPENAI_API_KEY (and optionally OPENAI_BASE_URL for a compatible gateway).",
@@ -241,26 +303,26 @@ const DESCRIPTORS: ProviderDescriptor[] = [
     id: "openrouter",
     label: "OpenRouter",
     kind: "api-key",
-    capabilities: caps({ vision: true, customEndpoint: true }),
+    capabilities: caps({ vision: true, customEndpoint: false }),
     defaultModel: "openrouter/auto",
     models: ["openrouter/auto", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"],
     setupHint: "Set OPENROUTER_API_KEY.",
     note: "Aggregates many upstream models behind one OpenAI-compatible endpoint.",
     status(env) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
+      const c = { configured: !!env.OPENROUTER_API_KEY?.trim(), endpointType: "default" as const, host: "openrouter.ai" };
       return apiKeyStatus(this, c, env);
     },
     build(env, model) {
-      const c = resolveApiKeyCredential(env, { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1" });
-      if (!c.configured) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) throw new ProviderError("not_configured", "OpenRouter is not configured (OPENROUTER_API_KEY missing)", { kind: "auth" });
       return new OpenAiCompatibleProvider({
         id: "openrouter",
-        apiKey: c.apiKey!,
-        baseUrl: c.baseUrl,
+        apiKey,
+        baseUrl: OPENROUTER_API_BASE_URL,
         defaultModel: resolveModel(env, this.id, model, this.defaultModel),
         includeUsage: true,
         extraHeaders: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
-        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: c.endpointType, endpointHost: c.host }),
+        route: routeMetadata({ env, id: this.id, protocol: "openai-chat", endpointKind: "default", endpointHost: "openrouter.ai" }),
       });
     },
   },
@@ -422,12 +484,132 @@ const DESCRIPTORS: ProviderDescriptor[] = [
   },
 ];
 
+/**
+ * Build a descriptor for a catalog (OpenAI-compatible) provider.
+ *
+ * Two honesty rules shape this:
+ *
+ *  1. **No hardcoded model list.** A catalog provider reports the model the
+ *     operator persisted, plus anything live discovery found via
+ *     `withDiscovery`. It never invents ids, so `models` is legitimately empty
+ *     until the endpoint has been probed — that is a true statement about what
+ *     Morrow knows, not a defect.
+ *  2. **Local means opt-in.** A local server is only "configured" once the user
+ *     points Morrow at it, so Morrow never claims LM Studio is available just
+ *     because a default port exists.
+ */
+function catalogDescriptor(p: CatalogProvider): ProviderDescriptor {
+  const capabilities = caps({
+    vision: p.vision ?? false,
+    customEndpoint: true,
+    local: p.local ?? false,
+  });
+  const setupHint = catalogSetupHint(p);
+  // Only add the free-tier sentence when the summary does not already say it,
+  // otherwise the note reads "…including a free tier. Offers a free tier."
+  const note = p.hasFreeTier && !/free tier/i.test(p.summary) ? `${p.summary} Offers a free tier.` : p.summary;
+
+  const credential = (env: ProviderEnv) =>
+    p.local
+      ? resolveLocalCredential(env, { baseUrlEnv: p.baseUrlEnv, defaultBaseUrl: p.defaultBaseUrl })
+      : resolveApiKeyCredential(env, {
+          apiKeyEnv: p.apiKeyEnv!,
+          ...(p.fallbackApiKeyEnv ? { fallbackApiKeyEnv: p.fallbackApiKeyEnv } : {}),
+          baseUrlEnv: p.baseUrlEnv,
+          defaultBaseUrl: p.defaultBaseUrl,
+        });
+
+  return {
+    id: p.id,
+    label: p.label,
+    kind: p.local ? "local" : "api-key",
+    capabilities,
+    defaultModel: "",
+    models: [],
+    setupHint,
+    note,
+    status(env) {
+      const c = credential(env);
+      const override = modelOverride(env, p.id);
+      return {
+        version: 1,
+        id: p.id,
+        label: p.label,
+        kind: this.kind,
+        configured: c.configured,
+        available: c.configured,
+        endpointType: c.endpointType,
+        endpointHost: c.host,
+        authStatus: p.local ? "not-applicable" : c.configured ? "configured" : "missing",
+        authMode: p.local ? "catalog-local" : "catalog-api-key",
+        capabilities,
+        models: override ? [override] : [],
+        defaultModel: override ?? null,
+        note,
+        setupHint,
+      };
+    },
+    build(env, model) {
+      const c = credential(env);
+      if (!c.configured) {
+        throw new ProviderError(
+          "not_configured",
+          p.local
+            ? `${p.label} is not enabled (set ${p.baseUrlEnv} to a running server)`
+            : `${p.label} is not configured (${p.apiKeyEnv} missing)`,
+          { kind: p.local ? "invalid_request" : "auth" }
+        );
+      }
+      // Catalog providers ship no built-in model id, so a model must come from
+      // the request, the persisted default, or discovery. Failing loudly here is
+      // far better than silently sending an empty/guessed model the endpoint
+      // will reject with an opaque 400.
+      const resolved = model || modelOverride(env, p.id) || getProviderStatus(p.id, env)?.defaultModel || "";
+      if (!resolved) {
+        throw new ProviderError(
+          "not_configured",
+          `${p.label} requires a model (set ${p.modelEnv}, or run \`morrow providers test ${p.id}\` to discover the available models)`,
+          { kind: "invalid_request" }
+        );
+      }
+      // A local server is configured by URL, but some (notably vLLM started
+      // with --api-key) still require a bearer token. Read the key whenever the
+      // catalog declares one, so a secured local server is actually reachable.
+      const apiKey: string | undefined = p.local
+        ? p.apiKeyEnv
+          ? env[p.apiKeyEnv] || undefined
+          : undefined
+        : (c as { apiKey?: string }).apiKey;
+      return new OpenAiCompatibleProvider({
+        id: p.id,
+        ...(apiKey ? { apiKey } : {}),
+        baseUrl: c.baseUrl,
+        defaultModel: resolved,
+        includeUsage: p.includeUsage ?? true,
+        ...(p.extraHeaders ? { extraHeaders: p.extraHeaders } : {}),
+        route: routeMetadata({
+          env,
+          id: p.id,
+          protocol: "openai-chat",
+          endpointKind: c.endpointType,
+          endpointHost: c.host,
+        }),
+      });
+    },
+  };
+}
+
+const DESCRIPTORS: ProviderDescriptor[] = [
+  ...BUILTIN_DESCRIPTORS,
+  ...PROVIDER_CATALOG.map(catalogDescriptor),
+];
+
 const BY_ID = new Map<ProviderId, ProviderDescriptor>(DESCRIPTORS.map((d) => [d.id, d]));
 
 export function listProviderStatuses(env: ProviderEnv = process.env): ProviderStatus[] {
-  const statuses = DESCRIPTORS.map((d) => withDiscovery(d.status(env)));
+  const statuses = DESCRIPTORS.map((d) => withPresentation(withDiscovery(d.status(env), env)));
   if (env.MOCK_PROVIDER === "true") {
-    statuses.push(withDiscovery({
+    statuses.push(withPresentation(withDiscovery({
       version: 1,
       id: "mock",
       label: "Mock provider (testing)",
@@ -443,7 +625,7 @@ export function listProviderStatuses(env: ProviderEnv = process.env): ProviderSt
       defaultModel: "mock-model",
       note: "Deterministic in-memory provider. Only present because MOCK_PROVIDER=true.",
       setupHint: "Unset MOCK_PROVIDER to use real providers.",
-    }));
+    }, env)));
   }
   return statuses;
 }

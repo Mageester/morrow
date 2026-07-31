@@ -6,42 +6,179 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
-## [0.1.0-beta.33] - 2026-07-18
+### Fixed - autonomous `morrow build` reliability, and mission closure
 
-### Release status - conditionally ready (unchanged from beta.31)
+- Nine root causes behind unreliable autonomous `morrow build` runs, each with
+  regression tests: packaged `morrow build` + `--in` workspace scoping now
+  creates and scopes the directory it names; `read_artifact` is authorized
+  through the read-only boundary; a route the user pinned no longer falls back
+  silently; tool arguments are normalized at exactly one boundary; change
+  tracking stays on meaningful source; recovery strategy fingerprints reflect
+  real strategy changes, not just a new task id; the launcher no longer adopts
+  another install's service on a shared port; machine-wide process kills are
+  denied; and requirements the user actually stated in the objective are now
+  authoritative criteria instead of being reducible to two generic ones. See
+  `docs/decisions/0008-autonomous-build-reliability-boundaries.md`.
+- A mission that exhausted automatic recovery previously parked at `blocked`
+  with zero evidence and no grade, forever — Guardian, evidence recording, and
+  grading all lived behind a path that required an active worker task to reach
+  `completed`, which never happened once recovery gave up. The mission now
+  runs its verification gates once, records evidence against the criteria they
+  prove, and grades honestly before reaching its terminal state.
+- Service commands (`npm start` and equivalents) were graded by exit code, and
+  a working server does not exit — the check could only ever run out its
+  timeout. Service criteria now start the command, discover the URL it
+  announces, probe it, and always stop it. Browser criteria render at 1280x800
+  and 375x812 and fail on a blank page or a console error. See
+  `docs/decisions/0009-mission-closure-and-service-gates.md`, which also
+  documents a second, separate give-up path found during live proof that
+  remains open.
+
+## [0.1.0-beta.33] - 2026-07-25
+
+### Added - the web app can use every provider, and ships in the package
+
+- The web Connections page is now a browsable catalog of all 30 providers,
+  grouped by kind and searchable, with subscription-sign-in and free-tier
+  badges and a direct link to each provider's key page. It could previously
+  configure exactly one provider (OpenRouter) — its API client asserted
+  `z.literal("openrouter")` — leaving 29 unreachable from the browser.
+- Local servers get a base-URL field and an explicitly optional key.
+- The release package bundles the built web app, so `install.ps1` installs the
+  CLI, the local service, and the web UI together.
+
+### Fixed - every provider now gets OpenRouter's protections
+
+- Credentials are verified against the provider before being stored, for every
+  provider rather than OpenRouter alone. A mistyped key is rejected and the
+  working one preserved; previously every other provider stored an invalid key
+  and reported "connected". Verified live against Groq, Mistral, Cerebras, xAI,
+  and Together.
+- Where an endpoint serves its model list without authentication (OpenCode
+  Zen), a wrong key cannot honestly be rejected. The credential is saved and
+  reported as unverified — `credentialVerified: false` — instead of a bare
+  "connected".
+- Model discovery runs on save for every provider, so a freshly connected
+  provider has selectable models immediately instead of after a manual refresh.
+- Local servers can still be configured before they are started; only a
+  reachable-but-rejecting endpoint blocks the save.
+- Setting a default model or context limit no longer requires a network check,
+  so those are savable on an unconnected provider or offline.
+
+### Fixed - the installed web UI was invisible
+
+- The packaged launcher reported only the JSON API root, so a new user read
+  "Morrow is ready at http://127.0.0.1:4317", opened it, and got a page of raw
+  JSON. The web UI bundled into the same package was never mentioned by
+  `start`, `status`, or `help`, and `morrow open` — which already launched it —
+  was undiscoverable. All three now show the web app address, and only when a
+  web bundle is really present.
+
+### Fixed - release notes described the wrong release
+
+- The release workflow carried its body as a hardcoded string describing
+  beta.30, so every release published after beta.30 shipped beta.30's notes.
+  The body is now generated from this CHANGELOG's section for the version being
+  released, and publication fails if that section is missing.
+
+### Fixed - long-standing test and UI defects
+
+- The six orchestrator test failures recorded as accepted baseline noise were
+  both fixture schema drift: a hand-written CREATE TABLE that had fallen behind
+  the migrations, and a migration test seeding a pinned-schema database with
+  current repositories. The whole monorepo is now green.
+- Unknown web addresses rendered an empty shell with no heading and no way
+  back; there is now a not-found page.
+- The first-run home page reported a missing project while offering no way to
+  create one, and never surfaced the missing-provider prompt.
+
+### Added - 30 model providers, guided setup, and one-command project builds
+
+- A data-driven provider catalog adds 22 OpenAI-compatible providers on top of
+  the existing 7: OpenCode Zen, Vercel AI Gateway, GitHub Models, xAI, Mistral,
+  Moonshot, Z.ai, DashScope, Perplexity, Cohere, Groq, Cerebras, Together,
+  Fireworks, DeepInfra, Nebius, Novita, Hyperbolic, SambaNova, and the LM
+  Studio, llama.cpp, vLLM, and Jan local servers. The registry, secrets writer,
+  and connectivity checker all derive from one table, and a test keeps the four
+  surfaces in sync.
+- Catalog providers ship no hardcoded model ids. Models come from each
+  endpoint's own `/models` response, so Morrow never claims a model exists that
+  the endpoint would reject, and guided setup offers exactly the models a
+  credential can reach.
+- One guided setup flow now backs both `morrow onboard` and `morrow providers
+  configure`: browse or search the catalog grouped by kind, sign in with a
+  subscription where a real OAuth flow exists, otherwise open the provider's key
+  page, then verify and pick a default model. `supportsOAuth` is reported by the
+  server, so clients no longer keep a list that drifts from the flows that
+  actually work. OpenCode Zen is presented as API-key only, which matches its
+  official documentation.
+- `morrow build "<what you want>"` creates a new project directory, registers
+  it, and builds it end to end through the existing durable mission engine.
+  It refuses a directory that already has contents and a workspace root too
+  broad to scope autonomy to, so autonomous-by-default is safe here.
+
+### Fixed - first-run setup reported valid API keys as invalid
+
+- `morrow onboard` wrote the secrets file directly from the CLI process and then
+  asked the already-running service to validate the key. The service had read
+  its environment at startup and never re-read the file, so it validated a
+  credential it did not have: a correct, freshly pasted key was reported as
+  "Validation failed" to a brand-new user, who was then offered the chance to
+  discard it. Credentials now persist through `configureProvider`, which
+  hot-applies inside the service that performs the request, and a test asserts
+  that ordering.
+
+### Fixed - configured providers that could not be reached
+
+- Presets name a curated `providerOrder`, and routing stopped there, so a user
+  whose only configured provider was outside that list got "no configured
+  provider" from every preset. Any other configured provider is now appended
+  after the preset's own. A local-only preset filters appended providers too,
+  so the fallback can never turn a local-only run into a hosted one — and
+  local-only now works with LM Studio, llama.cpp, vLLM, and Jan, not Ollama
+  alone.
+- `preferredModel` returned null whenever a preset had no model preference for a
+  provider, treating "no opinion" the same as "recommended models, none
+  available". A preset only curates models for the providers it names.
+- A routing failure caused by a provider with no model selected said nothing was
+  configured, sending users to reconfigure a provider that already worked. It
+  now names the provider and the exact command to fix it.
+
+### Fixed - "verified" was claimed for credentials that were never checked
+
+- The provider check is a `GET` on the endpoint's model list, and some
+  providers serve that list without authentication. A deliberately invalid
+  OpenCode Zen key was reported as verified, telling a user they were ready
+  when their first real request would fail. The check now repeats the request
+  with the credential removed; if it still succeeds, the endpoint does not
+  enforce the key on that route, and the result says "reachable" instead of
+  "verified" and explains why. Reported as `credentialVerified` on the provider
+  test result.
+
+### Fixed - credential and endpoint handling
+
+- `github-models` no longer reads `GITHUB_TOKEN`. That variable is set in
+  nearly every CI runner and dev shell for unrelated reasons, and honouring it
+  marked a hosted network provider as configured — and made it eligible for
+  routing — for users who never opted in. A test forbids any catalog provider
+  from claiming a general-purpose environment variable.
+- A key-protected local server (for example `vllm --api-key`) was unreachable
+  because local providers dropped their API key. The key now reaches both the
+  adapter and the connectivity probe.
+- The CLI drove provider configuration from a hardcoded map of 5 ids, leaving
+  most providers unconfigurable and omitting Gemini from onboarding entirely.
+  It now reads the provider list from the server.
+- Onboarding's mission step compared the selected index against hardcoded
+  numbers, so reordering an option would silently change which branch ran.
+  Options are identified by id.
+
+### Release status - 0.1.0-beta.31 is conditionally ready
 
 Deterministic and packaged acceptance gates (foundation, durable-autonomy,
 sustained-autonomy) pass. The remaining certification gate — a completed,
 funded, real-external-model Guardian mission run from the packaged product —
 has not yet been run. See `docs/ACCEPTANCE.md#release-status-01.0-beta31`.
 This release is not stable, final, or fully verified until that gate runs.
-
-### Fixed - models available after OAuth sign-in, and scrollable long output
-
-- After signing in to a provider with subscription OAuth (e.g. ChatGPT), account
-  model availability was never discovered until the next service restart, so the
-  models kept reading "Account model availability has not been discovered yet."
-  The OAuth exchange now triggers model discovery immediately, the same way
-  startup does for already-configured providers.
-  (`services/orchestrator/src/server.ts`)
-- The interactive `/model` picker hid any current/preview model whose account
-  availability was still "unknown" — which is every model in the window between
-  sign-in and first discovery — leaving the picker confusingly sparse. Unknown
-  availability is now treated as "not yet proven" rather than "unavailable":
-  modern models stay listed with an explicit tag. (`apps/cli/src/terminal/model-picker.ts`)
-- Long assistant output and `/output`-family viewers were head-clipped to the
-  viewport with no way to read the rest — the terminal's own scrollback was
-  unusable because the frame is a full-repaint. Overlays are now a real
-  scrollable viewport: ↑/↓, PageUp/PageDown, and Home/End move through the
-  content with an "N above · N below" indicator, clamped to the true bounds.
-  (`apps/cli/src/terminal/app-view.ts`, `session.ts`)
-
-### Added - capability roadmap
-
-- Adopted `docs/CAPABILITY_RECOMMENDATIONS.md` (local-autonomy + verification
-  capabilities) as a tracked roadmap, cross-referenced from `MORROW_BACKLOG.md`.
-  Browser automation from beta.31 is marked shipped; dev-server lifecycle,
-  structured file-edit primitives, and the visual/accessibility loops remain open.
 
 ### Fixed - the packaged long-run acceptance gate was fabricating its own evidence
 

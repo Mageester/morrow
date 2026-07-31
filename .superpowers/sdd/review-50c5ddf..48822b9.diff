@@ -1,0 +1,785 @@
+diff --git a/.gitignore b/.gitignore
+index ed7361e..1d1ebe6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -57,3 +57,9 @@ morrow-cli-recovery-*.patch
+ *.patch
+ *.orig
+ *.rej
++
++# Web E2E (Playwright) transient artifacts
++apps/web/e2e/.state.json
++apps/web/test-results/
++apps/web/playwright-report/
++apps/web/blob-report/
+diff --git a/apps/web/e2e/accessibility.spec.ts b/apps/web/e2e/accessibility.spec.ts
+new file mode 100644
+index 0000000..b1e6ddb
+--- /dev/null
++++ b/apps/web/e2e/accessibility.spec.ts
+@@ -0,0 +1,54 @@
++import { test, expect, type Page } from "@playwright/test";
++import AxeBuilder from "@axe-core/playwright";
++import { loadState } from "./seed-state.js";
++
++const state = loadState();
++
++// This file is intentionally ordered before mission-vertical-slice.spec.ts
++// (alphabetical, workers=1) so the seeded attention request is still pending
++// when the destructive-dialog focus test opens (and cancels) it.
++test.describe.configure({ mode: "serial" });
++
++async function seriousViolations(page: Page) {
++  const results = await new AxeBuilder({ page })
++    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
++    .analyze();
++  return results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
++}
++
++test("Home has no serious or critical accessibility violations", async ({ page }) => {
++  await page.goto("/app/");
++  await expect(page.getByRole("heading", { name: "What should Morrow accomplish?" })).toBeVisible();
++  const violations = await seriousViolations(page);
++  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
++});
++
++test("Mission workspace with an attention request has no serious or critical violations", async ({ page }) => {
++  await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
++  await expect(page.getByRole("heading", { name: "Waiting for your approval" })).toBeVisible();
++  const violations = await seriousViolations(page);
++  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
++});
++
++test("Result mission page has no serious or critical violations", async ({ page }) => {
++  await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++  await page.getByRole("tab", { name: "Result" }).click();
++  const violations = await seriousViolations(page);
++  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
++});
++
++test("a destructive attention choice traps focus and restores it on cancel", async ({ page }) => {
++  await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
++  const deny = page.getByRole("button", { name: "Deny" });
++  await deny.click();
++
++  const dialog = page.getByRole("alertdialog");
++  await expect(dialog).toBeVisible();
++  // Focus starts on Cancel, never on the confirming/destructive action.
++  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
++
++  await page.keyboard.press("Escape");
++  await expect(dialog).toBeHidden();
++  // Focus returns to the invoking choice.
++  await expect(deny).toBeFocused();
++});
+diff --git a/apps/web/e2e/constants.ts b/apps/web/e2e/constants.ts
+new file mode 100644
+index 0000000..8c9594e
+--- /dev/null
++++ b/apps/web/e2e/constants.ts
+@@ -0,0 +1,4 @@
++// Shared E2E constants. Kept dependency-free so the Playwright config, the
++// global setup/teardown, and the specs all agree on the local server address.
++export const E2E_PORT = 4373;
++export const E2E_BASE_URL = `http://127.0.0.1:${E2E_PORT}`;
+diff --git a/apps/web/e2e/global-setup.ts b/apps/web/e2e/global-setup.ts
+new file mode 100644
+index 0000000..9bd50fd
+--- /dev/null
++++ b/apps/web/e2e/global-setup.ts
+@@ -0,0 +1,109 @@
++import { spawn, spawnSync } from "node:child_process";
++import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { dirname, join, resolve } from "node:path";
++import { fileURLToPath } from "node:url";
++
++import { E2E_BASE_URL, E2E_PORT } from "./constants.js";
++
++const __dirname = dirname(fileURLToPath(import.meta.url));
++const REPO_ROOT = resolve(__dirname, "..", "..", "..");
++const STATE_FILE = join(__dirname, ".state.json");
++
++export interface SeededState {
++  dbPath: string;
++  home: string;
++  workspace: string;
++  projectId: string;
++  attentionMissionId: string;
++  attentionApprovalId: string;
++  resultMissionId: string;
++  artifactTitle: string;
++  resultStatus: string;
++}
++
++export interface E2EState {
++  baseURL: string;
++  serverPid: number | null;
++  home: string;
++  seed: SeededState;
++}
++
++async function waitForHealth(url: string, attempts = 60): Promise<boolean> {
++  for (let i = 0; i < attempts; i += 1) {
++    try {
++      const res = await fetch(`${url}/api/health`);
++      if (res.ok) return true;
++    } catch {
++      // not up yet
++    }
++    await new Promise((r) => setTimeout(r, 1000));
++  }
++  return false;
++}
++
++export default async function globalSetup(): Promise<void> {
++  const home = mkdtempSync(join(tmpdir(), "morrow-web-e2e-"));
++  const webRoot = join(REPO_ROOT, "apps", "web", "dist");
++
++  // 1. Seed deterministic mission states directly through the orchestrator's
++  //    repositories/service (no provider, network, or agent execution), before
++  //    the server opens the database.
++  const seedRun = spawnSync(
++    "pnpm",
++    ["--filter", "@morrow/orchestrator", "exec", "tsx", "scripts/e2e-seed.ts"],
++    {
++      cwd: REPO_ROOT,
++      env: { ...process.env, MORROW_HOME: home, MOCK_PROVIDER: "true" },
++      encoding: "utf8",
++      shell: true,
++    },
++  );
++  if (seedRun.status !== 0) {
++    throw new Error(`E2E seed failed (exit ${seedRun.status}):\n${seedRun.stdout}\n${seedRun.stderr}`);
++  }
++  const seedLine = seedRun.stdout
++    .split(/\r?\n/)
++    .map((l) => l.trim())
++    .filter(Boolean)
++    .at(-1);
++  if (!seedLine) throw new Error(`E2E seed produced no output:\n${seedRun.stderr}`);
++  const seed = JSON.parse(seedLine) as SeededState;
++
++  // 2. Start the orchestrator serving the built /app from the seeded database.
++  const server = spawn(
++    "pnpm",
++    ["--filter", "@morrow/orchestrator", "start"],
++    {
++      cwd: REPO_ROOT,
++      env: {
++        ...process.env,
++        MORROW_HOME: home,
++        MOCK_PROVIDER: "true",
++        MORROW_WEB_ROOT: webRoot,
++        MORROW_DISABLE_SCHEDULER: "true",
++        PORT: String(E2E_PORT),
++      },
++      shell: true,
++      detached: false,
++      stdio: "ignore",
++    },
++  );
++
++  const healthy = await waitForHealth(E2E_BASE_URL);
++  if (!healthy) {
++    try { server.kill(); } catch { /* ignore */ }
++    throw new Error(`Orchestrator did not become healthy at ${E2E_BASE_URL}`);
++  }
++
++  const state: E2EState = {
++    baseURL: E2E_BASE_URL,
++    serverPid: server.pid ?? null,
++    home,
++    seed,
++  };
++  mkdirSync(dirname(STATE_FILE), { recursive: true });
++  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
++}
++
++export { STATE_FILE };
+diff --git a/apps/web/e2e/global-teardown.ts b/apps/web/e2e/global-teardown.ts
+new file mode 100644
+index 0000000..7812540
+--- /dev/null
++++ b/apps/web/e2e/global-teardown.ts
+@@ -0,0 +1,35 @@
++import { spawnSync } from "node:child_process";
++import { existsSync, readFileSync, rmSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import type { E2EState } from "./global-setup.js";
++
++const __dirname = dirname(fileURLToPath(import.meta.url));
++const STATE_FILE = join(__dirname, ".state.json");
++
++export default async function globalTeardown(): Promise<void> {
++  if (!existsSync(STATE_FILE)) return;
++  let state: E2EState;
++  try {
++    state = JSON.parse(readFileSync(STATE_FILE, "utf8")) as E2EState;
++  } catch {
++    return;
++  }
++
++  if (state.serverPid) {
++    // Kill the whole process tree (pnpm -> tsx -> node) on Windows.
++    if (process.platform === "win32") {
++      spawnSync("taskkill", ["/PID", String(state.serverPid), "/T", "/F"], { stdio: "ignore" });
++    } else {
++      try { process.kill(-state.serverPid); } catch { /* ignore */ }
++      try { process.kill(state.serverPid); } catch { /* ignore */ }
++    }
++  }
++
++  for (const dir of [state.home, state.seed?.workspace]) {
++    if (dir) {
++      try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
++    }
++  }
++  try { rmSync(STATE_FILE, { force: true }); } catch { /* ignore */ }
++}
+diff --git a/apps/web/e2e/mission-vertical-slice.spec.ts b/apps/web/e2e/mission-vertical-slice.spec.ts
+new file mode 100644
+index 0000000..83a14be
+--- /dev/null
++++ b/apps/web/e2e/mission-vertical-slice.spec.ts
+@@ -0,0 +1,102 @@
++import { test, expect } from "@playwright/test";
++import { loadState } from "./seed-state.js";
++
++const state = loadState();
++
++test.describe.configure({ mode: "serial" });
++
++test.describe("Morrow web vertical slice", () => {
++  test("Home renders the universal objective-first composer and approved navigation", async ({ page }) => {
++    await page.goto("/app/");
++    await expect(page.getByRole("heading", { name: "What should Morrow accomplish?" })).toBeVisible();
++    const nav = page.getByRole("navigation", { name: "Primary" });
++    for (const label of ["Home", "Missions", "Library", "Automations", "Workspace", "Connections", "Settings"]) {
++      await expect(nav.getByRole("link", { name: label })).toBeVisible();
++    }
++    // No task-type selector — Morrow is a general agent, not a coding-only tool.
++    await expect(page.getByText(/Coding|Research|Documents/)).toHaveCount(0);
++  });
++
++  test("creates a mission through the composer and lands on its durable workspace", async ({ page }) => {
++    await page.goto("/app/");
++    await page.getByLabel("Mission objective").fill("Compare three note-taking apps and recommend one.");
++    const start = page.getByRole("button", { name: "Start mission" });
++    await expect(start).toBeEnabled();
++    await start.click();
++
++    await expect(page).toHaveURL(/\/app\/missions\/mission-/);
++    await expect(page.getByRole("heading", { name: "Compare three note-taking apps and recommend one." })).toBeVisible();
++
++    // At least one durable, human-readable activity item exists.
++    await page.getByRole("tab", { name: "Activity" }).click();
++    await expect(page.getByRole("list", { name: "Mission activity" }).getByRole("listitem").first()).toBeVisible();
++    await expect(page.getByText(/Mission created:/)).toBeVisible();
++  });
++
++  test("a refresh recovers the same mission and state", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
++    await expect(page.getByRole("heading", { name: "Research three competitors and prepare a concise report." })).toBeVisible();
++    await page.reload();
++    await expect(page).toHaveURL(new RegExp(state.seed.attentionMissionId));
++    await expect(page.getByRole("heading", { name: "Research three competitors and prepare a concise report." })).toBeVisible();
++  });
++
++  test("reports offline then recovers to online when the runtime connection drops", async ({ page, context }) => {
++    await page.goto("/app/");
++    await expect(page.getByText("Runtime online")).toBeVisible();
++    await context.setOffline(true);
++    await expect(page.getByText("Runtime offline")).toBeVisible();
++    await context.setOffline(false);
++    await expect(page.getByText("Runtime online")).toBeVisible();
++  });
++
++  test("resolves a seeded attention request without auto-selecting the recommendation", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.attentionMissionId}`);
++    const card = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Waiting for your approval" }) });
++    await expect(card).toBeVisible();
++    // The recommendation is shown but never auto-selected/submitted.
++    await expect(card.getByRole("button", { name: /Approve/ })).toBeEnabled();
++    await expect(card.getByRole("button", { name: "Deny" })).toBeEnabled();
++
++    await card.getByRole("button", { name: /Approve/ }).click();
++    // After a durable resolution the request is no longer pending.
++    await expect(page.getByText("No attention is needed right now.")).toBeVisible();
++  });
++
++  test("inspects the seeded result artifact through the Work tab", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++    await page.getByRole("tab", { name: "Work" }).click();
++    // The artifact title is an <h3> in the Work tab (an <h4> in Result); target
++    // the Work-tab heading level to disambiguate.
++    await expect(page.getByRole("heading", { name: state.seed.artifactTitle, level: 3 })).toBeVisible();
++  });
++
++  test("Result honestly reports completion with caveats and shows evidence", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++    await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
++    await page.getByRole("tab", { name: "Result" }).click();
++    const resultPanel = page.getByRole("tabpanel").filter({ has: page.getByRole("heading", { name: "Verification" }) });
++    await expect(resultPanel.getByRole("heading", { name: "Verification" })).toBeVisible();
++    // Honest: never claims a plain "Completed and verified" headline for a caveated mission.
++    await expect(page.getByRole("heading", { name: "Completed and verified", exact: true })).toHaveCount(0);
++  });
++
++  test("supports keyboard-only navigation across the mission tabs", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++    const overview = page.getByRole("tab", { name: "Overview" });
++    await overview.focus();
++    await expect(overview).toBeFocused();
++    await page.keyboard.press("ArrowRight");
++    await expect(page.getByRole("tab", { name: "Activity" })).toBeFocused();
++    await page.keyboard.press("End");
++    await expect(page.getByRole("tab", { name: "Result" })).toBeFocused();
++    await page.keyboard.press("Home");
++    await expect(page.getByRole("tab", { name: "Overview" })).toBeFocused();
++  });
++
++  test("never fabricates a numeric progress percentage", async ({ page }) => {
++    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++    // Honesty gate: the UI reports milestone counts, never an invented "NN%".
++    await expect(page.getByText(/\b\d{1,3}\s*%/)).toHaveCount(0);
++  });
++});
+diff --git a/apps/web/e2e/seed-state.ts b/apps/web/e2e/seed-state.ts
+new file mode 100644
+index 0000000..fac29e5
+--- /dev/null
++++ b/apps/web/e2e/seed-state.ts
+@@ -0,0 +1,11 @@
++import { readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import type { E2EState } from "./global-setup.js";
++
++const __dirname = dirname(fileURLToPath(import.meta.url));
++
++/** Load the seeded mission state written by global-setup. */
++export function loadState(): E2EState {
++  return JSON.parse(readFileSync(join(__dirname, ".state.json"), "utf8")) as E2EState;
++}
+diff --git a/apps/web/e2e/visual-regression.spec.ts b/apps/web/e2e/visual-regression.spec.ts
+new file mode 100644
+index 0000000..6b45b8b
+--- /dev/null
++++ b/apps/web/e2e/visual-regression.spec.ts
+@@ -0,0 +1,38 @@
++import { test, expect } from "@playwright/test";
++import { loadState } from "./seed-state.js";
++
++const state = loadState();
++
++/**
++ * Visual regression over a fully-seeded mission whose timestamps and content are
++ * fixed, so snapshots are stable run-to-run on the same platform. Baselines are
++ * Windows/Chromium-pinned; regenerate with `--update-snapshots` when the design
++ * intentionally changes. Runs last (alphabetical) so no earlier test mutates the
++ * result mission.
++ */
++test.describe.configure({ mode: "serial" });
++
++const viewports = [
++  { name: "desktop", width: 1440, height: 1000 },
++  { name: "tablet", width: 900, height: 1100 },
++  { name: "mobile", width: 390, height: 844 },
++] as const;
++
++for (const vp of viewports) {
++  test(`result mission overview — ${vp.name}`, async ({ page }) => {
++    await page.setViewportSize({ width: vp.width, height: vp.height });
++    await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++    await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
++    await expect(page).toHaveScreenshot(`result-overview-${vp.name}.png`, { fullPage: true });
++  });
++}
++
++test("result mission overview — dark mode", async ({ page }) => {
++  await page.emulateMedia({ colorScheme: "dark" });
++  await page.setViewportSize({ width: 1440, height: 1000 });
++  await page.goto(`/app/missions/${state.seed.resultMissionId}`);
++  // The app theme follows the OS preference by default; confirm the shell picked
++  // up dark before snapshotting.
++  await expect(page.getByRole("heading", { name: "Completed with caveats" })).toBeVisible();
++  await expect(page).toHaveScreenshot("result-overview-dark.png", { fullPage: true });
++});
+diff --git a/apps/web/package.json b/apps/web/package.json
+index 67087dd..c20bc45 100644
+--- a/apps/web/package.json
++++ b/apps/web/package.json
+@@ -7,7 +7,9 @@
+     "dev": "vite",
+     "check": "tsc -p tsconfig.json",
+     "test": "vitest run",
+-    "build": "tsc -p tsconfig.node.json && vite build"
++    "build": "tsc -p tsconfig.node.json && vite build",
++    "e2e": "playwright test",
++    "e2e:update": "playwright test --update-snapshots"
+   },
+   "dependencies": {
+     "@morrow/contracts": "workspace:*",
+@@ -21,6 +23,8 @@
+     "zod": "4.1.12"
+   },
+   "devDependencies": {
++    "@axe-core/playwright": "^4.12.1",
++    "@playwright/test": "1.61.0",
+     "@testing-library/jest-dom": "6.9.1",
+     "@testing-library/react": "16.3.2",
+     "@testing-library/user-event": "14.6.1",
+diff --git a/apps/web/playwright.config.ts b/apps/web/playwright.config.ts
+new file mode 100644
+index 0000000..d23c319
+--- /dev/null
++++ b/apps/web/playwright.config.ts
+@@ -0,0 +1,36 @@
++import { defineConfig, devices } from "@playwright/test";
++import { E2E_BASE_URL } from "./e2e/constants.js";
++
++/**
++ * Web vertical-slice E2E, accessibility, and visual-regression gates.
++ *
++ * The orchestrator (serving the built /app) is seeded with deterministic
++ * mission state and started in global-setup, then torn down in global-teardown.
++ * Tests run serially against that single stateful backend (workers=1), because
++ * the journey resolves a seeded attention request that must not race.
++ */
++export default defineConfig({
++  testDir: "./e2e",
++  testMatch: /.*\.spec\.ts$/,
++  fullyParallel: false,
++  workers: 1,
++  retries: 0,
++  forbidOnly: !!process.env.CI,
++  reporter: process.env.CI ? [["list"], ["github"]] : [["list"]],
++  globalSetup: "./e2e/global-setup.ts",
++  globalTeardown: "./e2e/global-teardown.ts",
++  timeout: 45_000,
++  expect: { timeout: 10_000, toHaveScreenshot: { maxDiffPixelRatio: 0.02 } },
++  use: {
++    baseURL: E2E_BASE_URL,
++    trace: "retain-on-failure",
++    reducedMotion: "reduce",
++    colorScheme: "light",
++  },
++  projects: [
++    {
++      name: "desktop-chromium",
++      use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 1000 } },
++    },
++  ],
++});
+diff --git a/apps/web/src/features/missions/mission-overview.tsx b/apps/web/src/features/missions/mission-overview.tsx
+index bb6c15a..fcbe33d 100644
+--- a/apps/web/src/features/missions/mission-overview.tsx
++++ b/apps/web/src/features/missions/mission-overview.tsx
+@@ -81,7 +81,7 @@ export function MissionOverview({ snapshot }: { snapshot: WebMissionSnapshot })
+         <p>{snapshot.summary.objective}</p>
+       </Surface>
+ 
+-      <p className="morrow-mission-milestone-count" aria-label="Milestone progress">
++      <p className="morrow-mission-milestone-count">
+         {completed.length} completed · {remaining.length} remaining ·{" "}
+         {skipped.length} skipped · {snapshot.milestones.length} total
+       </p>
+diff --git a/apps/web/src/features/missions/mission-page.tsx b/apps/web/src/features/missions/mission-page.tsx
+index f0ae69b..72d8fd5 100644
+--- a/apps/web/src/features/missions/mission-page.tsx
++++ b/apps/web/src/features/missions/mission-page.tsx
+@@ -206,6 +206,7 @@ function MissionWorkspace({
+         aria-label="Mission updates"
+         aria-live="polite"
+         className="morrow-sr-only"
++        role="status"
+       >
+         {announcement}
+       </p>
+diff --git a/apps/web/vitest.config.ts b/apps/web/vitest.config.ts
+index 1a89694..b57ce18 100644
+--- a/apps/web/vitest.config.ts
++++ b/apps/web/vitest.config.ts
+@@ -4,5 +4,10 @@ export default defineConfig({
+   test: {
+     environment: "jsdom",
+     setupFiles: ["./src/test-setup.ts"],
++    // Unit/component tests live under src/. The Playwright E2E suite in e2e/ is
++    // run by `pnpm e2e`, not vitest — exclude it so vitest never tries to load
++    // @playwright/test specs.
++    include: ["src/**/*.{test,spec}.{ts,tsx}"],
++    exclude: ["e2e/**", "node_modules/**", "dist/**"],
+   },
+ });
+diff --git a/docs/ACCEPTANCE.md b/docs/ACCEPTANCE.md
+index 0ecbfcb..71fefff 100644
+--- a/docs/ACCEPTANCE.md
++++ b/docs/ACCEPTANCE.md
+@@ -104,6 +104,45 @@ Edge channel unless an explicit Playwright browser selection is configured.
+ This keeps the consumer package self-contained without downloading an undeclared
+ browser at runtime.
+ 
++## Web app vertical slice (`/app`)
++
++The web foundation ships an end-to-end Playwright gate covering the local
++`/app` product surface. It is deterministic and self-contained: no provider,
++network, or agent execution is involved.
++
++```bash
++pnpm --filter @morrow/web test        # 151 component/unit tests
++pnpm --filter @morrow/web build       # built bundle served at /app
++pnpm --filter @morrow/web e2e         # Playwright journey + a11y + visual
++```
++
++`e2e` starts an isolated orchestrator (temporary `MORROW_HOME`, `MOCK_PROVIDER`,
++loopback only) serving the built `/app`, seeded via
++`services/orchestrator/scripts/e2e-seed.ts` with two deterministic missions: one
++carrying a resolvable pending attention request, one carrying a persisted
++artifact and criterion evidence that finalizes to an honest
++`completed_with_caveats`. The suite asserts:
++
++- the objective-first composer, approved navigation, and mission creation →
++  durable workspace navigation;
++- refresh recovery of the same mission and state;
++- offline → online runtime reconnection status;
++- resolving a real attention request (recommendation shown, never auto-selected)
++  and destructive-choice focus trap + restoration;
++- inspecting a generated artifact and an honest Result (evidence + caveated
++  verification, never a fabricated "Completed and verified" or numeric percent);
++- keyboard-only tab navigation;
++- no serious/critical axe accessibility violations on Home, the attention
++  mission, and the Result mission;
++- responsive + dark-mode visual snapshots of the seeded mission.
++
++Visual baselines under `apps/web/e2e/**-snapshots/` are pinned to
++Windows/Chromium; regenerate with `pnpm --filter @morrow/web e2e:update` when the
++design changes intentionally. Full agent-driven mission *completion* (running →
++verified) is covered by the orchestrator's own acceptance suites, not re-driven
++through the browser, because the mock provider does not progress missions past
++`draft` headlessly.
++
+ ## Security boundary
+ 
+ The child process receives a minimal environment with provider credentials
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index f842f09..06fdd77 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -92,6 +92,12 @@ importers:
+         specifier: 4.1.12
+         version: 4.1.12
+     devDependencies:
++      '@axe-core/playwright':
++        specifier: ^4.12.1
++        version: 4.12.1(playwright-core@1.61.0)
++      '@playwright/test':
++        specifier: 1.61.0
++        version: 1.61.0
+       '@testing-library/jest-dom':
+         specifier: 6.9.1
+         version: 6.9.1
+@@ -250,6 +256,11 @@ packages:
+   '@asamuzakjp/nwsapi@2.3.9':
+     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
+ 
++  '@axe-core/playwright@4.12.1':
++    resolution: {integrity: sha512-rMd7xriptqKpP+w5265i4Hdkv2X5kbu6uiBi/B2I7uf3hieRBM3qDCfaKPtxfiYb2mKXfF+yLODJwIx+Jv1GDw==}
++    peerDependencies:
++      playwright-core: '>= 1.0.0'
++
+   '@babel/code-frame@7.29.7':
+     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
+     engines: {node: '>=6.9.0'}
+@@ -594,6 +605,11 @@ packages:
+   '@pinojs/redact@0.4.0':
+     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
+ 
++  '@playwright/test@1.61.0':
++    resolution: {integrity: sha512-cKA5B6lpFEMyMGjxF54QihfYpB4FkEGH+qZhtArDEG+wezQAJY8Pq6C7T1SjWz+FFzt3TbyoXBQYk/0292TdJA==}
++    engines: {node: '>=18'}
++    hasBin: true
++
+   '@radix-ui/react-compose-refs@1.1.2':
+     resolution: {integrity: sha512-z4eqJvfiNnFMHIIvXP3CY57y2WJs5g2v3X0zm9mEJkrkNv4rDxu+sg9Jh8EkXyeqBkB7SOcboo9dMVqhyrACIg==}
+     peerDependencies:
+@@ -924,6 +940,10 @@ packages:
+   avvio@9.2.0:
+     resolution: {integrity: sha512-2t/sy01ArdHHE0vRH5Hsay+RtCZt3dLPji7W7/MMOCEgze5b7SNDC4j5H6FnVgPkI1MTNFGzHdHrVXDDl7QSSQ==}
+ 
++  axe-core@4.12.1:
++    resolution: {integrity: sha512-s7iGf5GaVMxEG0ENN9x+xTr7GFZCb1ZP/1uATUpCEK2X78nDB3RwbtFCo9pGAf9ru+VwoQ464DkaLEeRM08wJA==}
++    engines: {node: '>=4'}
++
+   babel-dead-code-elimination@1.0.12:
+     resolution: {integrity: sha512-GERT7L2TiYcYDtYk1IpD+ASAYXjKbLTDPhBtYj7X1NuRMDTMtAx9kyBenub1Ev41lo91OHCKdmP+egTDmfQ7Ig==}
+ 
+@@ -1920,6 +1940,11 @@ snapshots:
+ 
+   '@asamuzakjp/nwsapi@2.3.9': {}
+ 
++  '@axe-core/playwright@4.12.1(playwright-core@1.61.0)':
++    dependencies:
++      axe-core: 4.12.1
++      playwright-core: 1.61.0
++
+   '@babel/code-frame@7.29.7':
+     dependencies:
+       '@babel/helper-validator-identifier': 7.29.7
+@@ -2221,6 +2246,10 @@ snapshots:
+ 
+   '@pinojs/redact@0.4.0': {}
+ 
++  '@playwright/test@1.61.0':
++    dependencies:
++      playwright: 1.61.0
++
+   '@radix-ui/react-compose-refs@1.1.2(@types/react@19.2.17)(react@19.2.7)':
+     dependencies:
+       react: 19.2.7
+@@ -2539,6 +2568,8 @@ snapshots:
+       '@fastify/error': 4.2.0
+       fastq: 1.20.1
+ 
++  axe-core@4.12.1: {}
++
+   babel-dead-code-elimination@1.0.12:
+     dependencies:
+       '@babel/core': 7.29.7
+diff --git a/services/orchestrator/scripts/e2e-seed.ts b/services/orchestrator/scripts/e2e-seed.ts
+new file mode 100644
+index 0000000..b341e8e
+--- /dev/null
++++ b/services/orchestrator/scripts/e2e-seed.ts
+@@ -0,0 +1,130 @@
++/**
++ * Deterministic web-E2E seed.
++ *
++ * Builds a temporary Morrow home with a SQLite database pre-populated with
++ * missions in the exact states the browser vertical-slice journey needs:
++ *
++ *  - an "attention" mission with a durable pending approval (a resolvable
++ *    attention request), and
++ *  - a "result" mission carrying a persisted artifact and criterion evidence.
++ *
++ * No provider, network, or agent execution is involved — every state is written
++ * directly through the same repositories/service the orchestrator uses, so the
++ * result is fully deterministic. The orchestrator is then started against this
++ * home (read-only for the seeded rows) to serve /app.
++ *
++ * Usage: MORROW_HOME=<dir> tsx scripts/e2e-seed.ts
++ * Prints a single JSON line: { dbPath, workspace, projectId, attentionMissionId,
++ *   attentionApprovalId, resultMissionId, artifactTitle }.
++ */
++import { mkdtempSync, mkdirSync } from "node:fs";
++import { spawnSync } from "node:child_process";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { randomUUID } from "node:crypto";
++import { openDatabase } from "../src/database.js";
++import { resolveDefaultDatabasePath, resolveMorrowHome } from "../src/home.js";
++import { projectRepository } from "../src/repositories/projects.js";
++import { missionsRepository } from "../src/repositories/missions.js";
++import { MissionService } from "../src/mission/service.js";
++import { buildMissionCompletion } from "../src/mission/completion.js";
++
++function log(obj: unknown): void {
++  process.stdout.write(JSON.stringify(obj) + "\n");
++}
++
++const home = resolveMorrowHome(process.env);
++const dbPath = resolveDefaultDatabasePath(process.env);
++mkdirSync(home, { recursive: true });
++const db = openDatabase(dbPath);
++
++const projects = projectRepository(db);
++const missions = missionsRepository(db);
++const missionService = new MissionService({
++  repo: missions,
++  getWorkspacePath: (projectId: string) => projects.getProjectById(projectId)?.workspacePath,
++  completion: buildMissionCompletion({ env: process.env }),
++  backupDir: join(home, "mission-checkpoints"),
++});
++
++// Real, git-initialized workspace (project creation requires an existing dir).
++const workspace = mkdtempSync(join(tmpdir(), "morrow-e2e-ws-"));
++spawnSync("git", ["init", "-b", "main"], { cwd: workspace, stdio: "ignore" });
++const now = new Date("2026-07-21T12:00:00.000Z").toISOString();
++const projectId = `project-${randomUUID()}`;
++projects.createProject({ id: projectId, name: "E2E Personal", workspacePath: workspace, createdAt: now });
++
++// ── Mission A: a resolvable attention request ────────────────────────────
++const attentionMission = missionService.create(projectId, {
++  objective: "Research three competitors and prepare a concise report.",
++});
++const attentionApprovalId = `approval-${randomUUID()}`;
++const attnTaskId = `task-${attentionApprovalId}`;
++db.prepare(
++  "INSERT INTO tasks(id,schema_version,project_id,type,status,mission_id,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?)",
++).run(attnTaskId, projectId, "agent_chat", "running", attentionMission.id, now, now);
++db.prepare(
++  "INSERT INTO approvals(id,schema_version,task_id,project_id,kind,status,summary,details_json,decision,decision_note,created_at,resolved_at) VALUES(?,1,?,?,?,?,?,?,?,?,?,?)",
++).run(
++  attentionApprovalId,
++  attnTaskId,
++  projectId,
++  "command",
++  "pending",
++  "Approve running the competitor report command",
++  "{}",
++  null,
++  null,
++  now,
++  null,
++);
++
++// ── Mission B: a persisted artifact + criterion evidence ─────────────────
++const resultMission = missionService.create(projectId, {
++  objective: "Summarize the three competitors in one report file.",
++});
++const criterion = missionService.addCriterion(
++  resultMission.id,
++  "A competitor report file is produced.",
++);
++missionService.approveCriteria(resultMission.id); // draft -> running
++const artifactTitle = "competitor-report.md";
++missions.addEvidence({
++  id: `ev-${randomUUID()}`,
++  missionId: resultMission.id,
++  criterionIds: [criterion.id],
++  type: "manual",
++  summary: "Competitor report written to the workspace.",
++  command: null,
++  exitCode: null,
++  outputRef: null,
++  artifactPath: `reports/${artifactTitle}`,
++  status: "passed",
++});
++missions.updateCriterion(criterion.id, { state: "verified" }, now);
++
++// Attempt an honest finalize; if the completion gates reject it, leave the
++// mission in its real state rather than forcing a fake "completed_verified".
++let resultStatus = missionService.get(resultMission.id).status;
++let finalizeError: string | null = null;
++try {
++  const finalized = missionService.finalize(resultMission.id, { tasksCompleted: 1 });
++  resultStatus = finalized.status;
++} catch (error) {
++  finalizeError = error instanceof Error ? error.message : String(error);
++}
++
++db.close();
++
++log({
++  dbPath,
++  home,
++  workspace,
++  projectId,
++  attentionMissionId: attentionMission.id,
++  attentionApprovalId,
++  resultMissionId: resultMission.id,
++  artifactTitle,
++  resultStatus,
++  finalizeError,
++});

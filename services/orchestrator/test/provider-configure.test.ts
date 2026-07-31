@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +16,9 @@ const PROVIDER_KEYS = [
   "DEEPSEEK_CONTEXT_LIMIT",
   "OPENAI_API_KEY",
   "OPENAI_MODEL",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_BASE_URL",
+  "OPENROUTER_MODEL",
 ];
 
 describe("provider configuration (secrets module)", () => {
@@ -125,6 +128,92 @@ describe("provider configuration (secrets module)", () => {
     expect(env.DEEPSEEK_API_KEY).toBeUndefined(); // earlier good field not applied
     expect(existsSync(secretsFile)).toBe(false);
   });
+
+  it("uses a Windows user ACL boundary and reports the protection without exposing values", () => {
+    const acl = vi.fn(() => true);
+    const res = (configureProvider as any)(secretsFile, "openrouter", { apiKey: "windows-local-secret" }, env, {
+      platform: "win32",
+      applyWindowsAcl: acl,
+    });
+    expect(acl).toHaveBeenCalledOnce();
+    expect(res).toMatchObject({ securePermissions: true, credentialProtection: "windows-user-acl" });
+    expect(JSON.stringify(res)).not.toContain("windows-local-secret");
+  });
+});
+
+describe("OpenRouter authenticated configuration", () => {
+  let db: Database.Database;
+  let app: FastifyInstance;
+  let dir: string;
+  let secretsFile: string;
+  let connectivity: ReturnType<typeof vi.fn>;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    for (const key of PROVIDER_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    dir = mkdtempSync(join(tmpdir(), "morrow-openrouter-secrets-"));
+    secretsFile = join(dir, "secrets.env");
+    db = openDatabase(":memory:");
+    connectivity = vi.fn(async (_id: string, candidateEnv: NodeJS.ProcessEnv) => {
+      const accepted = candidateEnv.OPENROUTER_API_KEY === "last-known-good";
+      return {
+        id: "openrouter", ok: accepted, configured: true, status: accepted ? 200 : 401,
+        latencyMs: 1, checkedEndpoint: "openrouter.ai", detail: accepted ? "connected" : "rejected",
+        errorKind: accepted ? null : "auth", modelsSample: accepted ? ["vendor/live"] : [],
+        models: accepted ? [{ providerModelId: "vendor/live", displayName: "Live", author: "vendor", contextWindow: 100_000, maxOutputTokens: 8_000, inputModalities: ["text"], outputModalities: ["text"], capabilities: { streaming: true, toolCalls: true, vision: false, reasoning: false }, pricing: null, costType: "unknown", availability: "available", fetchedAt: "2026-07-22T12:00:00.000Z", metadataSource: "provider-reported" }] : [],
+      };
+    });
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile, providerConnectivityTest: connectivity as any, backgroundModelDiscovery: false });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+    for (const key of PROVIDER_KEYS) {
+      if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+    }
+  });
+
+  it("authenticates a candidate key before persisting and promoting it", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good", model: "vendor/live" } });
+    expect(response.statusCode).toBe(200);
+    expect(connectivity).toHaveBeenCalledWith("openrouter", expect.objectContaining({ OPENROUTER_API_KEY: "last-known-good", OPENROUTER_MODEL: "vendor/live" }));
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(JSON.stringify(response.json())).not.toContain("last-known-good");
+    expect(response.json().status).toMatchObject({ configured: true, available: true, defaultModel: "vendor/live" });
+  });
+
+  it("preserves the last known-good credential when replacement validation fails", async () => {
+    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
+    const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "replacement-rejected" } });
+    expect(response.statusCode).toBe(401);
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(response.json().error.code).toBe("PROVIDER_VALIDATION_FAILED");
+    expect(JSON.stringify(response.json())).not.toMatch(/last-known-good|replacement-rejected/);
+  });
+
+  it("rejects every OpenRouter endpoint override before an existing key can be sent elsewhere", async () => {
+    expect((await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { apiKey: "last-known-good" } })).statusCode).toBe(200);
+    connectivity.mockClear();
+
+    for (const baseUrl of ["http://attacker.invalid/v1", "https://attacker.invalid/v1"]) {
+      const response = await app.inject({ method: "POST", url: "/api/providers/openrouter/configure", payload: { baseUrl } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("OPENROUTER_ENDPOINT_PINNED");
+    }
+
+    expect(connectivity).not.toHaveBeenCalled();
+    expect(process.env.OPENROUTER_API_KEY).toBe("last-known-good");
+    expect(process.env.OPENROUTER_BASE_URL).toBeUndefined();
+    expect(parseSecretsFile(readFileSync(secretsFile, "utf-8")).OPENROUTER_API_KEY).toBe("last-known-good");
+  });
 });
 
 describe("provider configuration API (DeepSeek acceptance flow)", () => {
@@ -142,11 +231,17 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     dir = mkdtempSync(join(tmpdir(), "morrow-api-secrets-"));
     secretsFile = join(dir, "secrets.env");
     db = openDatabase(":memory:");
+    // Configuring a provider now verifies the candidate credential against the
+    // provider before persisting it, so these tests must stub the endpoint.
+    // They previously issued real requests to api.deepseek.com, which is what
+    // made this file intermittently fail with network errors.
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: [{ id: "deepseek-v4-flash" }, { id: "deepseek-v4-pro" }] })));
     app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile });
     await app.ready();
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await app.close();
     db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -194,6 +289,7 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     await json("POST", "/api/providers/deepseek/configure", { apiKey: "k" });
     const del = await json("DELETE", "/api/providers/deepseek/credentials");
     expect(del.status).toBe(200);
+    expect(del.body.removed).toEqual(expect.arrayContaining(["DEEPSEEK_API_KEY"]));
     expect(del.body.status.configured).toBe(false);
   });
 
@@ -226,5 +322,129 @@ describe("provider configuration API (DeepSeek acceptance flow)", () => {
     const res = await app2.inject({ method: "POST", url: "/api/providers/deepseek/configure", payload: { apiKey: "k" } });
     expect(res.statusCode).toBe(503);
     await app2.close();
+  });
+});
+
+
+describe("every provider is verified before its credential is stored", () => {
+  let db: Database.Database;
+  let app: FastifyInstance;
+  let dir: string;
+  let secretsFile: string;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    for (const k of [...PROVIDER_KEYS, "GROQ_API_KEY", "GROQ_MODEL", "LMSTUDIO_BASE_URL"]) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    dir = mkdtempSync(join(tmpdir(), "morrow-verify-"));
+    secretsFile = join(dir, "secrets.env");
+    db = openDatabase(":memory:");
+    app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await app.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+
+  const post = async (url: string, payload: unknown) => {
+    const res = await app.inject({ method: "POST", url, payload: payload as any });
+    return { status: res.statusCode, body: res.body ? JSON.parse(res.body) : undefined };
+  };
+
+  /**
+   * Verify-before-persist used to run for OpenRouter alone. Every other
+   * provider stored whatever it was handed and then reported "connected", so a
+   * mistyped key silently replaced a working one and the user only found out on
+   * their next real request.
+   */
+  it("rejects a bad key without destroying the working one", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: [{ id: "llama-3.3-70b" }] })));
+    expect((await post("/api/providers/groq/configure", { apiKey: "good-key" })).status).toBe(200);
+    expect(process.env.GROQ_API_KEY).toBe("good-key");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
+    const rejected = await post("/api/providers/groq/configure", { apiKey: "typo-key" });
+
+    expect(rejected.status).toBe(401);
+    expect(rejected.body.error.code).toBe("PROVIDER_VALIDATION_FAILED");
+    expect(JSON.stringify(rejected.body)).not.toMatch(/good-key|typo-key/);
+    // The working credential survives the failed replacement.
+    expect(process.env.GROQ_API_KEY).toBe("good-key");
+  });
+
+  it("records the models a credential can reach, so the provider is usable at once", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: [{ id: "llama-3.3-70b" }, { id: "mixtral" }] })));
+    await post("/api/providers/groq/configure", { apiKey: "good-key" });
+
+    const res = await app.inject({ method: "GET", url: "/api/providers" });
+    const groq = JSON.parse(res.body).find((p: any) => p.id === "groq");
+    expect(groq.configured).toBe(true);
+    // Without discovery-on-configure this list stays empty until a separate
+    // refresh, leaving a freshly connected provider with no selectable model.
+    expect(groq.models).toEqual(expect.arrayContaining(["llama-3.3-70b", "mixtral"]));
+  });
+
+  /**
+   * A local server is opt-in by URL and is routinely pointed at before it is
+   * started. Refusing to save the address because nothing is listening yet
+   * would make it impossible to configure ahead of time.
+   */
+  it("still lets a local server be configured before it is running", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
+    const res = await post("/api/providers/lmstudio/configure", { baseUrl: "http://127.0.0.1:1234/v1" });
+
+    expect(res.status).toBe(200);
+    expect(process.env.LMSTUDIO_BASE_URL).toBe("http://127.0.0.1:1234/v1");
+  });
+
+  it("does not let an unreachable hosted provider overwrite a stored key", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: [{ id: "m" }] })));
+    await post("/api/providers/groq/configure", { apiKey: "good-key" });
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
+    const res = await post("/api/providers/groq/configure", { apiKey: "replacement" });
+
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe("PROVIDER_VALIDATION_FAILED");
+    expect(process.env.GROQ_API_KEY).toBe("good-key");
+  });
+});
+
+
+describe("configuration that is not a credential", () => {
+  /**
+   * Setting a default model or a context limit touches nothing a provider could
+   * reject. Requiring a live check for those made them impossible to save on a
+   * provider that was not connected yet, or whenever the network was down.
+   */
+  it("saves a model and a context limit without a network round trip", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "morrow-noverify-"));
+    const db = openDatabase(":memory:");
+    const app = buildServer({ db, runner: new TaskRunner(db, async () => {}), secretsFile: join(dir, "secrets.env") });
+    await app.ready();
+    const fetchSpy = vi.fn(async () => { throw new Error("no network call should happen"); });
+    vi.stubGlobal("fetch", fetchSpy);
+    const savedLimit = process.env.DEEPSEEK_CONTEXT_LIMIT;
+    delete process.env.DEEPSEEK_CONTEXT_LIMIT;
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/providers/deepseek/configure", payload: { endpointContextLimit: 131_072 } });
+      expect(res.statusCode).toBe(200);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      if (savedLimit === undefined) delete process.env.DEEPSEEK_CONTEXT_LIMIT; else process.env.DEEPSEEK_CONTEXT_LIMIT = savedLimit;
+      await app.close();
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

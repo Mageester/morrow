@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { openDatabase } from "../src/database.js";
 import { TaskRunner } from "../src/runner.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -9,19 +10,14 @@ describe("TaskRunner", () => {
   let db: Database.Database;
   
   beforeEach(() => {
-    db = new Database(":memory:");
-    db.exec(`
-      CREATE TABLE projects (id TEXT PRIMARY KEY, schema_version INTEGER, name TEXT, workspace_path TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE tasks (id TEXT PRIMARY KEY, schema_version INTEGER, project_id TEXT, type TEXT, status TEXT, idempotency_key TEXT, parent_task_id TEXT, agent_id TEXT, worktree_id TEXT, mission_id TEXT, created_at TEXT, updated_at TEXT, started_at TEXT, completed_at TEXT);
-      CREATE TABLE task_events (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, type TEXT, payload_json TEXT, created_at TEXT);
-      CREATE TABLE agent_state_transitions (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, sequence INTEGER, state TEXT, details_json TEXT, created_at TEXT);
-      CREATE TABLE plan_steps (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, position INTEGER, title TEXT, description TEXT, status TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE execution_disclosures (task_id TEXT PRIMARY KEY, schema_version INTEGER, execution_mode TEXT, provider TEXT, network_access TEXT, workspace_scope TEXT, estimated_cost_usd TEXT, created_at TEXT, updated_at TEXT, filesystem_access TEXT, shell_execution INTEGER, model_invocation INTEGER);
-      CREATE TABLE task_evidence (id TEXT PRIMARY KEY, schema_version INTEGER, task_id TEXT, type TEXT, path TEXT, metadata_json TEXT, created_at TEXT);
-      CREATE TABLE verification_results (task_id TEXT PRIMARY KEY, schema_version INTEGER, status TEXT, summary TEXT, details_json TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE conversation_messages (id TEXT PRIMARY KEY, task_id TEXT, content TEXT, streaming_state TEXT, updated_at TEXT);
-    `);
-    
+    // Open the database through the real migration runner rather than a
+    // hand-written CREATE TABLE fixture. The fixture had drifted from the
+    // migrations — it was missing `tasks.idempotency_fingerprint`, so every
+    // test in this file failed on task creation with a SqliteError. A
+    // duplicated schema is guaranteed to rot; using the production opener means
+    // these tests exercise the schema the product actually ships.
+    db = openDatabase(":memory:");
+
     projectRepository(db).createProject({ id: "p1", name: "test", workspacePath: "/test", createdAt: new Date().toISOString() });
     taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "inspect_workspace", status: "queued", createdAt: new Date().toISOString() });
   });

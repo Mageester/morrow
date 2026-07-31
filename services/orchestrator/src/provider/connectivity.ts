@@ -1,8 +1,9 @@
 import type { DiscoveredModel, ProviderId, ProviderTestResult } from "@morrow/contracts";
 import { classifyHttpStatus, classifyThrownError } from "./base.js";
-import { resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
+import { redactSecrets, resolveApiKeyCredential, resolveLocalCredential, type ProviderEnv } from "./credentials.js";
 import { getStoredAccessTokenSync } from "./oauth-flow.js";
 import { codexHeaders } from "./codex.js";
+import { catalogProvider } from "./catalog.js";
 
 /**
  * Bounded, server-side provider connectivity check. Performs a single, cheap,
@@ -16,7 +17,12 @@ import { codexHeaders } from "./codex.js";
  */
 
 const DEFAULT_TIMEOUT_MS = 8000;
-const MAX_RESPONSE_BYTES = 64 * 1024;
+// OpenRouter's account catalogue can contain thousands of rich model records.
+// Keep the read bounded, but large enough for the real endpoint rather than a
+// small display-oriented sample.
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_MODEL_RECORDS = 5_000;
+export const OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1";
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   const contentLength = Number(response.headers.get("content-length"));
@@ -61,33 +67,85 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-function normalizeModels(json: unknown): DiscoveredModel[] {
+function normalizeModels(json: unknown, fetchedAt = new Date().toISOString()): DiscoveredModel[] {
   try {
     const anyJson = json as any;
     const rows: any[] = Array.isArray(anyJson?.data) ? anyJson.data : Array.isArray(anyJson?.models) ? anyJson.models : [];
-    return rows.slice(0, 500).flatMap((entry): DiscoveredModel[] => {
-      const id = typeof entry?.name === "string"
+    const seen = new Set<string>();
+    return rows.slice(0, MAX_MODEL_RECORDS).flatMap((entry): DiscoveredModel[] => {
+      const id = typeof entry?.name === "string" && entry.name.startsWith("models/")
         ? entry.name.replace(/^models\//, "")
-        : entry?.id ?? entry?.slug ?? entry?.model;
+        : entry?.id ?? entry?.slug ?? entry?.model ?? entry?.name;
       if (typeof id !== "string" || !id.trim()) return [];
+      const providerModelId = id.trim();
+      if (seen.has(providerModelId)) return [];
+      seen.add(providerModelId);
       const methods = Array.isArray(entry?.supportedGenerationMethods) ? entry.supportedGenerationMethods : [];
       const reportedCapabilities = entry?.capabilities && typeof entry.capabilities === "object" ? entry.capabilities : {};
+      const supportedParameters = Array.isArray(entry?.supported_parameters)
+        ? entry.supported_parameters.filter((value: unknown): value is string => typeof value === "string")
+        : [];
+      const inputModalities = Array.isArray(entry?.architecture?.input_modalities)
+        ? entry.architecture.input_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      const outputModalities = Array.isArray(entry?.architecture?.output_modalities)
+        ? entry.architecture.output_modalities.filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+        : [];
       const reportedBoolean = (...values: unknown[]): boolean | null => {
         const value = values.find((candidate) => typeof candidate === "boolean");
         return typeof value === "boolean" ? value : null;
       };
+      const perMillion = (value: unknown): number | null => {
+        if (typeof value !== "string" && typeof value !== "number") return null;
+        if (typeof value === "string" && value.trim().length === 0) return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
+      };
+      const inputPrice = perMillion(entry?.pricing?.prompt);
+      const outputPrice = perMillion(entry?.pricing?.completion);
+      const cachedInputPrice = perMillion(entry?.pricing?.input_cache_read);
+      const pricing = inputPrice !== null && outputPrice !== null
+        ? { inputUsdPerMillion: inputPrice, outputUsdPerMillion: outputPrice, ...(cachedInputPrice !== null ? { cachedInputUsdPerMillion: cachedInputPrice } : {}), source: "provider-reported" as const }
+        : null;
+      const billablePricingFields = new Set([
+        "prompt", "completion", "request", "image", "web_search", "internal_reasoning",
+        "input_cache_read", "input_cache_write",
+      ]);
+      const pricingEntries = entry?.pricing && typeof entry.pricing === "object" && !Array.isArray(entry.pricing)
+        ? Object.entries(entry.pricing) : [];
+      const hasUnknownPricingField = pricingEntries.some(([key]) => !billablePricingFields.has(key));
+      const parsedPricingEntries = pricingEntries.map(([key, value]) => ({ key, value: perMillion(value) }));
+      const hasInvalidPricingValue = parsedPricingEntries.some(({ value }) => value === null);
+      const hasNonTokenCharge = parsedPricingEntries.some(({ key, value }) => key !== "prompt" && key !== "completion" && value !== null && value > 0);
+      const hasTokenCharge = (inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0;
+      const costType = hasTokenCharge || hasNonTokenCharge
+        ? "paid" as const
+        : inputPrice === null || outputPrice === null || pricingEntries.length === 0 || hasUnknownPricingField || hasInvalidPricingValue
+          ? "unknown" as const
+          : "free" as const;
+      const expirationMs = typeof entry?.expiration_date === "string" ? Date.parse(entry.expiration_date) : Number.NaN;
+      const availability = Number.isFinite(expirationMs) && expirationMs <= Date.parse(fetchedAt) ? "unavailable" as const : "available" as const;
       return [{
-        providerModelId: id,
+        providerModelId,
         displayName: [entry?.displayName, entry?.display_name, entry?.name].find((value) => typeof value === "string" && value.trim()) ?? id,
+        author: providerModelId.includes("/") ? providerModelId.split("/", 1)[0]! : null,
         contextWindow: [entry?.inputTokenLimit, entry?.max_input_tokens, entry?.context_window]
+          .concat(entry?.context_length)
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
-        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens]
+        maxOutputTokens: [entry?.outputTokenLimit, entry?.max_tokens, entry?.max_output_tokens, entry?.top_provider?.max_completion_tokens]
           .find((value) => Number.isSafeInteger(value) && value > 0) ?? null,
+        inputModalities,
+        outputModalities,
         capabilities: {
-          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming),
-          toolCalls: reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
-          vision: reportedBoolean(reportedCapabilities.vision),
+          streaming: methods.length > 0 ? methods.includes("streamGenerateContent") : reportedBoolean(reportedCapabilities.streaming) ?? true,
+          toolCalls: supportedParameters.length > 0 ? supportedParameters.includes("tools") || supportedParameters.includes("tool_choice") : reportedBoolean(reportedCapabilities.toolCalls, reportedCapabilities.tool_calls),
+          vision: inputModalities.length > 0 ? inputModalities.some((modality: string) => modality === "image" || modality === "video") : reportedBoolean(reportedCapabilities.vision),
+          reasoning: supportedParameters.length > 0 ? supportedParameters.includes("reasoning") || supportedParameters.includes("include_reasoning") : null,
         },
+        pricing,
+        costType,
+        availability,
+        fetchedAt,
         metadataSource: "provider-reported",
       }];
     });
@@ -106,11 +164,9 @@ interface PlannedRequest {
 function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; request?: PlannedRequest; reason?: string } {
   switch (id) {
     case "openai":
-    case "openrouter":
     case "deepseek": {
       const cfgByProvider: Record<string, { apiKeyEnv: string; baseUrlEnv: string; defaultBaseUrl: string; extra?: Record<string, string> }> = {
         openai: { apiKeyEnv: "OPENAI_API_KEY", baseUrlEnv: "OPENAI_BASE_URL", defaultBaseUrl: "https://api.openai.com/v1" },
-        openrouter: { apiKeyEnv: "OPENROUTER_API_KEY", baseUrlEnv: "OPENROUTER_BASE_URL", defaultBaseUrl: "https://openrouter.ai/api/v1", extra: { "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" } },
         deepseek: { apiKeyEnv: "DEEPSEEK_API_KEY", baseUrlEnv: "DEEPSEEK_BASE_URL", defaultBaseUrl: "https://api.deepseek.com/v1" },
       };
       const spec = cfgByProvider[id]!;
@@ -124,6 +180,18 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
       }
       if (!c.apiKey) return { configured: false, reason: `${id} is not configured (${spec.apiKeyEnv} missing).` };
       return { configured: true, request: { url: `${c.baseUrl.replace(/\/$/, "")}/models`, headers: { Authorization: `Bearer ${c.apiKey}`, ...(spec.extra ?? {}) }, host: c.host } };
+    }
+    case "openrouter": {
+      const apiKey = env.OPENROUTER_API_KEY?.trim();
+      if (!apiKey) return { configured: false, reason: "openrouter is not configured (OPENROUTER_API_KEY missing)." };
+      return {
+        configured: true,
+        request: {
+          url: `${OPENROUTER_API_BASE_URL}/models/user`,
+          headers: { Authorization: `Bearer ${apiKey}`, "HTTP-Referer": "https://morrow.local", "X-Title": "Morrow" },
+          host: "openrouter.ai",
+        },
+      };
     }
     case "anthropic": {
       const c = resolveApiKeyCredential(env, { apiKeyEnv: "ANTHROPIC_API_KEY", baseUrlEnv: "ANTHROPIC_BASE_URL", defaultBaseUrl: "https://api.anthropic.com" });
@@ -163,8 +231,43 @@ function planRequest(id: ProviderId, env: ProviderEnv): { configured: boolean; r
     case "mock":
     case "deterministic-local":
       return { configured: true };
-    default:
-      return { configured: false, reason: `Unknown provider: ${id}` };
+    default: {
+      // Catalog providers are all OpenAI-compatible, so one plan covers them:
+      // GET {baseUrl}/models with a bearer key (or no key, for a local server).
+      const p = catalogProvider(id);
+      if (!p) return { configured: false, reason: `Unknown provider: ${id}` };
+      if (p.local) {
+        const c = resolveLocalCredential(env, { baseUrlEnv: p.baseUrlEnv, defaultBaseUrl: p.defaultBaseUrl });
+        if (!c.configured) {
+          return { configured: false, reason: `${id} is not enabled (set ${p.baseUrlEnv} to a running server).` };
+        }
+        // A local server may still be key-protected (e.g. vLLM --api-key).
+        const localKey = p.apiKeyEnv ? env[p.apiKeyEnv] : undefined;
+        return {
+          configured: true,
+          request: {
+            url: `${c.baseUrl.replace(/\/$/, "")}/models`,
+            headers: { ...(localKey ? { Authorization: `Bearer ${localKey}` } : {}), ...(p.extraHeaders ?? {}) },
+            host: c.host,
+          },
+        };
+      }
+      const c = resolveApiKeyCredential(env, {
+        apiKeyEnv: p.apiKeyEnv!,
+        ...(p.fallbackApiKeyEnv ? { fallbackApiKeyEnv: p.fallbackApiKeyEnv } : {}),
+        baseUrlEnv: p.baseUrlEnv,
+        defaultBaseUrl: p.defaultBaseUrl,
+      });
+      if (!c.configured) return { configured: false, reason: `${id} is not configured (${p.apiKeyEnv} missing).` };
+      return {
+        configured: true,
+        request: {
+          url: `${c.baseUrl.replace(/\/$/, "")}/models`,
+          headers: { Authorization: `Bearer ${c.apiKey!}`, ...(p.extraHeaders ?? {}) },
+          host: c.host,
+        },
+      };
+    }
   }
 }
 
@@ -173,6 +276,46 @@ function safeHostOf(url: string): string | null {
     return new URL(url).host || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Decide whether a successful model-list probe actually proved the credential.
+ *
+ * The probe is a plain GET on `/models`. Several providers (OpenCode Zen among
+ * them) serve that list to anyone, so a 200 there says the endpoint is
+ * reachable and nothing at all about the key. Reporting that as "verified"
+ * means telling a user their invalid key is fine, and letting them discover the
+ * truth on their first real request instead.
+ *
+ * To tell the two apart we repeat the request with the credential removed. If
+ * it still succeeds, the endpoint does not authenticate this route and the
+ * credential is unproven. If it now fails, the credential is what made the
+ * first request work.
+ *
+ * Runs only after an authenticated probe already succeeded, so it costs one
+ * extra request on a path a user explicitly asked to test, never during normal
+ * operation. Any error here means "cannot claim verification", never a hard
+ * failure — the endpoint is known to be reachable at this point.
+ */
+async function didEndpointCheckCredential(
+  url: string,
+  headers: Record<string, string>,
+  signal: AbortSignal
+): Promise<boolean> {
+  const authHeaders = Object.keys(headers).filter((h) => /^(authorization|x-api-key|x-goog-api-key)$/i.test(h));
+  // No credential was sent (keyless local server), or the key is embedded in
+  // the URL as a query parameter, where stripping it is not meaningful.
+  if (authHeaders.length === 0) return false;
+
+  const anonymous = Object.fromEntries(Object.entries(headers).filter(([name]) => !authHeaders.includes(name)));
+  try {
+    const res = await fetch(url, { method: "GET", headers: anonymous, signal });
+    await res.body?.cancel();
+    // Rejected without the credential ⇒ the credential is what worked.
+    return !res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -204,6 +347,11 @@ export async function testProviderConnectivity(
   }
 
   const { url, headers, host } = plan.request;
+  const configuredSecret = "Authorization" in headers ? headers.Authorization.replace(/^Bearer\s+/i, "") : null;
+  const safeDetail = (value: string): string => {
+    const exactRedacted = configuredSecret ? value.split(configuredSecret).join("***redacted***") : value;
+    return redactSecrets(exactRedacted);
+  };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
@@ -212,15 +360,39 @@ export async function testProviderConnectivity(
     const latencyMs = Date.now() - startedAt;
     const body = await readBoundedJson(res);
     if (res.ok) {
+      if (id === "openrouter" && (!body || typeof body !== "object" || !Array.isArray((body as { data?: unknown }).data))) {
+        return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: "OpenRouter returned an invalid authenticated user catalogue.", errorKind: "provider" };
+      }
       const models = normalizeModels(body);
-      return { ...base, configured: true, ok: true, status: res.status, latencyMs, checkedEndpoint: host, detail: `Reachable (HTTP ${res.status}).`, modelsSample: models.slice(0, 5).map((model) => model.providerModelId), models };
+      const credentialVerified = await didEndpointCheckCredential(url, headers, controller.signal);
+      return {
+        ...base,
+        configured: true,
+        ok: true,
+        status: res.status,
+        latencyMs,
+        checkedEndpoint: host,
+        detail: credentialVerified
+          ? `Reachable and credential accepted (HTTP ${res.status}).`
+          : `Reachable (HTTP ${res.status}), but this endpoint serves its model list without authentication, so the credential itself was not checked.`,
+        modelsSample: models.slice(0, 5).map((model) => model.providerModelId),
+        models,
+        credentialVerified,
+      };
     }
     const err = classifyHttpStatus(res.status, `HTTP ${res.status}`);
+    // `configured` reports whether the operator supplied a credential, NOT
+    // whether this check succeeded — `ok` and `errorKind` carry that. Clearing
+    // it here told the user their provider was "not configured" whenever the
+    // endpoint returned 500 or rate-limited them, sending them to re-enter a
+    // key that was never the problem.
     return { ...base, configured: true, ok: false, status: res.status, latencyMs, checkedEndpoint: host, detail: `Endpoint returned HTTP ${res.status} (${err.kind}).`, errorKind: err.kind };
   } catch (e: any) {
     const aborted = controller.signal.aborted;
     const err = classifyThrownError(e, aborted);
-    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : err.message, errorKind: aborted ? "timeout" : err.kind };
+    // Same reasoning as the HTTP-error path: an unreachable endpoint or a
+    // timeout says nothing about whether a credential is stored.
+    return { ...base, configured: true, ok: false, latencyMs: Date.now() - startedAt, checkedEndpoint: host, detail: aborted ? `Timed out after ${timeoutMs} ms.` : safeDetail(err.message), errorKind: aborted ? "timeout" : err.kind };
   } finally {
     clearTimeout(timer);
   }

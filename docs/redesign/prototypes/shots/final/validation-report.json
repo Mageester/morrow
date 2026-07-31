@@ -1,0 +1,566 @@
+{
+  "generatedAt": "2026-07-22T15:38:38.629Z",
+  "source": "morrow.html",
+  "viewports": {
+    "desktop": {
+      "width": 1600,
+      "height": 1000
+    },
+    "tablet": {
+      "width": 1024,
+      "height": 900
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  "results": [
+    {
+      "name": "home-desktop-light",
+      "screen": "home",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/home-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "home-keyboard-focus-desktop-light",
+      "screen": "home",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/home-keyboard-focus-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "home-desktop-dark",
+      "screen": "home",
+      "theme": "dark",
+      "viewport": "desktop",
+      "screenshot": "shots/final/home-desktop-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-normal-desktop-light",
+      "screen": "chat",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-normal-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-active-mission-desktop-light",
+      "screen": "mission",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-active-mission-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-active-mission-desktop-dark",
+      "screen": "mission",
+      "theme": "dark",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-active-mission-desktop-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-approval-desktop-light",
+      "screen": "approval",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-approval-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-recovery-desktop-light",
+      "screen": "recovery",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-recovery-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-recovery-desktop-dark",
+      "screen": "recovery",
+      "theme": "dark",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-recovery-desktop-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-completed-result-desktop-light",
+      "screen": "result",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/chat-completed-result-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "project-desktop-light",
+      "screen": "projects",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/project-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "missions-desktop-light",
+      "screen": "missions",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/missions-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "memory-desktop-light",
+      "screen": "memory",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/memory-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "memory-desktop-dark",
+      "screen": "memory",
+      "theme": "dark",
+      "viewport": "desktop",
+      "screenshot": "shots/final/memory-desktop-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "library-desktop-light",
+      "screen": "library",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/library-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "connections-desktop-light",
+      "screen": "connections",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/connections-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "connections-desktop-dark",
+      "screen": "connections",
+      "theme": "dark",
+      "viewport": "desktop",
+      "screenshot": "shots/final/connections-desktop-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "settings-desktop-light",
+      "screen": "settings",
+      "theme": "light",
+      "viewport": "desktop",
+      "screenshot": "shots/final/settings-desktop-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "home-tablet-light",
+      "screen": "home",
+      "theme": "light",
+      "viewport": "tablet",
+      "screenshot": "shots/final/home-tablet-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-active-mission-tablet-light",
+      "screen": "mission",
+      "theme": "light",
+      "viewport": "tablet",
+      "screenshot": "shots/final/chat-active-mission-tablet-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "New chat",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": null
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "home-mobile-light",
+      "screen": "home",
+      "theme": "light",
+      "viewport": "mobile",
+      "screenshot": "shots/final/home-mobile-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Toggle light and dark theme",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-active-mission-mobile-light",
+      "screen": "mission",
+      "theme": "light",
+      "viewport": "mobile",
+      "screenshot": "shots/final/chat-active-mission-mobile-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Toggle light and dark theme",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-mission-detail-mobile-light",
+      "screen": "mission",
+      "theme": "light",
+      "viewport": "mobile",
+      "screenshot": "shots/final/chat-mission-detail-mobile-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Pause",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "chat-approval-mobile-light",
+      "screen": "approval",
+      "theme": "light",
+      "viewport": "mobile",
+      "screenshot": "shots/final/chat-approval-mobile-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Toggle light and dark theme",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "memory-mobile-light",
+      "screen": "memory",
+      "theme": "light",
+      "viewport": "mobile",
+      "screenshot": "shots/final/memory-mobile-light.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Toggle light and dark theme",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    },
+    {
+      "name": "memory-mobile-dark",
+      "screen": "memory",
+      "theme": "dark",
+      "viewport": "mobile",
+      "screenshot": "shots/final/memory-mobile-dark.png",
+      "consoleErrors": [],
+      "pageErrors": [],
+      "focus": {
+        "tag": "BUTTON",
+        "label": "Toggle light and dark theme",
+        "outlineStyle": "solid",
+        "outlineWidth": "3px"
+      },
+      "layout": {
+        "horizontalOverflow": false,
+        "smallTargets": [],
+        "mobileNavigationVisible": true
+      },
+      "accessibilityViolations": []
+    }
+  ]
+}

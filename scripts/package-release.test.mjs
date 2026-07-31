@@ -65,7 +65,6 @@ test("forbidden-content contract rejects dev/acceptance cruft in Morrow's own fi
     R + "orchestrator/dist/scripts/todo-app-consumer-proof.js",
     R + "orchestrator/dist/scripts/sqlite-smoke.js",
     R + "orchestrator/node_modules/@morrow/orchestrator/dist/scripts/todo-app-files.js",
-    R + "web/index.html",
     R + ".env",
     R + "orchestrator/data.sqlite",
   ];
@@ -74,12 +73,16 @@ test("forbidden-content contract rejects dev/acceptance cruft in Morrow's own fi
     assert.equal(v.length, 1, `expected ${leak} to be flagged`);
   }
   // Third-party node_modules content and legitimate Morrow files are NOT flagged.
+  // The bundled Morrow web app (ADR 0007) is a first-class product surface, so
+  // web/index.html and its hashed assets are legitimate, not forbidden.
   const allowed = [
     R + "morrow.cmd",
     R + "orchestrator/dist/src/lib.js",
     R + "orchestrator/node_modules/playwright-core/lib/vite/dashboard/index.html",
     R + "orchestrator/node_modules/@morrow/contracts/dist/index.d.ts",
     R + "orchestrator/node_modules/@morrow/orchestrator/dist/src/lib.js",
+    R + "web/index.html",
+    R + "web/assets/index-abc123.js",
     R + ".env.example",
     R + "skills/coding/SKILL.md",
   ];

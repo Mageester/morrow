@@ -111,6 +111,6 @@ first is addressed here. The verification-gate work (dependency install, tests,
 typecheck/build, service startup, API health, browser render, console errors,
 interaction, viewport checks, each bounded) remains open.
 
-Continued in [0008](0008-mission-closure-and-service-gates.md): the
+Continued in [0009](0009-mission-closure-and-service-gates.md): the
 controller-exhaustion half of this gap is fixed there, and it documents a
 second, separate give-up path found during live proof that is not.

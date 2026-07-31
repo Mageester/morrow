@@ -268,6 +268,24 @@ try {
   throw new Error("The bundled CLI failed to run under the bundled runtime.");
 }
 
+// ── 4c. Bundled web app (served locally by the orchestrator at /app) ──────
+// The built React/Vite bundle from apps/web/dist is copied verbatim into the
+// package's web/ directory. The launcher points MORROW_WEB_ROOT here so the
+// orchestrator serves the local product at http://127.0.0.1:4317/app. The web
+// artifact's content hash is covered by the package manifest hash written in
+// step 6b, because the copy happens before provenance is computed.
+console.log("\n[4c/8] Bundling the web app...");
+const webSrc = join(ROOT, "apps", "web", "dist");
+const webIndex = join(webSrc, "index.html");
+if (!existsSync(webIndex)) {
+  throw new Error(`Web app is not built (missing ${webIndex}). Run pnpm --filter @morrow/web build (or pnpm build) first.`);
+}
+const webDst = join(PKG_DIR, "web");
+rmSync(webDst, { recursive: true, force: true });
+cpSync(webSrc, webDst, { recursive: true });
+if (!existsSync(join(webDst, "index.html"))) throw new Error("Web app copy failed (missing web/index.html).");
+console.log(`  Bundled web app from ${webSrc}.`);
+
 // ── 5. Skills (so the packaged agent can find_skill / load_skill) ─────────
 // The agent reads each skill's SKILL.md (and manifest/permissions) at runtime
 // from MORROW_SKILLS_DIR, which the launcher points at this bundled directory.
