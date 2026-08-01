@@ -116,8 +116,16 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
 
   // Anthropic
   model("anthropic", "claude-fable-5", "Claude Fable 5", { family: "claude-fable", generation: "5", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(10, 50), vision: true, speed: "powerful", cost: "high", reasoning: fixedReasoning() }),
-  model("anthropic", "claude-opus-4-8", "Claude Opus 4.8", { family: "claude-opus", generation: "4.8", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(5, 25), vision: true, speed: "powerful", cost: "high", reasoning: effort() }),
-  model("anthropic", "claude-sonnet-5", "Claude Sonnet 5", { family: "claude-sonnet", generation: "5", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(3, 15), vision: true, speed: "fast", cost: "medium", reasoning: effort() }),
+  // Anthropic routes speak `anthropic-messages`, which carries reasoning as a
+  // thinking-token budget and has no `reasoning_effort` field at all. Declaring
+  // `effort` here advertised Low/Medium/High in the `/reasoning` picker for
+  // these two models and then rejected every one of them at send time with
+  // REASONING_UNSUPPORTED, because translateReasoning can only map effort onto
+  // the OpenAI family. Until a live probe supplies a verified thinking budget
+  // for them, `fixed` is the honest declaration — it matches claude-fable-5 and
+  // states plainly that the depth is the provider's to choose.
+  model("anthropic", "claude-opus-4-8", "Claude Opus 4.8", { family: "claude-opus", generation: "4.8", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(5, 25), vision: true, speed: "powerful", cost: "high", reasoning: fixedReasoning() }),
+  model("anthropic", "claude-sonnet-5", "Claude Sonnet 5", { family: "claude-sonnet", generation: "5", contextWindow: 1_000_000, maxOutputTokens: 128_000, pricing: price(3, 15), vision: true, speed: "fast", cost: "medium", reasoning: fixedReasoning() }),
   model("anthropic", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", { aliases: ["claude-haiku-4-5"], family: "claude-haiku", generation: "4.5", contextWindow: 200_000, maxOutputTokens: 64_000, pricing: price(1, 5), vision: true, speed: "fast", cost: "low" }),
 
   // Gemini

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   AiProvider,
   ChatMessage,
@@ -41,6 +42,16 @@ interface GeminiContent {
  * map to `systemInstruction`, tool calls arrive as complete `functionCall`
  * parts (Gemini does not stream partial arguments) and are emitted as a single
  * normalized tool-call chunk each, with contiguous indices.
+ *
+ * Gemini's wire format carries no tool-call identity of its own — it matches a
+ * `functionResponse` back to its call by tool NAME — so this adapter has to
+ * synthesize one. The id must be unique across every stream, not just within
+ * one: the durable transcript stores tool calls in a table keyed globally on
+ * that id, so a per-turn ordinal alone (`gemini-tool-0`) silently collided
+ * with the previous turn's first call and with every other Gemini task's, and
+ * the colliding write updated the earlier row instead of recording a new one.
+ * Each streamChat call therefore gets its own nonce, keeping the id opaque and
+ * globally unique while the ordinal stays readable.
  */
 export class GeminiProvider implements AiProvider {
   readonly id = "gemini";
@@ -176,6 +187,9 @@ export class GeminiProvider implements AiProvider {
     let completionTokens = 0;
     let toolOrdinal = 0;
     let sawUsage = false;
+    // Unique per stream; see the class docstring for why an ordinal alone is
+    // not a safe tool-call identity.
+    const toolCallNonce = randomUUID().slice(0, 8);
 
     try {
       while (true) {
@@ -211,7 +225,7 @@ export class GeminiProvider implements AiProvider {
                 type: "tool_call",
                 toolCalls: [
                   {
-                    id: `gemini-tool-${ordinal}`,
+                    id: `gemini-tool-${toolCallNonce}-${ordinal}`,
                     index: ordinal,
                     type: "function",
                     function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args ?? {}) },

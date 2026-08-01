@@ -45,6 +45,25 @@ function tryParseJson(value: string): unknown {
 }
 
 /**
+ * Normalize an Anthropic `stop_reason` into the protocol-independent
+ * `finishReason` every adapter reports. `max_tokens` is the load-bearing one:
+ * it is how a reasoning model that spent its whole output budget on thinking
+ * — returning no visible answer at all — is distinguished from a model that
+ * genuinely had nothing to say, and it is what lets mission review retry a
+ * truncated response instead of grading an empty one.
+ */
+function normalizeStopReason(raw: unknown): NonNullable<ProviderChunk["finishReason"]> | undefined {
+  switch (raw) {
+    case "end_turn": case "stop_sequence": return "stop";
+    case "max_tokens": return "length";
+    case "tool_use": return "tool_calls";
+    case "refusal": return "content_filter";
+    case undefined: case null: return undefined;
+    default: return "other";
+  }
+}
+
+/**
  * Streaming adapter for the Anthropic Messages API. System prompts are hoisted
  * to the top-level `system` field, tool calls are normalized from `tool_use`
  * content blocks, and tool-call indices are remapped to a contiguous, tool-local
@@ -135,6 +154,21 @@ export class AnthropicProvider implements AiProvider {
         return;
       }
       Object.assign(body, translated.params);
+      // Enabling extended thinking constrains two fields this adapter has
+      // already set, and the API rejects the request outright if either
+      // conflicts: sampling temperature may not be combined with thinking, and
+      // `max_tokens` must leave room for the visible answer *on top of* the
+      // thinking budget. Reconcile both here, at the one boundary that builds
+      // the wire body, so no caller has to know the coupling — the preset that
+      // supplies temperature and output budget cannot see the reasoning mode.
+      const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
+      if (thinking?.type === "enabled") {
+        delete body.temperature;
+        const budgetTokens = thinking.budget_tokens ?? 0;
+        if (body.max_tokens <= budgetTokens) {
+          body.max_tokens = budgetTokens + (options.maxOutputTokens ?? 4096);
+        }
+      }
     }
 
     const controller = new AbortController();
@@ -210,6 +244,7 @@ export class AnthropicProvider implements AiProvider {
     // Map Anthropic content-block index -> contiguous tool-call ordinal.
     const blockToToolOrdinal = new Map<number, number>();
     let nextToolOrdinal = 0;
+    let finishReason: NonNullable<ProviderChunk["finishReason"]> | undefined;
 
     try {
       while (true) {
@@ -261,9 +296,14 @@ export class AnthropicProvider implements AiProvider {
             }
             case "message_delta":
               if (evt.usage?.output_tokens !== undefined) completionTokens = evt.usage.output_tokens;
+              finishReason = normalizeStopReason(evt.delta?.stop_reason) ?? finishReason;
               break;
             case "message_stop":
-              yield { type: "done", usage: { promptTokens, completionTokens, ...(cachedPromptTokens > 0 ? { cachedPromptTokens } : {}) } };
+              yield {
+                type: "done",
+                usage: { promptTokens, completionTokens, ...(cachedPromptTokens > 0 ? { cachedPromptTokens } : {}) },
+                ...(finishReason ? { finishReason } : {}),
+              };
               break;
             case "error": {
               const apiType = evt.error?.type ?? "provider_error";

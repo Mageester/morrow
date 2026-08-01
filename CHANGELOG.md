@@ -6,6 +6,40 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Fixed - reliability scan of chat, reasoning, and tool calling
+
+- Selecting a reasoning level on a Claude route failed outright. The model
+  registry declared effort control (Low/Medium/High) for `claude-opus-4-8` and
+  `claude-sonnet-5`, so `/reasoning` and the `/model` picker's reasoning tab
+  listed those levels — but Anthropic routes speak `anthropic-messages`, which
+  has no `reasoning_effort` field, so every selection came back
+  `400 REASONING_UNSUPPORTED` at send time and no request was ever issued. Both
+  models are the top preference of the `best-quality` and `coding` presets.
+  They now declare `fixed`, matching `claude-fable-5`, and a new structural
+  guard fails if any built-in model ever again advertises a reasoning option
+  that its provider's protocol cannot carry.
+- Gemini tool calls vanished from the durable transcript. The adapter minted
+  tool-call ids from a per-stream ordinal (`gemini-tool-0`), but the transcript
+  table keys on that id globally, so the first tool call of every turn — and of
+  every other Gemini task — collided with an existing row. The colliding write
+  updates only status and result, never the tool name or arguments, so a
+  second-turn call was recorded as the first turn's tool with the second turn's
+  result, and every Gemini conversation after the first showed an empty tool
+  transcript entirely. Each stream now mints a unique id.
+- Anthropic never reported why a response ended. `stop_reason` was read off the
+  wire for usage accounting but discarded, so `finishReason` was always absent
+  on Anthropic. A reasoning model that spent its whole output budget thinking
+  and returned no visible answer was indistinguishable from one with nothing to
+  say: mission review's truncation retry (which fires only on
+  `finishReason === "length"`) could never trigger, and the review diagnostic
+  reported "empty response" instead of "response truncated". All Anthropic stop
+  reasons are now normalized and reported.
+- Enabling Anthropic extended thinking would have been rejected on the wire.
+  The API refuses a request that pairs `thinking` with a sampling temperature,
+  or whose `max_tokens` does not exceed `budget_tokens` — and the preset
+  supplies both without any knowledge of the reasoning mode. The adapter now
+  reconciles them where the wire body is built.
+
 ## [0.1.0-beta.36] - 2026-07-31
 
 ### Fixed - autonomous `morrow build` reliability, and mission closure

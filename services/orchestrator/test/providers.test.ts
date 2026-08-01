@@ -354,6 +354,85 @@ describe("Anthropic provider normalization", () => {
     expect(JSON.stringify(chunks)).not.toContain("sk-ant-secret");
   });
 
+  it("reports a max_tokens stop as finishReason 'length' so a truncated reasoning response is recoverable", async () => {
+    // A reasoning model can spend its entire output budget thinking and emit
+    // no visible answer. Without a finishReason the caller cannot tell that
+    // apart from a model with nothing to say, and mission review's
+    // truncation retry (mission/completion.ts) could never fire on Anthropic.
+    mockFetch(
+      sseResponse([
+        `data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}\n\n`,
+        `data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ])
+    );
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    const chunks = await collect(provider, userMessages);
+    expect(chunks.find((c) => c.type === "done")?.finishReason).toBe("length");
+  });
+
+  it("reports the remaining stop reasons, and none at all when the provider omits one", async () => {
+    for (const [wire, expected] of [["end_turn", "stop"], ["stop_sequence", "stop"], ["tool_use", "tool_calls"], ["refusal", "content_filter"]] as const) {
+      mockFetch(
+        sseResponse([
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n`,
+          `data: {"type":"message_delta","delta":{"stop_reason":"${wire}"},"usage":{"output_tokens":1}}\n\n`,
+          `data: {"type":"message_stop"}\n\n`,
+        ])
+      );
+      const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+      const chunks = await collect(provider, userMessages);
+      expect(chunks.find((c) => c.type === "done")?.finishReason).toBe(expected);
+    }
+
+    mockFetch(
+      sseResponse([
+        `data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n`,
+        `data: {"type":"message_delta","usage":{"output_tokens":1}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ])
+    );
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    const chunks = await collect(provider, userMessages);
+    expect(chunks.find((c) => c.type === "done")).not.toHaveProperty("finishReason");
+  });
+
+  it("drops temperature and lifts max_tokens above the thinking budget when extended thinking is enabled", async () => {
+    // The API rejects a request that pairs thinking with a sampling
+    // temperature, or whose max_tokens does not exceed budget_tokens. The
+    // preset supplies both of those without any knowledge of the reasoning
+    // mode, so the adapter reconciles them.
+    const ref = mockFetch(sseResponse([`data: {"type":"message_stop"}\n\n`]));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    await collect(provider, userMessages, {
+      temperature: 0.3,
+      maxOutputTokens: 4096,
+      reasoning: { mode: "budget", tokens: 8192 },
+      reasoningCapability: { control: "budget", efforts: [], budgets: [8192], source: "registry" },
+    });
+
+    const sentBody = JSON.parse(ref.captured!.init.body);
+    expect(sentBody.thinking).toEqual({ type: "enabled", budget_tokens: 8192 });
+    expect(sentBody).not.toHaveProperty("temperature");
+    expect(sentBody.max_tokens).toBeGreaterThan(8192);
+  });
+
+  it("leaves temperature untouched when thinking is not enabled", async () => {
+    const ref = mockFetch(sseResponse([`data: {"type":"message_stop"}\n\n`]));
+    const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
+    await collect(provider, userMessages, {
+      temperature: 0.3,
+      maxOutputTokens: 4096,
+      reasoning: { mode: "off" },
+      reasoningCapability: { control: "budget", efforts: [], budgets: [8192], source: "registry" },
+    });
+
+    const sentBody = JSON.parse(ref.captured!.init.body);
+    expect(sentBody.thinking).toEqual({ type: "disabled" });
+    expect(sentBody.temperature).toBe(0.3);
+    expect(sentBody.max_tokens).toBe(4096);
+  });
+
   it("maps an overloaded error to a retryable rate_limit", async () => {
     mockFetch(sseResponse([`data: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n\n`]));
     const provider = new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com", defaultModel: "m" });
@@ -376,7 +455,8 @@ describe("Gemini provider normalization", () => {
 
     expect(chunks.find((c) => c.type === "text")?.text).toBe("Hello");
     const tool = chunks.find((c) => c.type === "tool_call");
-    expect(tool?.toolCalls?.[0]?.id).toBe("gemini-tool-0");
+    expect(tool?.toolCalls?.[0]?.id).toMatch(/^gemini-tool-[0-9a-f]{8}-0$/);
+    expect(tool?.toolCalls?.[0]?.index).toBe(0);
     expect(JSON.parse(tool!.toolCalls![0]!.function.arguments)).toEqual({ path: "a" });
     expect(chunks.find((c) => c.type === "done")?.usage).toEqual({ promptTokens: 3, completionTokens: 4 });
 
@@ -385,6 +465,29 @@ describe("Gemini provider normalization", () => {
     const sentBody = JSON.parse(ref.captured!.init.body);
     expect(sentBody.systemInstruction.parts[0].text).toBe("You are Morrow.");
     expect(JSON.stringify(chunks)).not.toContain("goog-secret");
+  });
+
+  it("never reuses a tool-call id across turns — the durable transcript keys on it globally", async () => {
+    // Gemini's wire format carries no call identity, so the adapter mints one.
+    // A bare per-turn ordinal ("gemini-tool-0") collided with the previous
+    // turn's first call and with every other Gemini task's, and the colliding
+    // upsert updated the earlier row instead of recording the new call.
+    const ids: string[] = [];
+    for (let turn = 0; turn < 3; turn++) {
+      mockFetch(
+        sseResponse([
+          `data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"a"}}},{"functionCall":{"name":"list_files","args":{"path":"."}}}]}}]}\n\n`,
+        ])
+      );
+      const provider = new GeminiProvider({ apiKey: "k", baseUrl: "https://generativelanguage.googleapis.com", defaultModel: "m" });
+      const chunks = await collect(provider, userMessages, { tools: [{ name: "read_file", description: "d", parameters: { type: "object", properties: {} } }] });
+      ids.push(...chunks.filter((c) => c.type === "tool_call").flatMap((c) => c.toolCalls!.map((t) => t.id)));
+    }
+
+    expect(ids).toHaveLength(6);
+    expect(new Set(ids).size).toBe(6);
+    // Indices still restart per turn: they address this turn's accumulator.
+    expect(ids.map((id) => id.slice(-2))).toEqual(["-0", "-1", "-0", "-1", "-0", "-1"]);
   });
 
   it("classifies a 403 as an auth error", async () => {
