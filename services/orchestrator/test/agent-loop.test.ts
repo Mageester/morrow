@@ -276,3 +276,57 @@ describe("agent loop detection", () => {
       .toBe(true);
   });
 });
+
+describe("empty-response recovery raises the output ceiling", () => {
+  let db: Database.Database;
+  const tempDir = join(process.cwd(), "test-temp-budget-" + Math.random().toString(36).slice(2));
+  beforeEach(() => { db = openDatabase(":memory:"); mkdirSync(tempDir, { recursive: true }); });
+  afterEach(() => { db.close(); try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+  it("escalates maxOutputTokens each retry instead of resending the same exhausted allowance", async () => {
+    const ts = new Date().toISOString();
+    projectRepository(db).createProject({ id: "p1", name: "B", workspacePath: tempDir, createdAt: ts });
+    conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "B", createdAt: ts, updatedAt: ts });
+    conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c1", role: "user", content: "go", createdAt: ts, updatedAt: ts });
+    taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: ts });
+    conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c1", role: "assistant", content: "", taskId: "t1", streamingState: "queued", createdAt: ts, updatedAt: ts });
+    taskRoutingRepository(db).upsert({
+      taskId: "t1", presetId: "balanced", providerId: "openai", model: "gpt-5.5", useMemory: true,
+      decision: { version: 1, presetId: "balanced", providerId: "openai", model: "gpt-5.5", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [] },
+      createdAt: ts,
+    });
+
+    // A reasoning-heavy route: always burns the whole allowance, never emits
+    // visible text. Exactly what deepseek-v4-flash-free did live.
+    const budgets: Array<number | null | undefined> = [];
+    const timeouts: Array<number | undefined> = [];
+    const provider = {
+      id: "openai",
+      async *streamChat(_m: unknown, options: { maxOutputTokens?: number | null; timeoutMs?: number }): AsyncIterable<ProviderChunk> {
+        budgets.push(options.maxOutputTokens);
+        timeouts.push(options.timeoutMs);
+        yield { type: "done", usage: { promptTokens: 10, completionTokens: options.maxOutputTokens ?? 0 }, finishReason: "length" };
+      },
+    } as never;
+
+    await executeAgentChatTask({ db, taskId: "t1", provider });
+
+    // First attempt at the preset budget, then a strictly rising ceiling.
+    expect(budgets.length).toBeGreaterThanOrEqual(4);
+    expect(budgets[0]).toBe(4096);
+    expect(budgets[1]).toBe(8192);
+    expect(budgets[2]).toBe(16384);
+    // Bounded: never escalates past the 8x cap.
+    expect(Math.max(...budgets.map((b) => Number(b ?? 0)))).toBeLessThanOrEqual(4096 * 8);
+    // The deadline must rise with the allowance. Raising tokens alone just
+    // converts an empty response into a timeout before the turn can finish.
+    expect(timeouts[0]).toBe(90_000);
+    expect(timeouts[1]).toBe(180_000);
+    expect(timeouts[2]).toBe(360_000);
+
+    const warnings = (taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: Record<string, unknown> }>)
+      .filter((e) => e.type === "task.progress_warning" && e.payload.reason === "empty_provider_response");
+    expect(warnings[0]!.payload.previousOutputBudgetTokens).toBe(4096);
+    expect(warnings[0]!.payload.outputBudgetTokens).toBe(8192);
+  });
+});

@@ -2609,6 +2609,40 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let completedWithoutMoreTools = false;
   let canonicalFinalText = "";
   let emptyFinalResponseRetries = 0;
+  /**
+   * Multiplier on the preset's output allowance for THIS task.
+   *
+   * A reasoning model bills its hidden chain-of-thought against the same
+   * output budget as its visible answer, so a route that reasons heavily can
+   * spend the entire allowance before writing a single user-visible token â€”
+   * observed directly against deepseek-v4-flash-free, which returned
+   * outputTokens exactly equal to the 4096 reserve on every attempt with empty
+   * content. Asking such a route to "be concise" cannot fix that: verbosity is
+   * not the binding constraint, the ceiling is. Each empty-response retry
+   * therefore RAISES the ceiling as well as tightening the instruction.
+   * Bounded so a pathological route cannot escalate without limit.
+   */
+  let outputBudgetMultiplier = 1;
+  // 8x: measured against deepseek-v4-flash-free, which spent 15,565 reasoning
+  // tokens before its first visible token on a single-file WebGL task. A 4x
+  // ceiling (16k on the 4096 presets) still cut it off mid-thought.
+  const MAX_OUTPUT_BUDGET_MULTIPLIER = 8;
+  const effectiveOutputBudget = (): number | null =>
+    typeof preset.outputBudgetTokens === "number"
+      ? preset.outputBudgetTokens * outputBudgetMultiplier
+      : preset.outputBudgetTokens ?? null;
+  /**
+   * The request deadline scales with the allowance. These two limits are
+   * coupled: a route that needs 4x the tokens needs roughly 4x the wall clock
+   * to emit them, so raising the ceiling alone converts an "empty response"
+   * failure into a "provider stream timed out" failure without ever letting
+   * the turn finish. Measured: 18,900 completion tokens took 146s on the
+   * free-tier route that motivated this.
+   */
+  const effectiveTimeoutMs = (): number | undefined =>
+    typeof preset.timeoutMs === "number"
+      ? preset.timeoutMs * outputBudgetMultiplier
+      : preset.timeoutMs;
   let providerRecoverySegments = 0;
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
@@ -3180,9 +3214,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           ...(abortSignal ? { abortSignal } : {}),
           tools: exposedTools,
           model: candidateModel,
-          timeoutMs: preset.timeoutMs,
+          ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
-          maxOutputTokens: preset.outputBudgetTokens,
+          maxOutputTokens: effectiveOutputBudget(),
           ...(candidateReasoning ? { reasoning: candidateReasoning, reasoningCapability: resolution.reasoning } : {}),
         };
         const envelope = {
@@ -3289,9 +3323,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           ...(abortSignal ? { abortSignal } : {}),
           tools: exposedTools,
           model: resolvedModel || assistantMessageRow.model || undefined,
-          timeoutMs: preset.timeoutMs,
+          ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
-          maxOutputTokens: preset.outputBudgetTokens,
+          maxOutputTokens: effectiveOutputBudget(),
           // Reasoning intentionally omitted here: this object is only a
           // fallback default fallback.ts uses when a candidate lacks its own
           // `request.options` (see FallbackCandidate) â€” every admitted
@@ -4674,6 +4708,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // in this branch, so continuation cannot duplicate a side effect.
         if (emptyFinalResponseRetries < 3) {
           emptyFinalResponseRetries++;
+          // Raise the ceiling before retrying. Without this the next attempt
+          // has the exact same allowance the model just exhausted on hidden
+          // reasoning, so all three retries fail identically and the task is
+          // interrupted having learned nothing.
+          const previousBudget = effectiveOutputBudget();
+          if (outputBudgetMultiplier < MAX_OUTPUT_BUDGET_MULTIPLIER) outputBudgetMultiplier *= 2;
           chatMessages.push({
             role: "user",
             content: lastVerificationFailure
@@ -4682,8 +4722,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           });
           event("task.progress_warning", {
             reason: "empty_provider_response",
-            message: `Provider returned no usable answer after tool completion; requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
+            message: `Provider returned no usable answer after tool completion; raising the output allowance to ${effectiveOutputBudget() ?? "provider default"} and requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
             turns: turn,
+            previousOutputBudgetTokens: previousBudget ?? null,
+            outputBudgetTokens: effectiveOutputBudget() ?? null,
           });
           continue;
         }
