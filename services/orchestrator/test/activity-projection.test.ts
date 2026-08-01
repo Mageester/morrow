@@ -37,6 +37,17 @@ describe("conversation activity projection", () => {
     expect(activity.entries).toMatchObject([
       { kind: "assistant", status: "running", summary: "Thinking", detail: "Planning next step" },
       {
+        // Reads are transcript steps too: they are the evidence for the write
+        // that follows, and hiding them left a change visible with its grounding
+        // invisible.
+        id: "task-1:tool:read-1",
+        kind: "file",
+        status: "completed",
+        summary: "Read src/activity.ts",
+        target: "src/activity.ts",
+        durationMs: 38,
+      },
+      {
         id: "task-1:tool:file-1",
         kind: "file",
         status: "completed",
@@ -53,7 +64,7 @@ describe("conversation activity projection", () => {
         durationMs: 9,
       },
     ]);
-    expect(activity.entries).toHaveLength(3);
+    expect(activity.entries).toHaveLength(4);
     expect(JSON.stringify(activity)).not.toContain("privateReasoning");
   });
 
@@ -76,5 +87,87 @@ describe("conversation activity projection", () => {
       target: "curl --token [redacted] https://example.test",
     });
     expect(JSON.stringify(activity)).not.toContain("secret-value");
+  });
+});
+
+describe("interleaved transcript ordering", () => {
+  it("folds streamed deltas into one narration entry per turn, in run order with the tools", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "assistant.turn_started", { turnId: "task-1:turn-1" }),
+          event(2, "evidence.persisted", { deltaText: "Let me read ", turnId: "task-1:turn-1" }),
+          event(3, "evidence.persisted", { deltaText: "the config.", turnId: "task-1:turn-1" }),
+          event(4, "tool.started", { id: "read-1", toolName: "read_file", target: "package.json" }),
+          event(5, "tool.completed", { id: "read-1", toolName: "read_file", elapsedMs: 12 }),
+          event(6, "assistant.turn_started", { turnId: "task-1:turn-2" }),
+          event(7, "evidence.persisted", { deltaText: "Now the fix.", turnId: "task-1:turn-2" }),
+          event(8, "tool.started", { id: "w-1", toolName: "create_file", target: "src/a.ts" }),
+          event(9, "tool.completed", { id: "w-1", toolName: "create_file", elapsedMs: 20 }),
+        ],
+      }],
+    });
+
+    // The transcript must read in the order the run actually happened.
+    expect(activity.entries.map((e) => [e.kind, e.text ?? e.summary])).toEqual([
+      ["narration", "Let me read the config."],
+      ["file", "Read package.json"],
+      ["narration", "Now the fix."],
+      ["file", "Created src/a.ts"],
+    ]);
+  });
+
+  it("never merges two turns, and keeps narration out of every other kind", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [
+          event(1, "evidence.persisted", { deltaText: "alpha", turnId: "task-1:turn-1" }),
+          event(2, "evidence.persisted", { deltaText: "beta", turnId: "task-1:turn-2" }),
+          event(3, "tool.started", { id: "r", toolName: "read_file", target: "a.txt" }),
+          event(4, "tool.completed", { id: "r", toolName: "read_file" }),
+        ],
+      }],
+    });
+    const narration = activity.entries.filter((e) => e.kind === "narration");
+    expect(narration.map((e) => e.text)).toEqual(["alpha", "beta"]);
+    expect(activity.entries.filter((e) => e.kind !== "narration").every((e) => e.text === null)).toBe(true);
+  });
+
+  it("ignores whitespace-only narration so an empty turn adds no transcript step", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [event(1, "evidence.persisted", { deltaText: "   ", turnId: "task-1:turn-1" })],
+      }],
+    });
+    expect(activity.entries.filter((e) => e.kind === "narration")).toEqual([]);
+  });
+});
+
+describe("narration cannot become a leak channel", () => {
+  it("ignores deltaText riding on a file-evidence event, and never echoes it", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [event(1, "evidence.persisted", {
+          action: "patched",
+          path: "src/app.ts",
+          deltaText: "PRIVATE MODEL OUTPUT",
+        })],
+      }],
+    });
+    expect(activity.entries.map((e) => e.kind)).toEqual(["file"]);
+    expect(activity.entries[0]).toMatchObject({ target: "src/app.ts", text: null });
+    expect(JSON.stringify(activity)).not.toContain("PRIVATE MODEL OUTPUT");
   });
 });

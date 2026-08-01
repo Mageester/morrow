@@ -20,7 +20,7 @@ import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
-import { ActivityPanel, ConversationActivity } from "./activity-panel.js";
+import { ActivityPanel, ConversationActivity, ConversationTranscript } from "./activity-panel.js";
 import { PendingApprovals } from "./pending-approvals.js";
 import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 
@@ -181,6 +181,16 @@ export function ConversationPageContent({
       grouped.set(entry.taskId, [...(grouped.get(entry.taskId) ?? []), entry]);
     }
     return grouped;
+  }, [activity.data]);
+
+  // A task has a transcript only once it has narration to interleave; without
+  // it there is nothing to order the tool steps against.
+  const transcripts = useMemo(() => {
+    const withNarration = new Set<string>();
+    for (const entry of activity.data?.entries ?? []) {
+      if (entry.kind === "narration") withNarration.add(entry.taskId);
+    }
+    return withNarration;
   }, [activity.data]);
   const conversationTaskIds = useMemo(
     () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
@@ -465,14 +475,29 @@ export function ConversationPageContent({
               key={message.id}
             >
               {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
-              {message.role === "assistant" && message.taskId ? (
-                <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
-              ) : null}
-              <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
-                {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
-                  <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
-                ) : <p>{message.content}</p>}
-              </div>
+              {/* An assistant turn with narration renders as the interleaved
+                  transcript — its words and its actions in run order. The flat
+                  body is the fallback for turns that produced no narration
+                  entries (a plain answer with no tools, or history recorded
+                  before the transcript projection existed), so nothing that
+                  used to be readable stops being readable. */}
+              {message.role === "assistant" && message.taskId && transcripts.has(message.taskId) ? (
+                <ConversationTranscript
+                  entries={activityByTask.get(message.taskId) ?? []}
+                  streaming={ACTIVE_STATES.has(message.streamingState)}
+                />
+              ) : (
+                <>
+                  {message.role === "assistant" && message.taskId ? (
+                    <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
+                  ) : null}
+                  <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
+                    {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
+                      <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
+                    ) : <p>{message.content}</p>}
+                  </div>
+                </>
+              )}
               {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
               {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
                 <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>

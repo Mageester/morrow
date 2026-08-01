@@ -36,6 +36,10 @@ function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
+/** Matches the contract's narration ceiling. Generous by design — a narration
+ * entry IS the assistant's message for that turn, not a label for it. */
+const NARRATION_LIMIT = 200_000;
+
 /** Redact common credential shapes before any persisted target reaches the
  * browser. Free-form payload fields are never passed through this function:
  * they are omitted entirely by the projection allow-list. */
@@ -79,6 +83,7 @@ function entry(
     summary: string;
     detail?: string | null;
     target?: string | null;
+    text?: string | null;
     toolName?: string | null;
     durationMs?: number | null;
     exitCode?: number | null;
@@ -96,6 +101,7 @@ function entry(
     summary: clamp(input.summary, 240),
     detail: input.detail ? clamp(input.detail, 1000) : null,
     target: input.target ?? null,
+    text: input.text ?? null,
     toolName: input.toolName ?? null,
     durationMs: input.durationMs ?? null,
     exitCode: input.exitCode ?? null,
@@ -116,13 +122,21 @@ function toolKind(toolName: string | null): WebActivityKind {
 
 /** Keep chat transcript legible. Low-level reads, listings, and repository
  * probes remain in durable event storage but do not each become a chat row. */
+/**
+ * Tools that appear as their own transcript step. This is deliberately the
+ * whole tool surface, not just the mutating ones: the transcript's job is to
+ * show what Morrow actually did, in order, and "read these three files, then
+ * searched for this symbol, then wrote that patch" is the part a reader uses
+ * to judge whether the work was grounded. Reads were previously hidden as
+ * noise, which left write-only transcripts that could not be audited — the
+ * evidence for a change was invisible while the change itself was shown.
+ *
+ * Lifecycle events (task/plan/step/workspace) remain hidden; those are audit
+ * records, not things the assistant chose to do.
+ */
 function isTranscriptTool(toolName: string | null): boolean {
-  return toolName === "run_command"
-    || toolName === "propose_patch"
-    || toolName === "create_file"
-    || toolName === "create_directory"
-    || toolName === "load_skill"
-    || toolName === "find_skill";
+  if (!toolName) return false;
+  return /^(?:run_command|propose_patch|create_file|create_directory|load_skill|find_skill|read_file|list_files|read_artifact|search_text|search_files|search_symbols|git_status|git_diff|git_log|browser_[a-z_]+)$/.test(toolName);
 }
 
 function toolSummary(
@@ -384,8 +398,50 @@ export function projectConversationActivity(
     );
 
   const entries: WebConversationActivityEntry[] = [];
+  // Narration arrives as one `evidence.persisted` event per streamed delta —
+  // hundreds of them for a single paragraph. They are folded into ONE entry per
+  // assistant turn, anchored at the sequence of that turn's first delta, so the
+  // transcript reads as "the model said this, then ran these tools, then said
+  // this" instead of a storm of fragments. Keyed by turnId, which agent.ts
+  // stamps on every delta, so two turns never merge.
+  const narrationByTurn = new Map<string, number>();
   for (const { taskId, event } of orderedEvents) {
     if (updateToolEntry(entries, taskId, event)) continue;
+
+    // Narration is ONLY a pure streamed-text delta. An `evidence.persisted`
+    // that carries an `action` is a durable file record, and its payload is
+    // projected through the allow-list below — any `deltaText` riding along on
+    // one of those is not the assistant narrating and must never be surfaced.
+    const deltaText = event.type === "evidence.persisted"
+      && event.payload.action === undefined
+      && typeof event.payload.deltaText === "string"
+      ? event.payload.deltaText
+      : null;
+    if (deltaText !== null) {
+      const turnId = identifier(event.payload.turnId) ?? `${taskId}:turn`;
+      const key = `${taskId}:${turnId}`;
+      const existing = narrationByTurn.get(key);
+      if (existing === undefined) {
+        if (deltaText.trim().length === 0) continue;
+        narrationByTurn.set(key, entries.length);
+        entries.push(entry(taskId, event, {
+          kind: "narration",
+          status: "completed",
+          summary: "Assistant message",
+          text: clamp(deltaText, NARRATION_LIMIT),
+          id: `${taskId}:narration:${turnId}`,
+        }));
+      } else {
+        const current = entries[existing]!;
+        entries[existing] = {
+          ...current,
+          text: clamp((current.text ?? "") + deltaText, NARRATION_LIMIT),
+          updatedAt: event.createdAt,
+        };
+      }
+      continue;
+    }
+
     const projected = projectEvent(taskId, event);
     if (!projected) continue;
 

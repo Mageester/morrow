@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Brain, ChevronRight, FileCode2, Terminal, Wrench, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { conversationQueries } from "../../api/conversations.js";
+import { Markdown } from "../../components/markdown.js";
 
 function activityIcon(kind: WebConversationActivityEntry["kind"]) {
   if (kind === "assistant") return <Brain aria-hidden="true" size={15} />;
@@ -75,6 +76,43 @@ export function ConversationActivity({ entries }: { entries: readonly WebConvers
     <section aria-label="Morrow activity" className="morrow-conversation-activity">
       <ActivityTimeline entries={entries} label="Morrow activity" />
     </section>
+  );
+}
+
+/**
+ * The interleaved transcript: one chronological stream of what Morrow said and
+ * what it did, in the order it happened. Narration entries render as the
+ * assistant's own prose; every other entry renders as a collapsible step. This
+ * is the whole point of the projection carrying `sequence` — reading top to
+ * bottom reproduces the run, rather than showing a block of tools above a block
+ * of text with no way to tell which words preceded which action.
+ */
+export function ConversationTranscript({
+  entries,
+  streaming = false,
+}: {
+  entries: readonly WebConversationActivityEntry[];
+  streaming?: boolean;
+}) {
+  if (entries.length === 0) return null;
+  const lastNarrationId = [...entries].reverse().find((item) => item.kind === "narration")?.id ?? null;
+  return (
+    <div className="morrow-transcript" data-testid="conversation-transcript">
+      {entries.map((item) => {
+        if (item.kind === "narration") {
+          return (
+            <div className="morrow-transcript__say" data-testid="transcript-narration" key={item.id}>
+              <Markdown streaming={streaming && item.id === lastNarrationId} text={item.text ?? ""} />
+            </div>
+          );
+        }
+        return (
+          <div className="morrow-transcript__do" key={item.id}>
+            <ActivityTimeline entries={[item]} label={item.summary} />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

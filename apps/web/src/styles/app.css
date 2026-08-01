@@ -3731,3 +3731,85 @@ a {
 .morrow-markdown tr:last-child td { border-bottom: none; }
 
 .morrow-markdown img { max-width: 100%; height: auto; }
+
+/* ── Interleaved transcript ──────────────────────────────────────────────────
+   One chronological stream: what Morrow said, then what it did, then what it
+   said next. A single continuous rail runs down the left so the turn reads as
+   one connected sequence rather than a stack of disconnected cards. */
+.morrow-transcript {
+  display: grid;
+  gap: 0;
+  position: relative;
+  padding-left: var(--morrow-space-4);
+}
+
+.morrow-transcript::before {
+  content: "";
+  position: absolute;
+  inset-block: 0.35rem;
+  inset-inline-start: 3px;
+  width: 1.5px;
+  border-radius: 1px;
+  background: var(--morrow-border);
+}
+
+/* The assistant's own words. Reads as prose, not as a log line. */
+.morrow-transcript__say {
+  padding-block: var(--morrow-space-2);
+}
+
+.morrow-transcript__say > :first-child { margin-block-start: 0; }
+.morrow-transcript__say > :last-child { margin-block-end: 0; }
+
+/* A single action step. Sits tighter than narration so a run of tool calls
+   groups visually into one "Morrow worked here" band. */
+.morrow-transcript__do {
+  padding-block: 1px;
+}
+
+.morrow-transcript__do .morrow-activity-timeline {
+  overflow: visible;
+}
+
+/* The step marker on the rail. Colour carries status at a glance without
+   needing to expand the row. */
+.morrow-transcript__do .morrow-activity-timeline li {
+  position: relative;
+}
+
+.morrow-transcript__do .morrow-activity-timeline li::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: calc(-1 * var(--morrow-space-4) + 1px);
+  top: 18px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--morrow-surface);
+  box-shadow: 0 0 0 1.5px var(--morrow-border);
+}
+
+.morrow-transcript__do .morrow-activity-timeline li[data-status="running"]::before {
+  background: var(--morrow-accent);
+  box-shadow: 0 0 0 1.5px var(--morrow-accent);
+}
+
+.morrow-transcript__do .morrow-activity-timeline li[data-status="failed"]::before,
+.morrow-transcript__do .morrow-activity-timeline li[data-status="blocked"]::before {
+  background: var(--morrow-danger, #b3261e);
+  box-shadow: 0 0 0 1.5px var(--morrow-danger, #b3261e);
+}
+
+.morrow-transcript__do .morrow-activity-timeline li[data-status="completed"]::before {
+  background: var(--morrow-border-strong, var(--morrow-border));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .morrow-transcript__do .morrow-activity-timeline li[data-status="running"]::before {
+    animation: morrow-transcript-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes morrow-transcript-pulse {
+  50% { opacity: 0.45; }
+}

@@ -151,6 +151,14 @@ export const WebMissionStreamEnvelopeSchema = z.object({
  */
 export const WebActivityKindSchema = z.enum([
   "assistant",
+  /** One assistant turn's own visible words, placed at the point in the run
+   * where they were actually streamed. This is what turns the activity list
+   * into a readable transcript: narration, then the tools that turn ran, then
+   * the next turn's narration. It carries only text the model already streamed
+   * to the user (the same words that accumulate into the message body) — never
+   * private chain-of-thought, which is held in the restricted continuation
+   * store and has no path to this projection. */
+  "narration",
   "plan",
   "search",
   "tool",
@@ -191,6 +199,12 @@ export const WebConversationActivityEntrySchema = z.object({
   detail: z.string().max(1000).nullable(),
   /** Bounded, defensively redacted command/file/search target when safe. */
   target: z.string().max(500).nullable(),
+  /** Full narration text for a `narration` entry, rendered as markdown in the
+   * transcript. Unlike `summary`/`detail` this is deliberately not clamped to a
+   * label length — it IS the assistant's message for that turn. Null on every
+   * other kind. Bounded only to keep one pathological turn from unbounding the
+   * response. */
+  text: z.string().max(200_000).nullable().default(null),
   toolName: z.string().max(120).nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   exitCode: z.number().int().nullable(),

@@ -379,3 +379,73 @@ describe("ConversationPage", () => {
     expect(queryClient.getQueryData<Array<typeof conversation>>(conversationKeys.list("project-1", true))).toEqual([]);
   });
 });
+
+describe("ConversationPage interleaved transcript", () => {
+  function entry(over: Record<string, unknown>) {
+    return {
+      version: 1, taskId: "task-1", status: "completed", detail: null, target: null,
+      toolName: null, durationMs: null, exitCode: null, resultCount: null, text: null,
+      createdAt: "2026-07-22T12:00:00.000Z", updatedAt: "2026-07-22T12:00:00.000Z",
+      ...over,
+    };
+  }
+
+  it("renders narration and tool steps as one stream in run order", async () => {
+    const activity = {
+      version: 1,
+      projectId: "project-1",
+      conversationId: conversation.id,
+      entries: [
+        entry({ id: "n1", sequence: 1, kind: "narration", summary: "Assistant message", text: "First I read the config." }),
+        entry({ id: "t1", sequence: 2, kind: "file", summary: "Read package.json", target: "package.json", toolName: "read_file" }),
+        entry({ id: "n2", sequence: 3, kind: "narration", summary: "Assistant message", text: "Now applying the fix." }),
+        entry({ id: "t2", sequence: 4, kind: "diff", summary: "Applied patch to src/a.ts", target: "src/a.ts", toolName: "propose_patch" }),
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ content: "First I read the config.\n\nNow applying the fix." })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const transcript = await screen.findByTestId("conversation-transcript");
+
+    // Reading the rendered transcript top to bottom must reproduce the run.
+    const steps = Array.from(
+      transcript.querySelectorAll('[data-testid="transcript-narration"], .morrow-activity-timeline li'),
+    ).map((node) => node.textContent?.replace(/\s+/g, " ").trim() ?? "");
+
+    expect(steps[0]).toContain("First I read the config.");
+    expect(steps[1]).toContain("Read package.json");
+    expect(steps[2]).toContain("Now applying the fix.");
+    expect(steps[3]).toContain("Applied patch to src/a.ts");
+
+    // The flat message body must not also render, or every word appears twice.
+    expect(transcript.parentElement?.querySelectorAll(".morrow-conversation-message__content").length ?? 0).toBe(0);
+  });
+
+  it("falls back to the plain body when a turn produced no narration", async () => {
+    const activity = {
+      version: 1, projectId: "project-1", conversationId: conversation.id,
+      entries: [entry({ id: "t1", sequence: 1, kind: "file", summary: "Read package.json", toolName: "read_file" })],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ content: "Plain answer." })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    expect(await screen.findByText("Plain answer.")).toBeInTheDocument();
+    expect(screen.queryByTestId("conversation-transcript")).toBeNull();
+  });
+});
