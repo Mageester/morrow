@@ -1,7 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  type AnyRouter,
+} from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActiveProjectProvider } from "../../state/active-project.js";
 import { ProjectsPage } from "./projects-page.js";
 
@@ -12,10 +20,17 @@ const projectB = { id: "project-b", name: "Beta", version: 1, workspacePath: "C:
 function renderProjects(fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal("fetch", vi.fn(fetchImpl));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const root = createRootRoute();
+  const projectsRoute = createRoute({ getParentRoute: () => root, path: "/", component: ProjectsPage });
+  const chatsRoute = createRoute({ getParentRoute: () => root, path: "/chats", component: () => null });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: root.addChildren([projectsRoute, chatsRoute]),
+  });
   render(
     <QueryClientProvider client={queryClient}>
       <ActiveProjectProvider>
-        <ProjectsPage />
+        <RouterProvider router={router as AnyRouter} />
       </ActiveProjectProvider>
     </QueryClientProvider>,
   );
@@ -34,6 +49,7 @@ function statusFor(project: { id: string; name: string; workspacePath: string },
 }
 
 describe("ProjectsPage", () => {
+  beforeEach(() => localStorage.clear());
   afterEach(() => vi.restoreAllMocks());
 
   it("shows an honest empty state and lets the user add the first project", async () => {
@@ -60,7 +76,7 @@ describe("ProjectsPage", () => {
     expect(screen.getByText("Active")).toBeVisible();
   });
 
-  it("lists existing projects, marks the active one, and lets the user switch", async () => {
+  it("lists existing projects with neither active until the user picks one", async () => {
     renderProjects(async (input) => {
       const url = String(input);
       if (url === "/api/projects") return Response.json([projectA, projectB]);
@@ -71,11 +87,16 @@ describe("ProjectsPage", () => {
 
     const rowA = (await screen.findByText("Alpha")).closest("li")!;
     const rowB = screen.getByText("Beta").closest("li")!;
-    expect(within(rowA).getByText("Active")).toBeVisible();
     expect(await within(rowA).findByText("main")).toBeVisible();
+    expect(within(rowA).queryByText("Active")).not.toBeInTheDocument();
     expect(within(rowB).queryByText("Active")).not.toBeInTheDocument();
 
     const user = userEvent.setup();
+    await user.click(within(rowA).getByRole("button", { name: /use this project/i }));
+
+    await waitFor(() => expect(within(rowA).getByText("Active")).toBeVisible());
+    expect(within(rowB).queryByText("Active")).not.toBeInTheDocument();
+
     await user.click(within(rowB).getByRole("button", { name: /use this project/i }));
 
     await waitFor(() => expect(within(rowB).getByText("Active")).toBeVisible());

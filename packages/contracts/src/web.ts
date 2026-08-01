@@ -143,6 +143,69 @@ export const WebMissionStreamEnvelopeSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
 }).strict();
 
+/**
+ * Browser-safe, durable execution history. This is deliberately not a task
+ * event passthrough: internal payloads may contain prompts, tool arguments,
+ * provider text, secrets, or private model reasoning. The orchestrator builds
+ * this strict projection from an allow-list of observable execution facts.
+ */
+export const WebActivityKindSchema = z.enum([
+  "assistant",
+  "plan",
+  "search",
+  "tool",
+  "command",
+  "file",
+  "diff",
+  "approval",
+  "checkpoint",
+  "context",
+  "provider",
+  "recovery",
+  "validation",
+  "evidence",
+  "process",
+  "system",
+]);
+
+export const WebActivityStatusSchema = z.enum([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "warning",
+  "blocked",
+  "cancelled",
+]);
+
+export const WebConversationActivityEntrySchema = z.object({
+  version: z.literal(1),
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  sequence: z.number().int().positive(),
+  kind: WebActivityKindSchema,
+  status: WebActivityStatusSchema,
+  summary: z.string().min(1).max(240),
+  /** Fixed-template explanation derived from observable state, never raw model
+   * reasoning, command output, or provider text. */
+  detail: z.string().max(1000).nullable(),
+  /** Bounded, defensively redacted command/file/search target when safe. */
+  target: z.string().max(500).nullable(),
+  toolName: z.string().max(120).nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  exitCode: z.number().int().nullable(),
+  resultCount: z.number().int().nonnegative().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+export const WebConversationActivitySchema = z.object({
+  version: z.literal(1),
+  projectId: z.string().min(1),
+  conversationId: z.string().min(1),
+  entries: z.array(WebConversationActivityEntrySchema),
+}).strict();
+
 export type WebMissionUiState = z.infer<typeof WebMissionUiStateSchema>;
 export type WebWorkspace = z.infer<typeof WebWorkspaceSchema>;
 export type WebMissionSummary = z.infer<typeof WebMissionSummarySchema>;
@@ -154,3 +217,7 @@ export type WebMissionSnapshot = z.infer<typeof WebMissionSnapshotSchema>;
 export type CreateWebMissionInput = z.infer<typeof CreateWebMissionSchema>;
 export type ResolveWebAttentionInput = z.infer<typeof ResolveWebAttentionSchema>;
 export type WebMissionStreamEnvelope = z.infer<typeof WebMissionStreamEnvelopeSchema>;
+export type WebActivityKind = z.infer<typeof WebActivityKindSchema>;
+export type WebActivityStatus = z.infer<typeof WebActivityStatusSchema>;
+export type WebConversationActivityEntry = z.infer<typeof WebConversationActivityEntrySchema>;
+export type WebConversationActivity = z.infer<typeof WebConversationActivitySchema>;

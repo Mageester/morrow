@@ -32,6 +32,15 @@ export interface DurableToolObservation {
   id: string;
   toolName: string;
   result: string;
+  status?: "completed" | "failed";
+}
+
+const CHECKPOINT_PREFIX = "Morrow durable execution checkpoint.";
+const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution batch";
+
+function isGeneratedProjectionMessage(message: ChatMessage): boolean {
+  return message.role === "system"
+    && (message.content.startsWith(CHECKPOINT_PREFIX) || message.content.startsWith(COMPACTED_BATCH_PREFIX));
 }
 
 /**
@@ -54,14 +63,22 @@ export function buildProviderProjection(input: {
       role: "assistant",
       content: turn.assistantText,
       ...(turn.toolCalls.length > 0 ? {
-        toolCalls: turn.toolCalls.map((call) => ({
-          id: call.id,
-          type: "function" as const,
-          function: {
-            name: call.name,
-            arguments: input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments,
-          },
-        })),
+      toolCalls: turn.toolCalls.map((call) => {
+          const observation = results.get(call.id);
+          return {
+            id: call.id,
+            type: "function" as const,
+            function: {
+              name: call.name,
+              // Failed write calls need their original body on the next turn
+              // so provider can repair one bad field. Compact only calls whose
+              // effect completed durably.
+              arguments: observation?.status === "failed"
+                ? call.arguments
+                : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments,
+            },
+          };
+        }),
       } : {}),
       ...(turn.providerContinuation ? { providerContinuation: turn.providerContinuation } : {}),
       ...(turn.providerContinuationRouteFingerprint ? { providerContinuationRouteFingerprint: turn.providerContinuationRouteFingerprint } : {}),
@@ -87,7 +104,9 @@ export function projectionFingerprint(messages: ChatMessage[]): string {
 }
 
 function groupDurableMessages(messages: ChatMessage[]): { system: ChatMessage[]; groups: ChatMessage[][] } {
-  const system = messages.filter((message) => message.role === "system");
+  // Projection output can become next segment's input. Replace old generated
+  // checkpoint/batch messages instead of preserving and stacking them forever.
+  const system = messages.filter((message) => message.role === "system" && !isGeneratedProjectionMessage(message));
   const groups: ChatMessage[][] = [];
   for (const message of messages) {
     if (message.role === "system") continue;
@@ -100,38 +119,84 @@ function groupDurableMessages(messages: ChatMessage[]): { system: ChatMessage[];
 /** Serialize only mission-owned checkpoint state. Provider continuation row IDs
  * and provider-owned opaque values are deliberately excluded from projection. */
 function checkpointMessage(snapshot: ExecutionCheckpointSnapshot): ChatMessage {
+  const boundedList = (values: string[], limit: number, itemLimit = 300): string[] =>
+    values.slice(-limit).map((value) => value.slice(0, itemLimit));
+  const boundedGitStatus = snapshot.gitStatus.split(/\r?\n/).slice(-40).join("\n").slice(0, 2_000);
   const publicSnapshot = {
     version: snapshot.version,
     missionContract: {
-      originalMission: snapshot.originalMission,
-      hardRequirements: snapshot.hardRequirements,
-      prohibitedActions: snapshot.prohibitedActions,
-      acceptanceCriteria: snapshot.acceptanceCriteria,
+      originalMission: snapshot.originalMission.slice(0, 4_000),
+      hardRequirements: boundedList(snapshot.hardRequirements, 30),
+      prohibitedActions: boundedList(snapshot.prohibitedActions, 30),
+      acceptanceCriteria: boundedList(snapshot.acceptanceCriteria, 30),
     },
     execution: {
-      decisions: snapshot.decisions,
-      completedWork: snapshot.completedWork,
+      decisions: boundedList(snapshot.decisions, 20),
+      completedWork: boundedList(snapshot.completedWork, 20),
       currentPhase: snapshot.currentPhase,
-      filesChanged: snapshot.filesChanged,
-      gitStatus: snapshot.gitStatus,
-      tests: snapshot.tests,
-      unresolvedFailures: snapshot.unresolvedFailures,
-      recoveryAttempts: snapshot.recoveryAttempts,
-      pendingWork: snapshot.pendingWork,
+      filesChanged: boundedList(snapshot.filesChanged, 20, 200),
+      gitStatus: boundedGitStatus,
+      tests: snapshot.tests.slice(-10).map((test) => ({ ...test, command: test.command.slice(0, 200), result: test.result.slice(0, 500) })),
+      unresolvedFailures: boundedList(snapshot.unresolvedFailures, 10, 500),
+      recoveryAttempts: boundedList(snapshot.recoveryAttempts, 10, 500),
+      pendingWork: boundedList(snapshot.pendingWork, 20),
       approvals: snapshot.approvals,
-      evidenceRequired: snapshot.evidenceRequired,
+      evidenceRequired: boundedList(snapshot.evidenceRequired, 30),
     },
     identity: { taskId: snapshot.taskId, missionId: snapshot.missionId },
     routing: snapshot.providerRouting,
   };
   return {
     role: "system",
-    content: `Morrow durable execution checkpoint. Continue the same mission; this is not a new task and is not completion.\n${JSON.stringify(publicSnapshot)}`,
+    content: `${CHECKPOINT_PREFIX} Continue the same mission; this is not a new task and is not completion.\n${JSON.stringify(publicSnapshot)}`,
   };
 }
 
 function hashEnvelope(envelope: ProviderRequestEnvelope): string {
   return createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
+}
+
+/** Last tool batch may itself be wider than a provider's usable input. Keep
+ * durable checkpoint state plus a terse operation ledger, never raw arguments
+ * or observations. The original turns and artifacts remain available locally. */
+function compactLatestBatch(groups: ChatMessage[][]): ChatMessage {
+  const latest = groups.at(-1) ?? [];
+  const entries = latest.map((message) => {
+    if (message.role === "tool") return `- ${message.name ?? "tool"}: completed`;
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      return `- assistant called: ${message.toolCalls.map((call) => call.function.name).join(", ")}`;
+    }
+    const text = message.content.replace(/\s+/g, " ").slice(0, 1_200);
+    return `- ${message.role}: ${text || "completed"}`;
+  });
+  return {
+    role: "system",
+    content: `${COMPACTED_BATCH_PREFIX} to fit this route. Full tool records remain durable; continue from checkpoint and inspect narrowly if needed.\n${entries.join("\n")}`,
+  };
+}
+
+const PRESSURE_TOOL_PRIORITY = [
+  "read_file",
+  "search_text",
+  "list_files",
+  "run_command",
+  "create_file",
+  "propose_patch",
+  "git_status",
+  "git_diff",
+  "read_process_output",
+  "stop_process",
+] as const;
+
+function pressureToolSets(envelope: ProviderRequestEnvelope, groups: ChatMessage[][]): ProviderRequestEnvelope["tools"][] {
+  const recentNames = groups.slice(-1).flat().flatMap((message) => message.toolCalls?.map((call) => call.function.name) ?? []);
+  const priority = [...new Set([...recentNames, ...PRESSURE_TOOL_PRIORITY])];
+  const byName = new Map(envelope.tools.map((tool) => [tool.name, tool]));
+  const ordered = priority.flatMap((name) => {
+    const tool = byName.get(name);
+    return tool ? [tool] : [];
+  });
+  return [12, 8, 5, 0].map((limit) => ordered.slice(0, limit));
 }
 
 /**
@@ -174,8 +239,27 @@ export function projectProviderRequest(input: {
   if (!ordering.ok) {
     throw new Error(`Durable provider projection is invalid: ${ordering.reason} (${ordering.detail})`);
   }
-  const envelope = { ...input.envelope, messages };
-  const admission = admitProviderRequest(envelope, input.resolution);
+  let envelope = { ...input.envelope, messages };
+  let admission = admitProviderRequest(envelope, input.resolution);
+  // A batch can contain many individually-safe reads/writes. If their combined
+  // newest group still cannot fit, compact that completed group too instead of
+  // failing after claiming automatic compaction succeeded.
+  if (!admission.ok) {
+    envelope = { ...input.envelope, messages: [...system, checkpointMessage(input.checkpoint), compactLatestBatch(groups)] };
+    admission = admitProviderRequest(envelope, input.resolution);
+  }
+  // Tool schemas are part of the wire request. Small routes cannot carry every
+  // optional tool plus checkpoint state indefinitely. Reduce to a deterministic
+  // coding core, remeasure each set, and send exactly the measured set.
+  if (!admission.ok && envelope.tools.length > 0) {
+    for (const tools of pressureToolSets(envelope, groups)) {
+      const candidate = { ...envelope, tools };
+      const candidateAdmission = admitProviderRequest(candidate, input.resolution);
+      envelope = candidate;
+      admission = candidateAdmission;
+      if (candidateAdmission.ok) break;
+    }
+  }
   return {
     envelope,
     admission,

@@ -59,6 +59,23 @@ test("installer safety guard catches a non-atomic overwrite with no rollback", (
   assert.ok(failures.some((f) => /roll back/.test(f)), "must require a rollback path");
 });
 
+test("installer safety guard rejects the retired CLI-only package contract", () => {
+  const cliOnly = [
+    "$InstallRoot = Join-Path $env:LOCALAPPDATA 'Morrow'",
+    "$StagingId = [Guid]::NewGuid().ToString('N').Substring(0, 12)",
+    '$Staging = Join-Path $env:TEMP "mrw-s-$StagingId"',
+    "$appNew = Join-Path $InstallRoot 'app.new'",
+    "$appOld = Join-Path $InstallRoot 'app.old'",
+    "Move-Item -LiteralPath $appNew -Destination $installedApp",
+    "Move-Item -LiteralPath $appOld -Destination $installedApp",
+    "[System.IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Staging)",
+    "Write-Host 'Open a new PowerShell window and run: morrow'",
+  ].join("\n");
+  const failures = installerSafetyFailures(cliOnly);
+  assert.ok(failures.some((failure) => /bundled local web app/.test(failure)), "must require the installed /app surface");
+  assert.ok(failures.some((failure) => /consumer app launcher/.test(failure)), "must require a no-terminal app launch path");
+});
+
 test("the live repo has a single consistent product version", async () => {
   const [rootPackageJson, cliUpdateTs, readme, changelog] = await Promise.all([
     readFile("package.json", "utf8"),

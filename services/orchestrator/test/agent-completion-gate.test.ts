@@ -11,6 +11,7 @@ import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { actionAttemptsRepository } from "../src/repositories/action-attempts.js";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -58,8 +59,113 @@ describe("agent completion gate", () => {
 
     // The verification failed (exit 1), so the task must NOT be completed.
     expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    const command = conversationsRepository(db).listToolCallsForTask("t")
+      .find((call: any) => call.id === "v1");
+    expect(command).toMatchObject({
+      status: "failed",
+      errorType: "command_exit_nonzero",
+    });
+    expect(command?.errorMessage).toContain("exited with status 1");
     const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) =>
+      e.type === "tool.failed"
+      && e.payload?.classification === "command_exit_nonzero"
+      && e.payload?.exitCode === 1
+    )).toBe(true);
     expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
+  });
+
+  it("classifies a timed-out verification as failed and keeps mission progress incomplete", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v-timeout", "run_command", {
+          executable: "node",
+          args: ["-e", "setTimeout(() => {}, 250)"],
+          purpose: "verify",
+          timeoutMs: 25,
+        }), done],
+        [text("all good"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    const command = conversationsRepository(db).listToolCallsForTask("t")
+      .find((call: any) => call.id === "v-timeout");
+    expect(command).toMatchObject({
+      status: "failed",
+      errorType: "command_timeout",
+    });
+    const timedOutResult = JSON.parse(command!.resultJson!);
+    expect(timedOutResult.terminationReason).toBe("timeout");
+    // Windows taskkill commonly reports 1 while POSIX reports null after a
+    // forced timeout. Termination reason, not platform signal encoding, is the
+    // classification authority; exitCode must still remain durably present.
+    expect(Object.hasOwn(timedOutResult, "exitCode")).toBe(true);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
+      event.type === "tool.failed"
+      && event.payload?.classification === "command_timeout"
+      && event.payload?.terminationReason === "timeout"
+    )).toBe(true);
+  });
+
+  it("rejects a package-script verification when the workspace has no package.json", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("npm-guard", "run_command", { executable: "npm", args: ["test"], purpose: "verify" }), done],
+        [text("cannot verify with npm here"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+    const command = conversationsRepository(db).listToolCallsForTask("t")
+      .find((call: any) => call.id === "npm-guard");
+    expect(command).toMatchObject({ status: "failed", errorType: "tool_failed" });
+    expect(command?.errorMessage).toContain("no package.json");
+    // The guard fires before execution: no process ever ran, so no retry-memory
+    // attempt exists and the failure cannot be misread as a flaky command.
+    expect(actionAttemptsRepository(db).listForTask("t")).toEqual([]);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
+  it("durably suppresses a third identical failed command and requests a strategy change", async () => {
+    seedYolo(db, ws, "recover without repeating the same failed command", true);
+    const failedCommand = { executable: "node", args: ["-e", "process.exit(7)"], purpose: "verify" };
+    const provider = new MockProvider({
+      chunks: [
+        [tool("repeat-1", "run_command", failedCommand), done],
+        [tool("repeat-2", "run_command", failedCommand), done],
+        [tool("repeat-3", "run_command", failedCommand), done],
+        [text("blocked by repeated command"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    expect(actionAttemptsRepository(db).listForTask("t")).toEqual([
+      expect.objectContaining({ toolCallId: "repeat-1", attemptNumber: 1, status: "failed", exitStatus: 7 }),
+      expect.objectContaining({ toolCallId: "repeat-2", attemptNumber: 2, status: "failed", exitStatus: 7 }),
+      expect.objectContaining({
+        toolCallId: "repeat-3",
+        attemptNumber: 3,
+        status: "suppressed",
+        failureCategory: "repeated_strategy",
+      }),
+    ]);
+    expect(conversationsRepository(db).listToolCallsForTask("t").find((call: any) => call.id === "repeat-3"))
+      .toMatchObject({ status: "failed", errorType: "repeated_strategy" });
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
+      event.type === "tool.strategy_switch"
+      && event.payload?.toolName === "run_command"
+      && event.payload?.failedAttempts === 2
+    )).toBe(true);
   });
 
   it("reports completed when a failed verification is recovered by a later clean run", async () => {
@@ -187,6 +293,27 @@ describe("agent completion gate", () => {
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after transient empty provider response");
+  });
+
+  it("recovers when a reasoning-heavy provider needs multiple empty continuations", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("v1", "run_command", { executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify" }), done],
+        [done],
+        [done],
+        [done],
+        [text("verified after output-limit continuations"), done],
+      ],
+      delayMs: 1,
+    });
+
+    await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(conversationsRepository(db).getMessage("ma")!.content).toContain("verified after output-limit continuations");
+    expect(taskRecordsRepository(db).listEvents("t").filter((event) => event.payload.reason === "empty_provider_response"))
+      .toHaveLength(3);
   });
 
   it("does not report completed when a final node --check exits non-zero", async () => {

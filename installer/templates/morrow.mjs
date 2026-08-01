@@ -29,6 +29,11 @@ const host = "127.0.0.1";
 // beside an existing one instead of colliding on the shared port.
 const port = Number.parseInt(process.env.MORROW_PORT ?? "", 10) > 0 ? Number.parseInt(process.env.MORROW_PORT, 10) : 4317;
 const url = `http://${host}:${port}`;
+// Packaged-install default for account/billing/device-pairing (Plans/
+// generic-sprouting-dragon.md Phase 4/6). Not a secret — it's a public Workers
+// URL. Only applies if the user hasn't already set their own (self-host/
+// advanced override) — see the spread order in start() below.
+const DEFAULT_HOSTED_API_URL = "https://morrow-hosted-api.aidan-magee2.workers.dev";
 /**
  * The bundled web UI's address, or null when this package has no web bundle.
  *
@@ -130,10 +135,15 @@ async function start() {
   // (stdio: "ignore") left users -- and a failing start -- with no way to see
   // why the orchestrator did not come up.
   const log = openSync(logFile, "a");
-  // PORT must be passed explicitly: the launcher may be running on MORROW_PORT,
-  // and a service that defaulted back to 4317 would never be found by its own
-  // launcher (and would collide with whatever is already there).
-  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, MORROW_BIND_HOST: host, PORT: String(port), NODE_ENV: "production" } });
+  // Two independent launch requirements, both load-bearing:
+  //   - MORROW_HOSTED_API_URL is seeded BEFORE ...process.env so a self-hoster
+  //     can still override it, giving account pairing a working default in a
+  //     packaged install (beta.35).
+  //   - PORT is passed explicitly AFTER ...process.env: the launcher may be
+  //     running on MORROW_PORT, and a service that defaulted back to 4317
+  //     would never be found by its own launcher (and would collide with
+  //     whatever is already there) (beta.36).
+  const child = spawn(runtime, [entry], { cwd: dirname(entry), detached: true, windowsHide: true, stdio: ["ignore", log, log], env: { MORROW_HOSTED_API_URL: DEFAULT_HOSTED_API_URL, ...process.env, MORROW_HOME: data, MORROW_SKILLS_DIR: skillsDir, MORROW_WEB_ROOT: webRoot, MORROW_BIND_HOST: host, PORT: String(port), NODE_ENV: "production" } });
   child.unref(); writeFileSync(pidFile, String(child.pid));
   if (!await waitForHealth()) {
     throw new Error("Morrow did not become healthy. Recent service log (" + logFile + "):\n" + tailLog());

@@ -147,6 +147,10 @@ describe("foundation acceptance runner", () => {
 });
 
 describe("package provenance gate", () => {
+  // These exercise runAcceptance's real polling/IO paths — under the full
+  // monorepo's parallel `pnpm test` load (package-release.mjs), the 5s
+  // default is too tight even though nothing here is a hung/broken test.
+  const PROVENANCE_TEST_TIMEOUT = 20000;
   it("rejects a package whose embedded commit does not match the intended source commit", async () => {
     const acceptanceRoot = root();
     const calls: string[][] = [];
@@ -164,7 +168,7 @@ describe("package provenance gate", () => {
     // The stale package must never reach product invocation.
     expect(calls.map((args) => args[0])).not.toContain("init");
     expect(calls.map((args) => args[0])).not.toContain("ask");
-  });
+  }, PROVENANCE_TEST_TIMEOUT);
 
   it("rejects a package built from a dirty worktree unless explicitly permitted", async () => {
     const acceptanceRoot = root();
@@ -192,7 +196,7 @@ describe("package provenance gate", () => {
     expect(result.state.disposition).not.toBe("PASS");
     expect(result.state.checks.package_provenance?.status).toBe("failed");
     expect(result.state.message).toMatch(/dirty/i);
-  });
+  }, PROVENANCE_TEST_TIMEOUT);
 
   it("passes and records the verified hash when the rebuilt package's commit matches", async () => {
     const acceptanceRoot = root();
@@ -209,5 +213,5 @@ describe("package provenance gate", () => {
     const report = JSON.parse(readFileSync(result.reportJson, "utf8"));
     expect(report.provenance.manifestHash).toBe("f".repeat(64));
     expect(report.checks.package_provenance.status).toBe("passed");
-  });
+  }, PROVENANCE_TEST_TIMEOUT);
 });

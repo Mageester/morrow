@@ -1,0 +1,6 @@
+# Copy to .dev.vars (untracked) for local `wrangler dev`. Real values come
+# from your own Clerk/Stripe accounts — see Plans/generic-sprouting-dragon.md.
+# CLERK_SECRET_KEY=
+# CLERK_WEBHOOK_SIGNING_SECRET=
+# STRIPE_SECRET_KEY=
+# STRIPE_WEBHOOK_SECRET=

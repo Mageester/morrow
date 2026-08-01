@@ -1,8 +1,8 @@
-import type { Conversation, ModelStatus, PresetStatus, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
+import type { Conversation, ModelStatus, PresetStatus, WebConversationActivityEntry, WebConversationMessage, WebMissionSummary } from "@morrow/contracts";
 import { WebMissionSnapshotSchema } from "@morrow/contracts";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Archive, Pencil, Trash2 } from "lucide-react";
+import { Archive, ListTree, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { clearChatStreamCursor, resumeChatStreamAfter, useChatTaskStream } from "../../api/chat-stream.js";
 import { useMissionStream } from "../../api/mission-stream.js";
@@ -13,12 +13,16 @@ import {
   pendingWebMessage,
 } from "../../api/conversations.js";
 import { modelQueries } from "../../api/models.js";
+import { Markdown } from "../../components/markdown.js";
 import { projectQueries } from "../../api/projects.js";
 import { missionKeys, missionQueries } from "../../api/query-keys.js";
 import { api, ApiClientError } from "../../api/client.js";
 import { ChatComposer, type ChatComposerSubmission } from "./chat-composer.js";
 import { MissionCard } from "./mission-card.js";
 import { MissionPanel } from "./mission-panel.js";
+import { ActivityPanel, ConversationActivity } from "./activity-panel.js";
+import { PendingApprovals } from "./pending-approvals.js";
+import { useConversationAutoscroll } from "./use-conversation-autoscroll.js";
 
 const ACTIVE_STATES = new Set(["queued", "streaming"]);
 const RETRYABLE_STATES = new Set(["failed", "interrupted"]);
@@ -130,11 +134,14 @@ export function ConversationPageContent({
   const queryClient = useQueryClient();
   const conversation = useQuery(conversationQueries.detail(projectId, conversationId));
   const messages = useQuery(conversationQueries.messages(projectId, conversationId));
+  const activity = useQuery(conversationQueries.activity(projectId, conversationId));
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const activityButtonRef = useRef<HTMLButtonElement>(null);
   const renameButtonRef = useRef<HTMLButtonElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
@@ -160,6 +167,25 @@ export function ConversationPageContent({
     [history],
   );
   const activeTaskId = activeMessages.at(-1)?.taskId ?? undefined;
+  // Latest task regardless of state — the context meter should keep reporting
+  // the last turn's usage after that turn finishes, not blank out.
+  const latestTaskId = [...history].reverse().find((message) => message.taskId)?.taskId ?? undefined;
+  const transcript = useMemo(
+    () => history.map(({ content, id, streamingState, updatedAt }) => `${id}\u0000${content}\u0000${streamingState}\u0000${updatedAt}`).join("\u0001"),
+    [history],
+  );
+  const { resume: resumeAutoscroll, sentinelRef } = useConversationAutoscroll({ history, transcript, activeTaskId });
+  const activityByTask = useMemo(() => {
+    const grouped = new Map<string, WebConversationActivityEntry[]>();
+    for (const entry of activity.data?.entries ?? []) {
+      grouped.set(entry.taskId, [...(grouped.get(entry.taskId) ?? []), entry]);
+    }
+    return grouped;
+  }, [activity.data]);
+  const conversationTaskIds = useMemo(
+    () => new Set(history.flatMap((message) => (message.taskId ? [message.taskId] : []))),
+    [history],
+  );
 
   useEffect(() => {
     if (renameOpen) {
@@ -192,6 +218,10 @@ export function ConversationPageContent({
     restoreDeleteFocus.current = true;
     setDeleteOpen(false);
   };
+  const closeActivity = () => {
+    setActivityOpen(false);
+    window.setTimeout(() => activityButtonRef.current?.focus(), 0);
+  };
   const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>, close: () => void) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -218,6 +248,7 @@ export function ConversationPageContent({
   };
 
   async function submit(submission: ChatComposerSubmission) {
+    resumeAutoscroll();
     try {
       const result = await conversationApi.sendMessage(projectId, conversationId, {
         content: submission.content,
@@ -368,6 +399,17 @@ export function ConversationPageContent({
       <header className="morrow-conversation-header">
         <h1 id="conversation-heading">{value.title}</h1>
         <div aria-label="Conversation actions" className="morrow-conversation-actions">
+          <button
+            aria-label="Activity / Inspect"
+            aria-pressed={activityOpen}
+            className="morrow-conversation-actions__activity"
+            onClick={() => setActivityOpen((open) => !open)}
+            ref={activityButtonRef}
+            type="button"
+          >
+            <ListTree aria-hidden="true" size={16} />
+            <span>Activity</span>
+          </button>
           <button aria-label="Rename conversation" disabled={actionBusy} onClick={openRename} ref={renameButtonRef} type="button"><Pencil aria-hidden="true" size={16} /></button>
           <button aria-label={value.archived ? "Restore conversation" : "Archive conversation"} disabled={actionBusy} onClick={() => { void toggleArchive(); }} type="button"><Archive aria-hidden="true" size={16} /></button>
           <button aria-label="Delete conversation" disabled={actionBusy} onClick={() => { setActionMessage(null); setDeleteOpen(true); }} ref={deleteButtonRef} type="button"><Trash2 aria-hidden="true" size={16} /></button>
@@ -375,6 +417,14 @@ export function ConversationPageContent({
       </header>
 
       <WorkspaceStatusLine projectId={projectId} />
+
+      {activityOpen ? (
+        <ActivityPanel
+          conversationId={conversationId}
+          onClose={closeActivity}
+          projectId={projectId}
+        />
+      ) : null}
 
       {(conversation.isRefetchError && conversation.data) || (messages.isRefetchError && messages.data) ? (
         <p className="morrow-chat-warning" role="status">Morrow could not refresh this conversation. Showing saved history.</p>
@@ -415,15 +465,15 @@ export function ConversationPageContent({
               key={message.id}
             >
               {message.role === "assistant" ? <p className="morrow-conversation-message__author">Morrow</p> : null}
-              <div className="morrow-conversation-message__content">
-                {waiting ? <p>Morrow is responding…</p> : <p>{message.content}</p>}
+              {message.role === "assistant" && message.taskId ? (
+                <ConversationActivity entries={activityByTask.get(message.taskId) ?? []} />
+              ) : null}
+              <div className={`morrow-conversation-message__content${message.role === "assistant" ? " morrow-conversation-message__content--markdown" : ""}`}>
+                {waiting ? <p>Morrow is responding…</p> : message.role === "assistant" ? (
+                  <Markdown streaming={ACTIVE_STATES.has(message.streamingState)} text={message.content} />
+                ) : <p>{message.content}</p>}
               </div>
               {label ? <p className="morrow-conversation-message__route">{label}</p> : null}
-              {message.toolActivity.length > 0 ? (
-                <ul aria-label="Tool activity" className="morrow-conversation-tools">
-                  {message.toolActivity.map((tool) => <li key={tool.id}>{tool.toolName.replaceAll("_", " ")} · {tool.status}</li>)}
-                </ul>
-              ) : null}
               {message.taskId && RETRYABLE_STATES.has(message.streamingState) ? (
                 <button disabled={actionBusy} onClick={() => { void retry(message.taskId!); }} type="button">Retry response</button>
               ) : null}
@@ -436,10 +486,18 @@ export function ConversationPageContent({
         <TaskStream conversationId={conversationId} key={message.taskId} projectId={projectId} taskId={message.taskId!} />
       ))}
 
+      <PendingApprovals
+        active={activeTaskId !== undefined}
+        conversationId={conversationId}
+        conversationTaskIds={conversationTaskIds}
+        projectId={projectId}
+      />
+
       <div className="morrow-conversation-composer">
         <ChatComposer
           activeTaskId={activeTaskId}
           autoFocus
+          contextTaskId={latestTaskId}
           draftScope={{ projectId, conversationId }}
           modelCatalogue={modelCatalogue}
           onStop={stop}
@@ -447,6 +505,8 @@ export function ConversationPageContent({
           placeholder="Reply to Morrow…"
         />
       </div>
+
+      <div aria-hidden="true" className="morrow-conversation-autoscroll-sentinel" ref={sentinelRef} />
 
       {renameOpen ? (
         <div aria-labelledby="rename-conversation-heading" aria-modal="true" className="morrow-conversation-dialog-backdrop" onKeyDown={(event) => onDialogKeyDown(event, closeRename)} role="dialog">

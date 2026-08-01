@@ -30,7 +30,7 @@ export const ProcessStatusSchema=z.enum(["running","exited","failed","cancelled"
 export const CreateWorktreeSchema=z.object({name:z.string().trim().min(1).max(81).optional(),taskId:z.string().optional(),agentId:z.string().optional(),baseRef:z.string().trim().min(1).max(200).optional()}).strict();
 export type CreateWorktreeInput=z.infer<typeof CreateWorktreeSchema>;
 export const CreateTaskSchema=z.object({projectId:z.string().min(1),kind:z.enum(["inspect_workspace","agent_chat"]),conversationId:z.string().optional(),preset:z.string().optional(),agentId:z.string().optional()});
-export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.arguments_normalized","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.route_selected","provider.fallback","provider.rate_limited","provider.usage","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
+export const TaskEventSchema=z.object({id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),type:z.enum(["task.created","task.running","plan.created","step.started","step.completed","workspace.inspected","evidence.persisted","assistant.turn_started","assistant.turn_completed","agent.state_changed","approval.requested","approval.resolved","verification.completed","tool.started","tool.completed","tool.failed","tool.arguments_rejected","tool.arguments_normalized","tool.strategy_switch","patch.recovery_feedback","task.verified","task.completed","task.failed","task.cancelled","task.interrupted","task.progress_warning","task.recovery_required","task.recovery_requeued","provider.route_selected","provider.fallback","provider.rate_limited","provider.usage","context.trimmed","context.budget_calculated","context.estimate_used","context.exact_count_used","context.compaction_started","context.compaction_completed","context.compaction_failed","context.history_trimmed","context.safety_fallback_applied","context.minimum_viable_context_exceeded","process.started","process.exited","provider.error_classified","provider.tool_syntax_normalized"]),createdAt:z.string(),payload:z.record(z.string(),z.unknown())});
 export const AgentStateTransitionSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),sequence:z.number().int().positive(),state:AgentExecutionStateSchema,details:z.record(z.string(),z.unknown()),createdAt:z.string().datetime()}).strict();
 export const ApprovalSchema=z.object({version:SchemaVersionSchema,id:z.string(),taskId:z.string(),projectId:z.string(),kind:ApprovalKindSchema,status:ApprovalStatusSchema,summary:z.string().min(1).max(240),details:z.record(z.string(),z.unknown()),decision:ApprovalDecisionSchema.nullable(),decisionNote:z.string().nullable(),createdAt:z.string().datetime(),resolvedAt:z.string().datetime().nullable()}).strict();
 export const ResolveApprovalSchema=z.object({projectId:z.string().min(1),decision:ApprovalDecisionSchema,trustPattern:z.string().trim().min(1).max(240).optional(),note:z.string().trim().max(500).optional()}).strict().refine((value)=>value.decision!=="trust_project"||value.trustPattern!==undefined,{message:"trustPattern is required when trusting a command pattern",path:["trustPattern"]});
@@ -58,6 +58,21 @@ export const ChatStreamEnvelopeSchema=z.object({
   payload:z.object({eventId:z.string()}).strict(),
 }).strict();
 export const ConversationTaskActionResultSchema=z.object({version:SchemaVersionSchema,taskId:z.string(),status:TaskStatusSchema,outcome:z.enum(["cancelled","already_cancelled","retried"]),afterCursor:z.number().int().nonnegative().optional()}).strict();
+
+// Local orchestrator <-> hosted-api pairing (Plans/generic-sprouting-dragon.md
+// Phase 4). These describe what apps/web can learn from the LOCAL orchestrator
+// about its own pairing/entitlement state — never a direct hosted-api call
+// from the browser. "unknown" covers paired-but-hosted-api-unreachable, which
+// must never be treated as inactive (a network blip can't brick local work).
+export const PairingStatusSchema=z.enum(["unpaired","active","inactive","unknown"]);
+export const PairingStatusResponseSchema=z.object({version:SchemaVersionSchema,status:PairingStatusSchema,accountId:z.string().nullable(),planId:z.enum(["free","plus"]).nullable(),checkedAt:z.string().datetime().nullable(),lastError:z.string().nullable()}).strict();
+export const RedeemPairingCodeSchema=z.object({code:z.string().trim().min(1).max(32),deviceLabel:z.string().trim().min(1).max(120).optional()}).strict();
+export const RedeemPairingCodeResultSchema=z.object({version:SchemaVersionSchema,paired:z.boolean(),accountId:z.string().nullable()}).strict();
+
+export type PairingStatus=z.infer<typeof PairingStatusSchema>;
+export type PairingStatusResponse=z.infer<typeof PairingStatusResponseSchema>;
+export type RedeemPairingCodeInput=z.infer<typeof RedeemPairingCodeSchema>;
+export type RedeemPairingCodeResult=z.infer<typeof RedeemPairingCodeResultSchema>;
 
 export type Project=z.infer<typeof ProjectSchema>;
 export type Task=z.infer<typeof TaskSchema>;

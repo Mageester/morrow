@@ -130,4 +130,48 @@ describe("mission controller restart continuity", () => {
     expect(dispatchWorker).not.toHaveBeenCalled();
     secondDb.close();
   });
+
+  it("stops late external-task wakes without cancelling durable worker state", async () => {
+    let settleTask!: () => void;
+    const taskSettled = new Promise<void>((resolve) => {
+      settleTask = resolve;
+    });
+    const tick = vi.fn(async () => ({
+      runtime: { activeTaskId: "task-1" },
+      action: "wait_for_worker",
+      immediate: false,
+      waitingForExternal: true,
+    }));
+    const claimLease = vi.fn(() => ({ ownerId: "controller-test", generation: 1 }));
+    const cancelTask = vi.fn();
+    const controllerRunner = new MissionControllerRunner({
+      runtime: {
+        claimLease,
+        releaseLease: vi.fn(),
+        renewLease: vi.fn(),
+        get: vi.fn(() => ({ activeTaskId: "task-1" })),
+      } as never,
+      controller: { tick } as never,
+      taskRunner: {
+        isActive: () => true,
+        waitFor: () => taskSettled,
+        cancel: cancelTask,
+      },
+      ownerId: "controller-test",
+      now: () => "2026-07-16T12:00:00.000Z",
+    });
+
+    controllerRunner.run("mission-1");
+    await controllerRunner.waitFor("mission-1");
+    await controllerRunner.stop("mission-1");
+    settleTask();
+    await taskSettled;
+    await Promise.resolve();
+    await controllerRunner.waitFor("mission-1");
+
+    expect(cancelTask).not.toHaveBeenCalled();
+    expect(claimLease).toHaveBeenCalledTimes(1);
+    expect(tick).toHaveBeenCalledTimes(1);
+    expect(controllerRunner.isActive("mission-1")).toBe(false);
+  });
 });

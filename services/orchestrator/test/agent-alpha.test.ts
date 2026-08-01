@@ -697,7 +697,13 @@ describe("Agent Alpha", () => {
         }
       };
 
-      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 3600 });
+      // Was 3600, which sat within ~200 bytes of the boundary between
+      // compacting into a summary and falling back to raw trimming — so any
+      // edit to the system prompt's wording decided which path this exercised,
+      // and a prompt fix failed here while compaction itself was fine. The
+      // margin keeps the summary path under test without making the fixture a
+      // tripwire for unrelated prompt changes.
+      await executeAgentChatTask({ db, taskId: "task-1", provider, maxContextBytes: 4000 });
 
       const sent = captured[0]!.map((message) => message.content).join("\n");
       expect(sent).toContain("Context summary (deterministic");

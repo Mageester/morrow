@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
-import { configureProvider, removeProviderCredentials, parseSecretsFile } from "../src/provider/secrets.js";
+import { configureProvider, hydrateProviderEnvFromSecrets, removeProviderCredentials, parseSecretsFile } from "../src/provider/secrets.js";
 
 const PROVIDER_KEYS = [
   "DEEPSEEK_API_KEY",
@@ -39,6 +39,16 @@ describe("provider configuration (secrets module)", () => {
     expect(env.DEEPSEEK_API_KEY).toBe("sk-deepseek-123"); // applied immediately
     const onDisk = parseSecretsFile(readFileSync(secretsFile, "utf-8"));
     expect(onDisk.DEEPSEEK_API_KEY).toBe("sk-deepseek-123");
+  });
+
+  it("hydrates persisted provider settings after restart without overriding explicit env", () => {
+    configureProvider(secretsFile, "deepseek", { apiKey: "stored-key", model: "stored-model" }, {});
+    const restartedEnv: NodeJS.ProcessEnv = { DEEPSEEK_MODEL: "shell-model" };
+    const result = hydrateProviderEnvFromSecrets(secretsFile, restartedEnv);
+    expect(result.loaded).toContain("DEEPSEEK_API_KEY");
+    expect(result.loaded).not.toContain("DEEPSEEK_MODEL");
+    expect(restartedEnv.DEEPSEEK_API_KEY).toBe("stored-key");
+    expect(restartedEnv.DEEPSEEK_MODEL).toBe("shell-model");
   });
 
   it("stores a default model and base url", () => {

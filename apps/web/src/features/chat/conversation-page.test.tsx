@@ -62,12 +62,152 @@ afterEach(() => {
 });
 
 describe("ConversationPage", () => {
+  it("opens compact activity details for reasoning, files, and skills", async () => {
+    const activity = {
+      version: 1,
+      projectId: "project-1",
+      conversationId: conversation.id,
+      entries: [
+        {
+          version: 1,
+          id: "task-1:event:thinking",
+          taskId: "task-1",
+          sequence: 1,
+          kind: "assistant",
+          status: "running",
+          summary: "Thinking",
+          detail: "Preparing changes",
+          target: null,
+          toolName: null,
+          durationMs: null,
+          exitCode: null,
+          resultCount: null,
+          createdAt: "2026-07-22T12:00:01.000Z",
+          updatedAt: "2026-07-22T12:00:01.000Z",
+        },
+        {
+          version: 1,
+          id: "task-1:tool:file-1",
+          taskId: "task-1",
+          sequence: 2,
+          kind: "file",
+          status: "completed",
+          summary: "Created src/activity.ts",
+          detail: null,
+          target: "src/activity.ts",
+          toolName: "create_file",
+          durationMs: 812,
+          exitCode: 0,
+          resultCount: null,
+          createdAt: "2026-07-22T12:00:02.000Z",
+          updatedAt: "2026-07-22T12:00:04.000Z",
+        },
+        {
+          version: 1,
+          id: "task-1:tool:skill-1",
+          taskId: "task-1",
+          sequence: 3,
+          kind: "tool",
+          status: "completed",
+          summary: "Used skill playwright",
+          detail: null,
+          target: "playwright",
+          toolName: "load_skill",
+          durationMs: null,
+          exitCode: null,
+          resultCount: null,
+          createdAt: "2026-07-22T12:00:05.000Z",
+          updatedAt: "2026-07-22T12:00:05.000Z",
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/activity")) return json(activity);
+      if (path.includes("/approvals")) return json([]);
+      if (path.endsWith("/messages")) return json([message({ toolActivity: [{ id: "tool-1", toolName: "run_command", status: "failed", startedAt: now, completedAt: now }] })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole("heading", { name: conversation.title });
+    await screen.findByRole("region", { name: "Morrow activity" });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activity"))).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Activity / Inspect" }));
+
+    const panel = await screen.findByRole("complementary", { name: "Activity / Inspect" });
+    const items = within(panel).getAllByRole("listitem");
+    expect(items.map((item) => item.querySelector("summary")?.textContent)).toEqual([
+      expect.stringContaining("Thinking"),
+      expect.stringContaining("Created src/activity.ts"),
+      expect.stringContaining("Used skill playwright"),
+    ]);
+    expect(within(panel).getByText("src/activity.ts")).not.toBeVisible();
+    await user.click(within(panel).getByText("Created src/activity.ts"));
+    expect(within(panel).getByText("src/activity.ts")).toBeVisible();
+    expect(within(panel).getByText("Exit 0")).toBeVisible();
+    expect(within(panel).getByText("812 ms")).toBeVisible();
+    expect(within(panel).getByText(/Completed events remain in this saved history\./)).toBeVisible();
+
+    await user.click(within(panel).getByRole("button", { name: "Close Activity / Inspect" }));
+    expect(screen.queryByRole("complementary", { name: "Activity / Inspect" })).not.toBeInTheDocument();
+  });
+
+  it("surfaces a blocking approval inside the conversation and resolving it clears the card", async () => {
+    const pendingApproval = {
+      version: 1,
+      id: "approval-1",
+      taskId: "task-1",
+      projectId: "project-1",
+      kind: "change_set",
+      status: "pending",
+      summary: "Apply patch: Create the landing page structure.",
+      details: { files: ["index.html"], explanation: "Create the landing page structure." },
+      decision: null,
+      decisionNote: null,
+      createdAt: now,
+      resolvedAt: null,
+    };
+    const foreignApproval = { ...pendingApproval, id: "approval-2", taskId: "task-elsewhere", summary: "Apply patch: unrelated task." };
+    let resolved: Array<{ projectId: string; decision: string }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/approvals?status=pending")) {
+        return json(resolved.length === 0 ? [pendingApproval, foreignApproval] : []);
+      }
+      if (path.endsWith(`/approvals/${pendingApproval.id}/resolve`) && init?.method === "POST") {
+        resolved.push(JSON.parse(String(init.body)) as { projectId: string; decision: string });
+        return json({ ...pendingApproval, status: "approved", decision: "allow_once", resolvedAt: now });
+      }
+      if (path.endsWith("/activity")) return json({ version: 1, projectId: "project-1", conversationId: conversation.id, entries: [] });
+      if (path.endsWith("/messages")) return json([message({ content: "Working", streamingState: "streaming", taskStatus: "running" })]);
+      if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      throw new Error(`Unexpected request ${init?.method} ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = await screen.findByRole("region", { name: "Approvals waiting for your decision" });
+    expect(within(region).getByText("Apply patch: Create the landing page structure.")).toBeVisible();
+    expect(within(region).getByText("index.html")).toBeVisible();
+    expect(within(region).queryByText("Apply patch: unrelated task.")).not.toBeInTheDocument();
+
+    await user.click(within(region).getByRole("button", { name: "Allow once" }));
+    await waitFor(() => expect(resolved).toEqual([{ projectId: "project-1", decision: "allow_once" }]));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Approvals waiting for your decision" })).not.toBeInTheDocument());
+  });
+
   it("retains input until the server accepts, then renders one canonical user and assistant row", async () => {
     let accept!: (response: Response) => void;
     const sendResponse = new Promise<Response>((resolve) => { accept = resolve; });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/messages") && init?.method === "GET") return json([]);
+      if (path.includes("/approvals")) return json([]);
       if (path.endsWith(`/conversations/${conversation.id}`) && init?.method === "GET") return json(conversation);
       if (path.endsWith("/messages") && init?.method === "POST") return sendResponse;
       throw new Error(`Unexpected request ${init?.method} ${path}`);
@@ -107,6 +247,7 @@ describe("ConversationPage", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/messages") && init?.method === "GET") return json(states[Math.min(reads++, states.length - 1)]);
+      if (path.includes("/approvals")) return json([]);
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
       throw new Error(`Unexpected request ${path}`);
     }));
@@ -130,6 +271,7 @@ describe("ConversationPage", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith(`/conversations/${conversation.id}`)) return json(conversation);
+      if (path.includes("/approvals")) return json([]);
       if (path.endsWith("/messages")) return json([message(cancelled
         ? { content: "Stopped where requested", streamingState: "cancelled", taskStatus: "cancelled" }
         : { content: "Working", streamingState: "streaming", taskStatus: "running" })]);
@@ -158,6 +300,7 @@ describe("ConversationPage", () => {
     let fail = false;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path.includes("/approvals")) return json([]);
       if (path.endsWith("/messages")) {
         if (fail) throw new TypeError("offline");
         return json([message({ content: "Useful saved history" })]);
@@ -180,6 +323,7 @@ describe("ConversationPage", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/messages")) return json([]);
+      if (path.includes("/approvals")) return json([]);
       if (init?.method === "PATCH") {
         current = { ...current, ...JSON.parse(String(init.body)), updatedAt: now };
         return json(current);

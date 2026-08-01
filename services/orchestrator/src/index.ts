@@ -10,6 +10,9 @@ import { SchedulerTicker } from "./schedule/ticker.js";
 import { loadAdaptersFromEnv } from "./messaging/adapter.js";
 import { ProcessSupervisor } from "./processes/supervisor.js";
 import { processesRepository } from "./repositories/processes.js";
+import { EntitlementPoller } from "./hosted/entitlement-poller.js";
+import { resolveHostedApiUrl } from "./hosted/hosted-api-url.js";
+import { hydrateProviderEnvFromSecrets } from "./provider/secrets.js";
 
 // In a packaged install the launcher sets MORROW_SKILLS_DIR to the bundled
 // skills directory. When running from source (pnpm dev) fall back to the repo's
@@ -21,6 +24,8 @@ if (!process.env.MORROW_SKILLS_DIR) {
 }
 
 const dbPath = resolveDefaultDatabasePath(process.env);
+const secretsFile = join(resolveMorrowHome(process.env), "secrets.env");
+hydrateProviderEnvFromSecrets(secretsFile, process.env);
 migrateLegacyDatabase(dbPath, legacyDatabaseCandidatesForRepo(resolveMorrowDevelopmentRoot()));
 const db = openDatabase(dbPath);
 
@@ -47,12 +52,20 @@ if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliati
 // development), Vite serves the app on its own port and no /app surface is
 // registered here.
 const webRoot = process.env.MORROW_WEB_ROOT?.trim();
+// Defaults to Morrow's hosted account service (MORROW_HOSTED_API_URL still
+// overrides for self-hosters). An install with no stored pairing never calls
+// out — the poller short-circuits before any fetch — so this only decides
+// where a user who *chose* to pair actually gets verified.
+const entitlementPoller = new EntitlementPoller(secretsFile, resolveHostedApiUrl(process.env));
+entitlementPoller.start(5 * 60 * 1000);
+
 const app = buildServer({
   db,
   runner,
   missionControllerRunner,
   supervisor,
-  secretsFile: join(resolveMorrowHome(process.env), "secrets.env"),
+  secretsFile,
+  entitlementPoller,
   ...(webRoot ? { webRoot } : {}),
 });
 
@@ -64,8 +77,9 @@ if (process.env.MORROW_DISABLE_SCHEDULER !== "true") {
 }
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4317;
+const host = process.env.MORROW_BIND_HOST?.trim() || "127.0.0.1";
 
-app.listen({ host: "127.0.0.1", port }).then((address) => {
+app.listen({ host, port }).then((address) => {
   console.log(`Server listening at ${address}`);
 }).catch(err => {
   console.error(err);

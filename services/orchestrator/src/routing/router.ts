@@ -14,6 +14,21 @@ function isLocal(id: ProviderId): boolean {
   return providerCapabilities(id)?.local ?? false;
 }
 
+/**
+ * The model a provider advertises first in its own discovered catalog.
+ *
+ * Gateways (OpenCode Zen, OpenRouter, Groq…) are discovery-only: they have no
+ * built-in default model, and a user who connects one through the UI never
+ * picks one either. Without this, such a provider reports 60 live models and
+ * still routes to nothing — the user is told to go run a CLI command while a
+ * perfectly usable catalog sits right there. Providers list their flagship
+ * first, so position 0 is the honest automatic choice; the routing decision
+ * records that Morrow picked it rather than the user.
+ */
+function firstDiscoveredModel(providerId: ProviderId, env: ProviderEnv): string | null {
+  return getProviderStatus(providerId, env)?.models?.[0] ?? null;
+}
+
 function preferredModel(preset: Preset, providerId: ProviderId, env: ProviderEnv): string | null {
   const prefs = preset.modelPreferences[providerId] ?? [];
   const status = getProviderStatus(providerId, env);
@@ -27,7 +42,9 @@ function preferredModel(preset: Preset, providerId: ProviderId, env: ProviderEnv
   //
   // The discovered status default is preferred over the configured one so a
   // credential whose account no longer has the saved model still routes.
-  if (prefs.length === 0) return status?.defaultModel ?? getProviderDefaultModel(providerId, env);
+  if (prefs.length === 0) {
+    return status?.defaultModel ?? getProviderDefaultModel(providerId, env) ?? firstDiscoveredModel(providerId, env);
+  }
   const preferred = prefs.find((model) => available.size === 0 || available.has(model));
   // The preset DID recommend models here but none are available on this
   // account. Never substitute an arbitrary default it did not recommend: keep
@@ -133,14 +150,24 @@ export function routePreset(presetId: PresetId, env: ProviderEnv = process.env, 
     // reporting the first for the second sends them to reconfigure a provider
     // that is already working.
     if (modelless.length > 0) {
+      // Phrased for whoever is reading it. This string reaches the web
+      // composer verbatim, and a consumer there cannot act on a CLI
+      // invocation — each surface adds its own affordance (Connections has a
+      // model picker, the CLI has `morrow providers configure`), so the
+      // shared text states the problem and names the provider, nothing more.
+      const names = modelless.map((pid) => getProviderStatus(pid, env)?.label ?? pid);
       return {
         ok: false,
-        reason: `${modelless.join(", ")} ${modelless.length === 1 ? "is" : "are"} configured but no model is selected. Run \`morrow providers configure ${modelless[0]}\` to pick one, or \`morrow providers test ${modelless[0]}\` to list the available models.`,
+        reason: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} connected but no model has been chosen yet. Choose one to continue.`,
       };
     }
+    // Same rule as the modelless branch above: these strings are rendered as
+    // the "why not" line under every unavailable entry in the web model
+    // picker, where a `morrow providers configure` invocation is not something
+    // the reader can act on.
     const reason = preset.requiresLocal
-      ? `Preset "${preset.label}" requires a local provider. Start a local server (Ollama, LM Studio, llama.cpp, vLLM, or Jan) and point Morrow at it with \`morrow providers configure\`.`
-      : `Preset "${preset.label}" has no configured provider. Configure one with \`morrow providers configure\`.`;
+      ? `"${preset.label}" runs only on a local model. Start Ollama, LM Studio, llama.cpp, vLLM or Jan, then connect it.`
+      : `"${preset.label}" has no connected provider to run on. Connect one to use it.`;
     return { ok: false, reason };
   }
 

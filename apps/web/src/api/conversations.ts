@@ -2,6 +2,7 @@ import {
   ConversationSchema,
   ConversationTaskActionResultSchema,
   DeleteConversationResultSchema,
+  WebConversationActivitySchema,
   WebSendMessageResultSchema,
   WebConversationMessageSchema,
   type SendMessageInput,
@@ -29,6 +30,9 @@ export const conversationKeys = {
   messages(projectId: string, conversationId: string) {
     return [...this.all, "messages", projectId, conversationId] as const;
   },
+  activity(projectId: string, conversationId: string) {
+    return [...this.all, "activity", projectId, conversationId] as const;
+  },
 };
 
 export const conversationQueries = {
@@ -48,6 +52,12 @@ export const conversationQueries = {
     return queryOptions({
       queryKey: conversationKeys.messages(projectId, conversationId),
       queryFn: () => conversationApi.messages(projectId, conversationId),
+    });
+  },
+  activity(projectId: string, conversationId: string) {
+    return queryOptions({
+      queryKey: conversationKeys.activity(projectId, conversationId),
+      queryFn: () => conversationApi.activity(projectId, conversationId),
     });
   },
 };
@@ -92,6 +102,13 @@ export const conversationApi = {
     return api.get(
       `${conversationPath(projectId, conversationId)}/messages`,
       WebConversationMessageSchema.array(),
+    );
+  },
+
+  activity(projectId: string, conversationId: string) {
+    return api.get(
+      `${conversationPath(projectId, conversationId)}/activity`,
+      WebConversationActivitySchema,
     );
   },
 

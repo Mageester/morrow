@@ -22,15 +22,16 @@ import { contextSummariesRepository } from "../repositories/context-summaries.js
 import { createExecutionLeaseOwnerId, ExecutionLeaseFenceError, executionContinuityRepository, type ExecutionCheckpointSnapshot, type MissionWorkerOutcome } from "../repositories/execution-continuity.js";
 import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
+import { actionAttemptsRepository, actionEnvironmentFingerprint, normalizeActionSignature } from "../repositories/action-attempts.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
-import { assessExhaustion, assessProgress, type MissionProgressSnapshot } from "./progress.js";
+import { assessExhaustion, assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
 import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
 import { IMPLEMENTED_TOOL_NAMES, PERMISSION_PROFILE } from "../tools/catalog.js";
 import { runProcessSafe } from "../tools/command-executor.js";
 import { parseUnifiedDiff, validatePatchPaths, applyUnifiedPatch, hashString, assertContainedRealPath, buildCreationDiff, buildReplacementDiff, PatchApplicationError, type PatchFile } from "../tools/diff-applier.js";
-import { repairAndParseToolArguments, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
+import { repairAndParseToolArguments, normalizeCommandDialect, normalizeToolArguments, validateToolArguments, describeToolSchema, type ToolArgFailureReason } from "../tools/tool-argument-repair.js";
 import { resolveMorrowHome } from "../home.js";
 import { processesRepository } from "../repositories/processes.js";
 import { ProcessSupervisor } from "../processes/supervisor.js";
@@ -48,6 +49,7 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
 import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
 import { buildProviderProjection, projectProviderRequest, type DurableProviderTurn } from "./provider-projection.js";
@@ -68,22 +70,35 @@ import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "../skills
  * of a bare tool name. Never throws: mid-stream arguments may be malformed,
  * in which case no target is reported.
  */
-function displayTarget(toolName: string, argsJson: string): { target?: string; verification?: boolean } {
+function displayTarget(toolName: string, argsJson: string): { target?: string; cwd?: string; verification?: boolean } {
   try {
     const args = JSON.parse(argsJson) as Record<string, unknown>;
     const pick = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
     let target: string | undefined;
+    let cwd: string | undefined;
     if (toolName === "run_command") {
       const executable = pick(args.executable);
       const rest = Array.isArray(args.args) ? args.args.filter((a): a is string => typeof a === "string").join(" ") : "";
       target = executable ? `${executable}${rest ? " " + rest : ""}` : undefined;
+      cwd = pick(args.cwd);
     } else {
-      target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
+      target = pick(args.path) ?? pick(args.query) ?? pick(args.pattern) ?? pick(args.skill_id) ?? pick(args.skillId) ?? pick(args.name) ?? (Array.isArray(args.files) ? args.files.filter((f): f is string => typeof f === "string").join(", ") : undefined);
+      // Patches carry their affected paths inside unified-diff headers rather
+      // than a top-level `path`. Extract only headers: patch body must never
+      // become browser-visible activity data.
+      if (!target && toolName === "propose_patch") {
+        const patch = pick(args.patch);
+        const files = patch
+          ? [...patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n]+)$/gm)].map((match) => match[1]!).filter((path) => path !== "/dev/null")
+          : [];
+        target = files.length > 0 ? [...new Set(files)].join(", ") : undefined;
+      }
     }
     const purpose = pick(args.purpose);
     const verification = toolName === "run_command" && purpose !== undefined && /\b(?:verify|verification|test|check|lint|typecheck|build)\b/i.test(purpose);
     return {
       ...(target ? { target: target.length > 80 ? target.slice(0, 79) + "â€¦" : target } : {}),
+      ...(cwd ? { cwd: cwd.length > 160 ? cwd.slice(0, 159) + "â€¦" : cwd } : {}),
       ...(verification ? { verification: true } : {}),
     };
   } catch {
@@ -222,7 +237,9 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, projectId
   return scored.slice(0, 5).map(({ id, name, description }) => ({ id, name, description }));
 }
 
-const TOOL_RESULT_BYTE_LIMIT = 24 * 1024;
+// Match artifact externalization: recent raw tool groups must fit a small
+// route after all tool schemas and request reserves are counted.
+const TOOL_RESULT_BYTE_LIMIT = 8 * 1024;
 const TOP_LEVEL_ENTRY_LIMIT = 80;
 
 async function buildWorkspaceDiscovery(
@@ -342,31 +359,72 @@ function capToolResult(toolName: string, result: string, externalizer?: (text: s
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalBytes: bytes, head, tail });
 }
 
-function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
+export function capToolArgumentsForContext(toolName: string, rawArguments: string): string {
   const bytes = Buffer.byteLength(rawArguments, "utf8");
-  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   try {
     const parsed = JSON.parse(rawArguments) as Record<string, unknown>;
+    // Write payloads are already applied and durable. Repeating their full
+    // content in a later provider turn is pure context debt: a single batch
+    // can create many ordinary-sized files whose combined arguments exceed a
+    // small route even though no individual argument crosses the byte cap.
     if (toolName === "create_file" && typeof parsed.content === "string") {
+      const content = parsed.content;
+      const { content: _content, ...rest } = parsed;
       return JSON.stringify({
-        ...parsed,
-        content: `[omitted ${Buffer.byteLength(parsed.content, "utf8")} bytes already provided to create_file]`,
+        ...rest,
+        _morrowAppliedWrite: {
+          kind: "create_file",
+          contentBytes: Buffer.byteLength(content, "utf8"),
+          contentSha256: createHash("sha256").update(content).digest("hex"),
+          instruction: "Historical applied write. Read workspace file for current content.",
+        },
         truncatedForContext: true,
         originalArgumentBytes: bytes,
       });
     }
     if (toolName === "propose_patch" && typeof parsed.patch === "string") {
+      const patch = parsed.patch;
+      const { patch: _patch, ...rest } = parsed;
       return JSON.stringify({
-        ...parsed,
-        patch: `[omitted ${Buffer.byteLength(parsed.patch, "utf8")} bytes already provided to propose_patch]`,
+        ...rest,
+        _morrowAppliedWrite: {
+          kind: "propose_patch",
+          patchBytes: Buffer.byteLength(patch, "utf8"),
+          patchSha256: createHash("sha256").update(patch).digest("hex"),
+          instruction: "Historical applied patch. Read workspace file or git diff for current content.",
+        },
         truncatedForContext: true,
         originalArgumentBytes: bytes,
       });
     }
+    if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   } catch {
     // Fall through to a compact opaque placeholder.
   }
+  if (bytes <= TOOL_RESULT_BYTE_LIMIT) return rawArguments;
   return JSON.stringify({ truncatedForContext: true, tool: toolName, originalArgumentBytes: bytes });
+}
+
+export function runCommandIsVerification(args: Record<string, unknown>): boolean {
+  const purpose = typeof args.purpose === "string" ? args.purpose : "";
+  const executable = typeof args.executable === "string" ? args.executable : "";
+  const argv = Array.isArray(args.args) ? args.args.filter((item): item is string => typeof item === "string") : [];
+  const intent = `${purpose} ${executable} ${argv.join(" ")}`;
+  return /\b(?:build|test|verify|verification|check|lint|typecheck|compile)\b/i.test(intent)
+    || /\b(?:tsc|vitest|jest|pytest)\b/i.test(executable);
+}
+
+export function toolCallPassedVerification(call: Pick<ToolCallRecord, "status" | "toolName" | "resultJson" | "argsJson">): boolean {
+  if (call.status !== "completed") return false;
+  if (call.toolName !== "run_command") return true;
+  try {
+    const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+    if (!runCommandIsVerification(args)) return false;
+    const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
 }
 
 function duplicateToolResult(toolName: string, previousBytes: number): string {
@@ -401,9 +459,29 @@ type Dependencies = {
 
 class AgentToolFailure extends Error {
   readonly resultJson: string;
-  readonly errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode";
+  readonly errorType:
+    | "tool_failed"
+    | "safe_read_rejected"
+    | "tool_not_permitted_in_mode"
+    | "invalid_tool_arguments"
+    | "command_exit_nonzero"
+    | "command_timeout"
+    | "command_cancelled"
+    | "repeated_strategy";
 
-  constructor(message: string, result: unknown, errorType: "tool_failed" | "safe_read_rejected" | "tool_not_permitted_in_mode" = "tool_failed") {
+  constructor(
+    message: string,
+    result: unknown,
+    errorType:
+      | "tool_failed"
+      | "safe_read_rejected"
+      | "tool_not_permitted_in_mode"
+      | "invalid_tool_arguments"
+      | "command_exit_nonzero"
+      | "command_timeout"
+      | "command_cancelled"
+      | "repeated_strategy" = "tool_failed",
+  ) {
     super(message);
     this.name = "AgentToolFailure";
     this.resultJson = JSON.stringify(result);
@@ -1312,6 +1390,7 @@ export async function executeAgentChatTask({
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
   const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+  const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(latestUserPrompt);
@@ -1321,17 +1400,18 @@ export async function executeAgentChatTask({
       ? tools.filter((tool) => !BROWSER_TOOL_NAMES.has(tool.name) || browserToolsRequested)
       : tools.filter((tool) => READ_ONLY_TOOL_NAMES.has(tool.name));
   
-  // System instructions
-  chatMessages.push({
-    role: "system",
-    content: `You are Morrow, a secure personal AI coding assistant.
-You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
-You have access to tools to inspect the workspace, read files, run safe project commands (like running tests), and propose patches to write files.
-You MUST choose relevant files, do NOT automatically ingest the entire repository.
-If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
-You must run test/verification commands using run_command, and modify files using the file tools.
-${allowedWriteFiles ? `The user explicitly constrained deliverable files to ONLY: ${[...allowedWriteFiles].join(", ")}. Treat this as a hard write contract: do not create or modify auxiliary files, test files, temp files, logs, package files, or directories outside that list. For calculations or checks, use run_command with node -e or existing files; do not write scratch verification files.` : ""}
-
+  // System instructions.
+  //
+  // Built per mode rather than as one block. The write/run_command sections
+  // used to be sent in read-only mode too, so an Ask turn was told "you must
+  // run test/verification commands using run_command, and modify files using
+  // the file tools" while holding none of those tools. A model instructed to
+  // use capabilities it cannot see stops acting and starts negotiating: a
+  // plain "list the files in this project and read package.json" came back as
+  // "I need a bit more information... what would you like to do first?" with
+  // zero tool calls. Each mode now describes only what it can actually do,
+  // and is told plainly to act on a clear request.
+  const writeToolInstructions = `
 File & directory operations â€” use the dedicated tools, NOT the shell:
 - Create a new file: call create_file with a relative path and full content. Parent directories are created automatically.
 - Create an empty directory: call create_directory. (Not needed before create_file â€” that already makes parents.)
@@ -1343,7 +1423,31 @@ Running commands with run_command (each argument is a separate array element; th
 - Package managers work directly: run_command executable "npm" args ["install"]; executable "npm" args ["run","build"]; executable "npm" args ["test"]. Same for pnpm/yarn/node/git.
 - Avoid interactive scaffolders (e.g. "npm create vite") â€” they hang waiting for input. Instead write the project files yourself with create_file and install dependencies with npm install.
 - If a command is denied, do not repeat it. Switch to the allowed equivalent (a file tool, or a non-shell command) described in the error.
+`;
 
+  // Kept deliberately short. This block ships on every request, and the
+  // context budget it consumes is charged to the user's history: an earlier,
+  // wordier draft of it was enough to change which branch of context
+  // compaction a 3600-byte budget took.
+  const readOnlyModeInstructions = `
+Ask mode: you can read this project but not change it. You have no write tools and no run_command, so never claim to have edited a file, run a command, or run tests. Read before answering â€” do not describe what you "would" look at. If the user wants a change made, say in one sentence that Build mode makes changes.
+`;
+
+  const agentModeInstructions = `
+Build mode: you may change this project. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
+${writeToolInstructions}`;
+
+  chatMessages.push({
+    role: "system",
+    content: `You are Morrow, a secure personal AI coding assistant.
+You are running in an environment scoped to the project: ${projectName} located at ${workspacePath}.
+
+Act on the request. If it is clear enough to start, start â€” never open by asking which part to do first, or by listing back what you were already asked to do. Ask only when a wrong guess would waste real work; otherwise state your assumption and proceed. Do every part of a multi-part request.
+
+You MUST choose relevant files, do NOT automatically ingest the entire repository.
+If you need to explore, call inspect_workspace once for bounded root facts, prefer search_symbols before broad search, then use list_files/search_files/search_text/read_file only for paths relevant to the user's request.
+${allowedWriteFiles ? `The user explicitly constrained deliverable files to ONLY: ${[...allowedWriteFiles].join(", ")}. Treat this as a hard write contract: do not create or modify auxiliary files, test files, temp files, logs, package files, or directories outside that list. For calculations or checks, use run_command with node -e or existing files; do not write scratch verification files.` : ""}
+${activeToolProfile === "agent" ? agentModeInstructions : readOnlyModeInstructions}
 Morrow ships installed skills (reusable expert workflows). They ARE available â€” never tell the user skills are unavailable. When a relevant active skill is listed below or found via find_skill, call load_skill for it and follow its workflow. Cortex observes evidence-backed repeated procedures automatically; do not call create_skill unless the user explicitly asked to create a skill.`
   });
 
@@ -1356,7 +1460,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   if (activeToolProfile === "agent" && requestsFrontendBrowserValidation(latestUserPrompt)) {
     chatMessages.push({
       role: "system",
-      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. Completion is deterministically blocked when any evidence class is missing."
+      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. Completion is deterministically blocked when any evidence class is missing. For a static site with no dev server: node is ALWAYS available â€” never probe runtimes with --version and never use npx/npm/yarn serve (their interactive install prompt hangs until timeout). Start the server yourself with one run_command: executable node, args [-e, STATIC_SERVER_SCRIPT], background true, where STATIC_SERVER_SCRIPT is exactly: const http=require(\"http\"),fs=require(\"fs\"),path=require(\"path\");const types={\".html\":\"text/html\",\".css\":\"text/css\",\".js\":\"text/javascript\",\".json\":\"application/json\",\".svg\":\"image/svg+xml\",\".png\":\"image/png\",\".jpg\":\"image/jpeg\",\".ico\":\"image/x-icon\",\".woff2\":\"font/woff2\"};http.createServer((req,res)=>{try{const p=decodeURIComponent((req.url||\"/\").split(\"?\")[0]);const file=path.join(process.cwd(),p===\"/\"?\"index.html\":p.replace(/^\\/+/,\"\"));if(!file.startsWith(process.cwd())){res.writeHead(403);res.end();return}fs.stat(file,(e,st)=>{if(e||!st.isFile()){res.writeHead(404);res.end();return}res.writeHead(200,{\"content-type\":types[path.extname(file).toLowerCase()]||\"application/octet-stream\"});fs.createReadStream(file).pipe(res)})}catch{res.writeHead(500);res.end()}}).listen(4173,\"127.0.0.1\") â€” then browser_open http://127.0.0.1:4173/ (browser_open accepts HTTP(S) only, never file://). If that port is taken, retry the same script with a different port. Mentally re-reading the files you wrote is not verification: only the browser evidence above counts.",
     });
   }
 
@@ -1618,6 +1722,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // escape.
       const resolvedCwd = cmdCwd ? assertContainedRealPath(workspacePath, cmdCwd) : workspacePath;
 
+      // A package-script verification (npm test, npm run build, pnpm test, â€¦)
+      // cannot succeed in a directory with no package.json. Without this guard
+      // the model got a bare non-zero exit, tried the identical command again,
+      // then claimed the deliverables were fine anyway. Fail fast with guidance
+      // toward a verification that matches the actual workspace.
+      const packageManagerMatch = /(?:^|[/\\])(npm|pnpm|yarn)(?:\.cmd|\.exe|\.bat)?$/i.exec(exec);
+      if (
+        packageManagerMatch
+        && /^(?:test|run)$/i.test(cmdArgs[0] ?? "")
+        && !existsSync(join(resolvedCwd, "package.json"))
+      ) {
+        throw new AgentToolFailure(
+          `Cannot run "${exec} ${cmdArgs.join(" ")}" here: ${cmdCwd || "the workspace root"} has no package.json, so there are no package scripts to run. Choose a verification that matches this workspace instead: for a static site, start a local static server (run_command with background true) and validate it with the browser tools, or syntax-check JavaScript with node --check. Do not retry this command unchanged.`,
+          { error: "missing_package_json", executable: exec, args: cmdArgs, cwd: cmdCwd || null },
+          "tool_failed",
+        );
+      }
+
       transitionAgentState("executing_tool", { tool: "run_command" });
 
       // background:true is for a process that never exits on its own (a dev
@@ -1662,16 +1784,93 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // the default 30s ceiling was too tight for `npm install` / `npm run build`
       // and made ordinary project setup time out. Give those a generous ceiling
       // while keeping short-lived commands snappy.
+      const policyTimeoutMs = longRunningCommandTimeoutMs(exec, cmdArgs);
+      const requestedTimeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
+        ? Math.max(10, Math.floor(args.timeoutMs))
+        : policyTimeoutMs;
       const runOptions: Parameters<typeof runProcessSafe>[4] = {
-        timeoutMs: longRunningCommandTimeoutMs(exec, cmdArgs),
+        // Models may request a shorter timeout for bounded probes. They can
+        // never raise the command-policy ceiling.
+        timeoutMs: Math.min(requestedTimeoutMs, policyTimeoutMs),
         maxOutputBytes: 65536,
       };
       if (abortSignal) {
         runOptions.abortSignal = abortSignal;
       }
-      const result = await runProcessSafe(exec, cmdArgs, resolvedCwd, process.env, runOptions);
+
+      // Durable retry memory: repeating an identical command that already
+      // failed twice with no intervening success is suppressed before it can
+      // burn another turn, and the model is told to change strategy instead.
+      // The attempt row is written either way so the mission record shows the
+      // full command history, including the suppressed call.
+      const actionAttempts = actionAttemptsRepository(db);
+      const actionSignature = normalizeActionSignature("run_command", {
+        executable: exec,
+        args: cmdArgs,
+        cwd: cmdCwd,
+        background: false,
+      });
+      const suppression = actionAttempts.shouldSuppress(taskId, taskMissionId, actionSignature);
+      const attempt = actionAttempts.start({
+        id: randomUUID(),
+        taskId,
+        missionId: taskMissionId,
+        toolCallId: tcId,
+        actionKind: "run_command",
+        normalizedSignature: actionSignature,
+        command: { executable: exec, args: cmdArgs },
+        cwd: cmdCwd || null,
+        environmentFingerprint: actionEnvironmentFingerprint(process.env),
+        strategy: runCommandIsVerification({ executable: exec, args: cmdArgs, purpose }) ? "verification" : "command",
+        createdAt: now(),
+      });
+      if (suppression.suppress) {
+        actionAttempts.finish(attempt.id, {
+          status: "suppressed",
+          exitStatus: null,
+          terminationReason: "suppressed_duplicate",
+          failureCategory: "repeated_strategy",
+          failureFingerprint: null,
+          progressFingerprint: null,
+          completedAt: now(),
+        });
+        event("tool.strategy_switch", {
+          toolName: "run_command",
+          tool: "run_command",
+          from: "repeat_failed_command",
+          to: "change_strategy",
+          failedAttempts: suppression.failedAttempts,
+          reason: "repeated_failure",
+        });
+        throw new AgentToolFailure(
+          `Suppressed identical retried command. ${suppression.reason}`,
+          { suppressed: true, failedAttempts: suppression.failedAttempts, classification: "repeated_strategy" },
+          "repeated_strategy",
+        );
+      }
+      const finishAttempt = (
+        status: "succeeded" | "failed",
+        outcome: { exitStatus: number | null; terminationReason: string | null; failureCategory: string | null },
+      ) => actionAttempts.finish(attempt.id, {
+        status,
+        exitStatus: outcome.exitStatus,
+        terminationReason: outcome.terminationReason,
+        failureCategory: outcome.failureCategory,
+        failureFingerprint: null,
+        progressFingerprint: null,
+        completedAt: now(),
+      });
+
+      let result: Awaited<ReturnType<typeof runProcessSafe>>;
+      try {
+        result = await runProcessSafe(exec, cmdArgs, resolvedCwd, process.env, runOptions);
+      } catch (runError) {
+        finishAttempt("failed", { exitStatus: null, terminationReason: "error", failureCategory: "tool_failed" });
+        throw runError;
+      }
 
       if (result.terminationReason === "error") {
+        finishAttempt("failed", { exitStatus: null, terminationReason: "error", failureCategory: "tool_failed" });
         throw new Error(result.error || "Process execution failed");
       }
 
@@ -1696,6 +1895,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         createdAt: now()
       });
 
+      if (result.terminationReason === "timeout") {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: "timeout", failureCategory: "command_timeout" });
+        throw new AgentToolFailure(
+          `Command ${exec} timed out after ${result.durationMs}ms.`,
+          JSON.parse(resultStr),
+          "command_timeout",
+        );
+      }
+      if (result.terminationReason === "cancelled") {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: "cancelled", failureCategory: "command_cancelled" });
+        throw new AgentToolFailure(
+          `Command ${exec} was cancelled before completion.`,
+          JSON.parse(resultStr),
+          "command_cancelled",
+        );
+      }
+      if (result.exitCode !== 0) {
+        finishAttempt("failed", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: "command_exit_nonzero" });
+        throw new AgentToolFailure(
+          `Command ${exec} exited with status ${result.exitCode ?? "unknown"}.`,
+          JSON.parse(resultStr),
+          "command_exit_nonzero",
+        );
+      }
+
+      finishAttempt("succeeded", { exitStatus: result.exitCode, terminationReason: result.terminationReason ?? null, failureCategory: null });
       return resultStr;
     } else if (toolName === "propose_patch") {
       const patch = args.patch;
@@ -1989,6 +2214,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let previousProgressSnapshot: MissionProgressSnapshot | null = null;
   let progressWindowStart = 0;
   let diagnosisCompleted = false;
+  let stagnationRecoveryAttempts = 0;
+  let loopRecoveryAttempts = 0;
+  let novelPostDeliveryReadTurns = 0;
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
@@ -2002,13 +2230,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // keeps emitting differently-broken diffs for the same file never trips the
   // per-hash ceiling; this counter drives the escalation to create_file.
   const patchFailureCountsByFile = new Map<string, number>();
+  // create_file may repair one target once, but repeated whole-file rewrites
+  // are not meaningful delivery progress.
+  const createFileWritesByPath = new Map<string, number>();
   // Bounded correction budget for malformed / schema-invalid tool arguments,
   // keyed by tool name so a provider that keeps emitting broken JSON for the
   // same tool is stopped after one corrective retry instead of looping.
   const malformedArgAttemptsByTool = new Map<string, number>();
+  const toolArgumentAttemptKey = (toolName: string, rawArguments: string, field = "format", parsed?: Record<string, unknown>) => {
+    const parsedPath = typeof parsed?.path === "string" ? parsed.path : null;
+    const rawPath = rawArguments.match(/"path"\s*:\s*"([^"]+)"/)?.[1] ?? null;
+    const target = parsedPath ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
+    return `${toolName}:${field}:${target}`;
+  };
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
+  const resetTransientToolTracking = () => {
+    // Provider projection replaced earlier raw tool observations. A read that
+    // existed only in removed context must be allowed again in fresh segment;
+    // otherwise duplicate suppression returns no content and creates a loop.
+    seenToolSignatures.clear();
+    toolResultBytesBySignature.clear();
+    loopDetector.reset();
+  };
   let responseContent = assistantMessageRow.content || "";
 
   // Turn-boundary tracking. `responseContent` stays a whole-task accumulator
@@ -2145,6 +2390,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // Distinct from VERIFY_OR_WRITE_TOOLS: run_command can verify without ever
   // changing the workspace, so it is not durable delivery evidence on its own.
   const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "create_directory"]);
+  // Completed browser-validation steps are evidence work the frontend
+  // completion gate explicitly demands. Keeping them out of progress
+  // accounting let the stagnation clock interrupt healthy frontend
+  // validation mid-run â€” the live "static site served, browser evidence
+  // underway" failure that motivated this set.
+  const BROWSER_EVIDENCE_TOOLS = new Set([
+    "browser_open", "browser_snapshot", "browser_console", "browser_screenshot",
+    "browser_viewport", "browser_click", "browser_type", "browser_key", "browser_select",
+  ]);
   // A small, deterministic (no model call, no NLP) classifier for "this
   // request's own wording asks for a workspace change" â€” the same
   // regex-over-the-prompt technique already used above for acceptance
@@ -2199,6 +2453,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
+      if (call.toolName === "run_command") {
+        try {
+          // A host-side argument/schema rejection is never skipped: the model's
+          // action never executed, so an "I'm done" after it is unverified.
+          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)
+            && call.errorType !== "invalid_tool_arguments") continue;
+        } catch {
+          if (call.errorType !== "invalid_tool_arguments") continue;
+        }
+      }
       // A call denied purely because the current mode forbids it (read-only /
       // plan-only) is an expected constraint, not a failed verification â€” it
       // must not block completion. See the matching skip in the live-path
@@ -2213,6 +2477,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             if (result.exitCode !== 0) failedOutcome = `command exited ${result.exitCode}`;
           }
         } catch { /* malformed raw results cannot establish passed verification */ }
+      } else if (call.toolName === "run_command" && call.status === "failed") {
+        // Throw-classified command failures (non-zero exit, timeout, cancel)
+        // never reach the completed branch above. Leaving verification
+        // "missing" here would let a later successful workspace write clear
+        // the outstanding failure â€” the classic "tests failed, file saved,
+        // task claimed done" hole. Keep the failure outstanding until a clean
+        // verification run replaces it.
+        let exitCode: number | undefined;
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
+          if (typeof result.exitCode === "number") exitCode = result.exitCode;
+        } catch { /* no durable exit code; the failure classification still stands */ }
+        verification = exitCode === undefined
+          ? { status: "failed", toolCallId: call.id }
+          : { status: "failed", toolCallId: call.id, exitCode };
       } else if (call.status === "completed") {
         const requiresVerification = taskMissionId !== null || verification.status !== "missing";
         if (requiresVerification) {
@@ -2262,7 +2541,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     chatMessages.push(...buildProviderProjection({
       prefixMessages: [],
       turns: turnsForProjection,
-      toolResults: finalToolCalls.map((call) => ({ id: call.id, toolName: call.toolName, result: call.resultJson || "" })),
+      toolResults: finalToolCalls.map((call) => ({
+        id: call.id,
+        toolName: call.toolName,
+        result: call.resultJson || "",
+        status: call.status === "failed" ? "failed" as const : "completed" as const,
+      })),
       normalizeToolArguments: capToolArgumentsForContext,
     }));
   } else if (finalToolCalls.length > 0) {
@@ -2328,6 +2612,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let providerRecoverySegments = 0;
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
+  let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -2480,8 +2765,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
       completedToolSignatures: [...seenProgressFingerprints],
       verifications: calls
-        .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName))
-        .map((call) => ({ id: call.id, passed: call.status === "completed" })),
+        .filter((call) => VERIFY_OR_WRITE_TOOLS.has(call.toolName) || BROWSER_EVIDENCE_TOOLS.has(call.toolName))
+        .map((call) => ({ id: call.id, passed: toolCallPassedVerification(call) })),
       unresolvedFailures: calls
         .filter((call) => call.status === "failed")
         .map((call) => `${call.toolName}: ${call.errorMessage ?? call.status}`),
@@ -2706,7 +2991,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     event("assistant.turn_started", { turnId: currentTurnId });
     const completedToolSignatures: string[] = [];
     const repeatedToolSignatures: string[] = [];
+    const loopSignaturesRecordedThisTurn = new Set<string>();
+    const argumentProblemsRecordedThisTurn = new Set<string>();
     let loopDetected: { signature: string; count: number } | null = null;
+    // Set when a tool's argument-correction budget is spent and the model sent
+    // yet another invalid call anyway. Until this existed, `retryExhausted`
+    // only swapped the instruction string for "stop cleanly" and trusted the
+    // model to comply â€” a model that ignored it kept going, which is how a
+    // single missing `create_file` path reached six attempts against a limit
+    // of two, re-sending a 15k-token payload each time.
+    let argumentBudgetSpent: { toolName: string; attempts: number } | null = null;
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
     let currentReasoningContent = "";
@@ -2811,6 +3105,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         // Full records remain durable in conversation/tool/turn tables. Only
         // the transient provider projection is replaced by the verified-fit
         // compacted projection, making repeated rebuilds idempotent.
@@ -2825,7 +3120,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         await onSegmentBoundary?.("context_pressure");
       }
       const hasImageInputs = preparedContext.messages.some((message) => (message.images?.length ?? 0) > 0);
-      const candidateEnvelopes = streamCandidates.map((candidate) => {
+      const routedCandidates = streamCandidates.map((candidate) => {
         const candidateModel = candidate.id === providerType
           ? contextModel
           : (getProviderDefaultModel(candidate.id as ProviderId, process.env) ?? `${candidate.id}-model`);
@@ -2901,7 +3196,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const metadata = resolveModelMetadata(candidate.id, candidateModel);
         const verifiedVision = metadata.capabilities.vision && metadata.capabilitySource !== "unknown";
         return { candidate, candidateModel, route, resolution, routeFingerprint, candidateOptions, envelope, verifiedVision };
-      }).filter((item) => !hasImageInputs || item.verifiedVision);
+      });
+      const candidateEnvelopes = routedCandidates.filter((item) => !hasImageInputs || item.verifiedVision);
+      // An image with no vision-capable route is a capability dead end, not a
+      // size one. This used to fall through to the admission check below and
+      // report "request cannot fit the endpoint limit", sending people to
+      // shrink a conversation that would never have been the problem.
+      if (candidateEnvelopes.length === 0 && routedCandidates.length > 0) {
+        throw new Error(
+          `This request includes an image, but none of the configured routes has verified image support (${routedCandidates
+            .map((item) => `${item.candidate.id}/${item.candidateModel}`)
+            .join(", ")}). Connect a vision-capable model, or send the request without the image.`,
+        );
+      }
       const compactionThresholdRatio = forceProviderCompaction ? 0.65 : 0.8;
       const compactionNeeded = forceProviderCompaction || candidateEnvelopes.some(({ envelope, resolution }) =>
         measureProviderRequest(envelope).inputTokens >= Math.floor(resolution.usableInputTokens * compactionThresholdRatio),
@@ -2953,11 +3260,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           projectionHash: projection.contentHash,
         });
         return admission.ok
-          ? [{ ...candidate, request: { messages: projection.envelope.messages, options: candidateOptions, routeFingerprint } }]
+          ? [{ ...candidate, request: { messages: projection.envelope.messages, options: { ...candidateOptions, tools: projection.envelope.tools }, routeFingerprint } }]
           : [];
       });
       if (admittedCandidates.length === 0) {
-        throw new Error("Provider request cannot fit the verified endpoint limit after automatic compaction; no provider call was made.");
+        // Compaction already reduces the request to system + checkpoint + the
+        // most recent group. When even that is rejected, conversation length is
+        // not what is left to shrink â€” a single message or tool result is
+        // bigger than the route allows. The old message named neither the
+        // route nor the size, so it read as an unexplained failure and offered
+        // no way forward.
+        const detail = projectedCandidates
+          .map(({ candidate, candidateModel, projection }) => {
+            const admission = projection.admission;
+            return admission.ok
+              ? `${candidate.id}/${candidateModel}: fits`
+              : `${candidate.id}/${candidateModel}: needs ${admission.measurement.inputTokens} input tokens, verified limit ${admission.usableInputTokens}`;
+          })
+          .join("; ");
+        throw new Error(
+          `This request is larger than every configured route accepts, even after automatic compaction (${detail}). One message or tool result is too large to send â€” start a new chat, or connect a model with a larger context window.`,
+        );
       }
       const opened = await openStreamWithFallback(
         admittedCandidates,
@@ -2997,6 +3320,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         openedFreshSegment = true;
         chatMessages.splice(0, chatMessages.length, ...selectedProjection.envelope.messages);
         turn = 1;
@@ -3027,6 +3351,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             generation: currentSegment.generation,
             now: now(),
           });
+          resetTransientToolTracking();
           openedFreshSegment = true;
           await onSegmentBoundary?.("provider_failure");
         }
@@ -3174,9 +3499,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         return;
       }
       closeCurrentTurn({ final: false, aborted: true });
-      if ((isRetryableProviderError(e) || isProviderContextRejection(e)) && providerRecoverySegments < 2) {
+      const retryableProviderError = isRetryableProviderError(e);
+      const providerContextRejection = isProviderContextRejection(e);
+      event("provider.error_classified", {
+        errorName: e instanceof Error ? e.name : typeof e,
+        message: e instanceof Error ? e.message : String(e),
+        ...(e instanceof ProviderError ? { kind: e.kind, retryableFlag: e.retryable, status: e.status ?? null } : {}),
+        retryable: retryableProviderError,
+        contextRejection: providerContextRejection,
+        recoveryAttemptsUsed: providerRecoverySegments,
+      });
+      if ((retryableProviderError || providerContextRejection) && providerRecoverySegments < 2) {
         providerRecoverySegments++;
-        forceProviderCompaction = isProviderContextRejection(e);
+        forceProviderCompaction = providerContextRejection;
         const checkpointId = await persistExecutionCheckpoint("provider_recovery");
         if (interruptAtSegmentLimit(checkpointId)) return;
         const failedProvider = currentServedBy;
@@ -3191,6 +3526,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           generation: currentSegment.generation,
           now: now(),
         });
+        resetTransientToolTracking();
         event("provider.fallback", {
           from: [failedProvider],
           servedBy: providerType,
@@ -3223,6 +3559,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return;
     }
 
+    // Some compatible routes emit XML-shaped tool calls as assistant text
+    // despite receiving structured tool schemas. Recover only trailing calls
+    // for tools exposed on this request; normal execution policy still applies.
+    if (!hasToolCalls && activeToolProfile !== "none") {
+      const streamedTurnText = responseContent.slice(responseLengthAtTurnStart);
+      const normalized = normalizeTrailingLegacyToolCalls(
+        streamedTurnText,
+        new Set(exposedTools.map((tool) => tool.name)),
+      );
+      if (normalized) {
+        responseContent = responseContent.slice(0, responseLengthAtTurnStart) + normalized.text;
+        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent, "streaming", now());
+        normalized.toolCalls.forEach((toolCall) => {
+          currentToolCalls.push({ id: `legacy-${randomUUID()}`, ...toolCall });
+        });
+        hasToolCalls = true;
+        event("provider.tool_syntax_normalized", {
+          format: "xml",
+          toolCount: normalized.toolCalls.length,
+          toolNames: normalized.toolCalls.map((call) => call.name),
+        });
+      }
+    }
+
     // The stream for this turn ended normally: it produced either tool calls
     // (an intermediate turn) or none (this is the final, user-facing turn).
     // Close it now, before tool execution or a cancellation check can run â€”
@@ -3252,6 +3612,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
 
     if (hasToolCalls && currentToolCalls.length > 0) {
+      emptyFinalResponseRetries = 0;
       transitionAgentState("executing_tool", { toolCount: currentToolCalls.length });
       // Transition step to Read Workspace
       if (workspaceStep && activeStepId !== workspaceStep.id) {
@@ -3265,7 +3626,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const toolOutputs: ChatMessage[] = [];
 
       // Append assistant message with tool calls to prompt history
-      chatMessages.push({
+      const providerAssistantTurn: ChatMessage = {
         role: "assistant",
         // Provider history is a projection of discrete turns. `responseContent`
         // is only the cumulative presentation buffer for the single UI row;
@@ -3278,9 +3639,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         toolCalls: currentToolCalls.map(tc => ({
           id: tc.id,
           type: "function",
-          function: { name: tc.name, arguments: capToolArgumentsForContext(tc.name, tc.arguments) }
+          // Keep raw arguments until execution succeeds. Failed calls must
+          // retain full bodies so provider can correct one field next turn.
+          function: { name: tc.name, arguments: tc.arguments }
         }))
-      });
+      };
+      chatMessages.push(providerAssistantTurn);
 
       for (const tc of currentToolCalls) {
         if (!tc.id || !tc.name) continue;
@@ -3305,8 +3669,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const dynamicBrowserObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
         const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
-        const loop = loopDetector.record(toolCallSignature(tc.name, tc.arguments));
-        if (loop.looping && !loopDetected) {
+        const loopSignature = toolCallSignature(tc.name, tc.arguments);
+        const loop = loopSignaturesRecordedThisTurn.has(loopSignature)
+          ? null
+          : loopDetector.record(loopSignature);
+        loopSignaturesRecordedThisTurn.add(loopSignature);
+        if (loop?.looping && !loopDetected) {
           loopDetected = { signature: loop.signature, count: loop.count };
           // Â§7: when a tool-call signature repeats past the threshold, stop
           // retrying the same operation. Classify the failure, derive a
@@ -3353,9 +3721,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           const toolDef = tools.find((t) => t.name === tc.name);
           const parsedArgs = repairAndParseToolArguments(tc.arguments);
           if (!parsedArgs.ok) {
-            const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
-            malformedArgAttemptsByTool.set(tc.name, attempts);
+            const attemptKey = toolArgumentAttemptKey(tc.name, tc.arguments);
+            const priorAttempts = malformedArgAttemptsByTool.get(attemptKey) ?? 0;
+            const attempts = argumentProblemsRecordedThisTurn.has(attemptKey) ? priorAttempts : priorAttempts + 1;
+            argumentProblemsRecordedThisTurn.add(attemptKey);
+            malformedArgAttemptsByTool.set(attemptKey, attempts);
             const retryExhausted = attempts >= 2;
+            if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
             event("tool.arguments_rejected", { toolName: tc.name, reason: parsedArgs.reason, attempts, retryExhausted });
             throw new AgentToolFailure("Invalid tool arguments format", {
               error: "Invalid tool arguments format",
@@ -3378,7 +3750,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // a bare string) without changing what it means. Everything after
           // this point â€” required fields, types, absolute-path refusal â€” is
           // validated exactly as strictly as before.
-          const normalized = normalizeToolArguments(tc.name, parsedArgs.value);
+          // Two independent dialects are normalized here, in order. First the
+          // run_command shape (`{ command: "npm test" }` â†’ executable + argv),
+          // then the cross-tool field aliases. They fix separate model
+          // behaviors and are separate passes; the alias pass is the one that
+          // reports what it applied.
+          const dialectArgs = normalizeCommandDialect(tc.name, parsedArgs.value);
+          const normalized = normalizeToolArguments(tc.name, dialectArgs);
           args = normalized.args;
           if (normalized.applied.length > 0) {
             event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });
@@ -3398,9 +3776,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             };
             const problem = validateToolArguments(toolDef, args, criticalRequired[tc.name]);
             if (problem) {
-              const attempts = (malformedArgAttemptsByTool.get(tc.name) ?? 0) + 1;
-              malformedArgAttemptsByTool.set(tc.name, attempts);
+              const attemptKey = toolArgumentAttemptKey(tc.name, tc.arguments, problem.field, args);
+              const priorAttempts = malformedArgAttemptsByTool.get(attemptKey) ?? 0;
+              const attempts = argumentProblemsRecordedThisTurn.has(attemptKey) ? priorAttempts : priorAttempts + 1;
+              argumentProblemsRecordedThisTurn.add(attemptKey);
+              malformedArgAttemptsByTool.set(attemptKey, attempts);
               const retryExhausted = attempts >= 2;
+              if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
               throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
                 error: `Invalid argument "${problem.field}" for ${tc.name}`,
@@ -3415,7 +3797,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 retryExhausted,
                 instruction: retryExhausted
                   ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
-                  : `Fix the "${problem.field}" argument and call the tool once more.`,
+                  // Naming only the broken field matters most when the rest of
+                  // the call is expensive: create_file carries the entire file
+                  // body, and a model told to "fix the arguments" regenerates
+                  // all of it to supply one missing string â€” which is how a
+                  // single missing `path` burned six attempts of a 15k-token
+                  // payload without ever becoming valid.
+                  : tc.name === "create_file" && problem.field === "path" && problem.problem === "missing"
+                  ? 'Resend create_file with the identical content you just produced, adding the "path" argument: the workspace-relative path of the file to write (for example "src/index.css"). Do not regenerate or re-derive the content.'
+                  : `Fix the "${problem.field}" argument and call the tool once more. Keep every other argument exactly as you already sent it.`,
               });
             }
           }
@@ -3641,7 +4031,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             // a clear, retryable tool error here rather than crashing later inside
             // command-policy's `args.map(...)` with an opaque host-side TypeError.
             if (rawArgs !== undefined && (!Array.isArray(rawArgs) || !rawArgs.every((a) => typeof a === "string"))) {
-              throw new Error(`Invalid argument: "args" must be an array of strings, got ${JSON.stringify(rawArgs)}`);
+              const detail = `Invalid argument: "args" must be an array of strings, got ${JSON.stringify(rawArgs)}`;
+              throw new AgentToolFailure(detail, { error: detail }, "invalid_tool_arguments");
             }
             const cmdArgs: string[] = rawArgs ?? [];
 
@@ -3745,11 +4136,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
 
             if (isApproved) {
-              convs.upsertToolCall({
-                id: tc.id, messageId: assistantMessageRow.id, taskId,
-                toolName: tc.name, argsJson: tc.arguments, status: "running",
-                createdAt: toolCallRecord.createdAt, startedAt: now(),
-              });
+            convs.upsertToolCall({
+              id: tc.id, messageId: assistantMessageRow.id, taskId,
+              toolName: tc.name, argsJson: JSON.stringify(args), status: "running",
+              createdAt: toolCallRecord.createdAt, startedAt: now(),
+            });
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
           } else if (tc.name === "propose_patch" || tc.name === "create_file") {
@@ -3768,6 +4159,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const relPath = args.path;
               if (typeof relPath !== "string" || !relPath.trim()) throw new Error("Missing required argument: path");
               if (typeof args.content !== "string") throw new Error("Missing required argument: content");
+              const auxiliaryProbe = /(^|[\\/])(?:placeholder|scratch|temp(?:orary)?)(?:[._-]|$)/i.test(relPath)
+                && /\b(?:placeholder|scratch|temp(?:orary)?|verify|test)\b/i.test(`${args.purpose ?? ""}\n${args.content.slice(0, 500)}`)
+                && !latestUserPrompt.toLowerCase().includes(relPath.toLowerCase());
+              if (auxiliaryProbe) {
+                throw new AgentToolFailure(`Refusing auxiliary progress-probe file ${relPath}`, {
+                  error: `Refusing auxiliary progress-probe file ${relPath}`,
+                  kind: "auxiliary_progress_probe_rejected",
+                  targetFile: relPath,
+                  instruction: "Create or repair a deliverable required by original request, or run required verification. Do not create placeholder/scratch/temp files to test tools or manufacture progress.",
+                });
+              }
+              if (/^\[omitted \d+ bytes already provided to create_file\]$/.test(args.content.trim())) {
+                throw new AgentToolFailure(`Refusing to write Morrow context placeholder to ${relPath}`, {
+                  error: `Refusing to write Morrow context placeholder to ${relPath}`,
+                  kind: "context_placeholder_rejected",
+                  targetFile: relPath,
+                  instruction: `Read ${relPath} for current content, then call create_file with complete intended file text. Never copy context omission markers into workspace files.`,
+                });
+              }
               assertWriteAllowedByFileContract(relPath, allowedWriteFiles);
               // Fail fast with a clear message on containment/denied-name before
               // synthesizing a diff. Parent directories are created on apply.
@@ -3780,6 +4190,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // as patch_no_effect at apply time, which is the honest signal.)
               const createDest = assertContainedRealPath(project.workspacePath, relPath);
               if (existsSync(createDest)) {
+                const priorWrites = createFileWritesByPath.get(relPath) ?? 0;
+                if (priorWrites >= 2) {
+                  throw new AgentToolFailure(`Refusing repeated create_file overwrite of ${relPath}`, {
+                    error: `Refusing repeated create_file overwrite of ${relPath}`,
+                    kind: "repeated_file_overwrite_rejected",
+                    targetFile: relPath,
+                    successfulWritesThisTask: priorWrites,
+                    instruction: `Stop rewriting ${relPath}. Continue with another deliverable required by the original request. Use propose_patch only if a later verification failure proves ${relPath} needs another edit.`,
+                  });
+                }
                 // Only a *regular file* may be auto-overwritten. A directory (or
                 // other special node) at the path is a hard error, never a
                 // silent clobber.
@@ -4012,6 +4432,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 createdAt: toolCallRecord.createdAt, startedAt: now(),
               });
               resultStr = await executeApprovedTool("propose_patch", patchArgs, tc.id);
+              if (tc.name === "create_file" && typeof files[0] === "string") {
+                createFileWritesByPath.set(files[0], (createFileWritesByPath.get(files[0]) ?? 0) + 1);
+              }
               // Report the createâ†’edit conversion in the tool result so the model
               // (and /output) see that create_file landed as a backed-up edit of
               // an existing file rather than a fresh creation.
@@ -4103,7 +4526,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             : err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
           errorMessage = err.message || "Unknown error";
           resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
-          event("tool.failed", { toolName: tc.name, message: errorMessage });
+          let failureDetails: Record<string, unknown> = {};
+          if (err instanceof AgentToolFailure) {
+            try {
+              const parsed = JSON.parse(err.resultJson) as Record<string, unknown>;
+              failureDetails = {
+                ...(typeof parsed.exitCode === "number" ? { exitCode: parsed.exitCode } : {}),
+                ...(typeof parsed.durationMs === "number" ? { durationMs: parsed.durationMs } : {}),
+                ...(typeof parsed.terminationReason === "string" ? { terminationReason: parsed.terminationReason } : {}),
+              };
+            } catch { /* the bounded result stays on the durable tool-call row */ }
+          }
+          event("tool.failed", {
+            toolName: tc.name,
+            message: errorMessage,
+            classification: errorType,
+            ...failureDetails,
+          });
           missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);
@@ -4113,7 +4552,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // verification* â€” the classic "tests failed yet the task said
         // completed" hole. Treat mutations/verifications that either threw or
         // exited non-zero as an outstanding failure; a clean one clears it.
-        if (VERIFY_OR_WRITE_TOOLS.has(tc.name) && errorType !== "tool_not_permitted_in_mode") {
+        const gatesCompletion = WORKSPACE_WRITE_TOOLS.has(tc.name)
+          || (tc.name === "run_command" && runCommandIsVerification(args))
+          || (tc.name === "run_command" && errorType === "invalid_tool_arguments");
+        if (gatesCompletion && errorType !== "tool_not_permitted_in_mode") {
           let failedOutcome: string | null = null;
           if (!isSuccess) {
             failedOutcome = errorMessage ?? "tool failed";
@@ -4163,6 +4605,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           lastVerificationFailure = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id)).failure;
         }
         if (isSuccess) {
+          const projectedCall = providerAssistantTurn.toolCalls?.find((call) => call.id === tc.id);
+          if (projectedCall) projectedCall.function.arguments = capToolArgumentsForContext(tc.name, tc.arguments);
           const progressFingerprint = toolProgressFingerprint(tc.name, args, contextResultStr);
           if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
           else seenProgressFingerprints.add(progressFingerprint);
@@ -4172,6 +4616,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // bounded Git read instead of guessing.
           if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
           else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
+          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) deliveryStarted = true;
         }
         let summary = isSuccess ? "completed" : "failed";
         try {
@@ -4223,15 +4668,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // empty provider turn as completion loses the mission outcome while
       // falsely presenting successful tools as a verified task.
       if (responseContent.length === responseLengthAtTurnStart) {
-        // Some live providers occasionally finish a post-tool turn with only
-        // usage metadata. Retry that empty turn once before recording an
-        // incomplete task; no tool ran in this branch, so the retry has no
-        // duplicate workspace side effect.
-        if (emptyFinalResponseRetries < 1) {
+        // Reasoning-heavy compatible routes can consume their whole output
+        // allowance before emitting visible text. Retry with a terse recovery
+        // instruction instead of blindly replaying the same prompt. No tool ran
+        // in this branch, so continuation cannot duplicate a side effect.
+        if (emptyFinalResponseRetries < 3) {
           emptyFinalResponseRetries++;
+          chatMessages.push({
+            role: "user",
+            content: lastVerificationFailure
+              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
+              : "Your prior response reached its output limit without a usable action or final answer. Do not repeat analysis. Call the next required tool now, or if work is complete, return a concise final result under 500 words.",
+          });
           event("task.progress_warning", {
             reason: "empty_provider_response",
-            message: "Provider returned no answer after tool completion; retrying the final response once.",
+            message: `Provider returned no usable answer after tool completion; requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
             turns: turn,
           });
           continue;
@@ -4251,8 +4702,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       break;
     }
 
+    if (argumentBudgetSpent) {
+      const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;
+      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
+      failCurrentSegment("tool_arguments_unrecoverable");
+      transitionAgentState("interrupted", { reason: "tool_arguments_unrecoverable", message, turns: turn });
+      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "tool_arguments_unrecoverable", message, turns: turn } });
+      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
+      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+      return;
+    }
+
     if (loopDetected) {
       const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
+      if (loopRecoveryAttempts < 1) {
+        loopRecoveryAttempts++;
+        loopDetector.reset();
+        event("task.progress_warning", {
+          reason: "loop_recovery",
+          message: `${message} One bounded recovery attempt remains.`,
+          turns: turn,
+          recoveryAttempt: loopRecoveryAttempts,
+        });
+        chatMessages.push({
+          role: "user",
+          content: `MORROW RECOVERY: ${message}\nDo not repeat that action. Continue directly with an unfinished deliverable or required verification from ORIGINAL REQUEST. If nothing useful remains, give the final result now.\n\nORIGINAL REQUEST:\n${latestUserPrompt}`,
+        });
+        continue;
+      }
       if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
       failCurrentSegment("loop_detected");
       transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
@@ -4268,11 +4745,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // stagnation instead of resetting it.
     const strategyFingerprint = `worker:${providerType}:${contextModel}`;
     const progressObservations = await observeTurnProgress(strategyFingerprint);
-    // Any observation is a real delta: assessProgress only emits when something
-    // new appeared, so a novel tool result counts while a repeated one, an
-    // unchanged file, and pure narration all produce nothing. Whether that
-    // delta is *meaningful* decides escalation, not whether the turn stalled.
-    const madeProgress = progressObservations.length > 0;
+    // Novel activity is not necessarily progress. In particular, reading a
+    // different file produces tool_result_observed but must not reset the
+    // stagnation clock forever. Only artifact/evidence/uncertainty/checkpoint/
+    // criterion deltas recognized by progress.ts justify continued autonomy.
+    const meaningfulDelta = progressObservations.some((observation) =>
+      (
+        isMeaningfulProgress(observation.kind)
+        // A rollover preserves work; it is not new work. Counting its own
+        // checkpoint as post-delivery progress lets read-only roaming reset
+        // forever at every adaptive turn boundary.
+        && (!deliveryStarted || observation.kind !== "checkpoint_created")
+      )
+      // During initial discovery, novel observations can legitimately narrow
+      // an unknown workspace. Post-delivery reads use a separate bounded
+      // allowance below.
+      || (!deliveryStarted && observation.kind === "tool_result_observed")
+    );
+    // After first write, allow a bounded evidence-gathering phase. This keeps
+    // legitimate multi-file diagnosis and restart recovery alive, while still
+    // stopping providers that endlessly roam through new paths.
+    const boundedNovelRead = deliveryStarted
+      && novelPostDeliveryReadTurns < postDeliveryReadTurnLimit
+      && completedToolSignatures.length > repeatedToolSignatures.length
+      && currentToolCalls.some((call) => READ_ONLY_TOOL_NAMES.has(call.name));
+    const madeProgress = meaningfulDelta || boundedNovelRead;
+    if (meaningfulDelta) novelPostDeliveryReadTurns = 0;
+    else if (boundedNovelRead) novelPostDeliveryReadTurns++;
     noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
     if (noProgressTurns === 2) {
       event("task.progress_warning", {
@@ -4287,7 +4786,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         stagnantTurns: noProgressTurns,
         availableStrategyFingerprints: [
           strategyFingerprint,
-          ...(fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : [])),
+          // Only a mission controller can act on strategy_change_required. A
+          // standalone task cannot adopt a different provider mid-run, so
+          // listing untried fallbacks here would loop "change strategy"
+          // forever without ever reaching the standalone exhaustion ladder.
+          ...(taskMissionId
+            ? (fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : []))
+            : []),
         ],
         blocker: lastVerificationFailure ? `${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : null,
       });
@@ -4301,11 +4806,48 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // Bounded ladder: diagnose once, then hand a strategy change to the
         // durable controller when one is available. Standalone tasks keep
         // working locally because no controller can replan for them.
-        if (exhaustion.next === "focused_diagnosis") diagnosisCompleted = true;
+        if (exhaustion.next === "focused_diagnosis") {
+          diagnosisCompleted = true;
+          chatMessages.push({
+            role: "user",
+            content: `Autonomous recovery: inspection is no longer progress. Continue original request below. Change a REQUIRED deliverable or run REQUIRED verification now. Do not create placeholder, scratch, temp, or tool-probe files. Do not repeat list_files, search_text, read_file, or narration unless a current verification error names that exact file.${lastVerificationFailure ? ` Latest verification failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
+          });
+          event("task.progress_warning", {
+            reason: "autonomous_recovery",
+            message: "Injected focused action instruction after observable stagnation.",
+            turns: turn,
+            attempt: stagnationRecoveryAttempts + 1,
+          });
+        }
         else if (await returnMissionWorkerOutcome("strategy_change_required", exhaustion.reason)) return;
         noProgressTurns = 0;
         progressWindowStart = progressHistory.length;
       } else {
+        // Standalone tasks have no mission controller to replan them. Give one
+        // final, explicit action-only recovery before interrupting. Warnings
+        // alone are event metadata and never reach provider context; without
+        // this instruction weaker routes keep inspecting until forced stop.
+        if (!taskMissionId && stagnationRecoveryAttempts < 1) {
+          stagnationRecoveryAttempts++;
+          chatMessages.push({
+            role: "user",
+            content: `Final autonomous recovery (${stagnationRecoveryAttempts}/1): stop inspecting. Finish REQUIRED deliverables from original request below, then run its test/build commands and fix failures. Do not create placeholder, scratch, temp, or tool-probe files. If deliverables already satisfy request, run verification now and return concise final answer. Do not call list_files, search_text, or read_file again unless a new verification error names a specific file.${lastVerificationFailure ? ` Current failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
+          });
+          event("task.progress_warning", {
+            reason: "autonomous_recovery",
+            message: "Injected final action-only recovery before interruption.",
+            turns: turn,
+            attempt: stagnationRecoveryAttempts,
+          });
+          noProgressTurns = 0;
+          // Escalation must stay monotonic: resetting diagnosisCompleted here
+          // would re-open a full focused-diagnosis cycle AFTER the final
+          // recovery, letting read-only roaming buy two more stall cycles.
+          // The final recovery is the last chance; continued stagnation now
+          // interrupts.
+          progressWindowStart = progressHistory.length;
+          continue;
+        }
         const message = exhaustion.reason;
         if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
         failCurrentSegment("stalled");
@@ -4331,6 +4873,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         generation: currentSegment.generation,
         now: now(),
       });
+      resetTransientToolTracking();
       event("context.compaction_completed", {
         checkpointId,
         reason: "turn_budget",
@@ -4339,7 +4882,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
       await onSegmentBoundary?.("turn_budget");
       turn = 0;
-      noProgressTurns = 0;
+      // Preserve post-delivery stagnation across adaptive turn-budget segments.
+      // Resetting here lets read-only roaming evade the no-progress ladder forever.
+      if (!deliveryStarted) noProgressTurns = 0;
     }
   }
 

@@ -201,7 +201,7 @@ describe("Preset router", () => {
   it("reports unavailable when no provider is configured", () => {
     const res = routePreset("balanced", {});
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reason).toContain("no configured provider");
+    if (!res.ok) expect(res.reason).toContain("no connected provider");
   });
 
   it("does not route to an arbitrary account model when no reviewed preset preference is available", () => {
@@ -225,6 +225,43 @@ describe("Preset router", () => {
       expect(result.ok).toBe(false);
     } finally {
       installProviderModelDiscoveries([]);
+    }
+  });
+
+  it("routes a discovery-only gateway to its first advertised model when nothing has set a default", () => {
+    // OpenCode Zen has no built-in default model and no preset curates it, so
+    // before this it reported a live 60-model catalog and still routed to
+    // nothing — the web composer refused every send and pointed the user at a
+    // CLI command. A connected provider with a usable catalog must route.
+    installProviderModelDiscoveries([{
+      providerId: "opencode-zen",
+      authMode: "catalog-api-key",
+      status: "available",
+      models: [
+        { providerModelId: "zen-flagship", displayName: "Zen Flagship", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: null, vision: null }, metadataSource: "provider-reported" },
+        { providerModelId: "zen-small", displayName: "Zen Small", contextWindow: null, maxOutputTokens: null, capabilities: { streaming: true, toolCalls: null, vision: null }, metadataSource: "provider-reported" },
+      ],
+      errorKind: null,
+      fetchedAt: "2026-07-29T15:00:00.000Z",
+    }]);
+    try {
+      const result = routePreset("balanced", { OPENCODE_ZEN_API_KEY: "k" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.decision.providerId).toBe("opencode-zen");
+        expect(result.decision.model).toBe("zen-flagship");
+      }
+    } finally {
+      installProviderModelDiscoveries([]);
+    }
+  });
+
+  it("names the provider without prescribing a CLI when a connected provider still has no model", () => {
+    const result = routePreset("balanced", { OPENCODE_ZEN_API_KEY: "k" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("OpenCode Zen");
+      expect(result.reason).not.toContain("morrow providers");
     }
   });
 
@@ -255,7 +292,7 @@ describe("Preset router", () => {
     expect(statuses.length).toBe(listPresets().length);
     const privateLocal = statuses.find((s) => s.preset.id === "private-local")!;
     expect(privateLocal.available).toBe(false);
-    expect(privateLocal.unavailableReason).toContain("local provider");
+    expect(privateLocal.unavailableReason).toContain("local model");
     const balanced = statuses.find((s) => s.preset.id === "balanced")!;
     expect(balanced.available).toBe(true);
     expect(balanced.resolved?.providerId).toBe("openai");

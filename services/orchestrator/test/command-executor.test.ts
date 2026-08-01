@@ -110,6 +110,14 @@ describe("runProcessSafe", () => {
     expect(res.terminationReason).toBe("completed");
   });
 
+  it("normalizes large unsigned exit codes back to signed values", async () => {
+    const res = await runProcessSafe("node", ["-e", "process.exit(-3)"], process.cwd(), process.env);
+    // Node reports process.exit(-3) as 4294967293 on Windows and 253 on POSIX.
+    // Callers must never see the unsigned 32-bit form: Windows normalizes to
+    // -3, POSIX keeps its native 253.
+    expect([-3, 253]).toContain(res.exitCode);
+  });
+
   it("terminates the process tree on timeout", async () => {
     const res = await runProcessSafe("node", ["-e", "setTimeout(() => {}, 30000)"], process.cwd(), process.env, { timeoutMs: 400 });
     expect(res.terminationReason).toBe("timeout");

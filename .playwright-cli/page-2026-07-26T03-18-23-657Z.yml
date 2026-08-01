@@ -1,0 +1,231 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - strong [ref=e11]: Morrow
+    - generic [ref=e13]:
+      - button "New chat" [disabled] [ref=e14]
+      - paragraph [ref=e17]: Open a local project before starting a chat.
+    - navigation "Primary" [ref=e18]:
+      - generic [ref=e19]:
+        - link "Home" [ref=e20] [cursor=pointer]:
+          - /url: /app/
+        - link "Chats" [ref=e25] [cursor=pointer]:
+          - /url: /app/chats
+        - link "Projects" [ref=e29] [cursor=pointer]:
+          - /url: /app/projects
+        - link "Missions" [ref=e33] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Library" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+        - button "Memory — coming soon" [disabled] [ref=e43]:
+          - generic [ref=e47]: Memory
+          - generic [ref=e48]: Soon
+        - link "Connections" [ref=e49] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e55] [cursor=pointer]:
+          - /url: /app/settings
+    - generic [ref=e60]:
+      - status [ref=e61]: Runtime online
+      - generic [ref=e62]: Local profile
+  - main [active] [ref=e63]:
+    - status [ref=e64]:
+      - generic [ref=e65]: Not connected to an account. Pairing is optional and only affects billing sync.
+      - link "Pair this install" [ref=e66] [cursor=pointer]:
+        - /url: /app/pair
+    - region [ref=e83]:
+      - generic [ref=e84]:
+        - paragraph [ref=e85]: Connections
+        - heading "Connect a model" [level=1] [ref=e86]
+        - paragraph [ref=e87]: Morrow works with 31 providers. Credentials are stored on this computer and are never returned to this browser.
+      - generic [ref=e88]:
+        - heading "Choose a provider" [level=2] [ref=e89]
+        - generic [ref=e90]: Search providers
+        - searchbox "Search providers" [ref=e91]
+        - generic [ref=e92]:
+          - heading "Major assistants" [level=3] [ref=e93]
+          - list [ref=e94]:
+            - listitem [ref=e95]:
+              - paragraph [ref=e97]:
+                - text: OpenAI
+                - status [ref=e98]: Sign in with a subscription
+              - button "Connect OpenAI" [ref=e99] [cursor=pointer]: Connect
+            - listitem [ref=e100]:
+              - paragraph [ref=e102]:
+                - text: Anthropic
+                - status [ref=e103]: Sign in with a subscription
+              - button "Connect Anthropic" [ref=e104] [cursor=pointer]: Connect
+            - listitem [ref=e105]:
+              - paragraph [ref=e107]:
+                - text: Google Gemini
+                - status [ref=e108]: Free tier
+              - button "Connect Google Gemini" [ref=e109] [cursor=pointer]: Connect
+        - generic [ref=e110]:
+          - heading "Gateways — one key, many models" [level=3] [ref=e111]
+          - list [ref=e112]:
+            - listitem [ref=e113]:
+              - generic [ref=e114]:
+                - paragraph [ref=e115]:
+                  - text: OpenRouter
+                  - status [ref=e116]: Free tier
+                - paragraph [ref=e117]: Aggregates many upstream models behind one OpenAI-compatible endpoint.
+              - button "Connect OpenRouter" [ref=e118] [cursor=pointer]: Connect
+            - listitem [ref=e119]:
+              - generic [ref=e120]:
+                - paragraph [ref=e121]:
+                  - text: OpenCode Zen
+                  - status [ref=e122]: Free tier
+                - paragraph [ref=e123]: Curated model gateway from the OpenCode project, including a free tier.
+              - button "Connect OpenCode Zen" [ref=e124] [cursor=pointer]: Connect
+            - listitem [ref=e125]:
+              - generic [ref=e126]:
+                - paragraph [ref=e127]: Vercel AI Gateway
+                - paragraph [ref=e128]: Vercel's routing gateway across many upstream model providers.
+              - button "Connect Vercel AI Gateway" [ref=e129] [cursor=pointer]: Connect
+            - listitem [ref=e130]:
+              - generic [ref=e131]:
+                - paragraph [ref=e132]:
+                  - text: GitHub Models
+                  - status [ref=e133]: Free tier
+                - paragraph [ref=e134]: Model inference authenticated with a GitHub personal access token. Offers a free tier.
+              - button "Connect GitHub Models" [ref=e135] [cursor=pointer]: Connect
+        - generic [ref=e136]:
+          - heading "Model labs" [level=3] [ref=e137]
+          - list [ref=e138]:
+            - listitem [ref=e139]:
+              - paragraph [ref=e141]: DeepSeek
+              - button "Connect DeepSeek" [ref=e142] [cursor=pointer]: Connect
+            - listitem [ref=e143]:
+              - generic [ref=e144]:
+                - paragraph [ref=e145]: OpenCode Go
+                - paragraph [ref=e146]: "OpenCode Go subscription (https://opencode.ai/docs/zen) — distinct from OpenCode Zen. Use `morrow providers test opencode-go` to verify and `morrow providers refresh opencode-go` to update the live model catalog."
+              - button "Connect OpenCode Go" [ref=e147] [cursor=pointer]: Connect
+            - listitem [ref=e148]:
+              - generic [ref=e149]:
+                - paragraph [ref=e150]: xAI (Grok)
+                - paragraph [ref=e151]: xAI's Grok models over an OpenAI-compatible endpoint.
+              - button "Connect xAI (Grok)" [ref=e152] [cursor=pointer]: Connect
+            - listitem [ref=e153]:
+              - generic [ref=e154]:
+                - paragraph [ref=e155]:
+                  - text: Mistral AI
+                  - status [ref=e156]: Free tier
+                - paragraph [ref=e157]: Mistral's hosted models, including their code-specialised line. Offers a free tier.
+              - button "Connect Mistral AI" [ref=e158] [cursor=pointer]: Connect
+            - listitem [ref=e159]:
+              - generic [ref=e160]:
+                - paragraph [ref=e161]: Moonshot AI (Kimi)
+                - paragraph [ref=e162]: Moonshot's Kimi models over an OpenAI-compatible endpoint.
+              - button "Connect Moonshot AI (Kimi)" [ref=e163] [cursor=pointer]: Connect
+            - listitem [ref=e164]:
+              - generic [ref=e165]:
+                - paragraph [ref=e166]: Z.ai (GLM)
+                - paragraph [ref=e167]: Z.ai's GLM model family over an OpenAI-compatible endpoint.
+              - button "Connect Z.ai (GLM)" [ref=e168] [cursor=pointer]: Connect
+            - listitem [ref=e169]:
+              - generic [ref=e170]:
+                - paragraph [ref=e171]: Alibaba DashScope (Qwen)
+                - paragraph [ref=e172]: Qwen models via Alibaba Model Studio's OpenAI-compatible mode.
+              - button "Connect Alibaba DashScope (Qwen)" [ref=e173] [cursor=pointer]: Connect
+            - listitem [ref=e174]:
+              - generic [ref=e175]:
+                - paragraph [ref=e176]: Perplexity
+                - paragraph [ref=e177]: Perplexity's search-grounded models over an OpenAI-compatible endpoint.
+              - button "Connect Perplexity" [ref=e178] [cursor=pointer]: Connect
+            - listitem [ref=e179]:
+              - generic [ref=e180]:
+                - paragraph [ref=e181]:
+                  - text: Cohere
+                  - status [ref=e182]: Free tier
+                - paragraph [ref=e183]: Cohere's Command models over their OpenAI-compatible endpoint. Offers a free tier.
+              - button "Connect Cohere" [ref=e184] [cursor=pointer]: Connect
+        - generic [ref=e185]:
+          - heading "Fast inference hosts" [level=3] [ref=e186]
+          - list [ref=e187]:
+            - listitem [ref=e188]:
+              - generic [ref=e189]:
+                - paragraph [ref=e190]:
+                  - text: Groq
+                  - status [ref=e191]: Free tier
+                - paragraph [ref=e192]: Open-weight models on Groq's LPU inference hardware. Offers a free tier.
+              - button "Connect Groq" [ref=e193] [cursor=pointer]: Connect
+            - listitem [ref=e194]:
+              - generic [ref=e195]:
+                - paragraph [ref=e196]:
+                  - text: Cerebras
+                  - status [ref=e197]: Free tier
+                - paragraph [ref=e198]: Open-weight models on Cerebras wafer-scale inference. Offers a free tier.
+              - button "Connect Cerebras" [ref=e199] [cursor=pointer]: Connect
+            - listitem [ref=e200]:
+              - generic [ref=e201]:
+                - paragraph [ref=e202]: Together AI
+                - paragraph [ref=e203]: A broad catalog of open-weight models on shared inference.
+              - button "Connect Together AI" [ref=e204] [cursor=pointer]: Connect
+            - listitem [ref=e205]:
+              - generic [ref=e206]:
+                - paragraph [ref=e207]: Fireworks AI
+                - paragraph [ref=e208]: Open-weight and fine-tuned models on Fireworks inference.
+              - button "Connect Fireworks AI" [ref=e209] [cursor=pointer]: Connect
+            - listitem [ref=e210]:
+              - generic [ref=e211]:
+                - paragraph [ref=e212]: DeepInfra
+                - paragraph [ref=e213]: Open-weight models billed per token on DeepInfra.
+              - button "Connect DeepInfra" [ref=e214] [cursor=pointer]: Connect
+            - listitem [ref=e215]:
+              - generic [ref=e216]:
+                - paragraph [ref=e217]: Nebius AI Studio
+                - paragraph [ref=e218]: Open-weight models hosted by Nebius.
+              - button "Connect Nebius AI Studio" [ref=e219] [cursor=pointer]: Connect
+            - listitem [ref=e220]:
+              - generic [ref=e221]:
+                - paragraph [ref=e222]: Novita AI
+                - paragraph [ref=e223]: Open-weight models hosted by Novita.
+              - button "Connect Novita AI" [ref=e224] [cursor=pointer]: Connect
+            - listitem [ref=e225]:
+              - generic [ref=e226]:
+                - paragraph [ref=e227]: Hyperbolic
+                - paragraph [ref=e228]: Open-weight models on Hyperbolic's inference marketplace.
+              - button "Connect Hyperbolic" [ref=e229] [cursor=pointer]: Connect
+            - listitem [ref=e230]:
+              - generic [ref=e231]:
+                - paragraph [ref=e232]:
+                  - text: SambaNova Cloud
+                  - status [ref=e233]: Free tier
+                - paragraph [ref=e234]: Open-weight models on SambaNova's inference hardware. Offers a free tier.
+              - button "Connect SambaNova Cloud" [ref=e235] [cursor=pointer]: Connect
+        - generic [ref=e236]:
+          - heading "Local — nothing leaves your machine" [level=3] [ref=e237]
+          - list [ref=e238]:
+            - listitem [ref=e239]:
+              - generic [ref=e240]:
+                - paragraph [ref=e241]: Ollama (local)
+                - paragraph [ref=e242]: Fully local inference. No data leaves the machine; no API key required.
+              - button "Connect Ollama (local)" [ref=e243] [cursor=pointer]: Connect
+            - listitem [ref=e244]:
+              - generic [ref=e245]:
+                - paragraph [ref=e246]: LM Studio (local)
+                - paragraph [ref=e247]: Local inference through LM Studio's OpenAI-compatible server.
+              - button "Connect LM Studio (local)" [ref=e248] [cursor=pointer]: Connect
+            - listitem [ref=e249]:
+              - generic [ref=e250]:
+                - paragraph [ref=e251]: llama.cpp (local)
+                - paragraph [ref=e252]: Local inference through a llama.cpp server.
+              - button "Connect llama.cpp (local)" [ref=e253] [cursor=pointer]: Connect
+            - listitem [ref=e254]:
+              - generic [ref=e255]:
+                - paragraph [ref=e256]: vLLM (local or self-hosted)
+                - paragraph [ref=e257]: Inference through a vLLM OpenAI-compatible server you run.
+              - button "Connect vLLM (local or self-hosted)" [ref=e258] [cursor=pointer]: Connect
+            - listitem [ref=e259]:
+              - generic [ref=e260]:
+                - paragraph [ref=e261]: Jan (local)
+                - paragraph [ref=e262]: Local inference through the Jan desktop app's server.
+              - button "Connect Jan (local)" [ref=e263] [cursor=pointer]: Connect
+        - generic [ref=e264]:
+          - heading "Custom endpoint" [level=3] [ref=e265]
+          - list [ref=e266]:
+            - listitem [ref=e267]:
+              - generic [ref=e268]:
+                - paragraph [ref=e269]: OpenAI-compatible endpoint
+                - paragraph [ref=e270]: Generic adapter for any self-hosted or third-party OpenAI-compatible gateway.
+              - button "Connect OpenAI-compatible endpoint" [ref=e271] [cursor=pointer]: Connect

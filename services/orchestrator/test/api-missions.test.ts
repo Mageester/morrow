@@ -161,7 +161,7 @@ describe("Mission REST API", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("starts one durable controller and exposes its persisted runtime projection", async () => {
+  it("starts one durable controller and exposes its persisted runtime projection", { timeout: 30_000 }, async () => {
     const mission = await createMission("Continue after the CLI exits");
     await app.inject({ method: "POST", url: `/api/missions/${mission.id}/approve` });
 

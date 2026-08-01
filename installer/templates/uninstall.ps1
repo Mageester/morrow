@@ -10,8 +10,8 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $App = $PSScriptRoot
 $Install = Split-Path -Parent $App
 $Bin = Join-Path $Install 'bin'
-$StartMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Morrow.lnk'
-$DesktopShortcut = Join-Path $env:USERPROFILE 'Desktop\Morrow.lnk'
+$StartMenuShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Morrow.lnk'
+$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Morrow.lnk'
 
 # Decide whether to delete user data. Flags win; otherwise prompt the user with a
 # clear, unambiguous "delete everything?" question (default No to stay safe).

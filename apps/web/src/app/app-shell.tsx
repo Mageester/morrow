@@ -17,6 +17,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { conversationQueries } from "../api/conversations.js";
 import { NewChatButton } from "../features/chat/new-chat-button.js";
+import { PairingBanner } from "../features/pairing/pairing-banner.js";
 import { useActiveProject } from "../features/projects/use-active-project.js";
 import { useRuntimeStatus } from "../state/runtime-status.js";
 
@@ -27,7 +28,8 @@ type ImplementedRoute =
   | "/library"
   | "/connections"
   | "/settings"
-  | "/projects";
+  | "/projects"
+  | "/pair";
 
 interface NavItem {
   icon: LucideIcon;
@@ -78,6 +80,7 @@ function getRouteTitle(pathname: string): string {
     "/connections": "Connections",
     "/library": "Library",
     "/missions": "Missions",
+    "/pair": "Pair this install",
     "/projects": "Projects",
     "/settings": "Settings",
   };
@@ -245,6 +248,7 @@ export function AppShell() {
         ref={mainRef}
         tabIndex={-1}
       >
+        <PairingBanner />
         <Outlet />
       </main>
     </div>

@@ -125,7 +125,9 @@ describe("first run", () => {
    * With no project the empty state replaces the composer — and the composer is
    * where the "connect a model" prompt lives. A brand-new user was therefore
    * told a project was missing, never told a provider was missing, and given no
-   * way to do either. Both first-run steps must be actionable from here.
+   * way to do either. Both first-run steps must be actionable from here; they
+   * are now carried by the setup checklist, which also covers the case this
+   * empty state never reached (a project exists but no provider is connected).
    */
   it("offers a way out when there is neither a project nor a provider", async () => {
     renderHome(emptyWorkspace([]));
@@ -133,6 +135,7 @@ describe("first run", () => {
     expect(await screen.findByRole("heading", { name: "No local project yet" })).toBeVisible();
     expect(await screen.findByRole("link", { name: "Create a project" })).toBeVisible();
     expect(await screen.findByRole("link", { name: "Connect a model" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /steps and you're running/i })).toBeVisible();
   });
 
   it("stops asking for a provider once one is connected", async () => {

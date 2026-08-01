@@ -113,6 +113,13 @@ export class MissionControllerRunner {
     if (runtime?.activeTaskId) this.dependencies.taskRunner.cancel?.(runtime.activeTaskId);
   }
 
+  /** Stop this process from driving a mission without mutating durable worker state. */
+  async stop(missionId: string): Promise<void> {
+    this.cancelled.add(missionId);
+    this.pendingWakes.delete(missionId);
+    await this.waitFor(missionId);
+  }
+
   isActive(missionId: string): boolean {
     return this.activePromises.has(missionId);
   }
@@ -142,7 +149,9 @@ export class MissionControllerRunner {
           this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
           leaseHeld = false;
           if (result.waitingForExternal && taskId && this.dependencies.taskRunner.isActive(taskId)) {
-            void this.dependencies.taskRunner.waitFor(taskId).then(() => this.wake(missionId));
+            void this.dependencies.taskRunner.waitFor(taskId).then(() => {
+              if (!this.cancelled.has(missionId)) this.wake(missionId);
+            });
           }
           return;
         }

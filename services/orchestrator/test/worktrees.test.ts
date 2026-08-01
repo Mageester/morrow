@@ -162,6 +162,8 @@ describe("worktree API + task assignment", () => {
   });
 
   it("full journey: create, inspect, diff, delete with preservation", async () => {
+    // Real `git worktree` operations end-to-end — under package-release.mjs's
+    // full-parallel `pnpm test`, the 5s default is too tight for real subprocess I/O.
     const create = await app.inject({ method: "POST", url: "/api/projects/p1/worktrees", payload: { name: "api-wt" } });
     expect(create.statusCode).toBe(201);
     const wt = create.json();
@@ -184,7 +186,7 @@ describe("worktree API + task assignment", () => {
 
     const list = await app.inject({ method: "GET", url: "/api/projects/p1/worktrees?status=removed" });
     expect(list.json().map((w: any) => w.id)).toContain(wt.id);
-  });
+  }, 20000);
 
   it("agent-chat sends can be pinned to an active worktree; stale ones are refused", async () => {
     const conv = await app.inject({ method: "POST", url: "/api/projects/p1/conversations", payload: { title: "T" } });

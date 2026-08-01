@@ -135,8 +135,15 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
     "try { ok = JSON.parse(readFileSync('result.json', 'utf8')).ok === true; } catch { ok = false; }",
     "process.exit(ok ? 0 : 1);",
   ].join("\n"));
+  // Per-unit payload sized so 96 units drive at least three real context
+  // rollovers against ROUTE's 32k window. This is a pressure knob, not a
+  // behavioral contract: context accounting legitimately gets *more* efficient
+  // over time (tool-result externalization, bounded recent-tool context), and
+  // when it does the same fixture stops reaching the pressure the scenario
+  // exists to exercise. Raise the payload to restore the intended pressure —
+  // never lower the rollover assertion, which is the actual durability gate.
   for (let index = 1; index <= WORK_UNITS; index += 1) {
-    writeFileSync(join(workspace, "inputs", `unit-${index}.txt`), `value=${index}\n${"pad ".repeat(200)}`);
+    writeFileSync(join(workspace, "inputs", `unit-${index}.txt`), `value=${index}\n${"pad ".repeat(600)}`);
   }
 
   const script: Script = { readUnits: 0, providerFailures: 0, malformedResults: 0, wroteBroken: false, wroteFixed: false, verifiedFix: false };
@@ -197,17 +204,29 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
       }
     };
     const settleActive = async (stack: Stack): Promise<void> => {
-      await stack.controller.waitFor(mission.id);
-      for (const id of missionTaskIds()) {
-        if (stack.runner.isActive(id)) await stack.runner.waitFor(id);
+      while (true) {
+        await stack.controller.waitFor(mission.id);
+        const activeTaskIds = missionTaskIds().filter((id) => stack.runner.isActive(id));
+        if (activeTaskIds.length === 0) {
+          await Promise.resolve();
+          if (!stack.controller.isActive(mission.id)
+            && !missionTaskIds().some((id) => stack.runner.isActive(id))) return;
+          continue;
+        }
+        for (const id of activeTaskIds) {
+          await stack.runner.waitFor(id);
+        }
       }
-      await stack.controller.waitFor(mission.id);
+    };
+    const quiesce = async (stack: Stack): Promise<void> => {
+      await stack.controller.stop(mission.id);
+      await settleActive(stack);
     };
     const rejected = () => missionRuntimeRepository(db).listTransitions(mission.id).some((t) => t.cause === "guardian_rejected");
 
     let stack = buildStack("break", "controller-before-restart");
     await drive(stack, () => script.readUnits >= WORK_UNITS && rejected(), 60_000);
-    await settleActive(stack);
+    await quiesce(stack);
 
     const beforeRestartOps = missionRuntimeRepository(db).listOperations(mission.id)
       .filter((o) => o.status === "completed").map((o) => o.idempotencyKey);
@@ -222,7 +241,7 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
     if (reconciliation.missionsResumed !== 1) throw new Error(`Startup reconciliation resumed ${reconciliation.missionsResumed} mission(s), expected exactly 1`);
 
     await drive(stack, () => isMissionRuntimeTerminal(missionRuntimeRepository(db).get(mission.id)!), 60_000);
-    await settleActive(stack);
+    await quiesce(stack);
 
     const runtimeRepo = missionRuntimeRepository(db);
     const runtime = runtimeRepo.get(mission.id)!;

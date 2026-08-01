@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Morrow — hosted accounts prototype</title>
+<style>
+:root{
+  --morrow-bg:#f7f6f3; --morrow-surface:#ffffff; --morrow-surface-subtle:#fbfaf8;
+  --morrow-text:#1f1f1d; --morrow-text-muted:#696864;
+  --morrow-border:#e7e4de; --morrow-accent:#6558d9; --morrow-accent-hover:#574ac8; --morrow-on-accent:#ffffff;
+  --morrow-success:#247a52; --morrow-success-soft:#e4f2ea;
+  --morrow-warning:#9a6514; --morrow-warning-soft:#f6eddc;
+  --morrow-danger:#b43a3a; --morrow-danger-soft:#f7e7e4;
+  --morrow-radius-sm:8px; --morrow-radius-md:12px; --morrow-radius-lg:16px;
+  --morrow-shadow-sm:0 1px 2px rgb(31 31 29/.05),0 6px 20px rgb(31 31 29/.04);
+  --morrow-space-1:4px; --morrow-space-2:8px; --morrow-space-3:12px; --morrow-space-4:16px; --morrow-space-5:24px; --morrow-space-6:32px; --morrow-space-7:48px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --morrow-bg:#181817; --morrow-surface:#222220; --morrow-surface-subtle:#1e1e1c;
+  --morrow-text:#f2f0eb; --morrow-text-muted:#aaa7a0; --morrow-border:#373632;
+  --morrow-accent:#8b7ff0; --morrow-accent-hover:#9b91f5; --morrow-on-accent:#181817;
+  --morrow-success-soft:#1c2e26; --morrow-warning-soft:#2e2717; --morrow-danger-soft:#2f1f1e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--morrow-bg);color:var(--morrow-text);font-family:var(--font);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.01em;line-height:1.25}
+h1{font-size:22px} h2{font-size:17px} h3{font-size:14px}
+p{margin:0}
+a{color:var(--morrow-accent);text-decoration:none}
+button{font-family:inherit;font-size:inherit;cursor:pointer;border:0;background:none;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid color-mix(in srgb,var(--morrow-accent) 60%,transparent);outline-offset:2px}
+.muted{color:var(--morrow-text-muted)}
+
+/* prototype-only chrome, hidden in captures via ?controls=1 gate */
+.proto-bar{display:none;position:sticky;top:0;z-index:9;gap:var(--morrow-space-3);align-items:center;padding:var(--morrow-space-2) var(--morrow-space-4);background:var(--morrow-surface-subtle);border-bottom:1px solid var(--morrow-border);font-size:13px}
+.show-controls .proto-bar{display:flex}
+.proto-bar select,.proto-bar a{padding:4px 8px;border:1px solid var(--morrow-border);border-radius:var(--morrow-radius-sm);background:var(--morrow-surface);color:var(--morrow-text)}
+.proto-bar a.on{border-color:var(--morrow-accent);color:var(--morrow-accent);font-weight:600}
+
+.screen{display:none;min-height:100vh}
+.screen.on{display:block}
+
+/* auth (login/signup) */
+.auth-wrap{min-height:100vh;display:grid;place-items:center;padding:var(--morrow-space-5)}
+.auth-card{width:100%;max-width:380px;background:var(--morrow-surface);border:1px solid var(--morrow-border);border-radius:var(--morrow-radius-lg);box-shadow:var(--morrow-shadow-sm);padding:var(--morrow-space-6)}
+.auth-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(150deg,var(--morrow-accent),#9b8bff);display:grid;place-items:center;color:#fff;font-weight:700;margin-bottom:var(--morrow-space-4)}
+.field{margin-top:var(--morrow-space-4)}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:var(--morrow-space-1)}
+.field input{width:100%;padding:9px 11px;border:1px solid var(--morrow-border);border-radius:var(--morrow-radius-sm);background:var(--morrow-bg);color:var(--morrow-text);font-size:14px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:10px 15px;border-radius:var(--morrow-radius-sm);font-weight:600;font-size:14px;background:var(--morrow-accent);color:var(--morrow-on-accent);margin-top:var(--morrow-space-5)}
+.btn:hover{background:var(--morrow-accent-hover)}
+.btn.ghost{background:var(--morrow-surface);color:var(--morrow-text);border:1px solid var(--morrow-border);box-shadow:none;margin-top:var(--morrow-space-2)}
+.auth-foot{margin-top:var(--morrow-space-5);text-align:center;font-size:13px}
+
+/* app shell for account/billing/pair (mirrors apps/web's topbar convention, no sidebar per gate decision) */
+.shell-top{display:flex;align-items:center;gap:var(--morrow-space-3);padding:var(--morrow-space-3) var(--morrow-space-5);border-bottom:1px solid var(--morrow-border)}
+.shell-top .mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(150deg,var(--morrow-accent),#9b8bff)}
+.shell-top .brand{font-weight:700;font-size:14px}
+.shell-top .spacer{flex:1}
+.shell-top .who{font-size:13px;color:var(--morrow-text-muted)}
+.shell-body{max-width:640px;margin:0 auto;padding:var(--morrow-space-6) var(--morrow-space-5)}
+.surface{background:var(--morrow-surface);border:1px solid var(--morrow-border);border-radius:var(--morrow-radius-md);box-shadow:var(--morrow-shadow-sm);padding:var(--morrow-space-5)}
+.surface + .surface{margin-top:var(--morrow-space-4)}
+.row{display:flex;align-items:center;gap:var(--morrow-space-3)}
+.row + .row{margin-top:var(--morrow-space-3)}
+.row .grow{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.pill.free{background:var(--morrow-surface-subtle);color:var(--morrow-text-muted);border:1px solid var(--morrow-border)}
+.pill.active{background:var(--morrow-success-soft);color:var(--morrow-success)}
+.pill.inactive{background:var(--morrow-warning-soft);color:var(--morrow-warning)}
+.btn.inline{width:auto;margin:0;padding:8px 14px}
+.btn.sm{padding:6px 11px;font-size:13px}
+hr.sep{border:0;border-top:1px solid var(--morrow-border);margin:var(--morrow-space-4) 0}
+.code-input{font-family:ui-monospace,monospace;font-size:20px;letter-spacing:.15em;text-align:center;text-transform:uppercase}
+.hint{font-size:13px;color:var(--morrow-text-muted);margin-top:var(--morrow-space-2)}
+.banner{display:flex;align-items:center;gap:var(--morrow-space-3);padding:var(--morrow-space-3) var(--morrow-space-4);border-radius:var(--morrow-radius-md);margin:var(--morrow-space-4);font-size:13px}
+.banner.warn{background:var(--morrow-warning-soft);color:var(--morrow-warning);border:1px solid color-mix(in srgb,var(--morrow-warning) 30%,transparent)}
+.banner .grow{flex:1}
+.banner a{font-weight:600}
+.mock-app{max-width:640px;margin:var(--morrow-space-5) auto;padding:0 var(--morrow-space-5)}
+.mock-app h3{margin-bottom:var(--morrow-space-2)}
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <span class="muted">Screen:</span>
+  <a href="#" data-screen="login">login</a>
+  <a href="#" data-screen="signup">signup</a>
+  <a href="#" data-screen="account">account</a>
+  <a href="#" data-screen="billing">billing</a>
+  <a href="#" data-screen="pair">pair</a>
+  <a href="#" data-screen="banner">banner</a>
+  <span class="muted" style="margin-left:12px">Theme:</span>
+  <a href="#" data-theme-btn="light">light</a>
+  <a href="#" data-theme-btn="dark">dark</a>
+</div>
+
+<!-- LOGIN -->
+<section class="screen" id="screen-login">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-mark">M</div>
+      <h1>Log in to Morrow</h1>
+      <p class="muted" style="margin-top:6px">Account, billing, and device pairing — your local install does the work.</p>
+      <div class="field"><label for="li-email">Email</label><input id="li-email" type="email" value="aidan@example.com" /></div>
+      <div class="field"><label for="li-pass">Password</label><input id="li-pass" type="password" value="••••••••••" /></div>
+      <button class="btn">Log in</button>
+      <div class="auth-foot">No account? <a href="?screen=signup">Sign up</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- SIGNUP -->
+<section class="screen" id="screen-signup">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-mark">M</div>
+      <h1>Create your account</h1>
+      <p class="muted" style="margin-top:6px">Free to start. Upgrade any time — your local install is unaffected either way.</p>
+      <div class="field"><label for="su-email">Email</label><input id="su-email" type="email" placeholder="you@example.com" /></div>
+      <div class="field"><label for="su-pass">Password</label><input id="su-pass" type="password" placeholder="At least 10 characters" /></div>
+      <button class="btn">Create account</button>
+      <div class="auth-foot">Already have one? <a href="?screen=login">Log in</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- ACCOUNT -->
+<section class="screen" id="screen-account">
+  <header class="shell-top">
+    <div class="mark"></div><div class="brand">Morrow</div>
+    <div class="spacer"></div>
+    <div class="who">aidan@example.com</div>
+    <a href="?screen=billing" class="muted">Billing</a>
+  </header>
+  <div class="shell-body">
+    <h1>Account</h1>
+    <div class="surface" style="margin-top:var(--morrow-space-4)">
+      <h3>Identity</h3>
+      <div class="row" style="margin-top:var(--morrow-space-3)">
+        <div class="grow">
+          <div>aidan@example.com</div>
+          <div class="hint">Signed up 24 Jul 2026</div>
+        </div>
+        <button class="btn ghost sm inline">Sign out</button>
+      </div>
+    </div>
+    <div class="surface">
+      <h3>Connected local installs</h3>
+      <div class="row" style="margin-top:var(--morrow-space-3)">
+        <div class="grow">
+          <div>Aidan's PC <span class="pill active" style="margin-left:6px">active</span></div>
+          <div class="hint">Paired 24 Jul 2026 · last seen 2 min ago</div>
+        </div>
+        <button class="btn ghost sm inline">Revoke</button>
+      </div>
+      <hr class="sep" />
+      <a href="?screen=pair">+ Pair another install</a>
+    </div>
+  </div>
+</section>
+
+<!-- BILLING -->
+<section class="screen" id="screen-billing">
+  <header class="shell-top">
+    <div class="mark"></div><div class="brand">Morrow</div>
+    <div class="spacer"></div>
+    <div class="who">aidan@example.com</div>
+    <a href="?screen=account" class="muted">Account</a>
+  </header>
+  <div class="shell-body">
+    <h1>Billing</h1>
+    <div class="surface" style="margin-top:var(--morrow-space-4)" id="billing-card">
+      <!-- toggled by JS between free / active states -->
+    </div>
+    <p class="hint" id="billing-note"></p>
+  </div>
+</section>
+
+<!-- PAIR (lives inside apps/web, not the dashboard — shown here for gate review) -->
+<section class="screen" id="screen-pair">
+  <div class="mock-app">
+    <p class="hint" style="margin-top:var(--morrow-space-4)">— shown as it appears inside apps/web, not the dashboard —</p>
+    <div class="surface" style="margin-top:var(--morrow-space-3)" id="pair-card">
+      <!-- toggled by JS between empty / success / error states -->
+    </div>
+  </div>
+</section>
+
+<!-- BANNER (entitlement banner as it appears at the top of apps/web) -->
+<section class="screen" id="screen-banner">
+  <div class="mock-app">
+    <p class="hint" style="margin-top:var(--morrow-space-4)">— entitlement banner as it appears above the chat in apps/web —</p>
+    <div id="banner-slot"></div>
+    <div class="surface" style="margin-top:var(--morrow-space-3)">
+      <h3>Chat</h3>
+      <p class="muted" style="margin-top:6px">Local work continues exactly as before — the banner never blocks it.</p>
+    </div>
+    <div class="row" style="margin-top:var(--morrow-space-3)">
+      <button class="btn ghost sm inline" data-banner="unpaired">unpaired</button>
+      <button class="btn ghost sm inline" data-banner="inactive">inactive</button>
+      <button class="btn ghost sm inline" data-banner="none">none (paired + active)</button>
+    </div>
+  </div>
+</section>
+
+<script>
+function setScreen(name){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+  const el = document.getElementById('screen-' + name);
+  (el || document.getElementById('screen-login')).classList.add('on');
+  document.querySelectorAll('.proto-bar [data-screen]').forEach(a=>a.classList.toggle('on', a.dataset.screen===name));
+}
+function setTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  document.querySelectorAll('.proto-bar [data-theme-btn]').forEach(a=>a.classList.toggle('on', a.dataset.themeBtn===t));
+}
+function renderBilling(active){
+  const card = document.getElementById('billing-card');
+  const note = document.getElementById('billing-note');
+  if(!active){
+    card.innerHTML = '<div class="row"><div class="grow"><h3>Free <span class="pill free">free</span></h3><p class="hint">Pair one local install, no cost.</p></div>'
+      + '<button class="btn inline" onclick="renderBilling(true)">Upgrade</button></div>';
+    note.textContent = 'Upgrade opens Stripe Checkout in a new tab — no card details are ever handled by Morrow directly.';
+  } else {
+    card.innerHTML = '<div class="row"><div class="grow"><h3>Morrow Plus <span class="pill active">active</span></h3><p class="hint">$9/mo · renews 24 Aug 2026</p></div>'
+      + '<button class="btn ghost sm inline">Manage billing</button></div>';
+    note.textContent = '"Manage billing" opens the Stripe Customer Portal — cancel, update card, or view invoices there.';
+  }
+}
+function renderPair(state){
+  const card = document.getElementById('pair-card');
+  if(state === 'success'){
+    card.innerHTML = '<h3>Paired <span class="pill active">connected</span></h3><p class="hint" style="margin-top:8px">This install is now linked to aidan@example.com. <a href="?screen=account">View in Account</a></p>';
+    return;
+  }
+  if(state === 'error'){
+    card.innerHTML = '<h3>Pair this install</h3><div class="field"><label for="pc">Code from app.getaxiom.ca</label>'
+      + '<input id="pc" class="code-input" value="XKQ-9F2" /></div><p class="hint" style="color:var(--morrow-danger)">Code not recognized — codes expire after 10 minutes. Get a new one from the dashboard.</p>'
+      + '<button class="btn inline" style="margin-top:12px" onclick="renderPair(\'success\')">Try again</button>';
+    return;
+  }
+  card.innerHTML = '<h3>Pair this install</h3><p class="hint">Get a code from app.getaxiom.ca → Account → Pair another install.</p>'
+    + '<div class="field"><label for="pc">Code</label><input id="pc" class="code-input" placeholder="XXX-XXX" /></div>'
+    + '<button class="btn inline" style="margin-top:12px" onclick="renderPair(\'success\')">Connect</button>'
+    + '<p class="hint">This links your account for billing and entitlement only — Morrow still runs entirely on this machine.</p>';
+}
+function renderBanner(state){
+  const slot = document.getElementById('banner-slot');
+  if(state === 'unpaired'){
+    slot.innerHTML = '<div class="banner warn"><span class="grow">Not connected to an account. Pairing is optional — <a href="?screen=pair">pair this install</a> to sync billing.</span></div>';
+  } else if(state === 'inactive'){
+    slot.innerHTML = '<div class="banner warn"><span class="grow">Subscription inactive. Your local work is unaffected — <a href="?screen=billing">renew on the dashboard</a> to restore paired features.</span></div>';
+  } else {
+    slot.innerHTML = '';
+  }
+}
+document.querySelectorAll('.proto-bar [data-screen]').forEach(a=>a.addEventListener('click', e=>{e.preventDefault(); setScreen(a.dataset.screen); history.replaceState(null,'','?screen='+a.dataset.screen);}));
+document.querySelectorAll('.proto-bar [data-theme-btn]').forEach(a=>a.addEventListener('click', e=>{e.preventDefault(); setTheme(a.dataset.themeBtn);}));
+document.querySelectorAll('[data-banner]').forEach(b=>b.addEventListener('click', ()=>renderBanner(b.dataset.banner)));
+
+const params = new URLSearchParams(location.search);
+if(params.get('controls') === '1') document.body.classList.add('show-controls');
+setScreen(params.get('screen') || 'login');
+setTheme(params.get('theme') || 'light');
+renderBilling(false);
+renderPair('empty');
+renderBanner('unpaired');
+</script>
+</body>
+</html>

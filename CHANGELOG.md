@@ -83,6 +83,124 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
   endpoint" check ran first and always won, since OpenRouter has no
   `baseUrlEnv` precisely because its endpoint is pinned. The specific,
   informative message now takes priority.
+## [0.1.0-beta.35] - 2026-07-29
+
+Consumer pass over the first hour of using Morrow: the things that made a
+working install look broken.
+
+### Fixed - chat could not send at all on a gateway provider
+
+Routing resolved a provider's model from its configured default only.
+Discovery-only gateways (OpenCode Zen, and any provider no preset curates)
+have no built-in default, and connecting one through the web UI never set
+one — so a provider reporting 60 live models routed to nothing. Every send
+failed with "opencode-zen is configured but no model is selected. Run
+`morrow providers configure ...`", which is not an instruction a web user can
+act on. Routing now falls back to the first model the provider advertises.
+
+### Fixed - account pairing could not work outside a packaged install
+
+Redeeming a pairing code and polling entitlement both required
+`MORROW_HOSTED_API_URL`, and only the packaged Windows launcher set it. In a
+source checkout or desktop run, a valid code from morrowapp.getaxiom.ca came
+back as "This install is not configured to reach a hosted Morrow account" —
+indistinguishable, to the user, from a bad code. The hosted API URL now has a
+real default; the environment variable still overrides it for self-hosters.
+This adds no outbound traffic to an unpaired install: the poller returns the
+unpaired snapshot before any request when no device token is stored.
+
+### Fixed - the pairing screen was unreachable, and rejected valid codes
+
+`/pair` had no navigation entry, and its only link lived in a banner that
+renders nothing when pairing status is "unknown" — the state every paired
+install reports whenever the account service is briefly unreachable.
+Connections now carries a permanent Morrow account section. The code field
+also advertised "XXX-XXX" for a six-character code that has no separator and
+passed input through unchanged, so a lowercase or dash-typed code returned
+the same error as a wrong one. Codes are now normalised on both sides.
+
+### Fixed - the agent asked what to do instead of doing it
+
+The chat system prompt was written for Build mode and sent verbatim in Ask
+mode, instructing a read-only turn to "run test/verification commands using
+run_command, and modify files using the file tools" while it held none of
+those tools. Asked to list a project's files and summarise its package.json,
+it made no tool calls and replied "I need a bit more information... What
+would you like to do first?", offering to do the things it had just been
+asked. The prompt is now assembled per mode, and both modes are told to act
+on a clear request, state assumptions rather than open with a menu, and
+complete every part of a multi-part ask.
+
+### Fixed - the model picker buried every usable model
+
+The catalogue rendered in catalogue order, interleaving models from providers
+the user has never connected, each one a fully enabled button whose selection
+surfaced only as a failed send later. Available models now sort first,
+unavailable ones collapse behind a disclosure, and they are disabled with the
+reason shown inline. Preset and provider failure messages no longer prescribe
+CLI invocations, since they render in the web UI.
+
+### Added - first-run setup on Home
+
+The web app had no onboarding surface: a fresh install landed on an empty
+Home with a disabled "New chat" button, and an install with a project but no
+connected model got no guidance at all. Home now leads with a checklist of
+the real first-run steps, each reading live status from the same endpoints
+its destination page uses, retiring itself once the required steps pass.
+
+### Added - context-window usage in the composer
+
+A compact ring showing how much of the route's context window the last turn
+used, drawn from figures the orchestrator already computes. It renders
+nothing rather than guessing: a provider that reported no usage, or a model
+advertising no context window, produces no meter instead of a reassuring 0%.
+A count Morrow derived rather than received is labelled estimated.
+
+## [0.1.0-beta.34] - 2026-07-25
+
+### Fixed - provider credentials could fail to save entirely
+
+`applyWindowsCredentialAcl` invoked `whoami.exe` and `icacls.exe` by bare name,
+letting PATH choose the binary. Git for Windows ships a Unix `whoami` and places
+it ahead of System32, so the SID lookup failed and saving any provider key threw
+"Unable to apply the current-user Windows ACL". On an affected machine no API
+key could be stored at all. Both tools now resolve against `%SystemRoot%`.
+
+This was also the cause of 17 of the 20 orchestrator test failures previously
+carried as pre-existing; the suite now runs 1268 passing.
+
+### Fixed - agent failures that gave no usable reason
+
+- A request containing an image with no vision-capable route reported a context
+  size error, so the remedy it implied could never work. It now names the real
+  cause and the routes tried.
+- The context admission failure named neither route nor size. Because
+  compaction has already reduced the request to system, checkpoint, and the most
+  recent group, the remaining cause is a single oversized message. The error now
+  reports measured tokens against the verified limit per route.
+- Reading a workspace file enforced an allowlist of "supported" extensions, so
+  ordinary source files were rejected outright: a project containing `.prisma`,
+  `.vue`, `.svelte`, `.kt`, or `.tf` could not be read. It is now a denylist of
+  binary formats. Workspace containment, credential-name checks, and null-byte
+  detection are unchanged.
+- A `create_file` call missing `path` was answered with "fix the arguments",
+  and the model regenerated the whole file body each time. The correction now
+  names the missing argument and says to reuse the content already produced.
+- The tool-argument retry limit was advisory: exceeding it only changed the
+  instruction text, so a model that ignored it kept going, reaching six attempts
+  against a limit of two. Exhaustion now interrupts the task.
+
+### Changed - clay accent, and two composer modes instead of four
+
+The accent moves off indigo to Claude clay: `#d97757` in dark, and `#bb5836` in
+light, where the accent carries white text and true clay measures 3.1:1 against
+white — below the 4.5:1 the accessibility gate requires.
+
+The composer offered Ask, Plan, Build, and Build Auto, where Build and Build
+Auto were the same mode differing only by auto-approval. It now offers Chat and
+Build, with approval as its own switch shown only once Morrow can change
+something, and a line stating what the current selection will do. The wire
+contract is unchanged.
 
 ## [0.1.0-beta.33] - 2026-07-25
 

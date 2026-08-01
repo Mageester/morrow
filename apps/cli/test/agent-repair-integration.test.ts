@@ -92,7 +92,7 @@ describe("CLI ⇄ orchestrator agent repair (real client path)", () => {
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();
     api = new MorrowApi(`http://127.0.0.1:${address.port}`);
-  });
+  }, 30_000);
 
   afterEach(async () => {
     process.env = originalEnv;

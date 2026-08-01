@@ -58,7 +58,10 @@ describe("ModelPicker", () => {
     await user.click(trigger);
     expect(screen.getByRole("searchbox", { name: "Search models" })).toBeVisible();
     expect(screen.getByRole("button", { name: /Claude Opus/ })).toBeVisible();
-    expect(screen.getByRole("button", { name: /Llama 3\.1 8B/ })).toBeVisible();
+    // Models from providers that are not connected start collapsed. On a real
+    // install the catalogue is ~526 entries of which ~60 are usable, and
+    // listing them together buried every working model.
+    expect(screen.queryByRole("button", { name: /Llama 3\.1 8B/ })).not.toBeInTheDocument();
   });
 
   it("filters by search and reports the chosen model route", async () => {
@@ -79,11 +82,22 @@ describe("ModelPicker", () => {
     });
   });
 
-  it("marks an unavailable model", async () => {
+  it("reveals unavailable models on request and refuses to let one be chosen", async () => {
     const user = userEvent.setup();
-    render(<ModelPicker models={models} presets={[]} onChange={vi.fn()} />);
+    const onChange = vi.fn();
+    render(<ModelPicker models={models} presets={[]} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: /Auto — recommended/ }));
-    expect(screen.getByRole("button", { name: /Llama 3\.1 8B.*Unavailable/ })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: /Show 1 model from providers you have not connected/ }));
+
+    const llama = screen.getByRole("button", { name: /Llama 3\.1 8B.*Not connected/ });
+    expect(llama).toBeVisible();
+    // Picking one used to succeed silently and only surface as a failed send
+    // afterwards, with nothing connecting the failure to the choice.
+    expect(llama).toBeDisabled();
+    expect(llama).toHaveAccessibleDescription(/Ollama is not running/);
+    await user.click(llama);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("keeps a vanished saved model visible and offers a safe fallback", async () => {

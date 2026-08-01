@@ -6,7 +6,7 @@
  *   2. resolve the package root and locate morrow.cmd
  *   3. install into a temporary LocalAppData-style directory (InstallRoot/app)
  *   4. launch the packaged runtime via morrow.cmd start
- *   5. reach http://127.0.0.1:4317/api/health
+ *   5. reach health and the bundled /app HTML + referenced assets
  *   6. stop the service and clean up
  *
  * Requires Windows and an artifact (MORROW_ARTIFACT, or newest dist/Morrow-*.zip).
@@ -96,6 +96,7 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     const installedCmd = join(installRoot, "app", "morrow.cmd");
     assert.ok(existsSync(installedCmd), "morrow.cmd exists in final installation");
     assert.ok(existsSync(join(installRoot, "app", "runtime", "node.exe")), "bundled runtime present");
+    assert.ok(existsSync(join(installRoot, "app", "web", "index.html")), "bundled app entrypoint present");
 
     // 4 + 5. launch and reach health. The launcher detaches the service; capture
     // its stdio to a pipe and execFileSync blocks until that pipe EOFs, which the
@@ -123,10 +124,11 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     }
     assert.ok(health && health.ok === true, "GET /api/health returned ok:true");
     assert.equal(health.service, "morrow-orchestrator");
-    // Morrow is terminal-first: the service exposes an API only. Health must NOT
-    // advertise any web UI origin, and there is no bundled dashboard to serve.
-    assert.ok(!("ui" in health), "health does not advertise a web UI origin");
-    assert.ok(!("uiServed" in health), "health does not claim to serve a web UI");
+
+    const listeningAddress = ps(
+      "(Get-NetTCPConnection -State Listen -LocalPort 4317 -ErrorAction Stop | Select-Object -First 1 -ExpandProperty LocalAddress)",
+    ).trim();
+    assert.equal(listeningAddress, "127.0.0.1", "packaged service listens only on IPv4 loopback");
 
     // The bare origin is a truthful JSON liveness probe, never an HTML app and
     // never a reference to the retired Vite dev server.
@@ -136,6 +138,21 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     const rootBody = await rootRes.text();
     assert.match(rootBody, /"name"\s*:\s*"morrow-orchestrator"/, "GET / returns the JSON probe");
     assert.doesNotMatch(rootBody, /127\.0\.0\.1:5173/, "GET / must not reference the dev server");
+
+    // The installed bundle, not a dev server or marketing site, owns /app.
+    const appRes = await fetch("http://127.0.0.1:4317/app/");
+    assert.equal(appRes.status, 200, "GET /app/ is 200");
+    assert.match(appRes.headers.get("content-type") || "", /text\/html/, "GET /app/ serves HTML");
+    const appHtml = await appRes.text();
+    assert.match(appHtml, /<div id="root"><\/div>/, "installed app shell is present");
+    const assetPaths = [...appHtml.matchAll(/(?:src|href)=["'](\/app\/(?:assets\/[^"'?#]+|favicon\.svg))["']/g)].map((match) => match[1]);
+    assert.ok(assetPaths.some((path) => path.endsWith(".js")), "app HTML references a JavaScript bundle");
+    assert.ok(assetPaths.some((path) => path.endsWith(".css")), "app HTML references a stylesheet");
+    for (const assetPath of assetPaths) {
+      const assetRes = await fetch(`http://127.0.0.1:4317${assetPath}`);
+      assert.equal(assetRes.status, 200, `installed asset loads: ${assetPath}`);
+      assert.notEqual((await assetRes.arrayBuffer()).byteLength, 0, `installed asset is non-empty: ${assetPath}`);
+    }
 
     // An unknown API path stays a truthful API 404, not an HTML fallback.
     const unknownApi = await fetch("http://127.0.0.1:4317/api/does-not-exist");
@@ -148,7 +165,6 @@ test("published artifact installs, launches, and serves /api/health", { skip, ti
     assert.doesNotMatch(doctorOut, /^FAIL\b/m, `morrow doctor reported a failure:\n${doctorOut}`);
     assert.match(doctorOut, /node\s+pass\s+24\./, "doctor reports the bundled Node 24 runtime");
     assert.match(doctorOut, /terminal\s+pass/, "doctor reports the terminal interface");
-    assert.doesNotMatch(doctorOut, /web UI/, "doctor makes no web UI claims");
 
     // 6. stop
     ps(`& '${installedCmd}' stop`);

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "morrow-orchestrator",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@morrow/orchestrator", "dev"],
+      "port": 4317
+    },
+    {
+      "name": "morrow-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@morrow/web", "dev"],
+      "port": 4318
+    }
+  ]
+}

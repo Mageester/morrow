@@ -1,0 +1,39 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - strong [ref=e11]: Morrow
+    - generic [ref=e13]:
+      - button "New chat" [disabled] [ref=e14]
+      - paragraph [ref=e17]: Open a local project before starting a chat.
+    - navigation "Primary" [ref=e18]:
+      - generic [ref=e19]:
+        - link "Home" [ref=e20] [cursor=pointer]:
+          - /url: /app/
+        - link "Chats" [ref=e25] [cursor=pointer]:
+          - /url: /app/chats
+        - link "Projects" [ref=e29] [cursor=pointer]:
+          - /url: /app/projects
+        - link "Missions" [ref=e33] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Library" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+        - button "Memory — coming soon" [disabled] [ref=e43]:
+          - generic [ref=e47]: Memory
+          - generic [ref=e48]: Soon
+        - link "Connections" [ref=e49] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e55] [cursor=pointer]:
+          - /url: /app/settings
+    - generic [ref=e60]:
+      - status [ref=e61]: Checking runtime
+      - generic [ref=e62]: Local profile
+  - main [ref=e63]:
+    - region [ref=e64]:
+      - generic [ref=e65]:
+        - heading "Good evening." [level=1] [ref=e66]
+        - paragraph [ref=e67]: What should we work on?
+        - generic [ref=e69]:
+          - button "New chat" [disabled] [ref=e70]
+          - paragraph [ref=e73]: Open a local project before starting a chat.
+      - status [ref=e74]: Getting your workspace ready…

@@ -1,5 +1,6 @@
 import { Button, Surface } from "@morrow/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { ApiClientError } from "../../api/client.js";
 import { projectApi, projectQueries, type ProjectSelection } from "../../api/projects.js";
@@ -39,10 +40,19 @@ export function ProjectsPage() {
           Point Morrow at a repository already on this machine. Chats and missions only ever read
           or change files inside the project you select here.
         </p>
+        {activeProject ? (
+          <Link className="morrow-projects__open-build" to="/chats">
+            Open {activeProject.name} in Build
+          </Link>
+        ) : null}
       </div>
 
       <Surface aria-labelledby="projects-add-heading" className="morrow-projects__create">
         <h2 id="projects-add-heading">Add a project</h2>
+        <p className="morrow-projects__create-note">
+          The folder stays on this machine. Morrow registers it as an execution workspace — nothing
+          is uploaded.
+        </p>
         <form className="morrow-projects__form" onSubmit={submit}>
           <label className="morrow-projects__field">
             <span>Project name</span>

@@ -1,0 +1,60 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - strong [ref=e11]: Morrow
+    - button "New chat" [ref=e291] [cursor=pointer]
+    - navigation "Primary" [ref=e18]:
+      - generic [ref=e19]:
+        - link "Home" [ref=e20] [cursor=pointer]:
+          - /url: /app/
+        - link "Chats" [ref=e25] [cursor=pointer]:
+          - /url: /app/chats
+        - link "Projects" [ref=e29] [cursor=pointer]:
+          - /url: /app/projects
+        - link "Missions" [ref=e33] [cursor=pointer]:
+          - /url: /app/missions
+        - link "Library" [ref=e39] [cursor=pointer]:
+          - /url: /app/library
+        - button "Memory — coming soon" [disabled] [ref=e43]:
+          - generic [ref=e47]: Memory
+          - generic [ref=e48]: Soon
+        - link "Connections" [ref=e49] [cursor=pointer]:
+          - /url: /app/connections
+        - link "Settings" [ref=e55] [cursor=pointer]:
+          - /url: /app/settings
+    - generic [ref=e60]:
+      - status [ref=e61]: Runtime online
+      - generic [ref=e62]: Local profile
+  - main [ref=e63]:
+    - status [ref=e64]:
+      - generic [ref=e65]: Not connected to an account. Pairing is optional and only affects billing sync.
+      - link "Pair this install" [ref=e66] [cursor=pointer]:
+        - /url: /app/pair
+    - region [ref=e272]:
+      - generic [ref=e273]:
+        - heading "Projects" [level=1] [ref=e274]
+        - paragraph [ref=e275]: Point Morrow at a repository already on this machine. Chats and missions only ever read or change files inside the project you select here.
+        - link "Open Morrow release candidate in Build" [ref=e294] [cursor=pointer]:
+          - /url: /app/chats
+      - region [ref=e276]:
+        - heading "Add a project" [level=2] [ref=e277]
+        - paragraph [ref=e278]: The folder stays on this machine. Morrow registers it as an execution workspace — nothing is uploaded.
+        - generic [ref=e279]:
+          - generic [ref=e280]:
+            - generic [ref=e281]: Project name
+            - textbox "Project name" [ref=e282]:
+              - /placeholder: My app
+          - generic [ref=e283]:
+            - generic [ref=e284]: Folder path
+            - textbox "Folder path" [ref=e285]:
+              - /placeholder: C:\code\my-app
+          - button "Add project" [disabled] [ref=e286]
+      - list "Your projects" [ref=e295]:
+        - listitem [ref=e296]:
+          - generic [ref=e297]:
+            - generic [ref=e298]: Morrow release candidate
+            - generic [ref=e299]: Active
+          - generic [ref=e300]:
+            - generic "C:\\Morrow\\worktrees\\morrow-release-candidate" [ref=e301]
+            - generic [ref=e302]: codex/release-candidate-latest

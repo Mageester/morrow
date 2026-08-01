@@ -289,7 +289,10 @@ export function runProcessSafe(
         options.abortSignal.removeEventListener("abort", onAbort);
       }
       resolveResult({
-        exitCode: code,
+        // Windows surfaces negative exit codes as large unsigned integers
+        // (0xFFFFFFC6 arrives as 4294963238). Normalize back to signed so
+        // failure messages, durable records, and gates read truthfully.
+        exitCode: typeof code === "number" && code > 0x7fffffff ? code - 0x100000000 : code,
         stdout: stdoutBuffer,
         stderr: stderrBuffer,
         durationMs: Date.now() - start,

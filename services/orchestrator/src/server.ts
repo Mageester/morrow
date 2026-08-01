@@ -148,6 +148,12 @@ import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing
 import { routePreset, listPresetStatuses } from "./routing/router.js";
 import { testProviderConnectivity } from "./provider/connectivity.js";
 import { buildProviderCandidateEnv, configureProvider, providerCredentialIdentity, removeProviderCredentials, providerEnvMapping } from "./provider/secrets.js";
+import { PairingStatusResponseSchema, RedeemPairingCodeSchema, RedeemPairingCodeResultSchema } from "@morrow/contracts";
+import { normalizePairingCode, redeemPairingCode } from "./hosted/pairing-client.js";
+import { resolveHostedApiUrl } from "./hosted/hosted-api-url.js";
+import { writeHostedPairing } from "./hosted/pairing-store.js";
+import type { EntitlementPoller } from "./hosted/entitlement-poller.js";
+import { hostname } from "node:os";
 import { TOOL_CATALOG, PERMISSION_PROFILE } from "./tools/catalog.js";
 import { evaluateLocalRequest, parseTrustedOrigins } from "./security/local-guard.js";
 import { countChatTokens, prepareContextForProvider, admitProviderRequest } from "./execution/context-budget.js";
@@ -156,6 +162,7 @@ import { resolveModelBudget } from "./routing/model-budget.js";
 import { AgentTaskDispatchError, dispatchAgentTask } from "./mission/task-dispatcher.js";
 import { registerWebMissionRoutes } from "./web/mission-routes.js";
 import { registerWebMissionStreamRoutes } from "./web/mission-stream.js";
+import { projectConversationActivity } from "./web/activity-projection.js";
 import { registerWebAppRoutes } from "./web/static-app.js";
 
 export class ApiError extends Error {
@@ -220,6 +227,13 @@ export type ServerDependencies = {
    * configuration is unavailable (e.g. in tests) rather than failing obscurely.
    */
   secretsFile?: string;
+  /**
+   * Tracks this install's hosted-account pairing/entitlement state (Plans/
+   * generic-sprouting-dragon.md Phase 4). When absent, /api/pairing/status
+   * reports "unpaired" and /api/pairing/redeem is unavailable — matches how
+   * `secretsFile` being absent degrades the provider-configuration routes.
+   */
+  entitlementPoller?: EntitlementPoller;
   /**
    * Absolute path to the built web bundle (the directory containing
    * `index.html`). When provided, the orchestrator serves the local Morrow web
@@ -952,6 +966,25 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
     ownedConversation(projectId, conversationId);
     return webMessages(conversationId);
+  });
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/activity", async (request) => {
+    const { projectId, conversationId } = request.params as { projectId: string; conversationId: string };
+    ownedConversation(projectId, conversationId);
+    const taskRows = deps.db.prepare(
+      `SELECT DISTINCT message.task_id AS taskId, message.created_at AS createdAt, message.id AS messageId
+         FROM conversation_messages message
+        WHERE message.conversation_id = ? AND message.task_id IS NOT NULL
+        ORDER BY message.created_at ASC, message.id ASC`,
+    ).all(conversationId) as Array<{ taskId: string; createdAt: string; messageId: string }>;
+    return projectConversationActivity({
+      projectId,
+      conversationId,
+      tasks: taskRows.map((row) => ({
+        taskId: row.taskId,
+        events: records.listEvents(row.taskId),
+      })),
+    });
   });
 
   app.patch("/api/projects/:projectId/conversations/:conversationId", async (request) => {
@@ -2573,6 +2606,48 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { removed } = removeProviderCredentials(deps.secretsFile, id, process.env);
     const status = listProviderStatuses().find((s) => s.id === id) ?? null;
     reply.send({ ok: true, provider: id, removed, status });
+  });
+
+  // Read-only snapshot of this install's hosted-account pairing (Plans/
+  // generic-sprouting-dragon.md Phase 4). Never contacts hosted-api directly —
+  // reports whatever the background EntitlementPoller last observed. A missing
+  // poller (e.g. tests) degrades to a plain "unpaired" snapshot rather than an
+  // error, matching how secretsFile-absent degrades the provider routes above.
+  app.get("/api/pairing/status", async () => {
+    const snapshot = deps.entitlementPoller?.getSnapshot() ?? {
+      status: "unpaired" as const,
+      accountId: null,
+      planId: null,
+      checkedAt: null,
+      lastError: null,
+    };
+    return PairingStatusResponseSchema.parse({ version: 1, ...snapshot });
+  });
+
+  // Redeem a one-time pairing code (shown on the hosted dashboard) against
+  // hosted-api. Outbound only — never accepts an inbound connection from the
+  // dashboard, so the loopback-only local-guard above is untouched.
+  app.post("/api/pairing/redeem", async (request, reply) => {
+    if (!deps.secretsFile) {
+      throw new ApiError(503, "Pairing is unavailable on this server.", "SECRETS_UNAVAILABLE");
+    }
+    const hostedApiUrl = resolveHostedApiUrl(process.env);
+    const body = RedeemPairingCodeSchema.parse(request.body ?? {});
+    const result = await redeemPairingCode(
+      { hostedApiUrl },
+      { code: normalizePairingCode(body.code), deviceLabel: body.deviceLabel?.trim() || hostname() },
+    );
+    if (!result.ok) {
+      const statusCode = result.status === 404 ? 404 : result.status >= 400 && result.status < 500 ? result.status : 502;
+      throw new ApiError(statusCode, result.message, result.code);
+    }
+    writeHostedPairing(deps.secretsFile, {
+      deviceToken: result.deviceToken,
+      accountId: result.accountId,
+      pairedAgentId: result.pairedAgentId,
+    });
+    void deps.entitlementPoller?.checkNow();
+    reply.send(RedeemPairingCodeResultSchema.parse({ version: 1, paired: true, accountId: result.accountId }));
   });
 
   // Safe read-only tool catalog and the enforced permission profile.

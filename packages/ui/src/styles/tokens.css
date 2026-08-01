@@ -6,13 +6,17 @@
   --morrow-text: #1f1f1d;
   --morrow-text-muted: #696864;
   --morrow-border: #e7e4de;
-  --morrow-accent: #6558d9;
-  --morrow-accent-hover: #574ac8;
+  /* Clay. Deepened from #d97757 for light mode only: the accent carries white
+     text (--morrow-on-accent), and true clay measures 3.1:1 against white,
+     below the 4.5:1 the accessibility gate requires. This shade holds 4.6:1
+     while staying in the same family as the dark-mode value. */
+  --morrow-accent: #bb5836;
+  --morrow-accent-hover: #a54d2f;
   --morrow-on-accent: #ffffff;
   --morrow-success: #247a52;
   --morrow-warning: #9a6514;
   --morrow-danger: #b43a3a;
-  --morrow-focus: #6558d9;
+  --morrow-focus: #bb5836;
   --morrow-radius-sm: 8px;
   --morrow-radius-md: 12px;
   --morrow-radius-lg: 16px;
@@ -35,7 +39,10 @@
   --morrow-text: #f2f0eb;
   --morrow-text-muted: #aaa7a0;
   --morrow-border: #373632;
-  --morrow-accent: #8b7ff0;
-  --morrow-accent-hover: #9b91f5;
+  /* True clay: on the dark surface the accent carries dark text, which
+     measures 5.7:1 — no adjustment needed. */
+  --morrow-accent: #d97757;
+  --morrow-accent-hover: #e58b6f;
   --morrow-on-accent: #181817;
+  --morrow-focus: #d97757;
 }

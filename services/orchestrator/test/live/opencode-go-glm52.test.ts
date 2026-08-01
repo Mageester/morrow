@@ -89,40 +89,54 @@ describe("live: OpenCode Go provider — GLM-5.2 completes a real request", () =
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
     try {
-      const response = await fetch(`${ENDPOINT}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            { role: "system", content: "You are a terse assistant. Reply with one short sentence." },
-            { role: "user", content: "What is 2+2? Reply with the number only." },
-          ],
-          max_tokens: 32,
-          temperature: 0,
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const body = await response.text();
-        // Honest reporting — do not pass on a failure to fetch.
-        throw new Error(`OpenCode Go /v1/chat/completions HTTP ${response.status}: ${body.slice(0, 200)}`);
+      // A shared live endpoint can transiently return an empty completion
+      // under load (observed: HTTP 200, finish=stop, contentLength=0 during
+      // a full-suite run while isolated runs succeed). Allow exactly one
+      // retry for that specific transient shape; HTTP errors and schema
+      // violations remain hard failures.
+      let json: ChatResponse | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await fetch(`${ENDPOINT}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: MODEL,
+            messages: [
+              { role: "system", content: "You are a terse assistant. Reply with one short sentence." },
+              { role: "user", content: "What is 2+2? Reply with the number only." },
+            ],
+            max_tokens: 32,
+            temperature: 0,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          // Honest reporting — do not pass on a failure to fetch.
+          throw new Error(`OpenCode Go /v1/chat/completions HTTP ${response.status}: ${body.slice(0, 200)}`);
+        }
+        const candidate = (await response.json()) as ChatResponse | null;
+        json = candidate;
+        const content = candidate?.choices?.[0]?.message?.content;
+        if (typeof content === "string" && content.length > 0) break;
+        if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
-      const json = (await response.json()) as ChatResponse;
+      if (!json) throw new Error("OpenCode Go /v1/chat/completions returned a null JSON response");
+      const payload = json;
       // The model must come back as glm-5.2 (or be a model the provider
       // routes the call to). The body must be a non-empty string.
-      expect(typeof json.model).toBe("string");
+      expect(typeof payload.model).toBe("string");
       // Log the wire-level evidence (model id, finish_reason, content
       // length) so the live test produces a paper trail in the test log
       // without ever printing the key. NEVER log the Authorization header
       // or the body verbatim — it could be echoed back by the provider.
       // eslint-disable-next-line no-console
-      console.log(`[live] opencode-go glm-5.2 response: model=${json.model} finish=${json.choices[0]?.finish_reason} contentLength=${json.choices[0]?.message?.content.length ?? 0}`);
-      expect(json.choices.length).toBeGreaterThan(0);
-      const content = json.choices[0]!.message.content;
+      console.log(`[live] opencode-go glm-5.2 response: model=${payload.model} finish=${payload.choices[0]?.finish_reason} contentLength=${payload.choices[0]?.message?.content.length ?? 0}`);
+      expect(payload.choices.length).toBeGreaterThan(0);
+      const content = payload.choices[0]!.message.content;
       expect(typeof content).toBe("string");
       expect(content.length).toBeGreaterThan(0);
       // §9 acceptance: the model the user requested (glm-5.2) is what
@@ -131,7 +145,7 @@ describe("live: OpenCode Go provider — GLM-5.2 completes a real request", () =
       // include "glm-5.2" OR the request must have been routed to a
       // OpenCode Go model (which we've already confirmed by reaching the
       // /v1/chat/completions endpoint behind the opencode-go auth).
-      expect(json.model.toLowerCase()).toMatch(/glm[-_.]?5[._-]?2/);
+      expect(payload.model.toLowerCase()).toMatch(/glm[-_.]?5[._-]?2/);
       // §9 acceptance: a real completion was returned through the OpenCode
       // Go path. We do NOT assert the literal "4" because the model may
       // respond with "4" or "4." or "The answer is 4." — all are real

@@ -36,19 +36,80 @@ function Cleanup {
     Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
-# The required runtime files, relative to the package root. The installer never
-# hard-codes a versioned directory name; it discovers the root by these files.
-# Morrow is a CLI-only product. The package contains no web assets; the
-# installer must never require or open a browser UI. The required files are
-# the launcher, the dispatcher, the bundled runtime, and the orchestrator
-# entrypoint -- the minimum set for a runnable terminal install.
-$RequiredFiles = @(
+# Required files for every new package. The local web application is the
+# consumer surface; the CLI launcher remains bundled and fully supported.
+# Existing CLI-only beta installs remain valid rollback candidates during an
+# upgrade, but a newly downloaded package must include a working /app bundle.
+$RequiredRuntimeFiles = @(
   'morrow.cmd',
   'morrow.mjs',
   'dispatch.mjs',
   'runtime\node.exe',
   'orchestrator\dist\src\index.js'
 )
+$RequiredFiles = @(
+  'morrow.cmd',
+  'morrow.mjs',
+  'dispatch.mjs',
+  'runtime\node.exe',
+  'orchestrator\dist\src\index.js',
+  'web\index.html'
+)
+
+# Validate every local src/href in web/index.html and require a module script.
+# This catches an incomplete archive before activation rather than leaving the
+# user with a blank app after installation.
+function Test-MorrowWebBundle([string]$PackageRoot) {
+  $webRoot = Join-Path $PackageRoot 'web'
+  $indexPath = Join-Path $webRoot 'index.html'
+  if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { return $false }
+  try {
+    $html = Get-Content -LiteralPath $indexPath -Raw -ErrorAction Stop
+  } catch {
+    return $false
+  }
+
+  $scriptReferences = [regex]::Matches(
+    $html,
+    '(?is)<script\b[^>]*\bsrc\s*=\s*["''](?<url>[^"'']+)["'']'
+  )
+  if ($scriptReferences.Count -eq 0) { return $false }
+
+  $references = [regex]::Matches(
+    $html,
+    '(?is)\b(?:src|href)\s*=\s*["''](?<url>[^"'']+)["'']'
+  )
+  foreach ($reference in $references) {
+    $url = $reference.Groups['url'].Value
+    $relative = $null
+    if ($url.StartsWith('/app/', [StringComparison]::OrdinalIgnoreCase)) {
+      $relative = $url.Substring(5)
+    } elseif ($url.StartsWith('./', [StringComparison]::Ordinal)) {
+      $relative = $url.Substring(2)
+    } elseif (
+      -not $url.StartsWith('/') -and
+      -not $url.StartsWith('#') -and
+      -not $url.StartsWith('data:', [StringComparison]::OrdinalIgnoreCase) -and
+      -not $url.StartsWith('http:', [StringComparison]::OrdinalIgnoreCase) -and
+      -not $url.StartsWith('https:', [StringComparison]::OrdinalIgnoreCase)
+    ) {
+      $relative = $url
+    }
+    if ($null -eq $relative) { continue }
+    $relative = ($relative -split '[?#]', 2)[0]
+    if (
+      -not $relative -or
+      $relative -match '(^|/)\.\.(/|$)' -or
+      $relative.StartsWith('\') -or
+      $relative.Contains(':')
+    ) {
+      return $false
+    }
+    $target = Join-Path $webRoot ($relative.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { return $false }
+  }
+  return $true
+}
 
 # Resolve the package root inside the extracted staging tree. Supports both
 # supported package shapes: files directly at the archive root, or nested under
@@ -62,7 +123,7 @@ function Resolve-PackageRoot([string]$root) {
     foreach ($rel in $RequiredFiles) {
       if (-not (Test-Path -LiteralPath (Join-Path $candidate $rel))) { $complete = $false; break }
     }
-    if ($complete) { return $candidate }
+    if ($complete -and (Test-MorrowWebBundle $candidate)) { return $candidate }
   }
   return $null
 }
@@ -76,8 +137,12 @@ function Test-MorrowAppTree([string]$Path) {
   } catch {
     return $false
   }
-  foreach ($rel in $RequiredFiles) {
+  foreach ($rel in $RequiredRuntimeFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $Path $rel))) { return $false }
+  }
+  $webIndex = Join-Path $Path 'web\index.html'
+  if ((Test-Path -LiteralPath $webIndex) -and (-not (Test-MorrowWebBundle $Path))) {
+    return $false
   }
   return $true
 }
@@ -97,6 +162,50 @@ function Move-MorrowAppDirectory([string]$From, [string]$To, [string]$Descriptio
   } catch {
     Fail "Could not $Description. Close Morrow, check for locked files or antivirus interference, then rerun the installer. ($_)"
   }
+}
+
+function Write-MorrowOpenLauncher([string]$Root) {
+  $installedCmd = Join-Path $Root 'app\morrow.cmd'
+  $openLauncher = Join-Path $Root 'bin\morrow-open.vbs'
+  # VBScript's doubled quotes preserve install paths containing spaces. Window
+  # style 0 keeps the service bootstrap/CLI shim hidden; the browser is the only
+  # visible consumer surface.
+  $body = 'CreateObject("WScript.Shell").Run """{0}"" open", 0, False' -f $installedCmd
+  Set-Content -LiteralPath $openLauncher -Value $body -Encoding ASCII
+  return $openLauncher
+}
+
+function Install-MorrowShortcuts([string]$Root) {
+  $openLauncher = Join-Path $Root 'bin\morrow-open.vbs'
+  if (-not (Test-Path -LiteralPath $openLauncher -PathType Leaf)) {
+    Fail "The consumer app launcher is missing at $openLauncher."
+  }
+  $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+  if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) {
+    Fail "Windows Script Host is unavailable at $wscript."
+  }
+
+  $shortcutPaths = @(
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'Morrow.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Morrow.lnk')
+  )
+  $shell = New-Object -ComObject WScript.Shell
+  foreach ($shortcutPath in $shortcutPaths) {
+    $shortcutDirectory = Split-Path -Parent $shortcutPath
+    New-Item -ItemType Directory -Path $shortcutDirectory -Force | Out-Null
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $wscript
+    $shortcut.Arguments = '//B //Nologo "{0}"' -f $openLauncher
+    $shortcut.WorkingDirectory = Join-Path $Root 'app'
+    $shortcut.Description = 'Open Morrow'
+    $shortcut.Save()
+  }
+}
+
+function Invoke-MorrowAppOpen([string]$Root) {
+  $openLauncher = Join-Path $Root 'bin\morrow-open.vbs'
+  $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+  Start-Process -FilePath $wscript -ArgumentList ('//B //Nologo "{0}"' -f $openLauncher) -WindowStyle Hidden
 }
 
 function Invoke-MorrowInstallRecovery {
@@ -181,6 +290,10 @@ function Invoke-MorrowActivation {
       Fail "Staged install is incomplete (missing app\$rel)."
     }
   }
+  if (-not (Test-MorrowWebBundle $appNew)) {
+    Remove-Item -LiteralPath $appNew -Recurse -Force -ErrorAction SilentlyContinue
+    Fail 'Staged install contains an incomplete web app bundle. Download the release again or inspect the published checksum.'
+  }
 
   # Stop any running instance before swapping (a live node.exe/DLL locks the dir).
   # Best-effort: stopping is an optimization, so a failing/garbled launcher must
@@ -207,6 +320,7 @@ function Invoke-MorrowActivation {
   }
 
   Set-Content -LiteralPath (Join-Path $Root 'bin\morrow.cmd') -Value "@echo off`r`n`"%~dp0..\app\morrow.cmd`" %*`r`n" -NoNewline
+  [void](Write-MorrowOpenLauncher -Root $Root)
 
   # Verify the activated tree; on any gap, roll back to the previous version.
   foreach ($rel in $RequiredFiles) {
@@ -217,6 +331,13 @@ function Invoke-MorrowActivation {
       }
       Fail "Installation incomplete: app\$rel is missing after activation; previous version restored."
     }
+  }
+  if (-not (Test-MorrowWebBundle $installedApp)) {
+    Remove-Item -LiteralPath $installedApp -Recurse -Force -ErrorAction SilentlyContinue
+    if ($hadPrevious -and (Test-Path -LiteralPath $appOld)) {
+      Move-Item -LiteralPath $appOld -Destination $installedApp -ErrorAction SilentlyContinue
+    }
+    Fail 'Installation incomplete: the local web app failed validation; previous version restored.'
   }
 
   return $hadPrevious
@@ -282,7 +403,7 @@ try {
   # Resolve and validate the runtime root BEFORE touching the existing install.
   $package = Resolve-PackageRoot $Staging
   if ($null -eq $package) {
-    Fail 'The release archive layout is unrecognised: could not locate morrow.cmd, runtime\node.exe and the orchestrator entrypoint at the archive root or under a single top-level directory.'
+    Fail 'The release archive layout is unrecognised or its local web app is incomplete. Download it again or inspect the published checksum.'
   }
   foreach ($rel in $RequiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $rel))) { Fail "The release archive is incomplete (missing $rel)." }
@@ -304,12 +425,6 @@ try {
   if ($mergedPath -ne $existingPath) {
     [Environment]::SetEnvironmentVariable('Path', $mergedPath, 'User')
   }
-  $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-  $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startMenu 'Morrow.lnk'))
-  $shortcut.TargetPath = $installedCmd
-  $shortcut.WorkingDirectory = Join-Path $InstallRoot 'app'
-  $shortcut.Description = 'Morrow AI Agent'
-  $shortcut.Save()
 
   Write-Host 'Starting Morrow...'
   # The health poll below is the real success gate. Wrap the launch so a
@@ -346,12 +461,22 @@ try {
 
   # Success: the new version is healthy. Discard the preserved previous version.
   Remove-Item -LiteralPath $appOld -Recurse -Force -ErrorAction SilentlyContinue
+  Install-MorrowShortcuts -Root $InstallRoot
+  $appOpened = $false
+  try {
+    Invoke-MorrowAppOpen -Root $InstallRoot
+    $appOpened = $true
+  } catch {
+    Write-Warning 'Morrow installed and is running, but Windows could not open the browser. Use the Morrow shortcut or run "morrow open".'
+  }
   Write-Host ''
   Write-Host 'Morrow installed successfully.'
   Write-Host ''
-  Write-Host 'Open a new PowerShell window and run:'
-  Write-Host ''
-  Write-Host '  morrow'
+  if ($appOpened) {
+    Write-Host 'Morrow app opened in your browser.'
+  }
+  Write-Host 'Use the Start Menu or Desktop Morrow shortcut to open it again.'
+  Write-Host 'CLI remains available in a new PowerShell window: morrow'
   Write-Host ''
   Write-Host "Morrow $($manifest.version) installed to $InstallRoot. It is an unsigned beta."
 } catch {

@@ -135,6 +135,7 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
   const listId = `morrow-model-list-${id}`;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [showUnavailable, setShowUnavailable] = useState(false);
 
   const presetOptions = useMemo(() => buildPresetOptions(presets), [presets]);
   const modelOptions = useMemo(() => buildModelOptions(models), [models]);
@@ -150,7 +151,17 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
   const filter = query.trim().toLowerCase();
   const matches = (option: ModelOption) => filter === "" || option.search.includes(filter);
   const visiblePresets = presetOptions.filter(matches);
-  const visibleModels = modelOptions.filter(matches);
+
+  // Availability decides order, and unavailable entries are collapsed behind a
+  // disclosure. The catalogue is ~526 models of which ~60 are usable on a
+  // typical install; rendering it in catalogue order buried every working
+  // model under hundreds of "UNAVAILABLE" rows for providers the user has
+  // never connected. Sorting is stable within each group, so a provider's own
+  // ordering (flagship first) survives.
+  const matchingModels = modelOptions.filter(matches);
+  const availableModels = matchingModels.filter((option) => option.available);
+  const unavailableModels = matchingModels.filter((option) => !option.available);
+  const visibleModels = showUnavailable ? [...availableModels, ...unavailableModels] : availableModels;
 
   function choose(route: ChatComposerModelRoute | undefined) {
     onChange(route);
@@ -215,13 +226,38 @@ export function ModelPicker({ models, presets, value, onChange, disabled = false
             ))}
 
             {visibleModels.length > 0 ? (
-              <li aria-hidden="true" className="morrow-model-picker__group">Models</li>
+              <li aria-hidden="true" className="morrow-model-picker__group">
+                {showUnavailable ? "Models" : `Models · ${availableModels.length} ready to use`}
+              </li>
             ) : null}
             {visibleModels.map((option) => (
               <ModelPickerOption key={option.route.id} onChoose={choose} option={option} selectedId={selectedId} />
             ))}
 
-            {visiblePresets.length === 0 && visibleModels.length === 0 ? (
+            {availableModels.length === 0 && unavailableModels.length > 0 && !showUnavailable ? (
+              <li className="morrow-model-picker__empty">
+                {filter
+                  ? `Nothing matching “${query}” is connected.`
+                  : "No connected provider offers a model yet."}
+              </li>
+            ) : null}
+
+            {unavailableModels.length > 0 ? (
+              <li>
+                <button
+                  aria-expanded={showUnavailable}
+                  className="morrow-model-picker__toggle"
+                  onClick={() => setShowUnavailable((next) => !next)}
+                  type="button"
+                >
+                  {showUnavailable
+                    ? `Hide ${unavailableModels.length} model${unavailableModels.length === 1 ? "" : "s"} from providers you have not connected`
+                    : `Show ${unavailableModels.length} model${unavailableModels.length === 1 ? "" : "s"} from providers you have not connected`}
+                </button>
+              </li>
+            ) : null}
+
+            {visiblePresets.length === 0 && matchingModels.length === 0 ? (
               <li className="morrow-model-picker__empty">No models match “{query}”.</li>
             ) : null}
           </ul>
@@ -241,11 +277,18 @@ function ModelPickerOption({
   onChoose: (route: ChatComposerModelRoute) => void;
 }) {
   const selected = option.route.id === selectedId;
+  // An unavailable route cannot be sent on — picking one only surfaced as a
+  // failed send a moment later, with nothing tying the failure back to the
+  // choice. Disabling states that up front; the reason stays reachable as the
+  // accessible description rather than a title-attribute-only hover.
+  const reason = option.available ? null : option.reason ?? "No connected provider offers this model.";
   return (
     <li>
       <button
+        aria-describedby={reason ? `${option.route.id}-reason` : undefined}
         aria-pressed={selected}
         className="morrow-model-picker__option"
+        disabled={!option.available}
         onClick={() => onChoose(option.route)}
         type="button"
       >
@@ -253,12 +296,17 @@ function ModelPickerOption({
           <span className="morrow-model-picker__option-label">
             {option.route.label}
             {!option.available ? (
-              <span className="morrow-model-picker__flag" title={option.reason ?? undefined}>Unavailable</span>
+              <span className="morrow-model-picker__flag">Not connected</span>
             ) : null}
           </span>
           <span className="morrow-model-picker__option-meta">
             {[option.provider, ...option.badges].join(" · ")}
           </span>
+          {reason ? (
+            <span className="morrow-model-picker__option-reason" id={`${option.route.id}-reason`}>
+              {reason}
+            </span>
+          ) : null}
         </span>
         {selected ? <Check aria-hidden="true" size={15} /> : null}
       </button>

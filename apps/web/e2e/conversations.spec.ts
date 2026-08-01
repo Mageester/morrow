@@ -31,13 +31,13 @@ test.describe("durable conversation workspace", () => {
     await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
     await expect(page.getByText(/Ask · mock-model via mock/i)).toBeVisible();
-    await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
+    await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
 
     await page.reload();
     await expect(page.getByText("Is the local mock runtime operational?")).toBeVisible();
     await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
     await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
-    await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
+    await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
   });
 
   test("active refresh and disconnect resume from the durable cursor before one cancellation", async ({ page, context }) => {
@@ -93,7 +93,7 @@ test.describe("durable conversation workspace", () => {
       await page.getByRole("button", { name: "Retry response" }).click();
       await expect(page.getByText("Based on the evidence, the system is fully operational.")).toBeVisible();
       await expect(page.getByTestId("conversation-message-assistant")).toHaveCount(1);
-      await expect(page.getByRole("list", { name: "Tool activity" }).getByRole("listitem")).toHaveCount(1);
+      await expect(page.getByRole("region", { name: "Morrow activity" }).getByRole("listitem").first()).toBeVisible();
       await expect.poll(() => streamAfters.some((cursor) => cursor > 0)).toBe(true);
       page.off("request", observe);
     }

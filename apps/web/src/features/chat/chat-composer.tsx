@@ -1,5 +1,6 @@
 import type { AgentMode, ModelStatus, PresetId, PresetStatus, ProviderId } from "@morrow/contracts";
 import { Send, Square } from "lucide-react";
+import { ContextMeter } from "./context-meter.js";
 import { ModelPicker } from "./model-picker.js";
 import {
   useEffect,
@@ -20,8 +21,34 @@ import {
 
 export const CHAT_PROMPT_MAX_LENGTH = 32_000;
 const TEXTAREA_MAX_HEIGHT = 192;
+const COMPOSER_MODE_STORAGE_KEY = "morrow.chat.composer-mode.v1";
 
-type ComposerMode = "ask" | "plan" | "build" | "build-auto";
+type ComposerMode = "chat" | "build";
+
+interface ComposerModePreference {
+  mode: ComposerMode;
+  autoApprove: boolean;
+}
+
+function loadComposerModePreference(): ComposerModePreference {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COMPOSER_MODE_STORAGE_KEY) ?? "null") as Partial<ComposerModePreference> | null;
+    if (saved?.mode === "build") {
+      return { mode: "build", autoApprove: saved.autoApprove === true };
+    }
+  } catch {
+    // Corrupt or unavailable browser storage must not block chat.
+  }
+  return { mode: "chat", autoApprove: false };
+}
+
+function saveComposerModePreference(preference: ComposerModePreference): void {
+  try {
+    localStorage.setItem(COMPOSER_MODE_STORAGE_KEY, JSON.stringify(preference));
+  } catch {
+    // Storage can be disabled; current-session state still works.
+  }
+}
 
 export interface ChatComposerModelRoute {
   id: string;
@@ -61,6 +88,11 @@ export interface ChatComposerProps {
    * with the searchable model picker. */
   modelCatalogue?: { models: ReadonlyArray<ModelStatus>; presets: ReadonlyArray<PresetStatus> } | undefined;
   activeTaskId?: string | undefined;
+  /** The most recent task in this conversation, running or finished. The
+   * context meter reads usage from it; activeTaskId alone would blank the
+   * meter the moment a turn completed, which is exactly when the reader wants
+   * to know how much of the window that turn consumed. */
+  contextTaskId?: string | undefined;
   onStop?: ((taskId: string) => Promise<void>) | undefined;
 }
 
@@ -70,17 +102,30 @@ const DEFAULT_ROUTE: ChatComposerModelRoute = {
   preset: "balanced",
 };
 
-const MODES: ReadonlyArray<{ id: ComposerMode; label: string }> = [
-  { id: "ask", label: "Ask" },
-  { id: "plan", label: "Plan" },
-  { id: "build", label: "Build" },
-  { id: "build-auto", label: "Build Auto" },
+/**
+ * Two modes, not four.
+ *
+ * The previous set — Ask, Plan, Build, Build Auto — asked people to make two
+ * unrelated decisions through one control. Build and Build Auto were the same
+ * mode differing only by `autoApprove`, which is a question about supervision,
+ * not about what Morrow should do; and Plan sat between them describing an
+ * output format rather than a capability. What is left is the one real choice
+ * (may Morrow change my files?) with approval as its own visible switch.
+ *
+ * The wire contract is unchanged: the orchestrator still receives
+ * read-only / plan-only / agent plus autoApprove.
+ */
+const MODES: ReadonlyArray<{ id: ComposerMode; label: string; hint: string }> = [
+  { id: "chat", label: "Chat", hint: "Answers and reads your project. Changes nothing." },
+  { id: "build", label: "Build", hint: "Makes changes to your project." },
 ];
 
-function mapMode(mode: ComposerMode): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
-  if (mode === "ask") return { mode: "read-only", autoApprove: false };
-  if (mode === "plan") return { mode: "plan-only", autoApprove: false };
-  return { mode: "agent", autoApprove: mode === "build-auto" };
+function mapMode(
+  mode: ComposerMode,
+  autoApprove: boolean,
+): Pick<ChatComposerSubmission, "mode" | "autoApprove"> {
+  if (mode === "chat") return { mode: "read-only", autoApprove: false };
+  return { mode: "agent", autoApprove };
 }
 
 function scopeId(scope: ChatDraftScope): string {
@@ -105,6 +150,7 @@ export function ChatComposer({
   modelRoutes = [DEFAULT_ROUTE],
   modelCatalogue,
   activeTaskId,
+  contextTaskId,
   onStop,
 }: ChatComposerProps) {
   const id = useId();
@@ -123,7 +169,9 @@ export function ChatComposer({
   } | null>(null);
 
   const availableRoutes = modelRoutes.length > 0 ? modelRoutes : [DEFAULT_ROUTE];
-  const [mode, setMode] = useState<ComposerMode>("ask");
+  const [initialModePreference] = useState(loadComposerModePreference);
+  const [mode, setMode] = useState<ComposerMode>(initialModePreference.mode);
+  const [autoApprove, setAutoApprove] = useState(initialModePreference.autoApprove);
   const [routeId, setRouteId] = useState(availableRoutes[0]!.id);
   // Selection from the searchable catalogue; undefined means "Auto — recommended".
   const [catalogueRoute, setCatalogueRoute] = useState<ChatComposerModelRoute | undefined>(undefined);
@@ -132,6 +180,10 @@ export function ChatComposer({
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    saveComposerModePreference({ mode, autoApprove: mode === "build" && autoApprove });
+  }, [mode, autoApprove]);
 
   const resize = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = "auto";
@@ -159,7 +211,7 @@ export function ChatComposer({
   }, [currentScopeId]);
 
   useEffect(() => {
-    if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus();
+    if (autoFocus && !disabled && !activeTaskId && !sending) textareaRef.current?.focus({ preventScroll: true });
   }, [activeTaskId, autoFocus, disabled, sending]);
 
   // Transient confirmations announce to assistive tech through the polite live
@@ -230,7 +282,7 @@ export function ChatComposer({
         ...(submittedScope.conversationId
           ? { conversationId: submittedScope.conversationId }
           : {}),
-        ...mapMode(mode),
+        ...mapMode(mode, autoApprove),
         ...routing,
       });
       if (!result.accepted) {
@@ -328,20 +380,45 @@ export function ChatComposer({
         rows={1}
       />
 
-      <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
-        {MODES.map((item) => (
-          <button
-            aria-pressed={mode === item.id}
-            className={mode === item.id ? "is-active" : undefined}
-            disabled={interactionDisabled}
-            key={item.id}
-            onClick={() => setMode(item.id)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="morrow-chat-composer__modes-row">
+        <div aria-label="How Morrow should work" className="morrow-chat-composer__modes" role="group">
+          {MODES.map((item) => (
+            <button
+              aria-pressed={mode === item.id}
+              className={mode === item.id ? "is-active" : undefined}
+              disabled={interactionDisabled}
+              key={item.id}
+              onClick={() => setMode(item.id)}
+              title={item.hint}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Supervision is only a question once Morrow can actually change
+            something, so the switch appears with Build rather than sitting
+            inert next to Chat. */}
+        {mode === "build" ? (
+          <label className="morrow-chat-composer__auto-approve">
+            <input
+              checked={autoApprove}
+              disabled={interactionDisabled}
+              onChange={(event) => setAutoApprove(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Approve changes automatically</span>
+          </label>
+        ) : null}
       </div>
+      <p className="morrow-chat-composer__mode-hint">
+        {mode === "build"
+          ? autoApprove
+            ? "Morrow will edit files and run commands without stopping to ask."
+            : "Morrow will ask before it applies changes."
+          : "Morrow will answer and read your project, but will not change anything."}
+      </p>
 
       <div className="morrow-chat-composer__toolbar">
         {projects.length > 1 && onProjectChange ? (
@@ -381,6 +458,8 @@ export function ChatComposer({
             </select>
           </label>
         )}
+
+        <ContextMeter taskId={contextTaskId ?? activeTaskId} />
 
         {activeTaskId && onStop ? (
           <button

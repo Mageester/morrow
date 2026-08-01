@@ -1,22 +1,9 @@
 /**
- * Installer CLI-only regression tests.
+ * Consumer installer/release-surface regression tests.
  *
- * Morrow is a CLI-only product. The installer must never:
- *   - open a browser (Start-Process with a URL)
- *   - tell the user to visit localhost to get started
- *   - require web/index.html or any web asset
- *   - install a dashboard or web UI
- *
- * The successful post-install experience is:
- *
- *   Morrow installed successfully.
- *
- *   Open a new PowerShell window and run:
- *
- *     morrow
- *
- * These static checks run on every platform (no Windows/PowerShell required)
- * so they gate CI on all runners.
+ * The Windows package contains the local Morrow app at /app and preserves the
+ * CLI as a second surface. These checks keep that relationship explicit on all
+ * CI platforms; the Windows activation and full-artifact tests exercise it.
  */
 
 import assert from "node:assert/strict";
@@ -26,51 +13,63 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, "..");
 const INSTALLER = join(__dirname, "..", "installer", "install.ps1");
+const ENTRYPOINT = join(ROOT, "services", "orchestrator", "src", "index.ts");
+const LAUNCHER = join(ROOT, "installer", "templates", "morrow.mjs");
+const PACKAGE_JSON = join(ROOT, "package.json");
 
-test("installer does not open a browser via Start-Process", async () => {
+test("installer validates the bundled local web application", async () => {
   const script = await readFile(INSTALLER, "utf8");
-  assert.doesNotMatch(
-    script,
-    /Start-Process\s+['"]http/i,
-    "install.ps1 must never call Start-Process with a URL — Morrow is CLI-only",
-  );
-});
-
-test("installer does not tell the user to visit localhost or 127.0.0.1 to get started", async () => {
-  const script = await readFile(INSTALLER, "utf8");
-  // The health-check Invoke-WebRequest call is internal and allowed.
-  // What is forbidden is user-facing onboarding text directing to localhost.
-  assert.doesNotMatch(
-    script,
-    /(?:Open|visit|go to)\s+(?:http:\/\/)?(?:localhost|127\.0\.0\.1)/i,
-    "install.ps1 must not direct the user to visit localhost as the product interface",
-  );
-  assert.doesNotMatch(
-    script,
-    /to get started/i,
-    "install.ps1 must not use 'to get started' localhost onboarding language",
-  );
-});
-
-test("installer does not require web/index.html or any web asset", async () => {
-  const script = await readFile(INSTALLER, "utf8");
-  assert.doesNotMatch(
-    script,
-    /web[\\/]+index\.html/i,
-    "install.ps1 must not require web/index.html — the package is CLI-only",
-  );
-  // The $RequiredFiles array must not list any web path.
   const requiredBlock = script.match(/\$RequiredFiles\s*=\s*@\(([\s\S]*?)\)/);
   assert.ok(requiredBlock, "$RequiredFiles array must exist");
-  assert.doesNotMatch(
+  assert.match(
     requiredBlock[1],
-    /web/i,
-    "$RequiredFiles must not include any web asset",
+    /web\\index\.html/i,
+    "installer must reject packages without the local app entrypoint",
+  );
+  assert.match(
+    script,
+    /function Test-MorrowWebBundle/,
+    "installer must validate the web entrypoint's referenced assets",
+  );
+  assert.match(
+    script,
+    /Test-MorrowWebBundle\s+\$appNew/,
+    "staged activation must run web-bundle validation",
   );
 });
 
-test("installer post-install instructions say to run morrow in a new shell", async () => {
+test("installer creates Start Menu and Desktop app shortcuts without a visible terminal", async () => {
+  const script = await readFile(INSTALLER, "utf8");
+  assert.match(
+    script,
+    /GetFolderPath\('Programs'\)/,
+    "installer must use the current user's Start Menu Programs folder",
+  );
+  assert.match(
+    script,
+    /GetFolderPath\('Desktop'\)/,
+    "installer must create a Desktop shortcut in the redirected desktop folder",
+  );
+  assert.match(
+    script,
+    /morrow-open\.vbs/,
+    "consumer shortcut must use the hidden app launcher",
+  );
+  assert.match(
+    script,
+    /\.TargetPath\s*=\s*\$wscript/i,
+    "consumer shortcuts must target the windowless script host",
+  );
+  assert.match(
+    script,
+    /Invoke-MorrowAppOpen/,
+    "successful installation must launch the real local app",
+  );
+});
+
+test("installer keeps CLI usage discoverable after launching the app", async () => {
   const script = await readFile(INSTALLER, "utf8");
   assert.match(
     script,
@@ -79,15 +78,44 @@ test("installer post-install instructions say to run morrow in a new shell", asy
   );
   assert.match(
     script,
-    /Open a new PowerShell window and run:/,
-    "install.ps1 must instruct the user to open a new shell and run morrow",
+    /Morrow app opened in your browser/,
+    "install.ps1 must explain the successful consumer launch",
   );
-  // The installer prints '  morrow' as a Write-Host argument.
   assert.match(
     script,
-    /Write-Host\s+'\s*morrow'/,
-    "install.ps1 must show 'morrow' as the launch command",
+    /CLI remains available in a new PowerShell window:/,
+    "installer must preserve and advertise the CLI surface",
   );
+});
+
+test("orchestrator defaults to loopback and honors MORROW_BIND_HOST", async () => {
+  const source = await readFile(ENTRYPOINT, "utf8");
+  assert.match(
+    source,
+    /const host = process\.env\.MORROW_BIND_HOST\?\.trim\(\) \|\| "127\.0\.0\.1"/,
+    "entrypoint must default to IPv4 loopback while allowing an explicit override",
+  );
+  assert.match(source, /app\.listen\(\{ host, port \}\)/, "resolved bind host must reach Fastify");
+  assert.doesNotMatch(source, /app\.listen\(\{ host: "0\.0\.0\.0"/, "entrypoint must not expose every interface by default");
+
+  const launcher = await readFile(LAUNCHER, "utf8");
+  assert.match(
+    launcher,
+    /MORROW_BIND_HOST:\s*host/,
+    "packaged service launch must make its loopback contract explicit",
+  );
+});
+
+test("root development commands distinguish app, marketing site, and hosted account surfaces", async () => {
+  const pkg = JSON.parse(await readFile(PACKAGE_JSON, "utf8"));
+  assert.equal(pkg.scripts.dev, "pnpm dev:app", "root dev command must open the actual Morrow app stack");
+  assert.match(pkg.scripts["dev:app"], /@morrow\/web/);
+  assert.match(pkg.scripts["dev:app"], /@morrow\/orchestrator/);
+  assert.match(pkg.scripts["dev:app"], /127\.0\.0\.1:4318\/app/);
+  assert.doesNotMatch(pkg.scripts["dev:app"], /@morrow\/landing|@morrow\/dashboard|@morrow\/hosted-api/);
+  assert.match(pkg.scripts["dev:site"], /@morrow\/landing/);
+  assert.match(pkg.scripts["dev:hosted"], /@morrow\/dashboard/);
+  assert.match(pkg.scripts["dev:hosted"], /@morrow\/hosted-api/);
 });
 
 test("installer requires the CLI launcher and orchestrator files", async () => {

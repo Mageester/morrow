@@ -1,6 +1,14 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  type AnyRouter,
+} from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "./connections-page.js";
 
@@ -19,13 +27,38 @@ function result(overrides: Record<string, unknown> = {}) {
   return { id: "openrouter", ok: true, configured: true, status: 200, latencyMs: 12, checkedEndpoint: "openrouter.ai", detail: "Connected", errorKind: null, modelsSample: ["anthropic/claude-sonnet-4"], models: [], ...overrides };
 }
 
+// The page links to /pair (the only permanent route to the pairing screen), so
+// it now needs a router in scope. A memory router with a stub /pair keeps every
+// existing assertion untouched.
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return { queryClient, ...render(<QueryClientProvider client={queryClient}><ConnectionsPage /></QueryClientProvider>) };
+  const root = createRootRoute();
+  const connections = createRoute({ getParentRoute: () => root, path: "/", component: ConnectionsPage });
+  const pair = createRoute({ getParentRoute: () => root, path: "/pair", component: () => null });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: root.addChildren([connections, pair]),
+  });
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router as unknown as AnyRouter} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function installApi(handler: (path: string, init?: RequestInit) => Response | Promise<Response>) {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init));
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    // Account status is ambient page furniture, not the subject of any test
+    // here — answer it once centrally so each case keeps its own tight handler.
+    if (path === "/api/pairing/status") {
+      return json({ version: 1, status: "unpaired", accountId: null, planId: null, checkedAt: null, lastError: null });
+    }
+    return handler(path, init);
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -57,7 +90,11 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("Connected", { exact: true })).toBeVisible();
     expect(await screen.findByText(/could not confirm owner-restricted permissions/i)).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "Replace key" })).toHaveFocus());
-    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
+    // Matched by path, not call index: the page makes other ambient requests
+    // (account status), and pinning this to position 1 made an unrelated added
+    // request look like a credential regression.
+    const configureCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/providers/openrouter/configure");
+    expect(configureCall?.[1]?.body).toBe(JSON.stringify({ apiKey: secret }));
     expect(screen.queryByText(secret)).not.toBeInTheDocument();
     expect(JSON.stringify(queryClient.getQueryData(["providers"]))).not.toContain(secret);
   });
@@ -118,7 +155,7 @@ describe("ConnectionsPage", () => {
     renderPage();
 
     expect(await screen.findByText("2 available models")).toBeVisible();
-    expect(screen.getByText("Active model: anthropic/claude-sonnet-4")).toBeVisible();
+    expect(screen.getByLabelText(/Active model for/)).toHaveValue("anthropic/claude-sonnet-4");
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Test connection" }));
     const disconnect = screen.getByRole("button", { name: "Disconnect OpenRouter" });
@@ -147,12 +184,12 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     const firstMount = renderPage();
 
-    expect(await screen.findByText("Active model: vendor/old")).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText(/Active model for/)).toHaveValue("vendor/old"));
     await user.click(screen.getByRole("button", { name: "Replace key" }));
     const input = screen.getByLabelText("OpenRouter API key");
     await user.type(input, secret);
     await user.click(screen.getByRole("button", { name: "Save connection" }));
-    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText(/Active model for/)).toHaveValue("vendor/new"));
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     expect(await screen.findByText(/protected local credential file/i)).toBeVisible();
     await waitFor(() => expect(providerReads).toBeGreaterThanOrEqual(2));
@@ -160,7 +197,7 @@ describe("ConnectionsPage", () => {
 
     firstMount.unmount();
     renderPage();
-    expect(await screen.findByText("Active model: vendor/new")).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText(/Active model for/)).toHaveValue("vendor/new"));
     expect(await screen.findByText(/last successful health check:.*2026/i)).toBeVisible();
     expect(providerReads).toBeGreaterThanOrEqual(3);
   });
@@ -360,5 +397,49 @@ describe("ConnectionsPage — the full provider catalog", () => {
 
     await user.click(await screen.findByRole("button", { name: "Test connection" }));
     expect(await screen.findByText(/lists models without a key/i)).toBeVisible();
+  });
+
+  /**
+   * A connected provider used to report "60 available models" and "No default
+   * model selected" beside each other with no control to resolve it — the only
+   * instruction anywhere was a CLI command printed inside a failed send. The
+   * configure route accepted `model` the whole time; the web app never sent it.
+   */
+  it("sets the active model from the card instead of requiring the CLI", async () => {
+    let defaultModel: string | null = null;
+    const fetchMock = installApi((path, init) => {
+      if (path === "/api/providers") {
+        return json([provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/a", "vendor/b"], defaultModel })]);
+      }
+      if (path === "/api/providers/openrouter/configure") {
+        defaultModel = JSON.parse(String(init?.body)).model;
+        return json({ ok: true, provider: "openrouter", status: provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/a", "vendor/b"], defaultModel }), securePermissions: true, credentialProtection: "posix-mode", shadowedByEnv: [] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    const select = await screen.findByLabelText(/Active model for/);
+    expect(select).toHaveValue("");
+    await user.selectOptions(select, "vendor/b");
+
+    await waitFor(() => expect(select).toHaveValue("vendor/b"));
+    const configureCall = fetchMock.mock.calls.find(([input]) => String(input) === "/api/providers/openrouter/configure");
+    expect(JSON.parse(String(configureCall?.[1]?.body))).toEqual({ model: "vendor/b" });
+  });
+
+  it("does not preselect a model when none has been chosen", async () => {
+    installApi((path) => {
+      if (path === "/api/providers") {
+        return json([provider({ configured: true, available: true, authStatus: "configured", models: ["vendor/a", "vendor/b"], defaultModel: null })]);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderPage();
+
+    // Showing the first model as selected would misreport an unset default as
+    // a decision the user had made.
+    expect(await screen.findByLabelText(/Active model for/)).toHaveValue("");
   });
 });

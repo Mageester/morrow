@@ -222,6 +222,348 @@ a {
   text-transform: uppercase;
 }
 
+/* ── Durable activity inspector ─────────────────────────────────────────── */
+.morrow-conversation-actions__activity {
+  width: auto;
+  gap: var(--morrow-space-2);
+  padding-inline: var(--morrow-space-3);
+}
+
+.morrow-conversation-actions__activity span {
+  font-size: 0.75rem;
+  font-weight: 680;
+}
+
+.morrow-activity-panel {
+  position: fixed;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  display: flex;
+  width: min(440px, calc(100vw - 208px));
+  height: 100dvh;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--morrow-space-4);
+  padding: var(--morrow-space-5);
+  overflow: hidden;
+  background: var(--morrow-surface);
+  border-inline-start: 1px solid var(--morrow-border);
+  box-shadow: -20px 0 48px rgb(31 31 29 / 0.12);
+}
+
+.morrow-activity-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--morrow-space-3);
+}
+
+.morrow-activity-panel__header h2,
+.morrow-activity-panel__header p {
+  margin: 0;
+}
+
+.morrow-activity-panel__header h2 {
+  margin-top: var(--morrow-space-1);
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.morrow-activity-panel__header button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  place-items: center;
+}
+
+.morrow-activity-panel__contract,
+.morrow-activity-panel__empty,
+.morrow-activity-panel__error p {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.morrow-activity-timeline {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+.morrow-activity-timeline li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 42px;
+}
+
+.morrow-activity-timeline details {
+  border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-activity-timeline summary {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  gap: var(--morrow-space-2);
+  align-items: center;
+  min-height: 38px;
+  padding: 6px var(--morrow-space-2);
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.morrow-activity-timeline summary:hover {
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-activity-timeline summary::-webkit-details-marker {
+  display: none;
+}
+
+.morrow-activity-timeline details[open] summary {
+  background: var(--morrow-surface-subtle);
+}
+
+.morrow-activity-entry__icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  color: var(--morrow-text-muted);
+  place-items: center;
+}
+
+.morrow-activity-timeline li[data-status="running"] .morrow-activity-entry__icon {
+  color: var(--morrow-accent);
+}
+
+.morrow-activity-timeline li[data-status="failed"] .morrow-activity-entry__icon,
+.morrow-activity-timeline li[data-status="blocked"] .morrow-activity-entry__icon {
+  color: var(--morrow-danger);
+}
+
+.morrow-activity-entry__main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.morrow-activity-entry__summary {
+  color: var(--morrow-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.morrow-activity-entry__meta {
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+}
+
+.morrow-activity-entry__chevron {
+  color: var(--morrow-text-muted);
+  transition: transform 120ms ease;
+}
+
+.morrow-activity-timeline details[open] .morrow-activity-entry__chevron {
+  transform: rotate(90deg);
+}
+
+.morrow-activity-entry__details {
+  display: grid;
+  gap: var(--morrow-space-2);
+  padding: 2px var(--morrow-space-2) var(--morrow-space-3) 28px;
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+
+.morrow-activity-entry__details p,
+.morrow-activity-entry__details dl {
+  margin: 0;
+}
+
+.morrow-activity-entry__details dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, max-content));
+  gap: var(--morrow-space-2);
+}
+
+.morrow-activity-entry__details dl div,
+.morrow-activity-entry__target {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.morrow-activity-entry__details dt,
+.morrow-activity-entry__target > span {
+  color: var(--morrow-text-muted);
+  font-weight: 650;
+}
+
+.morrow-activity-entry__details dd {
+  margin: 0;
+  color: var(--morrow-text);
+}
+
+.morrow-activity-entry__target code {
+  max-width: 100%;
+  padding: var(--morrow-space-2);
+  overflow-x: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.morrow-conversation-activity {
+  max-width: min(100%, 46rem);
+  margin: 0 0 var(--morrow-space-2);
+}
+
+.morrow-conversation-activity .morrow-activity-timeline {
+  overflow: visible;
+}
+
+/* Blocking approvals surface inside the conversation, where the user already
+   is. Without it a paused run was invisible and the chat simply stalled. */
+.morrow-approvals {
+  display: grid;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 var(--morrow-space-4);
+  gap: var(--morrow-space-3);
+}
+
+.morrow-approvals__card {
+  display: grid;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-4);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-warning);
+  border-radius: var(--morrow-radius-lg);
+  box-shadow: var(--morrow-shadow-sm);
+}
+
+.morrow-approvals__card header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--morrow-space-3);
+  color: var(--morrow-warning);
+}
+
+.morrow-approvals__card header svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.morrow-approvals__card h3 {
+  margin: 0;
+  color: var(--morrow-text);
+  font-size: 0.9375rem;
+  letter-spacing: -0.01em;
+}
+
+.morrow-approvals__eyebrow {
+  margin: 0 0 2px;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.morrow-approvals__target {
+  max-width: 100%;
+  padding: var(--morrow-space-2);
+  overflow-x: auto;
+  color: var(--morrow-text);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.morrow-approvals__hint {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.morrow-approvals__card [role="alert"] {
+  margin: 0;
+  color: var(--morrow-danger);
+  font-size: 0.8125rem;
+}
+
+.morrow-approvals__actions {
+  display: flex;
+  gap: var(--morrow-space-2);
+  justify-content: flex-end;
+}
+
+.morrow-approvals__actions button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--morrow-space-4);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 650;
+  border-radius: var(--morrow-radius-sm);
+  cursor: pointer;
+}
+
+.morrow-approvals__allow {
+  color: var(--morrow-surface);
+  background: var(--morrow-accent);
+  border: 1px solid var(--morrow-accent);
+}
+
+.morrow-approvals__deny {
+  color: var(--morrow-text);
+  background: transparent;
+  border: 1px solid var(--morrow-border);
+}
+
+.morrow-approvals__actions button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+@media (max-width: 720px) {
+  .morrow-activity-panel {
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    height: min(78dvh, 720px);
+    padding: var(--morrow-space-4);
+    border-top: 1px solid var(--morrow-border);
+    border-inline-start: 0;
+    border-radius: var(--morrow-radius-lg) var(--morrow-radius-lg) 0 0;
+    box-shadow: 0 -20px 48px rgb(31 31 29 / 0.16);
+  }
+
+  .morrow-conversation-actions__activity span {
+    display: none;
+  }
+}
+
 /* ── Universal mission composer ─────────────────────────────────────────── */
 .morrow-composer {
   display: grid;
@@ -357,14 +699,46 @@ a {
   outline-offset: 2px;
 }
 
+.morrow-chat-composer__modes-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--morrow-space-3);
+}
+
 .morrow-chat-composer__modes {
   display: inline-grid;
   width: fit-content;
   padding: 3px;
   gap: 2px;
-  grid-template-columns: repeat(4, auto);
+  grid-template-columns: repeat(2, auto);
   background: var(--morrow-surface-subtle);
   border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-chat-composer__auto-approve {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.morrow-chat-composer__auto-approve input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--morrow-accent);
+  cursor: pointer;
+}
+
+/* States what the current mode will actually do, so the consequence of the
+   choice is readable without hovering or guessing. */
+.morrow-chat-composer__mode-hint {
+  margin: var(--morrow-space-1) 0 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
 }
 
 .morrow-chat-composer__modes button,
@@ -469,7 +843,7 @@ a {
 
   .morrow-chat-composer__modes {
     width: 100%;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .morrow-chat-composer__toolbar {
@@ -629,28 +1003,28 @@ a {
   overflow-wrap: anywhere;
 }
 
+.morrow-conversation-message__content--markdown {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
 .morrow-conversation-message__route,
-.morrow-conversation-tools,
 .morrow-chat-warning,
 .morrow-chat-sync {
   margin: 0;
   font-size: 0.8125rem;
 }
 
-.morrow-conversation-tools {
-  display: grid;
-  padding: var(--morrow-space-2) var(--morrow-space-3);
-  gap: var(--morrow-space-1);
-  list-style: none;
-  background: var(--morrow-surface-subtle);
-  border-radius: var(--morrow-radius-sm);
-}
-
 .morrow-chat-warning,
 .morrow-chat-sync {
   padding: var(--morrow-space-2) var(--morrow-space-3);
   background: var(--morrow-surface-subtle);
   border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-conversation-autoscroll-sentinel {
+  height: 1px;
+  scroll-margin-block-end: 9rem;
 }
 
 .morrow-conversation-composer {
@@ -2271,6 +2645,11 @@ a {
   display: grid;
   gap: var(--morrow-space-3);
 }
+.morrow-projects__create-note {
+  margin: 0;
+  color: var(--morrow-text-muted);
+  font-size: 0.85rem;
+}
 .morrow-projects__form {
   display: flex;
   flex-wrap: wrap;
@@ -2376,6 +2755,10 @@ a {
   flex: none;
   color: var(--morrow-danger);
 }
+.morrow-projects__open-build {
+  color: var(--morrow-accent);
+  font-weight: 500;
+}
 
 /* Shared: empty, inline error, theme choice */
 .morrow-empty {
@@ -2399,6 +2782,11 @@ a {
 .morrow-empty--soft {
   padding: var(--morrow-space-5) var(--morrow-space-4);
   background: none;
+}
+.morrow-empty__action {
+  justify-self: center;
+  color: var(--morrow-accent);
+  font-weight: 500;
 }
 .morrow-inline-error {
   display: grid;
@@ -2688,6 +3076,154 @@ a {
   color: var(--morrow-text-muted);
   font-size: 0.8125rem;
 }
+/* First-run setup checklist on Home. Retires itself once the required steps
+   report done, so it needs no dismissed-state persistence. */
+.morrow-getting-started {
+  margin-bottom: var(--morrow-space-5);
+}
+.morrow-getting-started__head h2 {
+  margin: var(--morrow-space-1) 0 var(--morrow-space-2);
+}
+.morrow-getting-started__steps {
+  display: grid;
+  gap: var(--morrow-space-3);
+  margin: var(--morrow-space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.morrow-getting-started__step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--morrow-space-3);
+  align-items: start;
+}
+.morrow-getting-started__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--morrow-text-muted);
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+}
+.morrow-getting-started__step[data-done] .morrow-getting-started__mark {
+  color: var(--morrow-success, var(--morrow-text));
+  border-color: currentcolor;
+}
+.morrow-getting-started__body {
+  display: grid;
+  gap: 2px;
+}
+.morrow-getting-started__title {
+  display: flex;
+  gap: var(--morrow-space-2);
+  align-items: center;
+  font-weight: 600;
+}
+.morrow-getting-started__optional {
+  padding: 0 6px;
+  color: var(--morrow-text-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--morrow-border);
+  border-radius: 999px;
+}
+.morrow-getting-started__detail {
+  color: var(--morrow-text-muted);
+  font-size: 0.8125rem;
+}
+.morrow-getting-started__status {
+  color: var(--morrow-text-muted);
+  font-size: 0.75rem;
+}
+.morrow-getting-started__action {
+  justify-self: start;
+  margin-top: var(--morrow-space-1);
+  font-size: 0.8125rem;
+}
+
+.morrow-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Context-window usage ring in the composer. The title attribute carries the
+   full figure; the ring itself is decorative, with the same text repeated for
+   assistive tech because a title on an <svg> is not reliably announced. */
+.morrow-context-meter {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.morrow-context-meter__track,
+.morrow-context-meter__fill {
+  fill: none;
+  stroke-width: 2;
+}
+.morrow-context-meter__track {
+  stroke: var(--morrow-border);
+}
+.morrow-context-meter__fill {
+  stroke: var(--morrow-text-muted);
+  stroke-linecap: round;
+  transition: stroke-dasharray 240ms ease;
+}
+.morrow-context-meter[data-tone="warning"] .morrow-context-meter__fill {
+  stroke: var(--morrow-warning);
+}
+.morrow-context-meter[data-tone="critical"] .morrow-context-meter__fill {
+  stroke: var(--morrow-danger, var(--morrow-warning));
+}
+/* An estimated count is drawn dashed so a derived number never reads as a
+   measured one. */
+.morrow-context-meter[data-estimated="true"] .morrow-context-meter__fill {
+  stroke-dashoffset: 0;
+  opacity: 0.7;
+}
+
+/* Why a model cannot be picked, shown inline rather than as a hover title so
+   it is readable on touch and by a screen reader. */
+.morrow-model-picker__option-reason {
+  overflow: hidden;
+  color: var(--morrow-text-muted);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.morrow-model-picker__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+/* Collapses the ~90% of the catalogue belonging to unconnected providers. */
+.morrow-model-picker__toggle {
+  width: 100%;
+  padding: var(--morrow-space-2);
+  color: var(--morrow-text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--morrow-border);
+  cursor: pointer;
+}
+.morrow-model-picker__toggle:hover,
+.morrow-model-picker__toggle:focus-visible {
+  color: var(--morrow-text);
+  background: var(--morrow-surface-hover, transparent);
+}
 
 /* ── Slice 8: mission inside chat ────────────────────────────────────────── */
 .morrow-conversation-mission {
@@ -2931,6 +3467,65 @@ a {
   padding-left: var(--morrow-space-4);
 }
 
+.morrow-pairing-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--morrow-space-3);
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  margin-bottom: var(--morrow-space-4);
+  color: var(--morrow-text-muted);
+  background: var(--morrow-surface-subtle);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font-size: 0.875rem;
+}
+.morrow-pairing-banner a {
+  font-weight: 650;
+}
+.morrow-pairing-banner--warn {
+  color: var(--morrow-text);
+  background: color-mix(in srgb, var(--morrow-warning) 9%, transparent);
+  border-color: color-mix(in srgb, var(--morrow-warning) 35%, var(--morrow-border));
+}
+
+.morrow-pair__form-surface {
+  max-width: 420px;
+}
+.morrow-pair__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--morrow-space-3);
+}
+.morrow-pair__field {
+  display: grid;
+  flex: 1 1 220px;
+  min-width: 200px;
+  gap: var(--morrow-space-1);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.morrow-pair__field input {
+  min-height: 44px;
+  padding: 0 var(--morrow-space-3);
+  color: var(--morrow-text);
+  background: var(--morrow-surface);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  font: inherit;
+  font-weight: 400;
+  text-transform: uppercase;
+}
+.morrow-pair__field input:focus-visible {
+  border-color: var(--morrow-focus);
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 0;
+}
+.morrow-pair__result {
+  max-width: 420px;
+}
+
 /* Actions inside an empty state: the way out of a first-run dead end. */
 .morrow-empty__actions {
   margin-top: var(--morrow-space-3);
@@ -2940,3 +3535,199 @@ a {
   justify-content: center;
   align-items: center;
 }
+
+/* --------------------------------------------------------------------------
+ * Markdown rendering (assistant prose + markdown artifacts)
+ * Token-driven so dark/light themes stay correct. Layout containment:
+ * nothing inside .morrow-markdown may overflow its column horizontally.
+ * ----------------------------------------------------------------------- */
+
+:root {
+  --morrow-font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+
+.morrow-markdown {
+  color: var(--morrow-text);
+  line-height: 1.65;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+.morrow-markdown > :first-child { margin-top: 0; }
+.morrow-markdown > :last-child { margin-bottom: 0; }
+
+.morrow-markdown p {
+  margin: 0 0 var(--morrow-space-3);
+}
+
+.morrow-markdown h1,
+.morrow-markdown h2,
+.morrow-markdown h3,
+.morrow-markdown h4,
+.morrow-markdown h5,
+.morrow-markdown h6 {
+  margin: var(--morrow-space-5) 0 var(--morrow-space-2);
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.morrow-markdown h1:first-child,
+.morrow-markdown h2:first-child,
+.morrow-markdown h3:first-child,
+.morrow-markdown h4:first-child {
+  margin-top: 0;
+}
+
+.morrow-markdown h1 { font-size: 1.375rem; }
+.morrow-markdown h2 { font-size: 1.1875rem; }
+.morrow-markdown h3 { font-size: 1.0625rem; }
+.morrow-markdown h4,
+.morrow-markdown h5,
+.morrow-markdown h6 { font-size: 1rem; }
+
+.morrow-markdown ul,
+.morrow-markdown ol {
+  margin: 0 0 var(--morrow-space-3);
+  padding-left: var(--morrow-space-5);
+}
+
+.morrow-markdown li { margin: var(--morrow-space-1) 0; }
+.morrow-markdown li > ul,
+.morrow-markdown li > ol { margin: var(--morrow-space-1) 0; }
+
+.morrow-markdown li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: calc(-1 * var(--morrow-space-5));
+  padding-left: var(--morrow-space-1);
+}
+
+.morrow-markdown input[type="checkbox"] {
+  margin-right: var(--morrow-space-2);
+  accent-color: var(--morrow-accent);
+  vertical-align: -0.1em;
+}
+
+.morrow-markdown blockquote {
+  margin: 0 0 var(--morrow-space-3);
+  padding: var(--morrow-space-1) var(--morrow-space-4);
+  border-left: 3px solid var(--morrow-border);
+  color: var(--morrow-text-muted);
+}
+
+.morrow-markdown blockquote > :last-child { margin-bottom: 0; }
+
+.morrow-markdown hr {
+  border: none;
+  border-top: 1px solid var(--morrow-border);
+  margin: var(--morrow-space-4) 0;
+}
+
+.morrow-markdown a,
+.morrow-markdown__link {
+  color: var(--morrow-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.morrow-markdown code {
+  font-family: var(--morrow-font-mono);
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--morrow-text) 7%, transparent);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.morrow-markdown__codeblock {
+  margin: 0 0 var(--morrow-space-3);
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+  background: var(--morrow-surface-subtle);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.morrow-markdown__codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--morrow-space-2);
+  padding: var(--morrow-space-1) var(--morrow-space-2) var(--morrow-space-1) var(--morrow-space-3);
+  border-bottom: 1px solid var(--morrow-border);
+  background: color-mix(in srgb, var(--morrow-text) 4%, transparent);
+}
+
+.morrow-markdown__codeblock-lang {
+  font-family: var(--morrow-font-mono);
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+  user-select: none;
+}
+
+.morrow-markdown__copy {
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--morrow-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px var(--morrow-space-2);
+  cursor: pointer;
+}
+
+.morrow-markdown__copy:hover {
+  color: var(--morrow-text);
+  border-color: var(--morrow-border);
+}
+
+.morrow-markdown__copy:focus-visible {
+  outline: 2px solid var(--morrow-focus);
+  outline-offset: 1px;
+}
+
+.morrow-markdown__pre {
+  margin: 0;
+  padding: var(--morrow-space-3);
+  overflow-x: auto;
+  font-family: var(--morrow-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.morrow-markdown__pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+  white-space: pre;
+}
+
+.morrow-markdown__table-scroll {
+  margin: 0 0 var(--morrow-space-3);
+  overflow-x: auto;
+  max-width: 100%;
+  border: 1px solid var(--morrow-border);
+  border-radius: var(--morrow-radius-sm);
+}
+
+.morrow-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.morrow-markdown th,
+.morrow-markdown td {
+  padding: var(--morrow-space-2) var(--morrow-space-3);
+  border-bottom: 1px solid var(--morrow-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.morrow-markdown th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--morrow-text) 4%, transparent);
+}
+
+.morrow-markdown tr:last-child td { border-bottom: none; }
+
+.morrow-markdown img { max-width: 100%; height: auto; }

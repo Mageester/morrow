@@ -89,7 +89,11 @@ export function resolvePackageRoot(entries) {
     if (top) candidates.add(top + "/");
   }
   for (const prefix of candidates) {
-    if (REQUIRED_PACKAGE_FILES.every((rel) => set.has(prefix + rel))) return prefix;
+    const hasRequiredFiles = REQUIRED_PACKAGE_FILES.every((rel) => set.has(prefix + rel));
+    const hasWebJavaScript = [...set].some(
+      (entry) => entry.startsWith(prefix + "web/assets/") && /\.js$/i.test(entry),
+    );
+    if (hasRequiredFiles && hasWebJavaScript) return prefix;
   }
   return null;
 }
@@ -169,6 +173,9 @@ export function assertArtifactLayout(zipPath) {
     const set = new Set(entries.map((e) => e.replace(/\\/g, "/")));
     const prefix = [...topDirs][0] + "/";
     const missing = REQUIRED_PACKAGE_FILES.filter((rel) => !set.has(prefix + rel));
+    if (![...set].some((entry) => entry.startsWith(prefix + "web/assets/") && /\.js$/i.test(entry))) {
+      missing.push("web/assets/*.js");
+    }
     throw new Error(`Archive is missing required files: ${missing.join(", ")}`);
   }
 

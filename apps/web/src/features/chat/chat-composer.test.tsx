@@ -1,12 +1,24 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as baseRender, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ChatComposer,
   type ChatComposerSubmission,
 } from "./chat-composer.js";
 import { loadChatDraft, saveChatDraft } from "./draft-store.js";
+
+// The composer embeds the context meter, which reads task usage through React
+// Query. Every case here renders the composer directly, so the provider is
+// supplied once at the render boundary rather than threaded through ~18 call
+// sites. rerender() is wrapped too, or a rerender would drop the provider.
+function render(ui: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrap = (node: ReactNode) => <QueryClientProvider client={client}>{node}</QueryClientProvider>;
+  const result = baseRender(wrap(ui));
+  return { ...result, rerender: (next: ReactNode) => result.rerender(wrap(next)) };
+}
 
 const scope = { projectId: "project-1", conversationId: "conversation-1" };
 const projects = [
@@ -128,7 +140,10 @@ describe("ChatComposer", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Build Auto" }));
+    // Build plus the approval switch is what "Build Auto" used to mean; the
+    // wire payload it produces must be identical.
+    await user.click(screen.getByRole("button", { name: "Build" }));
+    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
     await user.selectOptions(screen.getByLabelText("Model route"), "openrouter:model-a");
     await user.selectOptions(screen.getByLabelText("Project"), "project-2");
     expect(onProjectChange).toHaveBeenCalledWith("project-2");
@@ -144,6 +159,21 @@ describe("ChatComposer", () => {
       projectId: "project-1",
       providerId: "openrouter",
     } satisfies ChatComposerSubmission);
+  });
+
+  it("keeps Build supervision selected across composer remounts", async () => {
+    const user = userEvent.setup();
+    const first = render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Build" }));
+    await user.click(screen.getByRole("checkbox", { name: "Approve changes automatically" }));
+    first.unmount();
+
+    render(<ChatComposer draftScope={scope} onSubmit={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("checkbox", { name: "Approve changes automatically" })).toBeChecked();
+    expect(screen.getByText("Morrow will edit files and run commands without stopping to ask.")).toBeVisible();
   });
 
   it("clears draft only after acceptance and blocks rapid duplicate sends", async () => {
@@ -324,7 +354,7 @@ describe("ChatComposer", () => {
     fireEvent.submit(textbox.closest("form")!);
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Stop generation" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Chat" })).toBeDisabled();
     expect(screen.getByLabelText("Model route")).toBeDisabled();
   });
 });

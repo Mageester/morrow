@@ -91,6 +91,27 @@ describe("agent tool-argument recovery", () => {
     expect(argEvents(db)).toHaveLength(0);
   });
 
+  it("normalizes a legacy command string without executing through a shell", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("legacy-command", "run_command", {
+          command: "node --version",
+          working_directory: "/home/user",
+          purpose: "Verify Node is available",
+        }), done],
+        [text("finished"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const command = calls(db).find((c: any) => c.id === "legacy-command")!;
+    expect(command.status).toBe("completed");
+    expect(JSON.parse(command.resultJson!)).toMatchObject({ exitCode: 0 });
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("returns structured feedback for truncated arguments, then applies a corrected retry", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
@@ -175,6 +196,68 @@ describe("agent tool-argument recovery", () => {
     });
     expect(readdirSync(ws)).toHaveLength(0);
     expect(states(db)).not.toContain("applying_changes");
+  });
+
+  it("keeps a failed create_file body in provider context for field repair", async () => {
+    seedYolo(db, ws);
+    const content = "important body\n".repeat(100);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("missing-path", "create_file", { content }), done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const retryRequest = provider.requests[1]!;
+    const historical = retryRequest
+      .filter((message) => message.role === "assistant")
+      .flatMap((message) => message.toolCalls ?? [])
+      .find((call) => call.id === "missing-path");
+    expect(JSON.parse(historical!.function.arguments)).toEqual({ content });
+  });
+
+  it("counts parallel invalid calls for one tool as one correction attempt", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [{
+          type: "tool_call",
+          toolCalls: ["a", "b", "c", "d"].map((id, index) => ({
+            id,
+            index,
+            type: "function" as const,
+            function: { name: "create_file", arguments: JSON.stringify({ path: `${id}.txt` }) },
+          })),
+        }, done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1, 1]);
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
+  });
+
+  it("keeps correction budgets independent across sequential file targets", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("a", "create_file", { path: "a.txt" }), done],
+        [tool("b", "create_file", { path: "b.txt" }), done],
+        [tool("c", "create_file", { path: "c.txt" }), done],
+        [tool("good", "create_file", { path: "done.txt", content: "done\n" }), done],
+        [text("finished"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
+    expect(readFileSync(join(ws, "done.txt"), "utf8")).toBe("done\n");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
   });
 
   it("rejects an absolute path argument as a structured correction", async () => {

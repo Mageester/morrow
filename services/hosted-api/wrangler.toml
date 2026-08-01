@@ -1,0 +1,27 @@
+name = "morrow-hosted-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-24"
+compatibility_flags = ["nodejs_compat"]
+
+# Real resources, created 2026-07-24 on the shared Cloudflare account
+# (explicit user confirmation obtained first — see
+# Plans/generic-sprouting-dragon.md). Migration 0001_init.sql already applied
+# via the Cloudflare MCP (local wrangler CLI has no valid auth token in this
+# environment — `wrangler d1 migrations apply --remote` will see 0001 as
+# already-applied via the d1_migrations bookkeeping table once real CLI auth
+# is set up).
+[[d1_databases]]
+binding = "DB"
+database_name = "morrow-hosted-db"
+database_id = "b2714a9c-9e09-4e33-bb08-c0e198cd5884"
+
+[[kv_namespaces]]
+binding = "PAIRING_CODES"
+id = "22d9db22fe6b4e55a8cc2ba22b45127a"
+
+[vars]
+MORROW_HOSTED_ENV = "development"
+
+# Secrets (Clerk/Stripe keys, webhook signing secrets) are never committed —
+# set locally via `wrangler secret put <NAME>` reading from an untracked
+# .dev.vars file (see .dev.vars.example), and in CI via repo secrets.

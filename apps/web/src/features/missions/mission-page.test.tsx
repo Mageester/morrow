@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import {
   act,
+  configure,
   render,
   screen,
   waitFor,
@@ -275,6 +276,12 @@ afterEach(() => {
 });
 
 describe("MissionPage", () => {
+  // The full web suite runs 30 jsdom files under heavy worker contention;
+  // the default 1s async-util timeout flakes on this page's data-driven
+  // heading queries. 10s keeps the assertions honest without masking
+  // genuine render failures.
+  configure({ asyncUtilTimeout: 10_000 });
+
   it("leads with one compact, authoritative header: state, phase, model — no fabricated percentage or estimate", async () => {
     installApi();
     renderMission();

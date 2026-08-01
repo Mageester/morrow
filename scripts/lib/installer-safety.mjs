@@ -74,29 +74,33 @@ export function installerSafetyFailures(script) {
     }
   }
 
-  // 5. CLI-only product: the installer must never open a browser.
-  if (/Start-Process\s+['"]http/i.test(script)) {
+  // 5. Browser launch must stay behind the packaged local-app launcher. A raw
+  // URL here could point at a dev/marketing/remote surface or bypass service
+  // startup; the hidden launcher owns starting the loopback service + /app.
+  if (/Start-Process[^\n]*(?:https?:\/\/|['"]http)/i.test(script)) {
     failures.push(
-      "install.ps1 must not call Start-Process with a URL; Morrow is a CLI-only product and the installer must never open a browser.",
+      "install.ps1 must open Morrow through the packaged consumer app launcher, not Start-Process a raw URL.",
     );
   }
 
-  // 6. The installer must not require web/index.html — the package has no web assets.
-  if (/web\\\\index\.html|web\/index\.html/i.test(script)) {
+  // 6. Every newly downloaded package must carry and validate the actual local
+  // web product. The CLI remains bundled, but it is no longer the only surface.
+  if (!/web\\index\.html|web\/index\.html/i.test(script) || !/Test-MorrowWebBundle\s+\$appNew/i.test(script)) {
     failures.push(
-      "install.ps1 must not require web/index.html; the Morrow package is CLI-only and contains no web assets.",
+      "install.ps1 must require and validate the bundled local web app before activation.",
     );
   }
 
-  // 7. The post-install message must tell the user to run `morrow`, not visit localhost.
-  if (!/morrow\b/.test(script) || /localhost|127\.0\.0\.1.*get\s+started|open.*127\.0\.0\.1/i.test(script)) {
-    // Check for a positive CLI instruction rather than just absence of bad text.
-    // The installer must print a message directing the user to run `morrow`.
-    if (!/Open a new PowerShell window and run:/.test(script)) {
-      failures.push(
-        "install.ps1 must print CLI-only post-install instructions directing the user to run `morrow` in a new shell, not visit localhost or open a browser.",
-      );
-    }
+  // 7. Ordinary users need a Start Menu/Desktop launch that opens /app without
+  // a visible development terminal, plus automatic first launch after install.
+  if (
+    !/morrow-open\.vbs/i.test(script) ||
+    !/Install-MorrowShortcuts/i.test(script) ||
+    !/Invoke-MorrowAppOpen/i.test(script)
+  ) {
+    failures.push(
+      "install.ps1 must install and invoke the windowless consumer app launcher.",
+    );
   }
 
   return failures;

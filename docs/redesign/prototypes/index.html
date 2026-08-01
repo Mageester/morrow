@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Morrow — redesign preview</title>
+<style>
+:root{--bg:#f7f6f3;--surface:#fff;--surface2:#f1efe9;--text:#1f1f1d;--muted:#6b6a66;--faint:#93918b;--border:#e7e4de;--accent:#6558d9;--accent-soft:#efedfb;--r:14px;--font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--bg:#181817;--surface:#222220;--surface2:#2b2a27;--text:#f2f0eb;--muted:#a8a59e;--faint:#78766f;--border:#333230;--accent:#8b7ff0;--accent-soft:#2b2740}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:48px 22px 80px}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(150deg,var(--accent),#9b8bff);display:grid;place-items:center;color:#fff;font-weight:800;box-shadow:0 4px 14px rgb(101 88 217/.35)}
+h1{font-size:30px;margin:0;letter-spacing:-.02em}
+.lede{color:var(--muted);font-size:16px;margin:8px 0 4px}
+.tag{display:inline-block;font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:3px 10px;border-radius:999px;margin-top:6px}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin:36px 0 14px;font-weight:700}
+.cta{display:flex;align-items:center;justify-content:space-between;gap:14px;background:linear-gradient(150deg,var(--accent),#8172ee);color:#fff;border-radius:18px;padding:22px 24px;text-decoration:none;box-shadow:0 12px 30px rgb(101 88 217/.3);margin-top:20px}
+.cta b{font-size:19px} .cta span{opacity:.85;font-size:14px} .cta .go{font-size:26px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(max-width:620px){.grid{grid-template-columns:1fr}}
+a.card{display:block;text-decoration:none;color:inherit;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:15px 17px;transition:.15s}
+a.card:hover{border-color:var(--accent);transform:translateY(-1px)}
+a.card .t{font-weight:650;font-size:15px}
+a.card .d{color:var(--muted);font-size:13px;margin-top:2px}
+.doclist{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.doclist a{display:flex;gap:10px;padding:12px 16px;color:inherit;text-decoration:none;border-bottom:1px solid var(--border);font-size:14px}
+.doclist a:last-child{border:0} .doclist a:hover{background:var(--surface2)} .doclist a b{font-weight:600} .doclist a .m{color:var(--faint);margin-left:auto;font-size:12.5px}
+.note{margin-top:30px;font-size:13px;color:var(--faint);border-top:1px solid var(--border);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="mark">✦</span><div><h1>Morrow</h1><div class="lede">Chat-first redesign — interactive preview</div></div></div>
+  <span class="tag">Design gate · not the production app · static mockup</span>
+
+  <a class="cta" href="morrow.html?screen=home">
+    <div><b>Open the interactive prototype →</b><br><span>Home · Chat · Missions · Projects · Memory · Library · Connections. Toggle light/dark. Works on mobile.</span></div>
+    <span class="go">→</span>
+  </a>
+
+  <h2>Jump to a screen</h2>
+  <div class="grid">
+    <a class="card" href="morrow.html?screen=home"><div class="t">Home / Today</div><div class="d">Greeting, composer, continue, active work, learned</div></a>
+    <a class="card" href="morrow.html?screen=chat"><div class="t">Chat — normal (Ask)</div><div class="d">Streaming answer, escalate to mission</div></a>
+    <a class="card" href="morrow.html?screen=mission"><div class="t">Mission in chat + panel</div><div class="d">Embedded card, approval, detail panel</div></a>
+    <a class="card" href="morrow.html?screen=result"><div class="t">Completed result</div><div class="d">Deliverables, verification, caveats</div></a>
+    <a class="card" href="morrow.html?screen=recovery"><div class="t">Provider recovery</div><div class="d">Failure explained, progress preserved</div></a>
+    <a class="card" href="morrow.html?screen=projects"><div class="t">Project — Morrow</div><div class="d">Chats, missions, files, project memory</div></a>
+    <a class="card" href="morrow.html?screen=memory"><div class="t">Memory — About you</div><div class="d">Transparent, editable, with provenance</div></a>
+    <a class="card" href="morrow.html?screen=connections"><div class="t">Connections</div><div class="d">Friendly provider setup + failure states</div></a>
+  </div>
+
+  <h2>Redesign documents</h2>
+  <div class="doclist">
+    <a href="01-discovery.md"><b>01 · Discovery</b><span class="m">what's reusable vs rejected</span></a>
+    <a href="02-product-spec.md"><b>02 · Product experience spec</b><span class="m">thesis, IA, modes, security</span></a>
+    <a href="03-memory-and-adaptation.md"><b>03 · Memory &amp; adaptation model</b><span class="m">layers → real schema</span></a>
+    <a href="04-user-journeys.md"><b>04 · User journeys</b><span class="m">the 9 flows</span></a>
+    <a href="05-migration-plan.md"><b>05 · Migration &amp; build plan</b><span class="m">old UI → new</span></a>
+  </div>
+
+  <p class="note">Static design mockup for review only — no real AI, no backend, no data. The production Morrow backend (mission engine, provider keys, file tools) is deliberately <b>not</b> exposed here. PR #64 remains open and unmerged.</p>
+</div>
+<script>
+// serve docs .md as plain text in-browser
+document.querySelectorAll('.doclist a').forEach(a=>{a.target="_blank";});
+</script>
+</body>
+</html>
