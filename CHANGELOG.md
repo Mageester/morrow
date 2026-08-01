@@ -6,6 +6,36 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+## [0.1.0-beta.37] - 2026-08-01
+
+### Added - unified clay UI, interleaved transcript
+
+- Brought the clay-accent Chat/Build web UI (organized conversations, first-run
+  setup checklist, context-window meter) together with beta.36's autonomous
+  `morrow build` reliability work into one line. Both had diverged for over
+  two months and independently touched the orchestrator; migrations, the
+  `TaskEvent` schema, and tool-argument normalization were unioned rather than
+  picked from one side, so neither line's fixes were lost.
+- The conversation transcript now renders as one chronological stream instead
+  of a block of tool calls above a block of text: assistant narration is
+  folded into a `narration` step per turn and interleaved with the tool steps
+  at the point they actually ran, matching Claude Code/Codex-style execution
+  logs. Reads and searches are visible steps too, not hidden as noise, so a
+  file edit's evidence is inspectable alongside the edit itself.
+
+### Fixed - a reasoning-heavy route could never finish a real build
+
+- A reasoning model bills its hidden chain-of-thought against the same output
+  allowance as its visible answer, so a heavy reasoner could spend its entire
+  budget thinking and return nothing — every retry reissued the same
+  exhausted allowance and failed identically. Verified live against
+  OpenCode Zen's deepseek-v4-flash-free, which spent over 15,000 reasoning
+  tokens before its first visible token on a single-file task. Each
+  empty-response retry now raises the output ceiling and, coupled with it,
+  the request deadline — raising tokens alone just traded an empty response
+  for a timeout. Proven end to end: the same route went on to write a
+  complete, rendering, zero-console-error WebGL2 page.
+
 ### Fixed - reliability scan of chat, reasoning, and tool calling
 
 - Selecting a reasoning level on a Claude route failed outright. The model
