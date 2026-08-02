@@ -35,6 +35,7 @@ artifacts/
 .morrow/
 .hermes/
 MEMORY/
+.worktrees/
 
 # Cloudflare Workers (services/hosted-api)
 .dev.vars
