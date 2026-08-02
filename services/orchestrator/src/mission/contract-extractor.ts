@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { RequirementSource, RequirementCategory, MissionContractInput } from "@morrow/contracts";
+import { extractExecutionRequirements } from "../execution/requirements.js";
 
 export interface ContractRequirementNodeInput {
   id: string;
@@ -78,6 +79,7 @@ export function buildContractFromInput(input: { objective: string; contract?: Mi
   const verificationCommands = structured?.verificationCommands ?? [];
   const requiredGitResult = structured?.requiredGitResult ?? null;
   const prohibitions = structured?.prohibitions ?? [];
+  const executionRequirements = extractExecutionRequirements(sourcePrompt);
 
   const nodes: ContractRequirementNodeInput[] = [];
   let order = 0;
@@ -104,6 +106,25 @@ export function buildContractFromInput(input: { objective: string; contract?: Mi
     approved: true,
     authoritative: true,
   });
+
+  // Keep explicit execution constraints in the durable mission contract as
+  // user-authored hard-requirement nodes. The executor re-extracts the typed
+  // policy at the tool boundary, while this node preserves the source excerpt
+  // in the same contract/ledger the mission controller already owns. Unknown
+  // explicit constraints are retained as authoritative nodes too; their
+  // unresolved status is what prevents a false completion later.
+  for (const requirement of executionRequirements) {
+    addNode({
+      statement: requirement.sourceExcerpt,
+      category: "hard_requirement",
+      sourcePromptExcerpt: requirement.sourceExcerpt,
+      sourceLocator: null,
+      source: "user",
+      confidence: 1,
+      approved: true,
+      authoritative: requirement.authoritative,
+    });
+  }
 
   // Explicit, user-supplied structured detail becomes authoritative nodes. Each
   // records truthful provenance: a verbatim prompt value is excerpted (null
@@ -138,9 +159,9 @@ export function buildContractFromInput(input: { objective: string; contract?: Mi
   });
 
   const hasStructuredDetail =
-    expectedArtifacts.length > 0 || acceptanceCriteria.length > 0 || prohibitions.length > 0;
+    expectedArtifacts.length > 0 || acceptanceCriteria.length > 0 || prohibitions.length > 0 || executionRequirements.length > 0;
   const unresolvedAmbiguities: string[] = [];
-  if (!structured || !hasStructuredDetail) {
+  if (!hasStructuredDetail) {
     unresolvedAmbiguities.push(
       "Detailed requirements (expected artifacts, acceptance criteria, prohibitions) were not supplied; " +
       "only the objective is authoritative. Do not treat inferred detail as a requirement.",

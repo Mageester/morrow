@@ -54,6 +54,17 @@ import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
+import {
+  canCompleteWithRequirements,
+  enforceToolRequirement,
+  evaluateRequirementObservations,
+  extractExecutionRequirements,
+  observeRequirementChangedPaths,
+  observeRequirementToolCall,
+  type RequirementEvaluation,
+  type RequirementObservation,
+  type RequirementToolCall,
+} from "./requirements.js";
 import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
 import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
@@ -478,7 +489,8 @@ class AgentToolFailure extends Error {
     | "command_exit_nonzero"
     | "command_timeout"
     | "command_cancelled"
-    | "repeated_strategy";
+    | "repeated_strategy"
+    | "requirement_violation";
 
   constructor(
     message: string,
@@ -491,7 +503,8 @@ class AgentToolFailure extends Error {
       | "command_exit_nonzero"
       | "command_timeout"
       | "command_cancelled"
-      | "repeated_strategy" = "tool_failed",
+      | "repeated_strategy"
+      | "requirement_violation" = "tool_failed",
   ) {
     super(message);
     this.name = "AgentToolFailure";
@@ -1411,6 +1424,7 @@ export async function executeAgentChatTask({
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
   const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
+  const executionRequirements = extractExecutionRequirements(latestUserPrompt);
   const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
@@ -2695,10 +2709,70 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     event("step.started", { stepId: activeStepId });
   }
 
+  type RequirementWorkspaceState = { lines: string[]; paths: string[]; measured: boolean };
+  let requirementBaselinePaths = new Set<string>();
+  const canonicalRequirementPath = (value: string): string => value
+    .replace(/^"|"$/g, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+  const pathsFromGitStatus = (lines: string[]): string[] => lines
+    .filter((line) => !line.startsWith("## "))
+    .map((line) => canonicalRequirementPath(line.slice(3).trim().split(" -> ").at(-1) ?? ""))
+    .filter(Boolean);
+  const readRequirementWorkspaceState = async (filterBaseline = true): Promise<RequirementWorkspaceState> => {
+    try {
+      const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
+      const paths = pathsFromGitStatus(status.lines);
+      return {
+        lines: status.lines,
+        paths: filterBaseline ? paths.filter((path) => !requirementBaselinePaths.has(path)) : paths,
+        measured: !status.timedOut && !status.truncated,
+      };
+    } catch {
+      return { lines: [], paths: [], measured: false };
+    }
+  };
+  const requirementToolCallFromRecord = (call: ToolCallRecord): { call: RequirementToolCall; status: "completed" | "failed" | "requested" } => {
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(call.argsJson) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+    } catch {
+      // Invalid calls remain failed tool evidence and never become a fabricated
+      // requirement pass.
+    }
+    const status = call.status === "completed" ? "completed" : call.status === "requested" || call.status === "running" ? "requested" : "failed";
+    return { call: { toolName: call.toolName, args }, status };
+  };
+  const existingRequiredFilePaths = (): string[] => executionRequirements.flatMap((requirement) => {
+    if (requirement.kind !== "required_file" || typeof requirement.parameters.path !== "string") return [];
+    try {
+      const fullPath = assertContainedRealPath(workspacePath, requirement.parameters.path);
+      return existsSync(fullPath) ? [canonicalRequirementPath(requirement.parameters.path)] : [];
+    } catch {
+      return [];
+    }
+  });
+  const evaluateCurrentRequirements = (calls: ToolCallRecord[], workspace: RequirementWorkspaceState): RequirementEvaluation[] => {
+    const observations: RequirementObservation[] = calls.flatMap((call) => {
+      const observed = requirementToolCallFromRecord(call);
+      return observeRequirementToolCall(observed.call, call.resultJson, observed.status);
+    });
+    const workspacePaths = [...new Set([...workspace.paths, ...existingRequiredFilePaths()])];
+    if (workspace.measured) {
+      observations.push(observeRequirementChangedPaths(workspacePaths, "final workspace status observed"));
+    } else if (workspacePaths.length > 0) {
+      observations.push(observeRequirementChangedPaths(workspacePaths, "durable tool and workspace paths observed"));
+    }
+    return evaluateRequirementObservations(executionRequirements, observations);
+  };
+  let requirementEvaluations: RequirementEvaluation[] = evaluateRequirementObservations(executionRequirements, []);
+
   const persistExecutionCheckpoint = async (phase: string): Promise<string> => {
-    const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) })
-      .catch(() => ({ lines: [] as string[], truncated: false, timedOut: false }));
+    const workspace = await readRequirementWorkspaceState();
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    requirementEvaluations = evaluateCurrentRequirements(calls, workspace);
     const failedCalls = calls.filter((call) => call.status === "failed");
     const lastEvent = records.latestEvent(taskId);
     const checkpointCursor = lastEvent?.sequence ?? 0;
@@ -2713,10 +2787,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         decisions: ["Continue through durable execution segments without treating an internal boundary as completion."],
         completedWork: [],
         currentPhase: phase,
-        filesChanged: status.lines.filter((line) => !line.startsWith("## ")).map((line) => line.slice(3).trim()),
-        gitStatus: status.lines.join("\n"),
+        filesChanged: workspace.paths,
+        gitStatus: workspace.lines.join("\n"),
         tests: [],
-        unresolvedFailures: [],
+        unresolvedFailures: requirementEvaluations
+          .filter((evaluation) => evaluation.status === "failed" || evaluation.status === "unevaluated")
+          .map((evaluation) => `${evaluation.kind ?? "unmapped"}: ${evaluation.status}`),
         recoveryAttempts: [],
         pendingWork: completedWithoutMoreTools ? [] : ["Continue provider execution and complete verification."],
         approvals: { records: approvals.listByTask(taskId).map((approval) => ({ id: approval.id, kind: approval.kind, status: approval.status, decision: approval.decision })) },
@@ -2725,6 +2801,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         providerRouting: { providerId: providerType, model: contextModel, route: primaryRoute },
         providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
         evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
+        executionRequirements,
+        requirementEvaluations,
       },
       completedCalls: calls.filter((call) => call.status === "completed"),
       testCalls: calls.filter((call) => call.toolName === "run_command").map((call) => ({ ...call, cursor: checkpointCursor })),
@@ -2770,6 +2848,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
     executionCheckpointIds.push(checkpointId);
     return checkpointId;
+  };
+
+  const refreshRequirementEvaluations = async (): Promise<RequirementEvaluation[]> => {
+    const workspace = await readRequirementWorkspaceState();
+    requirementEvaluations = evaluateCurrentRequirements(
+      convs.listToolCallsForMessage(assistantMessageRow.id),
+      workspace,
+    );
+    return requirementEvaluations;
   };
 
   /**
@@ -2897,6 +2984,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return true;
   };
 
+  const returnRequirementBlock = async (): Promise<boolean> => {
+    if (canCompleteWithRequirements(executionRequirements, requirementEvaluations)) return false;
+    const unresolved = requirementEvaluations
+      .filter((evaluation) => evaluation.status !== "verified" && evaluation.status !== "waived")
+      .map((evaluation) => `${evaluation.kind ?? "unmapped"}=${evaluation.status}`);
+    const message = `Stopping without completion: explicit task requirements remain unresolved (${unresolved.join(", ") || "evaluation unavailable"}).`;
+    const details = {
+      requirementEvaluations: requirementEvaluations.map((evaluation) => ({
+        requirementId: evaluation.requirementId,
+        kind: evaluation.kind,
+        status: evaluation.status,
+      })),
+    };
+    if (await returnMissionWorkerOutcome("validation_required", message, details)) return true;
+    closeCurrentTurn({ final: false, aborted: true });
+    const checkpointId = await persistExecutionCheckpoint("requirement_evaluation_incomplete");
+    failCurrentSegment("requirement_evaluation_incomplete");
+    transitionAgentState("interrupted", { reason: "requirement_evaluation_incomplete", message, checkpointId, turns: absoluteTurn, ...details });
+    records.transitionTask(taskId, "interrupted", {
+      id: randomUUID(),
+      createdAt: now(),
+      payload: { reason: "requirement_evaluation_incomplete", message, checkpointId, ...details },
+    });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return true;
+  };
+
   const enforceArtifactDeliveryBoundary = async (): Promise<"continue" | "stop" | null> => {
     const assessment = assessArtifactDelivery({
       requiresArtifact: requiresArtifactDelivery,
@@ -2952,6 +3067,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const completeWithCanonicalAnswer = (finalText: string, sourceTurnKey: string): void => {
+    if (!canCompleteWithRequirements(executionRequirements, requirementEvaluations)) {
+      throw new Error("Cannot create canonical answer while an explicit execution requirement is unresolved");
+    }
     const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
     const evidenceJson = {
       sourceTurnKey,
@@ -2959,6 +3077,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       verification: completionState.verification,
       unresolvedBlocker: completionState.failure?.detail ?? null,
       unresolvedFailures: completionState.failure ? [`${completionState.failure.tool}: ${completionState.failure.detail}`] : [],
+      executionRequirements,
+      requirementEvaluations,
+      requirementsSatisfied: canCompleteWithRequirements(executionRequirements, requirementEvaluations),
       status: taskMissionId ? "pending_mission_verification" : "completed",
     };
     db.transaction(() => {
@@ -3050,6 +3171,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
       return;
     }
+    await refreshRequirementEvaluations();
+    if (await returnRequirementBlock()) return;
     for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
     completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
     return;
@@ -3071,7 +3194,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // Seed the artifact baseline once, before any turn runs, so a workspace that
   // was already dirty is not mistaken for progress this task made. A worktree
   // or non-repository workspace simply yields no baseline.
-  for (const artifact of fingerprintPaths(await dirtyWorkspacePaths())) knownArtifacts.set(artifact.path, artifact.contentHash);
+  const initialRequirementWorkspace = await readRequirementWorkspaceState(false);
+  requirementBaselinePaths = new Set(initialRequirementWorkspace.paths);
+  for (const artifact of fingerprintPaths(initialRequirementWorkspace.paths)) knownArtifacts.set(artifact.path, artifact.contentHash);
   previousProgressSnapshot = buildExecutionProgressSnapshot({
     missionId: progressIdentity,
     operationId: null,
@@ -3947,6 +4072,28 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
               "tool_not_permitted_in_mode",
             );
+          }
+
+          // Explicit user requirements are enforced after argument
+          // normalization/validation but before any approval record or tool
+          // dispatch. This preserves the existing permission boundary while
+          // ensuring a prohibited action cannot become an approval prompt or a
+          // filesystem/provider side effect.
+          const requirementResult = enforceToolRequirement(
+            { toolName: tc.name, args: args as Record<string, unknown> },
+            executionRequirements,
+          );
+          if (!requirementResult.allowed) {
+            let payload: Record<string, unknown> = { errorType: "requirement_violation" };
+            try {
+              const parsed = JSON.parse(requirementResult.resultJson) as unknown;
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
+            } catch {
+              // The requirement module emits JSON; retain a bounded structured
+              // fallback if a future implementation violates that contract.
+            }
+            const reason = typeof payload.reason === "string" ? payload.reason : "the action conflicts with an explicit task requirement";
+            throw new AgentToolFailure(`Explicit task requirement violated: ${reason}`, payload, "requirement_violation");
           }
 
           if (OBSERVATION_TOOL_NAMES.has(tc.name)) {
@@ -5073,6 +5220,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     handleCancellation();
     return;
   }
+
+  await refreshRequirementEvaluations();
+  if (await returnRequirementBlock()) return;
 
   // Completion gate: the model stopped emitting tool calls (its "I'm done"
   // signal), but the last workspace mutation or verification it ran failed and

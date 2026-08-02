@@ -186,6 +186,28 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     providerRouting: compactRecord(snapshot.providerRouting, 8_192),
     providerContinuationRefs: uniqueStrings(snapshot.providerContinuationRefs),
     evidenceRequired: uniqueStrings(snapshot.evidenceRequired),
+    ...(snapshot.executionRequirements
+      ? {
+          executionRequirements: snapshot.executionRequirements.slice(-MAX_ARRAY_ENTRIES).map((requirement) => ({
+            id: boundedString(requirement.id, 160),
+            kind: requirement.kind,
+            sourceExcerpt: boundedString(requirement.sourceExcerpt, 2_000),
+            parameters: compactRecord(requirement.parameters, 2_048),
+            authoritative: requirement.authoritative,
+            status: requirement.status,
+          })),
+        }
+      : {}),
+    ...(snapshot.requirementEvaluations
+      ? {
+          requirementEvaluations: snapshot.requirementEvaluations.slice(-MAX_ARRAY_ENTRIES).map((evaluation) => ({
+            requirementId: boundedString(evaluation.requirementId, 160),
+            kind: evaluation.kind,
+            status: evaluation.status,
+            evidence: uniqueStrings(evaluation.evidence).slice(-8),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -243,6 +265,8 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       providerRouting: {},
       providerContinuationRefs: [],
       evidenceRequired: [],
+      ...(bounded.executionRequirements ? { executionRequirements: [] } : {}),
+      ...(bounded.requirementEvaluations ? { requirementEvaluations: [] } : {}),
     };
   }
 

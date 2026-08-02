@@ -1,5 +1,6 @@
 import type { MissionVerificationStrategy } from "@morrow/contracts";
 import type { DraftCriterion } from "./criteria.js";
+import { extractExecutionRequirements } from "../execution/requirements.js";
 
 /**
  * Preserve the requirements the user actually stated.
@@ -225,10 +226,22 @@ export function extractObjectiveRequirements(objective: string): ObjectiveRequir
 
 /** The stated requirements as draft criteria, ready to merge with generated ones. */
 export function objectiveRequirementCriteria(objective: string): DraftCriterion[] {
-  return extractObjectiveRequirements(objective).map((requirement) => ({
+  const criteria = extractObjectiveRequirements(objective).map((requirement) => ({
     description: requirement.statement.length > 300 ? `${requirement.statement.slice(0, 297)}...` : requirement.statement,
     verification: requirement.verification,
   }));
+  const existing = new Set(criteria.map((criterion) => normalizeForDedupe(criterion.description)));
+  for (const requirement of extractExecutionRequirements(objective)) {
+    const description = requirement.sourceExcerpt.length > 300 ? `${requirement.sourceExcerpt.slice(0, 297)}...` : requirement.sourceExcerpt;
+    const key = normalizeForDedupe(description);
+    if (!key || existing.has(key)) continue;
+    existing.add(key);
+    criteria.push({
+      description,
+      verification: { kind: "manual", describe: `Explicit execution requirement (${requirement.kind ?? "unmapped"}): ${description}` },
+    });
+  }
+  return criteria;
 }
 
 /**

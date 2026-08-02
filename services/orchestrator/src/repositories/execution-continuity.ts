@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ProviderContinuationState } from "../provider/base.js";
 import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
+import type { ExecutionRequirement, RequirementEvaluation } from "../execution/requirements.js";
 
 export interface ExecutionSegment {
   id: string;
@@ -67,6 +68,10 @@ export interface ExecutionCheckpointSnapshot {
   providerRouting: Record<string, unknown>;
   providerContinuationRefs: string[];
   evidenceRequired: string[];
+  /** Bounded, durable source contract used to produce the evaluations below. */
+  executionRequirements?: ExecutionRequirement[];
+  /** Bounded, durable evaluation ledger for explicit execution constraints. */
+  requirementEvaluations?: RequirementEvaluation[];
 }
 
 export interface ExecutionCheckpoint {
