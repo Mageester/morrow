@@ -358,7 +358,7 @@ describe("MissionService.concludeWithoutSuccess", () => {
     db.close();
   });
 
-  it("does not duplicate verification after a heartbeat loss during close-out", async () => {
+  it("keeps a same-process active verifier fenced until it finally unwinds", async () => {
     const workspace = tmp("closure-heartbeat-loss-ws-");
     const db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
@@ -429,7 +429,9 @@ describe("MissionService.concludeWithoutSuccess", () => {
     }));
     const secondResult = await second;
     expect(secondResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
-    expect(repoA.getTerminalOutcomeClaim(mission.id)?.verificationStatus).toBe("abandoned");
+    const activeClaim = repoA.getTerminalOutcomeClaim(mission.id);
+    expect(activeClaim?.verificationStatus).toBe("running");
+    const activeGeneration = activeClaim?.generation;
     const third = observe(serviceB.concludeTerminalOutcome(mission.id, {
       kind: "startup_reconciliation",
       reason: "Retry while the original verifier is still blocked.",
@@ -439,6 +441,7 @@ describe("MissionService.concludeWithoutSuccess", () => {
     try {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(execCalls).toHaveLength(1);
+      expect(repoA.getTerminalOutcomeClaim(mission.id)?.generation).toBe(activeGeneration);
     } finally {
       releaseVerification();
       await Promise.all([first, third]);

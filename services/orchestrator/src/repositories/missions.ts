@@ -680,16 +680,14 @@ export function missionsRepository(db: Database.Database) {
 
         const stale = claim.leaseExpiresAt === null || claim.leaseExpiresAt <= input.now;
         if (!stale) return { acquired: false, claim };
-        if (claim.verificationStatus === "running") {
-          db.prepare(`UPDATE mission_terminal_outcome_claims
-            SET verification_status='abandoned', verification_generation=verification_generation+1
-            WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
-              AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
-            .run(input.missionId, claim.ownerId, claim.generation, input.now);
+        // A verifier may still be unwinding in this process even though its
+        // durable lease has expired. Keep the claim fenced to that operation;
+        // otherwise a second call could start a duplicate verification before
+        // the original promise has settled. With no local operation, the
+        // generation-fenced update below atomically hands the stale claim to
+        // the recovery owner so a crashed process needs only one attempt.
+        if (input.activeVerificationOwnerId && (claim.verificationStatus === "running" || claim.verificationStatus === "abandoned")) {
           return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
-        }
-        if (claim.verificationStatus === "abandoned" && input.activeVerificationOwnerId === claim.ownerId) {
-          return { acquired: false, claim };
         }
         const updated = db.prepare(`UPDATE mission_terminal_outcome_claims
           SET kind=?,reason=?,preserve_status=?,owner_id=?,claimed_at=?,lease_expires_at=?,completed_at=NULL,

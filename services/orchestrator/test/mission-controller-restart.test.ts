@@ -227,6 +227,80 @@ describe("mission controller restart continuity", () => {
     db.close();
   });
 
+  it("takes over an expired running close-out during the first startup attempt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "morrow-controller-closeout-crash-"));
+    roots.push(root);
+    const db = openDatabase(":memory:");
+    const timestamp = "2026-07-16T12:00:00.000Z";
+    const afterLease = "2026-07-16T12:00:02.000Z";
+    projectRepository(db).createProject({ id: "project-1", name: "Project", workspacePath: root, createdAt: timestamp });
+    db.prepare(`INSERT INTO missions
+      (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`)
+      .run("mission-1", 1, "project-1", "Recover the crashed close-out", "blocked", 1, "{}", timestamp, timestamp);
+    const repo = missionsRepository(db);
+    const seeded = repo.claimTerminalOutcome({
+      missionId: "mission-1",
+      kind: "controller_exhausted",
+      reason: "The previous process crashed during verification.",
+      preserveStatus: "blocked",
+      ownerId: "process-before-crash",
+      now: timestamp,
+      leaseExpiresAt: "2026-07-16T12:00:01.000Z",
+    });
+    expect(repo.startTerminalOutcomeVerification({
+      missionId: "mission-1",
+      ownerId: "process-before-crash",
+      generation: seeded.claim.generation,
+      now: timestamp,
+    })).toBe(true);
+
+    const runtime = missionRuntimeRepository(db);
+    runtime.create({ missionId: "mission-1", state: "executing", now: timestamp });
+    let execCalls = 0;
+    const service = new MissionService({
+      repo,
+      getWorkspacePath: () => root,
+      backupDir: join(root, "backups"),
+      serviceInstanceId: "process-after-crash",
+      now: () => afterLease,
+      runOptions: {
+        exec: async () => {
+          execCalls += 1;
+          return { exitCode: 0, output: "ok", timedOut: false };
+        },
+      },
+    });
+    service.addCriterion("mission-1", "The recovery check passes", { kind: "test", command: "npm test", expectExitCode: 0 });
+    const controllerRunner = new MissionControllerRunner({
+      runtime,
+      controller: {} as never,
+      taskRunner: { isActive: () => false, waitFor: async () => undefined },
+      ownerId: "controller-after-crash",
+      concludeTerminalOutcome: (missionId, input) => service.concludeTerminalOutcome(missionId, input),
+      now: () => afterLease,
+    });
+
+    const summary = await reconcileMissionsOnStartup({
+      db,
+      runner: { run: vi.fn(), isActive: () => false },
+      controllerRunner,
+      now: () => afterLease,
+    });
+
+    expect(summary.missionsResumed).toBe(1);
+    expect(execCalls).toBe(1);
+    expect(runtime.get("mission-1")?.state).toBe("blocked");
+    expect(repo.getTerminalOutcomeClaim("mission-1")).toMatchObject({
+      ownerId: "process-after-crash",
+      status: "completed",
+      verificationStatus: "completed",
+    });
+    expect(repo.listEvents("mission-1").filter((event) => event.type === "mission.terminal_outcome_recorded"))
+      .toHaveLength(1);
+    db.close();
+  });
+
   it("waits for terminal-runtime startup reconciliation before returning", async () => {
     const db = openDatabase(":memory:");
     const timestamp = "2026-07-16T12:00:00.000Z";
