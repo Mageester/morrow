@@ -3,11 +3,26 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const orchestratorMocks = vi.hoisted(() => ({
+  migrateLegacyDatabase: vi.fn(() => ({ migratedFrom: undefined })),
+  openDatabase: vi.fn(() => ({ close: vi.fn() })),
+  TaskRunner: vi.fn(),
+  createDefaultMissionControllerRunner: vi.fn(() => ({})),
+  reconcileMissionsOnStartup: vi.fn(),
+  buildServer: vi.fn(),
+}));
+
+vi.mock("@morrow/orchestrator", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@morrow/orchestrator")>()),
+  ...orchestratorMocks,
+}));
+
 import { ConfigStore } from "../src/config/config.js";
 import { Output } from "../src/cli/output.js";
 import { Context } from "../src/cli/context.js";
-import { readPid, recoverReachableServicePid, stop } from "../src/service/lifecycle.js";
+import { readPid, recoverReachableServicePid, serveForeground, stop } from "../src/service/lifecycle.js";
 
 describe("service lifecycle", () => {
   const tempDirs: string[] = [];
@@ -20,6 +35,7 @@ describe("service lifecycle", () => {
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+    vi.clearAllMocks();
   });
 
   function makeContext(baseUrl: string) {
@@ -109,5 +125,32 @@ describe("service lifecycle", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("waits for startup reconciliation before binding the foreground service", async () => {
+    let resolveReconciliation!: (summary: { missionsResumed: number; interrupted: number; requeued: number; cancelledOrphans: number }) => void;
+    const reconciliation = new Promise<{ missionsResumed: number; interrupted: number; requeued: number; cancelledOrphans: number }>((resolve) => {
+      resolveReconciliation = resolve;
+    });
+    const order: string[] = [];
+    orchestratorMocks.reconcileMissionsOnStartup.mockImplementation(async () => {
+      order.push("reconciliation-start");
+      const summary = await reconciliation;
+      order.push("reconciliation-complete");
+      return summary;
+    });
+    const listen = vi.fn(async () => {
+      order.push("listen");
+      throw new Error("stop foreground test");
+    });
+    orchestratorMocks.buildServer.mockReturnValue({ listen, close: vi.fn() });
+
+    const foreground = serveForeground(makeContext("http://127.0.0.1:0")).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(order).toContain("reconciliation-start"));
+    expect(order).toEqual(["reconciliation-start"]);
+
+    resolveReconciliation({ missionsResumed: 1, interrupted: 0, requeued: 0, cancelledOrphans: 0 });
+    await expect(foreground).resolves.toMatchObject({ message: "stop foreground test" });
+    expect(order).toEqual(["reconciliation-start", "reconciliation-complete", "listen"]);
   });
 });
