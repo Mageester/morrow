@@ -163,7 +163,89 @@ git add services/orchestrator/src/mission/terminal-outcome.ts services/orchestra
 git commit -m "fix(orchestrator): coordinate terminal mission outcomes"
 ```
 
-### Task 2: Canonicalize every model selection before metadata use
+### Task 2: Bound non-progress loops and checkpoint/history amplification
+
+**Files:**
+- Create: `services/orchestrator/src/execution/progress-epoch.ts`
+- Create: `services/orchestrator/src/execution/checkpoint-snapshot.ts`
+- Create: `services/orchestrator/test/live-loop-performance-conformance.test.ts`
+- Modify: `services/orchestrator/src/execution/agent.ts`
+- Modify: `services/orchestrator/src/repositories/execution-continuity.ts`
+- Modify: `services/orchestrator/src/repositories/task-records.ts`
+- Modify: `services/orchestrator/src/server.ts`
+- Test: `services/orchestrator/test/agent-loop.test.ts`
+- Test: `services/orchestrator/test/execution-continuity.test.ts`
+- Test: `services/orchestrator/test/checkpoint-rollover.test.ts`
+- Test: `services/orchestrator/test/sse.test.ts`
+- Test: `services/orchestrator/test/server-web-stream.test.ts`
+- Test: `services/orchestrator/test/api.test.ts`
+
+**Interfaces:**
+- Produces: a progress-epoch guard whose signature counts survive interleaved reads and compaction until a meaningful mutation or named verification failure changes the epoch.
+- Produces: `MAX_EXECUTION_CHECKPOINT_BYTES = 131_072` and bounded checkpoint projections that omit cumulative raw tool arguments/results.
+- Changes: `TaskRecordRepository` exposes cursor-aware/latest-event queries used by streaming and checkpoint paths instead of hydrating full history.
+- Preserves: append-only task/provider/tool audit records, latest-checkpoint restart accuracy, permissions, and provider choice.
+
+- [ ] **Step 1: Write deterministic performance conformance failures**
+
+Cover the measured live failure classes without wall-clock assertions:
+
+```ts
+expect(interleavedReadSignatures.executionsPerSignature).toBeLessThanOrEqual(3);
+expect(buildWithoutMutation.providerTurns).toBeLessThanOrEqual(12);
+expect(Buffer.byteLength(JSON.stringify(latest.snapshot))).toBeLessThanOrEqual(131_072);
+expect(checkpointRowsForTask).toHaveLength(1);
+expect(eventsQuery.rowsRead).toBe(newEvents.length);
+```
+
+The loop fixture must interleave `read_file`, `list_files`, and `inspect_workspace`, persist observation evidence, and compact context between repeats. Assert that none of those actions starts a new progress epoch. Seed 10,000 old events before the cursor test so a cursorless full scan is observable through a repository spy or SQLite query trace.
+
+- [ ] **Step 2: Reproduce the current amplification**
+
+Run:
+
+```powershell
+pnpm --filter @morrow/orchestrator exec vitest run test/live-loop-performance-conformance.test.ts test/agent-loop.test.ts test/execution-continuity.test.ts test/checkpoint-rollover.test.ts test/sse.test.ts test/server-web-stream.test.ts test/api.test.ts
+```
+
+Expected: interleaved observation calls evade the sliding window; observation evidence resets stagnation; snapshots exceed 128 KiB and accumulate rows; cursor polling reads historical events.
+
+- [ ] **Step 3: Count repetition across an unchanged progress epoch**
+
+Normalize exact observation-tool signatures and count them for the whole unchanged epoch, not only the last six calls. Permit at most three executions of one exact signature per epoch. Only a durable artifact mutation or a named verification that fails with new diagnostic evidence starts a new epoch; reads, listings, workspace inspection, narration, compaction, and duplicated evidence do not.
+
+- [ ] **Step 4: Bound pre-mutation wandering for delivery tasks**
+
+For task shapes that require an artifact, trigger an action-only recovery no later than provider turn 6 without the first mutation and end or change strategy no later than turn 12. A recovery prompt must prohibit more discovery unless it names a specific unresolved prerequisite. Do not apply this mutation requirement to read-only tasks.
+
+- [ ] **Step 5: Stop observation evidence from disguising stagnation**
+
+Separate `observation_recorded` from meaningful delivery progress. Post-delivery reads may satisfy a declared verification contract, but generic persisted evidence must not reset the delivery stagnation counter or postpone completion evaluation.
+
+- [ ] **Step 6: Store only a bounded latest recovery snapshot**
+
+Project unique, size-bounded summaries/hashes for completed calls, tests, failures, and recovery attempts. Never copy cumulative raw tool arguments or results into each snapshot. Reject or deterministically truncate a projection above `MAX_EXECUTION_CHECKPOINT_BYTES`. In one transaction, save the new checkpoint and remove older internal recovery checkpoints for that task only; retain the append-only audit in task events, provider turns, and tool-call records.
+
+- [ ] **Step 7: Make event consumers cursor-aware at the database boundary**
+
+Add focused repository methods for latest event, event types, and `afterSequence`. Update `/api/tasks/:id/events`, SSE polling, checkpoint cursor creation, and recovery-attempt projection to use them. No cursor-bearing request may call `listEvents(taskId)` without the cursor and filter in JavaScript.
+
+- [ ] **Step 8: Run focused loop, recovery, and API tests**
+
+```powershell
+pnpm --filter @morrow/orchestrator exec vitest run test/live-loop-performance-conformance.test.ts test/agent-loop.test.ts test/agent-completion-gate.test.ts test/execution-continuity.test.ts test/checkpoint-rollover.test.ts test/sse.test.ts test/server-web-stream.test.ts test/api.test.ts
+```
+
+Expected: all pass; pathological delivery fixtures cannot exceed 12 pre-mutation turns, each task retains one checkpoint no larger than 128 KiB, restart state round-trips, and event polling reads only new rows.
+
+- [ ] **Step 9: Commit bounded execution overhead**
+
+```powershell
+git add services/orchestrator/src/execution/progress-epoch.ts services/orchestrator/src/execution/checkpoint-snapshot.ts services/orchestrator/src/execution/agent.ts services/orchestrator/src/repositories/execution-continuity.ts services/orchestrator/src/repositories/task-records.ts services/orchestrator/src/server.ts services/orchestrator/test/live-loop-performance-conformance.test.ts services/orchestrator/test/agent-loop.test.ts services/orchestrator/test/execution-continuity.test.ts services/orchestrator/test/checkpoint-rollover.test.ts services/orchestrator/test/sse.test.ts services/orchestrator/test/server-web-stream.test.ts services/orchestrator/test/api.test.ts
+git commit -m "fix(orchestrator): bound non-progress execution overhead"
+```
+
+### Task 3: Canonicalize every model selection before metadata use
 
 **Files:**
 - Modify: `services/orchestrator/src/routing/models.ts:45-75,140-150,220-240`
@@ -221,7 +303,7 @@ git add services/orchestrator/src/routing/models.ts services/orchestrator/test/m
 git commit -m "fix(routing): canonicalize model metadata aliases"
 ```
 
-### Task 3: Enforce explicit hard requirements as observable contracts
+### Task 4: Enforce explicit hard requirements as observable contracts
 
 **Files:**
 - Create: `services/orchestrator/src/execution/requirements.ts`
@@ -290,7 +372,7 @@ git add services/orchestrator/src/execution/requirements.ts services/orchestrato
 git commit -m "fix(orchestrator): enforce explicit task requirements"
 ```
 
-### Task 4: Make completion evidence-driven for every declared task shape
+### Task 5: Make completion evidence-driven for every declared task shape
 
 **Files:**
 - Create: `services/orchestrator/src/execution/completion-contract.ts`
@@ -339,7 +421,7 @@ git add services/orchestrator/src/execution/completion-contract.ts services/orch
 git commit -m "fix(orchestrator): complete tasks from durable evidence"
 ```
 
-### Task 5: Guard read-only constraints and private provider continuation as classes
+### Task 6: Guard read-only constraints and private provider continuation as classes
 
 **Files:**
 - Create: `services/orchestrator/test/execution-boundary-conformance.test.ts`
@@ -370,7 +452,7 @@ git add services/orchestrator/test/execution-boundary-conformance.test.ts servic
 git commit -m "test(orchestrator): guard execution boundary classes"
 ```
 
-### Task 6: Run real-provider canaries and fix only reproduced failures
+### Task 7: Run real-provider canaries and fix only reproduced failures
 
 **Files:**
 - Modify: `services/orchestrator/test/live/flagship-build.test.ts`
@@ -405,7 +487,7 @@ If a free model repeatedly fails while orchestration invariants hold, select one
 
 Use `fix(orchestrator): <class-level invariant>` or `fix(provider): <class-level invariant>`. Include its structural test and no unrelated cleanup.
 
-### Task 7: Prove the gate and record the new invariants
+### Task 8: Prove the gate and record the new invariants
 
 **Files:**
 - Create: `docs/decisions/0011-terminal-outcomes-and-requirement-enforcement.md`
@@ -427,7 +509,7 @@ Run 10 attempts per provider, or enough additional attempts for each latest wind
 pnpm flagship:gate
 ```
 
-Expected: `Flagship workflow proven` with both DeepSeek and OpenCode Zen at 9/10 or better. If not, return to Task 6; do not edit evidence or lower thresholds.
+Expected: `Flagship workflow proven` with both DeepSeek and OpenCode Zen at 9/10 or better. If not, return to Task 7; do not edit evidence or lower thresholds.
 
 - [ ] **Step 3: Write ADR 0011**
 
