@@ -193,11 +193,33 @@ export function conversationsRepository(db: Database.Database) {
       startedAt?: string | null;
       completedAt?: string | null;
     }): ToolCallRecord {
+      // This table is keyed globally on the tool-call id, and the conflicting
+      // update below deliberately refreshes only lifecycle fields — a call
+      // legitimately upserts several times as it moves requested -> running ->
+      // completed, and the name and arguments recorded on the first write are
+      // the truth. That makes an id COLLISION between two different tasks
+      // indistinguishable from a normal lifecycle update, and silent: the
+      // second task's call updates the first task's row and is never recorded
+      // at all. That is exactly what happened when the Gemini adapter minted
+      // per-turn ordinal ids ("gemini-tool-0"), and every Gemini conversation
+      // after the first showed zero tool calls.
+      //
+      // A tool-call id is unique per task by construction, so a write landing
+      // on another task's row is a defect in whatever minted the id — never a
+      // recoverable condition. Refuse it loudly instead of losing the data.
+      const existingTaskId = db
+        .prepare("SELECT task_id FROM message_tool_calls WHERE id = ?")
+        .get(input.id) as { task_id: string } | undefined;
+      if (existingTaskId && existingTaskId.task_id !== input.taskId) {
+        throw new Error(
+          `Tool-call id collision: "${input.id}" is already recorded under task ${existingTaskId.task_id} and cannot be rewritten by task ${input.taskId}. Tool-call ids must be unique per task; the provider adapter that minted this id is reusing it across streams.`
+        );
+      }
       db.prepare(
-        `INSERT INTO message_tool_calls 
-         (id, message_id, task_id, tool_name, args_json, result_json, status, error_type, error_message, created_at, started_at, completed_at) 
+        `INSERT INTO message_tool_calls
+         (id, message_id, task_id, tool_name, args_json, result_json, status, error_type, error_message, created_at, started_at, completed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET 
+         ON CONFLICT(id) DO UPDATE SET
            result_json = excluded.result_json,
            status = excluded.status,
            error_type = excluded.error_type,

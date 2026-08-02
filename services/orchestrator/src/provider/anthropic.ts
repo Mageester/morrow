@@ -9,6 +9,7 @@ import {
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
+import { reconcileWireLimits } from "./limits.js";
 import { translateReasoning } from "./reasoning.js";
 
 export interface AnthropicConfig {
@@ -43,6 +44,10 @@ function tryParseJson(value: string): unknown {
     return {};
   }
 }
+
+/** `max_tokens` is required by the Messages API, so an unbudgeted request still
+ * has to name a ceiling. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
 /**
  * Normalize an Anthropic `stop_reason` into the protocol-independent
@@ -136,11 +141,9 @@ export class AnthropicProvider implements AiProvider {
     const { system, messages: anthropicMessages } = this.buildMessages(messages);
     const body: Record<string, any> = {
       model: options.model || this.config.defaultModel,
-      max_tokens: options.maxOutputTokens ?? 4096,
       messages: anthropicMessages,
       stream: true,
       ...(system ? { system } : {}),
-      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
     };
     if (options.tools && options.tools.length > 0) {
       body.tools = options.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
@@ -154,22 +157,32 @@ export class AnthropicProvider implements AiProvider {
         return;
       }
       Object.assign(body, translated.params);
-      // Enabling extended thinking constrains two fields this adapter has
-      // already set, and the API rejects the request outright if either
-      // conflicts: sampling temperature may not be combined with thinking, and
-      // `max_tokens` must leave room for the visible answer *on top of* the
-      // thinking budget. Reconcile both here, at the one boundary that builds
-      // the wire body, so no caller has to know the coupling — the preset that
-      // supplies temperature and output budget cannot see the reasoning mode.
-      const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
-      if (thinking?.type === "enabled") {
-        delete body.temperature;
-        const budgetTokens = thinking.budget_tokens ?? 0;
-        if (body.max_tokens <= budgetTokens) {
-          body.max_tokens = budgetTokens + (options.maxOutputTokens ?? 4096);
-        }
-      }
     }
+
+    // Enabling extended thinking constrains two fields this request also
+    // carries, and the API rejects the request outright if either conflicts:
+    // sampling temperature may not be combined with thinking, and `max_tokens`
+    // must leave room for the visible answer *on top of* the thinking budget.
+    // The adapter states what the protocol requires; provider/limits.ts owns
+    // the arithmetic for every such coupling in one place, so no caller — and
+    // no future adapter — has to remember it. The preset that supplies
+    // temperature and the output budget cannot see the reasoning mode.
+    const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
+    const thinkingEnabled = thinking?.type === "enabled";
+    const requestedOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    const limits = reconcileWireLimits({
+      maxOutputTokens: requestedOutputTokens,
+      timeoutMs: options.timeoutMs,
+      temperature: options.temperature,
+      ...(thinkingEnabled ? { reasoningBudgetTokens: thinking?.budget_tokens ?? 0 } : {}),
+      reasoningExcludesTemperature: true,
+      // Preserve the caller's full allowance as visible-answer room rather than
+      // spending it on thinking: an explicit output budget states how much
+      // ANSWER was asked for.
+      visibleAnswerFloorTokens: requestedOutputTokens,
+    });
+    body.max_tokens = limits.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    if (limits.temperature !== null) body.temperature = limits.temperature;
 
     const controller = new AbortController();
     let timedOut = false;
@@ -178,11 +191,11 @@ export class AnthropicProvider implements AiProvider {
       else options.abortSignal.addEventListener("abort", () => controller.abort());
     }
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (options.timeoutMs) {
+    if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, options.timeoutMs);
+      }, limits.timeoutMs);
     }
 
     let response: Response;

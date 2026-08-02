@@ -10,6 +10,7 @@ import {
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
+import { reconcileWireLimits } from "./limits.js";
 
 export interface GeminiConfig {
   apiKey: string;
@@ -35,6 +36,39 @@ interface GeminiPart {
 interface GeminiContent {
   role: "user" | "model";
   parts: GeminiPart[];
+}
+
+/**
+ * Normalize a Gemini candidate `finishReason` into the protocol-independent
+ * `finishReason` every adapter reports. `MAX_TOKENS` is the load-bearing one:
+ * it is how a model that spent its whole output budget — returning no visible
+ * answer at all — is told apart from one that genuinely had nothing to say,
+ * and it is what lets mission review retry a truncated response instead of
+ * grading an empty one (mission/completion.ts). Until this existed, that
+ * retry was dead on every Gemini route.
+ *
+ * Gemini reports `STOP` even when the candidate's only content was a
+ * `functionCall`, so the caller passes whether this stream emitted tool calls
+ * and a clean stop is reported as `tool_calls` — matching what every other
+ * adapter reports for the same situation.
+ */
+function normalizeGeminiFinishReason(
+  raw: unknown,
+  sawToolCall: boolean
+): NonNullable<ProviderChunk["finishReason"]> | undefined {
+  switch (raw) {
+    case "STOP": return sawToolCall ? "tool_calls" : "stop";
+    case "MAX_TOKENS": return "length";
+    case "SAFETY":
+    case "RECITATION":
+    case "BLOCKLIST":
+    case "PROHIBITED_CONTENT":
+    case "SPII":
+    case "IMAGE_SAFETY":
+      return "content_filter";
+    case undefined: case null: case "FINISH_REASON_UNSPECIFIED": return undefined;
+    default: return "other";
+  }
 }
 
 /**
@@ -119,9 +153,17 @@ export class GeminiProvider implements AiProvider {
       contents,
       ...(systemInstruction ? { systemInstruction } : {}),
     };
+    // One boundary reconciles this request's limits against each other; see
+    // provider/limits.ts. Notably the output ceiling and the deadline, which
+    // are only valid relative to one another.
+    const limits = reconcileWireLimits({
+      maxOutputTokens: options.maxOutputTokens,
+      timeoutMs: options.timeoutMs,
+      temperature: options.temperature,
+    });
     const generationConfig: Record<string, any> = {};
-    if (typeof options.temperature === "number") generationConfig.temperature = options.temperature;
-    if (typeof options.maxOutputTokens === "number") generationConfig.maxOutputTokens = options.maxOutputTokens;
+    if (limits.temperature !== null) generationConfig.temperature = limits.temperature;
+    if (limits.maxOutputTokens !== null) generationConfig.maxOutputTokens = limits.maxOutputTokens;
     if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
     if (options.tools && options.tools.length > 0) {
       body.tools = [{ functionDeclarations: options.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }];
@@ -134,11 +176,11 @@ export class GeminiProvider implements AiProvider {
       else options.abortSignal.addEventListener("abort", () => controller.abort());
     }
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (options.timeoutMs) {
+    if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, options.timeoutMs);
+      }, limits.timeoutMs);
     }
 
     const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
@@ -187,6 +229,8 @@ export class GeminiProvider implements AiProvider {
     let completionTokens = 0;
     let toolOrdinal = 0;
     let sawUsage = false;
+    let sawToolCall = false;
+    let rawFinishReason: unknown;
     // Unique per stream; see the class docstring for why an ordinal alone is
     // not a safe tool-call identity.
     const toolCallNonce = randomUUID().slice(0, 8);
@@ -215,11 +259,16 @@ export class GeminiProvider implements AiProvider {
             completionTokens = evt.usageMetadata.candidatesTokenCount ?? completionTokens;
           }
 
+          // Gemini reports the reason it stopped on the candidate itself, and
+          // may repeat or refine it across events; the last one observed wins.
+          if (evt.candidates?.[0]?.finishReason) rawFinishReason = evt.candidates[0].finishReason;
+
           const parts: GeminiPart[] = evt.candidates?.[0]?.content?.parts ?? [];
           for (const part of parts) {
             if (typeof part.text === "string" && part.text.length) {
               yield { type: "text", text: part.text };
             } else if (part.functionCall) {
+              sawToolCall = true;
               const ordinal = toolOrdinal++;
               yield {
                 type: "tool_call",
@@ -236,7 +285,17 @@ export class GeminiProvider implements AiProvider {
           }
         }
       }
-      if (sawUsage) yield { type: "done", usage: { promptTokens, completionTokens } };
+      // A terminal `done` is emitted unconditionally. It is the only chunk
+      // that can carry `finishReason`, and gating it on usage metadata — which
+      // Gemini omits on some responses, truncated ones included — is what made
+      // truncation unobservable on this route. Usage stays conditional so an
+      // absent count is never reported as zero.
+      const finishReason = normalizeGeminiFinishReason(rawFinishReason, sawToolCall);
+      yield {
+        type: "done",
+        ...(sawUsage ? { usage: { promptTokens, completionTokens } } : {}),
+        ...(finishReason ? { finishReason } : {}),
+      };
     } catch (e: any) {
       if (timedOut) {
         yield { type: "error", error: { type: "timeout", kind: "timeout", message: "Provider stream timed out", retryable: true } };

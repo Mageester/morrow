@@ -10,6 +10,7 @@ import {
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
+import { reconcileWireLimits } from "./limits.js";
 import { translateReasoning } from "./reasoning.js";
 
 export interface OpenAiCompatibleConfig {
@@ -85,8 +86,18 @@ export class OpenAiCompatibleProvider implements AiProvider {
       ...(this.config.includeUsage ? { stream_options: { include_usage: true } } : {}),
     };
 
-    if (typeof options.temperature === "number") body.temperature = options.temperature;
-    if (typeof options.maxOutputTokens === "number") body.max_tokens = options.maxOutputTokens;
+    // Every limit on this request is reconciled against the others in one
+    // place (provider/limits.ts) rather than adapter by adapter — most
+    // importantly the output ceiling against the deadline, since a reasoning
+    // route bills its hidden chain-of-thought against the same allowance and
+    // needs the wall clock to match.
+    const limits = reconcileWireLimits({
+      maxOutputTokens: options.maxOutputTokens,
+      timeoutMs: options.timeoutMs,
+      temperature: options.temperature,
+    });
+    if (limits.temperature !== null) body.temperature = limits.temperature;
+    if (limits.maxOutputTokens !== null) body.max_tokens = limits.maxOutputTokens;
     if (options.responseFormat === "json_object") body.response_format = { type: "json_object" };
 
     if (options.reasoning) {
@@ -113,11 +124,11 @@ export class OpenAiCompatibleProvider implements AiProvider {
       else options.abortSignal.addEventListener("abort", () => controller.abort());
     }
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (options.timeoutMs) {
+    if (limits.timeoutMs) {
       timeoutId = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, options.timeoutMs);
+      }, limits.timeoutMs);
     }
 
     const headers: Record<string, string> = {

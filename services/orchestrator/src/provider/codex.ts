@@ -10,6 +10,7 @@ import {
   type ProviderRouteMetadata,
 } from "./base.js";
 import { parseRetryAfter } from "./rate-guard.js";
+import { reconcileWireLimits } from "./limits.js";
 
 /**
  * Streaming adapter for OpenAI's ChatGPT/Codex subscription backend
@@ -65,6 +66,34 @@ export function codexHeaders(accessToken: string): Record<string, string> {
   const acct = extractChatgptAccountId(accessToken);
   if (acct) headers["ChatGPT-Account-ID"] = acct;
   return headers;
+}
+
+/**
+ * Normalize how a Responses-API stream ended into the protocol-independent
+ * `finishReason` every adapter reports.
+ *
+ * The Responses API splits this across two terminal events rather than a
+ * single field: `response.completed` means the model chose to stop, and
+ * `response.incomplete` carries the reason it could not — `max_output_tokens`
+ * being the load-bearing one, since a reasoning model bills its hidden
+ * chain-of-thought against the same allowance and can exhaust it before
+ * writing a single visible token. Without this, truncation was invisible on
+ * every Codex route and mission review's truncation retry could never fire.
+ *
+ * A completed response whose output contained a function call is reported as
+ * `tool_calls`, matching what the other adapters report for the same shape.
+ */
+function normalizeCodexFinishReason(
+  event: { type: string; response?: { incomplete_details?: { reason?: string } } },
+  sawToolCall: boolean
+): NonNullable<ProviderChunk["finishReason"]> | undefined {
+  if (event.type === "response.completed") return sawToolCall ? "tool_calls" : "stop";
+  if (event.type !== "response.incomplete") return undefined;
+  switch (event.response?.incomplete_details?.reason) {
+    case "max_output_tokens": return "length";
+    case "content_filter": return "content_filter";
+    default: return "other";
+  }
 }
 
 type ResponsesItem =
@@ -139,6 +168,22 @@ export class CodexProvider implements AiProvider {
       body.tools = options.tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.parameters }));
     }
 
+    // One boundary reconciles this request's limits against each other; see
+    // provider/limits.ts. The output ceiling and the deadline in particular are
+    // only meaningful relative to one another.
+    //
+    // The Codex backend serves gpt-5.x reasoning models that reject a sampling
+    // temperature outright, and it applies its own output ceiling, so neither
+    // limit is put on the wire here — but the deadline still has to admit the
+    // allowance the caller budgeted for, because that is the number the empty
+    // response recovery escalates. Reconciling with the caller's ceiling and
+    // sending only the resulting timeout keeps this route out of the failure
+    // where a raised budget silently becomes a stream timeout.
+    const limits = reconcileWireLimits({
+      maxOutputTokens: options.maxOutputTokens,
+      timeoutMs: options.timeoutMs,
+    });
+
     const controller = new AbortController();
     let timedOut = false;
     if (options.abortSignal) {
@@ -146,8 +191,8 @@ export class CodexProvider implements AiProvider {
       else options.abortSignal.addEventListener("abort", () => controller.abort());
     }
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (options.timeoutMs) {
-      timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs);
+    if (limits.timeoutMs) {
+      timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, limits.timeoutMs);
     }
 
     let response: Response;
@@ -191,6 +236,7 @@ export class CodexProvider implements AiProvider {
     // Map a Responses output-item id -> contiguous tool-call ordinal.
     const itemToOrdinal = new Map<string, number>();
     let nextOrdinal = 0;
+    let sawToolCall = false;
 
     try {
       while (true) {
@@ -215,6 +261,7 @@ export class CodexProvider implements AiProvider {
             case "response.output_item.added": {
               const item = evt.item;
               if (item?.type === "function_call") {
+                sawToolCall = true;
                 const ordinal = nextOrdinal++;
                 if (item.id) itemToOrdinal.set(item.id, ordinal);
                 yield { type: "tool_call", toolCalls: [{ id: item.call_id || item.id || "", index: ordinal, type: "function", function: { name: item.name || "", arguments: typeof item.arguments === "string" ? item.arguments : "" } }] };
@@ -230,12 +277,25 @@ export class CodexProvider implements AiProvider {
               const usage = evt.response?.usage;
               const cachedPromptTokens = usage?.input_tokens_details?.cached_tokens;
               if (usage) { promptTokens = usage.input_tokens ?? 0; completionTokens = usage.output_tokens ?? 0; }
-              yield { type: "done", usage: { promptTokens, completionTokens, ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}) } };
+              const finishReason = normalizeCodexFinishReason(evt, sawToolCall);
+              yield {
+                type: "done",
+                usage: { promptTokens, completionTokens, ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}) },
+                ...(finishReason ? { finishReason } : {}),
+              };
               break;
             }
-            case "response.incomplete":
-              yield { type: "done", usage: { promptTokens, completionTokens } };
+            case "response.incomplete": {
+              const usage = evt.response?.usage;
+              if (usage) { promptTokens = usage.input_tokens ?? promptTokens; completionTokens = usage.output_tokens ?? completionTokens; }
+              const finishReason = normalizeCodexFinishReason(evt, sawToolCall);
+              yield {
+                type: "done",
+                usage: { promptTokens, completionTokens },
+                ...(finishReason ? { finishReason } : {}),
+              };
               break;
+            }
             case "response.failed":
             case "error": {
               const msg = evt.response?.error?.message || evt.error?.message || evt.message || "Codex provider error";
