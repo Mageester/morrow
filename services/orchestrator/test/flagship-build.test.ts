@@ -85,6 +85,8 @@ class ScriptedProvider implements AiProvider {
 function writeAppTurns(content: string): ProviderChunk[][] {
   return [
     [{ type: "tool_call", toolCalls: [tool("flagship-write", 0, "create_file", { path: "app.mjs", content, purpose: "Create the task list app" })] } as ProviderChunk, done],
+    [{ type: "tool_call", toolCalls: [tool("flagship-syntax", 0, "run_command", { executable: "node", args: ["--check", "app.mjs"], purpose: "Verify app syntax" })] } as ProviderChunk, done],
+    [{ type: "tool_call", toolCalls: [tool("flagship-behavior", 0, "run_command", { executable: "node", args: ["app.mjs", "list"], purpose: "Verify CLI behavior" })] } as ProviderChunk, done],
     [{ type: "text", text: "Built app.mjs with add, list, and done, and verified each command." }, done],
   ];
 }

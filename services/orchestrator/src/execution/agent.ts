@@ -53,6 +53,7 @@ import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
+import { evaluateTaskCompletion, inferTaskShape, type CompletionInput, type CompletionResult } from "./completion-contract.js";
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
 import {
   canCompleteWithRequirements,
@@ -2501,6 +2502,47 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // which would misclassify a plain question about it as a change request.
     || /\b(change|update|create|write|edit|modify)\b[\s\S]{0,60}\b(bug|file|function|test|code|feature|method|class|module)\b/i.test(prompt);
   const requiresArtifactDelivery = agentMode === "agent" && requestsWorkspaceChange(latestUserPrompt);
+  const taskShape = inferTaskShape(latestUserPrompt, agentMode);
+  // Answer-only turns have no independent execution evidence to contractually
+  // evaluate. Preserve their existing terminal behavior, while keeping the
+  // strict read-only contract for prompts that request inspection/evidence or
+  // for any turn that actually records a tool observation.
+  const requestsReadOnlyEvidence = agentMode === "agent"
+    && /\b(?:read|inspect|review|analy[sz]e|diagnos(?:e|is)|list|check|verify|examine|search)\b/i.test(latestUserPrompt);
+  const completionContractApplies = (): boolean => {
+    if (taskShape !== "read_only") return true;
+    if (requestsReadOnlyEvidence || executionRequirements.some((requirement) => requirement.authoritative)) return true;
+    return convs.listToolCallsForMessage(assistantMessageRow.id).length > 0;
+  };
+  const frontendCompletionEvidence = (calls: ToolCallRecord[]): CompletionInput["frontend"] | undefined => {
+    if (!requestsFrontendBrowserValidation(latestUserPrompt)) return undefined;
+    const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
+    if (lastWrite < 0) return {};
+    const afterWrite = calls.slice(lastWrite + 1).filter((call) => call.status === "completed");
+    const names = new Set(afterWrite.map((call) => call.toolName));
+    const viewports = new Set<string>();
+    let visionAttached = true;
+    for (const call of afterWrite.filter((item) => item.toolName === "browser_screenshot")) {
+      try {
+        const result = JSON.parse(call.resultJson ?? "{}") as { viewport?: { width?: unknown; height?: unknown }; visionAnalysis?: unknown };
+        if (typeof result.viewport?.width === "number" && typeof result.viewport.height === "number") {
+          viewports.add(`${result.viewport.width}x${result.viewport.height}`);
+        }
+        if (result.visionAnalysis !== "attached_to_next_turn") visionAttached = false;
+      } catch {
+        visionAttached = false;
+      }
+    }
+    return {
+      routeHealthy: names.has("browser_open"),
+      domSnapshot: names.has("browser_snapshot"),
+      consoleClean: names.has("browser_console"),
+      interaction: afterWrite.some((call) => ["browser_click", "browser_type", "browser_key", "browser_select"].includes(call.toolName)),
+      viewports: [...viewports],
+      visionAttached: visionAttached && viewports.size > 0,
+      visionRequired: routeSupportsVision,
+    };
+  };
   const frontendValidationGaps = (calls: ToolCallRecord[]): string[] => {
     if (!requestsFrontendBrowserValidation(latestUserPrompt)) return [];
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
@@ -2698,6 +2740,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   let completedWithoutMoreTools = false;
   let canonicalFinalText = "";
+  let finalCompletionEvaluation: CompletionResult | null = null;
   let emptyFinalResponseRetries = 0;
   /**
    * Multiplier on the preset's output allowance for THIS task.
@@ -2986,6 +3029,118 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return requirementEvaluations;
   };
 
+  const completionInputFor = (canonicalFinalAnswer: string | null, priorNarration: readonly string[] = []): CompletionInput => {
+    const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const artifactPaths = new Set<string>();
+    for (const call of calls) {
+      if (!WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.status !== "completed") continue;
+      try {
+        const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+        if (typeof args.path === "string" && args.path.trim()) artifactPaths.add(args.path);
+        if (Array.isArray(args.files)) {
+          for (const file of args.files) if (typeof file === "string" && file.trim()) artifactPaths.add(file);
+        }
+      } catch {
+        // A malformed or missing path cannot be delivery evidence.
+      }
+    }
+    const durableArtifacts = [...artifactPaths].map((path) => ({
+      path,
+      exists: true,
+      contentHash: knownArtifacts.get(path) ?? null,
+      independentlyObserved: knownArtifacts.has(path),
+      observedBy: knownArtifacts.has(path) ? "filesystem" as const : "tool" as const,
+    }));
+
+    const independentVerifications = calls.flatMap((call) => {
+      if (call.toolName !== "run_command") return [];
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>; } catch { /* failure remains unverified */ }
+      if (!runCommandIsVerification(args) && call.errorType !== "invalid_tool_arguments") return [];
+      let exitCode: number | null | undefined;
+      try {
+        const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
+        if (typeof result.exitCode === "number" || result.exitCode === null) exitCode = result.exitCode;
+      } catch { /* malformed results cannot establish a pass */ }
+      const command = typeof args.executable === "string" && Array.isArray(args.args)
+        ? { executable: args.executable, args: args.args.map(String) }
+        : null;
+      return [{
+        id: call.id,
+        ...(command ? { command } : {}),
+        passed: call.status === "completed" && exitCode === 0,
+        ...(exitCode !== undefined ? { exitCode } : {}),
+        completed: call.status === "completed",
+        independentlyObserved: true,
+        ...(call.errorMessage ? { failure: call.errorMessage } : {}),
+      }];
+    });
+
+    const durableObservations = [
+      ...calls
+        .filter((call) => call.status === "completed" || call.errorType === "tool_not_permitted_in_mode")
+        .map((call) => ({ id: call.id, kind: call.toolName, independentlyObserved: true, durable: true })),
+      ...(taskMissionId && missionRuntime
+        ? missionRuntime.listProgress(taskMissionId).flatMap((progress) => progress.evidenceIds.map((evidenceId) => ({
+            id: `mission-progress:${progress.id}:${evidenceId}`,
+            kind: `mission_progress:${progress.kind}`,
+            independentlyObserved: true,
+            durable: true,
+            evidenceRef: evidenceId,
+          })))
+        : []),
+    ];
+    const completionState = completionStateFromCalls(calls);
+    const frontend = frontendCompletionEvidence(calls);
+    return {
+      taskShape,
+      canonicalFinalAnswer,
+      priorNarration,
+      durableArtifacts,
+      independentVerifications,
+      durableObservations,
+      ...(frontend ? { frontend } : {}),
+      requirements: { requirements: executionRequirements, evaluations: requirementEvaluations },
+      lastMutationOrVerification: completionState.failure ? { passed: false, detail: completionState.failure.detail } : null,
+      stagnation: { stalled: noProgressTurns >= 3 },
+    };
+  };
+
+  const evaluateCurrentTaskCompletion = async (
+    canonicalFinalAnswer: string | null,
+    priorNarration: readonly string[] = [],
+  ): Promise<CompletionResult> => {
+    await refreshKnownArtifacts();
+    await refreshRequirementEvaluations();
+    if (!completionContractApplies()) return { complete: true, blockers: [] };
+    return evaluateTaskCompletion(completionInputFor(canonicalFinalAnswer, priorNarration));
+  };
+
+  const returnCompletionContractBlock = async (evaluation: CompletionResult): Promise<boolean> => {
+    const primary = evaluation.blockers[0];
+    const message = `Stopping without completion: ${primary?.message ?? "durable completion evidence is incomplete."}`;
+    const details = {
+      taskShape,
+      completionBlockers: evaluation.blockers.map((item) => ({
+        code: item.code,
+        requirementId: item.requirementId,
+        message: item.message,
+      })),
+    };
+    if (await returnMissionWorkerOutcome("validation_required", message, details)) return true;
+    closeCurrentTurn({ final: false, aborted: true });
+    failCurrentSegment("completion_contract_blocked");
+    transitionAgentState("interrupted", { reason: "completion_contract_blocked", message, ...details });
+    records.transitionTask(taskId, "interrupted", {
+      id: randomUUID(),
+      createdAt: now(),
+      payload: { reason: "completion_contract_blocked", message, ...details },
+    });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return true;
+  };
+
   /**
    * Resolves the workspace paths worth fingerprinting this turn. Tool-reported
    * paths are authoritative and free. A bounded Git read only happens when a
@@ -3268,6 +3423,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     && replayableFinalTurn.assistantText.trim().length > 0
     && !lastVerificationFailure) {
     const priorNarration = durableTurns.slice(0, -1).map((t) => t.assistantText);
+    finalCompletionEvaluation = await evaluateCurrentTaskCompletion(replayableFinalTurn.assistantText, priorNarration);
+    if (finalCompletionEvaluation.complete) {
+      for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
+      completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
+      return;
+    }
     if (duplicatesPriorNarration(replayableFinalTurn.assistantText, priorNarration)) {
       const message = "Stopping without completion: the final recorded turn duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
       failCurrentSegment("duplicate_final_narration");
@@ -3300,6 +3461,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
     await refreshRequirementEvaluations();
     if (await returnRequirementBlock()) return;
+    if (finalCompletionEvaluation && !finalCompletionEvaluation.complete) {
+      if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
+    }
     for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
     completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
     return;
@@ -5170,7 +5334,41 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       continue;
     }
     if (artifactBoundary === "stop") return;
-    if (completedWithoutMoreTools) break;
+
+    // Some providers append a concise conclusion to the same turn that
+    // performs the final verification. Once durable evidence is complete,
+    // commit that text here rather than treating the turn as provisional and
+    // opening another provider request that can drift into read-only polling.
+    const verificationCompletedThisTurn = currentToolCalls.some((toolCall) => {
+      if (toolCall.name !== "run_command") return false;
+      try {
+        return runCommandIsVerification(JSON.parse(toolCall.arguments) as Record<string, unknown>);
+      } catch {
+        return false;
+      }
+    });
+    if (!completedWithoutMoreTools && verificationCompletedThisTurn) {
+      const candidateFinalText = responseContent.slice(responseLengthAtTurnStart);
+      if (candidateFinalText.trim()) {
+        const candidateCompletion = await evaluateCurrentTaskCompletion(candidateFinalText);
+        if (candidateCompletion.complete) {
+          for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
+          completeWithCanonicalAnswer(candidateFinalText, durableTurnKey);
+          return;
+        }
+      }
+    }
+    if (completedWithoutMoreTools) {
+      const recordedTurnsAtBoundary = continuity.listProviderTurns(taskId);
+      finalCompletionEvaluation = await evaluateCurrentTaskCompletion(
+        canonicalFinalText,
+        recordedTurnsAtBoundary.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
+      );
+      // This is the last provider turn. The final gate below either commits
+      // this verified result or records the exact durable blockers; no
+      // stagnation recovery turn is allowed after a canonical answer.
+      break;
+    }
 
     if (argumentBudgetSpent) {
       const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;
@@ -5389,6 +5587,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const finalTurn = recordedTurns.at(-1);
   if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== canonicalFinalText) {
     throw new Error("Canonical final turn is not durably recorded");
+  }
+
+  finalCompletionEvaluation ??= await evaluateCurrentTaskCompletion(
+    canonicalFinalText,
+    recordedTurns.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
+  );
+  if (!finalCompletionEvaluation.complete) {
+    if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
   }
 
   // Completion gate: a stalled model that re-emits the same scene-setting
