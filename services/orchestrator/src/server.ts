@@ -1105,7 +1105,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const poll = () => {
       if (closed) return;
       try {
-        const pending = records.listEvents(taskId, cursor);
+        const pending = records.listEventsAfter(taskId, cursor);
         for (const event of pending) {
           const envelope = ChatStreamEnvelopeSchema.parse({
             version: 1,

@@ -2,10 +2,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isLiveProviderOptedIn } from "../../src/acceptance/flagship-gate.js";
 
 /**
  * §8+§9 live acceptance: GLM-5.2 completes a real request through Morrow's
- * OpenCode Go provider path. The test reads the user's already-authenticated
+ * OpenCode Go provider path. Set MORROW_LIVE_OPENCODE_GO=1 for an explicit
+ * live canary; configured credentials alone never authorize this suite. The
+ * test reads the user's already-authenticated
  * OpenCode Desktop key from the on-disk auth store (NEVER printing the value),
  * sends a small chat/completions request to https://opencode.ai/zen/go/v1
  * (verified endpoint), and asserts the model returned text.
@@ -18,6 +21,7 @@ import { join } from "node:path";
  */
 
 const SKIP_ENV = "MORROW_SKIP_LIVE_OPENCODE_GO";
+const OPT_IN_ENV = "MORROW_LIVE_OPENCODE_GO";
 const ENDPOINT = "https://opencode.ai/zen/go/v1";
 const MODEL = "glm-5.2";
 
@@ -27,6 +31,7 @@ interface AuthEntry {
 }
 
 function readOpencodeGoKey(): { ok: true; key: string; type: string } | { ok: false; reason: string } {
+  if (!isLiveProviderOptedIn(process.env, OPT_IN_ENV)) return { ok: false, reason: `${OPT_IN_ENV}=1 is required; skipping live test.` };
   if (process.env[SKIP_ENV] === "1") return { ok: false, reason: `${SKIP_ENV}=1 set; skipping live test.` };
   const candidates = [
     join(homedir(), ".local", "share", "opencode", "auth.json"),
@@ -158,6 +163,10 @@ describe("live: OpenCode Go provider — GLM-5.2 completes a real request", () =
   it("honors the skip env var without fabricating success", () => {
     // The other test in this file is gated on a live key. This test asserts
     // that the gate itself behaves correctly when MORROW_SKIP_LIVE_OPENCODE_GO=1.
+    if (process.env[OPT_IN_ENV] !== "1" && process.env[SKIP_ENV] !== "1") {
+      expect(keyClosure).toBeNull();
+      return;
+    }
     if (process.env[SKIP_ENV] !== "1") {
       // This test is a no-op when live credentials are available; the other
       // test is the real assertion.

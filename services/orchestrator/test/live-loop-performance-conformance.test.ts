@@ -19,11 +19,14 @@ import {
   MAX_OBSERVATION_SIGNATURE_EXECUTIONS,
   createProgressEpoch,
   assessArtifactDelivery,
+  observationSignature,
 } from "../src/execution/progress-epoch.js";
 import {
   MAX_EXECUTION_CHECKPOINT_BYTES,
   projectCheckpointSnapshot,
 } from "../src/execution/checkpoint-snapshot.js";
+import { projectProviderRequest } from "../src/execution/provider-projection.js";
+import { resolveModelBudget } from "../src/routing/model-budget.js";
 
 const NOW = "2026-08-02T12:00:00.000Z";
 
@@ -100,6 +103,13 @@ function observationTurn(index: number): ProviderChunk[] {
   ];
 }
 
+function narrationTurn(index: number): ProviderChunk[] {
+  return [
+    { type: "text", text: `I am still analyzing the requested artifact, pass ${index}.` },
+    { type: "done" },
+  ];
+}
+
 describe("Task 2 live-loop performance conformance", () => {
   let db: Database.Database | undefined;
   let workspacePath = "";
@@ -152,6 +162,25 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(epoch.hasMeaningfulDeliveryProgress()).toBe(true);
   });
 
+  it("collapses semantically equivalent observation aliases into one epoch signature", () => {
+    const aliases = [
+      {},
+      { path: "." },
+      { path: "./" },
+      { path: "src/.." },
+      { path: ".\\" },
+      { path: "./src/../" },
+    ];
+    const signatures = aliases.map((args) => observationSignature("list_files", args));
+    expect(new Set(signatures)).toHaveLength(1);
+
+    const epoch = createProgressEpoch();
+    const observations = aliases.map((args) => epoch.recordObservation("list_files", args));
+    expect(observations[0]?.executionsPerSignature).toBe(1);
+    expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS - 1]?.exceeded).toBe(false);
+    expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS]?.exceeded).toBe(true);
+  });
+
   it("requires action-only recovery by turn 6 and strategy termination by turn 12 for artifact delivery", () => {
     expect(assessArtifactDelivery({ requiresArtifact: true, providerTurn: ARTIFACT_DELIVERY_RECOVERY_TURN, mutationObserved: false }))
       .toMatchObject({ actionOnlyRecoveryRequired: true, strategyTerminationRequired: false });
@@ -186,6 +215,54 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(JSON.stringify(snapshot)).not.toContain("RAW_RESULT_SHOULD_NOT_BE_STORED");
   });
 
+  it("preserves bounded actionable failure context through checkpoint compaction", () => {
+    const failedCall = {
+      id: "failed-command",
+      toolName: "run_command",
+      status: "failed",
+      argsJson: JSON.stringify({ executable: "pnpm", args: ["test", "--filter", "orchestrator", "--token", "SUPER_SECRET"], purpose: "verification" }),
+      resultJson: JSON.stringify({ exitCode: 1, stderr: "TS2322: Type string is not assignable to type number" }),
+      errorMessage: "command_exit_nonzero: TS2322: Type string is not assignable to type number; token=SUPER_SECRET",
+      cursor: 87,
+    };
+    const checkpoint = projectCheckpointSnapshot({
+      snapshot: baseCheckpointSnapshot("task-1"),
+      failedCalls: [failedCall],
+    });
+
+    expect(Buffer.byteLength(JSON.stringify(checkpoint))).toBeLessThanOrEqual(MAX_EXECUTION_CHECKPOINT_BYTES);
+    expect(checkpoint.unresolvedFailures[0]).toContain("run_command");
+    expect(checkpoint.unresolvedFailures[0]).toContain("pnpm test");
+    expect(checkpoint.unresolvedFailures[0]).toContain("TS2322");
+    expect(checkpoint.unresolvedFailures[0]).toContain("cursor=87");
+    expect(JSON.stringify(checkpoint)).not.toContain("SUPER_SECRET");
+
+    const resolution = resolveModelBudget({
+      providerId: "deepseek",
+      selectedModel: "deepseek-v4-flash",
+      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
+      outputBudgetTokens: 4_096,
+    });
+    const projected = projectProviderRequest({
+      checkpoint,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [{ role: "user", content: "old context ".repeat(35_000) }],
+        tools: [],
+        outputReserveTokens: 4_096,
+      },
+      resolution,
+      forceCompaction: true,
+    });
+    const providerContext = projected.envelope.messages.map((message) => message.content).join("\n");
+    expect(providerContext).toContain("pnpm test");
+    expect(providerContext).toContain("TS2322");
+    expect(providerContext).toContain("cursor=87");
+    expect(providerContext).not.toContain("SUPER_SECRET");
+  });
+
   it("retains only the latest checkpoint while preserving the newest bounded snapshot", () => {
     db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "project-1", name: "Checkpoint", workspacePath: "/tmp/checkpoint", createdAt: NOW });
@@ -210,6 +287,20 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(db.prepare("SELECT count(*) AS count FROM agent_execution_checkpoints WHERE task_id=?").get("task-1")).toEqual({ count: 1 });
     expect(continuity.latestCheckpoint("task-1")?.cursor).toBe(20);
     expect(continuity.latestCheckpoint("task-1")?.snapshot.currentPhase).toBe("phase-20");
+  });
+
+  it("keeps the emitted checkpoint id authoritative when the durable cursor is reused", () => {
+    db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "project-1", name: "Checkpoint identity", workspacePath: "/tmp/checkpoint-id", createdAt: NOW });
+    taskRepository(db).createTask({ id: "task-1", projectId: "project-1", kind: "agent_chat", status: "running", createdAt: NOW });
+    const continuity = executionContinuityRepository(db);
+    const segment = continuity.openSegment({ taskId: "task-1", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: "worker-1", now: NOW });
+
+    continuity.saveCheckpoint({ id: "checkpoint-first", taskId: "task-1", missionId: null, segmentId: segment.id, cursor: 41, snapshot: baseCheckpointSnapshot("task-1"), ownerId: "worker-1", generation: segment.generation, now: NOW });
+    continuity.saveCheckpoint({ id: "checkpoint-authoritative", taskId: "task-1", missionId: null, segmentId: segment.id, cursor: 41, snapshot: { ...baseCheckpointSnapshot("task-1"), currentPhase: "new phase" }, ownerId: "worker-1", generation: segment.generation, now: NOW });
+
+    expect(continuity.latestCheckpoint("task-1")).toMatchObject({ id: "checkpoint-authoritative", cursor: 41, snapshot: { currentPhase: "new phase" } });
+    expect(db.prepare("SELECT id FROM agent_execution_checkpoints WHERE task_id=? AND durable_event_cursor=?").get("task-1", 41)).toEqual({ id: "checkpoint-authoritative" });
   });
 
   it("reads only rows after a cursor and uses the task/sequence index with 10,000 historical events", () => {
@@ -257,5 +348,27 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(recovery?.payload.turn).toBeLessThanOrEqual(ARTIFACT_DELIVERY_RECOVERY_TURN);
     expect(termination?.payload.turn).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
     expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => ["propose_patch", "create_file", "create_directory"].includes(call.toolName) && call.status === "completed")).toBe(false);
+  });
+
+  it("routes repeated no-tool artifact narration through recovery before stopping", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-task-2-narration-"));
+    writeFileSync(join(workspacePath, "README.md"), "fixture\n");
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const provider = new MockProvider({ chunks: Array.from({ length: 20 }, (_, index) => narrationTurn(index)) });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 12 });
+
+    const records = taskRecordsRepository(db);
+    const events = records.listEvents("task-1") as Array<{ type: string; payload: Record<string, unknown> }>;
+    const providerTurns = events.filter((event) => event.type === "assistant.turn_started");
+    const recovery = events.find((event) => event.payload.reason === "artifact_delivery_recovery");
+    const termination = events.find((event) => event.payload.reason === "artifact_delivery_stalled");
+    expect(provider.requests.length).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(providerTurns.length).toBeLessThanOrEqual(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(recovery?.payload.turn).toBe(ARTIFACT_DELIVERY_RECOVERY_TURN);
+    expect(termination?.payload.turn).toBe(ARTIFACT_DELIVERY_STOP_TURN);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(0);
   });
 });

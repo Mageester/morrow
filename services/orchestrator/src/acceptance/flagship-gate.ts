@@ -23,6 +23,11 @@ export const FLAGSHIP_GATE_MIN_RUNS = 10;
 export const FLAGSHIP_GATE_MIN_PASSES = 9;
 export const FLAGSHIP_GATE_MIN_PROVIDERS = 2;
 
+/** Live-provider suites must be explicitly enabled; configured credentials are not consent. */
+export function isLiveProviderOptedIn(env: Readonly<Record<string, string | undefined>>, flagName: string): boolean {
+  return env[flagName] === "1";
+}
+
 export interface FlagshipProviderResult {
   providerId: string;
   runs: number;

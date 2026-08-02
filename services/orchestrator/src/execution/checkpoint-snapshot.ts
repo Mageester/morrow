@@ -12,7 +12,9 @@ export interface CheckpointToolCallProjection {
   status: string;
   argsJson?: string | null;
   resultJson?: string | null;
+  errorType?: string | null;
   errorMessage?: string | null;
+  cursor?: number;
 }
 
 export interface CheckpointRecoveryProjection {
@@ -40,6 +42,72 @@ function boundedString(value: string, maxBytes = 8_192): string {
   return `${value.slice(0, end)}…[truncated:${hash(value)}]`;
 }
 
+function sanitizeActionableText(value: string, maxBytes = 480): string {
+  const sanitized = value
+    .replace(/\s+/g, " ")
+    .replace(/(?:bearer\s+|api[-_]?key\s*[:=]\s*|token\s*[:=]\s*|secret\s*[:=]\s*|password\s*[:=]\s*|authorization\s*[:=]\s*)[^\s,;]+/gi, "[redacted]")
+    .replace(/\b(?:sk|gh[pousr]|xox[baprs]|AIza)[-_][A-Za-z0-9_-]+\b/g, "[redacted]");
+  return boundedString(sanitized, maxBytes);
+}
+
+function parseCallArguments(call: CheckpointToolCallProjection): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(call.argsJson ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizedActionTarget(call: CheckpointToolCallProjection): string {
+  const args = parseCallArguments(call);
+  if (call.toolName === "run_command") {
+    const executable = typeof args.executable === "string" ? sanitizeActionableText(args.executable, 120) : "unknown";
+    const rawArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+    const commandArgs: string[] = [];
+    let redactNext = false;
+    for (const value of rawArgs) {
+      if (redactNext) {
+        commandArgs.push("[redacted]");
+        redactNext = false;
+        continue;
+      }
+      if (/^--?(?:token|api[-_]?key|password|secret|authorization|auth)$/i.test(value)) {
+        commandArgs.push(value);
+        redactNext = true;
+        continue;
+      }
+      commandArgs.push(sanitizeActionableText(value, 180));
+    }
+    return `command=${boundedString([executable, ...commandArgs].join(" "), 720)}`;
+  }
+  if (typeof args.path === "string") return `target=${sanitizeActionableText(args.path, 240)}`;
+  if (typeof args.query === "string") return `target=${sanitizeActionableText(args.query, 240)}`;
+  if (typeof args.id === "string") return `target=${sanitizeActionableText(args.id, 160)}`;
+  if (typeof args.processId === "string") return `target=${sanitizeActionableText(args.processId, 160)}`;
+  return "target=unspecified";
+}
+
+function diagnosticSummary(call: CheckpointToolCallProjection): string {
+  const details: string[] = [];
+  if (call.errorType) details.push(`classification=${sanitizeActionableText(call.errorType, 120)}`);
+  try {
+    const result = JSON.parse(call.resultJson ?? "{}") as Record<string, unknown>;
+    if (typeof result.exitCode === "number") details.push(`exit=${result.exitCode}`);
+    for (const key of ["stderr", "error", "diagnostic", "stdout"]) {
+      if (typeof result[key] === "string" && result[key].length > 0) {
+        details.push(`diagnostic=${sanitizeActionableText(result[key] as string)}`);
+        break;
+      }
+    }
+  } catch {
+    // Preserve the structured error classification below even when the raw
+    // result is malformed.
+  }
+  if (call.errorMessage) details.push(`message=${sanitizeActionableText(call.errorMessage)}`);
+  return details.join(" ") || "diagnostic=unclassified failure";
+}
+
 function resultSummary(resultJson: string | null | undefined): string {
   if (!resultJson) return "result=absent";
   try {
@@ -62,6 +130,11 @@ export function summarizeCheckpointCall(call: CheckpointToolCallProjection): str
   return `${call.toolName}:${call.status}:call#${hash(call.id ?? `${call.toolName}:${call.argsJson ?? ""}`)}:args#${hash(call.argsJson ?? "")}:result#${hash(call.resultJson ?? "")}:${resultSummary(call.resultJson)}`;
 }
 
+/** Keep the recent failure actionable after raw history is compacted away. */
+export function summarizeCheckpointFailure(call: CheckpointToolCallProjection): string {
+  return `failure tool=${sanitizeActionableText(call.toolName, 120)} ${normalizedActionTarget(call)} ${diagnosticSummary(call)} cursor=${typeof call.cursor === "number" ? call.cursor : "unknown"}`;
+}
+
 export function summarizeCheckpointTest(call: CheckpointToolCallProjection): { command: string; exitCode: number | null; result: string } {
   let exitCode: number | null = null;
   try {
@@ -71,9 +144,9 @@ export function summarizeCheckpointTest(call: CheckpointToolCallProjection): { c
     // The raw result remains in the append-only tool-call record.
   }
   return {
-    command: `${call.toolName}:args#${hash(call.argsJson ?? "")}`,
+    command: `${call.toolName} ${normalizedActionTarget(call)}`,
     exitCode,
-    result: `${resultSummary(call.resultJson)}:result#${hash(call.resultJson ?? "")}`,
+    result: `${resultSummary(call.resultJson)} ${diagnosticSummary(call)}`,
   };
 }
 
@@ -187,7 +260,7 @@ export function projectCheckpointSnapshot(input: CheckpointSnapshotProjectionInp
     ...input.snapshot,
     ...(input.completedCalls ? { completedWork: input.completedCalls.map(summarizeCheckpointCall) } : {}),
     ...(input.testCalls ? { tests: input.testCalls.map(summarizeCheckpointTest) } : {}),
-    ...(input.failedCalls ? { unresolvedFailures: input.failedCalls.map((call) => summarizeCheckpointCall(call)) } : {}),
+    ...(input.failedCalls ? { unresolvedFailures: input.failedCalls.map((call) => summarizeCheckpointFailure(call)) } : {}),
     ...(input.recoveryAttempts ? { recoveryAttempts: input.recoveryAttempts.map(summarizeCheckpointRecovery) } : {}),
   };
   return boundExecutionCheckpointSnapshot(snapshot);

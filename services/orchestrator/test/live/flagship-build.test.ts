@@ -3,12 +3,15 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
-import { appendFlagshipRun, evaluateFlagshipGate, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
+import { appendFlagshipRun, evaluateFlagshipGate, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
 import type { ProviderId } from "@morrow/contracts";
 
 /**
  * The flagship workflow, against real models.
+ *
+ * Set MORROW_LIVE_FLAGSHIP=1 for an explicit live canary; configured
+ * credentials alone never authorize this suite.
  *
  * This is the only test in the repository whose result says anything about
  * whether Morrow works. Everything else proves the harness is self-consistent
@@ -32,6 +35,7 @@ import type { ProviderId } from "@morrow/contracts";
  */
 
 const SKIP_ENV = "MORROW_SKIP_LIVE_FLAGSHIP";
+const OPT_IN_ENV = "MORROW_LIVE_FLAGSHIP";
 const DEFAULT_LOG = resolve(__dirname, "..", "..", "..", "..", "docs", "evidence", "flagship-runs.jsonl");
 
 /** Providers worth proving the flagship workflow against. Frontier-capable
@@ -55,6 +59,11 @@ function configuredProviders(): ProviderId[] {
 
 describe("live: the flagship workflow against real models", () => {
   it("builds a working app, and records the result whether it passed or not", async () => {
+    if (!isLiveProviderOptedIn(process.env, OPT_IN_ENV)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[live] flagship build: ${OPT_IN_ENV}=1 is required; skipping without calling a provider or writing evidence.`);
+      return;
+    }
     if (process.env[SKIP_ENV] === "1") {
       // eslint-disable-next-line no-console
       console.warn(`[live] flagship build: ${SKIP_ENV}=1 set; skipping.`);

@@ -2701,6 +2701,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
     const failedCalls = calls.filter((call) => call.status === "failed");
     const lastEvent = records.latestEvent(taskId);
+    const checkpointCursor = lastEvent?.sequence ?? 0;
     const recoveryEvents = records.listEventsByType(taskId, ["provider.fallback", "task.recovery_requeued"]);
     const snapshot = projectCheckpointSnapshot({
       snapshot: {
@@ -2726,8 +2727,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
       },
       completedCalls: calls.filter((call) => call.status === "completed"),
-      testCalls: calls.filter((call) => call.toolName === "run_command"),
-      failedCalls,
+      testCalls: calls.filter((call) => call.toolName === "run_command").map((call) => ({ ...call, cursor: checkpointCursor })),
+      failedCalls: failedCalls.map((call) => ({ ...call, cursor: checkpointCursor })),
       recoveryAttempts: recoveryEvents.map((item) => ({ type: item.type, payload: item.payload })),
     });
     const checkpointId = randomUUID();
@@ -2918,7 +2919,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       noProgressTurns = 0;
       return "continue";
     }
-    if (!assessment.strategyTerminationRequired) return null;
+    if (!assessment.strategyTerminationRequired) {
+      // A narration-only turn is provisional for an artifact task until the
+      // delivery recovery boundary. Otherwise the first polished scene-setting
+      // answer exits before turn 6 can demand a concrete mutation.
+      if (completedWithoutMoreTools && requiresArtifactDelivery && !deliveryStarted) return "continue";
+      return null;
+    }
 
     const message = `No durable artifact mutation was recorded by provider turn ${absoluteTurn}. Stop discovery and change strategy or report the blocked delivery.`;
     event("task.progress_warning", {
@@ -4862,12 +4869,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // No more tool calls and a final answer was streamed, so we're done.
       canonicalFinalText = responseContent.slice(responseLengthAtTurnStart);
       completedWithoutMoreTools = true;
-      break;
     }
 
     const artifactBoundary = await enforceArtifactDeliveryBoundary();
-    if (artifactBoundary === "continue") continue;
+    if (artifactBoundary === "continue") {
+      // This narration was only an intermediate recovery turn. Do not let it
+      // become the canonical answer if the provider receives another chance
+      // to deliver the requested artifact.
+      completedWithoutMoreTools = false;
+      canonicalFinalText = "";
+      continue;
+    }
     if (artifactBoundary === "stop") return;
+    if (completedWithoutMoreTools) break;
 
     if (argumentBudgetSpent) {
       const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;

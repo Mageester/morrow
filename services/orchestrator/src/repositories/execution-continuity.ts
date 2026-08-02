@@ -274,7 +274,7 @@ export function executionContinuityRepository(db: Database.Database) {
       db.transaction(() => {
         assertFence(input.segmentId, input);
         db.prepare(`INSERT INTO agent_execution_checkpoints(id,task_id,mission_id,segment_id,version,durable_event_cursor,snapshot_json,created_at)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,durable_event_cursor) DO UPDATE SET mission_id=excluded.mission_id, segment_id=excluded.segment_id, version=excluded.version, snapshot_json=excluded.snapshot_json, created_at=excluded.created_at`).run(input.id, input.taskId, input.missionId, input.segmentId, snapshot.version, input.cursor, JSON.stringify(snapshot), input.now);
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,durable_event_cursor) DO UPDATE SET id=excluded.id, mission_id=excluded.mission_id, segment_id=excluded.segment_id, version=excluded.version, snapshot_json=excluded.snapshot_json, created_at=excluded.created_at`).run(input.id, input.taskId, input.missionId, input.segmentId, snapshot.version, input.cursor, JSON.stringify(snapshot), input.now);
         // Restart recovery only consumes the newest internal recovery point.
         // Delete older rows in the same transaction so a crash cannot leave a
         // partially rolled-over checkpoint set, while append-only task,
