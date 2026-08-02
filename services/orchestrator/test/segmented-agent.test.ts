@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
@@ -349,6 +350,71 @@ describe("durable agent segments", () => {
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
       expect(continuity.getCanonicalAnswer("t")?.content).toBe("FINAL_ONCE");
       expect(convs.getMessage("a")?.content).toBe("FINAL_ONCE");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: "unchanged", mutate: (_path: string) => undefined, expected: "completed" },
+    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "interrupted" },
+    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "interrupted" },
+  ])("replays a persisted CLI artifact fingerprint only when the workspace is $label", async ({ mutate, expected }) => {
+    const workspace = mkdtempSync(join(tmpdir(), `morrow-artifact-replay-${expected}-`));
+    const db = openDatabase(":memory:");
+    const taskId = `artifact-replay-${expected}`;
+    const originalContent = "console.log('original');\n";
+    const artifactPath = join(workspace, "app.mjs");
+    try {
+      const at = new Date().toISOString();
+      writeFileSync(artifactPath, originalContent);
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Build a CLI application in app.mjs and verify it.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: taskId, projectId: "p", kind: "agent_chat", status: "running", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId, streamingState: "streaming", createdAt: at, updatedAt: at });
+      taskRoutingRepository(db).upsert({
+        taskId, presetId: "balanced", providerId: "mock", model: "mock-model", useMemory: false, createdAt: at,
+        decision: { version: 1, presetId: "balanced", providerId: "mock", model: "mock-model", reason: "artifact replay", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode: "agent", toolProfile: "agent", autoApprove: true },
+      });
+      convs.upsertToolCall({ id: "write-app", messageId: "a", taskId, toolName: "create_file", argsJson: JSON.stringify({ path: "app.mjs", content: originalContent }), resultJson: JSON.stringify({ created: true }), status: "completed", createdAt: at, startedAt: at, completedAt: at });
+      convs.upsertToolCall({ id: "verify-app", messageId: "a", taskId, toolName: "run_command", argsJson: JSON.stringify({ executable: "node", args: ["app.mjs"], purpose: "verify behavior" }), resultJson: JSON.stringify({ exitCode: 0, stdout: "" }), status: "completed", createdAt: at, startedAt: at, completedAt: at });
+
+      const continuity = executionContinuityRepository(db);
+      const deadOwnerId = "morrow-pid:999999999:artifact-replay";
+      const segment = continuity.openSegment({ taskId, missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: deadOwnerId, now: at, leaseExpiresAt: "2000-01-01T00:00:00.000Z" });
+      continuity.recordProviderTurn({ id: "final-turn", taskId, segmentId: segment.id, turnKey: "final-key", ordinal: 1, assistantText: "The CLI artifact is complete and verified.", toolCalls: [], isFinal: true, ownerId: deadOwnerId, generation: segment.generation, now: at });
+      const contentHash = createHash("sha256").update(originalContent, "utf8").digest("hex").slice(0, 32);
+      continuity.saveCheckpoint({
+        id: "artifact-checkpoint", taskId, missionId: null, segmentId: segment.id, cursor: 1,
+        snapshot: {
+          version: 1,
+          originalMission: "Build a CLI application in app.mjs and verify it.",
+          hardRequirements: ["Build a CLI application in app.mjs and verify it."],
+          prohibitedActions: [], acceptanceCriteria: [], decisions: [], completedWork: ["app.mjs created and verified"], currentPhase: "final",
+          filesChanged: ["app.mjs"], gitStatus: " M app.mjs", tests: [{ command: "node app.mjs", exitCode: 0, result: "exit=0" }], unresolvedFailures: [], recoveryAttempts: [], pendingWork: [], approvals: {}, taskId, missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: ["final answer"],
+          taskArtifactFingerprints: [{ path: "app.mjs", contentHash }],
+        },
+        ownerId: deadOwnerId, generation: segment.generation, now: at,
+      });
+
+      mutate(artifactPath);
+      let providerCalls = 0;
+      const provider: AiProvider = { id: "mock", async *streamChat(): AsyncIterable<ProviderChunk> { providerCalls++; yield { type: "text", text: "must not run" }; yield { type: "done" }; } };
+      const runner = new TaskRunner(db, async (deps) => executeAgentChatTask({ db: deps.db, taskId: deps.taskId, provider, ...(deps.recovery ? { recovery: deps.recovery } : {}) }));
+
+      expect(reconcileTasksOnStartup({ db, runner, now: () => new Date(Date.parse(at) + 10 * 60_000).toISOString() }).requeued).toBe(1);
+      await runner.waitFor(taskId);
+
+      expect(providerCalls).toBe(0);
+      expect(taskRepository(db).getTaskById(taskId)?.status).toBe(expected);
+      if (expected === "completed") {
+        expect(continuity.getCanonicalAnswer(taskId)?.content).toBe("The CLI artifact is complete and verified.");
+      } else {
+        expect(continuity.getCanonicalAnswer(taskId)).toBeNull();
+      }
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

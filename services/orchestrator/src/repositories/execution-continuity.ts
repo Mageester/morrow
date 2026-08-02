@@ -79,6 +79,8 @@ export interface ExecutionCheckpointSnapshot {
   executionRequirements?: ExecutionRequirement[];
   /** Bounded, durable evaluation ledger for explicit execution constraints. */
   requirementEvaluations?: RequirementEvaluation[];
+  /** Task-owned artifact fingerprints used to validate completion after replay. */
+  taskArtifactFingerprints?: Array<{ path: string; contentHash: string }>;
 }
 
 export interface ExecutionCheckpoint {

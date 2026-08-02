@@ -32,16 +32,25 @@ tool calls from becoming read-only evidence.
   cases.
 - Review GREEN: the same focused run passed 33/33 after the production fixes;
   the lineage and mixed-shape RED/GREEN cases also remained green.
+- P1 restart RED: the exact three-case crash-replay fixture reproduced the
+  restart defect with 1 failure/2 expected blockers: an unchanged persisted
+  CLI artifact was interrupted because replay ran before task evidence was
+  restored.
+- P1 restart GREEN: the unchanged artifact completed with zero provider calls;
+  changed and missing artifacts both interrupted with zero provider calls
+  (3/3).
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
 | Focused Task 5 brief command (5 files) | 64/64 passed |
+| Focused restart/review compatibility run (5 files) | 122/122 passed |
+| Restart/recovery, completion-order, progress, requirements, security, and checkpoint regressions (21 files) | 267/267 passed |
 | Review-focused completion/frontend/security run (3 files) | 33/33 passed |
 | Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
 | 247-test regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,730/1,730 passed |
+| Full default `@morrow/orchestrator` suite | 165 files, 1,733/1,733 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
 | Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
@@ -53,8 +62,7 @@ fallback, plan-mode, restart, and sustained-mission paths. The runtime now
 preserves answer-only completion when no evidence contract applies, while
 keeping strict read-only evidence checks for inspection/tool turns. Mission
 recovery turns import independently recorded progress evidence from the
-mission ledger, preserving completion across task restarts. The final full
-suite is fully green.
+The final full suite is fully green, including the new crash-replay coverage.
 
 ## Security and privacy
 
@@ -82,6 +90,6 @@ bytes and its SHA-256 is:
 
 ## Rollback
 
-Revert the focused completion-contract commit to remove the review corrections
-and their coverage. No schema or evidence migration is required; the
-append-only live evidence file remains untouched.
+Revert this focused restart-correction commit to remove task-owned artifact
+fingerprint persistence and its crash-replay coverage. No schema or evidence
+migration is required; the append-only live evidence file remains untouched.

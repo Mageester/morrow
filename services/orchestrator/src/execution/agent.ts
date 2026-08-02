@@ -3020,9 +3020,37 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
   let requirementEvaluations: RequirementEvaluation[] = evaluateRequirementObservations(executionRequirements, []);
 
+  const completedArtifactPaths = (): string[] => {
+    const paths = new Set<string>();
+    for (const call of convs.listToolCallsForMessage(assistantMessageRow.id)) {
+      if (!WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.status !== "completed") continue;
+      try {
+        const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+        if (typeof args.path === "string" && args.path.trim()) paths.add(args.path);
+        if (Array.isArray(args.files)) {
+          for (const file of args.files) if (typeof file === "string" && file.trim()) paths.add(file);
+        }
+      } catch {
+        // A malformed or missing path cannot be task-owned artifact evidence.
+      }
+    }
+    return [...paths];
+  };
+
   const persistExecutionCheckpoint = async (phase: string): Promise<string> => {
     const workspace = await readRequirementWorkspaceState();
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const taskArtifactPaths = completedArtifactPaths();
+    for (const artifact of fingerprintPaths(taskArtifactPaths)) {
+      if (artifact.contentHash === "absent") knownArtifacts.delete(artifact.path);
+      else knownArtifacts.set(artifact.path, artifact.contentHash);
+    }
+    const taskArtifactFingerprints = taskArtifactPaths.flatMap((path) => {
+      const contentHash = knownArtifacts.get(path);
+      return contentHash && contentHash !== "absent"
+        ? [{ path, contentHash }]
+        : [];
+    });
     requirementEvaluations = evaluateCurrentRequirements(calls, workspace);
     const failedCalls = calls.filter((call) => call.status === "failed");
     const lastEvent = records.latestEvent(taskId);
@@ -3058,6 +3086,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         requirementBaselineComplete,
         executionRequirements,
         requirementEvaluations,
+        taskArtifactFingerprints,
       },
       completedCalls: calls.filter((call) => call.status === "completed"),
       testCalls: calls.filter((call) => call.toolName === "run_command").map((call) => ({ ...call, cursor: checkpointCursor })),
@@ -3117,26 +3146,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const completionInputFor = (canonicalFinalAnswer: string | null, priorNarration: readonly string[] = []): CompletionInput => {
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
     const lineage = completionEvidenceLineage();
-    const artifactPaths = new Set<string>();
-    for (const call of calls) {
-      if (!WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.status !== "completed") continue;
-      try {
-        const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
-        if (typeof args.path === "string" && args.path.trim()) artifactPaths.add(args.path);
-        if (Array.isArray(args.files)) {
-          for (const file of args.files) if (typeof file === "string" && file.trim()) artifactPaths.add(file);
-        }
-      } catch {
-        // A malformed or missing path cannot be delivery evidence.
-      }
-    }
-    const durableArtifacts = [...artifactPaths].map((path) => ({
+    const durableArtifacts = completedArtifactPaths().map((path) => {
+      const contentHash = knownArtifacts.get(path) ?? null;
+      const independentlyObserved = contentHash !== null && contentHash !== "absent";
+      return {
       path,
-      exists: true,
-      contentHash: knownArtifacts.get(path) ?? null,
-      independentlyObserved: knownArtifacts.has(path),
-      observedBy: knownArtifacts.has(path) ? "filesystem" as const : "tool" as const,
-    }));
+        exists: independentlyObserved,
+        contentHash,
+        independentlyObserved,
+        observedBy: independentlyObserved ? "filesystem" as const : "tool" as const,
+      };
+    });
 
     const independentVerifications = calls.flatMap((call) => {
       if (call.toolName !== "run_command") return [];
@@ -3515,6 +3535,64 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
   };
 
+  // Restore workspace baselines and task-owned artifact evidence before any
+  // persisted final turn is replayed. A replay must validate the artifact in
+  // the current workspace; the prior turn's narration and path alone are not
+  // durable completion evidence.
+  const initialRequirementWorkspace = await readRequirementWorkspaceState(false);
+  const persistedCheckpointSnapshot = continuity.latestCheckpoint(taskId)?.snapshot;
+  const persistedRequirementBaseline = persistedCheckpointSnapshot?.requirementBaselinePaths;
+  if (Array.isArray(persistedRequirementBaseline)) {
+    requirementBaselinePaths = new Set(persistedRequirementBaseline.map(requirementPathKey));
+    requirementBaselinePathCount = typeof persistedCheckpointSnapshot?.requirementBaselinePathCount === "number"
+      ? persistedCheckpointSnapshot.requirementBaselinePathCount
+      : requirementBaselinePaths.size;
+    requirementBaselineIdentityHash = persistedCheckpointSnapshot?.requirementBaselineIdentityHash;
+    requirementBaselineComplete = persistedCheckpointSnapshot?.requirementBaselineComplete !== false
+      && requirementBaselinePathCount === requirementBaselinePaths.size;
+  } else {
+    requirementBaselinePaths = new Set(initialRequirementWorkspace.pathTypes.map((entry) => requirementPathKey(entry.path)));
+    requirementBaselinePathCount = requirementBaselinePaths.size;
+    requirementBaselineIdentityHash = createHash("sha256").update(JSON.stringify([...requirementBaselinePaths]), "utf8").digest("hex").slice(0, 24);
+    requirementBaselineComplete = initialRequirementWorkspace.authoritative;
+  }
+  for (const artifact of fingerprintPaths(initialRequirementWorkspace.paths)) knownArtifacts.set(artifact.path, artifact.contentHash);
+
+  const persistedTaskArtifacts = persistedCheckpointSnapshot?.taskArtifactFingerprints ?? [];
+  const persistedTaskArtifactPaths = new Set(persistedTaskArtifacts.map((artifact) => artifact.path));
+  const currentTaskArtifacts = new Map(fingerprintPaths([
+    ...new Set([
+      ...completedArtifactPaths(),
+      ...persistedTaskArtifacts.map((artifact) => artifact.path),
+    ]),
+  ]).map((artifact) => [artifact.path, artifact.contentHash]));
+  // A checkpoint written before task-owned fingerprints existed cannot prove
+  // that a write survived restart. Remove those paths from the baseline map so
+  // stale workspace state cannot be promoted to delivery evidence.
+  for (const path of completedArtifactPaths()) {
+    if (!persistedTaskArtifactPaths.has(path)) knownArtifacts.delete(path);
+  }
+  for (const expected of persistedTaskArtifacts) {
+    const actual = currentTaskArtifacts.get(expected.path);
+    if (actual === expected.contentHash && actual !== "absent") knownArtifacts.set(expected.path, actual);
+    else knownArtifacts.delete(expected.path);
+  }
+
+  previousProgressSnapshot = buildExecutionProgressSnapshot({
+    missionId: progressIdentity,
+    operationId: null,
+    // Same fingerprint the first turn will report, so the baseline itself is
+    // not mistaken for a strategy change.
+    strategyFingerprint: `worker:${providerType}:${contextModel}`,
+    changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
+    completedToolSignatures: [],
+    verifications: [],
+    unresolvedFailures: [],
+    checkpointIds: [],
+    validatedCriterionIds: [],
+    observedAt: now(),
+  });
+
   const replayableFinalTurn = durableTurns.at(-1);
   if (replayableFinalTurn
     && replayableFinalTurn.isFinal
@@ -3580,42 +3658,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const usage = normalizePersistedUsagePayload(ev.payload as Record<string, unknown>);
       return usage ? accumulateUsage(acc, usage) : acc;
     }, EMPTY_CUMULATIVE_USAGE);
-
-  // Seed the artifact baseline once, before any turn runs, so a workspace that
-  // was already dirty is not mistaken for progress this task made. A worktree
-  // or non-repository workspace still gets a bounded filesystem baseline.
-  const initialRequirementWorkspace = await readRequirementWorkspaceState(false);
-  const persistedCheckpointSnapshot = continuity.latestCheckpoint(taskId)?.snapshot;
-  const persistedRequirementBaseline = persistedCheckpointSnapshot?.requirementBaselinePaths;
-  if (Array.isArray(persistedRequirementBaseline)) {
-    requirementBaselinePaths = new Set(persistedRequirementBaseline.map(requirementPathKey));
-    requirementBaselinePathCount = typeof persistedCheckpointSnapshot?.requirementBaselinePathCount === "number"
-      ? persistedCheckpointSnapshot.requirementBaselinePathCount
-      : requirementBaselinePaths.size;
-    requirementBaselineIdentityHash = persistedCheckpointSnapshot?.requirementBaselineIdentityHash;
-    requirementBaselineComplete = persistedCheckpointSnapshot?.requirementBaselineComplete !== false
-      && requirementBaselinePathCount === requirementBaselinePaths.size;
-  } else {
-    requirementBaselinePaths = new Set(initialRequirementWorkspace.pathTypes.map((entry) => requirementPathKey(entry.path)));
-    requirementBaselinePathCount = requirementBaselinePaths.size;
-    requirementBaselineIdentityHash = createHash("sha256").update(JSON.stringify([...requirementBaselinePaths]), "utf8").digest("hex").slice(0, 24);
-    requirementBaselineComplete = initialRequirementWorkspace.authoritative;
-  }
-  for (const artifact of fingerprintPaths(initialRequirementWorkspace.paths)) knownArtifacts.set(artifact.path, artifact.contentHash);
-  previousProgressSnapshot = buildExecutionProgressSnapshot({
-    missionId: progressIdentity,
-    operationId: null,
-    // Same fingerprint the first turn will report, so the baseline itself is
-    // not mistaken for a strategy change.
-    strategyFingerprint: `worker:${providerType}:${contextModel}`,
-    changedFiles: [...knownArtifacts].map(([path, contentHash]) => ({ path, contentHash })),
-    completedToolSignatures: [],
-    verifications: [],
-    unresolvedFailures: [],
-    checkpointIds: [],
-    validatedCriterionIds: [],
-    observedAt: now(),
-  });
 
   if (missionFailureOutcome) {
     const outcome = missionFailureOutcome;

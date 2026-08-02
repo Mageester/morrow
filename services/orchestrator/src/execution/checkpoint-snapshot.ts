@@ -157,6 +157,21 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)].map((value) => boundedString(redactSecrets(value))).slice(-MAX_ARRAY_ENTRIES);
 }
 
+function boundedArtifactFingerprints(values: unknown): Array<{ path: string; contentHash: string }> {
+  if (!Array.isArray(values)) return [];
+  return values
+    .flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.path !== "string" || typeof entry.contentHash !== "string") return [];
+      return [{
+        path: boundedString(redactSecrets(entry.path), 1_024),
+        contentHash: boundedString(redactSecrets(entry.contentHash), 160),
+      }];
+    })
+    .slice(-MAX_ARRAY_ENTRIES);
+}
+
 function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
   const unique = [...new Set(values)].map((value) => boundedString(redactSecrets(value)));
   const paths: string[] = [];
@@ -291,6 +306,9 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
           }),
         }
       : {}),
+    ...(snapshot.taskArtifactFingerprints
+      ? { taskArtifactFingerprints: boundedArtifactFingerprints(snapshot.taskArtifactFingerprints) }
+      : {}),
   };
 }
 
@@ -318,6 +336,7 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
     "filesChanged",
     "providerContinuationRefs",
     "evidenceRequired",
+    "taskArtifactFingerprints",
   ];
 
   while (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
@@ -361,6 +380,9 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
         : {}),
       ...(bounded.requirementEvaluations
         ? { requirementEvaluations: bounded.requirementEvaluations.map(compactRequirementEvaluation) }
+        : {}),
+      ...(bounded.taskArtifactFingerprints
+        ? { taskArtifactFingerprints: bounded.taskArtifactFingerprints }
         : {}),
     };
   }
