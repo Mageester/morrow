@@ -74,6 +74,8 @@ export interface RequirementObservation {
   type: "changed_paths" | "command" | "verification";
   paths?: string[];
   pathTypes?: RequirementPathObservation[];
+  /** Tool-declared path types are hints only; final stat evidence opts in explicitly. */
+  pathTypesAuthoritative?: boolean;
   /** A complete filesystem observation can prove the absence of a conflict. */
   measured?: boolean;
   authoritative?: boolean;
@@ -115,7 +117,7 @@ type Match = {
 };
 
 const PATH_PATTERN = /[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*/g;
-const COMMAND_EXECUTABLES = new Set(["npm", "pnpm", "yarn", "bun", "node", "deno"]);
+const COMMAND_EXECUTABLES = new Set(["npm", "pnpm", "yarn", "bun", "node", "deno", "npx"]);
 const DEPENDENCY_MANIFESTS = new Set([
   "package.json",
   "package-lock.json",
@@ -130,8 +132,8 @@ export function canonicalRequirementPath(value: string, platform: NodeJS.Platfor
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function normalizePath(value: string): string {
-  return canonicalRequirementPath(value, "win32");
+function normalizePath(value: string, platform: NodeJS.Platform = process.platform): string {
+  return canonicalRequirementPath(value, platform);
 }
 
 function displayPath(value: string): string {
@@ -293,8 +295,11 @@ export function observeRequirementToolCall(
       type: "changed_paths",
       paths,
       pathTypes,
+      pathTypesAuthoritative: false,
+      authoritative: false,
+      measured: false,
       completed: true,
-      dependencyChange: contentAddsDependencies(call) || paths.some(isDependencyLockfile),
+      dependencyChange: contentAddsDependencies(call) || paths.some((path) => isDependencyLockfile(path)),
       evidence: `${call.toolName} completed for ${paths.length} workspace path${paths.length === 1 ? "" : "s"}`,
     });
   }
@@ -324,13 +329,16 @@ export function observeRequirementToolCall(
 export function observeRequirementChangedPaths(
   paths: string[],
   evidence = "final workspace changed paths observed",
-  options: { pathTypes?: RequirementPathObservation[]; measured?: boolean; authoritative?: boolean } = {},
+  options: { pathTypes?: RequirementPathObservation[]; pathTypesAuthoritative?: boolean; measured?: boolean; authoritative?: boolean } = {},
 ): RequirementObservation {
   const normalized = paths.map(displayPath).filter(Boolean);
   return {
     type: "changed_paths",
     paths: [...new Set(normalized)],
     ...(options.pathTypes ? { pathTypes: options.pathTypes.map((entry) => ({ path: displayPath(entry.path), type: entry.type })) } : {}),
+    ...(options.pathTypes
+      ? { pathTypesAuthoritative: options.pathTypesAuthoritative ?? options.authoritative === true }
+      : {}),
     ...(options.measured !== undefined ? { measured: options.measured } : {}),
     ...(options.authoritative !== undefined ? { authoritative: options.authoritative } : {}),
     evidence,
@@ -345,14 +353,14 @@ function commandFromCall(call: RequirementToolCall): { executable: string; args:
   return { executable: executableName(executable), args };
 }
 
-function isFrontendPath(path: string): boolean {
-  const normalized = normalizePath(path);
+function isFrontendPath(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const normalized = normalizePath(path, platform);
   return /(?:^|\/)(?:frontend|ui|components|public)(?:\/|$)/.test(normalized)
     || /\.(?:html?|css|scss|sass|less|jsx|tsx|vue|svelte|astro)$/.test(normalized);
 }
 
-function isDatabasePath(path: string): boolean {
-  const normalized = normalizePath(path);
+function isDatabasePath(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const normalized = normalizePath(path, platform);
   return /(?:^|\/)(?:database|databases|db|migrations?)(?:\/|$)/.test(normalized)
     || /\.(?:sql|sqlite|sqlite3|db)$/.test(normalized)
     || /(?:^|\/)(?:schema|prisma)\.(?:sql|prisma)$/.test(normalized);
@@ -361,40 +369,78 @@ function isDatabasePath(path: string): boolean {
 const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const DEPENDENCY_MUTATING_VERBS = new Set(["install", "i", "ci", "add", "update", "up", "remove", "rm", "uninstall", "prune", "dedupe", "link"]);
 const PACKAGE_MANAGER_OPTIONS_WITH_VALUE = new Set(["--dir", "--prefix", "--cwd", "--filter", "--workspace", "--workspace-root", "-c", "-C"]);
+const PACKAGE_MANAGER_WRAPPER_OPTIONS_WITH_VALUE = new Set(["--package", "-p", "--cache", "--prefix", "--registry"]);
+const SHELL_EXECUTABLES = new Set(["sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh"]);
+
+function shellScriptTokens(script: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|([^\s]+)/g;
+  for (const match of script.matchAll(pattern)) tokens.push(match[1] ?? match[2] ?? match[3] ?? "");
+  return tokens.filter(Boolean);
+}
+
+function stripWrapperOptions(args: string[], optionsWithValue: Set<string>): string[] {
+  const remaining = [...args];
+  while (remaining.length > 0) {
+    const flag = remaining[0]!.toLowerCase();
+    if (flag === "--") {
+      remaining.shift();
+      break;
+    }
+    if (optionsWithValue.has(flag)) {
+      remaining.splice(0, Math.min(2, remaining.length));
+      continue;
+    }
+    if ([...optionsWithValue].some((option) => flag.startsWith(`${option}=`))) {
+      remaining.shift();
+      continue;
+    }
+    if (flag.startsWith("-")) {
+      remaining.shift();
+      continue;
+    }
+    break;
+  }
+  return remaining;
+}
 
 function unwrapPackageManagerCommand(command: { executable: string; args: string[] }): { executable: string; args: string[] } | null {
   let executable = executableName(command.executable);
   let args = [...command.args];
   for (let depth = 0; depth < 4; depth++) {
     if (PACKAGE_MANAGERS.has(executable)) {
-      while (args.length > 0) {
-        const flag = args[0]!.toLowerCase();
-        if (PACKAGE_MANAGER_OPTIONS_WITH_VALUE.has(flag)) {
-          args.splice(0, Math.min(2, args.length));
-          continue;
-        }
-        if (flag.startsWith("--dir=") || flag.startsWith("--prefix=") || flag.startsWith("--cwd=") || flag.startsWith("--filter=") || flag.startsWith("--workspace=")) {
-          args.shift();
-          continue;
-        }
-        if (flag.startsWith("-")) {
-          args.shift();
-          continue;
-        }
-        break;
-      }
-      if (args[0]?.toLowerCase() === "exec" && args[1]) {
-        executable = executableName(args[1]!);
-        args = args.slice(2);
+      args = stripWrapperOptions(args, PACKAGE_MANAGER_OPTIONS_WITH_VALUE);
+      if ((args[0]?.toLowerCase() === "exec" || args[0]?.toLowerCase() === "dlx") && args[1]) {
+        args = args.slice(1);
+        args = stripWrapperOptions(args, new Set(["exec", "dlx"]));
+        if (!args[0]) return null;
+        executable = executableName(args[0]!);
+        args = args.slice(1);
         continue;
       }
       return { executable, args };
+    }
+    if (executable === "npx") {
+      args = stripWrapperOptions(args, PACKAGE_MANAGER_WRAPPER_OPTIONS_WITH_VALUE);
+      if (!args[0]) return null;
+      executable = executableName(args[0]!);
+      args = args.slice(1);
+      continue;
     }
     if (executable === "corepack") {
       const managerIndex = args.findIndex((value) => PACKAGE_MANAGERS.has(executableName(value)));
       if (managerIndex < 0) return null;
       executable = executableName(args[managerIndex]!);
       args = args.slice(managerIndex + 1);
+      continue;
+    }
+    if (SHELL_EXECUTABLES.has(executable)) {
+      const scriptIndex = args.findIndex((value) => ["-c", "/c", "-command", "--command"].includes(value.toLowerCase()));
+      if (scriptIndex < 0 || !args[scriptIndex + 1]) return null;
+      const nested = shellScriptTokens(args[scriptIndex + 1]!);
+      if (nested.length === 0) return null;
+      executable = executableName(nested[0]!);
+      args = nested.slice(1);
       continue;
     }
     return null;
@@ -408,13 +454,13 @@ function isDependencyInstall(command: { executable: string; args: string[] }): b
   return DEPENDENCY_MUTATING_VERBS.has(canonical.args[0]?.toLowerCase() ?? "");
 }
 
-function isDependencyManifest(path: string): boolean {
-  const basename = normalizePath(path).split("/").at(-1) ?? "";
+function isDependencyManifest(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const basename = normalizePath(path, platform).split("/").at(-1) ?? "";
   return DEPENDENCY_MANIFESTS.has(basename);
 }
 
-function isDependencyLockfile(path: string): boolean {
-  const basename = normalizePath(path).split("/").at(-1) ?? "";
+function isDependencyLockfile(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const basename = normalizePath(path, platform).split("/").at(-1) ?? "";
   return basename === "package-lock.json"
     || basename === "pnpm-lock.yaml"
     || basename === "yarn.lock"
@@ -429,8 +475,30 @@ function contentAddsDependencies(call: RequirementToolCall): boolean {
   }
   if (call.toolName === "propose_patch") {
     const patch = typeof call.args.patch === "string" ? call.args.patch : "";
-    return /\+\s*["'](?:dependencies|devDependencies|peerDependencies|optionalDependencies)["']\s*:/i.test(patch)
-      || /^\+[^+].*(?:express|react|vite|lodash|fastify|axios|typescript)/im.test(patch);
+    let manifestPath: string | null = null;
+    let dependencyBlockDepth: number | null = null;
+    for (const line of patch.split(/\r?\n/)) {
+      const header = /^(?:\+\+\+|---)\s+(?:[ab]\/)?([^\r\n]+)$/.exec(line);
+      if (header) {
+        manifestPath = displayPath(header[1]!);
+        dependencyBlockDepth = null;
+        continue;
+      }
+      if (!manifestPath || !isDependencyManifest(manifestPath)) continue;
+      const text = line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") ? line.slice(1) : line;
+      const dependencyHeader = /["'](?:dependencies|devDependencies|peerDependencies|optionalDependencies)["']\s*:\s*\{/i.test(text);
+      if (dependencyHeader) {
+        if (line.startsWith("+")) return true;
+        dependencyBlockDepth = Math.max(1, (text.match(/\{/g) ?? []).length - (text.match(/\}/g) ?? []).length);
+        continue;
+      }
+      if (dependencyBlockDepth !== null && line.startsWith("+") && /^\+\s*["'][^"']+["']\s*:/.test(line)) return true;
+      if (dependencyBlockDepth !== null) {
+        dependencyBlockDepth += (text.match(/\{/g) ?? []).length - (text.match(/\}/g) ?? []).length;
+        if (dependencyBlockDepth <= 0) dependencyBlockDepth = null;
+      }
+    }
+    return false;
   }
   return false;
 }
@@ -446,9 +514,9 @@ function requirementViolation(requirement: ExecutionRequirement, call: Requireme
   const paths = affectedPaths(call);
   switch (requirement.kind) {
     case "no_frontend":
-      return paths.find(isFrontendPath) ? "the action targets a frontend deliverable" : null;
+      return paths.find((path) => isFrontendPath(path, platform)) ? "the action targets a frontend deliverable" : null;
     case "no_database":
-      return paths.find(isDatabasePath) ? "the action targets a database deliverable" : null;
+      return paths.find((path) => isDatabasePath(path, platform)) ? "the action targets a database deliverable" : null;
     case "no_new_dependencies": {
       const command = commandFromCall(call);
       if (command && isDependencyInstall(command)) return "the command installs or adds a dependency";
@@ -498,7 +566,7 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
   };
 
   addPattern("no_frontend", /\bbackend\s+only\b|\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use))?\s+(?:a\s+)?front[- ]?end\b(?!\s+(?:tests?|testing|test[- ]?suite|specs?)\b)/gi);
-  addPattern("no_database", /\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use|require))?\s+(?:a\s+)?(?:database|db)(?:\s+server)?\b(?!\s+(?:tests?|testing|test[- ]?suite|queries?)\b)/gi);
+  addPattern("no_database", /\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use|require))?\s+(?:a\s+)?(?:database|db)(?:\s+server)?\b(?!\s+(?:tests?|testing|test[- ]?suite|queries?|migrations?)\b)/gi);
   addPattern("no_new_dependencies", /\bno\s+(?:new\s+)?dependencies\b|\b(?:without|do not|don't|must not)\s+(?:adding\s+)?(?:any\s+)?(?:new\s+)?dependencies\b/gi);
   addPattern("allowed_files", /\b(?:modify|change|edit|touch)\s+only\s+(?:these\s+)?files?\s*:\s*[^!?\n]+/gi, (match) => {
     const afterColon = match[0].split(":").slice(1).join(":");
@@ -511,11 +579,11 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     const path = match[0].split(":").slice(1).join(":").trim().replace(/[.,;]+$/, "");
     return { path: displayPath(path) };
   });
-  addPattern("required_verification", /\brequired\s+verification\s*:\s*(?:pnpm|npm|yarn|bun|node|deno)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
+  addPattern("required_verification", /\brequired\s+verification\s*:\s*(?:pnpm|npm|yarn|bun|node|deno|npx)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
     const commandText = match[0].split(":").slice(1).join(":").replace(/\b(?:passes|pass|succeeds|successfully)\b.*$/i, "").trim();
     return { command: normalizedCommand(commandText) };
   });
-  addPattern("required_verification", /\b(?:must|should)\s+(?:run|execute|verify with)\s+(?:pnpm|npm|yarn|bun|node|deno)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
+  addPattern("required_verification", /\b(?:must|should)\s+(?:run|execute|verify with)\s+(?:pnpm|npm|yarn|bun|node|deno|npx)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
     const commandText = match[0].replace(/^.*?\b(?:run|execute|verify with)\s+/i, "").replace(/\b(?:passes|pass|succeeds|successfully)\b.*$/i, "").trim();
     return { command: normalizedCommand(commandText) };
   });
@@ -546,8 +614,8 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     // asking"). Keep unknown constraints blocking only when the wording itself
     // makes a contractual boundary unmistakable; supported kinds above already
     // capture high-confidence no/only/required forms.
-    const explicitMarker = /^(?:\s*)(?:must(?:n't| not)?|should(?:n't| not)?|don't|do not|never|no|without|required|strictly|approved|as specified|use|follow|preserve)\b/i.test(clause.value);
-    const unsupportedSignal = /\b(?:exactly|protocol|format|schema|process|standard|contract|tests?|testing|test[- ]?suite|specification|policy|convention|interface|api)\b/i.test(clause.value);
+    const explicitMarker = /^(?:\s*)(?:must(?:n't| not)?|should(?:n't| not)?|don't|do not|never|no|without|required|strictly|approved|as specified|use|follow|preserve|only\s+(?:modify|change|edit|touch))\b/i.test(clause.value);
+    const unsupportedSignal = /\b(?:exactly|protocol|format|schema|process|standard|contract|tests?|testing|test[- ]?suite|specification|policy|convention|interface|api|migrations?|backend\s+files?|frontend\s+files?)\b/i.test(clause.value);
     if (!explicitMarker || !unsupportedSignal) continue;
     const clauseEnd = clause.start + clause.value.length;
     if (selected.some((match) => match.start < clauseEnd && match.end > clause.start)) continue;
@@ -571,6 +639,10 @@ function observationPaths(observation: RequirementObservation): string[] {
 
 function observationPathTypes(observation: RequirementObservation): RequirementPathObservation[] {
   return (observation.pathTypes ?? []).map((entry) => ({ path: displayPath(entry.path), type: entry.type }));
+}
+
+function authoritativeObservationPathTypes(observation: RequirementObservation): RequirementPathObservation[] {
+  return observation.pathTypesAuthoritative === false ? [] : observationPathTypes(observation);
 }
 
 function observationCommand(observation: RequirementObservation): { executable: string; args: string[] } | null {
@@ -614,7 +686,6 @@ export function evaluateRequirementObservations(
     const paths = observations.flatMap(observationPaths);
     const changedPathObservations = observations.filter((observation) => observation.type === "changed_paths");
     const commandObservations = observations.filter((observation) => observation.type === "command" || observation.type === "verification");
-    const pathTypes = changedPathObservations.flatMap(observationPathTypes);
     const hasCompleteWorkspaceObservation = changedPathObservations.some((observation) => observation.measured === true && observation.authoritative !== false);
     const hasUsablePathEvidence = paths.length > 0 || hasCompleteWorkspaceObservation;
     let status: RequirementStatus = "unevaluated";
@@ -622,16 +693,22 @@ export function evaluateRequirementObservations(
     let observedFileType: RequirementPathType | undefined;
     switch (requirement.kind) {
       case "no_frontend": {
-        const conflict = paths.find(isFrontendPath);
-        if (conflict || (changedPathObservations.length > 0 && hasUsablePathEvidence)) {
+        const conflict = paths.find((path) => isFrontendPath(path, platform));
+        const canProveAbsence = changedPathObservations.length > 0
+          && hasUsablePathEvidence
+          && changedPathObservations.every((observation) => observation.authoritative !== false);
+        if (conflict || canProveAbsence) {
           status = conflict ? "failed" : "verified";
           evidence.push(conflict ? `frontend path changed: ${conflict}` : "final changed paths contain no frontend deliverable");
         }
         break;
       }
       case "no_database": {
-        const conflict = paths.find(isDatabasePath);
-        if (conflict || (changedPathObservations.length > 0 && hasUsablePathEvidence)) {
+        const conflict = paths.find((path) => isDatabasePath(path, platform));
+        const canProveAbsence = changedPathObservations.length > 0
+          && hasUsablePathEvidence
+          && changedPathObservations.every((observation) => observation.authoritative !== false);
+        if (conflict || canProveAbsence) {
           status = conflict ? "failed" : "verified";
           evidence.push(conflict ? `database path changed: ${conflict}` : "final changed paths contain no database deliverable");
         }
@@ -669,7 +746,9 @@ export function evaluateRequirementObservations(
       case "allowed_files": {
         const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => pathKey(String(path))));
         const outside = paths.find((path) => !allowed.has(pathKey(path)));
-        if (changedPathObservations.length > 0 && hasUsablePathEvidence) {
+        if (changedPathObservations.length > 0
+          && hasUsablePathEvidence
+          && changedPathObservations.every((observation) => observation.authoritative !== false)) {
           status = outside ? "failed" : "verified";
           evidence.push(outside ? `path outside allowlist: ${outside}` : "all final changed paths are allowed");
         }
@@ -677,7 +756,9 @@ export function evaluateRequirementObservations(
       }
       case "required_file": {
         const requiredPath = typeof requirement.parameters.path === "string" ? pathKey(requirement.parameters.path) : "";
-        const matchingTypes = pathTypes.filter((entry) => pathKey(entry.path) === requiredPath);
+        const matchingTypes = changedPathObservations
+          .flatMap(authoritativeObservationPathTypes)
+          .filter((entry) => pathKey(entry.path) === requiredPath);
         const matchingPath = paths.some((path) => pathKey(path) === requiredPath);
         const type = matchingTypes.at(-1)?.type;
         if (type) {

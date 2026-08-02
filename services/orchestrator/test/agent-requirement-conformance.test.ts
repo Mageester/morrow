@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   EXECUTION_REQUIREMENT_REGISTRY,
   canCompleteWithRequirements,
@@ -26,8 +26,11 @@ import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { approvalsRepository } from "../src/repositories/approvals.js";
+import { taskContinuationsRepository } from "../src/repositories/task-continuations.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
+import { ApprovalContinuationRegistry } from "../src/execution/continuation.js";
 import { buildContractFromInput } from "../src/mission/contract-extractor.js";
 import { objectiveRequirementCriteria } from "../src/mission/objective-requirements.js";
 
@@ -230,7 +233,7 @@ describe("explicit execution requirement conformance", () => {
       pathTypes: [{ path: "src/server.ts", type: "directory" }],
     });
     const directoryEvaluation = evaluateRequirementObservations([requirement], [directoryObservation]);
-    expect(directoryEvaluation[0]).toMatchObject({ status: "failed", observedFileType: "directory" });
+    expect(directoryEvaluation[0]).toMatchObject({ status: "unevaluated" });
     expect(canCompleteWithRequirements([requirement], directoryEvaluation)).toBe(false);
 
     const fileObservation = (observeRequirementToolCall as any)(
@@ -243,6 +246,27 @@ describe("explicit execution requirement conformance", () => {
       pathTypes: [{ path: "src/server.ts", type: "file" }],
     });
     expect(evaluateRequirementObservations([requirement], [fileObservation])[0]).toMatchObject({
+      status: "unevaluated",
+    });
+  });
+
+  it("does not treat a completed create_file declaration as authoritative stat evidence", () => {
+    const requirement = requirementFor("Required file: src/server.ts.", "required_file");
+    const toolObservation = observeRequirementToolCall(
+      { toolName: "create_file", args: { path: "src/server.ts", content: "export const server = true;" } },
+      JSON.stringify({ created: true }),
+      "completed",
+    )[0]!;
+    const toolEvaluation = evaluateRequirementObservations([requirement], [toolObservation]);
+    expect(toolEvaluation[0]).toMatchObject({ status: "unevaluated" });
+    expect(canCompleteWithRequirements([requirement], toolEvaluation)).toBe(false);
+
+    const authoritativeStat = observeRequirementChangedPaths(
+      ["src/server.ts"],
+      "authoritative final stat",
+      { pathTypes: [{ path: "src/server.ts", type: "file" }], measured: true, authoritative: true },
+    );
+    expect(evaluateRequirementObservations([requirement], [authoritativeStat])[0]).toMatchObject({
       status: "verified",
       observedFileType: "file",
     });
@@ -297,11 +321,73 @@ describe("explicit execution requirement conformance", () => {
     expect(enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement])).toEqual({ allowed: true });
   });
 
+  it.each([
+    ["npx", ["npm", "install"]],
+    ["npm", ["exec", "--", "npm", "install"]],
+    ["pnpm", ["dlx", "npm", "install"]],
+    ["sh", ["-c", "npm install"]],
+  ])("rejects nested dependency wrapper form %s %s before approval", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement]);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(JSON.parse(result.resultJson)).toMatchObject({ errorType: "requirement_violation", requirementId: requirement.id });
+  });
+
+  it("rejects an unknown dependency added by a semantic package manifest patch", () => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({
+      toolName: "propose_patch",
+      args: {
+        patch: [
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@",
+          "   \"dependencies\": {",
+          "+    \"unlisted-private-package\": \"^9.9.9\"",
+          "   }",
+        ].join("\n"),
+      },
+    }, [requirement]);
+    expect(result.allowed).toBe(false);
+  });
+
+  it("preserves scoped explicit constraints and supports npx verification without conversational false positives", () => {
+    const requirements = extractExecutionRequirements([
+      "No database migrations.",
+      "Never create database migrations.",
+      "Only modify backend files.",
+      "Required verification: npx vitest passes.",
+    ].join(" "));
+    expect(requirements.map((item) => item.kind)).toEqual([null, null, null, "required_verification"]);
+    expect(requirements.slice(0, 3).map((item) => item.sourceExcerpt)).toEqual([
+      "No database migrations.",
+      "Never create database migrations.",
+      "Only modify backend files.",
+    ]);
+    expect(requirements[3]?.parameters).toMatchObject({ command: { executable: "npx", args: ["vitest"] } });
+    expect(extractExecutionRequirements("The project has no database migrations.").some((item) => item.kind === "no_database")).toBe(false);
+  });
+
   it("does not verify prohibitions from an empty or unavailable changed-path ledger", () => {
     const requirement = requirementFor("Build the backend only. No frontend.", "no_frontend");
     const evaluation = evaluateRequirementObservations([requirement], [observeRequirementChangedPaths([])]);
     expect(evaluation[0]).toMatchObject({ status: "unevaluated" });
     expect(canCompleteWithRequirements([requirement], evaluation)).toBe(false);
+  });
+
+  it("does not verify absence-based requirements from a bounded non-authoritative scan", () => {
+    const requirements = [
+      requirementFor("Build the backend only. No frontend.", "no_frontend"),
+      requirementFor("Modify only these files: src/server.ts.", "allowed_files"),
+    ];
+    const partialObservation = observeRequirementChangedPaths(
+      ["src/server.ts"],
+      "bounded scan omitted ignored directories",
+      { measured: false, authoritative: false },
+    );
+    const evaluations = evaluateRequirementObservations(requirements, [partialObservation]);
+    expect(evaluations.map((evaluation) => evaluation.status)).toEqual(["unevaluated", "unevaluated"]);
+    expect(canCompleteWithRequirements(requirements, evaluations)).toBe(false);
   });
 
   it("persists the original requirement baseline separately from changed paths", () => {
@@ -335,6 +421,46 @@ describe("explicit execution requirement conformance", () => {
     expect(JSON.stringify(snapshot)).toContain("***redacted***");
   });
 
+  it("redacts checkpoint test command and result fields before persistence", () => {
+    const secret = "sk-proj-round-two-checkpoint-secret-123456";
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({
+      tests: [{ command: `npx vitest --token=${secret}`, exitCode: 1, result: `failed with ${secret}` }],
+    }));
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+    expect((snapshot as any).tests[0].command).toContain("***redacted***");
+    expect((snapshot as any).tests[0].result).toContain("***redacted***");
+  });
+
+  it("preserves requirement identities, evaluations, waivers, and baseline identity under oversized compaction", () => {
+    const base = requirementFor("Required verification: pnpm test passes.", "required_verification");
+    const requirements = Array.from({ length: 256 }, (_, index) => ({
+      ...base,
+      id: `round-two-requirement-${index}`,
+      sourceExcerpt: `Required verification: pnpm test passes. ${"safe requirement context ".repeat(120)}`,
+      status: index === 0 ? "waived" as const : "unevaluated" as const,
+      ...(index === 0 ? { waiver: { authorizedBy: "user" as const, reason: "User explicitly waived this check for the recorded run.", evidenceRefs: ["waiver-evidence-1"] } } : {}),
+    }));
+    const evaluations = requirements.map((requirement) => ({
+      requirementId: requirement.id,
+      kind: requirement.kind,
+      status: requirement.status,
+      evidence: requirement.status === "waived" ? ["waiver-evidence-1"] : [],
+    }));
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({
+      requirementBaselinePaths: ["src/existing.ts"],
+      executionRequirements: requirements,
+      requirementEvaluations: evaluations,
+    }));
+    expect((snapshot as any).requirementBaselinePaths).toEqual(["src/existing.ts"]);
+    expect((snapshot as any).executionRequirements).toHaveLength(256);
+    expect((snapshot as any).requirementEvaluations).toHaveLength(256);
+    expect((snapshot as any).executionRequirements[0]).toMatchObject({
+      id: "round-two-requirement-0",
+      waiver: { authorizedBy: "user", evidenceRefs: ["waiver-evidence-1"] },
+    });
+    expect((snapshot as any).requirementEvaluations[0]).toMatchObject({ requirementId: "round-two-requirement-0", status: "waived" });
+  });
+
   it("lets failed verification status dominate a contradictory zero exit code", () => {
     const requirement = requirementFor("Required verification: pnpm test passes.", "required_verification");
     const evaluation = evaluateRequirementObservations([requirement], [{
@@ -359,6 +485,17 @@ describe("explicit execution requirement conformance", () => {
     const call = { toolName: "create_file", args: { path: "src/server.ts", content: "" } };
     expect(enforceToolRequirement(call, [allowed], { platform: "linux" })).toMatchObject({ allowed: false });
     expect(enforceToolRequirement(call, [allowed], { platform: "win32" })).toEqual({ allowed: true });
+  });
+
+  it("uses the requested platform when classifying policy paths", () => {
+    const requirement = requirementFor("Build the backend only. No frontend.", "no_frontend");
+    const observation = observeRequirementChangedPaths(
+      ["FRONTEND/readme.md"],
+      "final workspace observation",
+      { measured: true, authoritative: true },
+    );
+    expect(evaluateRequirementObservations([requirement], [observation], { platform: "linux" })[0]).toMatchObject({ status: "verified" });
+    expect(evaluateRequirementObservations([requirement], [observation], { platform: "win32" })[0]).toMatchObject({ status: "failed" });
   });
 
   it("requires an explicit, reasoned, durable waiver before treating a requirement as satisfied", () => {
@@ -427,6 +564,44 @@ const providerDone = { type: "done" as const };
 const providerText = (value: string) => ({ type: "text" as const, text: value });
 
 describe("agent requirement boundary integration", () => {
+  it("revalidates current requirements before dispatching an approved continuation", async () => {
+    const workspacePath = realpathSync(mkdtempSync(join(tmpdir(), "morrow-req-resume-gate-")));
+    const db = openDatabase(":memory:");
+    try {
+      seedAgentTask(db, workspacePath, "Create src/App.tsx.", false);
+      const routing = taskRoutingRepository(db).get("t")!;
+      taskRoutingRepository(db).upsert({
+        ...routing,
+        decision: { ...routing.decision, autoApprove: false },
+      });
+      const provider = new MockProvider({
+        chunks: [
+          [providerTool("stale-approval", "create_file", { path: "src/App.tsx", content: "export function App() {}" }), providerDone],
+          [providerText("done"), providerDone],
+        ],
+        delayMs: 1,
+      });
+
+      const running = executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 4 });
+      await vi.waitFor(() => expect(approvalsRepository(db).listByTask("t")[0]?.status).toBe("pending"));
+      await vi.waitFor(() => expect(taskContinuationsRepository(db).get("t")).toBeDefined());
+
+      db.prepare("UPDATE conversation_messages SET content=? WHERE id='mu'").run("No frontend. Create src/App.tsx.");
+      const approval = approvalsRepository(db).listByTask("t")[0]!;
+      approvalsRepository(db).resolve(approval.id, { decision: "allow_once", resolvedAt: new Date().toISOString() });
+      ApprovalContinuationRegistry.resolveApproval(approval.id, "allow_once");
+      await running;
+
+      expect(existsSync(join(workspacePath, "src", "App.tsx"))).toBe(false);
+      const call = conversationsRepository(db).listToolCallsForTask("t").find((item) => item.id === "stale-approval");
+      expect(call).toMatchObject({ status: "failed" });
+      expect(call?.resultJson).toContain("requirement_violation");
+    } finally {
+      db.close();
+      rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a prohibited tool action before approval or filesystem mutation", async () => {
     const workspacePath = realpathSync(mkdtempSync(join(tmpdir(), "morrow-req-boundary-")));
     const db = openDatabase(":memory:");

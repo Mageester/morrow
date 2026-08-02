@@ -52,6 +52,50 @@ Waiver reasons are stored in the existing bounded mission `lastFailure` field af
 
 Rollback is a focused revert of the remediation commit. The checkpoint additions are optional and no destructive migration was introduced; existing approval, mission, provider, and append-only evidence records remain readable.
 
+## Round 2 re-review remediation
+
+The second adversarial review reproduced all eight residual findings. This focused remediation keeps the existing permission/approval boundary and adds no live-provider behavior:
+
+- Dependency enforcement now unwraps `npx`, `npm exec --`, `pnpm dlx`, `corepack`, and bounded shell `-c`/`/c` forms, canonicalizes executable basenames, and semantically detects added dependency keys in `package.json` patches before approval.
+- Explicit scoped clauses such as `No database migrations`, `Never create database migrations`, and `Only modify backend files` remain complete authoritative unmapped blockers; `npx` is supported for exact required verification; ordinary conversational wording is not promoted to a requirement.
+- `create_file`/`create_directory` observations mark tool-declared path types non-authoritative. `required_file` verifies only final authoritative stat evidence with `isFile`.
+- The final workspace scan no longer excludes `node_modules`, `.morrow`, `vendor`, or other ignored policy-relevant directories. If the bounded scan cannot complete, absence-based requirements remain unevaluated and cannot satisfy completion.
+- Oversized checkpoint fallback retains all bounded requirement identities/evaluations, explicit waiver records, and the original baseline paths plus identity metadata instead of clearing them.
+- Checkpoint test command/result fields pass through `sanitizeActionableText`/`redactSecrets` before bounding.
+- Frontend/database/path classification receives the requested platform, preserving POSIX case sensitivity and Windows case insensitivity.
+- Every approved dispatch, including an in-process or durable continuation, reloads normalized current requirements and re-runs the pre-tool gate immediately before execution; a stale approval cannot bypass a changed requirement.
+
+### Round 2 RED evidence
+
+- The new table-driven adversarial conformance run was **RED: 45 tests, 33 passed and 12 failed**, covering all eight findings. The failures reproduced tool-declared `required_file` completion, four dependency wrappers, an unknown manifest dependency patch, scoped extraction/`npx` support, bounded-scan verification, checkpoint secret retention, oversized-state clearing, POSIX classification, and stale approved continuation dispatch.
+- The first implementation typecheck then recorded `TS2345` because a platform-threaded classifier was passed directly to `Array.prototype.some`; the callback was narrowed and the typecheck passed.
+
+### Round 2 GREEN evidence
+
+- Focused conformance: **1 file, 45 passed**.
+- Focused mission/conformance/restart/approval/security batch (`agent-requirement-conformance`, mission kernel/contract, execution continuity, continuation, approvals, agent security, segmented agent): **8 files, 220 passed**.
+- `pnpm --filter @morrow/contracts check`: passed.
+- `pnpm --filter @morrow/orchestrator check`: passed after the callback correction above.
+- Default isolated orchestrator suite with `MORROW_SKIP_LIVE_FLAGSHIP=1` and `MORROW_SKIP_LIVE_OPENCODE_GO=1`: **164 files, 1,683 passed**.
+- Explicit live-isolation checks with both skip flags: **3 files, 21 passed**.
+- `git diff --check`: passed.
+- `docs/evidence/flagship-runs.jsonl` SHA-256 remained `0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A`.
+
+### Round 2 security/privacy impact, limitations, and rollback
+
+The dependency guard is still a pre-approval categorical check and only parses bounded wrapper syntax; it never executes a proposed command or patch. Tool-declared file types cannot prove a required file, and bounded scans fail closed for absence claims when ignored directories or large workspaces cannot be safely inspected. Requirement source, waiver data, checkpoint tests, structured violation payloads, and compact fallback fields use existing redaction before persistence. Current requirement reloads preserve authorization as a separate decision: an approval grants permission only if the normalized requirement gate still allows the exact dispatch. No new waiver authority, telemetry, network call, or hosted dependency was added. No live provider was called and the append-only flagship evidence file was not touched.
+
+The bounded scan remains limited to 2,048 entries, eight levels, and 150 ms; an incomplete scan intentionally blocks relevant absence-based requirements. Dependency manifest patches that cannot be semantically inspected remain unevaluated rather than passing. Oversized checkpoint fallback retains authoritative identity/status/evidence but may compact long source/parameter text to bounded summaries. Rollback is a focused revert of the round-2 commit; checkpoint additions are optional and no destructive migration was introduced.
+
+### Round 2 commit scope
+
+- `.superpowers/sdd/2026-08-02-real-task-reliability/task-4-report.md`
+- `services/orchestrator/src/execution/agent.ts`
+- `services/orchestrator/src/execution/checkpoint-snapshot.ts`
+- `services/orchestrator/src/execution/requirements.ts`
+- `services/orchestrator/src/repositories/execution-continuity.ts`
+- `services/orchestrator/test/agent-requirement-conformance.test.ts`
+
 ## RED evidence
 
 The required conformance test was written before the production integration. The initial run was RED because `services/orchestrator/src/execution/requirements.ts` did not exist: Vitest collected zero tests and failed to resolve `../src/execution/requirements.js`.

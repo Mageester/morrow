@@ -1437,13 +1437,25 @@ export async function executeAgentChatTask({
   // to use their latest user prompt verbatim.
   const missionObjective = taskMissionId && missionRepo ? missionRepo.get(taskMissionId)?.objective : undefined;
   const requirementPrompt = missionObjective ?? latestUserPrompt;
-  const executionRequirements = restoreMissionRequirementWaivers(
-    restoreExecutionRequirementWaivers(
-      extractExecutionRequirements(requirementPrompt),
-      continuity.latestCheckpoint(taskId)?.snapshot.executionRequirements ?? [],
-    ),
-    taskMissionId && missionRepo ? missionRepo.listRequirementNodes(taskMissionId) : [],
-  );
+  const currentRequirementPrompt = (): string => {
+    if (taskMissionId && missionRepo) return missionRepo.get(taskMissionId)?.objective ?? requirementPrompt;
+    return [...convs.listMessages(conversationId)].reverse().find((message) => message.id !== assistantMessageRow.id && message.role === "user")?.content ?? requirementPrompt;
+  };
+  const loadCurrentExecutionRequirements = () => {
+    const prompt = currentRequirementPrompt();
+    return restoreMissionRequirementWaivers(
+      restoreExecutionRequirementWaivers(
+        extractExecutionRequirements(prompt),
+        continuity.latestCheckpoint(taskId)?.snapshot.executionRequirements ?? [],
+      ),
+      taskMissionId && missionRepo ? missionRepo.listRequirementNodes(taskMissionId) : [],
+    );
+  };
+  let executionRequirements = loadCurrentExecutionRequirements();
+  const refreshExecutionRequirements = () => {
+    executionRequirements = loadCurrentExecutionRequirements();
+    return executionRequirements;
+  };
   const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
@@ -1762,6 +1774,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   async function executeApprovedTool(toolName: string, args: any, tcId: string): Promise<string> {
     renewExecutionLease();
+    const requirementResult = enforceToolRequirement(
+      { toolName, args: (args && typeof args === "object" && !Array.isArray(args)) ? args as Record<string, unknown> : {} },
+      refreshExecutionRequirements(),
+    );
+    if (!requirementResult.allowed) {
+      let payload: Record<string, unknown> = { errorType: "requirement_violation" };
+      try {
+        const parsed = JSON.parse(requirementResult.resultJson) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>;
+      } catch {
+        // Keep the bounded fallback if a future requirement implementation
+        // emits malformed JSON at this security boundary.
+      }
+      const reason = typeof payload.reason === "string" ? payload.reason : "the action conflicts with an explicit task requirement";
+      throw new AgentToolFailure(`Explicit task requirement violated: ${reason}`, payload, "requirement_violation");
+    }
     if (toolName.startsWith("browser_")) {
       return executeBrowserTool(toolName, args);
     } else if (toolName === "run_command") {
@@ -2400,9 +2428,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             missionFailures.reportSuccess(continuation.toolName, continuation.args);
           } catch (err: any) {
             isSuccess = false;
-            errorType = err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
+            errorType = err instanceof AgentToolFailure
+              ? err.errorType
+              : err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
             errorMessage = err.message || "Unknown error";
-            resultStr = JSON.stringify({ error: errorMessage });
+            resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
             event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
             const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
             noteMissionFailure(report, continuation.toolName, errorMessage);
@@ -2739,7 +2769,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const entries: RequirementPathObservation[] = [];
     const startedAt = Date.now();
     let complete = true;
-    const ignoredDirectories = new Set([".git", ".morrow", ".hermes", "node_modules", "vendor"]);
+    // Ignored directories are still inside the task workspace. A command can
+    // mutate them without changing Git status, so excluding them would let a
+    // policy-relevant frontend/database/allowlist violation disappear. The
+    // bounded scan may become non-authoritative under load; evaluators then
+    // remain unevaluated instead of claiming a clean absence.
+    const ignoredDirectories = new Set([".git"]);
     const walk = (directory: string, relativeDirectory: string, depth: number): void => {
       if (Date.now() - startedAt > 150 || entries.length >= 2_048) {
         complete = false;
@@ -4167,7 +4202,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // filesystem/provider side effect.
           const requirementResult = enforceToolRequirement(
             { toolName: tc.name, args: args as Record<string, unknown> },
-            executionRequirements,
+            refreshExecutionRequirements(),
           );
           if (!requirementResult.allowed) {
             let payload: Record<string, unknown> = { errorType: "requirement_violation" };

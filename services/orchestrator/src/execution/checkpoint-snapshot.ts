@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import { redactSecrets } from "../provider/credentials.js";
-import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation } from "./requirements.js";
+import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation, type ExecutionRequirement, type RequirementEvaluation } from "./requirements.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
@@ -174,7 +174,40 @@ function compactRecord(value: Record<string, unknown>, maxBytes: number): Record
   return { summaryHash: hash(serialized), summary: "large structured checkpoint field omitted" };
 }
 
+function compactExecutionRequirement(requirement: ExecutionRequirement): ExecutionRequirement {
+  const sanitized = sanitizeExecutionRequirement(requirement);
+  return {
+    id: boundedString(sanitized.id, 128),
+    kind: sanitized.kind,
+    sourceExcerpt: boundedString(sanitized.sourceExcerpt, 128),
+    parameters: compactRecord(sanitized.parameters, 256),
+    authoritative: sanitized.authoritative,
+    status: sanitized.status,
+    ...(sanitized.waiver
+      ? {
+          waiver: {
+            authorizedBy: sanitized.waiver.authorizedBy,
+            reason: boundedString(sanitized.waiver.reason, 160),
+            evidenceRefs: uniqueStrings(sanitized.waiver.evidenceRefs).slice(-16),
+          },
+        }
+      : {}),
+  };
+}
+
+function compactRequirementEvaluation(evaluation: RequirementEvaluation): RequirementEvaluation {
+  const sanitized = sanitizeRequirementEvaluation(evaluation);
+  return {
+    requirementId: boundedString(sanitized.requirementId, 128),
+    kind: sanitized.kind,
+    status: sanitized.status,
+    evidence: uniqueStrings(sanitized.evidence).slice(-4),
+    ...(sanitized.observedFileType ? { observedFileType: sanitized.observedFileType } : {}),
+  };
+}
+
 function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
+  const baselinePaths = snapshot.requirementBaselinePaths ? uniqueStrings(snapshot.requirementBaselinePaths) : undefined;
   return {
     ...snapshot,
     originalMission: boundedString(redactSecrets(snapshot.originalMission)),
@@ -187,9 +220,9 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     filesChanged: uniqueStrings(snapshot.filesChanged),
     gitStatus: boundedString(redactSecrets(snapshot.gitStatus)),
     tests: snapshot.tests.slice(-MAX_ARRAY_ENTRIES).map((test) => ({
-      command: boundedString(test.command),
+      command: sanitizeActionableText(test.command, 4_096),
       exitCode: test.exitCode,
-      result: boundedString(test.result),
+      result: sanitizeActionableText(test.result, 4_096),
     })),
     unresolvedFailures: uniqueStrings(snapshot.unresolvedFailures),
     recoveryAttempts: uniqueStrings(snapshot.recoveryAttempts),
@@ -198,8 +231,12 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     providerRouting: compactRecord(snapshot.providerRouting, 8_192),
     providerContinuationRefs: uniqueStrings(snapshot.providerContinuationRefs),
     evidenceRequired: uniqueStrings(snapshot.evidenceRequired),
-    ...(snapshot.requirementBaselinePaths
-      ? { requirementBaselinePaths: uniqueStrings(snapshot.requirementBaselinePaths) }
+    ...(baselinePaths
+      ? {
+          requirementBaselinePaths: baselinePaths,
+          requirementBaselinePathCount: snapshot.requirementBaselinePathCount ?? snapshot.requirementBaselinePaths!.length,
+          requirementBaselineIdentityHash: snapshot.requirementBaselineIdentityHash ?? hash(snapshot.requirementBaselinePaths),
+        }
       : {}),
     ...(snapshot.executionRequirements
       ? {
@@ -262,7 +299,6 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
     "filesChanged",
     "providerContinuationRefs",
     "evidenceRequired",
-    "requirementBaselinePaths",
   ];
 
   while (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
@@ -284,7 +320,13 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       decisions: [],
       completedWork: [],
       filesChanged: [],
-      ...(bounded.requirementBaselinePaths ? { requirementBaselinePaths: [] } : {}),
+      ...(bounded.requirementBaselinePaths
+        ? {
+            requirementBaselinePaths: bounded.requirementBaselinePaths,
+            ...(bounded.requirementBaselinePathCount !== undefined ? { requirementBaselinePathCount: bounded.requirementBaselinePathCount } : {}),
+            ...(bounded.requirementBaselineIdentityHash ? { requirementBaselineIdentityHash: bounded.requirementBaselineIdentityHash } : {}),
+          }
+        : {}),
       gitStatus: boundedString(bounded.gitStatus, 2_048),
       tests: [],
       unresolvedFailures: [],
@@ -294,8 +336,12 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       providerRouting: {},
       providerContinuationRefs: [],
       evidenceRequired: [],
-      ...(bounded.executionRequirements ? { executionRequirements: [] } : {}),
-      ...(bounded.requirementEvaluations ? { requirementEvaluations: [] } : {}),
+      ...(bounded.executionRequirements
+        ? { executionRequirements: bounded.executionRequirements.map(compactExecutionRequirement) }
+        : {}),
+      ...(bounded.requirementEvaluations
+        ? { requirementEvaluations: bounded.requirementEvaluations.map(compactRequirementEvaluation) }
+        : {}),
     };
   }
 
