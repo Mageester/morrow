@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
+import { redactSecrets } from "../provider/credentials.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
@@ -43,10 +44,7 @@ function boundedString(value: string, maxBytes = 8_192): string {
 }
 
 function sanitizeActionableText(value: string, maxBytes = 480): string {
-  const sanitized = value
-    .replace(/\s+/g, " ")
-    .replace(/(?:bearer\s+|api[-_]?key\s*[:=]\s*|token\s*[:=]\s*|secret\s*[:=]\s*|password\s*[:=]\s*|authorization\s*[:=]\s*)[^\s,;]+/gi, "[redacted]")
-    .replace(/\b(?:sk|gh[pousr]|xox[baprs]|AIza)[-_][A-Za-z0-9_-]+\b/g, "[redacted]");
+  const sanitized = redactSecrets(value.replace(/\s+/g, " "));
   return boundedString(sanitized, maxBytes);
 }
 

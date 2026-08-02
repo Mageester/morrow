@@ -72,7 +72,8 @@ export function resolveLocalCredential(
 /** Defensive redaction for any string that might be logged. */
 export function redactSecrets(input: string): string {
   return input
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-***redacted***")
-    .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, "Bearer ***redacted***")
-    .replace(/(x-api-key|x-goog-api-key|authorization)\s*[:=]\s*\S+/gi, "$1: ***redacted***");
+    .replace(/\bBearer\s+(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Bearer ***redacted***")
+    .replace(/(?<![A-Za-z0-9_])((?:[A-Za-z0-9][A-Za-z0-9_-]*[_-])?(?:api[_-]?key|key|token|secret|password|passwd|authorization|auth))(["']?)(\s*[:=]\s*)("[^"]*"|'[^']*'|`[^`]*`|[^\s,;}\]]+)/gi, (_match, key: string, keyQuote: string, separator: string, value: string) => `${key}${keyQuote}${separator}${value.startsWith("\"") || value.startsWith("'") || value.startsWith("`") ? `${value[0]}***redacted***${value[value.length - 1]}` : "***redacted***"}`)
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***redacted***@")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AIza[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16})\b/gi, "***redacted***");
 }

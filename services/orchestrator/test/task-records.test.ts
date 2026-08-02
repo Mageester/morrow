@@ -32,6 +32,39 @@ describe("task records repository", () => {
     db.close();
   });
 
+  it("executes the repository cursor query and reports its indexed SQLite plan for large histories", () => {
+    const { db, records } = setup();
+    const insert = db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,1,?,?,?,?,?)");
+    db.transaction(() => {
+      for (let sequence = 1; sequence <= 10_000; sequence++) {
+        insert.run(`seed-${sequence}`, "t1", sequence, "task.progress_warning", "{}", createdAt);
+      }
+    })();
+
+    const preparedTaskEventSql: string[] = [];
+    const originalPrepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      const statement = originalPrepare(sql);
+      if (/^\s*SELECT \* FROM task_events\b/i.test(sql)) preparedTaskEventSql.push(sql);
+      return statement;
+    }) as typeof db.prepare;
+
+    expect(records.listEventsAfter("t1", 9_995).map((event) => event.sequence)).toEqual([9_996, 9_997, 9_998, 9_999, 10_000]);
+    expect(records.listEvents("t1", 9_998).map((event) => event.sequence)).toEqual([9_999, 10_000]);
+    expect(preparedTaskEventSql).toHaveLength(2);
+    expect(preparedTaskEventSql.every((sql) => /WHERE\s+task_id\s*=\s*\?\s+AND\s+sequence\s*>\s*\?/i.test(sql))).toBe(true);
+    expect(preparedTaskEventSql.some((sql) => /WHERE\s+task_id\s*=\s*\?\s+ORDER\s+BY\s+sequence/i.test(sql))).toBe(false);
+
+    type QueryDiagnostic = {
+      explainEventsAfterQuery(taskId: string, afterSequence: number): { sql: string; plan: string[] };
+    };
+    const diagnostic = (records as unknown as QueryDiagnostic).explainEventsAfterQuery("t1", 9_995);
+    expect(diagnostic.sql).toMatch(/WHERE\s+task_id\s*=\s*\?\s+AND\s+sequence\s*>\s*\?/i);
+    expect(diagnostic.plan.join(" ")).toMatch(/SEARCH task_events USING (?:COVERING )?INDEX/i);
+    expect(diagnostic.plan.join(" ")).toMatch(/task_id.*sequence/i);
+    db.close();
+  });
+
   it("rejects malformed stored event payloads", () => {
     const { db, records } = setup();
     db.prepare("INSERT INTO task_events VALUES(?,?,?,?,?,?,?)").run("e", 1, "t1", 1, "task.created", "not-json", createdAt);

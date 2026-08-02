@@ -166,6 +166,7 @@ describe("Task 2 live-loop performance conformance", () => {
     const aliases = [
       {},
       { path: "." },
+      { path: "" },
       { path: "./" },
       { path: "src/.." },
       { path: ".\\" },
@@ -179,6 +180,40 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(observations[0]?.executionsPerSignature).toBe(1);
     expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS - 1]?.exceeded).toBe(false);
     expect(observations[MAX_OBSERVATION_SIGNATURE_EXECUTIONS]?.exceeded).toBe(true);
+  });
+
+  it("keeps malformed required observation arguments distinct from valid empty values", () => {
+    const readFileSignatures = [
+      observationSignature("read_file", {}),
+      observationSignature("read_file", { path: "" }),
+      observationSignature("read_file", { path: "README.md" }),
+    ];
+    const searchTextSignatures = [
+      observationSignature("search_text", {}),
+      observationSignature("search_text", { query: "" }),
+      observationSignature("search_text", { query: "needle" }),
+    ];
+
+    expect(new Set(readFileSignatures)).toHaveLength(3);
+    expect(new Set(searchTextSignatures)).toHaveLength(3);
+
+    const readEpoch = createProgressEpoch();
+    for (let index = 0; index < MAX_OBSERVATION_SIGNATURE_EXECUTIONS; index++) {
+      readEpoch.recordObservation("read_file", { path: "" });
+    }
+    const malformedRead = readEpoch.recordObservation("read_file", {});
+    expect(malformedRead.executionsPerSignature).toBe(1);
+    expect(malformedRead.exceeded).toBe(false);
+    expect(readEpoch.recordObservation("read_file", { path: "" }).exceeded).toBe(true);
+
+    const searchEpoch = createProgressEpoch();
+    for (let index = 0; index < MAX_OBSERVATION_SIGNATURE_EXECUTIONS; index++) {
+      searchEpoch.recordObservation("search_text", { query: "" });
+    }
+    const malformedSearch = searchEpoch.recordObservation("search_text", {});
+    expect(malformedSearch.executionsPerSignature).toBe(1);
+    expect(malformedSearch.exceeded).toBe(false);
+    expect(searchEpoch.recordObservation("search_text", { query: "" }).exceeded).toBe(true);
   });
 
   it("requires action-only recovery by turn 6 and strategy termination by turn 12 for artifact delivery", () => {
@@ -261,6 +296,58 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(providerContext).toContain("TS2322");
     expect(providerContext).toContain("cursor=87");
     expect(providerContext).not.toContain("SUPER_SECRET");
+  });
+
+  it("redacts environment, header, bearer, password, and URI credentials from actionable diagnostics", () => {
+    const secretValues = [
+      "aws-secret-value",
+      "openai-secret-value",
+      "password-secret-value",
+      "json-secret-value",
+      "bearer-secret-value",
+      "mixed-case-secret-value",
+      "quoted-secret-value",
+      "uri-secret-value",
+    ];
+    const failedCall = {
+      id: "secret-bearing-failure",
+      toolName: "run_command",
+      status: "failed",
+      argsJson: JSON.stringify({
+        executable: "node",
+        args: [
+          "-e",
+          "AWS_SECRET_ACCESS_KEY=aws-secret-value OPENAI_API_KEY=\"openai-secret-value\" PaSsWoRd='password-secret-value'",
+          "https://alice:uri-secret-value@example.com/api",
+        ],
+      }),
+      resultJson: JSON.stringify({
+        exitCode: 1,
+        stderr: [
+          "TS2322: request failed while contacting service",
+          "aws_secret_access_key=aws-secret-value",
+          "\"OPENAI_API_KEY\": \"json-secret-value\"",
+          "Authorization: Bearer bearer-secret-value",
+          "X-API-KEY: mixed-case-secret-value",
+          "pAsSwOrD: 'quoted-secret-value'",
+          "endpoint=https://alice:uri-secret-value@example.com/api",
+        ].join("; "),
+      }),
+      errorMessage: "diagnostic preserved: request failed for https://alice:uri-secret-value@example.com/api",
+      cursor: 88,
+    };
+    const checkpoint = projectCheckpointSnapshot({
+      snapshot: baseCheckpointSnapshot("task-1"),
+      failedCalls: [failedCall],
+    });
+    const serialized = JSON.stringify(checkpoint);
+
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(MAX_EXECUTION_CHECKPOINT_BYTES);
+    expect(serialized).toContain("TS2322");
+    expect(serialized).toContain("request failed");
+    for (const secret of secretValues) expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("rawArgument");
+    expect(serialized).not.toContain("rawResult");
   });
 
   it("retains only the latest checkpoint while preserving the newest bounded snapshot", () => {

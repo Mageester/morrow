@@ -25,6 +25,9 @@ type EvidenceInput = Omit<TaskEvidence, "version">;
 type VerificationInput = Omit<VerificationResult, "version">;
 type AgentStateInput = Omit<AgentStateTransition, "version" | "taskId" | "sequence">;
 
+const LIST_EVENTS_SQL = "SELECT * FROM task_events WHERE task_id=? ORDER BY sequence ASC";
+const LIST_EVENTS_AFTER_SQL = "SELECT * FROM task_events WHERE task_id=? AND sequence>? ORDER BY sequence ASC";
+
 const eventTypes = {
   running: "task.running",
   verified: "task.verified",
@@ -166,9 +169,17 @@ export function taskRecordsRepository(db: Database.Database) {
   })();
 
   const listEventsAfter = (taskId: string, afterSequence: number): TaskEvent[] => db
-    .prepare("SELECT * FROM task_events WHERE task_id=? AND sequence>? ORDER BY sequence ASC")
+    .prepare(LIST_EVENTS_AFTER_SQL)
     .all(taskId, afterSequence)
     .map(mapEvent);
+
+  const explainEventsAfterQuery = (taskId: string, afterSequence: number): { sql: string; plan: string[] } => ({
+    sql: LIST_EVENTS_AFTER_SQL,
+    plan: db
+      .prepare(`EXPLAIN QUERY PLAN ${LIST_EVENTS_AFTER_SQL}`)
+      .all(taskId, afterSequence)
+      .map((row) => String((row as { detail?: unknown }).detail ?? "")),
+  });
 
   const latestEvent = (taskId: string): TaskEvent | undefined => {
     const row = db.prepare("SELECT * FROM task_events WHERE task_id=? ORDER BY sequence DESC LIMIT 1").get(taskId);
@@ -194,12 +205,13 @@ export function taskRecordsRepository(db: Database.Database) {
     appendEvent,
     listEvents(taskId: string, afterSequence?: number) {
       return afterSequence === undefined
-        ? db.prepare("SELECT * FROM task_events WHERE task_id=? ORDER BY sequence ASC").all(taskId).map(mapEvent)
+        ? db.prepare(LIST_EVENTS_SQL).all(taskId).map(mapEvent)
         : listEventsAfter(taskId, afterSequence);
     },
     /** Database-bound cursor query; callers must not hydrate and JS-filter history. */
     listEventsAfter,
     listEventsAfterSequence: listEventsAfter,
+    explainEventsAfterQuery,
     latestEvent,
     getLatestEvent: latestEvent,
     latestEventOfType,

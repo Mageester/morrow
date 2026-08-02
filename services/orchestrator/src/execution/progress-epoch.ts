@@ -50,6 +50,23 @@ function normalizeObservationPath(value: unknown): string {
   return normalized.replace(/\/+$/, "") || ".";
 }
 
+function normalizedValueType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function normalizeRequiredString(
+  parsed: Record<string, unknown>,
+  key: string,
+  normalize: (value: string) => string = (value) => value,
+): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(parsed, key)) return { state: "missing" };
+  const value = parsed[key];
+  if (typeof value !== "string") return { state: "invalid", valueType: normalizedValueType(value) };
+  return { state: "present", value: value.length === 0 ? "" : normalize(value) };
+}
+
 function boundedInteger(value: unknown, fallback: number, maximum: number): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(Math.max(Math.floor(value), 1), maximum)
@@ -83,11 +100,11 @@ export function normalizeObservationArguments(toolName: string, args: unknown): 
     case "list_files":
       return { path: normalizeObservationPath(parsed.path) };
     case "read_file":
-      return { path: normalizeObservationPath(parsed.path) };
+      return { path: normalizeRequiredString(parsed, "path", normalizeObservationPath) };
     case "search_text":
     case "search_files":
       return {
-        query: typeof parsed.query === "string" ? parsed.query : "",
+        query: normalizeRequiredString(parsed, "query"),
         path: normalizeObservationPath(parsed.path),
         caseSensitive: parsed.caseSensitive === true,
       };
