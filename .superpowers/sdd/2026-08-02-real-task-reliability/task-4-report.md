@@ -10,6 +10,48 @@ Task 4 is implemented and verified. Explicit high-confidence requirements are ex
 
 No live provider was called and `docs/evidence/flagship-runs.jsonl` was not modified.
 
+## Adversarial remediation
+
+The independent review identified eight requirement-conformance gaps. The remediation preserves the existing permission and approval boundaries and closes them at extraction, pre-tool enforcement, observation, persistence, and completion gates:
+
+- Required-file completion now requires authoritative `stat.isFile` evidence; directories and unknown path types cannot satisfy it.
+- Unsupported explicit constraints remain authoritative unmapped blockers. Contractions and scoped phrases are handled without turning “No frontend tests” into `no_frontend`.
+- Dependency mutation detection canonicalizes executable basenames and unwraps package-manager options, `pnpm exec`, and `corepack` wrappers before approval.
+- Arbitrary command side effects are measured by a bounded authoritative filesystem scan, and the original baseline is persisted/restored across checkpoints instead of being rebuilt from current state.
+- Requirement source, parameters, evaluation evidence, checkpoint projections, canonical evidence, and structured violations pass through the existing comprehensive secret redaction primitive.
+- Failed verification observations dominate contradictory zero exits; only a completed, consistent zero-exit observation verifies.
+- Path comparisons are case-sensitive on POSIX and case-insensitive on Windows, including pre-tool allowed-file enforcement.
+- Waivers require an explicit reason and mission-scoped durable evidence. Checkpoint and mission-ledger restoration accepts only auditable user/ledger authority; unaudited waivers do not satisfy mission or execution completion.
+
+### Remediation RED evidence
+
+- The adversarial table-driven conformance run recorded **13 failed / 20 passed (33)** before implementation.
+- Adding checkpoint waiver restoration first recorded **1 failed / 32 passed (33)** with the production restore export absent.
+- The mission-ledger waiver test recorded **1 failed / 122 passed (123)** before `MissionService.updateRequirementStatus` enforced reason/evidence.
+- The mission-kernel audit test recorded **1 failed / 17 passed (18)** before unaudited waivers were excluded from satisfaction.
+- The POSIX pre-tool case regression recorded **1 failed / 32 passed (33)** before enforcement accepted a platform option.
+- A semicolon-scoped prompt regression recorded **1 failed / 32 passed (33)** when the unsupported “Acme protocol exactly” clause was swallowed by an adjacent recognized clause; clause extraction now preserves semicolon boundaries.
+- The first default isolated full suite recorded **1 failed / 1,670 passed (1,671)**: sustained autonomy became blocked because the extractor treated the controller’s internal “Use the persisted mission contract…” instruction as a user-authored unmapped requirement. Mission-linked extraction now uses the durable user objective, and the regression is green.
+
+### Final GREEN evidence
+
+- Requirement conformance: **1 file, 33 passed**.
+- Mission kernel and durable mission contract: **2 files, 141 passed**.
+- Focused requirement/security/mission command: **5 files, 195 passed**.
+- Continuity/completion/restart/recovery regression batch: **8 files, 69 passed**.
+- Sustained autonomy regression: **1 file, 1 passed**.
+- Default orchestrator suite with `MORROW_SKIP_LIVE_FLAGSHIP=1` and `MORROW_SKIP_LIVE_OPENCODE_GO=1`: **164 files, 1,671 passed**.
+- Live-provider isolation/conformance checks: **3 files, 21 passed**.
+- `pnpm --filter @morrow/contracts check`: passed.
+- `pnpm --filter @morrow/orchestrator check`: passed.
+- `git diff --check`: passed.
+
+### Security/privacy impact, limitations, and rollback
+
+Waiver reasons are stored in the existing bounded mission `lastFailure` field after redaction, with evidence IDs in the existing `evidenceRefs` field; no new authority or automatic waiver path was introduced. Mission and checkpoint restoration never manufactures a waiver. Filesystem observation is bounded to 2,048 entries, eight directory levels, and 150 ms, with incomplete scans remaining non-authoritative. The existing approval/permission path remains intact: requirement rejection occurs before approval creation and tool dispatch. No live provider was called, no telemetry or hosted dependency was added, and the flagship evidence file’s SHA-256 remained `0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A`.
+
+Rollback is a focused revert of the remediation commit. The checkpoint additions are optional and no destructive migration was introduced; existing approval, mission, provider, and append-only evidence records remain readable.
+
 ## RED evidence
 
 The required conformance test was written before the production integration. The initial run was RED because `services/orchestrator/src/execution/requirements.ts` did not exist: Vitest collected zero tests and failed to resolve `../src/execution/requirements.js`.
@@ -57,11 +99,14 @@ Revert the Task 4 commit. The checkpoint fields are optional and the implementat
 
 - `.superpowers/sdd/2026-08-02-real-task-reliability/task-4-report.md`
 - `services/orchestrator/src/execution/requirements.ts`
-- `services/orchestrator/test/agent-requirement-conformance.test.ts`
 - `services/orchestrator/src/execution/agent.ts`
 - `services/orchestrator/src/execution/checkpoint-snapshot.ts`
 - `services/orchestrator/src/repositories/execution-continuity.ts`
-- `services/orchestrator/src/mission/contract-extractor.ts`
-- `services/orchestrator/src/mission/objective-requirements.ts`
+- `services/orchestrator/src/mission/service.ts`
+- `services/orchestrator/src/mission/kernel.ts`
+- `services/orchestrator/src/mission/guardian.ts`
+- `services/orchestrator/test/agent-requirement-conformance.test.ts`
+- `services/orchestrator/test/mission-kernel-contract.test.ts`
+- `services/orchestrator/test/mission-kernel.test.ts`
 
 The final commit hash is reported in the implementation handoff because this report is included in that commit.

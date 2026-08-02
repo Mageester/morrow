@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactSecrets } from "../provider/credentials.js";
 
 /** The closed set of execution requirements understood by deterministic policy. */
 export const REQUIREMENT_KINDS = [
@@ -47,6 +48,21 @@ export interface ExecutionRequirement {
   parameters: Record<string, unknown>;
   authoritative: boolean;
   status: RequirementStatus;
+  /** A waiver is terminal only when its authority, reason, and evidence are durable. */
+  waiver?: RequirementWaiver;
+}
+
+export interface RequirementWaiver {
+  authorizedBy: "user" | "mission_ledger";
+  reason: string;
+  evidenceRefs: string[];
+}
+
+export type RequirementPathType = "file" | "directory" | "unknown";
+
+export interface RequirementPathObservation {
+  path: string;
+  type: RequirementPathType;
 }
 
 export interface RequirementToolCall {
@@ -57,6 +73,11 @@ export interface RequirementToolCall {
 export interface RequirementObservation {
   type: "changed_paths" | "command" | "verification";
   paths?: string[];
+  pathTypes?: RequirementPathObservation[];
+  /** A complete filesystem observation can prove the absence of a conflict. */
+  measured?: boolean;
+  authoritative?: boolean;
+  completed?: boolean;
   command?: { executable: string; args: string[] };
   exitCode?: number | null;
   passed?: boolean;
@@ -70,6 +91,15 @@ export interface RequirementEvaluation {
   kind: RequirementKind | null;
   status: RequirementStatus;
   evidence: string[];
+  observedFileType?: RequirementPathType;
+}
+
+export interface RequirementEvaluationOptions {
+  platform?: NodeJS.Platform;
+}
+
+export interface RequirementEnforcementOptions {
+  platform?: NodeJS.Platform;
 }
 
 export type RequirementEnforcementResult =
@@ -85,7 +115,7 @@ type Match = {
 };
 
 const PATH_PATTERN = /[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*/g;
-const COMMAND_EXECUTABLES = new Set(["npm", "pnpm", "yarn", "bun", "node"]);
+const COMMAND_EXECUTABLES = new Set(["npm", "pnpm", "yarn", "bun", "node", "deno"]);
 const DEPENDENCY_MANIFESTS = new Set([
   "package.json",
   "package-lock.json",
@@ -95,8 +125,13 @@ const DEPENDENCY_MANIFESTS = new Set([
   "bun.lockb",
 ]);
 
+export function canonicalRequirementPath(value: string, platform: NodeJS.Platform = process.platform): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "").toLowerCase();
+  return canonicalRequirementPath(value, "win32");
 }
 
 function displayPath(value: string): string {
@@ -111,6 +146,95 @@ function stableId(kind: RequirementKind | null, sourceExcerpt: string, parameter
   return `execution-requirement-${digest}`;
 }
 
+function redactStructured(value: unknown, depth = 0): unknown {
+  if (depth > 6) return "[REDACTED]";
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.slice(0, 256).map((item) => redactStructured(item, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 256).map(([key, item]) => [key, redactStructured(item, depth + 1)]));
+  }
+  return value;
+}
+
+export function sanitizeExecutionRequirement(requirement: ExecutionRequirement): ExecutionRequirement {
+  return {
+    ...requirement,
+    sourceExcerpt: redactSecrets(requirement.sourceExcerpt),
+    parameters: redactStructured(requirement.parameters) as Record<string, unknown>,
+    ...(requirement.waiver
+      ? {
+          waiver: {
+            authorizedBy: requirement.waiver.authorizedBy,
+            reason: redactSecrets(requirement.waiver.reason),
+            evidenceRefs: requirement.waiver.evidenceRefs.map(redactSecrets),
+          },
+        }
+      : {}),
+  };
+}
+
+export function sanitizeRequirementEvaluation(evaluation: RequirementEvaluation): RequirementEvaluation {
+  return {
+    ...evaluation,
+    evidence: evaluation.evidence.map((item) => redactSecrets(item)),
+  };
+}
+
+function validRequirementWaiver(requirement: ExecutionRequirement): requirement is ExecutionRequirement & { waiver: RequirementWaiver } {
+  return requirement.status === "waived"
+    && requirement.waiver !== undefined
+    && (requirement.waiver.authorizedBy === "user" || requirement.waiver.authorizedBy === "mission_ledger")
+    && requirement.waiver.reason.trim().length > 0
+    && requirement.waiver.evidenceRefs.length > 0
+    && requirement.waiver.evidenceRefs.every((ref) => ref.trim().length > 0);
+}
+
+/** Restore only a mission-ledger waiver that is authoritative and auditable. */
+export function restoreMissionRequirementWaivers<T extends {
+  sourcePromptExcerpt?: string | null;
+  statement?: string | null;
+  authoritative?: boolean;
+  status?: string;
+  lastFailure?: string | null;
+  evidenceRefs?: string[];
+}>(requirements: ExecutionRequirement[], nodes: T[]): ExecutionRequirement[] {
+  return requirements.map((requirement) => {
+    const node = nodes.find((candidate) =>
+      candidate.authoritative === true
+      && candidate.status === "waived"
+      && (candidate.sourcePromptExcerpt === requirement.sourceExcerpt || candidate.statement === requirement.sourceExcerpt)
+      && typeof candidate.lastFailure === "string"
+      && candidate.lastFailure.trim().length > 0
+      && Array.isArray(candidate.evidenceRefs)
+      && candidate.evidenceRefs.length > 0
+      && candidate.evidenceRefs.every((ref) => typeof ref === "string" && ref.trim().length > 0));
+    if (!node) return requirement;
+    return {
+      ...requirement,
+      status: "waived",
+      waiver: {
+        authorizedBy: "mission_ledger",
+        reason: node.lastFailure!.trim(),
+        evidenceRefs: [...node.evidenceRefs!],
+      },
+    };
+  });
+}
+
+/** Restore a standalone checkpoint waiver only when its durable record proves user authority. */
+export function restoreExecutionRequirementWaivers(
+  requirements: ExecutionRequirement[],
+  persistedRequirements: ExecutionRequirement[],
+): ExecutionRequirement[] {
+  return requirements.map((requirement) => {
+    const persisted = persistedRequirements.find((candidate) =>
+      candidate.id === requirement.id
+      || (candidate.kind === requirement.kind && candidate.sourceExcerpt === requirement.sourceExcerpt));
+    if (!persisted || !validRequirementWaiver(persisted)) return requirement;
+    return { ...requirement, status: "waived", waiver: { ...persisted.waiver } };
+  });
+}
+
 function normalizedCommand(command: string): { executable: string; args: string[] } | null {
   const tokens = command
     .trim()
@@ -119,17 +243,22 @@ function normalizedCommand(command: string): { executable: string; args: string[
     .map((token) => token.replace(/[.,;:!?]+$/, ""))
     .filter(Boolean);
   if (tokens.length === 0) return null;
-  const executable = tokens[0]!.replace(/\.cmd$|\.exe$|\.bat$/i, "").toLowerCase();
+  const executable = executableName(tokens[0]!);
   if (!COMMAND_EXECUTABLES.has(executable)) return null;
   const args = tokens.slice(1).filter((token) => !/^(?:passes|pass|succeeds|successfully|successfully\.)$/i.test(token));
   return { executable, args };
 }
 
 function commandEqual(left: { executable: string; args: string[] }, right: { executable: string; args: string[] }): boolean {
-  const normalizeExecutable = (value: string) => value.replace(/\.cmd$|\.exe$|\.bat$/i, "").toLowerCase();
+  const normalizeExecutable = executableName;
   return normalizeExecutable(left.executable) === normalizeExecutable(right.executable)
     && left.args.length === right.args.length
     && left.args.every((arg, index) => arg === right.args[index]);
+}
+
+function executableName(value: string): string {
+  const basename = value.replace(/\\/g, "/").split("/").at(-1) ?? value;
+  return basename.replace(/\.cmd$|\.exe$|\.bat$/i, "").toLowerCase();
 }
 
 function affectedPaths(call: RequirementToolCall): string[] {
@@ -156,9 +285,15 @@ export function observeRequirementToolCall(
   const observations: RequirementObservation[] = [];
   const paths = affectedPaths(call);
   if (paths.length > 0 && status === "completed") {
+    const pathTypes: RequirementPathObservation[] = paths.map((path) => ({
+      path,
+      type: call.toolName === "create_directory" ? "directory" : call.toolName === "create_file" ? "file" : "unknown",
+    }));
     observations.push({
       type: "changed_paths",
       paths,
+      pathTypes,
+      completed: true,
       dependencyChange: contentAddsDependencies(call) || paths.some(isDependencyLockfile),
       evidence: `${call.toolName} completed for ${paths.length} workspace path${paths.length === 1 ? "" : "s"}`,
     });
@@ -179,15 +314,27 @@ export function observeRequirementToolCall(
       command,
       exitCode,
       passed: status === "completed" && exitCode === 0,
+      completed: status === "completed",
       evidence: `${command.executable} command was recorded`,
     });
   }
   return observations;
 }
 
-export function observeRequirementChangedPaths(paths: string[], evidence = "final workspace changed paths observed"): RequirementObservation {
+export function observeRequirementChangedPaths(
+  paths: string[],
+  evidence = "final workspace changed paths observed",
+  options: { pathTypes?: RequirementPathObservation[]; measured?: boolean; authoritative?: boolean } = {},
+): RequirementObservation {
   const normalized = paths.map(displayPath).filter(Boolean);
-  return { type: "changed_paths", paths: [...new Set(normalized)], evidence };
+  return {
+    type: "changed_paths",
+    paths: [...new Set(normalized)],
+    ...(options.pathTypes ? { pathTypes: options.pathTypes.map((entry) => ({ path: displayPath(entry.path), type: entry.type })) } : {}),
+    ...(options.measured !== undefined ? { measured: options.measured } : {}),
+    ...(options.authoritative !== undefined ? { authoritative: options.authoritative } : {}),
+    evidence,
+  };
 }
 
 function commandFromCall(call: RequirementToolCall): { executable: string; args: string[] } | null {
@@ -195,7 +342,7 @@ function commandFromCall(call: RequirementToolCall): { executable: string; args:
   const executable = typeof call.args.executable === "string" ? call.args.executable : null;
   const args = Array.isArray(call.args.args) ? call.args.args.filter((value): value is string => typeof value === "string") : [];
   if (!executable) return null;
-  return { executable, args };
+  return { executable: executableName(executable), args };
 }
 
 function isFrontendPath(path: string): boolean {
@@ -211,11 +358,54 @@ function isDatabasePath(path: string): boolean {
     || /(?:^|\/)(?:schema|prisma)\.(?:sql|prisma)$/.test(normalized);
 }
 
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+const DEPENDENCY_MUTATING_VERBS = new Set(["install", "i", "ci", "add", "update", "up", "remove", "rm", "uninstall", "prune", "dedupe", "link"]);
+const PACKAGE_MANAGER_OPTIONS_WITH_VALUE = new Set(["--dir", "--prefix", "--cwd", "--filter", "--workspace", "--workspace-root", "-c", "-C"]);
+
+function unwrapPackageManagerCommand(command: { executable: string; args: string[] }): { executable: string; args: string[] } | null {
+  let executable = executableName(command.executable);
+  let args = [...command.args];
+  for (let depth = 0; depth < 4; depth++) {
+    if (PACKAGE_MANAGERS.has(executable)) {
+      while (args.length > 0) {
+        const flag = args[0]!.toLowerCase();
+        if (PACKAGE_MANAGER_OPTIONS_WITH_VALUE.has(flag)) {
+          args.splice(0, Math.min(2, args.length));
+          continue;
+        }
+        if (flag.startsWith("--dir=") || flag.startsWith("--prefix=") || flag.startsWith("--cwd=") || flag.startsWith("--filter=") || flag.startsWith("--workspace=")) {
+          args.shift();
+          continue;
+        }
+        if (flag.startsWith("-")) {
+          args.shift();
+          continue;
+        }
+        break;
+      }
+      if (args[0]?.toLowerCase() === "exec" && args[1]) {
+        executable = executableName(args[1]!);
+        args = args.slice(2);
+        continue;
+      }
+      return { executable, args };
+    }
+    if (executable === "corepack") {
+      const managerIndex = args.findIndex((value) => PACKAGE_MANAGERS.has(executableName(value)));
+      if (managerIndex < 0) return null;
+      executable = executableName(args[managerIndex]!);
+      args = args.slice(managerIndex + 1);
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 function isDependencyInstall(command: { executable: string; args: string[] }): boolean {
-  const executable = command.executable.replace(/\.cmd$|\.exe$|\.bat$/i, "").toLowerCase();
-  if (!new Set(["npm", "pnpm", "yarn", "bun"]).has(executable)) return false;
-  const first = command.args[0]?.toLowerCase();
-  return first === "install" || first === "add" || first === "i";
+  const canonical = unwrapPackageManagerCommand(command);
+  if (!canonical) return false;
+  return DEPENDENCY_MUTATING_VERBS.has(canonical.args[0]?.toLowerCase() ?? "");
 }
 
 function isDependencyManifest(path: string): boolean {
@@ -251,8 +441,8 @@ function matchesRequiredVerification(call: RequirementToolCall, requirement: Exe
   return Boolean(actual && required && typeof required === "object" && commandEqual(actual, required as { executable: string; args: string[] }));
 }
 
-function requirementViolation(requirement: ExecutionRequirement, call: RequirementToolCall): string | null {
-  if (!requirement.authoritative || requirement.status === "waived" || !requirement.kind) return null;
+function requirementViolation(requirement: ExecutionRequirement, call: RequirementToolCall, platform: NodeJS.Platform): string | null {
+  if (!requirement.authoritative || (requirement.status === "waived" && validRequirementWaiver(requirement)) || !requirement.kind) return null;
   const paths = affectedPaths(call);
   switch (requirement.kind) {
     case "no_frontend":
@@ -266,8 +456,8 @@ function requirementViolation(requirement: ExecutionRequirement, call: Requireme
       return null;
     }
     case "allowed_files": {
-      const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => normalizePath(String(path))));
-      return paths.find((path) => !allowed.has(normalizePath(path))) ? "the action targets a file outside the user's allowed-file boundary" : null;
+      const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => canonicalRequirementPath(String(path), platform)));
+      return paths.find((path) => !allowed.has(canonicalRequirementPath(path, platform))) ? "the action targets a file outside the user's allowed-file boundary" : null;
     }
     case "required_file":
       return null;
@@ -307,8 +497,8 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     }
   };
 
-  addPattern("no_frontend", /\bbackend\s+only\b|\b(?:no|without|never use|do not (?:build|create|add|include|use)|must not (?:build|create|add|include|use))\s+(?:a\s+)?front[- ]?end\b/gi);
-  addPattern("no_database", /\b(?:no|without|never use|do not (?:build|create|add|include|use|require)|must not (?:build|create|add|include|use|require))\s+(?:a\s+)?(?:database|db)(?:\s+server)?\b/gi);
+  addPattern("no_frontend", /\bbackend\s+only\b|\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use))?\s+(?:a\s+)?front[- ]?end\b(?!\s+(?:tests?|testing|test[- ]?suite|specs?)\b)/gi);
+  addPattern("no_database", /\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use|require))?\s+(?:a\s+)?(?:database|db)(?:\s+server)?\b(?!\s+(?:tests?|testing|test[- ]?suite|queries?)\b)/gi);
   addPattern("no_new_dependencies", /\bno\s+(?:new\s+)?dependencies\b|\b(?:without|do not|don't|must not)\s+(?:adding\s+)?(?:any\s+)?(?:new\s+)?dependencies\b/gi);
   addPattern("allowed_files", /\b(?:modify|change|edit|touch)\s+only\s+(?:these\s+)?files?\s*:\s*[^!?\n]+/gi, (match) => {
     const afterColon = match[0].split(":").slice(1).join(":");
@@ -321,11 +511,11 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     const path = match[0].split(":").slice(1).join(":").trim().replace(/[.,;]+$/, "");
     return { path: displayPath(path) };
   });
-  addPattern("required_verification", /\brequired\s+verification\s*:\s*(?:pnpm|npm|yarn|node)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*/gi, (match) => {
+  addPattern("required_verification", /\brequired\s+verification\s*:\s*(?:pnpm|npm|yarn|bun|node|deno)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
     const commandText = match[0].split(":").slice(1).join(":").replace(/\b(?:passes|pass|succeeds|successfully)\b.*$/i, "").trim();
     return { command: normalizedCommand(commandText) };
   });
-  addPattern("required_verification", /\b(?:must|should)\s+(?:run|execute|verify with)\s+(?:pnpm|npm|yarn|node)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*/gi, (match) => {
+  addPattern("required_verification", /\b(?:must|should)\s+(?:run|execute|verify with)\s+(?:pnpm|npm|yarn|bun|node|deno)\b(?:(?!\s+(?:passes|pass|succeeds|successfully)\b)[^\n])*(?:\s+(?:passes|pass|succeeds|successfully)\b[.!?]?)?/gi, (match) => {
     const commandText = match[0].replace(/^.*?\b(?:run|execute|verify with)\s+/i, "").replace(/\b(?:passes|pass|succeeds|successfully)\b.*$/i, "").trim();
     return { command: normalizedCommand(commandText) };
   });
@@ -345,17 +535,20 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
   // Keep explicit clauses that use a clear constraint marker but do not map to
   // one of the closed kinds. "Approved protocol exactly" is intentionally
   // visible and blocks completion instead of being guessed into a category.
-  const clauses = prompt.split(/(?<=[.!?])\s+|\n+/).map((value) => {
-    const start = prompt.indexOf(value);
-    return { value: value.trim(), start: start < 0 ? 0 : start };
-  }).filter((clause) => clause.value.length > 0);
+  const clauses: Array<{ value: string; start: number }> = [];
+  for (const match of prompt.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
+    const value = match[0]?.replace(/;\s*$/, "").trim() ?? "";
+    if (value.length > 0) clauses.push({ value, start: match.index ?? 0 });
+  }
   for (const clause of clauses) {
     // Generic words such as "only", "no", "without", and "must" also
     // occur in ordinary task framing ("no changes needed", "finish without
     // asking"). Keep unknown constraints blocking only when the wording itself
     // makes a contractual boundary unmistakable; supported kinds above already
     // capture high-confidence no/only/required forms.
-    if (!/\b(?:strictly|approved)\b|\bas specified\b[\s\S]*\b(?:protocol|format|schema|process|standard|contract)\b/i.test(clause.value)) continue;
+    const explicitMarker = /^(?:\s*)(?:must(?:n't| not)?|should(?:n't| not)?|don't|do not|never|no|without|required|strictly|approved|as specified|use|follow|preserve)\b/i.test(clause.value);
+    const unsupportedSignal = /\b(?:exactly|protocol|format|schema|process|standard|contract|tests?|testing|test[- ]?suite|specification|policy|convention|interface|api)\b/i.test(clause.value);
+    if (!explicitMarker || !unsupportedSignal) continue;
     const clauseEnd = clause.start + clause.value.length;
     if (selected.some((match) => match.start < clauseEnd && match.end > clause.start)) continue;
     selected.push({ kind: null as never, start: clause.start, end: clauseEnd, excerpt: clause.value, parameters: { statement: clause.value } });
@@ -376,22 +569,44 @@ function observationPaths(observation: RequirementObservation): string[] {
   return (observation.paths ?? []).map(displayPath);
 }
 
+function observationPathTypes(observation: RequirementObservation): RequirementPathObservation[] {
+  return (observation.pathTypes ?? []).map((entry) => ({ path: displayPath(entry.path), type: entry.type }));
+}
+
 function observationCommand(observation: RequirementObservation): { executable: string; args: string[] } | null {
   return observation.command ?? null;
 }
 
 function evidenceFor(observation: RequirementObservation, fallback: string): string {
-  return observation.evidence?.trim() || fallback;
+  return redactSecrets(observation.evidence?.trim() || fallback);
 }
 
 /** Evaluate the final changed-path/command ledger without trusting narration. */
 export function evaluateRequirementObservations(
   requirements: ExecutionRequirement[],
   observations: RequirementObservation[],
+  options: RequirementEvaluationOptions = {},
 ): RequirementEvaluation[] {
+  const platform = options.platform ?? process.platform;
+  const pathKey = (path: string): string => canonicalRequirementPath(path, platform);
   return requirements.map((requirement) => {
-    if (!requirement.authoritative || requirement.status === "waived") {
-      return { requirementId: requirement.id, kind: requirement.kind, status: "waived", evidence: ["requirement is not authoritative or was explicitly waived"] };
+    if (!requirement.authoritative) {
+      return { requirementId: requirement.id, kind: requirement.kind, status: "unevaluated", evidence: ["requirement is not authoritative"] };
+    }
+    if (requirement.status === "waived") {
+      if (!validRequirementWaiver(requirement)) {
+        return { requirementId: requirement.id, kind: requirement.kind, status: "unevaluated", evidence: ["waiver lacks explicit user authority, reason, or durable evidence"] };
+      }
+      return {
+        requirementId: requirement.id,
+        kind: requirement.kind,
+        status: "waived",
+        evidence: [
+          `explicit waiver authorized by ${requirement.waiver.authorizedBy}`,
+          `waiver reason: ${redactSecrets(requirement.waiver.reason)}`,
+          `waiver evidence: ${requirement.waiver.evidenceRefs.map(redactSecrets).join(", ")}`,
+        ],
+      };
     }
     if (!requirement.kind) {
       return { requirementId: requirement.id, kind: null, status: "unevaluated", evidence: ["explicit constraint was not mapped to a deterministic evaluator"] };
@@ -399,12 +614,16 @@ export function evaluateRequirementObservations(
     const paths = observations.flatMap(observationPaths);
     const changedPathObservations = observations.filter((observation) => observation.type === "changed_paths");
     const commandObservations = observations.filter((observation) => observation.type === "command" || observation.type === "verification");
+    const pathTypes = changedPathObservations.flatMap(observationPathTypes);
+    const hasCompleteWorkspaceObservation = changedPathObservations.some((observation) => observation.measured === true && observation.authoritative !== false);
+    const hasUsablePathEvidence = paths.length > 0 || hasCompleteWorkspaceObservation;
     let status: RequirementStatus = "unevaluated";
     const evidence: string[] = [];
+    let observedFileType: RequirementPathType | undefined;
     switch (requirement.kind) {
       case "no_frontend": {
         const conflict = paths.find(isFrontendPath);
-        if (changedPathObservations.length > 0) {
+        if (conflict || (changedPathObservations.length > 0 && hasUsablePathEvidence)) {
           status = conflict ? "failed" : "verified";
           evidence.push(conflict ? `frontend path changed: ${conflict}` : "final changed paths contain no frontend deliverable");
         }
@@ -412,7 +631,7 @@ export function evaluateRequirementObservations(
       }
       case "no_database": {
         const conflict = paths.find(isDatabasePath);
-        if (changedPathObservations.length > 0) {
+        if (conflict || (changedPathObservations.length > 0 && hasUsablePathEvidence)) {
           status = conflict ? "failed" : "verified";
           evidence.push(conflict ? `database path changed: ${conflict}` : "final changed paths contain no database deliverable");
         }
@@ -424,10 +643,10 @@ export function evaluateRequirementObservations(
           return Boolean(command && isDependencyInstall(command));
         });
         const dependencyPath = paths.find((path) => isDependencyLockfile(path)
-          || (isDependencyManifest(path) && observations.some((observation) => observation.dependencyChange === true && observationPaths(observation).some((candidate) => normalizePath(candidate) === normalizePath(path)))));
+          || (isDependencyManifest(path) && observations.some((observation) => observation.dependencyChange === true && observationPaths(observation).some((candidate) => pathKey(candidate) === pathKey(path)))));
         const manifestPath = paths.find((path) => isDependencyManifest(path));
         const explicitDependencyChange = observations.find((observation) => observation.dependencyChange === true);
-        if (observations.length > 0) {
+        if (commandObservations.length > 0 || changedPathObservations.some((observation) => observation.measured === true) || paths.length > 0) {
           if (dependencyCommand) {
             status = "failed";
             evidence.push(`dependency-install command recorded: ${dependencyCommand.command?.executable ?? "unknown"}`);
@@ -448,20 +667,40 @@ export function evaluateRequirementObservations(
         break;
       }
       case "allowed_files": {
-        const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => normalizePath(String(path))));
-        const outside = paths.find((path) => !allowed.has(normalizePath(path)));
-        if (changedPathObservations.length > 0) {
+        const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => pathKey(String(path))));
+        const outside = paths.find((path) => !allowed.has(pathKey(path)));
+        if (changedPathObservations.length > 0 && hasUsablePathEvidence) {
           status = outside ? "failed" : "verified";
           evidence.push(outside ? `path outside allowlist: ${outside}` : "all final changed paths are allowed");
         }
         break;
       }
       case "required_file": {
-        const requiredPath = typeof requirement.parameters.path === "string" ? normalizePath(requirement.parameters.path) : "";
-        if (changedPathObservations.length > 0) {
-          const present = paths.some((path) => normalizePath(path) === requiredPath);
-          status = present ? "verified" : "failed";
-          evidence.push(present ? `required file delivered: ${requiredPath}` : `required file absent from final changed paths: ${requiredPath}`);
+        const requiredPath = typeof requirement.parameters.path === "string" ? pathKey(requirement.parameters.path) : "";
+        const matchingTypes = pathTypes.filter((entry) => pathKey(entry.path) === requiredPath);
+        const matchingPath = paths.some((path) => pathKey(path) === requiredPath);
+        const type = matchingTypes.at(-1)?.type;
+        if (type) {
+          observedFileType = type;
+          if (type === "file") {
+            status = "verified";
+            evidence.push(`required file delivered as file: ${requiredPath}`);
+          } else if (type === "directory") {
+            status = "failed";
+            evidence.push(`required path is a directory, not a file: ${requiredPath}`);
+          } else {
+            status = "unevaluated";
+            evidence.push(`required path type is unknown: ${requiredPath}`);
+          }
+        } else if (hasCompleteWorkspaceObservation) {
+          status = "failed";
+          evidence.push(`required file absent from authoritative workspace observation: ${requiredPath}`);
+        } else if (matchingPath) {
+          status = "unevaluated";
+          evidence.push(`required path was observed without stat.isFile evidence: ${requiredPath}`);
+        } else if (paths.length > 0) {
+          status = "failed";
+          evidence.push(`required file absent from final changed paths: ${requiredPath}`);
         }
         break;
       }
@@ -471,9 +710,17 @@ export function evaluateRequirementObservations(
           const actual = observationCommand(observation);
           return Boolean(actual && required && typeof required === "object" && commandEqual(actual, required as { executable: string; args: string[] }));
         });
-        const passed = matching.find((observation) => observation.passed === true || observation.exitCode === 0);
         const failed = matching.find((observation) => observation.passed === false || (typeof observation.exitCode === "number" && observation.exitCode !== 0));
-        if (passed) {
+        const inconsistent = matching.find((observation) => observation.passed === true && observation.exitCode !== undefined && observation.exitCode !== 0);
+        const passed = matching.find((observation) =>
+          observation.passed !== false
+          && observation.exitCode === 0
+          && observation.completed !== false,
+        );
+        if (failed || inconsistent) {
+          status = "failed";
+          evidence.push(evidenceFor(failed ?? inconsistent!, "required verification failed"));
+        } else if (passed) {
           status = "verified";
           evidence.push(evidenceFor(passed, "required verification passed"));
         } else if (failed) {
@@ -486,7 +733,7 @@ export function evaluateRequirementObservations(
         break;
       }
     }
-    return { requirementId: requirement.id, kind: requirement.kind, status, evidence };
+    return { requirementId: requirement.id, kind: requirement.kind, status, evidence, ...(observedFileType ? { observedFileType } : {}) };
   });
 }
 
@@ -497,15 +744,20 @@ export function canCompleteWithRequirements(requirements: ExecutionRequirement[]
     .filter((requirement) => requirement.authoritative)
     .every((requirement) => {
       const evaluation = byId.get(requirement.id);
-      return evaluation?.status === "verified" || evaluation?.status === "waived";
+      return evaluation?.status === "verified" || (evaluation?.status === "waived" && validRequirementWaiver(requirement));
     });
 }
 
 /** Return a structured failure payload for a tool call that would violate policy. */
-export function enforceToolRequirement(call: RequirementToolCall, requirements: ExecutionRequirement[]): RequirementEnforcementResult {
+export function enforceToolRequirement(
+  call: RequirementToolCall,
+  requirements: ExecutionRequirement[],
+  options: RequirementEnforcementOptions = {},
+): RequirementEnforcementResult {
+  const platform = options.platform ?? process.platform;
   for (const requirement of requirements) {
     if (requirement.kind && !EXECUTION_REQUIREMENT_REGISTRY[requirement.kind].preAction) continue;
-    const reason = requirementViolation(requirement, call);
+    const reason = requirementViolation(requirement, call, platform);
     if (!reason || !requirement.kind) continue;
     return {
       allowed: false,
@@ -513,11 +765,11 @@ export function enforceToolRequirement(call: RequirementToolCall, requirements: 
         errorType: "requirement_violation",
         requirementId: requirement.id,
         requirementKind: requirement.kind,
-        sourceExcerpt: requirement.sourceExcerpt,
-        reason,
-        instruction: correctionInstruction(requirement.kind),
-        toolName: call.toolName,
-        targetPaths: affectedPaths(call).slice(0, 32),
+        sourceExcerpt: redactSecrets(requirement.sourceExcerpt),
+        reason: redactSecrets(reason),
+        instruction: redactSecrets(correctionInstruction(requirement.kind)),
+        toolName: redactSecrets(call.toolName),
+        targetPaths: affectedPaths(call).slice(0, 32).map(redactSecrets),
       }),
     };
   }

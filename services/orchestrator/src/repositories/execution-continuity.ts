@@ -68,6 +68,8 @@ export interface ExecutionCheckpointSnapshot {
   providerRouting: Record<string, unknown>;
   providerContinuationRefs: string[];
   evidenceRequired: string[];
+  /** Original workspace paths captured before this task's first action. */
+  requirementBaselinePaths?: string[];
   /** Bounded, durable source contract used to produce the evaluations below. */
   executionRequirements?: ExecutionRequirement[];
   /** Bounded, durable evaluation ledger for explicit execution constraints. */

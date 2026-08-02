@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
 import { redactSecrets } from "../provider/credentials.js";
+import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation } from "./requirements.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
 export const MAX_EXECUTION_CHECKPOINT_BYTES = 131_072;
@@ -153,27 +154,38 @@ export function summarizeCheckpointRecovery(attempt: CheckpointRecoveryProjectio
 }
 
 function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values)].map((value) => boundedString(value)).slice(-MAX_ARRAY_ENTRIES);
+  return [...new Set(values)].map((value) => boundedString(redactSecrets(value))).slice(-MAX_ARRAY_ENTRIES);
+}
+
+function redactStructured(value: unknown, depth = 0): unknown {
+  if (depth > 6) return "[REDACTED]";
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ENTRIES).map((item) => redactStructured(item, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, MAX_ARRAY_ENTRIES).map(([key, item]) => [key, redactStructured(item, depth + 1)]));
+  }
+  return value;
 }
 
 function compactRecord(value: Record<string, unknown>, maxBytes: number): Record<string, unknown> {
-  const serialized = JSON.stringify(value) ?? "{}";
-  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return value;
+  const sanitized = redactStructured(value) as Record<string, unknown>;
+  const serialized = JSON.stringify(sanitized) ?? "{}";
+  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return sanitized;
   return { summaryHash: hash(serialized), summary: "large structured checkpoint field omitted" };
 }
 
 function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
   return {
     ...snapshot,
-    originalMission: boundedString(snapshot.originalMission),
+    originalMission: boundedString(redactSecrets(snapshot.originalMission)),
     hardRequirements: uniqueStrings(snapshot.hardRequirements),
     prohibitedActions: uniqueStrings(snapshot.prohibitedActions),
     acceptanceCriteria: uniqueStrings(snapshot.acceptanceCriteria),
     decisions: uniqueStrings(snapshot.decisions),
     completedWork: uniqueStrings(snapshot.completedWork),
-    currentPhase: boundedString(snapshot.currentPhase),
+    currentPhase: boundedString(redactSecrets(snapshot.currentPhase)),
     filesChanged: uniqueStrings(snapshot.filesChanged),
-    gitStatus: boundedString(snapshot.gitStatus),
+    gitStatus: boundedString(redactSecrets(snapshot.gitStatus)),
     tests: snapshot.tests.slice(-MAX_ARRAY_ENTRIES).map((test) => ({
       command: boundedString(test.command),
       exitCode: test.exitCode,
@@ -186,26 +198,41 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     providerRouting: compactRecord(snapshot.providerRouting, 8_192),
     providerContinuationRefs: uniqueStrings(snapshot.providerContinuationRefs),
     evidenceRequired: uniqueStrings(snapshot.evidenceRequired),
+    ...(snapshot.requirementBaselinePaths
+      ? { requirementBaselinePaths: uniqueStrings(snapshot.requirementBaselinePaths) }
+      : {}),
     ...(snapshot.executionRequirements
       ? {
-          executionRequirements: snapshot.executionRequirements.slice(-MAX_ARRAY_ENTRIES).map((requirement) => ({
-            id: boundedString(requirement.id, 160),
-            kind: requirement.kind,
-            sourceExcerpt: boundedString(requirement.sourceExcerpt, 2_000),
-            parameters: compactRecord(requirement.parameters, 2_048),
-            authoritative: requirement.authoritative,
-            status: requirement.status,
-          })),
+          executionRequirements: snapshot.executionRequirements.slice(-MAX_ARRAY_ENTRIES).map((requirement) => {
+            const sanitized = sanitizeExecutionRequirement(requirement);
+            return {
+              ...sanitized,
+              id: boundedString(sanitized.id, 160),
+              sourceExcerpt: boundedString(sanitized.sourceExcerpt, 2_000),
+              parameters: compactRecord(sanitized.parameters, 2_048),
+              ...(sanitized.waiver
+                ? {
+                    waiver: {
+                      authorizedBy: sanitized.waiver.authorizedBy,
+                      reason: boundedString(sanitized.waiver.reason, 1_000),
+                      evidenceRefs: uniqueStrings(sanitized.waiver.evidenceRefs),
+                    },
+                  }
+                : {}),
+            };
+          }),
         }
       : {}),
     ...(snapshot.requirementEvaluations
       ? {
-          requirementEvaluations: snapshot.requirementEvaluations.slice(-MAX_ARRAY_ENTRIES).map((evaluation) => ({
-            requirementId: boundedString(evaluation.requirementId, 160),
-            kind: evaluation.kind,
-            status: evaluation.status,
-            evidence: uniqueStrings(evaluation.evidence).slice(-8),
-          })),
+          requirementEvaluations: snapshot.requirementEvaluations.slice(-MAX_ARRAY_ENTRIES).map((evaluation) => {
+            const sanitized = sanitizeRequirementEvaluation(evaluation);
+            return {
+              ...sanitized,
+              requirementId: boundedString(sanitized.requirementId, 160),
+              evidence: uniqueStrings(sanitized.evidence).slice(-8),
+            };
+          }),
         }
       : {}),
   };
@@ -235,6 +262,7 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
     "filesChanged",
     "providerContinuationRefs",
     "evidenceRequired",
+    "requirementBaselinePaths",
   ];
 
   while (serializedBytes(bounded) > MAX_EXECUTION_CHECKPOINT_BYTES) {
@@ -256,6 +284,7 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
       decisions: [],
       completedWork: [],
       filesChanged: [],
+      ...(bounded.requirementBaselinePaths ? { requirementBaselinePaths: [] } : {}),
       gitStatus: boundedString(bounded.gitStatus, 2_048),
       tests: [],
       unresolvedFailures: [],

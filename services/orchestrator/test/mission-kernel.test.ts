@@ -5,6 +5,7 @@ import {
   canReopenNode,
   computeFrozen,
   isDependencyBlocked,
+  allAuthoritativeSatisfied,
 } from "../src/mission/kernel.js";
 import type { MissionRequirementNode } from "@morrow/contracts";
 
@@ -56,6 +57,15 @@ describe("mission kernel — selectActiveNode (R4)", () => {
 });
 
 describe("mission kernel — deriveAllowedActions (R3 cursor)", () => {
+  it("requires an auditable reason and evidence before a waiver satisfies the ledger", () => {
+    expect(allAuthoritativeSatisfied([node({ status: "waived" })])).toBe(false);
+    expect(allAuthoritativeSatisfied([node({
+      status: "waived",
+      lastFailure: "User approved this explicit exception.",
+      evidenceRefs: ["ev-waiver"],
+    })])).toBe(true);
+  });
+
   it("bounds actions to a finite set, never a bare continue", () => {
     const pending = node({ status: "pending", id: "req-1" });
     const actions = deriveAllowedActions("running", pending, [pending]);

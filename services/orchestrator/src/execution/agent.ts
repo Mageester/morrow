@@ -61,8 +61,14 @@ import {
   extractExecutionRequirements,
   observeRequirementChangedPaths,
   observeRequirementToolCall,
+  restoreMissionRequirementWaivers,
+  restoreExecutionRequirementWaivers,
+  sanitizeExecutionRequirement,
+  sanitizeRequirementEvaluation,
+  canonicalRequirementPath,
   type RequirementEvaluation,
   type RequirementObservation,
+  type RequirementPathObservation,
   type RequirementToolCall,
 } from "./requirements.js";
 import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
@@ -1424,7 +1430,20 @@ export async function executeAgentChatTask({
   const chatMessages: ChatMessage[] = [];
   const dbMessages = convs.listMessages(conversationId);
   const latestUserPrompt = [...dbMessages].reverse().find((m) => m.id !== assistantMessageRow.id && m.role === "user")?.content ?? "";
-  const executionRequirements = extractExecutionRequirements(latestUserPrompt);
+  // Mission controller prompts contain operational instructions such as
+  // "Use the persisted mission contract ...". Those are orchestrator policy,
+  // not user-authored execution requirements. Extract the user's durable
+  // mission objective for mission-linked tasks; ordinary chat tasks continue
+  // to use their latest user prompt verbatim.
+  const missionObjective = taskMissionId && missionRepo ? missionRepo.get(taskMissionId)?.objective : undefined;
+  const requirementPrompt = missionObjective ?? latestUserPrompt;
+  const executionRequirements = restoreMissionRequirementWaivers(
+    restoreExecutionRequirementWaivers(
+      extractExecutionRequirements(requirementPrompt),
+      continuity.latestCheckpoint(taskId)?.snapshot.executionRequirements ?? [],
+    ),
+    taskMissionId && missionRepo ? missionRepo.listRequirementNodes(taskMissionId) : [],
+  );
   const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
@@ -2709,29 +2728,87 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     event("step.started", { stepId: activeStepId });
   }
 
-  type RequirementWorkspaceState = { lines: string[]; paths: string[]; measured: boolean };
+  type RequirementWorkspaceState = { lines: string[]; paths: string[]; pathTypes: RequirementPathObservation[]; measured: boolean; authoritative: boolean };
   let requirementBaselinePaths = new Set<string>();
-  const canonicalRequirementPath = (value: string): string => value
-    .replace(/^"|"$/g, "")
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/\/+$/, "");
+  const requirementPathKey = (value: string): string => canonicalRequirementPath(value);
   const pathsFromGitStatus = (lines: string[]): string[] => lines
     .filter((line) => !line.startsWith("## "))
-    .map((line) => canonicalRequirementPath(line.slice(3).trim().split(" -> ").at(-1) ?? ""))
+    .map((line) => line.slice(3).trim().split(" -> ").at(-1) ?? "")
     .filter(Boolean);
+  const scanRequirementWorkspace = (): { entries: RequirementPathObservation[]; complete: boolean } => {
+    const entries: RequirementPathObservation[] = [];
+    const startedAt = Date.now();
+    let complete = true;
+    const ignoredDirectories = new Set([".git", ".morrow", ".hermes", "node_modules", "vendor"]);
+    const walk = (directory: string, relativeDirectory: string, depth: number): void => {
+      if (Date.now() - startedAt > 150 || entries.length >= 2_048) {
+        complete = false;
+        return;
+      }
+      let children: Array<{ name: string; isDirectory(): boolean }>;
+      try {
+        children = readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
+      } catch {
+        complete = false;
+        return;
+      }
+      for (const child of children) {
+        if (entries.length >= 2_048 || Date.now() - startedAt > 150) {
+          complete = false;
+          return;
+        }
+        if (child.isDirectory() && ignoredDirectories.has(child.name.toLowerCase())) continue;
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name;
+        try {
+          const target = assertContainedRealPath(workspacePath, relativePath);
+          const isDirectory = statSync(target).isDirectory();
+          entries.push({ path: relativePath, type: isDirectory ? "directory" : "file" });
+          if (isDirectory) {
+            if (depth >= 8) complete = false;
+            else walk(target, relativePath, depth + 1);
+          }
+        } catch {
+          complete = false;
+        }
+      }
+    };
+    walk(workspacePath, "", 0);
+    return { entries, complete };
+  };
   const readRequirementWorkspaceState = async (filterBaseline = true): Promise<RequirementWorkspaceState> => {
+    let gitLines: string[] = [];
+    let gitPaths: string[] = [];
+    let gitMeasured = false;
     try {
       const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) });
-      const paths = pathsFromGitStatus(status.lines);
-      return {
-        lines: status.lines,
-        paths: filterBaseline ? paths.filter((path) => !requirementBaselinePaths.has(path)) : paths,
-        measured: !status.timedOut && !status.truncated,
-      };
+      gitLines = status.lines;
+      gitPaths = pathsFromGitStatus(status.lines);
+      gitMeasured = !status.timedOut && !status.truncated;
     } catch {
-      return { lines: [], paths: [], measured: false };
+      // The bounded filesystem scan below is an independent authoritative
+      // observation for arbitrary commands, including ignored files.
     }
+    const scan = scanRequirementWorkspace();
+    const pathTypesByKey = new Map<string, RequirementPathObservation>();
+    for (const entry of scan.entries) pathTypesByKey.set(requirementPathKey(entry.path), entry);
+    for (const path of gitPaths) {
+      const key = requirementPathKey(path);
+      if (!pathTypesByKey.has(key)) pathTypesByKey.set(key, { path, type: "unknown" });
+    }
+    const allPathTypes = [...pathTypesByKey.values()];
+    const filteredPathTypes = filterBaseline
+      ? allPathTypes.filter((entry) => !requirementBaselinePaths.has(requirementPathKey(entry.path)))
+      : allPathTypes;
+    return {
+      lines: gitLines,
+      paths: filteredPathTypes.map((entry) => entry.path),
+      pathTypes: filteredPathTypes,
+      // A complete bounded filesystem scan proves absence. Git alone does not:
+      // ignored paths and arbitrary command side effects are not a complete
+      // workspace observation.
+      measured: scan.complete,
+      authoritative: scan.complete && (gitMeasured || gitPaths.length === 0),
+    };
   };
   const requirementToolCallFromRecord = (call: ToolCallRecord): { call: RequirementToolCall; status: "completed" | "failed" | "requested" } => {
     let args: Record<string, unknown> = {};
@@ -2745,11 +2822,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const status = call.status === "completed" ? "completed" : call.status === "requested" || call.status === "running" ? "requested" : "failed";
     return { call: { toolName: call.toolName, args }, status };
   };
-  const existingRequiredFilePaths = (): string[] => executionRequirements.flatMap((requirement) => {
+  const existingRequiredFileObservations = (): RequirementPathObservation[] => executionRequirements.flatMap((requirement) => {
     if (requirement.kind !== "required_file" || typeof requirement.parameters.path !== "string") return [];
     try {
       const fullPath = assertContainedRealPath(workspacePath, requirement.parameters.path);
-      return existsSync(fullPath) ? [canonicalRequirementPath(requirement.parameters.path)] : [];
+      if (!existsSync(fullPath)) return [];
+      return [{ path: requirement.parameters.path, type: statSync(fullPath).isFile() ? "file" : statSync(fullPath).isDirectory() ? "directory" : "unknown" }];
     } catch {
       return [];
     }
@@ -2759,12 +2837,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const observed = requirementToolCallFromRecord(call);
       return observeRequirementToolCall(observed.call, call.resultJson, observed.status);
     });
-    const workspacePaths = [...new Set([...workspace.paths, ...existingRequiredFilePaths()])];
-    if (workspace.measured) {
-      observations.push(observeRequirementChangedPaths(workspacePaths, "final workspace status observed"));
-    } else if (workspacePaths.length > 0) {
-      observations.push(observeRequirementChangedPaths(workspacePaths, "durable tool and workspace paths observed"));
-    }
+    const requiredFileObservations = existingRequiredFileObservations();
+    const workspacePathTypes = [...workspace.pathTypes, ...requiredFileObservations];
+    const workspacePaths = [...new Set([...workspace.paths, ...requiredFileObservations.map((entry) => entry.path)])];
+    observations.push(observeRequirementChangedPaths(
+      workspacePaths,
+      workspace.measured ? "authoritative filesystem workspace observation" : "durable tool and partial workspace paths observed",
+      { pathTypes: workspacePathTypes, measured: workspace.measured, authoritative: workspace.authoritative },
+    ));
     return evaluateRequirementObservations(executionRequirements, observations);
   };
   let requirementEvaluations: RequirementEvaluation[] = evaluateRequirementObservations(executionRequirements, []);
@@ -2801,6 +2881,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         providerRouting: { providerId: providerType, model: contextModel, route: primaryRoute },
         providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
         evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
+        requirementBaselinePaths: [...requirementBaselinePaths],
         executionRequirements,
         requirementEvaluations,
       },
@@ -3077,8 +3158,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       verification: completionState.verification,
       unresolvedBlocker: completionState.failure?.detail ?? null,
       unresolvedFailures: completionState.failure ? [`${completionState.failure.tool}: ${completionState.failure.detail}`] : [],
-      executionRequirements,
-      requirementEvaluations,
+      executionRequirements: executionRequirements.map(sanitizeExecutionRequirement),
+      requirementEvaluations: requirementEvaluations.map(sanitizeRequirementEvaluation),
       requirementsSatisfied: canCompleteWithRequirements(executionRequirements, requirementEvaluations),
       status: taskMissionId ? "pending_mission_verification" : "completed",
     };
@@ -3193,9 +3274,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   // Seed the artifact baseline once, before any turn runs, so a workspace that
   // was already dirty is not mistaken for progress this task made. A worktree
-  // or non-repository workspace simply yields no baseline.
+  // or non-repository workspace still gets a bounded filesystem baseline.
   const initialRequirementWorkspace = await readRequirementWorkspaceState(false);
-  requirementBaselinePaths = new Set(initialRequirementWorkspace.paths);
+  const persistedRequirementBaseline = continuity.latestCheckpoint(taskId)?.snapshot.requirementBaselinePaths;
+  requirementBaselinePaths = new Set(
+    Array.isArray(persistedRequirementBaseline)
+      ? persistedRequirementBaseline.map(requirementPathKey)
+      : initialRequirementWorkspace.pathTypes.map((entry) => requirementPathKey(entry.path)),
+  );
   for (const artifact of fingerprintPaths(initialRequirementWorkspace.paths)) knownArtifacts.set(artifact.path, artifact.contentHash);
   previousProgressSnapshot = buildExecutionProgressSnapshot({
     missionId: progressIdentity,

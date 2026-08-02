@@ -82,17 +82,31 @@ export function isDependencyBlocked(node: MissionRequirementNode, allNodes: Miss
     const dep = byId.get(depId);
     // A missing dependency blocks advancement.
     if (!dep) return true;
-    return dep.status !== "verified" && dep.status !== "waived" && dep.status !== "invalidated";
+    return dep.status !== "verified" && !isAuditedRequirementWaiver(dep) && dep.status !== "invalidated";
   });
 }
 
+/** A waiver is satisfied only when its durable audit fields are present. */
+export function isAuditedRequirementWaiver(node: {
+  status: RequirementNodeStatus;
+  lastFailure?: string | null;
+  evidenceRefs?: string[];
+}): boolean {
+  return node.status === "waived"
+    && typeof node.lastFailure === "string"
+    && node.lastFailure.trim().length > 0
+    && Array.isArray(node.evidenceRefs)
+    && node.evidenceRefs.length > 0
+    && node.evidenceRefs.every((ref) => typeof ref === "string" && ref.trim().length > 0);
+}
+
 /** True when every authoritative requirement node is in a satisfied terminal
- *  state (verified or waived). Non-authoritative (unapproved model/derived)
+ *  state (verified or auditable waived). Non-authoritative (unapproved model/derived)
  *  nodes are intentionally excluded from this check. */
 export function allAuthoritativeSatisfied(nodes: MissionRequirementNode[]): boolean {
   const authoritative = nodes.filter((n) => n.authoritative);
   if (authoritative.length === 0) return true;
-  return authoritative.every((n) => n.status === "verified" || n.status === "waived");
+  return authoritative.every((n) => n.status === "verified" || isAuditedRequirementWaiver(n));
 }
 
 /**

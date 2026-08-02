@@ -7,6 +7,7 @@ import type {
   RequirementNodeStatus,
   TaskStatus,
 } from "@morrow/contracts";
+import { isAuditedRequirementWaiver } from "./kernel.js";
 
 export type GuardianItemKind =
   | "criterion"
@@ -36,6 +37,7 @@ export interface GuardianInput {
     authoritative: boolean;
     status: RequirementNodeStatus;
     evidenceRefs: string[];
+    lastFailure?: string | null;
   }>;
   evidence: Array<{ id: string; criterionIds: string[]; status: MissionEvidenceStatus }>;
   operations: Array<{ id: string; status: MissionOperationStatus; effectEvidenceIds: string[] }>;
@@ -107,7 +109,9 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
       nextActions.add("repair_failed_requirements");
       continue;
     }
-    if (requirement.status === "waived") continue;
+    const hasAuditedWaiver = isAuditedRequirementWaiver(requirement)
+      && requirement.evidenceRefs.every((id) => evidenceById.has(id));
+    if (hasAuditedWaiver) continue;
     const hasEvidence = requirement.evidenceRefs.some((id) => evidenceById.get(id)?.status === "passed");
     if (requirement.status !== "verified" || !hasEvidence) {
       missing.push({ kind: "requirement", id: requirement.id, detail: "Authoritative requirement lacks passed evidence." });
@@ -191,9 +195,11 @@ export function evaluateGuardian(input: GuardianInput): GuardianDecision {
     item.state === "verified"
     && item.evidenceIds.some((id) => evidenceById.get(id)?.status === "passed")
   )).length;
-  const requirementsSatisfied = authoritative.filter((item) => item.status === "waived" || (
-    item.status === "verified"
-    && item.evidenceRefs.some((id) => evidenceById.get(id)?.status === "passed")
+  const requirementsSatisfied = authoritative.filter((item) => (
+    (isAuditedRequirementWaiver(item) && item.evidenceRefs.every((id) => evidenceById.has(id))) || (
+      item.status === "verified"
+      && item.evidenceRefs.some((id) => evidenceById.get(id)?.status === "passed")
+    )
   )).length;
   const resolvedOperations = input.operations.filter((item) => item.status === "completed").length;
   const resolvedTasks = input.tasks.filter((item) => item.status === "completed" || item.status === "verified").length;

@@ -5,12 +5,16 @@ import {
   enforceToolRequirement,
   evaluateRequirementObservations,
   extractExecutionRequirements,
+  observeRequirementChangedPaths,
+  observeRequirementToolCall,
+  restoreExecutionRequirementWaivers,
   type ExecutionRequirement,
   type RequirementKind,
   type RequirementObservation,
   type RequirementToolCall,
 } from "../src/execution/requirements.js";
-import { mkdtempSync, readFileSync, rmSync, realpathSync, existsSync } from "node:fs";
+import { boundExecutionCheckpointSnapshot } from "../src/execution/checkpoint-snapshot.js";
+import { mkdtempSync, readFileSync, rmSync, realpathSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
@@ -75,8 +79,8 @@ const REQUIREMENT_CASES: Record<RequirementKind, RequirementCase> = {
     prompt: "Required file: src/server.ts.",
     compliantTool: { toolName: "create_file", args: { path: "src/server.ts", content: "export const server = true;" } },
     violatingTool: { toolName: "create_file", args: { path: "src/routes.ts", content: "export const routes = [];" } },
-    compliantObservation: { type: "changed_paths", paths: ["src/server.ts"], evidence: "required file delivered" },
-    violatingObservation: { type: "changed_paths", paths: ["src/routes.ts"], evidence: "required file absent" },
+    compliantObservation: { type: "changed_paths", paths: ["src/server.ts"], pathTypes: [{ path: "src/server.ts", type: "file" }], evidence: "required file delivered" },
+    violatingObservation: { type: "changed_paths", paths: ["src/routes.ts"], pathTypes: [{ path: "src/routes.ts", type: "file" }], evidence: "required file absent" },
     expectedParameters: { path: "src/server.ts" },
     // A required file is evaluated from the final workspace observation. Both
     // writes are permitted before the executor knows the final file set.
@@ -98,6 +102,30 @@ const requirementFor = (prompt: string, kind: RequirementKind): ExecutionRequire
   if (!requirement) throw new Error(`missing ${kind} in ${prompt}`);
   return requirement;
 };
+
+const checkpointFixture = (overrides: Record<string, unknown> = {}): any => ({
+  version: 1,
+  originalMission: "Build the backend.",
+  hardRequirements: [],
+  prohibitedActions: [],
+  acceptanceCriteria: [],
+  decisions: [],
+  completedWork: [],
+  currentPhase: "verification",
+  filesChanged: [],
+  gitStatus: "",
+  tests: [],
+  unresolvedFailures: [],
+  recoveryAttempts: [],
+  pendingWork: [],
+  approvals: {},
+  taskId: "task",
+  missionId: null,
+  providerRouting: {},
+  providerContinuationRefs: [],
+  evidenceRequired: [],
+  ...overrides,
+});
 
 describe("explicit execution requirement conformance", () => {
   it("keeps the case table exactly aligned with the exported requirement registry", () => {
@@ -190,6 +218,173 @@ describe("explicit execution requirement conformance", () => {
     expect(canCompleteWithRequirements([requirement], lockfileEvaluation)).toBe(false);
   });
 
+  it("requires stat.isFile evidence when a required path is delivered", () => {
+    const requirement = requirementFor("Required file: src/server.ts.", "required_file");
+    const directoryObservation = (observeRequirementToolCall as any)(
+      { toolName: "create_directory", args: { path: "src/server.ts" } },
+      "{}",
+      "completed",
+    )[0];
+    expect(directoryObservation).toMatchObject({
+      type: "changed_paths",
+      pathTypes: [{ path: "src/server.ts", type: "directory" }],
+    });
+    const directoryEvaluation = evaluateRequirementObservations([requirement], [directoryObservation]);
+    expect(directoryEvaluation[0]).toMatchObject({ status: "failed", observedFileType: "directory" });
+    expect(canCompleteWithRequirements([requirement], directoryEvaluation)).toBe(false);
+
+    const fileObservation = (observeRequirementToolCall as any)(
+      { toolName: "create_file", args: { path: "src/server.ts", content: "export const server = true;" } },
+      "{}",
+      "completed",
+    )[0];
+    expect(fileObservation).toMatchObject({
+      type: "changed_paths",
+      pathTypes: [{ path: "src/server.ts", type: "file" }],
+    });
+    expect(evaluateRequirementObservations([requirement], [fileObservation])[0]).toMatchObject({
+      status: "verified",
+      observedFileType: "file",
+    });
+  });
+
+  it("preserves unsupported constraints, contractions, and scoped prohibitions", () => {
+    const prompt = "Required verification: deno test passes. Must use Acme protocol exactly. No frontend tests. Don't build a frontend.";
+    const requirements = extractExecutionRequirements(prompt);
+    expect(requirements.map((item) => item.kind)).toEqual([
+      "required_verification",
+      null,
+      null,
+      "no_frontend",
+    ]);
+    expect(requirements[0]?.parameters).toMatchObject({ command: { executable: "deno", args: ["test"] } });
+    expect(requirements.find((item) => item.kind === null && item.sourceExcerpt.includes("Acme protocol"))).toMatchObject({
+      authoritative: true,
+      status: "unevaluated",
+    });
+    expect(requirements.find((item) => item.kind === null && item.sourceExcerpt.includes("No frontend tests"))).toMatchObject({
+      authoritative: true,
+      status: "unevaluated",
+    });
+    expect(requirements.some((item) => item.kind === "no_frontend" && item.sourceExcerpt.includes("Don't build a frontend"))).toBe(true);
+
+    const semicolonRequirements = extractExecutionRequirements(
+      "Required verification: deno test passes; Must use Acme protocol exactly; Don't build a frontend.",
+    );
+    expect(semicolonRequirements.map((item) => item.kind)).toEqual(["required_verification", null, "no_frontend"]);
+    expect(canCompleteWithRequirements(requirements, evaluateRequirementObservations(requirements, []))).toBe(false);
+  });
+
+  it.each([
+    ["npm", ["ci"]],
+    ["pnpm", ["--dir", "sub", "install"]],
+    ["pnpm", ["exec", "npm", "install"]],
+    ["corepack", ["pnpm", "install"]],
+    ["/usr/bin/npm", ["install"]],
+  ])("rejects dependency-mutating wrapper form %s %s before approval", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement]);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(JSON.parse(result.resultJson)).toMatchObject({ errorType: "requirement_violation", requirementId: requirement.id });
+  });
+
+  it.each([
+    ["npm", ["test"]],
+    ["pnpm", ["exec", "node", "--check", "src/server.js"]],
+    ["corepack", ["pnpm", "test"]],
+  ])("does not classify verification wrapper form %s %s as dependency mutation", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    expect(enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement])).toEqual({ allowed: true });
+  });
+
+  it("does not verify prohibitions from an empty or unavailable changed-path ledger", () => {
+    const requirement = requirementFor("Build the backend only. No frontend.", "no_frontend");
+    const evaluation = evaluateRequirementObservations([requirement], [observeRequirementChangedPaths([])]);
+    expect(evaluation[0]).toMatchObject({ status: "unevaluated" });
+    expect(canCompleteWithRequirements([requirement], evaluation)).toBe(false);
+  });
+
+  it("persists the original requirement baseline separately from changed paths", () => {
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({
+      filesChanged: ["src/server.ts"],
+      requirementBaselinePaths: ["README.md", "public/existing.html"],
+    }));
+    expect((snapshot as any).requirementBaselinePaths).toEqual(["README.md", "public/existing.html"]);
+    expect((snapshot as any).requirementBaselinePaths).not.toEqual((snapshot as any).filesChanged);
+  });
+
+  it("redacts requirement source and parameter secrets from failures and checkpoints", () => {
+    const secret = "sk-adversarial-requirement-secret-123456";
+    const requirement = {
+      ...requirementFor("Build the backend only. No frontend.", "no_frontend"),
+      sourceExcerpt: `Don't build a frontend with token=${secret}`,
+      parameters: { statement: `Must use approved protocol with token=${secret}`, token: secret },
+    } as any;
+    const violation = enforceToolRequirement(
+      { toolName: "create_file", args: { path: "src/App.tsx", content: "export function App() {}" } },
+      [requirement],
+    );
+    expect(violation.allowed).toBe(false);
+    if (!violation.allowed) expect(violation.resultJson).not.toContain(secret);
+
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({
+      executionRequirements: [requirement],
+      requirementEvaluations: [{ requirementId: requirement.id, kind: requirement.kind, status: "failed", evidence: [`token=${secret}`] }],
+    }));
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+    expect(JSON.stringify(snapshot)).toContain("***redacted***");
+  });
+
+  it("lets failed verification status dominate a contradictory zero exit code", () => {
+    const requirement = requirementFor("Required verification: pnpm test passes.", "required_verification");
+    const evaluation = evaluateRequirementObservations([requirement], [{
+      type: "command",
+      command: { executable: "pnpm", args: ["test"] },
+      passed: false,
+      exitCode: 0,
+      evidence: "provider reported failure",
+    }]);
+    expect(evaluation[0]).toMatchObject({ status: "failed" });
+    expect(canCompleteWithRequirements([requirement], evaluation)).toBe(false);
+  });
+
+  it("compares allowed and required paths with platform-consistent case rules", () => {
+    const allowed = requirementFor("Modify only these files: src/Server.ts.", "allowed_files");
+    const required = requirementFor("Required file: src/Server.ts.", "required_file");
+    const observation = { type: "changed_paths" as const, paths: ["src/server.ts"], pathTypes: [{ path: "src/server.ts", type: "file" }] } as any;
+    expect((evaluateRequirementObservations as any)([allowed], [observation], { platform: "linux" })[0]).toMatchObject({ status: "failed" });
+    expect((evaluateRequirementObservations as any)([required], [observation], { platform: "linux" })[0]).toMatchObject({ status: "failed" });
+    expect((evaluateRequirementObservations as any)([allowed], [observation], { platform: "win32" })[0]).toMatchObject({ status: "verified" });
+    expect((evaluateRequirementObservations as any)([required], [observation], { platform: "win32" })[0]).toMatchObject({ status: "verified" });
+    const call = { toolName: "create_file", args: { path: "src/server.ts", content: "" } };
+    expect(enforceToolRequirement(call, [allowed], { platform: "linux" })).toMatchObject({ allowed: false });
+    expect(enforceToolRequirement(call, [allowed], { platform: "win32" })).toEqual({ allowed: true });
+  });
+
+  it("requires an explicit, reasoned, durable waiver before treating a requirement as satisfied", () => {
+    const requirement = requirementFor("Required verification: pnpm test passes.", "required_verification");
+    const unbacked = { ...requirement, status: "waived" } as any;
+    const unbackedEvaluation = evaluateRequirementObservations([unbacked], []);
+    expect(unbackedEvaluation[0]).toMatchObject({ status: "unevaluated" });
+    expect(canCompleteWithRequirements([unbacked], unbackedEvaluation)).toBe(false);
+
+    const authorized = {
+      ...requirement,
+      status: "waived",
+      waiver: { authorizedBy: "user", reason: "User approved omission for this run.", evidenceRefs: ["mission-ev-waiver"] },
+    } as any;
+    const authorizedEvaluation = evaluateRequirementObservations([authorized], []);
+    expect(authorizedEvaluation[0]).toMatchObject({ status: "waived" });
+    expect(authorizedEvaluation[0]?.evidence.join(" ")).toContain("mission-ev-waiver");
+    expect(canCompleteWithRequirements([authorized], authorizedEvaluation)).toBe(true);
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({ executionRequirements: [authorized], requirementEvaluations: authorizedEvaluation }));
+    expect((snapshot as any).executionRequirements[0].waiver).toEqual(authorized.waiver);
+
+    const restored = restoreExecutionRequirementWaivers([requirement], [authorized]);
+    expect(restored[0]).toMatchObject({ status: "waived", waiver: authorized.waiver });
+    expect(restoreExecutionRequirementWaivers([requirement], [{ ...authorized, waiver: undefined } as any])[0]?.status).toBe("unevaluated");
+  });
+
   it("projects extracted requirements into mission contracts and stated criteria", () => {
     const prompt = "Build the backend only. No frontend, no database, and no new dependencies.";
     const extracted = extractExecutionRequirements(prompt);
@@ -279,6 +474,7 @@ describe("agent requirement boundary integration", () => {
       expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
       expect(executionContinuityRepository(db).getCanonicalAnswer("t")).toBeNull();
       const snapshot = executionContinuityRepository(db).latestCheckpoint("t")?.snapshot as any;
+      expect(snapshot.requirementBaselinePaths).toEqual([]);
       expect(snapshot.executionRequirements).toEqual(expect.arrayContaining([
         expect.objectContaining({
           kind: "required_file",
@@ -323,6 +519,76 @@ describe("agent requirement boundary integration", () => {
       expect(answer?.evidenceJson.requirementEvaluations).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "required_file", status: "verified" }),
         expect.objectContaining({ kind: "required_verification", status: "verified" }),
+      ]));
+    } finally {
+      db.close();
+      rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not canonically complete when the extracted required verification was omitted", async () => {
+    const workspacePath = realpathSync(mkdtempSync(join(tmpdir(), "morrow-req-missing-verification-")));
+    const db = openDatabase(":memory:");
+    try {
+      const prompt = "Build the backend. Required verification: deno test passes.";
+      seedAgentTask(db, workspacePath, prompt, false);
+      const provider = new MockProvider({
+        chunks: [
+          [providerTool("write-server", "create_file", { path: "src/server.ts", content: "export const server = true;\n" }), providerDone],
+          [providerText("delivered without running the required verification"), providerDone],
+        ],
+        delayMs: 1,
+      });
+
+      await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 4 });
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+      expect(executionContinuityRepository(db).getCanonicalAnswer("t")).toBeNull();
+      const snapshot = executionContinuityRepository(db).latestCheckpoint("t")?.snapshot as any;
+      expect(snapshot.executionRequirements).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "required_verification", sourceExcerpt: "Required verification: deno test passes." }),
+      ]));
+      expect(snapshot.requirementEvaluations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "required_verification", status: "unevaluated" }),
+      ]));
+    } finally {
+      db.close();
+      rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not credit an ignored frontend file created by an arbitrary command", async () => {
+    const workspacePath = realpathSync(mkdtempSync(join(tmpdir(), "morrow-req-ignored-command-")));
+    const db = openDatabase(":memory:");
+    try {
+      writeFileSync(join(workspacePath, ".gitignore"), "public/\n", "utf8");
+      const { execFileSync } = await import("node:child_process");
+      execFileSync("git", ["-C", workspacePath, "init", "-q"]);
+      execFileSync("git", ["-C", workspacePath, "add", ".gitignore"]);
+      execFileSync("git", ["-C", workspacePath, "-c", "user.name=Morrow Test", "-c", "user.email=morrow@example.test", "commit", "-qm", "baseline"]);
+      const prompt = "Build the backend only. No frontend.";
+      seedAgentTask(db, workspacePath, prompt, false);
+      const provider = new MockProvider({
+        chunks: [
+          [providerTool("write-server", "create_file", { path: "src/server.ts", content: "export const server = true;\n" }), providerDone],
+          [providerTool("mutate-ignored", "run_command", {
+            executable: "node",
+            args: ["-e", "require('fs').mkdirSync('public',{recursive:true});require('fs').writeFileSync('public/index.html','frontend')"],
+            purpose: "workspace mutation",
+          }), providerDone],
+          [providerText("backend delivered"), providerDone],
+        ],
+        delayMs: 1,
+      });
+
+      await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
+
+      expect(readFileSync(join(workspacePath, "public", "index.html"), "utf8")).toBe("frontend");
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+      expect(executionContinuityRepository(db).getCanonicalAnswer("t")).toBeNull();
+      const snapshot = executionContinuityRepository(db).latestCheckpoint("t")?.snapshot as any;
+      expect(snapshot.requirementEvaluations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "no_frontend", status: "failed" }),
       ]));
     } finally {
       db.close();

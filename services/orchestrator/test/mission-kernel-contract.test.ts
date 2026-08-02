@@ -86,6 +86,28 @@ describe("R1/R2 — contract on create preserves verbatim prompt + provenance", 
   });
 });
 
+describe("Durable requirement waivers", () => {
+  it("requires an explicit reason and mission-scoped evidence", () => {
+    const { service, repo } = setup();
+    const mission = service.create("p1", { objective: "Audit waiver persistence" });
+    const requirement = service.listRequirementNodes(mission.id)[0]!;
+    service.updateRequirementStatus(mission.id, requirement.id, "active");
+
+    expect(() => service.updateRequirementStatus(mission.id, requirement.id, "waived"))
+      .toThrow(/waiv/i);
+
+    const evidenceRef = addEvidence(repo, mission.id, "ev-waiver-audit", "failed");
+    const waived = service.updateRequirementStatus(mission.id, requirement.id, "waived", {
+      waiverReason: "User approved omitting this requirement for the run.",
+      evidenceRefs: [evidenceRef],
+    });
+
+    expect(waived.status).toBe("waived");
+    expect(waived.lastFailure).toBe("User approved omitting this requirement for the run.");
+    expect(waived.evidenceRefs).toEqual([evidenceRef]);
+  });
+});
+
 describe("R4 — missing structured input yields an objective-only contract", () => {
   it("records unresolved detail and guesses nothing", () => {
     const { service } = setup();
@@ -1796,8 +1818,14 @@ describe("F13 — fault-injection matrix", () => {
     },
     {
       name: "waiver",
-      prepare: (repo, service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "active"),
-      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "waived"),
+      prepare: (repo, service, m, reqId) => {
+        service.updateRequirementStatus(m.id, reqId, "active");
+        (service as any)._waiverEv = addEvidence(repo, m.id, `ev-w-${m.id}-${reqId}`, "failed");
+      },
+      act: (service, m, reqId) => service.updateRequirementStatus(m.id, reqId, "waived", {
+        waiverReason: "User approved this explicit exception for the run.",
+        evidenceRefs: [(service as any)._waiverEv as string],
+      }),
     },
     {
       name: "invalidation",

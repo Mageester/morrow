@@ -37,6 +37,7 @@ import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
 import { evaluateGuardian, type GuardianDecision } from "./guardian.js";
 import { TERMINAL_ENTRY_KINDS, type MissionTerminalOutcomeInput, type TerminalEntryKind } from "./terminal-outcome.js";
+import { redactSecrets } from "../provider/credentials.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -1174,6 +1175,7 @@ export class MissionService {
         authoritative: requirement.authoritative,
         status: requirement.status,
         evidenceRefs: requirement.evidenceRefs,
+        lastFailure: requirement.lastFailure,
       })),
       evidence: mission.evidence.map((item) => ({
         id: item.id,
@@ -1811,6 +1813,8 @@ export class MissionService {
       fileHashes?: string[];
       evidenceRefs?: string[];
       failureReason?: string | null;
+      /** Explicit user/mission-ledger reason for a durable waiver. */
+      waiverReason?: string | null;
       invalidationCondition?: ReopenCondition;
       invalidationReason?: string | null;
       invalidationEvidenceRef?: string | null;
@@ -1818,7 +1822,33 @@ export class MissionService {
   ): MissionRequirementNode {
     const node = this.repo.getRequirementNode(nodeId);
     if (!node || node.missionId !== missionId) throw new MissionError("Requirement node not found in mission", "not_found");
-    if (node.status === status) return node;
+    const waiverReason = opts.waiverReason?.trim();
+    const waiverEvidenceRefs = (opts.evidenceRefs ?? []).map((ref) => ref.trim());
+    if (status === "waived") {
+      // A waived node is a user-authorized exception, not a convenience state.
+      // Require the reason and mission-scoped evidence both when creating it
+      // and when an old/partially persisted row is observed again.
+      const persistedReason = node.status === "waived" ? node.lastFailure?.trim() : undefined;
+      const persistedEvidenceRefs = node.status === "waived" ? node.evidenceRefs : [];
+      const effectiveReason = waiverReason ?? persistedReason;
+      const effectiveEvidenceRefs = waiverEvidenceRefs.length > 0 ? waiverEvidenceRefs : persistedEvidenceRefs;
+      if (!effectiveReason) {
+        throw new MissionError(
+          `Waiving requirement ${nodeId} requires an explicit reason`,
+          "waiver_reason_required",
+        );
+      }
+      if (effectiveEvidenceRefs.length === 0) {
+        throw new MissionError(
+          `Waiving requirement ${nodeId} requires durable evidence references`,
+          "waiver_evidence_required",
+        );
+      }
+      this.assertDurableEvidence(missionId, effectiveEvidenceRefs, { requirePassed: false });
+      if (node.status === status && !waiverReason && waiverEvidenceRefs.length === 0) return node;
+    } else if (node.status === status) {
+      return node;
+    }
     const now = this.now();
 
     // ── Centralized state machine: applied BEFORE every special-case branch ──
@@ -1954,6 +1984,10 @@ export class MissionService {
         patch.verifiedFileHashes = opts.fileHashes ?? (opts.fileHash ? [opts.fileHash] : []);
         patch.evidenceRefs = opts.evidenceRefs ?? [];
         patch.completedAt = now;
+      }
+      if (status === "waived") {
+        patch.lastFailure = redactSecrets(waiverReason!).slice(0, 2000);
+        patch.evidenceRefs = waiverEvidenceRefs;
       }
       if (status === "failed") {
         patch.lastFailure = opts.failureReason ?? "Requirement marked failed";
