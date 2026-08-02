@@ -398,6 +398,83 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(serialized).toContain("authorization=none");
   });
 
+  it("redacts secret-like uppercase bare KEY assignments without hiding benign key fields", () => {
+    const secretValues = ["BARE_KEY_SECRET", "QUOTED_KEY_SECRET", "JSON_KEY_SECRET"];
+    const failedCall = {
+      id: "bare-key-failure",
+      toolName: "run_command",
+      status: "failed",
+      argsJson: JSON.stringify({ executable: "node", args: ["inspect"] }),
+      resultJson: JSON.stringify({
+        exitCode: 1,
+        stderr: [
+          "env: KEY=BARE_KEY_SECRET export KEY=\"QUOTED_KEY_SECRET\"",
+          "json: {\"KEY\":\"JSON_KEY_SECRET\"}",
+          "object key=abc index key=abc cache-key=abc123 keycode=200 KEY=abc",
+          "diagnostic: retryable=false",
+        ].join("\n"),
+      }),
+      errorMessage: "useful diagnostic: retryable=false",
+      cursor: 90,
+    };
+    const checkpoint = projectCheckpointSnapshot({
+      snapshot: baseCheckpointSnapshot("task-1"),
+      failedCalls: [failedCall],
+    });
+    const serialized = JSON.stringify(checkpoint);
+
+    for (const secret of secretValues) expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("object key=abc");
+    expect(serialized).toContain("index key=abc");
+    expect(serialized).toContain("cache-key=abc123");
+    expect(serialized).toContain("keycode=200");
+    expect(serialized).toContain("KEY=abc");
+    expect(serialized).toContain("diagnostic: retryable=false");
+  });
+
+  it("redacts cookie values across header syntaxes while preserving inline trailing diagnostics", () => {
+    const secretValues = [
+      "COLON_SESSION",
+      "COLON_AUTH",
+      "COLON_JWT",
+      "EQUAL_SESSION",
+      "JSON_AUTH",
+      "INLINE_JWT",
+    ];
+    const failedCall = {
+      id: "cookie-syntax-failure",
+      toolName: "run_command",
+      status: "failed",
+      argsJson: JSON.stringify({ executable: "node", args: ["headers"] }),
+      resultJson: JSON.stringify({
+        exitCode: 1,
+        stderr: [
+          "Cookie: session=COLON_SESSION; auth=COLON_AUTH; jwt=COLON_JWT; theme=dark; retryable=false, status=401",
+          "Set-Cookie=session=EQUAL_SESSION; Path=/; HttpOnly; retryable=false, status=401",
+          "json: {\"Set-Cookie\":\"auth=JSON_AUTH; Path=/; Secure\", \"status\":401}",
+          "inline: Cookie: jwt=INLINE_JWT; theme=light; retryable=false, status=401",
+          "diagnostic: connection refused",
+        ].join("\n"),
+      }),
+      errorMessage: "useful diagnostic: connection refused",
+      cursor: 91,
+    };
+    const checkpoint = projectCheckpointSnapshot({
+      snapshot: baseCheckpointSnapshot("task-1"),
+      failedCalls: [failedCall],
+    });
+    const serialized = JSON.stringify(checkpoint);
+
+    for (const secret of secretValues) expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("theme=dark");
+    expect(serialized).toContain("theme=light");
+    expect(serialized).toContain("Path=/");
+    expect(serialized).toContain("HttpOnly");
+    expect(serialized).toContain("retryable=false");
+    expect(serialized).toContain("status=401");
+    expect(serialized).toContain("diagnostic: connection refused");
+  });
+
   it("retains only the latest checkpoint while preserving the newest bounded snapshot", () => {
     db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "project-1", name: "Checkpoint", workspacePath: "/tmp/checkpoint", createdAt: NOW });

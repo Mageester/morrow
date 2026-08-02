@@ -93,6 +93,24 @@ const EXPLICIT_SENSITIVE_ASSIGNMENT_NAMES = new Set([
   "session_token",
   "token",
 ]);
+const SENSITIVE_COOKIE_NAMES = new Set([
+  "access_token",
+  "auth",
+  "auth_token",
+  "authorization",
+  "credential",
+  "id_token",
+  "jwt",
+  "login",
+  "password",
+  "refresh_token",
+  "secret",
+  "session",
+  "session_id",
+  "sessionid",
+  "sid",
+  "token",
+]);
 
 function normalizedCredentialName(value: string): string {
   return value.trim().toLowerCase().replace(/-/g, "_");
@@ -117,20 +135,55 @@ function redactedValue(value: string): string {
     : "***redacted***";
 }
 
-function isSensitiveAssignmentName(name: string): boolean {
+function looksLikeSecretValue(value: string): boolean {
+  const candidate = unquoted(value).trim();
+  if (candidate.length < 8) return false;
+  return /(?:secret|token|password|credential|bearer|jwt|api[_-]?key)/i.test(candidate)
+    || /^[A-Za-z0-9+/_=-]{20,}$/.test(candidate);
+}
+
+function isSensitiveAssignmentName(name: string, value: string): boolean {
   const normalized = normalizedCredentialName(name);
-  if (BENIGN_ASSIGNMENT_NAMES.has(normalized) || normalized === "key") return false;
+  if (BENIGN_ASSIGNMENT_NAMES.has(normalized)) return false;
+  if (normalized === "key") return name === "KEY" && looksLikeSecretValue(value);
   return EXPLICIT_SENSITIVE_ASSIGNMENT_NAMES.has(normalized)
     || /(?:_key|_token|_secret|_password|_passwd|_passphrase)$/.test(normalized);
+}
+
+function isSensitiveCookieName(name: string, value: string): boolean {
+  const normalized = normalizedCredentialName(name);
+  if ((normalized === "auth" || normalized === "authorization") && isBenignAuthorizationValue(value)) return false;
+  return SENSITIVE_COOKIE_NAMES.has(normalized)
+    || /(?:auth|credential|jwt|password|secret|session|token)/.test(normalized)
+    || looksLikeSecretValue(value);
+}
+
+function redactCookiePayload(payload: string): string {
+  return payload.replace(
+    /(^|[;,]\s*)([A-Za-z][A-Za-z0-9_-]*)(\s*=\s*)(?:(["'`])([\s\S]*?)\4|([^;,\r\n]*))/g,
+    (match: string, prefix: string, name: string, separator: string, quote: string | undefined, quotedValue: string | undefined, plainValue: string | undefined) => {
+      const value = quote ? quotedValue ?? "" : plainValue ?? "";
+      if (!isSensitiveCookieName(name, value)) return match;
+      if (quote) return `${prefix}${name}${separator}${quote}***redacted***${quote}`;
+      const leadingWhitespace = plainValue?.match(/^\s*/)?.[0] ?? "";
+      const trailingWhitespace = plainValue?.match(/\s*$/)?.[0] ?? "";
+      return `${prefix}${name}${separator}${leadingWhitespace}***redacted***${trailingWhitespace}`;
+    },
+  );
 }
 
 /** Defensive redaction for any string that might be logged. */
 export function redactSecrets(input: string): string {
   return input
-    // Cookie and Set-Cookie values include multiple attributes; redact the
-    // complete structured header line rather than attempting to enumerate
-    // every cookie name and attribute.
-    .replace(/((?:^|[\r\n])[^\r\n]*?\b(?:set-cookie|cookie)\s*:\s*)[^\r\n]*/gim, "$1***redacted***")
+    // Cookie and Set-Cookie values include multiple attributes; parse the
+    // structured payload so sensitive cookie values are replaced while safe
+    // attributes and trailing diagnostic fields remain visible.
+    .replace(/(?<![A-Za-z0-9_-])(["']?)(set-cookie|cookie)\1(\s*[:=]\s*)(?:(['"`])([\s\S]*?)\4|([^\r\n]*))/gi, (_match, keyQuote: string, name: string, separator: string, valueQuote: string | undefined, quotedPayload: string | undefined, unquotedPayload: string | undefined) => {
+      const payload = valueQuote ? quotedPayload ?? "" : unquotedPayload ?? "";
+      const redactedPayload = redactCookiePayload(payload);
+      const value = valueQuote ? `${valueQuote}${redactedPayload}${valueQuote}` : redactedPayload;
+      return `${keyQuote}${name}${keyQuote}${separator}${value}`;
+    })
     // Authorization schemes can contain a scheme plus a credential, such as
     // `Bearer token` or `Basic base64`; consume both under the known header.
     .replace(/\b((?:proxy-)?authorization)(\s*:\s*)((?:(?:[A-Za-z][A-Za-z0-9_-]*)\s+[^\r\n]+|[^\s,;}\]]+))/gi, (_match, name: string, separator: string, value: string) => isBenignAuthorizationValue(value) ? _match : `${name}${separator}***redacted***`)
@@ -139,9 +192,9 @@ export function redactSecrets(input: string): string {
     .replace(/\bBearer\s+(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Bearer ***redacted***")
     // Only known credential names and env-style suffixes are eligible. In
     // particular, ordinary `key`, `cache-key`, and object fields survive.
-    .replace(/(?<![A-Za-z0-9_])([A-Za-z0-9][A-Za-z0-9_-]*)(["']?)(\s*[:=]\s*)("[^"]*"|'[^']*'|`[^`]*`|[^\s,;}\]]+)/gi, (match: string, name: string, keyQuote: string, separator: string, value: string) => {
+    .replace(/(?<![A-Za-z0-9_])([A-Za-z0-9][A-Za-z0-9_-]*)(["']?)(\s*[:=]\s*)(?![\[{])(?!(?:[A-Za-z0-9][A-Za-z0-9_-]*)\s*=)("[^"]*"|'[^']*'|`[^`]*`|[^\s,;}\]]+)/gi, (match: string, name: string, keyQuote: string, separator: string, value: string) => {
       const normalized = normalizedCredentialName(name);
-      if (!isSensitiveAssignmentName(name) || ((normalized === "authorization" || normalized === "proxy_authorization" || normalized === "auth") && isBenignAuthorizationValue(value))) return match;
+      if (!isSensitiveAssignmentName(name, value) || ((normalized === "authorization" || normalized === "proxy_authorization" || normalized === "auth") && isBenignAuthorizationValue(value))) return match;
       return `${name}${keyQuote}${separator}${redactedValue(value)}`;
     })
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***redacted***@")
