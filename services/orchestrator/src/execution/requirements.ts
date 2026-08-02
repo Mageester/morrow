@@ -445,7 +445,7 @@ function unwrapPackageManagerCommand(command: { executable: string; args: string
       args = stripWrapperOptions(args, PACKAGE_MANAGER_OPTIONS_WITH_VALUE);
       if ((args[0]?.toLowerCase() === "exec" || args[0]?.toLowerCase() === "dlx") && args[1]) {
         args = args.slice(1);
-        args = stripWrapperOptions(args, new Set(["exec", "dlx"]));
+        args = stripWrapperOptions(args, PACKAGE_MANAGER_WRAPPER_OPTIONS_WITH_VALUE);
         if (!args[0]) return null;
         executable = executableName(args[0]!);
         args = args.slice(1);

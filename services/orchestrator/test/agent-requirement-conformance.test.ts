@@ -334,6 +334,34 @@ describe("explicit execution requirement conformance", () => {
   });
 
   it.each([
+    ["npm", ["exec", "--package", "foo", "npm", "install"]],
+    ["npm", ["exec", "-p", "foo", "npm", "install"]],
+    ["npm", ["exec", "--package=foo", "npm", "install"]],
+    ["npm", ["exec", "-p=foo", "npm", "install"]],
+    ["pnpm", ["dlx", "--package", "foo", "npm", "install"]],
+    ["pnpm", ["dlx", "-p", "foo", "npm", "install"]],
+    ["pnpm", ["dlx", "--package=foo", "npm", "install"]],
+    ["pnpm", ["dlx", "-p=foo", "npm", "install"]],
+    ["corepack", ["npm", "exec", "--package", "foo", "npm", "install"]],
+    ["corepack", ["npm", "exec", "-p", "foo", "npm", "install"]],
+    ["corepack", ["npm", "exec", "--package=foo", "npm", "install"]],
+    ["corepack", ["npm", "exec", "-p=foo", "npm", "install"]],
+  ])("rejects package-bearing nested wrapper form %s %s before approval", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement]);
+    expect(result.allowed).toBe(false);
+  });
+
+  it.each([
+    ["npm", ["exec", "--", "npm", "--version"]],
+    ["pnpm", ["dlx", "npm", "--version"]],
+    ["corepack", ["npm", "exec", "--", "npm", "--version"]],
+  ])("allows a non-mutating nested wrapper without package injection %s %s", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    expect(enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement])).toEqual({ allowed: true });
+  });
+
+  it.each([
     ["sh", ["-c", "echo ok; npm install"]],
     ["sh", ["-c", "echo ok && npm install"]],
     ["cmd", ["/c", "echo ok & npm install"]],

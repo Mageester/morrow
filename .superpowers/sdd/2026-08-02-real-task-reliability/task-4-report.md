@@ -130,6 +130,32 @@ The dependency guard remains fail-closed at the pre-approval boundary and does n
 - `services/orchestrator/src/repositories/execution-continuity.ts`
 - `services/orchestrator/test/agent-requirement-conformance.test.ts`
 
+## Final wrapper-option residual remediation
+
+The post-`009f580` review found that package-manager wrapper options with a separate value were discarded as flags without consuming their values. That allowed the value to be mistaken for the nested executable and let dependency mutation reach approval. The parser now consumes the existing bounded `--package`, `-p`, `--cache`, `--prefix`, and `--registry` value-bearing wrapper options, including `=` forms, before identifying the nested executable for `npm exec`, `pnpm dlx`, and corepack-dispatched commands. Non-mutating nested verification controls remain allowed.
+
+### Wrapper-option RED/GREEN evidence
+
+- New table-driven conformance probes recorded **RED: 67 tests, 61 passed and 6 failed**. The six failures were the separate-value forms for npm exec, pnpm dlx, and corepack; the corresponding `=` forms were already safe.
+- Focused conformance after the parser fix: **1 file, 67 passed**.
+- Focused approval/security/continuity/mission regression batch: **8 files, 242 passed**.
+- `pnpm --filter @morrow/orchestrator check`: passed.
+- `pnpm --filter @morrow/contracts check`: passed.
+- Default isolated orchestrator suite with both live-provider skip flags: **164 files, 1,705 passed**.
+- Explicit live-provider isolation checks: **3 files, 21 passed**.
+- `git diff --check`: passed.
+- `docs/evidence/flagship-runs.jsonl` remained unchanged with SHA-256 `0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A`.
+
+### Wrapper-option security/privacy impact, limitations, and rollback
+
+This is a narrow pre-approval parser correction: wrapper option values are consumed before nested command classification, so package injection cannot hide the nested `install` verb behind a value token. Existing non-mutating wrapper controls remain permitted, and no permission, approval, provider, or persistence boundary was widened. No secret, telemetry, network call, live provider call, or flagship evidence write was added. The parser remains bounded and conservative over the existing recognized wrapper-option set; unsupported command syntaxes remain subject to the existing fail-closed behavior. Rollback is a focused revert of this wrapper-option commit.
+
+### Wrapper-option changed files
+
+- `.superpowers/sdd/2026-08-02-real-task-reliability/task-4-report.md`
+- `services/orchestrator/src/execution/requirements.ts`
+- `services/orchestrator/test/agent-requirement-conformance.test.ts`
+
 ## RED evidence
 
 The required conformance test was written before the production integration. The initial run was RED because `services/orchestrator/src/execution/requirements.ts` did not exist: Vitest collected zero tests and failed to resolve `../src/execution/requirements.js`.
