@@ -44,6 +44,39 @@ export type MissionCompletionFn = (
   opts: { purpose: "planning" | "review"; temperature?: number },
 ) => Promise<{ text: string; provider?: string; model?: string; usdCost?: number; finishReason?: string | null }>;
 
+type ActiveTerminalVerification = {
+  ownerId: string;
+  generation: number;
+  operationId: string;
+};
+
+// Durable claim generations fence stale owners across processes. This registry
+// only handles the narrower same-process race where a second MissionService
+// wraps the same SQLite handle while the first owner's external verification
+// promise is still active. It stores no promise or result and is removed in
+// finally, so a crashed process cannot strand durable recovery.
+const activeTerminalVerifications = new WeakMap<object, Map<string, ActiveTerminalVerification>>();
+
+function activeTerminalVerification(repo: MissionsRepository, missionId: string): ActiveTerminalVerification | undefined {
+  return activeTerminalVerifications.get(repo.processLocalIdentity)?.get(missionId);
+}
+
+function beginTerminalVerification(repo: MissionsRepository, missionId: string, ownerId: string, generation: number): ActiveTerminalVerification {
+  let byMission = activeTerminalVerifications.get(repo.processLocalIdentity);
+  if (!byMission) {
+    byMission = new Map<string, ActiveTerminalVerification>();
+    activeTerminalVerifications.set(repo.processLocalIdentity, byMission);
+  }
+  const operation = { ownerId, generation, operationId: `terminal-verification:${missionId}:${randomUUID()}` };
+  byMission.set(missionId, operation);
+  return operation;
+}
+
+function endTerminalVerification(repo: MissionsRepository, missionId: string, operation: ActiveTerminalVerification): void {
+  const byMission = activeTerminalVerifications.get(repo.processLocalIdentity);
+  if (byMission?.get(missionId)?.operationId === operation.operationId) byMission.delete(missionId);
+}
+
 export interface MissionServiceDeps {
   repo: MissionsRepository;
   /** Resolve a project's absolute workspace path. */
@@ -1229,6 +1262,7 @@ export class MissionService {
     }
 
     const requestedReason = input.reason.slice(0, 2_000);
+    const activeVerification = activeTerminalVerification(this.repo, missionId);
     const claimResult = this.repo.claimTerminalOutcome({
       missionId,
       kind: input.kind,
@@ -1237,6 +1271,7 @@ export class MissionService {
       ownerId: this.serviceInstanceId,
       now: this.now(),
       leaseExpiresAt: this.terminalOutcomeLeaseExpiresAt(this.now()),
+      ...(activeVerification ? { activeVerificationOwnerId: activeVerification.ownerId } : {}),
     });
     if (!claimResult.acquired) {
       const recordedAfterClaim = this.terminalOutcomeEvent(missionId);
@@ -1271,18 +1306,23 @@ export class MissionService {
       ...(claimedStatus ? { preserveStatus: claimedStatus } : {}),
     };
     const verificationAlreadyCompleted = claimResult.claim.verificationStatus === "completed";
-    const terminalHeartbeat = this.startTerminalOutcomeLeaseHeartbeat(missionId);
+    const terminalHeartbeat = this.startTerminalOutcomeLeaseHeartbeat(missionId, claimResult.claim.generation);
+    let activeOperation: ActiveTerminalVerification | undefined;
     try {
     this.assertTerminalOutcomeClaim(missionId, terminalHeartbeat);
     if (!verificationAlreadyCompleted && !this.repo.startTerminalOutcomeVerification({
       missionId,
       ownerId: this.serviceInstanceId,
+      generation: claimResult.claim.generation,
       now: this.now(),
     })) {
       throw new MissionError(
         `Terminal close-out verification is already owned for ${missionId}; waiting for lease recovery`,
         "terminal_closeout_in_progress",
       );
+    }
+    if (!verificationAlreadyCompleted) {
+      activeOperation = beginTerminalVerification(this.repo, missionId, this.serviceInstanceId, claimResult.claim.generation);
     }
 
     const reason = input.reason.slice(0, 2_000);
@@ -1319,6 +1359,7 @@ export class MissionService {
       if (!this.repo.completeTerminalOutcomeVerification({
         missionId,
         ownerId: this.serviceInstanceId,
+        generation: claimResult.claim.generation,
         now: this.now(),
       })) {
         throw new MissionError(
@@ -1409,7 +1450,7 @@ export class MissionService {
         { kind: input.kind, reason, status: terminalStatus, result },
         now,
       );
-      if (!this.repo.completeTerminalOutcomeClaim({ missionId, ownerId: this.serviceInstanceId, completedAt: now })) {
+      if (!this.repo.completeTerminalOutcomeClaim({ missionId, ownerId: this.serviceInstanceId, generation: claimResult.claim.generation, completedAt: now })) {
         throw new MissionError(`Finalization integrity error: terminal close-out claim was lost for ${missionId}`, "finalization_integrity_error");
       }
     });
@@ -1421,10 +1462,11 @@ export class MissionService {
     return this.assertRecordedTerminalOutcome(missionId, recorded);
     } finally {
       terminalHeartbeat.stop();
+      if (activeOperation) endTerminalVerification(this.repo, missionId, activeOperation);
     }
   }
 
-  private assertTerminalOutcomeClaim(missionId: string, heartbeat: { lost(): boolean }): void {
+  private assertTerminalOutcomeClaim(missionId: string, heartbeat: { generation: number; lost(): boolean }): void {
     const claim = this.repo.getTerminalOutcomeClaim(missionId);
     const now = this.now();
     if (
@@ -1432,6 +1474,7 @@ export class MissionService {
       || !claim
       || claim.status !== "reserved"
       || claim.ownerId !== this.serviceInstanceId
+      || claim.generation !== heartbeat.generation
       || (claim.leaseExpiresAt !== null && claim.leaseExpiresAt <= now)
     ) {
       throw new MissionError(`Terminal close-out claim was lost for ${missionId}`, "terminal_closeout_in_progress");
@@ -1442,7 +1485,7 @@ export class MissionService {
     return new Date(Date.parse(now) + this.terminalOutcomeLeaseMs).toISOString();
   }
 
-  private startTerminalOutcomeLeaseHeartbeat(missionId: string): { stop: () => void; lost: () => boolean } {
+  private startTerminalOutcomeLeaseHeartbeat(missionId: string, generation: number): { stop: () => void; generation: number; lost: () => boolean } {
     const intervalMs = Math.max(10, Math.floor(this.terminalOutcomeLeaseMs / 3));
     let ownershipLost = false;
     let timer: ReturnType<typeof setInterval>;
@@ -1453,6 +1496,7 @@ export class MissionService {
         const renewed = this.repo.renewTerminalOutcomeClaim({
           missionId,
           ownerId: this.serviceInstanceId,
+          generation,
           now,
           leaseExpiresAt: this.terminalOutcomeLeaseExpiresAt(now),
         });
@@ -1468,6 +1512,7 @@ export class MissionService {
     timer.unref?.();
     return {
       stop,
+      generation,
       lost: () => ownershipLost,
     };
   }

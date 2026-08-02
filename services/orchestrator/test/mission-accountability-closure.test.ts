@@ -427,18 +427,26 @@ describe("MissionService.concludeWithoutSuccess", () => {
       reason: "Recover the expired close-out claim.",
       preserveStatus: "blocked",
     }));
+    const secondResult = await second;
+    expect(secondResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
+    expect(repoA.getTerminalOutcomeClaim(mission.id)?.verificationStatus).toBe("abandoned");
+    const third = observe(serviceB.concludeTerminalOutcome(mission.id, {
+      kind: "startup_reconciliation",
+      reason: "Retry while the original verifier is still blocked.",
+      preserveStatus: "blocked",
+    }));
 
     try {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(execCalls).toHaveLength(1);
     } finally {
       releaseVerification();
-      await Promise.all([first, second]);
+      await Promise.all([first, third]);
     }
     const firstResult = await first;
-    const secondResult = await second;
     expect(firstResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
-    expect(secondResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
+    const thirdResult = await third;
+    expect(thirdResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
 
     const recovered = await serviceB.concludeTerminalOutcome(mission.id, {
       kind: "startup_reconciliation",

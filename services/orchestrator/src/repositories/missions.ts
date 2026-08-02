@@ -54,6 +54,7 @@ export interface MissionTerminalOutcomeClaim {
   ownerId: string;
   status: "reserved" | "completed";
   verificationStatus: "pending" | "running" | "completed" | "abandoned";
+  generation: number;
   claimedAt: string;
   leaseExpiresAt: string | null;
   completedAt: string | null;
@@ -67,6 +68,7 @@ export interface MissionTerminalOutcomeClaimInput {
   ownerId: string;
   now: string;
   leaseExpiresAt: string;
+  activeVerificationOwnerId?: string;
 }
 
 function mapTerminalOutcomeClaim(row: any): MissionTerminalOutcomeClaim {
@@ -78,6 +80,7 @@ function mapTerminalOutcomeClaim(row: any): MissionTerminalOutcomeClaim {
     ownerId: row.owner_id,
     status: row.status,
     verificationStatus: row.verification_status ?? "pending",
+    generation: Number(row.verification_generation ?? 0),
     claimedAt: row.claimed_at,
     leaseExpiresAt: row.lease_expires_at ?? null,
     completedAt: row.completed_at ?? null,
@@ -263,6 +266,10 @@ function mapProjectActiveMission(row: any): ProjectActiveMission {
 
 export function missionsRepository(db: Database.Database) {
   const repo = {
+    /** Stable only within this process; used to coordinate live operations
+     * across repository wrappers over the same SQLite handle. */
+    processLocalIdentity: db as unknown as object,
+
     create(input: {
       id: string; projectId: string; conversationId?: string | null;
       objective: string; autoApprove?: boolean; budget: MissionBudget;
@@ -655,8 +662,8 @@ export function missionsRepository(db: Database.Database) {
         const existing = read();
         if (!existing) {
           db.prepare(`INSERT INTO mission_terminal_outcome_claims
-            (mission_id,kind,reason,preserve_status,owner_id,status,verification_status,claimed_at,lease_expires_at,completed_at)
-            VALUES(?,?,?,?,?,'reserved','pending',?,?,NULL)`)
+            (mission_id,kind,reason,preserve_status,owner_id,status,verification_status,verification_generation,claimed_at,lease_expires_at,completed_at)
+            VALUES(?,?,?,?,?,'reserved','pending',0,?,?,NULL)`)
             .run(input.missionId, input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt);
           return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
         }
@@ -666,8 +673,8 @@ export function missionsRepository(db: Database.Database) {
         if (claim.ownerId === input.ownerId && claim.leaseExpiresAt !== null && claim.leaseExpiresAt > input.now) {
           db.prepare(`UPDATE mission_terminal_outcome_claims
             SET lease_expires_at=?
-            WHERE mission_id=? AND status='reserved' AND owner_id=?`)
-            .run(input.leaseExpiresAt, input.missionId, input.ownerId);
+            WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?`)
+            .run(input.leaseExpiresAt, input.missionId, input.ownerId, claim.generation);
           return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
         }
 
@@ -675,20 +682,23 @@ export function missionsRepository(db: Database.Database) {
         if (!stale) return { acquired: false, claim };
         if (claim.verificationStatus === "running") {
           db.prepare(`UPDATE mission_terminal_outcome_claims
-            SET verification_status='abandoned'
-            WHERE mission_id=? AND status='reserved' AND owner_id=?
+            SET verification_status='abandoned', verification_generation=verification_generation+1
+            WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
               AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
-            .run(input.missionId, claim.ownerId, input.now);
+            .run(input.missionId, claim.ownerId, claim.generation, input.now);
           return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
+        }
+        if (claim.verificationStatus === "abandoned" && input.activeVerificationOwnerId === claim.ownerId) {
+          return { acquired: false, claim };
         }
         const updated = db.prepare(`UPDATE mission_terminal_outcome_claims
           SET kind=?,reason=?,preserve_status=?,owner_id=?,claimed_at=?,lease_expires_at=?,completed_at=NULL,
-              verification_status=?
-          WHERE mission_id=? AND status='reserved' AND owner_id=?
+              verification_status=?, verification_generation=verification_generation+1
+          WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
             AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
           .run(input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt,
             claim.verificationStatus === "completed" ? "completed" : "pending",
-            input.missionId, claim.ownerId, input.now);
+            input.missionId, claim.ownerId, claim.generation, input.now);
         if (updated.changes !== 1) return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
         return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
       })();
@@ -699,39 +709,42 @@ export function missionsRepository(db: Database.Database) {
       return row ? mapTerminalOutcomeClaim(row) : null;
     },
 
-    startTerminalOutcomeVerification(input: { missionId: string; ownerId: string; now: string }): boolean {
+    startTerminalOutcomeVerification(input: { missionId: string; ownerId: string; generation: number; now: string }): boolean {
       return db.prepare(`UPDATE mission_terminal_outcome_claims
         SET verification_status='running'
-        WHERE mission_id=? AND status='reserved' AND owner_id=?
+        WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
           AND verification_status IN ('pending','abandoned')
           AND lease_expires_at>?`)
-        .run(input.missionId, input.ownerId, input.now).changes === 1;
+        .run(input.missionId, input.ownerId, input.generation, input.now).changes === 1;
     },
 
-    completeTerminalOutcomeVerification(input: { missionId: string; ownerId: string; now: string }): boolean {
+    completeTerminalOutcomeVerification(input: { missionId: string; ownerId: string; generation: number; now: string }): boolean {
       return db.prepare(`UPDATE mission_terminal_outcome_claims
         SET verification_status='completed'
-        WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_status='running'
+        WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=? AND verification_status='running'
           AND (lease_expires_at IS NULL OR lease_expires_at>?)`)
-        .run(input.missionId, input.ownerId, input.now).changes === 1;
+        .run(input.missionId, input.ownerId, input.generation, input.now).changes === 1;
     },
 
-    renewTerminalOutcomeClaim(input: { missionId: string; ownerId: string; now: string; leaseExpiresAt: string }): boolean {
+    renewTerminalOutcomeClaim(input: { missionId: string; ownerId: string; generation: number; now: string; leaseExpiresAt: string }): boolean {
       return db.prepare(`UPDATE mission_terminal_outcome_claims
         SET lease_expires_at=?
-        WHERE mission_id=? AND status='reserved' AND owner_id=?
+        WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
           AND (lease_expires_at IS NULL OR lease_expires_at>?)`)
-        .run(input.leaseExpiresAt, input.missionId, input.ownerId, input.now).changes === 1;
+        .run(input.leaseExpiresAt, input.missionId, input.ownerId, input.generation, input.now).changes === 1;
     },
 
-    completeTerminalOutcomeClaim(input: { missionId: string; ownerId?: string; completedAt: string }): boolean {
+    completeTerminalOutcomeClaim(input: { missionId: string; ownerId?: string; generation?: number; completedAt: string }): boolean {
       const ownerClause = input.ownerId ? " AND owner_id=?" : "";
+      const generationClause = input.ownerId && input.generation !== undefined ? " AND verification_generation=?" : "";
       const params = input.ownerId
-        ? [input.completedAt, input.missionId, input.ownerId]
+        ? input.generation === undefined
+          ? [input.completedAt, input.missionId, input.ownerId]
+          : [input.completedAt, input.missionId, input.ownerId, input.generation]
         : [input.completedAt, input.missionId];
       return db.prepare(`UPDATE mission_terminal_outcome_claims
         SET status='completed',completed_at=?,lease_expires_at=NULL
-        WHERE mission_id=? AND status='reserved'${ownerClause}`)
+        WHERE mission_id=? AND status='reserved'${ownerClause}${generationClause}`)
         .run(...params).changes === 1;
     },
 

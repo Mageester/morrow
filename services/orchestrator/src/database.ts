@@ -1211,6 +1211,10 @@ export const migrations:Migration[]=[
       ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'pending'
       CHECK(verification_status IN ('pending','running','completed','abandoned'));
   `}
+  ,{id:44,name:"mission_terminal_outcome_verification_generation",sql:`
+    ALTER TABLE mission_terminal_outcome_claims
+      ADD COLUMN verification_generation INTEGER NOT NULL DEFAULT 0;
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
