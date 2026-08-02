@@ -6,6 +6,54 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Changed - reliability cycle: bug classes became structural guards
+
+- **Every provider adapter now normalizes the same situations identically, and
+  is proven to.** `provider-conformance.test.ts` feeds each adapter canned
+  stop / truncation / tool-use / error streams in that adapter's own wire
+  format and asserts one shared normalized chunk sequence. Gemini and Codex
+  could not report `finishReason` at all, so mission review's truncation retry
+  — which fires only on `finishReason === "length"` — was dead on both routes,
+  exactly as it had been on Anthropic before beta.37. Both now report it.
+  An adapter that is not registered in the table fails the suite rather than
+  shipping unchecked.
+- **A colliding tool-call id is now a loud failure instead of silent data
+  loss.** `message_tool_calls` is keyed globally on the id and its conflicting
+  upsert refreshes only lifecycle fields, which made a genuine collision
+  indistinguishable from a normal status update — how a per-turn ordinal id in
+  the Gemini adapter caused every Gemini conversation after the first to record
+  zero tool calls. The store now refuses a write that lands on another task's
+  row, and the conformance suite asserts that a minted id differs on every
+  stream.
+- **One boundary reconciles a request's limits against each other.**
+  `provider/limits.ts` owns the couplings that were previously re-derived per
+  adapter: extended thinking versus `temperature` and `max_tokens`, and the
+  output ceiling versus the request deadline. Raising a token allowance without
+  its deadline converts an empty response into a stream timeout; that is now
+  arithmetic in one place rather than something each adapter has to remember.
+- **Branch divergence is bounded by CI.** A pull request whose merge-base with
+  `main` is more than seven days of integration history old now fails
+  (`scripts/check-branch-freshness.mjs`). Staleness is measured against
+  integration history, not wall-clock time, so a quiet week does not fail every
+  open branch. `pnpm branches:inventory` regenerates
+  `docs/branch-inventory.md`, which separates the repository's 74 remote
+  branches into merged (35), stale (7), aging (24), and active (8).
+
+### Added - the flagship workflow, and the evidence for it
+
+- A single scored workflow — build a small working app from a prompt — that
+  runs against real providers (`pnpm flagship:run`) rather than mocks. The app
+  is verified against a behavioral contract the harness wrote and the agent
+  never sees, so a model cannot pass by writing agreeable tests. Every run,
+  pass or fail, is appended to `docs/evidence/flagship-runs.jsonl` with a
+  classified failure reason.
+- A release gate over that log (`pnpm flagship:gate`): proven means two
+  different real providers each passing at least 9 of their most recent 10
+  runs. Mock runs never count. It currently reports **unproven**, printed on
+  every CI build, because no real-provider runs have been recorded yet.
+- ADR 0010 records the decision to freeze new surface for one cycle and turn
+  each bug class into a guard.
+
 ## [0.1.0-beta.37] - 2026-08-01
 
 ### Added - unified clay UI, interleaved transcript
