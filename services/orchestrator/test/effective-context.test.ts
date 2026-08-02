@@ -87,6 +87,27 @@ describe("route-aware effective context", () => {
     expect(resolved.canonicalModelId).toBe("deepseek-v4-flash");
   });
 
+  it("uses canonical capacity for legacy DeepSeek selections without changing the selected id", () => {
+    for (const selectedModel of ["deepseek-chat", "deepseek-reasoner"]) {
+      const resolved = resolveEffectiveContext({
+        providerId: "deepseek",
+        selectedModel,
+        endpoint: {
+          kind: "default",
+          host: "api.deepseek.com",
+          protocol: "openai-chat",
+          limitTokens: 131_072,
+          limitSource: "provider-metadata",
+        },
+        outputReserveTokens: 8_192,
+      });
+
+      expect(resolved.selectedModelId).toBe(selectedModel);
+      expect(resolved.canonicalModelId).toBe("deepseek-v4-flash");
+      expect(resolved.advertisedModelCapacityTokens).toBe(1_000_000);
+    }
+  });
+
   it("binds private continuation to the exact endpoint identity, not only its host", () => {
     const common = {
       providerId: "openai-compatible",
@@ -98,5 +119,17 @@ describe("route-aware effective context", () => {
     const first = providerRouteFingerprint({ ...common, endpointIdentityHash: "route-v1-hash" });
     const second = providerRouteFingerprint({ ...common, endpointIdentityHash: "route-v2-hash" });
     expect(second).not.toBe(first);
+  });
+
+  it("uses the canonical model identity in the provider route fingerprint", () => {
+    const common = {
+      providerId: "deepseek",
+      protocol: "openai-chat" as const,
+      endpointKind: "default" as const,
+      endpointHost: "api.deepseek.com",
+    };
+    const canonical = providerRouteFingerprint({ ...common, model: "deepseek-v4-flash" });
+    const legacy = providerRouteFingerprint({ ...common, model: "deepseek-reasoner" });
+    expect(legacy).toBe(canonical);
   });
 });

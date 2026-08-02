@@ -4,6 +4,13 @@ import type { ProviderModelDiscovery } from "../repositories/provider-model-disc
 type Pricing = NonNullable<ModelInfo["pricing"]>;
 export const BUNDLED_MODEL_CATALOG_VERSION = "2026-07-16";
 
+export interface CanonicalModelTarget {
+  providerId: ProviderId;
+  modelId: string;
+}
+
+export type BundledModelInfo = ModelInfo;
+
 // ── Reasoning capability, with provenance ────────────────────────────────────
 //
 // The built-in registry is the lowest-priority ("registry") source of reasoning
@@ -36,6 +43,7 @@ function model(
   label: string,
   opts: {
     aliases?: string[];
+    canonicalTarget?: CanonicalModelTarget;
     contextWindow?: number | null;
     maxOutputTokens?: number | null;
     pricing?: Pricing | null;
@@ -60,6 +68,7 @@ function model(
     id,
     providerModelId: id,
     canonicalId: id,
+    ...(opts.canonicalTarget ? { canonicalTarget: opts.canonicalTarget } : {}),
     aliases: opts.aliases ?? [],
     providerId,
     label,
@@ -105,7 +114,7 @@ const price = (inputUsdPerMillion: number, outputUsdPerMillion: number, cachedIn
   source: "authoritative",
 });
 
-export const BUILT_IN_MODELS: ModelInfo[] = [
+export const BUILT_IN_MODELS: BundledModelInfo[] = [
   // OpenAI API catalog. Account availability is discovered separately.
   model("openai", "gpt-5.6-sol", "GPT-5.6 Sol", { aliases: ["gpt-5.6", "gpt5.6"], family: "gpt-5.6", generation: "5.6", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(5, 30, 0.5), vision: true, speed: "powerful", cost: "high", reasoning: effort(["low", "medium", "high", "xhigh", "max"]) }),
   model("openai", "gpt-5.6-terra", "GPT-5.6 Terra", { family: "gpt-5.6", generation: "5.6", contextWindow: 1_050_000, maxOutputTokens: 128_000, pricing: price(2.5, 15), vision: true, speed: "balanced", cost: "medium", reasoning: effort(["low", "medium", "high", "xhigh", "max"]) }),
@@ -142,9 +151,9 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
   // DeepSeek
   model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, speed: "powerful", cost: "low" }),
   model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, speed: "fast", cost: "low" }),
-  model("deepseek", "deepseek-chat", "DeepSeek Chat", { lifecycle: "deprecated", speed: "balanced", cost: "low" }),
+  model("deepseek", "deepseek-chat", "DeepSeek Chat", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "balanced", cost: "low" }),
   // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
-  model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
+  model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
 
   // Ollama (local)
   model("ollama", "llama3.1", "Llama 3.1 (local)", { contextWindow: 128000, pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
@@ -156,10 +165,84 @@ export const BUILT_IN_MODELS: ModelInfo[] = [
 
 let activeCatalogModels: ModelInfo[] = BUILT_IN_MODELS;
 
+function catalogKey(providerId: string, modelId: string): string {
+  return `${providerId}\u0000${modelId}`;
+}
+
+function hasCompleteIndependentMetadata(model: ModelInfo): boolean {
+  return model.providerModelId !== undefined
+    && model.contextWindow !== undefined
+    && model.maxOutputTokens !== undefined
+    && model.pricing !== undefined
+    && model.capabilities !== undefined
+    && model.reasoning !== undefined;
+}
+
+/**
+ * Validate the canonical identity graph before it becomes an active catalog.
+ * Targets are intentionally exact ids within the declaring provider. Alias
+ * matching is only for user selections; it cannot make a malformed target
+ * valid or silently cross provider boundaries.
+ */
+export function validateCanonicalModelCatalog(models: readonly ModelInfo[]): void {
+  const exact = new Map<string, ModelInfo>();
+  const selections = new Map<string, string>();
+
+  for (const model of models) {
+    const exactKey = catalogKey(model.providerId, model.id);
+    if (exact.has(exactKey)) {
+      throw new Error(`Duplicate model id for provider ${model.providerId}: ${model.id}`);
+    }
+    exact.set(exactKey, model);
+
+    for (const selectionId of [model.id, ...model.aliases]) {
+      const selectionKey = catalogKey(model.providerId, selectionId);
+      const previous = selections.get(selectionKey);
+      if (previous !== undefined && previous !== model.id) {
+        throw new Error(`Ambiguous model alias for provider ${model.providerId}: ${selectionId}`);
+      }
+      selections.set(selectionKey, model.id);
+    }
+
+    const target = model.canonicalTarget;
+    if (!target && !hasCompleteIndependentMetadata(model)) {
+      throw new Error(`Model ${model.providerId}/${model.id} has incomplete independent metadata`);
+    }
+    if (target && target.providerId !== model.providerId) {
+      throw new Error(`Canonical target for ${model.providerId}/${model.id} crosses provider to ${target.providerId}/${target.modelId}`);
+    }
+  }
+
+  for (const model of models) {
+    const target = model.canonicalTarget;
+    if (target && !exact.has(catalogKey(target.providerId, target.modelId))) {
+      throw new Error(`Canonical target for ${model.providerId}/${model.id} is missing: ${target.providerId}/${target.modelId}`);
+    }
+
+    const seen = new Set<string>();
+    let current: ModelInfo = model;
+    while (current.canonicalTarget) {
+      const currentKey = catalogKey(current.providerId, current.id);
+      if (seen.has(currentKey)) {
+        throw new Error(`Canonical target cycle detected at ${current.providerId}/${current.id}`);
+      }
+      seen.add(currentKey);
+      const next = exact.get(catalogKey(current.canonicalTarget.providerId, current.canonicalTarget.modelId));
+      if (!next) {
+        throw new Error(`Canonical target for ${current.providerId}/${current.id} is missing: ${current.canonicalTarget.providerId}/${current.canonicalTarget.modelId}`);
+      }
+      current = next;
+    }
+  }
+}
+
+validateCanonicalModelCatalog(BUILT_IN_MODELS);
+
 export function installModelCatalog(models: ModelInfo[]): void {
+  validateCanonicalModelCatalog(models);
   const seen = new Set<string>();
   activeCatalogModels = models.filter((model) => {
-    const key = `${model.providerId}\u0000${model.canonicalId}`;
+    const key = catalogKey(model.providerId, model.canonicalId);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -173,8 +256,8 @@ export function installModelCatalog(models: ModelInfo[]): void {
  */
 export function mergeModelCatalog(seed: ModelInfo[], remote: ModelInfo[]): ModelInfo[] {
   const merged = new Map<string, ModelInfo>();
-  for (const model of seed) merged.set(`${model.providerId}\u0000${model.canonicalId}`, model);
-  for (const model of remote) merged.set(`${model.providerId}\u0000${model.canonicalId}`, model);
+  for (const model of seed) merged.set(catalogKey(model.providerId, model.canonicalId), model);
+  for (const model of remote) merged.set(catalogKey(model.providerId, model.canonicalId), model);
   return [...merged.values()];
 }
 
@@ -215,6 +298,42 @@ export function listModels(): ModelInfo[] {
   return activeCatalogModels;
 }
 
+function resolveSelectedDeclaration(providerId: string, selectedId: string): { model: ModelInfo; selectedId: string } | undefined {
+  const exact = activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId);
+  if (exact) return { model: exact, selectedId };
+  const alias = activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));
+  return alias ? { model: alias, selectedId } : undefined;
+}
+
+function resolveCanonicalDeclaration(model: ModelInfo): ModelInfo {
+  let current = model;
+  const seen = new Set<string>();
+  while (current.canonicalTarget) {
+    const key = catalogKey(current.providerId, current.id);
+    if (seen.has(key)) throw new Error(`Canonical target cycle detected at ${current.providerId}/${current.id}`);
+    seen.add(key);
+    const next = activeCatalogModels.find((candidate) => candidate.providerId === current.canonicalTarget!.providerId && candidate.id === current.canonicalTarget!.modelId);
+    if (!next) throw new Error(`Canonical target for ${current.providerId}/${current.id} is missing: ${current.canonicalTarget.providerId}/${current.canonicalTarget.modelId}`);
+    current = next;
+  }
+  return current;
+}
+
+export function resolveCanonicalModelMetadata(providerId: string, selectedId: string): { selected: ModelInfo; canonical: ModelInfo } {
+  const normalized = selectedId.trim();
+  const declaration = resolveSelectedDeclaration(providerId, normalized)?.model;
+  if (!declaration) {
+    const unknown = unknownModel(providerId, normalized);
+    return { selected: unknown, canonical: unknown };
+  }
+
+  const canonical = resolveCanonicalDeclaration(declaration);
+  const selected = declaration.id === normalized && declaration.canonicalId === canonical.id
+    ? declaration
+    : { ...declaration, id: normalized, providerModelId: normalized, canonicalId: canonical.id };
+  return { selected, canonical };
+}
+
 /**
  * The reasoning capability for a route, resolved through the metadata
  * precedence (provider metadata → probe → registry → unknown). Today only the
@@ -226,12 +345,19 @@ export function resolveReasoningCapability(providerId: string, id: string): Rout
 }
 
 export function resolveModelMetadata(providerId: string, id: string): ModelInfo {
-  const normalized = id.trim();
-  const exact = activeCatalogModels.find((m) => m.providerId === providerId && m.id === normalized);
-  if (exact) return exact;
-  const alias = activeCatalogModels.find((m) => m.providerId === providerId && m.aliases.includes(normalized));
-  if (alias) return alias;
-  return unknownModel(providerId, normalized);
+  const { selected, canonical } = resolveCanonicalModelMetadata(providerId, id);
+  if (selected === canonical) return selected;
+
+  return {
+    ...canonical,
+    id: selected.id,
+    providerModelId: selected.providerModelId,
+    canonicalId: canonical.id,
+    aliases: selected.aliases,
+    label: selected.label,
+    lifecycle: selected.lifecycle,
+    reasoning: selected.reasoning ?? canonical.reasoning,
+  };
 }
 
 export function getModel(id: string): ModelInfo | undefined {
@@ -297,30 +423,31 @@ export function resolveModelStatuses(
 
     for (const model of providerModels) {
       const report = discovered.find((item) => item.providerModelId === model.id || model.aliases.includes(item.providerModelId));
+      const metadata = resolveModelMetadata(model.providerId, model.id);
       const resolved = report ? {
-        ...model,
+        ...metadata,
         providerModelId: report.providerModelId,
         label: report.displayName,
-        author: report.author ?? model.author ?? null,
-        inputModalities: report.inputModalities ?? model.inputModalities ?? [],
-        outputModalities: report.outputModalities ?? model.outputModalities ?? [],
-        pricing: report.pricing ?? model.pricing,
-        costType: report.costType ?? model.costType ?? "unknown",
-        contextWindow: report.contextWindow ?? model.contextWindow,
-        maxOutputTokens: report.maxOutputTokens ?? model.maxOutputTokens,
+        author: report.author ?? metadata.author ?? null,
+        inputModalities: report.inputModalities ?? metadata.inputModalities ?? [],
+        outputModalities: report.outputModalities ?? metadata.outputModalities ?? [],
+        pricing: report.pricing ?? metadata.pricing,
+        costType: report.costType ?? metadata.costType ?? "unknown",
+        contextWindow: report.contextWindow ?? metadata.contextWindow,
+        maxOutputTokens: report.maxOutputTokens ?? metadata.maxOutputTokens,
         metadataSource: "provider-reported" as const,
-        fetchedAt: discovery?.fetchedAt ?? model.fetchedAt,
-        confidence: report.contextWindow !== null || report.maxOutputTokens !== null ? "reported" as const : model.confidence,
+        fetchedAt: discovery?.fetchedAt ?? metadata.fetchedAt,
+        confidence: report.contextWindow !== null || report.maxOutputTokens !== null ? "reported" as const : metadata.confidence,
         capabilities: {
-          streaming: report.capabilities.streaming ?? model.capabilities.streaming,
-          toolCalls: report.capabilities.toolCalls ?? model.capabilities.toolCalls,
-          vision: report.capabilities.vision ?? model.capabilities.vision,
+          streaming: report.capabilities.streaming ?? metadata.capabilities.streaming,
+          toolCalls: report.capabilities.toolCalls ?? metadata.capabilities.toolCalls,
+          vision: report.capabilities.vision ?? metadata.capabilities.vision,
           reasoning: report.capabilities.reasoning ?? null,
         },
         capabilitySource: Object.values(report.capabilities).some((value) => value !== null)
           ? "provider-reported" as const
-          : model.capabilitySource,
-      } : model;
+          : metadata.capabilitySource,
+      } : metadata;
       const availability = !provider.configured
         ? "unavailable" as const
         : discovery?.status === "available" && report

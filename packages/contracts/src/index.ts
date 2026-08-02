@@ -222,6 +222,7 @@ export const ModelInfoSchema=z.object({
   id:z.string(),
   providerModelId:z.string().optional(),
   canonicalId:z.string(),
+  canonicalTarget:z.object({providerId:ProviderIdSchema,modelId:z.string().min(1)}).strict().optional(),
   aliases:z.array(z.string()),
   providerId:ProviderIdSchema,
   label:z.string(),
