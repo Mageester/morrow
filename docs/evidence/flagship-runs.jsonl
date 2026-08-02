@@ -1,1 +1,2 @@
 # Append-only run log for the flagship workflow. See README.md. Never edit a line.
+{"scenarioId":"flagship-build-v1","runId":"b2eda1d3-c77a-4d16-be5c-c08445f1e081","startedAt":"2026-08-02T15:22:32.651Z","mode":"real","providerId":"deepseek","model":"deepseek-v4-flash","passed":false,"failureReason":"artifact_missing","failureDetail":"app.mjs was never written","taskStatus":"failed","toolCalls":0,"promptTokens":0,"completionTokens":0,"wallClockMs":1164,"artifactSha256":null}
