@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ProviderContinuationState } from "../provider/base.js";
+import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
 
 export interface ExecutionSegment {
   id: string;
@@ -268,11 +269,20 @@ export function executionContinuityRepository(db: Database.Database) {
         WHERE turn.task_id=? ORDER BY segment.sequence,turn.ordinal,turn.id`).all(taskId) as any[]).map((row) => ({ id: row.id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: row.assistant_text as string, ...providerTurnPayload(row.tool_calls_json as string) }));
     },
     saveCheckpoint(input: { id: string; taskId: string; missionId: string | null; segmentId: string; cursor: number; snapshot: ExecutionCheckpointSnapshot; ownerId: string; generation: number; now: string }): void {
-      if (input.snapshot.taskId !== input.taskId || input.snapshot.missionId !== input.missionId) throw new Error("Checkpoint identity mismatch");
+      const snapshot = boundExecutionCheckpointSnapshot(input.snapshot);
+      if (snapshot.taskId !== input.taskId || snapshot.missionId !== input.missionId) throw new Error("Checkpoint identity mismatch");
       db.transaction(() => {
         assertFence(input.segmentId, input);
         db.prepare(`INSERT INTO agent_execution_checkpoints(id,task_id,mission_id,segment_id,version,durable_event_cursor,snapshot_json,created_at)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,durable_event_cursor) DO UPDATE SET snapshot_json=excluded.snapshot_json, created_at=excluded.created_at`).run(input.id, input.taskId, input.missionId, input.segmentId, input.snapshot.version, input.cursor, JSON.stringify(input.snapshot), input.now);
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,durable_event_cursor) DO UPDATE SET mission_id=excluded.mission_id, segment_id=excluded.segment_id, version=excluded.version, snapshot_json=excluded.snapshot_json, created_at=excluded.created_at`).run(input.id, input.taskId, input.missionId, input.segmentId, snapshot.version, input.cursor, JSON.stringify(snapshot), input.now);
+        // Restart recovery only consumes the newest internal recovery point.
+        // Delete older rows in the same transaction so a crash cannot leave a
+        // partially rolled-over checkpoint set, while append-only task,
+        // provider-turn, and tool-call audit rows remain untouched.
+        const latest = db.prepare("SELECT id FROM agent_execution_checkpoints WHERE task_id=? ORDER BY durable_event_cursor DESC,id DESC LIMIT 1")
+          .get(input.taskId) as { id: string } | undefined;
+        if (!latest) throw new Error("Checkpoint was not persisted");
+        db.prepare("DELETE FROM agent_execution_checkpoints WHERE task_id=? AND id<>?").run(input.taskId, latest.id);
       })();
     },
     latestCheckpoint(taskId: string): ExecutionCheckpoint | null {

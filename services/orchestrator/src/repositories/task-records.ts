@@ -165,12 +165,46 @@ export function taskRecordsRepository(db: Database.Database) {
     return value;
   })();
 
+  const listEventsAfter = (taskId: string, afterSequence: number): TaskEvent[] => db
+    .prepare("SELECT * FROM task_events WHERE task_id=? AND sequence>? ORDER BY sequence ASC")
+    .all(taskId, afterSequence)
+    .map(mapEvent);
+
+  const latestEvent = (taskId: string): TaskEvent | undefined => {
+    const row = db.prepare("SELECT * FROM task_events WHERE task_id=? ORDER BY sequence DESC LIMIT 1").get(taskId);
+    return row ? mapEvent(row) : undefined;
+  };
+
+  const latestEventOfType = (taskId: string, type: string): TaskEvent | undefined => {
+    const row = db.prepare("SELECT * FROM task_events WHERE task_id=? AND type=? ORDER BY sequence DESC LIMIT 1").get(taskId, type);
+    return row ? mapEvent(row) : undefined;
+  };
+
+  const listEventsByType = (taskId: string, type: string | readonly string[]): TaskEvent[] => {
+    const types = typeof type === "string" ? [type] : [...type];
+    if (types.length === 0) return [];
+    const placeholders = types.map(() => "?").join(",");
+    return db
+      .prepare(`SELECT * FROM task_events WHERE task_id=? AND type IN (${placeholders}) ORDER BY sequence ASC`)
+      .all(taskId, ...types)
+      .map(mapEvent);
+  };
+
   return {
     appendEvent,
     listEvents(taskId: string, afterSequence?: number) {
-      const sql = afterSequence === undefined ? "SELECT * FROM task_events WHERE task_id=? ORDER BY sequence ASC" : "SELECT * FROM task_events WHERE task_id=? AND sequence>? ORDER BY sequence ASC";
-      return db.prepare(sql).all(taskId, ...(afterSequence === undefined ? [] : [afterSequence])).map(mapEvent);
+      return afterSequence === undefined
+        ? db.prepare("SELECT * FROM task_events WHERE task_id=? ORDER BY sequence ASC").all(taskId).map(mapEvent)
+        : listEventsAfter(taskId, afterSequence);
     },
+    /** Database-bound cursor query; callers must not hydrate and JS-filter history. */
+    listEventsAfter,
+    listEventsAfterSequence: listEventsAfter,
+    latestEvent,
+    getLatestEvent: latestEvent,
+    latestEventOfType,
+    listEventsByType,
+    listEventsOfType: listEventsByType,
     transitionTask(id: string, target: Task["status"], event: TransitionEvent) { return transition(id, target, event); },
     resumeInterruptedTask(id: string, event: TransitionEvent) { return transition(id, "running", event, true); },
     /**

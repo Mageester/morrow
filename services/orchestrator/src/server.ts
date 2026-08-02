@@ -754,13 +754,9 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const { after } = request.query as { after?: string };
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
-    
-    let events = records.listEvents(taskId);
-    if (after) {
-      const cursor = parseEventCursor(after);
-      events = events.filter(e => e.sequence > cursor);
-    }
-    return events;
+
+    if (after === undefined) return records.listEvents(taskId);
+    return records.listEventsAfter(taskId, parseEventCursor(after));
   });
 
   app.get("/api/tasks/:taskId/events/stream", async (request, reply) => {
@@ -802,8 +798,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const pollEvents = async () => {
       if (isClosed) return;
       
-      const allEvents = records.listEvents(taskId);
-      const newEvents = allEvents.filter(e => e.sequence > afterSeq);
+      const newEvents = records.listEventsAfter(taskId, afterSeq);
       
       for (const e of newEvents) {
         sendEvent(e);
@@ -1062,7 +1057,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     if (task.status !== "failed" && task.status !== "interrupted") {
       throw new ApiError(409, "Only failed or interrupted responses can be retried", "TASK_NOT_RETRYABLE");
     }
-    const afterCursor = records.listEvents(taskId).at(-1)?.sequence ?? 0;
+    const afterCursor = records.latestEvent(taskId)?.sequence ?? 0;
     records.retryTask(taskId);
     deps.runner.run(taskId);
     reply.status(202);
@@ -1413,10 +1408,10 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     }
     if (task.status !== "interrupted") throw new ApiError(409, "Only interrupted tasks can be resumed", "TASK_NOT_RESUMABLE");
     if (task.kind === "agent_chat") {
-      const events = records.listEvents(taskId);
-      const rejectedBudget = [...events].reverse().find((event) => event.type === "context.budget_calculated" && event.payload.admitted === false);
+      const budgetEvents = records.listEventsByType(taskId, "context.budget_calculated");
+      const rejectedBudget = [...budgetEvents].reverse().find((event) => event.payload.admitted === false);
       const compactedAfterRejection = rejectedBudget
-        ? events.some((event) => event.sequence > rejectedBudget.sequence && event.type === "context.compaction_completed")
+        ? records.listEventsAfter(taskId, rejectedBudget.sequence).some((event) => event.type === "context.compaction_completed")
         : true;
       if (!compactedAfterRejection) {
         throw new ApiError(

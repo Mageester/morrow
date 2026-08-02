@@ -52,6 +52,8 @@ import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
+import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
+import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
 import { normalizeTrailingLegacyToolCalls } from "./legacy-tool-call.js";
 import { categorizeFailure, normalizeSignature, planRecovery } from "../mission/failures.js";
 import { measureProviderRequest, prepareContextForProvider } from "./context-budget.js";
@@ -335,6 +337,12 @@ const READ_ONLY_TOOL_NAMES = new Set([
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
 ]);
+
+// Read-only observations share the same epoch-wide guard. The measured
+// read/list/inspect interleaving is the primary case, while search and artifact
+// reads receive the same bound so a provider cannot evade it by changing the
+// observation tool name.
+const OBSERVATION_TOOL_NAMES = new Set(READ_ONLY_TOOL_NAMES);
 
 function capToolResult(toolName: string, result: string, externalizer?: (text: string, kind: string) => string): string {
   const bytes = Buffer.byteLength(result, "utf8");
@@ -2259,6 +2267,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // Tight per-action loop detection: catches the same tool+args recurring within
   // a short window, stopping a stuck model sooner than the turn-budget ceiling.
   const loopDetector = createLoopDetector();
+  // Unlike the transient detector above, this guard survives compaction and
+  // segment rollover for the whole task transaction.
+  const progressEpoch = createProgressEpoch();
   const resetTransientToolTracking = () => {
     // Provider projection replaced earlier raw tool observations. A read that
     // existed only in removed context must be allowed again in fresh segment;
@@ -2421,11 +2432,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // this gate at the call site: they cannot call a write tool at all, so
   // Journey A's "diagnose but do not modify" requests must never trip it.
   const requestsWorkspaceChange = (prompt: string): boolean =>
-    /\b(fix|repair|patch|implement|refactor)\b/i.test(prompt)
+    /\b(fix|repair|patch|implement|refactor|build|develop)\b/i.test(prompt)
     // "add" is deliberately excluded here: it collides too easily with a
     // function/variable *named* add (as in this journey's own fixture),
     // which would misclassify a plain question about it as a change request.
     || /\b(change|update|create|write|edit|modify)\b[\s\S]{0,60}\b(bug|file|function|test|code|feature|method|class|module)\b/i.test(prompt);
+  const requiresArtifactDelivery = agentMode === "agent" && requestsWorkspaceChange(latestUserPrompt);
   const frontendValidationGaps = (calls: ToolCallRecord[]): string[] => {
     if (!requestsFrontendBrowserValidation(latestUserPrompt)) return [];
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
@@ -2662,6 +2674,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
   let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
+  let artifactDeliveryRecoverySent = false;
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -2686,40 +2699,37 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const status = await gitStatus(workspacePath, { maxOutputBytes: 16 * 1024, timeoutMs: 1_000, ...(abortSignal ? { signal: abortSignal } : {}) })
       .catch(() => ({ lines: [] as string[], truncated: false, timedOut: false }));
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
-    const tests = calls
-      .filter((call) => call.toolName === "run_command")
-      .map((call) => {
-        let exitCode: number | null = null;
-        try {
-          const result = JSON.parse(call.resultJson ?? "{}") as Record<string, unknown>;
-          exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
-        } catch { /* exact raw result remains durable on the tool-call row */ }
-        return { command: call.argsJson, exitCode, result: call.resultJson ?? call.errorMessage ?? call.status };
-      });
     const failedCalls = calls.filter((call) => call.status === "failed");
-    const lastEvent = records.listEvents(taskId).at(-1);
-    const snapshot: ExecutionCheckpointSnapshot = {
-      version: 1,
-      originalMission: latestUserPrompt,
-      hardRequirements: latestUserPrompt.trim() ? [latestUserPrompt] : [],
-      prohibitedActions: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:do not|don't|never|prohibited)\b/i.test(line)),
-      acceptanceCriteria: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:must|acceptance|required|prove|verify)\b/i.test(line)),
-      decisions: ["Continue through durable execution segments without treating an internal boundary as completion."],
-      completedWork: calls.filter((call) => call.status === "completed").map((call) => `${call.toolName}: ${call.argsJson}`),
-      currentPhase: phase,
-      filesChanged: status.lines.filter((line) => !line.startsWith("## ")).map((line) => line.slice(3).trim()),
-      gitStatus: status.lines.join("\n"),
-      tests,
-      unresolvedFailures: failedCalls.map((call) => `${call.toolName}: ${call.errorMessage ?? call.status}`),
-      recoveryAttempts: records.listEvents(taskId).filter((item) => item.type === "provider.fallback" || item.type === "task.recovery_requeued").map((item) => `${item.type}: ${JSON.stringify(item.payload)}`),
-      pendingWork: completedWithoutMoreTools ? [] : ["Continue provider execution and complete verification."],
-      approvals: { records: approvals.listByTask(taskId).map((approval) => ({ id: approval.id, kind: approval.kind, status: approval.status, decision: approval.decision })) },
-      taskId,
-      missionId: taskMissionId,
-      providerRouting: { providerId: providerType, model: contextModel, route: primaryRoute },
-      providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
-      evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
-    };
+    const lastEvent = records.latestEvent(taskId);
+    const recoveryEvents = records.listEventsByType(taskId, ["provider.fallback", "task.recovery_requeued"]);
+    const snapshot = projectCheckpointSnapshot({
+      snapshot: {
+        version: 1,
+        originalMission: latestUserPrompt,
+        hardRequirements: latestUserPrompt.trim() ? [latestUserPrompt] : [],
+        prohibitedActions: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:do not|don't|never|prohibited)\b/i.test(line)),
+        acceptanceCriteria: latestUserPrompt.split(/\r?\n/).map((line) => line.trim()).filter((line) => /\b(?:must|acceptance|required|prove|verify)\b/i.test(line)),
+        decisions: ["Continue through durable execution segments without treating an internal boundary as completion."],
+        completedWork: [],
+        currentPhase: phase,
+        filesChanged: status.lines.filter((line) => !line.startsWith("## ")).map((line) => line.slice(3).trim()),
+        gitStatus: status.lines.join("\n"),
+        tests: [],
+        unresolvedFailures: [],
+        recoveryAttempts: [],
+        pendingWork: completedWithoutMoreTools ? [] : ["Continue provider execution and complete verification."],
+        approvals: { records: approvals.listByTask(taskId).map((approval) => ({ id: approval.id, kind: approval.kind, status: approval.status, decision: approval.decision })) },
+        taskId,
+        missionId: taskMissionId,
+        providerRouting: { providerId: providerType, model: contextModel, route: primaryRoute },
+        providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
+        evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
+      },
+      completedCalls: calls.filter((call) => call.status === "completed"),
+      testCalls: calls.filter((call) => call.toolName === "run_command"),
+      failedCalls,
+      recoveryAttempts: recoveryEvents.map((item) => ({ type: item.type, payload: item.payload })),
+    });
     const checkpointId = randomUUID();
     continuity.saveCheckpoint({
       id: checkpointId,
@@ -2886,11 +2896,59 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return true;
   };
 
+  const enforceArtifactDeliveryBoundary = async (): Promise<"continue" | "stop" | null> => {
+    const assessment = assessArtifactDelivery({
+      requiresArtifact: requiresArtifactDelivery,
+      providerTurn: absoluteTurn,
+      mutationObserved: deliveryStarted,
+    });
+    if (assessment.actionOnlyRecoveryRequired && !artifactDeliveryRecoverySent) {
+      artifactDeliveryRecoverySent = true;
+      const message = "No durable artifact mutation has landed yet. Take one concrete action required by the original request now; do not perform more general discovery unless a specific unresolved prerequisite names the exact file or fact needed.";
+      event("task.progress_warning", {
+        reason: "artifact_delivery_recovery",
+        message,
+        turn: absoluteTurn,
+        actionOnly: true,
+      });
+      chatMessages.push({
+        role: "user",
+        content: `MORROW DELIVERY RECOVERY (turn ${absoluteTurn}): ${message}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
+      });
+      noProgressTurns = 0;
+      return "continue";
+    }
+    if (!assessment.strategyTerminationRequired) return null;
+
+    const message = `No durable artifact mutation was recorded by provider turn ${absoluteTurn}. Stop discovery and change strategy or report the blocked delivery.`;
+    event("task.progress_warning", {
+      reason: "artifact_delivery_stalled",
+      message,
+      turn: absoluteTurn,
+      actionOnly: true,
+    });
+    if (await returnMissionWorkerOutcome("strategy_change_required", message, {
+      deliveryRequired: true,
+      providerTurn: absoluteTurn,
+    })) return "stop";
+    closeCurrentTurn({ final: false, aborted: true });
+    failCurrentSegment("artifact_delivery_stalled");
+    transitionAgentState("interrupted", { reason: "artifact_delivery_stalled", message, turns: absoluteTurn });
+    records.transitionTask(taskId, "interrupted", {
+      id: randomUUID(),
+      createdAt: now(),
+      payload: { reason: "artifact_delivery_stalled", message, turns: absoluteTurn },
+    });
+    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return "stop";
+  };
+
   const completeWithCanonicalAnswer = (finalText: string, sourceTurnKey: string): void => {
     const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
     const evidenceJson = {
       sourceTurnKey,
-      durableEventCursor: records.listEvents(taskId).at(-1)?.sequence ?? 0,
+      durableEventCursor: records.latestEvent(taskId)?.sequence ?? 0,
       verification: completionState.verification,
       unresolvedBlocker: completionState.failure?.detail ?? null,
       unresolvedFailures: completionState.failure ? [`${completionState.failure.tool}: ${completionState.failure.detail}`] : [],
@@ -3131,7 +3189,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         // message cursor against the compacted transient projection and could
         // separate an assistant tool call from its result.
         appliedTaskProjectionId = record.id;
-        const last = records.listEvents(taskId).filter((ev) => ev.type === "context.compaction_completed").at(-1);
+        const last = records.listEventsByType(taskId, "context.compaction_completed").at(-1);
         if (last) {
           event("context.compaction_completed", {
             summaryId: record.id,
@@ -3775,6 +3833,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         let errorType = null;
         let errorMessage = null;
         let args: any = {};
+        let observationRecord: ObservationRecord | null = null;
 
         try {
           const toolDef = tools.find((t) => t.name === tc.name);
@@ -3881,6 +3940,28 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               { error: `Tool "${tc.name}" is not permitted in ${agentMode} mode`, kind: "tool_not_permitted_in_mode" },
               "tool_not_permitted_in_mode",
             );
+          }
+
+          if (OBSERVATION_TOOL_NAMES.has(tc.name)) {
+            observationRecord = progressEpoch.recordObservation(tc.name, args);
+            if (observationRecord.exceeded) {
+              const message = `Observation ${tc.name} with the same arguments exceeded the per-epoch execution limit (${observationRecord.executionsPerSignature}).`;
+              event("task.progress_warning", {
+                reason: "observation_epoch_exhausted",
+                message,
+                toolName: tc.name,
+                signature: observationRecord.signature,
+                executionsPerSignature: observationRecord.executionsPerSignature,
+                epoch: observationRecord.epoch,
+              });
+              throw new AgentToolFailure(message, {
+                error: message,
+                kind: "observation_epoch_exhausted",
+                signature: observationRecord.signature,
+                executionsPerSignature: observationRecord.executionsPerSignature,
+                epoch: observationRecord.epoch,
+              }, "repeated_strategy");
+            }
           }
 
           const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
@@ -4628,6 +4709,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             } catch { /* non-JSON result â€” treat as clean */ }
           }
           lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
+          if (failedOutcome) progressEpoch.recordVerificationFailure(`${tc.name}:${failedOutcome}`);
         }
 
         // Â§3+Â§4: oversized tool results are stored in the durable tool_artifacts
@@ -4671,12 +4753,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           if (seenProgressFingerprints.has(progressFingerprint)) repeatedToolSignatures.push(progressFingerprint);
           else seenProgressFingerprints.add(progressFingerprint);
           completedToolSignatures.push(progressFingerprint);
+          if (observationRecord) progressEpoch.recordObservationEvidence(tc.id);
           // Attribute workspace effects for progress fingerprinting. A patch can
           // span files and a command can write anything, so those fall back to a
           // bounded Git read instead of guessing.
           if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
           else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
-          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) deliveryStarted = true;
+          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) {
+            deliveryStarted = true;
+            progressEpoch.recordMutation(progressFingerprint);
+          }
         }
         let summary = isSuccess ? "completed" : "failed";
         try {
@@ -4778,6 +4864,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       completedWithoutMoreTools = true;
       break;
     }
+
+    const artifactBoundary = await enforceArtifactDeliveryBoundary();
+    if (artifactBoundary === "continue") continue;
+    if (artifactBoundary === "stop") return;
 
     if (argumentBudgetSpent) {
       const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;
