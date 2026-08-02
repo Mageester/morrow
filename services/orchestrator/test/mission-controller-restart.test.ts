@@ -133,7 +133,7 @@ describe("mission controller restart continuity", () => {
     secondDb.close();
   });
 
-  it("reconciles a terminal mission after the marker committed before runtime transition", async () => {
+  it("reclaims a valid pre-crash lease after the marker committed before runtime transition", async () => {
     const root = mkdtempSync(join(tmpdir(), "morrow-controller-marker-crash-"));
     roots.push(root);
     const db = openDatabase(":memory:");
@@ -162,6 +162,12 @@ describe("mission controller restart continuity", () => {
     const runtime = missionRuntimeRepository(db);
     runtime.create({ missionId: "mission-1", state: "executing", now: timestamp });
     db.prepare("UPDATE mission_runtime SET active_task_id=? WHERE mission_id=?").run("task-1", "mission-1");
+    const preCrashFence = runtime.claimLease({
+      missionId: "mission-1",
+      ownerId: "process-before-crash",
+      now: timestamp,
+      expiresAt: "2026-07-16T12:01:00.000Z",
+    })!;
     const dispatchWorker = vi.fn(() => ({ taskId: "task-duplicate" }));
     const cancelTask = vi.fn();
     const loadSnapshot = (): ControllerSnapshot => ({
@@ -207,6 +213,12 @@ describe("mission controller restart continuity", () => {
 
     expect(summary.missionsResumed).toBe(1);
     expect(runtime.get("mission-1")?.state).toBe("blocked");
+    expect(runtime.renewLease({
+      missionId: "mission-1",
+      fence: preCrashFence,
+      now: timestamp,
+      expiresAt: "2026-07-16T12:03:00.000Z",
+    })).toBe(false);
     expect(cancelTask).toHaveBeenCalledWith("task-1", "mission_terminal");
     expect(closeout).toHaveBeenCalledTimes(1);
     expect(dispatchWorker).not.toHaveBeenCalled();

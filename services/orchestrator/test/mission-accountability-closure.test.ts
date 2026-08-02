@@ -255,6 +255,8 @@ describe("MissionService.concludeWithoutSuccess", () => {
     const db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
     const repo = missionsRepository(db);
+    const repoA = missionsRepository(db);
+    const repoB = missionsRepository(db);
     const mission = new MissionService({
       repo,
       getWorkspacePath: () => workspace,
@@ -273,7 +275,7 @@ describe("MissionService.concludeWithoutSuccess", () => {
       return { exitCode: 0, output: "ok", timedOut: false };
     };
     const serviceA = new MissionService({
-      repo,
+      repo: repoA,
       getWorkspacePath: () => workspace,
       backupDir: join(tmp("closure-claim-home-a-2-"), "mission-checkpoints"),
       serviceInstanceId: "closeout-owner-a",
@@ -281,9 +283,9 @@ describe("MissionService.concludeWithoutSuccess", () => {
     });
     serviceA.addCriterion(mission.id, "The suite passes", { kind: "test", command: "npm test", expectExitCode: 0 });
     serviceA.approveCriteria(mission.id);
-    repo.setStatus(mission.id, "blocked", now);
+    repoA.setStatus(mission.id, "blocked", now);
     const serviceB = new MissionService({
-      repo,
+      repo: repoB,
       getWorkspacePath: () => workspace,
       backupDir: join(tmp("closure-claim-home-b-"), "mission-checkpoints"),
       serviceInstanceId: "closeout-owner-b",
@@ -353,6 +355,100 @@ describe("MissionService.concludeWithoutSuccess", () => {
     expect(repo.listEvents(mission.id).filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
     expect(db.prepare("SELECT owner_id AS ownerId, status FROM mission_terminal_outcome_claims WHERE mission_id=?").get(mission.id))
       .toEqual({ ownerId: "closeout-owner-live", status: "completed" });
+    db.close();
+  });
+
+  it("does not duplicate verification after a heartbeat loss during close-out", async () => {
+    const workspace = tmp("closure-heartbeat-loss-ws-");
+    const db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
+    const repo = missionsRepository(db);
+    const repoA = missionsRepository(db);
+    const repoB = missionsRepository(db);
+    const seed = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-heartbeat-loss-seed-"), "mission-checkpoints"),
+      now: () => now,
+    });
+    const mission = seed.create("p1", { objective: "Keep one close-out verification" });
+    const execCalls: string[] = [];
+    let releaseVerification!: () => void;
+    const verificationGate = new Promise<void>((resolve) => { releaseVerification = resolve; });
+    let verificationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const exec = async () => {
+      execCalls.push("verify");
+      if (execCalls.length === 1) verificationStarted();
+      await verificationGate;
+      return { exitCode: 0, output: "ok", timedOut: false };
+    };
+    const serviceA = new MissionService({
+      repo: repoA,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-heartbeat-loss-a-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-heartbeat-owner-a",
+      now: () => now,
+      terminalOutcomeLeaseMs: 30,
+      runOptions: { exec },
+    });
+    serviceA.addCriterion(mission.id, "The suite passes", { kind: "test", command: "npm test", expectExitCode: 0 });
+    serviceA.approveCriteria(mission.id);
+    repoA.setStatus(mission.id, "blocked", now);
+    const serviceB = new MissionService({
+      repo: repoB,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-heartbeat-loss-b-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-heartbeat-owner-b",
+      now: () => "2026-07-30T12:00:01.000Z",
+      terminalOutcomeLeaseMs: 30,
+      runOptions: { exec },
+    });
+    const heartbeatLost = new Promise<void>((resolve) => {
+      vi.spyOn(repoA, "renewTerminalOutcomeClaim").mockImplementation(({ ownerId }) => {
+        if (ownerId === "closeout-heartbeat-owner-a") resolve();
+        return false;
+      });
+    });
+
+    const observe = <T>(promise: Promise<T>) => promise.then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    const first = observe(serviceA.concludeTerminalOutcome(mission.id, {
+      kind: "controller_exhausted",
+      reason: "The first close-out lost its heartbeat.",
+      preserveStatus: "blocked",
+    }));
+    await verificationStarted;
+    await heartbeatLost;
+    const second = observe(serviceB.concludeTerminalOutcome(mission.id, {
+      kind: "startup_reconciliation",
+      reason: "Recover the expired close-out claim.",
+      preserveStatus: "blocked",
+    }));
+
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(execCalls).toHaveLength(1);
+    } finally {
+      releaseVerification();
+      await Promise.all([first, second]);
+    }
+    const firstResult = await first;
+    const secondResult = await second;
+    expect(firstResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
+    expect(secondResult.error).toMatchObject({ code: "terminal_closeout_in_progress" });
+
+    const recovered = await serviceB.concludeTerminalOutcome(mission.id, {
+      kind: "startup_reconciliation",
+      reason: "Resume after the lost owner stopped.",
+      preserveStatus: "blocked",
+    });
+    expect(recovered.status).toBe("blocked");
+    expect(execCalls).toHaveLength(1);
+    expect(repoA.listEvidence(mission.id)).toHaveLength(1);
+    expect(repoA.listEvents(mission.id).filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
     db.close();
   });
 });

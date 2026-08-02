@@ -5,7 +5,7 @@ import { openDatabase } from "../src/database.js";
 import { terminalDispositionForMission, TERMINAL_ENTRY_KINDS, type TerminalEntryKind } from "../src/mission/terminal-outcome.js";
 import { MissionController, type ControllerSnapshot } from "../src/mission/controller.js";
 import { MissionService } from "../src/mission/service.js";
-import { MissionControllerRunner } from "../src/mission/controller-runner.js";
+import { createDefaultMissionControllerRunner, MissionControllerRunner } from "../src/mission/controller-runner.js";
 import { reconcileMissionsOnStartup } from "../src/recovery.js";
 import { CortexService } from "../src/cortex/service.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
@@ -381,5 +381,62 @@ describe("terminal mission outcome conformance", () => {
     expect(events.filter((event) => event.type === "mission.conclusion_started")).toHaveLength(1);
     expect(events.filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
     expect(settledMission.result?.status).toBe(settledMission.status);
+  });
+
+  it("covers controller exhaustion through the default linked-task composition", async () => {
+    const fixture = createFixture();
+    databases.push(fixture.db);
+    const task = createTask(fixture, { id: "task-1" });
+    const records = taskRecordsRepository(fixture.db);
+    records.transitionTask(task.id, "running", { id: "task-1-running", createdAt: now, payload: {} });
+    records.transitionTask(task.id, "interrupted", {
+      id: "task-1-interrupted",
+      createdAt: now,
+      payload: {
+        reason: "provider_recovery_required",
+        message: "Provider rejected the request.",
+        provider: { kind: "provider", retryable: false, status: 402, retryAfterMs: null },
+      },
+    });
+    const runtime = missionRuntimeRepository(fixture.db);
+    runtime.create({ missionId: fixture.missionId, state: "recovering", now });
+    fixture.db.prepare("UPDATE mission_runtime SET active_task_id=? WHERE mission_id=?").run(task.id, fixture.missionId);
+    runtime.recordRecovery({
+      missionId: fixture.missionId,
+      operationId: null,
+      category: "process_interruption",
+      diagnosis: "The linked worker exhausted its recovery strategy.",
+      failedStrategyFingerprint: "worker:default-composition",
+      nextStrategyFingerprint: null,
+      action: "block_precisely",
+      retryCondition: null,
+      exhausted: true,
+      now,
+    });
+    const taskRunner = new TaskRunner(fixture.db, async () => undefined);
+    activeRunners.push(taskRunner);
+    const controllerRunner = createDefaultMissionControllerRunner({
+      db: fixture.db,
+      taskRunner,
+      env: { MORROW_HOME: process.cwd() },
+      ownerId: "default-composition-conformance",
+      now: () => now,
+      completion: async () => ({ text: "[]" }),
+    });
+
+    expect(fixture.service.get(fixture.missionId).status).toBe("running");
+    expect(runtime.get(fixture.missionId)?.state).toBe("recovering");
+    expect(runtime.listRecoveryDecisions(fixture.missionId).at(-1)?.exhausted).toBe(true);
+
+    controllerRunner.run(fixture.missionId);
+    await controllerRunner.waitFor(fixture.missionId);
+
+    const settledMission = fixture.service.get(fixture.missionId);
+    const settledRuntime = runtime.get(fixture.missionId)!;
+    expect(settledRuntime.state).toBe("blocked");
+    expect(settledMission.status).toBe("blocked");
+    expect(taskRepository(fixture.db).getTaskById(task.id)?.missionId).toBe(fixture.missionId);
+    expect(taskRunner.isActive(task.id)).toBe(false);
+    expect(fixture.repo.listEvents(fixture.missionId).filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
   });
 });

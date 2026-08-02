@@ -53,6 +53,7 @@ export interface MissionTerminalOutcomeClaim {
   preserveStatus: string | null;
   ownerId: string;
   status: "reserved" | "completed";
+  verificationStatus: "pending" | "running" | "completed" | "abandoned";
   claimedAt: string;
   leaseExpiresAt: string | null;
   completedAt: string | null;
@@ -76,6 +77,7 @@ function mapTerminalOutcomeClaim(row: any): MissionTerminalOutcomeClaim {
     preserveStatus: row.preserve_status ?? null,
     ownerId: row.owner_id,
     status: row.status,
+    verificationStatus: row.verification_status ?? "pending",
     claimedAt: row.claimed_at,
     leaseExpiresAt: row.lease_expires_at ?? null,
     completedAt: row.completed_at ?? null,
@@ -653,15 +655,15 @@ export function missionsRepository(db: Database.Database) {
         const existing = read();
         if (!existing) {
           db.prepare(`INSERT INTO mission_terminal_outcome_claims
-            (mission_id,kind,reason,preserve_status,owner_id,status,claimed_at,lease_expires_at,completed_at)
-            VALUES(?,?,?,?,?,'reserved',?,?,NULL)`)
+            (mission_id,kind,reason,preserve_status,owner_id,status,verification_status,claimed_at,lease_expires_at,completed_at)
+            VALUES(?,?,?,?,?,'reserved','pending',?,?,NULL)`)
             .run(input.missionId, input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt);
           return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
         }
 
         const claim = mapTerminalOutcomeClaim(existing);
         if (claim.status === "completed") return { acquired: false, claim };
-        if (claim.ownerId === input.ownerId) {
+        if (claim.ownerId === input.ownerId && claim.leaseExpiresAt !== null && claim.leaseExpiresAt > input.now) {
           db.prepare(`UPDATE mission_terminal_outcome_claims
             SET lease_expires_at=?
             WHERE mission_id=? AND status='reserved' AND owner_id=?`)
@@ -671,22 +673,55 @@ export function missionsRepository(db: Database.Database) {
 
         const stale = claim.leaseExpiresAt === null || claim.leaseExpiresAt <= input.now;
         if (!stale) return { acquired: false, claim };
+        if (claim.verificationStatus === "running") {
+          db.prepare(`UPDATE mission_terminal_outcome_claims
+            SET verification_status='abandoned'
+            WHERE mission_id=? AND status='reserved' AND owner_id=?
+              AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
+            .run(input.missionId, claim.ownerId, input.now);
+          return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
+        }
         const updated = db.prepare(`UPDATE mission_terminal_outcome_claims
-          SET kind=?,reason=?,preserve_status=?,owner_id=?,claimed_at=?,lease_expires_at=?,completed_at=NULL
+          SET kind=?,reason=?,preserve_status=?,owner_id=?,claimed_at=?,lease_expires_at=?,completed_at=NULL,
+              verification_status=?
           WHERE mission_id=? AND status='reserved' AND owner_id=?
             AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
           .run(input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt,
+            claim.verificationStatus === "completed" ? "completed" : "pending",
             input.missionId, claim.ownerId, input.now);
         if (updated.changes !== 1) return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
         return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
       })();
     },
 
+    getTerminalOutcomeClaim(missionId: string): MissionTerminalOutcomeClaim | null {
+      const row = db.prepare("SELECT * FROM mission_terminal_outcome_claims WHERE mission_id=?").get(missionId);
+      return row ? mapTerminalOutcomeClaim(row) : null;
+    },
+
+    startTerminalOutcomeVerification(input: { missionId: string; ownerId: string; now: string }): boolean {
+      return db.prepare(`UPDATE mission_terminal_outcome_claims
+        SET verification_status='running'
+        WHERE mission_id=? AND status='reserved' AND owner_id=?
+          AND verification_status IN ('pending','abandoned')
+          AND lease_expires_at>?`)
+        .run(input.missionId, input.ownerId, input.now).changes === 1;
+    },
+
+    completeTerminalOutcomeVerification(input: { missionId: string; ownerId: string; now: string }): boolean {
+      return db.prepare(`UPDATE mission_terminal_outcome_claims
+        SET verification_status='completed'
+        WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_status='running'
+          AND (lease_expires_at IS NULL OR lease_expires_at>?)`)
+        .run(input.missionId, input.ownerId, input.now).changes === 1;
+    },
+
     renewTerminalOutcomeClaim(input: { missionId: string; ownerId: string; now: string; leaseExpiresAt: string }): boolean {
       return db.prepare(`UPDATE mission_terminal_outcome_claims
         SET lease_expires_at=?
-        WHERE mission_id=? AND status='reserved' AND owner_id=?`)
-        .run(input.leaseExpiresAt, input.missionId, input.ownerId).changes === 1;
+        WHERE mission_id=? AND status='reserved' AND owner_id=?
+          AND (lease_expires_at IS NULL OR lease_expires_at>?)`)
+        .run(input.leaseExpiresAt, input.missionId, input.ownerId, input.now).changes === 1;
     },
 
     completeTerminalOutcomeClaim(input: { missionId: string; ownerId?: string; completedAt: string }): boolean {

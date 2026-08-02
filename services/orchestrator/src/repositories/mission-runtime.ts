@@ -183,6 +183,28 @@ export function missionRuntimeRepository(db: Database.Database) {
       return { ownerId: input.ownerId, generation: runtime.leaseGeneration };
     },
 
+    /**
+     * Terminal mission status is authoritative even when a process crashed
+     * after recording the outcome marker but before parking the runtime. A
+     * recovery claimant may therefore fence the pre-crash controller lease
+     * while retaining the normal generation check for every subsequent write.
+     */
+    claimTerminalRecoveryLease(input: { missionId: string; ownerId: string; now: string; expiresAt: string }): MissionRuntimeLeaseFence | null {
+      const result = db.prepare(`UPDATE mission_runtime
+        SET lease_owner=?, lease_generation=lease_generation+1, lease_expires_at=?, updated_at=?
+        WHERE mission_id=?
+          AND state NOT IN ('blocked','completed','cancelled','abandoned','superseded')
+          AND EXISTS (
+            SELECT 1 FROM missions
+            WHERE missions.id=mission_runtime.mission_id
+              AND missions.status IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
+          )`)
+        .run(input.ownerId, input.expiresAt, input.now, input.missionId);
+      if (result.changes !== 1) return null;
+      const runtime = runtimeFromRow(requireRuntimeRow(input.missionId));
+      return { ownerId: input.ownerId, generation: runtime.leaseGeneration };
+    },
+
     renewLease(input: { missionId: string; fence: MissionRuntimeLeaseFence; expiresAt: string; now: string }): boolean {
       return db.prepare(`UPDATE mission_runtime SET lease_expires_at=?,updated_at=?
         WHERE mission_id=? AND lease_owner=? AND lease_generation=?

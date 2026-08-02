@@ -1206,6 +1206,11 @@ export const migrations:Migration[]=[
     CREATE INDEX mission_terminal_outcome_claims_lease_idx
       ON mission_terminal_outcome_claims(status, lease_expires_at);
   `}
+  ,{id:43,name:"mission_terminal_outcome_verification_state",sql:`
+    ALTER TABLE mission_terminal_outcome_claims
+      ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(verification_status IN ('pending','running','completed','abandoned'));
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

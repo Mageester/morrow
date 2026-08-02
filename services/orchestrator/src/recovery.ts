@@ -232,12 +232,12 @@ export async function reconcileMissionsOnStartup(
     FROM mission_runtime AS runtime
     JOIN missions AS mission ON mission.id = runtime.mission_id
     WHERE runtime.state NOT IN ('blocked','completed','cancelled','abandoned','superseded')
+      AND mission.status NOT IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
     ORDER BY runtime.created_at,runtime.mission_id`).all() as Array<{ missionId: string }>;
   const terminalMissions = db.prepare(`SELECT runtime.mission_id AS missionId, mission.status AS status
     FROM mission_runtime AS runtime
     JOIN missions AS mission ON mission.id = runtime.mission_id
-    WHERE runtime.state IN ('blocked','completed','cancelled','abandoned','superseded')
-      AND mission.status IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
+    WHERE mission.status IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
     ORDER BY runtime.created_at,runtime.mission_id`).all() as Array<{ missionId: string; status: string }>;
 
   let missionsResumed = 0;

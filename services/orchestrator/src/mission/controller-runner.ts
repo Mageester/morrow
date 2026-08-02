@@ -137,6 +137,21 @@ export class MissionControllerRunner {
    * acquire a normal controller lease. Active work is still cancelled and
    * settled before the same mission close-out method records its result. */
   async reconcileTerminalOutcome(missionId: string, input: MissionTerminalOutcomeInput): Promise<void> {
+    const initial = this.dependencies.runtime.get(missionId);
+    let fence: MissionRuntimeLeaseFence | undefined;
+    if (initial && !isMissionRuntimeTerminal(initial)) {
+      const claimedAt = this.now();
+      fence = this.dependencies.runtime.claimTerminalRecoveryLease({
+        missionId,
+        ownerId: this.dependencies.ownerId,
+        now: claimedAt,
+        expiresAt: this.expiresAt(claimedAt),
+      }) ?? undefined;
+      const latest = this.dependencies.runtime.get(missionId);
+      if (!fence && latest && !isMissionRuntimeTerminal(latest)) {
+        throw new MissionError(`Terminal mission runtime lease could not be fenced for ${missionId}`, "finalization_integrity_error");
+      }
+    }
     const runtime = this.dependencies.runtime.get(missionId);
     if (runtime?.activeTaskId) {
       this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
@@ -146,7 +161,7 @@ export class MissionControllerRunner {
     const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
       ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
       : input.preserveStatus ?? "blocked";
-    this.settleTerminalRuntime(missionId, status, input);
+    this.settleTerminalRuntime(missionId, status, input, fence);
   }
 
   private async drive(missionId: string): Promise<void> {
