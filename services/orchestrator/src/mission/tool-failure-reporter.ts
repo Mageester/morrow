@@ -1,4 +1,5 @@
 import type { MissionService } from "./service.js";
+import type { TerminalEntryKind } from "./terminal-outcome.js";
 
 /**
  * Bridges agent tool execution to the mission failure ledger.
@@ -47,6 +48,7 @@ export interface MissionToolFailureReporter {
 
 export interface MissionFailureReportResult {
   exhausted: boolean;
+  terminalEntryKind?: TerminalEntryKind;
 }
 
 const NOOP: MissionToolFailureReporter = { reportFailure: () => ({ exhausted: false }), reportSuccess() {} };
@@ -72,7 +74,7 @@ export function createMissionToolFailureReporter(options: {
         if (errorType && NOISE_ERROR_TYPES.has(errorType)) return { exhausted: false };
         if (!message || !message.trim()) return { exhausted: false };
         const operation = bucket(toolName, args).slice(0, 500);
-        const { failure, plan } = service.recordFailure(missionId, operation, message, {
+        const { failure, plan, terminalEntryKind } = service.recordFailure(missionId, operation, message, {
           taskId,
           ...(agentId ? { agentId } : {}),
           escalation: "loop-only",
@@ -81,7 +83,10 @@ export function createMissionToolFailureReporter(options: {
         open.failureIds.push(failure.id);
         open.strategy = plan.strategy;
         openFailures.set(operation, open);
-        return { exhausted: plan.exhausted && failure.attempt >= 4 };
+        return {
+          exhausted: plan.exhausted && failure.attempt >= 4,
+          ...(terminalEntryKind ? { terminalEntryKind } : {}),
+        };
       } catch (err) {
         log?.(`mission failure ledger write failed: ${err instanceof Error ? err.message : String(err)}`);
         return { exhausted: false };

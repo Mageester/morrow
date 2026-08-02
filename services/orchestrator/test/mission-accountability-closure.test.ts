@@ -249,4 +249,110 @@ describe("MissionService.concludeWithoutSuccess", () => {
     expect(repo.listEvents(mission.id).some((e) => e.type === "mission.conclusion_gate_failed")).toBe(true);
     db.close();
   });
+
+  it("uses one durable close-out claimant across MissionService instances", async () => {
+    const workspace = tmp("closure-claim-ws-");
+    const db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
+    const repo = missionsRepository(db);
+    const mission = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-claim-home-a-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-owner-a",
+    }).create("p1", { objective: "Build it" });
+    const execCalls: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const exec = async () => {
+      execCalls.push("verify");
+      if (execCalls.length === 1) firstStarted();
+      await gate;
+      return { exitCode: 0, output: "ok", timedOut: false };
+    };
+    const serviceA = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-claim-home-a-2-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-owner-a",
+      runOptions: { exec },
+    });
+    serviceA.addCriterion(mission.id, "The suite passes", { kind: "test", command: "npm test", expectExitCode: 0 });
+    serviceA.approveCriteria(mission.id);
+    repo.setStatus(mission.id, "blocked", now);
+    const serviceB = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-claim-home-b-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-owner-b",
+      runOptions: { exec },
+    });
+
+    const first = serviceA.concludeTerminalOutcome(mission.id, {
+      kind: "controller_exhausted",
+      reason: "Recovery strategies exhausted.",
+      preserveStatus: "blocked",
+    });
+    await firstStarted;
+    const second = serviceB.concludeTerminalOutcome(mission.id, {
+      kind: "controller_exhausted",
+      reason: "Recovery strategies exhausted.",
+      preserveStatus: "blocked",
+    });
+    const secondResult = second.then(
+      () => ({ error: null as unknown }),
+      (error: unknown) => ({ error }),
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(execCalls).toHaveLength(1);
+    release();
+
+    await first;
+    expect((await secondResult).error).toMatchObject({ code: "terminal_closeout_in_progress" });
+    expect(repo.listEvents(mission.id).filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
+    db.close();
+  });
+
+  it("recovers a stale close-out claimant without duplicating verification", async () => {
+    const workspace = tmp("closure-stale-claim-ws-");
+    const db = openDatabase(":memory:");
+    projectRepository(db).createProject({ id: "p1", name: "proj", workspacePath: workspace, createdAt: now });
+    const repo = missionsRepository(db);
+    const service = new MissionService({
+      repo,
+      getWorkspacePath: () => workspace,
+      backupDir: join(tmp("closure-stale-claim-home-"), "mission-checkpoints"),
+      serviceInstanceId: "closeout-owner-live",
+      now: () => now,
+      runOptions: { exec: async () => ({ exitCode: 0, output: "ok", timedOut: false }) },
+    });
+    const mission = service.create("p1", { objective: "Recover the close-out" });
+    service.addCriterion(mission.id, "The suite passes", { kind: "test", command: "npm test", expectExitCode: 0 });
+    service.approveCriteria(mission.id);
+    repo.setStatus(mission.id, "blocked", now);
+    repo.claimTerminalOutcome({
+      missionId: mission.id,
+      kind: "controller_exhausted",
+      reason: "The previous process stopped.",
+      preserveStatus: "blocked",
+      ownerId: "dead-closeout-owner",
+      now: "2026-07-30T11:00:00.000Z",
+      leaseExpiresAt: "2026-07-30T11:01:00.000Z",
+    });
+
+    const concluded = await service.concludeTerminalOutcome(mission.id, {
+      kind: "startup_reconciliation",
+      reason: "Resume stale close-out.",
+      preserveStatus: "blocked",
+    });
+
+    expect(concluded.status).toBe("blocked");
+    expect(repo.listEvidence(mission.id)).toHaveLength(1);
+    expect(repo.listEvents(mission.id).filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
+    expect(db.prepare("SELECT owner_id AS ownerId, status FROM mission_terminal_outcome_claims WHERE mission_id=?").get(mission.id))
+      .toEqual({ ownerId: "closeout-owner-live", status: "completed" });
+    db.close();
+  });
 });

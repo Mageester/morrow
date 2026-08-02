@@ -142,7 +142,11 @@ export class MissionControllerRunner {
       this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
       await this.dependencies.taskRunner.waitFor(runtime.activeTaskId);
     }
-    await this.dependencies.concludeTerminalOutcome?.(missionId, input);
+    const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
+    const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
+      ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
+      : input.preserveStatus ?? "blocked";
+    this.settleTerminalRuntime(missionId, status, input);
   }
 
   private async drive(missionId: string): Promise<void> {
@@ -210,16 +214,32 @@ export class MissionControllerRunner {
     const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
       ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
       : input.preserveStatus ?? "blocked";
+    this.settleTerminalRuntime(missionId, status, input, fence);
+  }
+
+  private settleTerminalRuntime(
+    missionId: string,
+    status: Parameters<typeof terminalDispositionForMission>[0],
+    input: MissionTerminalOutcomeInput,
+    fence?: MissionRuntimeLeaseFence,
+  ): void {
     const to = terminalDispositionForMission(status);
     const latest = this.dependencies.runtime.get(missionId);
-    if (!latest || isMissionRuntimeTerminal(latest)) {
-      if (latest && latest.state !== to) {
+    if (!latest) throw new MissionError(`Mission runtime missing for ${missionId}`, "finalization_integrity_error");
+    if (isMissionRuntimeTerminal(latest)) {
+      if (latest.state !== to) {
         throw new MissionError(
           `Terminal mission/runtime contradiction for ${missionId}`,
           "finalization_integrity_error",
         );
       }
       return;
+    }
+    if (!fence) {
+      throw new MissionError(
+        `Non-terminal runtime cannot be reconciled without a controller lease for ${missionId}`,
+        "finalization_integrity_error",
+      );
     }
     this.dependencies.runtime.transition({
       missionId,

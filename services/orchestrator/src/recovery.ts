@@ -216,7 +216,7 @@ export function reconcileTasksOnStartup(
  * they establish fenced ownership before checkpoint-aware task recovery runs.
  * A final wake observes any task state reconciled in the second phase.
  */
-export function reconcileMissionsOnStartup(
+export async function reconcileMissionsOnStartup(
   { db, runner, controllerRunner, records, now = () => new Date().toISOString() }:
     {
       db: Database.Database;
@@ -227,7 +227,7 @@ export function reconcileMissionsOnStartup(
       records?: ReturnType<typeof taskRecordsRepository>;
       now?: () => string;
     },
-): MissionReconcileSummary {
+): Promise<MissionReconcileSummary> {
   const missions = db.prepare(`SELECT runtime.mission_id AS missionId
     FROM mission_runtime AS runtime
     JOIN missions AS mission ON mission.id = runtime.mission_id
@@ -238,11 +238,6 @@ export function reconcileMissionsOnStartup(
     JOIN missions AS mission ON mission.id = runtime.mission_id
     WHERE runtime.state IN ('blocked','completed','cancelled','abandoned','superseded')
       AND mission.status IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
-      AND NOT EXISTS (
-        SELECT 1 FROM mission_events AS terminal_event
-        WHERE terminal_event.mission_id = mission.id
-          AND terminal_event.type = 'mission.terminal_outcome_recorded'
-      )
     ORDER BY runtime.created_at,runtime.mission_id`).all() as Array<{ missionId: string; status: string }>;
 
   let missionsResumed = 0;
@@ -251,19 +246,20 @@ export function reconcileMissionsOnStartup(
     controllerRunner.run(row.missionId);
     missionsResumed += 1;
   }
+  const terminalReconciliations: Promise<void>[] = [];
   for (const row of terminalMissions) {
     const reconcile = controllerRunner.reconcileTerminalOutcome;
     if (reconcile) {
-      void reconcile.call(controllerRunner, row.missionId, {
+      terminalReconciliations.push(reconcile.call(controllerRunner, row.missionId, {
         kind: "startup_reconciliation",
         reason: "Terminal mission was missing its durable outcome record at startup.",
         preserveStatus: row.status as MissionStatus,
-      }).catch((error) => {
-        console.error(`Mission terminal reconciliation failed for ${row.missionId}:`, error);
-      });
+      }));
     }
     missionsResumed += 1;
   }
+
+  await Promise.all(terminalReconciliations);
 
   const taskSummary = reconcileTasksOnStartup({ db, runner, ...(records ? { records } : {}), now });
   for (const row of missions) controllerRunner.wake(row.missionId);

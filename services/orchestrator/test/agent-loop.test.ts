@@ -13,6 +13,9 @@ import type { ProviderChunk } from "../src/provider/base.js";
 import { executeAgentChatTask, runCommandIsVerification, toolCallPassedVerification } from "../src/execution/agent.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { CortexService } from "../src/cortex/service.js";
+import { intelligenceRepository } from "../src/repositories/intelligence.js";
+import { MAX_PLAN_REVISIONS } from "@morrow/contracts";
 
 describe("agent loop detection", () => {
   let db: Database.Database;
@@ -203,6 +206,35 @@ describe("agent loop detection", () => {
     expect(taskRecordsRepository(db).listEvents("task-1").at(-1)?.payload).toMatchObject({
       reason: "strategy_change_required",
       terminalEntryKind: "tool_loop_exhausted",
+    });
+  });
+
+  it("ends the mission task at the revision limit before another provider turn", async () => {
+    seed(true);
+    const cortex = new CortexService({ repo: intelligenceRepository(db), getWorkspacePath: () => tempDir });
+    for (let revision = 0; revision < MAX_PLAN_REVISIONS; revision++) {
+      cortex.recordPlanRevision("mission-1", {
+        trigger: "repeated_tool_failure",
+        triggerDetail: "seeded revision limit",
+      });
+    }
+    const repeatedFailure: ProviderChunk[] = [
+      {
+        type: "tool_call",
+        toolCalls: [{ id: "forbidden", index: 0, type: "function", function: { name: "unknown_tool", arguments: JSON.stringify({ target: "same" }) } }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "blocked" });
+    expect(provider.requests).toHaveLength(3);
+    expect(taskRecordsRepository(db).listEvents("task-1").at(-1)?.payload).toMatchObject({
+      reason: "strategy_change_required",
+      terminalEntryKind: "revision_limit",
     });
   });
 

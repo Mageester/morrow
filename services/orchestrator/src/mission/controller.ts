@@ -117,8 +117,7 @@ export class MissionController {
     };
 
     if (
-      snapshot.terminalOutcomeRecorded === false
-      && snapshot.missionStatus
+      snapshot.missionStatus
       && ["completed", "completed_with_reservations", "partially_completed", "blocked", "failed", "cancelled"].includes(snapshot.missionStatus)
     ) {
       return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {

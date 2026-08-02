@@ -8,6 +8,7 @@ import { createGitignoreMatcher, isBuiltInIgnoredName } from "../workspace/ignor
 import { searchFiles, searchText, WorkspaceSearchError } from "../workspace/search.js";
 import { gitDiff, gitLog, gitStatus, GitInspectionError } from "../tools/git.js";
 import { projectRepository } from "../repositories/projects.js";
+import { intelligenceRepository } from "../repositories/intelligence.js";
 import { taskRepository } from "../repositories/tasks.js";
 import { taskRecordsRepository } from "../repositories/task-records.js";
 import { conversationsRepository, type ToolCallRecord } from "../repositories/conversations.js";
@@ -39,6 +40,8 @@ import { missionsRepository } from "../repositories/missions.js";
 import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js";
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
+import { CortexService } from "../cortex/service.js";
+import type { TerminalEntryKind } from "../mission/terminal-outcome.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, MAX_CHAT_IMAGE_BYTES, type ChatImage } from "../provider/base.js";
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
@@ -706,6 +709,11 @@ export async function executeAgentChatTask({
           getWorkspacePath: (pid) => projects.getProjectById(pid)?.workspacePath,
           backupDir: join(resolveMorrowHome(process.env), "mission-checkpoints"),
           now,
+          cortex: new CortexService({
+            repo: intelligenceRepository(db),
+            getWorkspacePath: (pid) => projects.getProjectById(pid)?.workspacePath,
+            now,
+          }),
         })
       : null,
     missionId: taskMissionId,
@@ -713,7 +721,11 @@ export async function executeAgentChatTask({
     agentId: (task as { agentId?: string | null }).agentId ?? null,
     log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
   });
-  let missionFailureExhausted: { toolName: string; message: string } | null = null;
+  let missionFailureOutcome: { kind: TerminalEntryKind; toolName: string; message: string } | null = null;
+  const noteMissionFailure = (report: { exhausted: boolean; terminalEntryKind?: TerminalEntryKind }, toolName: string, message: string) => {
+    const kind = report.terminalEntryKind ?? (report.exhausted ? "tool_loop_exhausted" : null);
+    if (kind) missionFailureOutcome = { kind, toolName, message };
+  };
   let turn = 0;
   let absoluteTurn = 0;
   const TERMINAL_AGENT_STATES = new Set<AgentExecutionState>(["completed", "failed", "cancelled"]);
@@ -2349,7 +2361,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             resultStr = JSON.stringify({ error: errorMessage });
             event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
             const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
-            if (report.exhausted) missionFailureExhausted = { toolName: continuation.toolName, message: errorMessage };
+            noteMissionFailure(report, continuation.toolName, errorMessage);
           }
         } else {
           isSuccess = false;
@@ -2358,7 +2370,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
           const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
-          if (report.exhausted) missionFailureExhausted = { toolName: continuation.toolName, message: errorMessage };
+          noteMissionFailure(report, continuation.toolName, errorMessage);
         }
 
         convs.upsertToolCall({
@@ -3010,13 +3022,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     observedAt: now(),
   });
 
-  if (missionFailureExhausted) {
-    const exhausted = missionFailureExhausted;
-    missionFailureExhausted = null;
+  if (missionFailureOutcome) {
+    const outcome = missionFailureOutcome;
+    missionFailureOutcome = null;
     if (await returnMissionWorkerOutcome(
       "strategy_change_required",
-      `Tool loop exhausted after repeated ${exhausted.toolName} failures: ${exhausted.message}`,
-      { terminalEntryKind: "tool_loop_exhausted", toolName: exhausted.toolName },
+      `${outcome.kind === "revision_limit" ? "Plan revision limit reached after" : "Tool loop exhausted after repeated"} ${outcome.toolName} failures: ${outcome.message}`,
+      { terminalEntryKind: outcome.kind, toolName: outcome.toolName },
     )) return;
   }
 
@@ -4591,7 +4603,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             ...failureDetails,
           });
           const report = missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
-          if (report.exhausted) missionFailureExhausted = { toolName: tc.name, message: errorMessage };
+          noteMissionFailure(report, tc.name, errorMessage);
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);
 
@@ -4700,13 +4712,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           toolCallId: tc.id,
           content: contextResultStr
         });
-        if (missionFailureExhausted) {
-          const exhausted = missionFailureExhausted;
-          missionFailureExhausted = null;
+        if (missionFailureOutcome) {
+          const outcome = missionFailureOutcome;
+          missionFailureOutcome = null;
           if (await returnMissionWorkerOutcome(
             "strategy_change_required",
-            `Tool loop exhausted after repeated ${exhausted.toolName} failures: ${exhausted.message}`,
-            { terminalEntryKind: "tool_loop_exhausted", toolName: exhausted.toolName },
+            `${outcome.kind === "revision_limit" ? "Plan revision limit reached after" : "Tool loop exhausted after repeated"} ${outcome.toolName} failures: ${outcome.message}`,
+            { terminalEntryKind: outcome.kind, toolName: outcome.toolName },
           )) return;
         }
       }

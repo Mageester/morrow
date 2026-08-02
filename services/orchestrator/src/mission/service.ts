@@ -36,7 +36,7 @@ import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
 import { evaluateGuardian, type GuardianDecision } from "./guardian.js";
-import type { MissionTerminalOutcomeInput } from "./terminal-outcome.js";
+import { TERMINAL_ENTRY_KINDS, type MissionTerminalOutcomeInput, type TerminalEntryKind } from "./terminal-outcome.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -60,6 +60,8 @@ export interface MissionServiceDeps {
   serviceInstanceId?: string | undefined;
   /** Duration of a review reservation lease. */
   reviewLeaseMs?: number | undefined;
+  /** Duration of the durable terminal close-out claim lease. */
+  terminalOutcomeLeaseMs?: number | undefined;
   runOptions?: Partial<RunOptions> | undefined;
   /** Cortex integration: plan revisions on evidence contradictions/loops and
    *  post-review learning extraction. Optional so missions degrade gracefully
@@ -83,6 +85,7 @@ export class MissionService {
   private readonly now: () => string;
   private readonly serviceInstanceId: string;
   private readonly reviewLeaseMs: number;
+  private readonly terminalOutcomeLeaseMs: number;
   private readonly terminalOutcomePromises = new Map<string, Promise<Mission>>();
 
   constructor(private readonly deps: MissionServiceDeps) {
@@ -90,6 +93,7 @@ export class MissionService {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.serviceInstanceId = deps.serviceInstanceId ?? `mission-service-${randomUUID()}`;
     this.reviewLeaseMs = deps.reviewLeaseMs ?? 5 * 60_000;
+    this.terminalOutcomeLeaseMs = deps.terminalOutcomeLeaseMs ?? 60_000;
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────
@@ -414,7 +418,7 @@ export class MissionService {
   /** Record a failure, run loop detection against persisted history, and return
    *  the chosen escalating recovery plan. Escalates the mission to `blocked`
    *  when safe automated options are exhausted. */
-  recordFailure(missionId: string, operation: string, message: string, ctx: { taskId?: string; agentId?: string; escalation?: "auto" | "loop-only" } = {}): { failure: MissionFailure; plan: RecoveryPlan } {
+  recordFailure(missionId: string, operation: string, message: string, ctx: { taskId?: string; agentId?: string; escalation?: "auto" | "loop-only" } = {}): { failure: MissionFailure; plan: RecoveryPlan; terminalEntryKind?: TerminalEntryKind } {
     const category = categorizeFailure(operation, message);
     const signature = normalizeSignature(category, operation);
     const priorCount = this.repo.countBySignature(missionId, signature);
@@ -432,6 +436,7 @@ export class MissionService {
     });
     this.repo.appendEvent(missionId, "mission.failure_recorded", `${category}: ${operation.slice(0, 80)}`, { category, attempt, signature }, this.now());
 
+    let terminalEntryKind: TerminalEntryKind | null = null;
     if (attempt >= 3) {
       this.repo.appendEvent(
         missionId,
@@ -443,7 +448,7 @@ export class MissionService {
       // Exactly one plan revision per looping signature: reality disproved the
       // current approach, so the plan must change rather than retry forever.
       if (attempt === 3) {
-        this.revisePlan(missionId, {
+        terminalEntryKind = this.revisePlan(missionId, {
           trigger: "repeated_tool_failure",
           triggerDetail: `${category} failed ${attempt}× (${signature.slice(0, 160)})`,
           invalidatedAssumption: `The operation "${operation.slice(0, 160)}" can succeed as attempted.`,
@@ -460,7 +465,7 @@ export class MissionService {
         this.transition(missionId, "blocked");
       }
     }
-    return { failure, plan };
+    return { failure, plan, ...(terminalEntryKind ? { terminalEntryKind } : {}) };
   }
 
   markRecovered(missionId: string, failureId: string, strategy: string): void {
@@ -469,8 +474,8 @@ export class MissionService {
 
   /** Record a bounded plan revision through Cortex. Hitting the revision limit
    *  blocks the mission — the alternative is an endless replan loop. */
-  private revisePlan(missionId: string, input: Parameters<CortexService["recordPlanRevision"]>[1]): void {
-    if (!this.deps.cortex) return;
+  private revisePlan(missionId: string, input: Parameters<CortexService["recordPlanRevision"]>[1]): TerminalEntryKind | null {
+    if (!this.deps.cortex) return null;
     try {
       const revision = this.deps.cortex.recordPlanRevision(missionId, input);
       this.repo.appendEvent(missionId, "mission.plan_revised", `Plan revision ${revision.revision}: ${input.trigger.replace(/_/g, " ")}`, { revision: revision.revision, trigger: input.trigger }, this.now());
@@ -481,10 +486,11 @@ export class MissionService {
         if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, "blocked")) {
           this.transition(missionId, "blocked");
         }
-        return;
+        return "revision_limit";
       }
       // Revision bookkeeping must never break mission execution.
     }
+    return null;
   }
 
   // ── checkpoints + rollback ───────────────────────────────────────────────
@@ -1221,7 +1227,60 @@ export class MissionService {
 
   private async concludeTerminalOutcomeInternal(missionId: string, input: MissionTerminalOutcomeInput): Promise<Mission> {
     const existing = this.terminalOutcomeEvent(missionId);
-    if (existing) return this.assertRecordedTerminalOutcome(missionId, existing);
+    if (existing) {
+      const recorded = this.assertRecordedTerminalOutcome(missionId, existing);
+      // A crash can occur after the marker/result transaction commits but
+      // before the close-out claimant is marked completed. The marker is the
+      // authoritative evidence that verification finished, so clear any stale
+      // reservation without asking a second verifier to run.
+      this.repo.completeTerminalOutcomeClaim({ missionId, completedAt: this.now() });
+      return recorded;
+    }
+
+    const requestedReason = input.reason.slice(0, 2_000);
+    const claimResult = this.repo.claimTerminalOutcome({
+      missionId,
+      kind: input.kind,
+      reason: requestedReason,
+      preserveStatus: input.preserveStatus ?? null,
+      ownerId: this.serviceInstanceId,
+      now: this.now(),
+      leaseExpiresAt: this.terminalOutcomeLeaseExpiresAt(this.now()),
+    });
+    if (!claimResult.acquired) {
+      const recordedAfterClaim = this.terminalOutcomeEvent(missionId);
+      if (recordedAfterClaim) {
+        const recorded = this.assertRecordedTerminalOutcome(missionId, recordedAfterClaim);
+        this.repo.completeTerminalOutcomeClaim({ missionId, completedAt: this.now() });
+        return recorded;
+      }
+      if (claimResult.claim.status === "completed") {
+        throw new MissionError(
+          `Terminal close-out claim completed without a durable outcome record for ${missionId}`,
+          "finalization_integrity_error",
+        );
+      }
+      throw new MissionError(
+        `Terminal close-out is already owned for ${missionId}; waiting for the live claimant or lease recovery`,
+        "terminal_closeout_in_progress",
+      );
+    }
+
+    const claimedKind = claimResult.claim.kind as TerminalEntryKind;
+    if (!TERMINAL_ENTRY_KINDS.includes(claimedKind)) {
+      throw new MissionError(`Terminal close-out claim has an invalid entry kind for ${missionId}`, "finalization_integrity_error");
+    }
+    const claimedStatus = claimResult.claim.preserveStatus as MissionStatus | null;
+    if (claimedStatus && !isTerminalMissionStatus(claimedStatus)) {
+      throw new MissionError(`Terminal close-out claim has an invalid mission status for ${missionId}`, "finalization_integrity_error");
+    }
+    input = {
+      kind: claimedKind,
+      reason: claimResult.claim.reason,
+      ...(claimedStatus ? { preserveStatus: claimedStatus } : {}),
+    };
+    const stopLeaseHeartbeat = this.startTerminalOutcomeLeaseHeartbeat(missionId);
+    try {
 
     const reason = input.reason.slice(0, 2_000);
     if (!this.repo.listEvents(missionId).some((event) => event.type === "mission.conclusion_started")) {
@@ -1312,7 +1371,10 @@ export class MissionService {
       if (recorded.length > 1) {
         throw new MissionError(`Finalization integrity error: mission ${missionId} has multiple terminal outcome records`, "finalization_integrity_error");
       }
-      if (recorded.length === 1) return;
+      if (recorded.length === 1) {
+        this.repo.completeTerminalOutcomeClaim({ missionId, completedAt: this.now() });
+        return;
+      }
       if (fresh.status !== terminalStatus) {
         throw new MissionError(`Finalization integrity error: mission ${missionId} changed before terminal outcome recording`, "finalization_integrity_error");
       }
@@ -1328,6 +1390,9 @@ export class MissionService {
         { kind: input.kind, reason, status: terminalStatus, result },
         now,
       );
+      if (!this.repo.completeTerminalOutcomeClaim({ missionId, ownerId: this.serviceInstanceId, completedAt: now })) {
+        throw new MissionError(`Finalization integrity error: terminal close-out claim was lost for ${missionId}`, "finalization_integrity_error");
+      }
     });
 
     const recorded = this.terminalOutcomeEvent(missionId);
@@ -1335,6 +1400,33 @@ export class MissionService {
       throw new MissionError(`Finalization integrity error: mission ${missionId} terminal outcome was not recorded`, "finalization_integrity_error");
     }
     return this.assertRecordedTerminalOutcome(missionId, recorded);
+    } finally {
+      stopLeaseHeartbeat();
+    }
+  }
+
+  private terminalOutcomeLeaseExpiresAt(now: string): string {
+    return new Date(Date.parse(now) + this.terminalOutcomeLeaseMs).toISOString();
+  }
+
+  private startTerminalOutcomeLeaseHeartbeat(missionId: string): () => void {
+    const intervalMs = Math.max(10, Math.floor(this.terminalOutcomeLeaseMs / 3));
+    const timer = setInterval(() => {
+      try {
+        const now = this.now();
+        this.repo.renewTerminalOutcomeClaim({
+          missionId,
+          ownerId: this.serviceInstanceId,
+          now,
+          leaseExpiresAt: this.terminalOutcomeLeaseExpiresAt(now),
+        });
+      } catch {
+        // The close-out operation retains its integrity checks; a heartbeat
+        // failure cannot turn a verification error into a false success.
+      }
+    }, intervalMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
   }
 
   private terminalOutcomeEvent(missionId: string) {

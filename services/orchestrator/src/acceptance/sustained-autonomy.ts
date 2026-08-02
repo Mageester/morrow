@@ -237,7 +237,7 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
     const databaseRestartCount = 1;
 
     stack = buildStack("fix", "controller-after-restart");
-    const reconciliation = reconcileMissionsOnStartup({ db, runner: stack.runner, controllerRunner: stack.controller });
+    const reconciliation = await reconcileMissionsOnStartup({ db, runner: stack.runner, controllerRunner: stack.controller });
     if (reconciliation.missionsResumed !== 1) throw new Error(`Startup reconciliation resumed ${reconciliation.missionsResumed} mission(s), expected exactly 1`);
 
     await drive(stack, () => isMissionRuntimeTerminal(missionRuntimeRepository(db).get(mission.id)!), 60_000);

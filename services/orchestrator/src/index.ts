@@ -39,7 +39,7 @@ const missionControllerRunner = createDefaultMissionControllerRunner({ db, taskR
 
 // Reclaim durable missions first, then reconcile their checkpoint-aware tasks.
 // Both standalone and packaged startup use this exact path.
-const reconciliation = reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
+const reconciliation = await reconcileMissionsOnStartup({ db, runner, controllerRunner: missionControllerRunner });
 if (reconciliation.missionsResumed || reconciliation.interrupted || reconciliation.requeued || reconciliation.cancelledOrphans) {
   console.log(
     `Startup reconciliation: ${reconciliation.missionsResumed} mission(s) resumed, ` +

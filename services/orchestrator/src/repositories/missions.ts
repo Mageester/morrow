@@ -46,6 +46,42 @@ export interface MissionReviewCycle {
   leaseExpiresAt: string | null;
 }
 
+export interface MissionTerminalOutcomeClaim {
+  missionId: string;
+  kind: string;
+  reason: string;
+  preserveStatus: string | null;
+  ownerId: string;
+  status: "reserved" | "completed";
+  claimedAt: string;
+  leaseExpiresAt: string | null;
+  completedAt: string | null;
+}
+
+export interface MissionTerminalOutcomeClaimInput {
+  missionId: string;
+  kind: string;
+  reason: string;
+  preserveStatus?: string | null;
+  ownerId: string;
+  now: string;
+  leaseExpiresAt: string;
+}
+
+function mapTerminalOutcomeClaim(row: any): MissionTerminalOutcomeClaim {
+  return {
+    missionId: row.mission_id,
+    kind: row.kind,
+    reason: row.reason,
+    preserveStatus: row.preserve_status ?? null,
+    ownerId: row.owner_id,
+    status: row.status,
+    claimedAt: row.claimed_at,
+    leaseExpiresAt: row.lease_expires_at ?? null,
+    completedAt: row.completed_at ?? null,
+  };
+}
+
 function mapReviewCycle(row: any): MissionReviewCycle {
   return {
     id: row.id,
@@ -611,6 +647,59 @@ export function missionsRepository(db: Database.Database) {
     },
 
     // ── Advanced Execution Kernel: contract + requirement ledger ──────────
+    claimTerminalOutcome(input: MissionTerminalOutcomeClaimInput): { acquired: boolean; claim: MissionTerminalOutcomeClaim } {
+      return db.transaction(() => {
+        const read = () => db.prepare("SELECT * FROM mission_terminal_outcome_claims WHERE mission_id=?").get(input.missionId) as any;
+        const existing = read();
+        if (!existing) {
+          db.prepare(`INSERT INTO mission_terminal_outcome_claims
+            (mission_id,kind,reason,preserve_status,owner_id,status,claimed_at,lease_expires_at,completed_at)
+            VALUES(?,?,?,?,?,'reserved',?,?,NULL)`)
+            .run(input.missionId, input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt);
+          return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
+        }
+
+        const claim = mapTerminalOutcomeClaim(existing);
+        if (claim.status === "completed") return { acquired: false, claim };
+        if (claim.ownerId === input.ownerId) {
+          db.prepare(`UPDATE mission_terminal_outcome_claims
+            SET lease_expires_at=?
+            WHERE mission_id=? AND status='reserved' AND owner_id=?`)
+            .run(input.leaseExpiresAt, input.missionId, input.ownerId);
+          return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
+        }
+
+        const stale = claim.leaseExpiresAt === null || claim.leaseExpiresAt <= input.now;
+        if (!stale) return { acquired: false, claim };
+        const updated = db.prepare(`UPDATE mission_terminal_outcome_claims
+          SET kind=?,reason=?,preserve_status=?,owner_id=?,claimed_at=?,lease_expires_at=?,completed_at=NULL
+          WHERE mission_id=? AND status='reserved' AND owner_id=?
+            AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
+          .run(input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt,
+            input.missionId, claim.ownerId, input.now);
+        if (updated.changes !== 1) return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
+        return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
+      })();
+    },
+
+    renewTerminalOutcomeClaim(input: { missionId: string; ownerId: string; now: string; leaseExpiresAt: string }): boolean {
+      return db.prepare(`UPDATE mission_terminal_outcome_claims
+        SET lease_expires_at=?
+        WHERE mission_id=? AND status='reserved' AND owner_id=?`)
+        .run(input.leaseExpiresAt, input.missionId, input.ownerId).changes === 1;
+    },
+
+    completeTerminalOutcomeClaim(input: { missionId: string; ownerId?: string; completedAt: string }): boolean {
+      const ownerClause = input.ownerId ? " AND owner_id=?" : "";
+      const params = input.ownerId
+        ? [input.completedAt, input.missionId, input.ownerId]
+        : [input.completedAt, input.missionId];
+      return db.prepare(`UPDATE mission_terminal_outcome_claims
+        SET status='completed',completed_at=?,lease_expires_at=NULL
+        WHERE mission_id=? AND status='reserved'${ownerClause}`)
+        .run(...params).changes === 1;
+    },
+
     createContract(input: {
       missionId: string;
       sourcePrompt: string;

@@ -1191,6 +1191,21 @@ export const migrations:Migration[]=[
     CREATE INDEX action_attempts_task_signature_idx
       ON action_attempts(task_id, normalized_signature, attempt_number);
   `}
+  ,{id:42,name:"mission_terminal_outcome_claims",sql:`
+    CREATE TABLE mission_terminal_outcome_claims (
+      mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      preserve_status TEXT,
+      owner_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('reserved','completed')),
+      claimed_at TEXT NOT NULL,
+      lease_expires_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX mission_terminal_outcome_claims_lease_idx
+      ON mission_terminal_outcome_claims(status, lease_expires_at);
+  `}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
