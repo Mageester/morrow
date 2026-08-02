@@ -174,8 +174,7 @@ function hasCompleteIndependentMetadata(model: ModelInfo): boolean {
     && model.contextWindow !== undefined
     && model.maxOutputTokens !== undefined
     && model.pricing !== undefined
-    && model.capabilities !== undefined
-    && model.reasoning !== undefined;
+    && model.capabilities !== undefined;
 }
 
 /**
@@ -239,9 +238,12 @@ export function validateCanonicalModelCatalog(models: readonly ModelInfo[]): voi
 validateCanonicalModelCatalog(BUILT_IN_MODELS);
 
 export function installModelCatalog(models: ModelInfo[]): void {
-  validateCanonicalModelCatalog(models);
+  const normalizedModels = models.map((model) => model.reasoning
+    ? model
+    : { ...model, reasoning: UNKNOWN_REASONING });
+  validateCanonicalModelCatalog(normalizedModels);
   const seen = new Set<string>();
-  activeCatalogModels = models.filter((model) => {
+  activeCatalogModels = normalizedModels.filter((model) => {
     const key = catalogKey(model.providerId, model.canonicalId);
     if (seen.has(key)) return false;
     seen.add(key);

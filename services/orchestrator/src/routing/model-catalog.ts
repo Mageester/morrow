@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "no
 import { join } from "node:path";
 import { ModelInfoSchema, type ModelInfo, type ProviderId } from "@morrow/contracts";
 import { z } from "zod";
-import { BUNDLED_MODEL_CATALOG_VERSION } from "./models.js";
+import { BUNDLED_MODEL_CATALOG_VERSION, validateCanonicalModelCatalog } from "./models.js";
 
 /** models.dev's signed-free public catalog is currently a little over 3 MiB. */
 const MAX_CATALOG_BYTES = 4 * 1_024 * 1_024;
@@ -236,6 +236,7 @@ export class ModelCatalog {
       let raw: unknown;
       try { raw = JSON.parse(text); } catch { throw new Error("Invalid model catalog JSON"); }
       const document = parseCatalog(raw, response);
+      validateCanonicalModelCatalog(document.models);
       const cache = {
         schemaVersion: 1 as const,
         document,
@@ -262,7 +263,9 @@ export class ModelCatalog {
     try {
       if (statSync(this.path).size > MAX_CATALOG_BYTES) return null;
       const parsed = CacheSchema.safeParse(JSON.parse(readFileSync(this.path, "utf8")));
-      return parsed.success ? parsed.data : null;
+      if (!parsed.success) return null;
+      validateCanonicalModelCatalog(parsed.data.document.models);
+      return parsed.data;
     } catch {
       return null;
     }

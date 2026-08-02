@@ -142,7 +142,7 @@ import type { ProviderRouteMetadata, ChatMessage } from "./provider/base.js";
 import { globalRateGuard } from "./provider/rate-guard.js";
 import { OAUTH_FINDINGS } from "./provider/oauth.js";
 import { oauthStatuses, startAuthorization, exchangeCode, signOut, isOAuthProvider } from "./provider/oauth-flow.js";
-import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelStatuses } from "./routing/models.js";
+import { BUILT_IN_MODELS, installModelCatalog, listModels, listConfiguredCustomModels, mergeModelCatalog, resolveModelMetadata, resolveModelStatuses } from "./routing/models.js";
 import { ModelCatalog } from "./routing/model-catalog.js";
 import { listPresets, getPreset, isPresetId, DEFAULT_PRESET_ID } from "./routing/presets.js";
 import { routePreset, listPresetStatuses } from "./routing/router.js";
@@ -2744,6 +2744,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         selectedModel: model.id,
         endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
       });
+      const metadata = resolveModelMetadata(model.providerId, model.id);
       return {
         providerId: budget.providerId,
         selectedModelId: budget.selectedModelId,
@@ -2759,7 +2760,7 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         outputReserveTokens: budget.outputReserveTokens,
         totalReserveTokens: budget.totalReserveTokens,
         capabilities: budget.capabilities,
-        pricing: model.pricing,
+        pricing: metadata.pricing,
         reasoning: budget.reasoning,
       };
     });

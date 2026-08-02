@@ -3,7 +3,12 @@ import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { buildServer } from "../src/server.js";
 import { TaskRunner } from "../src/runner.js";
+import { ModelCatalog } from "../src/routing/model-catalog.js";
+import { BUILT_IN_MODELS, installModelCatalog, resolveModelMetadata } from "../src/routing/models.js";
 import type { FastifyInstance } from "fastify";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("Provider / preset / memory API", () => {
   let db: Database.Database;
@@ -332,6 +337,57 @@ describe("Provider / preset / memory API", () => {
     } finally {
       if (prev === undefined) delete process.env.DEEPSEEK_API_KEY;
       else process.env.DEEPSEEK_API_KEY = prev;
+    }
+  });
+
+  it("discloses canonical pricing for a legacy selected model id", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "morrow-budget-canonical-"));
+    const localDb = openDatabase(":memory:");
+    const canonicalPricing = { inputUsdPerMillion: 1, outputUsdPerMillion: 2, source: "authoritative" as const };
+    const canonical = {
+      ...resolveModelMetadata("openai", "gpt-5.6-sol"),
+      id: "review-canonical",
+      providerModelId: "review-canonical",
+      canonicalId: "review-canonical",
+      aliases: [],
+      pricing: canonicalPricing,
+      builtIn: false,
+      metadataSource: "remote-catalog" as const,
+      capabilitySource: "remote-catalog" as const,
+      metadataVersion: "review-catalog",
+      fetchedAt: "2026-08-02T00:00:00.000Z",
+    };
+    const selected = {
+      ...canonical,
+      id: "review-legacy",
+      providerModelId: "review-legacy",
+      canonicalId: "review-legacy",
+      label: "Review Legacy",
+      pricing: null,
+      canonicalTarget: { providerId: "openai" as const, modelId: "review-canonical" },
+    };
+    const catalog = new ModelCatalog({ cacheDir, remoteUrl: null, bundledModels: [canonical, selected] });
+    const localApp = buildServer({
+      db: localDb,
+      runner: new TaskRunner(localDb, async () => {}),
+      modelCatalog: catalog,
+      backgroundModelDiscovery: false,
+    });
+    try {
+      await localApp.ready();
+      const response = await localApp.inject({ method: "GET", url: "/api/models/budgets" });
+      expect(response.statusCode).toBe(200);
+      const budget = JSON.parse(response.body).find((item: any) => item.providerId === "openai" && item.selectedModelId === "review-legacy");
+      expect(budget).toMatchObject({
+        selectedModelId: "review-legacy",
+        canonicalModelId: "review-canonical",
+        pricing: canonicalPricing,
+      });
+    } finally {
+      await localApp.close();
+      localDb.close();
+      installModelCatalog(BUILT_IN_MODELS);
+      rmSync(cacheDir, { recursive: true, force: true });
     }
   });
 

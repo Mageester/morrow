@@ -69,6 +69,43 @@ describe("safe remote model catalog", () => {
     expect(offline.current()).toMatchObject({ source: "remote-cache", catalogVersion: "catalog-2" });
   });
 
+  it("does not persist a schema-valid catalog with an invalid canonical graph", async () => {
+    const cacheDir = root();
+    const valid = new ModelCatalog({
+      cacheDir,
+      remoteUrl: "https://catalog.morrow.invalid/models.json",
+      bundledModels: [],
+      fetcher: vi.fn(async () => new Response(JSON.stringify({
+        schemaVersion: 1,
+        catalogVersion: "catalog-good",
+        generatedAt: "2026-07-16T20:00:00.000Z",
+        models: [model()],
+      }), { status: 200 })),
+    });
+    await valid.refresh();
+    const before = readFileSync(join(cacheDir, "model-catalog.json"), "utf8");
+
+    const malformed = {
+      ...model(),
+      canonicalTarget: { providerId: "openai" as const, modelId: "missing-canonical-model" },
+    };
+    const poisoned = new ModelCatalog({
+      cacheDir,
+      remoteUrl: "https://catalog.morrow.invalid/models.json",
+      bundledModels: [],
+      fetcher: vi.fn(async () => new Response(JSON.stringify({
+        schemaVersion: 1,
+        catalogVersion: "catalog-bad",
+        generatedAt: "2026-07-16T20:00:00.000Z",
+        models: [malformed],
+      }), { status: 200 })),
+    });
+
+    await expect(poisoned.refresh()).rejects.toThrow(/canonical target/i);
+    expect(readFileSync(join(cacheDir, "model-catalog.json"), "utf8")).toBe(before);
+    expect(poisoned.current()).toMatchObject({ source: "remote-cache", catalogVersion: "catalog-good" });
+  });
+
   it("rejects non-HTTPS remote locations", () => {
     expect(() => new ModelCatalog({ cacheDir: root(), remoteUrl: "http://example.com/models.json", bundledModels: [] })).toThrow(/HTTPS/);
   });

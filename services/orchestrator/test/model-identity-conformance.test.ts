@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ModelInfo } from "@morrow/contracts";
 import * as routing from "../src/routing/models.js";
 
 type CanonicalResolution = { selected: ModelInfo; canonical: ModelInfo };
 type CanonicalResolver = (providerId: string, selectedId: string) => CanonicalResolution;
 type CatalogValidator = (models: readonly ModelInfo[]) => void;
+
+const originalCatalog = routing.listModels();
+
+afterEach(() => {
+  routing.installModelCatalog([...originalCatalog]);
+});
 
 function canonicalResolver(): CanonicalResolver {
   const resolver = (routing as typeof routing & { resolveCanonicalModelMetadata?: CanonicalResolver }).resolveCanonicalModelMetadata;
@@ -117,5 +123,13 @@ describe("canonical model identity", () => {
       reasoning: { control: "fixed" },
     });
     expect(routing.resolveReasoningCapability("deepseek", "deepseek-reasoner").control).toBe("fixed");
+  });
+
+  it("accepts schema-valid cached rows that omit optional reasoning metadata", () => {
+    const source = routing.resolveModelMetadata("openai", "gpt-5.6-sol");
+    const { reasoning: _reasoning, ...cachedRow } = source;
+
+    expect(() => routing.installModelCatalog([cachedRow as ModelInfo])).not.toThrow();
+    expect(routing.resolveModelMetadata("openai", "gpt-5.6-sol").reasoning).toEqual(routing.UNKNOWN_REASONING);
   });
 });
