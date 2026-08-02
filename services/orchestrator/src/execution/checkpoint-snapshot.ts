@@ -157,6 +157,24 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)].map((value) => boundedString(redactSecrets(value))).slice(-MAX_ARRAY_ENTRIES);
 }
 
+function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: string[]; complete: boolean; count: number; identityHash: string } {
+  const unique = [...new Set(values)].map((value) => boundedString(redactSecrets(value)));
+  const paths: string[] = [];
+  let bytes = 2;
+  for (const path of unique) {
+    const nextBytes = Buffer.byteLength(path, "utf8") + (paths.length > 0 ? 3 : 1);
+    if (bytes + nextBytes > maxBytes) break;
+    paths.push(path);
+    bytes += nextBytes;
+  }
+  return {
+    paths,
+    complete: paths.length === unique.length,
+    count: unique.length,
+    identityHash: hash(unique),
+  };
+}
+
 function redactStructured(value: unknown, depth = 0): unknown {
   if (depth > 6) return "[REDACTED]";
   if (typeof value === "string") return redactSecrets(value);
@@ -207,7 +225,7 @@ function compactRequirementEvaluation(evaluation: RequirementEvaluation): Requir
 }
 
 function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionCheckpointSnapshot {
-  const baselinePaths = snapshot.requirementBaselinePaths ? uniqueStrings(snapshot.requirementBaselinePaths) : undefined;
+  const baseline = snapshot.requirementBaselinePaths ? boundedBaselinePaths(snapshot.requirementBaselinePaths) : undefined;
   return {
     ...snapshot,
     originalMission: boundedString(redactSecrets(snapshot.originalMission)),
@@ -231,11 +249,12 @@ function normalizeSnapshot(snapshot: ExecutionCheckpointSnapshot): ExecutionChec
     providerRouting: compactRecord(snapshot.providerRouting, 8_192),
     providerContinuationRefs: uniqueStrings(snapshot.providerContinuationRefs),
     evidenceRequired: uniqueStrings(snapshot.evidenceRequired),
-    ...(baselinePaths
+    ...(baseline
       ? {
-          requirementBaselinePaths: baselinePaths,
-          requirementBaselinePathCount: snapshot.requirementBaselinePathCount ?? snapshot.requirementBaselinePaths!.length,
-          requirementBaselineIdentityHash: snapshot.requirementBaselineIdentityHash ?? hash(snapshot.requirementBaselinePaths),
+          requirementBaselinePaths: baseline.paths,
+          requirementBaselinePathCount: snapshot.requirementBaselinePathCount ?? baseline.count,
+          requirementBaselineIdentityHash: snapshot.requirementBaselineIdentityHash ?? baseline.identityHash,
+          requirementBaselineComplete: snapshot.requirementBaselineComplete === false ? false : baseline.complete,
         }
       : {}),
     ...(snapshot.executionRequirements
@@ -325,6 +344,7 @@ export function boundExecutionCheckpointSnapshot(snapshot: ExecutionCheckpointSn
             requirementBaselinePaths: bounded.requirementBaselinePaths,
             ...(bounded.requirementBaselinePathCount !== undefined ? { requirementBaselinePathCount: bounded.requirementBaselinePathCount } : {}),
             ...(bounded.requirementBaselineIdentityHash ? { requirementBaselineIdentityHash: bounded.requirementBaselineIdentityHash } : {}),
+            ...(bounded.requirementBaselineComplete !== undefined ? { requirementBaselineComplete: bounded.requirementBaselineComplete } : {}),
           }
         : {}),
       gitStatus: boundedString(bounded.gitStatus, 2_048),

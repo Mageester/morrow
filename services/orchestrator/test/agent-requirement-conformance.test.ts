@@ -333,6 +333,17 @@ describe("explicit execution requirement conformance", () => {
     if (!result.allowed) expect(JSON.parse(result.resultJson)).toMatchObject({ errorType: "requirement_violation", requirementId: requirement.id });
   });
 
+  it.each([
+    ["sh", ["-c", "echo ok; npm install"]],
+    ["sh", ["-c", "echo ok && npm install"]],
+    ["cmd", ["/c", "echo ok & npm install"]],
+    ["powershell", ["-Command", "Write-Output ok; npm install"]],
+  ])("rejects dependency mutation in every later shell segment %s %s", (executable, args) => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({ toolName: "run_command", args: { executable, args } }, [requirement]);
+    expect(result.allowed).toBe(false);
+  });
+
   it("rejects an unknown dependency added by a semantic package manifest patch", () => {
     const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
     const result = enforceToolRequirement({
@@ -345,6 +356,23 @@ describe("explicit execution requirement conformance", () => {
           "   \"dependencies\": {",
           "+    \"unlisted-private-package\": \"^9.9.9\"",
           "   }",
+        ].join("\n"),
+      },
+    }, [requirement]);
+    expect(result.allowed).toBe(false);
+  });
+
+  it("rejects a dependency-manifest replacement patch without an authoritative before/after proof", () => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const result = enforceToolRequirement({
+      toolName: "propose_patch",
+      args: {
+        patch: [
+          "--- a/package.json",
+          "+++ b/package.json",
+          "@@",
+          "-    \"old-package\": \"^1.0.0\",",
+          "+    \"new-package\": \"^2.0.0\",",
         ].join("\n"),
       },
     }, [requirement]);
@@ -461,6 +489,32 @@ describe("explicit execution requirement conformance", () => {
     expect((snapshot as any).requirementEvaluations[0]).toMatchObject({ requirementId: "round-two-requirement-0", status: "waived" });
   });
 
+  it("keeps an oversized baseline checkpoint bounded and restart-safe with durable identity metadata", () => {
+    const baseline = Array.from({ length: 256 }, (_, index) => `node_modules/pkg-${index}/${"baseline-path-segment-".repeat(38)}.js`);
+    const snapshot = boundExecutionCheckpointSnapshot(checkpointFixture({ requirementBaselinePaths: baseline }));
+    expect(Buffer.byteLength(JSON.stringify(snapshot), "utf8")).toBeLessThanOrEqual(131_072);
+    expect((snapshot as any).requirementBaselinePathCount).toBe(256);
+    expect((snapshot as any).requirementBaselineIdentityHash).toEqual(expect.stringMatching(/^[a-f0-9]{24}$/));
+    expect((snapshot as any).requirementBaselineComplete).toBe(false);
+    expect((snapshot as any).requirementBaselinePaths.length).toBeLessThan(256);
+
+    const db = openDatabase(":memory:");
+    try {
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: "/tmp/p", createdAt: "2026-07-13T00:00:00.000Z" });
+      taskRepository(db).createTask({ id: "task", projectId: "p", kind: "agent_chat", status: "running", createdAt: "2026-07-13T00:00:00.000Z" });
+      const repository = executionContinuityRepository(db);
+      const segment = repository.openSegment({ taskId: "task", missionId: null, providerId: "deepseek", model: "deepseek-v4-flash", routeJson: {}, ownerId: "worker-a", now: "2026-07-13T00:00:00.000Z" });
+      repository.saveCheckpoint({ id: "oversized-baseline", taskId: "task", missionId: null, segmentId: segment.id, cursor: 1, snapshot: { ...snapshot, taskId: "task" }, ownerId: "worker-a", generation: segment.generation, now: "2026-07-13T00:00:00.000Z" });
+      const reloaded = executionContinuityRepository(db).latestCheckpoint("task")?.snapshot as any;
+      expect(reloaded.requirementBaselinePathCount).toBe(256);
+      expect(reloaded.requirementBaselineIdentityHash).toBe((snapshot as any).requirementBaselineIdentityHash);
+      expect(reloaded.requirementBaselineComplete).toBe(false);
+      expect(reloaded.requirementBaselinePaths.length).toBeLessThan(256);
+    } finally {
+      db.close();
+    }
+  });
+
   it("lets failed verification status dominate a contradictory zero exit code", () => {
     const requirement = requirementFor("Required verification: pnpm test passes.", "required_verification");
     const evaluation = evaluateRequirementObservations([requirement], [{
@@ -496,6 +550,24 @@ describe("explicit execution requirement conformance", () => {
     );
     expect(evaluateRequirementObservations([requirement], [observation], { platform: "linux" })[0]).toMatchObject({ status: "verified" });
     expect(evaluateRequirementObservations([requirement], [observation], { platform: "win32" })[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("threads platform case rules through dependency manifest classification", () => {
+    const requirement = requirementFor("Build the backend. No new dependencies.", "no_new_dependencies");
+    const uppercaseManifest = observeRequirementChangedPaths(
+      ["PACKAGE.JSON"],
+      "final workspace observation",
+      { measured: true, authoritative: true },
+    );
+    expect(evaluateRequirementObservations([requirement], [uppercaseManifest], { platform: "linux" })[0]).toMatchObject({ status: "verified" });
+    expect(evaluateRequirementObservations([requirement], [uppercaseManifest], { platform: "win32" })[0]).toMatchObject({ status: "unevaluated" });
+
+    const patch = {
+      toolName: "propose_patch",
+      args: { patch: "--- a/PACKAGE.JSON\n+++ b/PACKAGE.JSON\n@@\n-  \"old-package\": \"^1.0.0\"\n+  \"new-package\": \"^2.0.0\"" },
+    };
+    expect(enforceToolRequirement(patch, [requirement], { platform: "linux" })).toEqual({ allowed: true });
+    expect(enforceToolRequirement(patch, [requirement], { platform: "win32" }).allowed).toBe(false);
   });
 
   it("requires an explicit, reasoned, durable waiver before treating a requirement as satisfied", () => {

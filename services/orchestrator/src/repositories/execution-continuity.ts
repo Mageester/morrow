@@ -73,6 +73,8 @@ export interface ExecutionCheckpointSnapshot {
   /** Stable identity metadata retained when a bounded projection cannot keep every path. */
   requirementBaselinePathCount?: number;
   requirementBaselineIdentityHash?: string;
+  /** False means the retained path sample cannot safely prove the original baseline was complete. */
+  requirementBaselineComplete?: boolean;
   /** Bounded, durable source contract used to produce the evaluations below. */
   executionRequirements?: ExecutionRequirement[];
   /** Bounded, durable evaluation ledger for explicit execution constraints. */

@@ -96,6 +96,40 @@ The bounded scan remains limited to 2,048 entries, eight levels, and 150 ms; an 
 - `services/orchestrator/src/repositories/execution-continuity.ts`
 - `services/orchestrator/test/agent-requirement-conformance.test.ts`
 
+## Final re-review remediation (four findings)
+
+The final re-review reproduced four remaining bypasses and was handled with focused RED probes before implementation:
+
+- **Shell-wrapper later segments:** under `no_new_dependencies`, bounded shell `-c`, `/c`, and PowerShell command arguments are scanned for unquoted command separators. Later `npm install` segments are rejected before approval; separators inside quoted data are not treated as commands.
+- **Dependency-manifest replacement patches:** any dependency-manifest patch that cannot be proven safe from an authoritative before/after comparison is rejected conservatively under `no_new_dependencies`, including replacement-only `old-package` to `new-package` hunks.
+- **Oversized baselines:** checkpoint projection retains a bounded path sample plus the original baseline count, stable identity digest, and `requirementBaselineComplete=false`. The agent restores those fields across checkpoint reload and treats incomplete scans as non-authoritative for absence-based requirements.
+- **Platform classification:** dependency manifests, lockfiles, frontend/database paths, and content classifiers receive the requested platform. POSIX comparisons remain case-sensitive while Windows comparisons remain case-insensitive.
+
+### Final re-review RED/GREEN evidence
+
+- The exact adversarial probes recorded **RED: 52 tests, 45 passed and 7 failed**: four shell-wrapper variants, one replacement-only manifest patch, one oversized baseline checkpoint, and one platform-classification case.
+- Focused conformance after implementation: **1 file, 52 passed**.
+- Focused continuity/approval/security/mission regression batch: **8 files, 227 passed**.
+- `pnpm --filter @morrow/orchestrator check`: passed.
+- `pnpm --filter @morrow/contracts check`: passed.
+- Default isolated orchestrator suite with both live-provider skip flags: **164 files, 1,690 passed**.
+- Explicit live-provider isolation checks: **3 files, 21 passed**.
+- `git diff --check`: passed.
+- `docs/evidence/flagship-runs.jsonl` remained unchanged with SHA-256 `0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A`.
+
+### Final re-review security/privacy impact, limitations, and rollback
+
+The dependency guard remains fail-closed at the pre-approval boundary and does not execute command strings or patches. Requiring authoritative filesystem evidence prevents tool-declared path types and incomplete scans from proving completion. Oversized checkpoints retain durable requirement and baseline identity rather than silently clearing security state. Existing secret redaction is applied before checkpoint persistence and structured diagnostics. The platform parameter is threaded through every relevant classifier without widening permissions. Shell-wrapper rejection and dependency-manifest patch rejection are intentionally conservative and may require a future authoritative manifest comparison to allow safe edits. No live provider call, telemetry, hosted dependency, or flagship evidence write was introduced. Rollback is a focused revert of this final re-review commit; checkpoint fields are optional and backward-compatible.
+
+### Final re-review changed files
+
+- `.superpowers/sdd/2026-08-02-real-task-reliability/task-4-report.md`
+- `services/orchestrator/src/execution/agent.ts`
+- `services/orchestrator/src/execution/checkpoint-snapshot.ts`
+- `services/orchestrator/src/execution/requirements.ts`
+- `services/orchestrator/src/repositories/execution-continuity.ts`
+- `services/orchestrator/test/agent-requirement-conformance.test.ts`
+
 ## RED evidence
 
 The required conformance test was written before the production integration. The initial run was RED because `services/orchestrator/src/execution/requirements.ts` did not exist: Vitest collected zero tests and failed to resolve `../src/execution/requirements.js`.

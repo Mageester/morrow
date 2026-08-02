@@ -283,7 +283,9 @@ export function observeRequirementToolCall(
   call: RequirementToolCall,
   resultJson: string | null | undefined,
   status: "completed" | "failed" | "requested" = "completed",
+  options: { platform?: NodeJS.Platform } = {},
 ): RequirementObservation[] {
+  const platform = options.platform ?? process.platform;
   const observations: RequirementObservation[] = [];
   const paths = affectedPaths(call);
   if (paths.length > 0 && status === "completed") {
@@ -299,7 +301,7 @@ export function observeRequirementToolCall(
       authoritative: false,
       measured: false,
       completed: true,
-      dependencyChange: contentAddsDependencies(call) || paths.some((path) => isDependencyLockfile(path)),
+      dependencyChange: contentAddsDependencies(call, platform) || paths.some((path) => isDependencyLockfile(path, platform)),
       evidence: `${call.toolName} completed for ${paths.length} workspace path${paths.length === 1 ? "" : "s"}`,
     });
   }
@@ -379,6 +381,37 @@ function shellScriptTokens(script: string): string[] {
   return tokens.filter(Boolean);
 }
 
+function shellScriptArgument(command: { executable: string; args: string[] }): string | null {
+  if (!SHELL_EXECUTABLES.has(executableName(command.executable))) return null;
+  const scriptIndex = command.args.findIndex((value) => ["-c", "/c", "-command", "--command"].includes(value.toLowerCase()));
+  return scriptIndex >= 0 && typeof command.args[scriptIndex + 1] === "string" ? command.args[scriptIndex + 1]! : null;
+}
+
+function containsUnquotedShellSeparator(script: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const character of script) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === ";" || character === "&" || character === "|" || character === "\n") return true;
+  }
+  return false;
+}
+
 function stripWrapperOptions(args: string[], optionsWithValue: Set<string>): string[] {
   const remaining = [...args];
   while (remaining.length > 0) {
@@ -449,6 +482,8 @@ function unwrapPackageManagerCommand(command: { executable: string; args: string
 }
 
 function isDependencyInstall(command: { executable: string; args: string[] }): boolean {
+  const shellScript = shellScriptArgument(command);
+  if (shellScript && containsUnquotedShellSeparator(shellScript)) return true;
   const canonical = unwrapPackageManagerCommand(command);
   if (!canonical) return false;
   return DEPENDENCY_MUTATING_VERBS.has(canonical.args[0]?.toLowerCase() ?? "");
@@ -468,7 +503,7 @@ function isDependencyLockfile(path: string, platform: NodeJS.Platform = process.
     || basename === "bun.lockb";
 }
 
-function contentAddsDependencies(call: RequirementToolCall): boolean {
+function contentAddsDependencies(call: RequirementToolCall, platform: NodeJS.Platform = process.platform): boolean {
   if (call.toolName === "create_file") {
     const content = typeof call.args.content === "string" ? call.args.content : "";
     return /["'](?:dependencies|devDependencies|peerDependencies|optionalDependencies)["']\s*:/i.test(content);
@@ -482,9 +517,10 @@ function contentAddsDependencies(call: RequirementToolCall): boolean {
       if (header) {
         manifestPath = displayPath(header[1]!);
         dependencyBlockDepth = null;
+        if (isDependencyManifest(manifestPath, platform)) return true;
         continue;
       }
-      if (!manifestPath || !isDependencyManifest(manifestPath)) continue;
+      if (!manifestPath || !isDependencyManifest(manifestPath, platform)) continue;
       const text = line.startsWith("+") || line.startsWith("-") || line.startsWith(" ") ? line.slice(1) : line;
       const dependencyHeader = /["'](?:dependencies|devDependencies|peerDependencies|optionalDependencies)["']\s*:\s*\{/i.test(text);
       if (dependencyHeader) {
@@ -520,7 +556,7 @@ function requirementViolation(requirement: ExecutionRequirement, call: Requireme
     case "no_new_dependencies": {
       const command = commandFromCall(call);
       if (command && isDependencyInstall(command)) return "the command installs or adds a dependency";
-      if (contentAddsDependencies(call)) return "the file content adds dependency declarations";
+      if (contentAddsDependencies(call, platform)) return "the file content adds dependency declarations";
       return null;
     }
     case "allowed_files": {
@@ -719,9 +755,9 @@ export function evaluateRequirementObservations(
           const command = observationCommand(observation);
           return Boolean(command && isDependencyInstall(command));
         });
-        const dependencyPath = paths.find((path) => isDependencyLockfile(path)
-          || (isDependencyManifest(path) && observations.some((observation) => observation.dependencyChange === true && observationPaths(observation).some((candidate) => pathKey(candidate) === pathKey(path)))));
-        const manifestPath = paths.find((path) => isDependencyManifest(path));
+        const dependencyPath = paths.find((path) => isDependencyLockfile(path, platform)
+          || (isDependencyManifest(path, platform) && observations.some((observation) => observation.dependencyChange === true && observationPaths(observation).some((candidate) => pathKey(candidate) === pathKey(path)))));
+        const manifestPath = paths.find((path) => isDependencyManifest(path, platform));
         const explicitDependencyChange = observations.find((observation) => observation.dependencyChange === true);
         if (commandObservations.length > 0 || changedPathObservations.some((observation) => observation.measured === true) || paths.length > 0) {
           if (dependencyCommand) {

@@ -2760,6 +2760,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   type RequirementWorkspaceState = { lines: string[]; paths: string[]; pathTypes: RequirementPathObservation[]; measured: boolean; authoritative: boolean };
   let requirementBaselinePaths = new Set<string>();
+  let requirementBaselinePathCount: number | undefined;
+  let requirementBaselineIdentityHash: string | undefined;
+  let requirementBaselineComplete = true;
   const requirementPathKey = (value: string): string => canonicalRequirementPath(value);
   const pathsFromGitStatus = (lines: string[]): string[] => lines
     .filter((line) => !line.startsWith("## "))
@@ -2841,8 +2844,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // A complete bounded filesystem scan proves absence. Git alone does not:
       // ignored paths and arbitrary command side effects are not a complete
       // workspace observation.
-      measured: scan.complete,
-      authoritative: scan.complete && (gitMeasured || gitPaths.length === 0),
+      measured: scan.complete && requirementBaselineComplete,
+      authoritative: scan.complete && requirementBaselineComplete && (gitMeasured || gitPaths.length === 0),
     };
   };
   const requirementToolCallFromRecord = (call: ToolCallRecord): { call: RequirementToolCall; status: "completed" | "failed" | "requested" } => {
@@ -2878,7 +2881,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     observations.push(observeRequirementChangedPaths(
       workspacePaths,
       workspace.measured ? "authoritative filesystem workspace observation" : "durable tool and partial workspace paths observed",
-      { pathTypes: workspacePathTypes, measured: workspace.measured, authoritative: workspace.authoritative },
+      {
+        pathTypes: workspacePathTypes,
+        pathTypesAuthoritative: workspace.authoritative || requiredFileObservations.length > 0,
+        measured: workspace.measured,
+        authoritative: workspace.authoritative,
+      },
     ));
     return evaluateRequirementObservations(executionRequirements, observations);
   };
@@ -2917,6 +2925,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         providerContinuationRefs: continuity.listProviderContinuationRefs(taskId),
         evidenceRequired: ["All hard requirements evaluated", "Required verification passed", "One canonical final answer"],
         requirementBaselinePaths: [...requirementBaselinePaths],
+        ...(requirementBaselinePathCount !== undefined ? { requirementBaselinePathCount } : {}),
+        ...(requirementBaselineIdentityHash ? { requirementBaselineIdentityHash } : {}),
+        requirementBaselineComplete,
         executionRequirements,
         requirementEvaluations,
       },
@@ -3311,12 +3322,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // was already dirty is not mistaken for progress this task made. A worktree
   // or non-repository workspace still gets a bounded filesystem baseline.
   const initialRequirementWorkspace = await readRequirementWorkspaceState(false);
-  const persistedRequirementBaseline = continuity.latestCheckpoint(taskId)?.snapshot.requirementBaselinePaths;
-  requirementBaselinePaths = new Set(
-    Array.isArray(persistedRequirementBaseline)
-      ? persistedRequirementBaseline.map(requirementPathKey)
-      : initialRequirementWorkspace.pathTypes.map((entry) => requirementPathKey(entry.path)),
-  );
+  const persistedCheckpointSnapshot = continuity.latestCheckpoint(taskId)?.snapshot;
+  const persistedRequirementBaseline = persistedCheckpointSnapshot?.requirementBaselinePaths;
+  if (Array.isArray(persistedRequirementBaseline)) {
+    requirementBaselinePaths = new Set(persistedRequirementBaseline.map(requirementPathKey));
+    requirementBaselinePathCount = typeof persistedCheckpointSnapshot?.requirementBaselinePathCount === "number"
+      ? persistedCheckpointSnapshot.requirementBaselinePathCount
+      : requirementBaselinePaths.size;
+    requirementBaselineIdentityHash = persistedCheckpointSnapshot?.requirementBaselineIdentityHash;
+    requirementBaselineComplete = persistedCheckpointSnapshot?.requirementBaselineComplete !== false
+      && requirementBaselinePathCount === requirementBaselinePaths.size;
+  } else {
+    requirementBaselinePaths = new Set(initialRequirementWorkspace.pathTypes.map((entry) => requirementPathKey(entry.path)));
+    requirementBaselinePathCount = requirementBaselinePaths.size;
+    requirementBaselineIdentityHash = createHash("sha256").update(JSON.stringify([...requirementBaselinePaths]), "utf8").digest("hex").slice(0, 24);
+    requirementBaselineComplete = initialRequirementWorkspace.authoritative;
+  }
   for (const artifact of fingerprintPaths(initialRequirementWorkspace.paths)) knownArtifacts.set(artifact.path, artifact.contentHash);
   previousProgressSnapshot = buildExecutionProgressSnapshot({
     missionId: progressIdentity,
