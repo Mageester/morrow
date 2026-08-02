@@ -27,6 +27,31 @@ Morrow is an AI agent application. Do not reframe it as an operating system, ent
 - Preserve local-first behavior and provider choice.
 - Keep the default experience simple while exposing advanced controls progressively.
 
+## Integration discipline
+
+`main` is the single integration branch. Everything reconciles onto it, and
+nothing else is allowed to become a second long-lived line.
+
+- Rebase or merge `main` into your branch daily once it is more than a week
+  behind, and always before requesting a merge. CI enforces this
+  (`scripts/check-branch-freshness.mjs`): a pull request whose merge-base is
+  more than seven days of integration history old fails.
+- Anything touching `services/orchestrator/src/{execution,provider,web}` is
+  held to that window strictly. Those are the files two parallel lines both
+  edit, and the merge that unified them produced defects with no conflict
+  marker to warn anyone.
+- Delete a branch once it merges. `node scripts/branch-inventory.mjs`
+  regenerates `docs/branch-inventory.md`, which separates merged branches from
+  abandoned ones so the backlog can be cleared deliberately.
+- Two agents must not work parallel long-lived branches over the same
+  subsystem. If that is unavoidable, land the first before starting the second.
+
+This is not a style preference. `morrow/consumer-polish` and `main` diverged
+for a week at 88 and 70 commits, and the reconciliation silently merged two
+unrelated functions that happened to share a name (caught only because `tsc`
+complained — a rename would have hidden it) and dropped a fix that had already
+shipped once in beta.34.
+
 ## Prohibited behavior
 
 - Do not commit secrets, API keys, tokens, credentials, private messages, or personal data.

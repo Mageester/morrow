@@ -26,4 +26,22 @@ jobs:
       # exercises the negative cases so the guards can't silently rot.
       # installer-cli-only proves no browser, no localhost, no web/index.html.
       # install-activation drives the real atomic activation/rollback code paths.
-      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs scripts/lib/package-provenance.test.mjs scripts/acceptance-foundation-smoke.test.mjs
+      - run: node --test scripts/validate-repository.test.mjs scripts/installer-cli-only.test.mjs scripts/install-activation.test.mjs scripts/lib/package-provenance.test.mjs scripts/acceptance-foundation-smoke.test.mjs scripts/check-branch-freshness.test.mjs
+      # Where the one claim that matters actually stands, printed on every
+      # build: "give Morrow a real task and it finishes correctly, every time."
+      # Reporting, not enforcing, until the first real-provider runs are
+      # recorded — see docs/evidence/README.md. It exits 0 either way.
+      - run: pnpm flagship:gate
+
+  branch-freshness:
+    name: Branch freshness
+    runs-on: ubuntu-latest
+    # A branch that diverges from the integration line for weeks is how Morrow
+    # silently unified two unrelated functions that shared a name, and how a
+    # beta.34 fix was lost in a later merge. Neither was visible in a diff.
+    # fetch-depth: 0 because the guard needs the merge-base and both tips.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: node scripts/check-branch-freshness.mjs
