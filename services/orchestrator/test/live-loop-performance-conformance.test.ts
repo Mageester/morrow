@@ -350,6 +350,54 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(serialized).not.toContain("rawResult");
   });
 
+  it("redacts complete cookie headers and credential authorization schemes without hiding benign fields", () => {
+    const secretValues = [
+      "session-cookie-secret",
+      "auth-cookie-secret",
+      "jwt-cookie-secret",
+      "set-cookie-secret",
+      "bearer-header-secret",
+      "basic-header-secret",
+      "api-header-secret",
+    ];
+    const failedCall = {
+      id: "cookie-bearing-failure",
+      toolName: "run_command",
+      status: "failed",
+      argsJson: JSON.stringify({ executable: "node", args: ["verify"] }),
+      resultJson: JSON.stringify({
+        exitCode: 1,
+        stderr: [
+          "request failed while contacting service",
+          "Cookie: session=session-cookie-secret; auth=auth-cookie-secret; jwt=jwt-cookie-secret; theme=dark",
+          "Set-Cookie: sid=set-cookie-secret; Path=/; HttpOnly; Secure",
+          "Authorization: Bearer bearer-header-secret",
+          "Authorization: Basic basic-header-secret",
+          "X-API-Key: api-header-secret",
+          "cache-key=abc123 object key=object-value index=7 keycode=200 authorization=disabled authorization=none",
+          "diagnostic: connection refused",
+        ].join("\n"),
+      }),
+      errorMessage: "useful diagnostic: connection refused",
+      cursor: 89,
+    };
+    const checkpoint = projectCheckpointSnapshot({
+      snapshot: baseCheckpointSnapshot("task-1"),
+      failedCalls: [failedCall],
+    });
+    const serialized = JSON.stringify(checkpoint);
+
+    for (const secret of secretValues) expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("request failed while contacting service");
+    expect(serialized).toContain("diagnostic: connection refused");
+    expect(serialized).toContain("cache-key=abc123");
+    expect(serialized).toContain("object key=object-value");
+    expect(serialized).toContain("index=7");
+    expect(serialized).toContain("keycode=200");
+    expect(serialized).toContain("authorization=disabled");
+    expect(serialized).toContain("authorization=none");
+  });
+
   it("retains only the latest checkpoint while preserving the newest bounded snapshot", () => {
     db = openDatabase(":memory:");
     projectRepository(db).createProject({ id: "project-1", name: "Checkpoint", workspacePath: "/tmp/checkpoint", createdAt: NOW });

@@ -44,7 +44,7 @@ function boundedString(value: string, maxBytes = 8_192): string {
 }
 
 function sanitizeActionableText(value: string, maxBytes = 480): string {
-  const sanitized = redactSecrets(value.replace(/\s+/g, " "));
+  const sanitized = redactSecrets(value).replace(/\s+/g, " ");
   return boundedString(sanitized, maxBytes);
 }
 
