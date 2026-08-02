@@ -40,12 +40,16 @@ function describeTarget(args: unknown): string {
 
 export interface MissionToolFailureReporter {
   /** Record a meaningful tool failure in the mission ledger. Safe to call unconditionally. */
-  reportFailure(toolName: string, args: unknown, message: string, errorType: string | null): void;
+  reportFailure(toolName: string, args: unknown, message: string, errorType: string | null): MissionFailureReportResult;
   /** Mark the newest unrecovered failure for this tool+target recovered. */
   reportSuccess(toolName: string, args: unknown): void;
 }
 
-const NOOP: MissionToolFailureReporter = { reportFailure() {}, reportSuccess() {} };
+export interface MissionFailureReportResult {
+  exhausted: boolean;
+}
+
+const NOOP: MissionToolFailureReporter = { reportFailure: () => ({ exhausted: false }), reportSuccess() {} };
 
 export function createMissionToolFailureReporter(options: {
   service: MissionService | null;
@@ -65,8 +69,8 @@ export function createMissionToolFailureReporter(options: {
   return {
     reportFailure(toolName, args, message, errorType) {
       try {
-        if (errorType && NOISE_ERROR_TYPES.has(errorType)) return;
-        if (!message || !message.trim()) return;
+        if (errorType && NOISE_ERROR_TYPES.has(errorType)) return { exhausted: false };
+        if (!message || !message.trim()) return { exhausted: false };
         const operation = bucket(toolName, args).slice(0, 500);
         const { failure, plan } = service.recordFailure(missionId, operation, message, {
           taskId,
@@ -77,8 +81,10 @@ export function createMissionToolFailureReporter(options: {
         open.failureIds.push(failure.id);
         open.strategy = plan.strategy;
         openFailures.set(operation, open);
+        return { exhausted: plan.exhausted && failure.attempt >= 4 };
       } catch (err) {
         log?.(`mission failure ledger write failed: ${err instanceof Error ? err.message : String(err)}`);
+        return { exhausted: false };
       }
     },
     reportSuccess(toolName, args) {

@@ -11,6 +11,8 @@ export interface ExecutionLeaseClaim {
   generation: number;
 }
 
+export type TaskCancelReason = "user_cancelled" | "parent_cancelled" | "mission_terminal";
+
 export type TaskExecutor = (deps: {
   db: Database.Database;
   taskId: string;
@@ -150,10 +152,10 @@ export class TaskRunner {
    * depth-first, parent-before-child order, then each is cancelled idempotently.
    * Cancelling a child never touches its parent or siblings.
    */
-  cancel(taskId: string) {
+  cancel(taskId: string, reason: TaskCancelReason = "user_cancelled") {
     const targets = this.collectCancelTargets(taskId);
     targets.forEach((id, index) =>
-      this.cancelOne(id, index === 0 ? "user_cancelled" : "parent_cancelled")
+      this.cancelOne(id, index === 0 ? reason : "parent_cancelled")
     );
   }
 
@@ -177,7 +179,7 @@ export class TaskRunner {
   // guard: a task already in a terminal state is left untouched (no throw, no
   // duplicate terminal event). `cancel()` is synchronous, so the check and the
   // transition cannot be interleaved by another lifecycle write.
-  private cancelOne(taskId: string, reason: "user_cancelled" | "parent_cancelled") {
+  private cancelOne(taskId: string, reason: TaskCancelReason) {
     const controller = this.abortControllers.get(taskId);
     if (controller) {
       controller.abort();
@@ -194,7 +196,14 @@ export class TaskRunner {
       records.transitionTask(taskId, "cancelled", {
         id: crypto.randomUUID(),
         createdAt: timestamp,
-        payload: { reason, message: reason === "parent_cancelled" ? "Task cancelled: parent cancelled" : "Task cancelled by user" }
+        payload: {
+          reason,
+          message: reason === "parent_cancelled"
+            ? "Task cancelled: parent cancelled"
+            : reason === "mission_terminal"
+              ? "Task cancelled: mission terminal"
+              : "Task cancelled by user",
+        }
       });
 
       if (task.kind === "agent_chat") {
@@ -204,7 +213,7 @@ export class TaskRunner {
           const currentMsg = conversationsRepository(this.db).getMessage((msgRows[0] as any).id);
           conversationsRepository(this.db).updateMessageContentAndState(
             (msgRows[0] as any).id,
-            currentMsg?.content || "Task cancelled by user",
+            currentMsg?.content || (reason === "mission_terminal" ? "Task cancelled: mission terminal" : "Task cancelled by user"),
             "cancelled",
             new Date().toISOString()
           );
@@ -212,15 +221,14 @@ export class TaskRunner {
       }
     }
 
-    this.activeTasks.delete(taskId);
-    this.activePromises.delete(taskId);
-    this.abortControllers.delete(taskId);
   }
 
   // test-only method
   async waitFor(taskId: string) {
-    if (this.activePromises.has(taskId)) {
-      await this.activePromises.get(taskId);
-    }
+    const targets = this.collectCancelTargets(taskId);
+    await Promise.all(targets.map(async (id) => {
+      const promise = this.activePromises.get(id);
+      if (promise) await promise;
+    }));
   }
 }

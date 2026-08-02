@@ -14,7 +14,7 @@ import {
   type MissionRuntimeLeaseFence,
 } from "../repositories/mission-runtime.js";
 import { dispatchAgentTask } from "./task-dispatcher.js";
-import { MissionService, type MissionCompletionFn } from "./service.js";
+import { MissionError, MissionService, type MissionCompletionFn } from "./service.js";
 import { MissionController, type ControllerRecovery, type ControllerTickResult } from "./controller.js";
 import { intelligenceRepository } from "../repositories/intelligence.js";
 import { memoryRepository } from "../repositories/memory.js";
@@ -25,6 +25,8 @@ import { AutomaticSkillService } from "../cortex/automatic-skills.js";
 import { listProviderStatuses } from "../provider/registry.js";
 import { decideWorkerRecovery, type ProviderFailureDetails } from "./worker-recovery.js";
 import { playwrightController, resolvePlaywrightChannel } from "../browser/playwright.js";
+import type { TaskCancelReason } from "../runner.js";
+import { terminalDispositionForMission, TERMINAL_ENTRY_KINDS, type MissionTerminalOutcomeInput, type TerminalEntryKind } from "./terminal-outcome.js";
 
 type MissionRuntimeRepository = ReturnType<typeof missionRuntimeRepository>;
 
@@ -35,7 +37,7 @@ export interface RunnableMissionController {
 export interface ObservableTaskRunner {
   isActive(taskId: string): boolean;
   waitFor(taskId: string): Promise<void>;
-  cancel?(taskId: string): void;
+  cancel?(taskId: string, reason?: TaskCancelReason): void;
   onSettled?(listener: (taskId: string) => void): () => void;
 }
 
@@ -44,6 +46,7 @@ export interface MissionControllerRunnerDependencies {
   controller: MissionController | RunnableMissionController;
   taskRunner: ObservableTaskRunner;
   ownerId: string;
+  concludeTerminalOutcome?(missionId: string, input: MissionTerminalOutcomeInput): Promise<unknown> | unknown;
   now?: () => string;
   leaseMs?: number;
 }
@@ -110,7 +113,7 @@ export class MissionControllerRunner {
     this.cancelled.add(missionId);
     this.pendingWakes.delete(missionId);
     const runtime = this.dependencies.runtime.get(missionId);
-    if (runtime?.activeTaskId) this.dependencies.taskRunner.cancel?.(runtime.activeTaskId);
+    if (runtime?.activeTaskId) this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
   }
 
   /** Stop this process from driving a mission without mutating durable worker state. */
@@ -130,6 +133,18 @@ export class MissionControllerRunner {
     }
   }
 
+  /** Reconcile a terminal mission whose runtime is already terminal and cannot
+   * acquire a normal controller lease. Active work is still cancelled and
+   * settled before the same mission close-out method records its result. */
+  async reconcileTerminalOutcome(missionId: string, input: MissionTerminalOutcomeInput): Promise<void> {
+    const runtime = this.dependencies.runtime.get(missionId);
+    if (runtime?.activeTaskId) {
+      this.dependencies.taskRunner.cancel?.(runtime.activeTaskId, "mission_terminal");
+      await this.dependencies.taskRunner.waitFor(runtime.activeTaskId);
+    }
+    await this.dependencies.concludeTerminalOutcome?.(missionId, input);
+  }
+
   private async drive(missionId: string): Promise<void> {
     const claimedAt = this.now();
     const fence = this.dependencies.runtime.claimLease({
@@ -144,6 +159,10 @@ export class MissionControllerRunner {
     try {
       while (!this.cancelled.has(missionId)) {
         const result = await this.dependencies.controller.tick(missionId, fence);
+        if (result.terminalOutcome) {
+          await this.coordinateTerminalOutcome(missionId, result.terminalOutcome, fence);
+          return;
+        }
         if (!result.immediate) {
           const taskId = result.runtime.activeTaskId;
           this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
@@ -173,6 +192,45 @@ export class MissionControllerRunner {
         this.dependencies.runtime.releaseLease({ missionId, fence, now: this.now() });
       }
     }
+  }
+
+  private async coordinateTerminalOutcome(
+    missionId: string,
+    input: MissionTerminalOutcomeInput,
+    fence: MissionRuntimeLeaseFence,
+  ): Promise<void> {
+    const runtime = this.dependencies.runtime.get(missionId);
+    const activeTaskId = runtime?.activeTaskId;
+    if (activeTaskId) {
+      this.dependencies.taskRunner.cancel?.(activeTaskId, "mission_terminal");
+      await this.dependencies.taskRunner.waitFor(activeTaskId);
+    }
+
+    const closed = await this.dependencies.concludeTerminalOutcome?.(missionId, input);
+    const status = typeof (closed as { status?: unknown } | undefined)?.status === "string"
+      ? (closed as { status: Parameters<typeof terminalDispositionForMission>[0] }).status
+      : input.preserveStatus ?? "blocked";
+    const to = terminalDispositionForMission(status);
+    const latest = this.dependencies.runtime.get(missionId);
+    if (!latest || isMissionRuntimeTerminal(latest)) {
+      if (latest && latest.state !== to) {
+        throw new MissionError(
+          `Terminal mission/runtime contradiction for ${missionId}`,
+          "finalization_integrity_error",
+        );
+      }
+      return;
+    }
+    this.dependencies.runtime.transition({
+      missionId,
+      from: latest.state,
+      to,
+      cause: to === "completed" ? "guardian_passed" : `terminal_outcome:${input.kind}`,
+      actor: "controller",
+      details: { reason: input.reason },
+      fence,
+      now: this.now(),
+    });
   }
 
   private expiresAt(now: string): string {
@@ -228,6 +286,7 @@ export function createDefaultMissionControllerRunner(
   });
   const controller = new MissionController({
     runtime,
+    deferTerminalOutcomes: true,
     loadSnapshot: (missionId) => {
       const mission = missionService.get(missionId);
       const guardianDependencies = missions.guardianDependencies(missionId);
@@ -237,6 +296,9 @@ export function createDefaultMissionControllerRunner(
       const activeTask = activeTaskId
         ? guardianDependencies.tasks.find((task) => task.id === activeTaskId)
         : undefined;
+      const missionEvents = missions.listEvents(missionId);
+      let terminalOutcomeKind: TerminalEntryKind | undefined;
+      let terminalOutcomeReason: string | undefined;
       let recovery: ControllerRecovery | null = latestRecovery ? {
         category: latestRecovery.category,
         diagnosis: latestRecovery.diagnosis,
@@ -246,12 +308,28 @@ export function createDefaultMissionControllerRunner(
         retryCondition: latestRecovery.retryCondition,
         exhausted: latestRecovery.exhausted,
       } : null;
+      if (mission.status === "cancelled" && missionEvents.some((event) => event.type === "mission.cancelled")) {
+        terminalOutcomeKind = "user_cancel";
+        terminalOutcomeReason = "Mission cancelled by user.";
+      }
+      if (mission.status !== "cancelled") {
+        const latestLoop = [...missionEvents].reverse().find((event) => event.type === "mission.loop_detected");
+        const loopKind = latestLoop?.data.terminalEntryKind;
+        if (typeof loopKind === "string" && TERMINAL_ENTRY_KINDS.includes(loopKind as TerminalEntryKind)) {
+          terminalOutcomeKind = loopKind as TerminalEntryKind;
+          terminalOutcomeReason = latestLoop?.summary;
+        }
+      }
       if (activeTask && (activeTask.status === "failed" || activeTask.status === "interrupted")) {
         const terminal = dependencies.db.prepare(`SELECT payload_json AS payloadJson
           FROM task_events
           WHERE task_id=? AND type IN ('task.failed','task.interrupted')
           ORDER BY sequence DESC LIMIT 1`).get(activeTask.id) as { payloadJson: string } | undefined;
         const payload = terminal ? JSON.parse(terminal.payloadJson) as Record<string, unknown> : {};
+        if (typeof payload.terminalEntryKind === "string" && TERMINAL_ENTRY_KINDS.includes(payload.terminalEntryKind as TerminalEntryKind)) {
+          terminalOutcomeKind = payload.terminalEntryKind as TerminalEntryKind;
+          terminalOutcomeReason = typeof payload.message === "string" ? payload.message : undefined;
+        }
         const route = dependencies.db.prepare("SELECT provider_id AS providerId FROM task_routing WHERE task_id=?")
           .get(activeTask.id) as { providerId: string } | undefined;
         const allowProviderSwitch = mission.execution.providerId === null;
@@ -276,6 +354,9 @@ export function createDefaultMissionControllerRunner(
       }
       return {
         missionStatus: mission.status,
+        terminalOutcomeRecorded: missionEvents.some((event) => event.type === "mission.terminal_outcome_recorded"),
+        ...(terminalOutcomeKind ? { terminalOutcomeKind } : {}),
+        ...(terminalOutcomeReason ? { terminalOutcomeReason } : {}),
         tasks: guardianDependencies.tasks,
         approvals: guardianDependencies.approvals.map((approval) => ({ ...approval, autoResolvable: false })),
         guardianDecision: missionService.assessGuardian(missionId),
@@ -362,7 +443,6 @@ export function createDefaultMissionControllerRunner(
       return { taskId: result.task.id };
     },
     finalizeMission: (missionId) => missionService.finalize(missionId),
-    concludeMission: (missionId, reason) => missionService.concludeWithoutSuccess(missionId, reason),
     validateMission: (missionId) => missionService.verifyAll(missionId),
     reviewMission: (missionId) => missionService.runReview(missionId),
     resolveApproval: (approvalId) => approvals.resolve(approvalId, {
@@ -376,6 +456,7 @@ export function createDefaultMissionControllerRunner(
     runtime,
     controller,
     taskRunner: dependencies.taskRunner,
+    concludeTerminalOutcome: (missionId, input) => missionService.concludeTerminalOutcome(missionId, input),
     ownerId: dependencies.ownerId ?? `mission-controller:${process.pid}:${randomUUID()}`,
     now,
     ...(dependencies.leaseMs === undefined ? {} : { leaseMs: dependencies.leaseMs }),

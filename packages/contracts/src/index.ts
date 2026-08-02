@@ -1060,7 +1060,7 @@ export const MissionEventTypeSchema=z.enum([
   "mission.contract_built","mission.requirement_reopened","mission.requirement_status_changed",
   // Close-out without a Guardian pass: the gates still run and the mission is
   // still graded, so the give-up itself is on the record.
-  "mission.conclusion_started","mission.conclusion_gate_failed",
+  "mission.conclusion_started","mission.conclusion_gate_failed","mission.terminal_outcome_recorded",
 ]);
 export type MissionEventType=z.infer<typeof MissionEventTypeSchema>;
 export const MissionEventSchema=z.object({

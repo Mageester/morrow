@@ -204,6 +204,7 @@ export type ServerDependencies = {
     run?(missionId: string): void;
     wake(missionId: string): void;
     cancel?(missionId: string): void;
+    waitFor?(missionId: string): Promise<void>;
     isActive?(missionId: string): boolean;
   };
   /** Injectable background-process supervisor (tests point its logs at a temp dir). */
@@ -1834,17 +1835,23 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     requireMission(missionId);
     deps.missionControllerRunner?.cancel?.(missionId);
     const cancelled = runMission(() => missionService.cancel(missionId));
-    const runtime = missionRuntime.get(missionId);
-    if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
-      missionRuntime.transition({
-        missionId,
-        from: runtime.state,
-        to: "cancelled",
-        cause: "user_cancelled",
-        actor: "user",
-        details: {},
-        now: new Date().toISOString(),
-      });
+    if (deps.missionControllerRunner?.waitFor) {
+      deps.missionControllerRunner.wake(missionId);
+      await deps.missionControllerRunner.waitFor?.(missionId);
+    } else {
+      deps.missionControllerRunner?.wake(missionId);
+      const runtime = missionRuntime.get(missionId);
+      if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
+        missionRuntime.transition({
+          missionId,
+          from: runtime.state,
+          to: "cancelled",
+          cause: "user_cancelled",
+          actor: "user",
+          details: {},
+          now: new Date().toISOString(),
+        });
+      }
     }
     return { ...cancelled, runtime: missionProjection(missionId).runtime };
   });

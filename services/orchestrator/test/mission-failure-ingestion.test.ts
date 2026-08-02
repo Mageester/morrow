@@ -127,6 +127,17 @@ describe("mission tool-failure reporter (unit)", () => {
     expect(service.get(missionId).status).toBe("blocked");
   });
 
+  it("reports exhaustion only after the durable fourth loop failure", () => {
+    const r = reporter();
+    const exhausted = Array.from({ length: 4 }, () => r.reportFailure(
+      "run_command",
+      { command: "rm -rf ." },
+      "Command execution denied by user.",
+      "tool_failed",
+    ).exhausted);
+    expect(exhausted).toEqual([false, false, false, true]);
+  });
+
   it("ledger write errors never break execution", () => {
     const broken = createMissionToolFailureReporter({
       service: { recordFailure() { throw new Error("db locked"); }, markRecovered() { throw new Error("db locked"); } } as any,

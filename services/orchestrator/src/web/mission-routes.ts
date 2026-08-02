@@ -43,7 +43,7 @@ export interface WebMissionRouteDependencies {
   missionRuntime: ReturnType<typeof missionRuntimeRepository>;
   missionService: MissionService;
   /** Wake durable mission ownership after a create or an attention resolution. */
-  missionControllerRunner?: { wake(missionId: string): void; cancel?(missionId: string): void };
+  missionControllerRunner?: { wake(missionId: string): void; cancel?(missionId: string): void; waitFor?(missionId: string): Promise<void> };
   /** Provider environment; injectable for tests. Defaults to process.env. */
   env?: NodeJS.ProcessEnv;
   /** Header/body idempotency-key reader (shared with the task routes). */
@@ -279,7 +279,24 @@ export function registerWebMissionRoutes(app: FastifyInstance, deps: WebMissionR
     deps.missionService.cancel(missionId);
     deps.missionControllerRunner?.cancel?.(missionId);
     // Wake once so the controller can park the runtime machine in `cancelled`.
-    deps.missionControllerRunner?.wake(missionId);
+    if (deps.missionControllerRunner?.waitFor) {
+      deps.missionControllerRunner.wake(missionId);
+      await deps.missionControllerRunner.waitFor(missionId);
+    } else {
+      deps.missionControllerRunner?.wake(missionId);
+      const runtime = deps.missionRuntime.get(missionId);
+      if (runtime && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)) {
+        deps.missionRuntime.transition({
+          missionId,
+          from: runtime.state,
+          to: "cancelled",
+          cause: "user_cancelled",
+          actor: "user",
+          details: {},
+          now: now(),
+        });
+      }
+    }
     return projectMissionForWeb(projectionInput(missionId));
   });
 

@@ -118,4 +118,28 @@ describe("TaskRunner", () => {
 
     expect(records.getAgentState("agent")?.state).toBe("cancelled");
   });
+
+  it("persists mission-terminal cancellation only on the exact task tree", async () => {
+    const createdAt = new Date().toISOString();
+    taskRepository(db).createTask({ id: "root", projectId: "p1", kind: "inspect_workspace", status: "queued", createdAt });
+    taskRepository(db).createTask({ id: "child", projectId: "p1", kind: "inspect_workspace", status: "queued", parentTaskId: "root", createdAt });
+    taskRepository(db).createTask({ id: "sibling", projectId: "p1", kind: "inspect_workspace", status: "queued", createdAt });
+    const records = taskRecordsRepository(db);
+    const runner = new TaskRunner(db, async ({ taskId, abortSignal }) => {
+      records.transitionTask(taskId, "running", { id: `${taskId}-running`, createdAt, payload: {} });
+      await new Promise<void>((resolve) => abortSignal?.addEventListener("abort", () => resolve(), { once: true }));
+    });
+
+    runner.run("root");
+    runner.run("child");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    runner.cancel("root", "mission_terminal");
+    await runner.waitFor("root");
+
+    expect(records.listEvents("root").at(-1)?.payload).toMatchObject({ reason: "mission_terminal" });
+    expect(records.listEvents("child").at(-1)?.payload).toMatchObject({ reason: "parent_cancelled" });
+    expect(taskRepository(db).getTaskById("sibling")?.status).toBe("queued");
+    expect(runner.isActive("root")).toBe(false);
+    expect(runner.isActive("child")).toBe(false);
+  });
 });

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
@@ -15,17 +16,21 @@ import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 
 describe("agent loop detection", () => {
   let db: Database.Database;
-  const tempDir = join(process.cwd(), "test-temp-loop-" + Math.random().toString(36).slice(2));
+  let tempDir = "";
 
   beforeEach(() => {
     db = openDatabase(":memory:");
-    mkdirSync(tempDir, { recursive: true });
+    tempDir = mkdtempSync(join(tmpdir(), "morrow-agent-loop-"));
   });
   afterEach(() => {
-    db.close();
     try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {}
+      db.close();
+    } finally {
+      if (tempDir) {
+        rmSync(tempDir, { recursive: true, force: true });
+        tempDir = "";
+      }
+    }
   });
 
   function seed(missionLinked = false) {
@@ -179,6 +184,28 @@ describe("agent loop detection", () => {
       .toBe(false);
   });
 
+  it("ends a mission task after the durable tool-failure loop is exhausted", async () => {
+    seed(true);
+    const repeatedFailure: ProviderChunk[] = [
+      {
+        type: "tool_call",
+        toolCalls: [{ id: "forbidden", index: 0, type: "function", function: { name: "unknown_tool", arguments: JSON.stringify({ target: "same" }) } }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure] });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "blocked" });
+    expect(provider.requests).toHaveLength(4);
+    expect(taskRecordsRepository(db).listEvents("task-1").at(-1)?.payload).toMatchObject({
+      reason: "strategy_change_required",
+      terminalEntryKind: "tool_loop_exhausted",
+    });
+  });
+
   it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
     seed(true);
     const turns: ProviderChunk[][] = [];
@@ -279,9 +306,18 @@ describe("agent loop detection", () => {
 
 describe("empty-response recovery raises the output ceiling", () => {
   let db: Database.Database;
-  const tempDir = join(process.cwd(), "test-temp-budget-" + Math.random().toString(36).slice(2));
-  beforeEach(() => { db = openDatabase(":memory:"); mkdirSync(tempDir, { recursive: true }); });
-  afterEach(() => { db.close(); try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ } });
+  let tempDir = "";
+  beforeEach(() => { db = openDatabase(":memory:"); tempDir = mkdtempSync(join(tmpdir(), "morrow-agent-budget-")); });
+  afterEach(() => {
+    try {
+      db.close();
+    } finally {
+      if (tempDir) {
+        rmSync(tempDir, { recursive: true, force: true });
+        tempDir = "";
+      }
+    }
+  });
 
   it("escalates maxOutputTokens each retry instead of resending the same exhausted allowance", async () => {
     const ts = new Date().toISOString();

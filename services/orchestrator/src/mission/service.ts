@@ -36,6 +36,7 @@ import type { CortexService } from "../cortex/service.js";
 import { CortexError } from "../cortex/service.js";
 import { buildMissionSpecialists, specialistsFromEvents } from "./specialists.js";
 import { evaluateGuardian, type GuardianDecision } from "./guardian.js";
+import type { MissionTerminalOutcomeInput } from "./terminal-outcome.js";
 
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
@@ -82,6 +83,7 @@ export class MissionService {
   private readonly now: () => string;
   private readonly serviceInstanceId: string;
   private readonly reviewLeaseMs: number;
+  private readonly terminalOutcomePromises = new Map<string, Promise<Mission>>();
 
   constructor(private readonly deps: MissionServiceDeps) {
     this.repo = deps.repo;
@@ -431,7 +433,13 @@ export class MissionService {
     this.repo.appendEvent(missionId, "mission.failure_recorded", `${category}: ${operation.slice(0, 80)}`, { category, attempt, signature }, this.now());
 
     if (attempt >= 3) {
-      this.repo.appendEvent(missionId, "mission.loop_detected", `Repeated failure detected (${attempt}×): ${signature}`, { signature, attempt }, this.now());
+      this.repo.appendEvent(
+        missionId,
+        "mission.loop_detected",
+        `Repeated failure detected (${attempt}×): ${signature}`,
+        { signature, attempt, ...(escalate ? { terminalEntryKind: "tool_loop_exhausted" } : {}) },
+        this.now(),
+      );
       // Exactly one plan revision per looping signature: reality disproved the
       // current approach, so the plan must change rather than retry forever.
       if (attempt === 3) {
@@ -468,7 +476,7 @@ export class MissionService {
       this.repo.appendEvent(missionId, "mission.plan_revised", `Plan revision ${revision.revision}: ${input.trigger.replace(/_/g, " ")}`, { revision: revision.revision, trigger: input.trigger }, this.now());
     } catch (err) {
       if (err instanceof CortexError && err.code === "limit") {
-        this.repo.appendEvent(missionId, "mission.loop_detected", "Plan revision limit reached; blocking for human input", {}, this.now());
+        this.repo.appendEvent(missionId, "mission.loop_detected", "Plan revision limit reached; blocking for human input", { terminalEntryKind: "revision_limit" }, this.now());
         const mission = this.get(missionId);
         if (!isTerminalMissionStatus(mission.status) && canTransitionMission(mission.status, "blocked")) {
           this.transition(missionId, "blocked");
@@ -1191,28 +1199,164 @@ export class MissionService {
    * bare `blocked` status with no result at all.
    */
   async concludeWithoutSuccess(missionId: string, reason: string): Promise<Mission> {
-    const mission = this.get(missionId);
-    if (isTerminalMissionStatus(mission.status)) return mission;
-    this.repo.appendEvent(missionId, "mission.conclusion_started", `Closing out without a Guardian pass: ${reason}`.slice(0, 500), { reason }, this.now());
+    return this.concludeTerminalOutcome(missionId, { kind: "controller_exhausted", reason });
+  }
+
+  /**
+   * Persist exactly one terminal outcome. Task cancellation and controller
+   * runtime transitions are coordinated by the caller; this method owns the
+   * mission-side close-out, result pinning, and durable audit marker.
+   */
+  async concludeTerminalOutcome(missionId: string, input: MissionTerminalOutcomeInput): Promise<Mission> {
+    const inFlight = this.terminalOutcomePromises.get(missionId);
+    if (inFlight) return inFlight;
+    const promise = this.concludeTerminalOutcomeInternal(missionId, input);
+    this.terminalOutcomePromises.set(missionId, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.terminalOutcomePromises.get(missionId) === promise) this.terminalOutcomePromises.delete(missionId);
+    }
+  }
+
+  private async concludeTerminalOutcomeInternal(missionId: string, input: MissionTerminalOutcomeInput): Promise<Mission> {
+    const existing = this.terminalOutcomeEvent(missionId);
+    if (existing) return this.assertRecordedTerminalOutcome(missionId, existing);
+
+    const reason = input.reason.slice(0, 2_000);
+    if (!this.repo.listEvents(missionId).some((event) => event.type === "mission.conclusion_started")) {
+      this.repo.transaction(() => {
+        if (!this.repo.listEvents(missionId).some((event) => event.type === "mission.conclusion_started")) {
+          this.repo.appendEvent(
+            missionId,
+            "mission.conclusion_started",
+            `Terminal close-out started (${input.kind}): ${reason}`.slice(0, 1_000),
+            { kind: input.kind, reason },
+            this.now(),
+          );
+        }
+      });
+    }
+
     try {
       await this.verifyAll(missionId, { revisePlanOnFailure: false });
     } catch (error) {
-      // A gate that throws must not strand the mission mid-close. The failure
-      // is recorded and grading proceeds on whatever evidence did land.
-      this.repo.appendEvent(
-        missionId,
-        "mission.conclusion_gate_failed",
-        `Verification pass errored during close-out: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`,
-        {},
-        this.now(),
+      this.repo.transaction(() => {
+        this.repo.appendEvent(
+          missionId,
+          "mission.conclusion_gate_failed",
+          `Verification pass errored during close-out: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`,
+          { kind: input.kind },
+          this.now(),
+        );
+      });
+    }
+
+    let current = this.get(missionId);
+    let terminalStatus = input.preserveStatus ?? current.status;
+    if (!isTerminalMissionStatus(terminalStatus)) {
+      // The legacy close-without-success path still grades from its evidence.
+      // Controller-owned paths pass an explicit terminal status and therefore
+      // do not bypass the existing successful-finalization integrity checks.
+      current = this.finalize(missionId);
+      terminalStatus = current.status;
+    }
+
+    if (input.preserveStatus && isTerminalMissionStatus(current.status) && current.status !== terminalStatus) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${missionId} is ${current.status} but terminal outcome requested ${terminalStatus}`,
+        "finalization_integrity_error",
       );
     }
-    const current = this.get(missionId);
-    // A give-up path (loop detection, revision limit) may have already driven
-    // the mission terminal while the gates ran. Its status stands; the evidence
-    // recorded above is still durably attached to the criteria it proves.
-    if (isTerminalMissionStatus(current.status)) return current;
-    return this.finalize(missionId);
+    if (!isTerminalMissionStatus(terminalStatus)) {
+      throw new MissionError(`Mission ${missionId} did not reach a terminal status during close-out`, "finalization_integrity_error");
+    }
+    if (current.status !== terminalStatus) {
+      assertMissionTransition(current.status, terminalStatus);
+      const from = current.status;
+      this.repo.transaction(() => {
+        const fresh = this.repo.get(missionId)!;
+        if (fresh.status !== from) {
+          throw new MissionError(`Finalization integrity error: mission ${missionId} changed during terminal close-out`, "finalization_integrity_error");
+        }
+        const now = this.now();
+        this.repo.setStatus(missionId, terminalStatus, now);
+        this.repo.appendEvent(missionId, "mission.status_changed", `Status: ${from} → ${terminalStatus}`, { from, to: terminalStatus }, now);
+      });
+      current = this.get(missionId);
+    }
+
+    if (current.status !== terminalStatus) {
+      throw new MissionError(`Finalization integrity error: mission ${missionId} status changed during terminal close-out`, "finalization_integrity_error");
+    }
+    if (current.result && current.result.status !== terminalStatus) {
+      throw new MissionError(
+        `Finalization integrity error: mission ${missionId} status is ${terminalStatus} but persisted result.status is ${current.result.status}`,
+        "finalization_integrity_error",
+      );
+    }
+
+    const result = current.result ?? buildMissionResult(current, {
+      review: current.finalReview,
+      changedFiles: this.changedFilesFor(current),
+      humanInterventions: 0,
+      tasksCompleted: 0,
+      elapsedMs: current.startedAt ? Date.parse(this.now()) - Date.parse(current.startedAt) : null,
+      spentUsd: current.budget.spentUsd || null,
+      finalStatus: terminalStatus,
+    });
+
+    this.repo.transaction(() => {
+      const fresh = this.repo.get(missionId)!;
+      const recorded = this.repo.listEvents(missionId).filter((event) => event.type === "mission.terminal_outcome_recorded");
+      if (recorded.length > 1) {
+        throw new MissionError(`Finalization integrity error: mission ${missionId} has multiple terminal outcome records`, "finalization_integrity_error");
+      }
+      if (recorded.length === 1) return;
+      if (fresh.status !== terminalStatus) {
+        throw new MissionError(`Finalization integrity error: mission ${missionId} changed before terminal outcome recording`, "finalization_integrity_error");
+      }
+      if (fresh.result && JSON.stringify(fresh.result) !== JSON.stringify(result)) {
+        throw new MissionError(`Finalization integrity error: mission ${missionId} result changed before terminal outcome recording`, "finalization_integrity_error");
+      }
+      const now = this.now();
+      if (!fresh.result) this.repo.setResult(missionId, result, now);
+      this.repo.appendEvent(
+        missionId,
+        "mission.terminal_outcome_recorded",
+        `Terminal outcome recorded: ${terminalStatus}`,
+        { kind: input.kind, reason, status: terminalStatus, result },
+        now,
+      );
+    });
+
+    const recorded = this.terminalOutcomeEvent(missionId);
+    if (!recorded) {
+      throw new MissionError(`Finalization integrity error: mission ${missionId} terminal outcome was not recorded`, "finalization_integrity_error");
+    }
+    return this.assertRecordedTerminalOutcome(missionId, recorded);
+  }
+
+  private terminalOutcomeEvent(missionId: string) {
+    const events = this.repo.listEvents(missionId).filter((event) => event.type === "mission.terminal_outcome_recorded");
+    if (events.length > 1) {
+      throw new MissionError(`Finalization integrity error: mission ${missionId} has multiple terminal outcome records`, "finalization_integrity_error");
+    }
+    return events[0];
+  }
+
+  private assertRecordedTerminalOutcome(missionId: string, event: { data: Record<string, unknown> }): Mission {
+    const mission = this.get(missionId);
+    const data = event.data;
+    if (
+      data.status !== mission.status
+      || !mission.result
+      || data.result === null
+      || JSON.stringify(data.result) !== JSON.stringify(mission.result)
+    ) {
+      throw new MissionError(`Finalization integrity error: mission ${missionId} terminal outcome disagrees with its durable result`, "finalization_integrity_error");
+    }
+    return mission;
   }
 
   /** Grade the mission from criteria + review and set the terminal status. */

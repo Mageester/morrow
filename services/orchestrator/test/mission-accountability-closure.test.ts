@@ -172,7 +172,9 @@ describe("MissionService.concludeWithoutSuccess", () => {
     expect(evidence.some((e) => e.status === "passed")).toBe(true);
     expect(evidence.some((e) => e.status === "failed")).toBe(true);
     expect(concluded.result).not.toBeNull();
-    expect(repo.listEvents(mission.id).some((e) => e.type === "mission.conclusion_started")).toBe(true);
+    expect(concluded.result?.status).toBe(concluded.status);
+    expect(repo.listEvents(mission.id).filter((e) => e.type === "mission.conclusion_started")).toHaveLength(1);
+    expect(repo.listEvents(mission.id).filter((e) => e.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
     db.close();
   });
 
@@ -204,6 +206,24 @@ describe("MissionService.concludeWithoutSuccess", () => {
 
     expect(again.status).toBe(terminal.status);
     expect(repo.listEvidence(mission.id)).toHaveLength(evidenceCount);
+    expect(repo.listEvents(mission.id).filter((e) => e.type === "mission.conclusion_started")).toHaveLength(1);
+    expect(repo.listEvents(mission.id).filter((e) => e.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
+    db.close();
+  });
+
+  it("rejects a terminal outcome whose durable result is later contradicted", async () => {
+    const { db, service, repo } = serviceHarness();
+    const mission = service.create("p1", { objective: "Build it" });
+    service.addCriterion(mission.id, "The suite passes", { kind: "test", command: "npm test -- pass", expectExitCode: 0 });
+    service.approveCriteria(mission.id);
+    const concluded = await service.concludeWithoutSuccess(mission.id, "strategies exhausted");
+    repo.setResult(mission.id, { ...concluded.result!, status: concluded.status === "blocked" ? "failed" : "blocked" });
+
+    await expect(service.concludeTerminalOutcome(mission.id, {
+      kind: "startup_reconciliation",
+      reason: "reconcile",
+      preserveStatus: concluded.status,
+    })).rejects.toMatchObject({ code: "finalization_integrity_error" });
     db.close();
   });
 

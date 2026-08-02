@@ -8,6 +8,8 @@ import {
   executionContinuityRepository,
 } from "./repositories/execution-continuity.js";
 import type { MissionControllerRunner } from "./mission/controller-runner.js";
+import type { MissionTerminalOutcomeInput } from "./mission/terminal-outcome.js";
+import type { MissionStatus } from "@morrow/contracts";
 
 /**
  * Minimal structural view of the task runner that reconciliation needs. Kept
@@ -219,20 +221,47 @@ export function reconcileMissionsOnStartup(
     {
       db: Database.Database;
       runner: ReconcilableRunner;
-      controllerRunner: Pick<MissionControllerRunner, "run" | "wake" | "isActive">;
+      controllerRunner: Pick<MissionControllerRunner, "run" | "wake" | "isActive"> & {
+        reconcileTerminalOutcome?: (missionId: string, input: MissionTerminalOutcomeInput) => Promise<void>;
+      };
       records?: ReturnType<typeof taskRecordsRepository>;
       now?: () => string;
     },
 ): MissionReconcileSummary {
-  const missions = db.prepare(`SELECT mission_id AS missionId
-    FROM mission_runtime
-    WHERE state NOT IN ('blocked','completed','cancelled','abandoned','superseded')
-    ORDER BY created_at,mission_id`).all() as Array<{ missionId: string }>;
+  const missions = db.prepare(`SELECT runtime.mission_id AS missionId
+    FROM mission_runtime AS runtime
+    JOIN missions AS mission ON mission.id = runtime.mission_id
+    WHERE runtime.state NOT IN ('blocked','completed','cancelled','abandoned','superseded')
+    ORDER BY runtime.created_at,runtime.mission_id`).all() as Array<{ missionId: string }>;
+  const terminalMissions = db.prepare(`SELECT runtime.mission_id AS missionId, mission.status AS status
+    FROM mission_runtime AS runtime
+    JOIN missions AS mission ON mission.id = runtime.mission_id
+    WHERE runtime.state IN ('blocked','completed','cancelled','abandoned','superseded')
+      AND mission.status IN ('completed','completed_with_reservations','partially_completed','blocked','failed','cancelled')
+      AND NOT EXISTS (
+        SELECT 1 FROM mission_events AS terminal_event
+        WHERE terminal_event.mission_id = mission.id
+          AND terminal_event.type = 'mission.terminal_outcome_recorded'
+      )
+    ORDER BY runtime.created_at,runtime.mission_id`).all() as Array<{ missionId: string; status: string }>;
 
   let missionsResumed = 0;
   for (const row of missions) {
     if (controllerRunner.isActive(row.missionId)) continue;
     controllerRunner.run(row.missionId);
+    missionsResumed += 1;
+  }
+  for (const row of terminalMissions) {
+    const reconcile = controllerRunner.reconcileTerminalOutcome;
+    if (reconcile) {
+      void reconcile.call(controllerRunner, row.missionId, {
+        kind: "startup_reconciliation",
+        reason: "Terminal mission was missing its durable outcome record at startup.",
+        preserveStatus: row.status as MissionStatus,
+      }).catch((error) => {
+        console.error(`Mission terminal reconciliation failed for ${row.missionId}:`, error);
+      });
+    }
     missionsResumed += 1;
   }
 

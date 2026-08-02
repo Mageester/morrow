@@ -713,6 +713,7 @@ export async function executeAgentChatTask({
     agentId: (task as { agentId?: string | null }).agentId ?? null,
     log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
   });
+  let missionFailureExhausted: { toolName: string; message: string } | null = null;
   let turn = 0;
   let absoluteTurn = 0;
   const TERMINAL_AGENT_STATES = new Set<AgentExecutionState>(["completed", "failed", "cancelled"]);
@@ -2347,7 +2348,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             errorMessage = err.message || "Unknown error";
             resultStr = JSON.stringify({ error: errorMessage });
             event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
-            missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
+            const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
+            if (report.exhausted) missionFailureExhausted = { toolName: continuation.toolName, message: errorMessage };
           }
         } else {
           isSuccess = false;
@@ -2355,7 +2357,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
-          missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
+          const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
+          if (report.exhausted) missionFailureExhausted = { toolName: continuation.toolName, message: errorMessage };
         }
 
         convs.upsertToolCall({
@@ -3006,6 +3009,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     validatedCriterionIds: [],
     observedAt: now(),
   });
+
+  if (missionFailureExhausted) {
+    const exhausted = missionFailureExhausted;
+    missionFailureExhausted = null;
+    if (await returnMissionWorkerOutcome(
+      "strategy_change_required",
+      `Tool loop exhausted after repeated ${exhausted.toolName} failures: ${exhausted.message}`,
+      { terminalEntryKind: "tool_loop_exhausted", toolName: exhausted.toolName },
+    )) return;
+  }
 
   while (true) {
     if (checkCancelled()) {
@@ -4577,7 +4590,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             classification: errorType,
             ...failureDetails,
           });
-          missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
+          const report = missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
+          if (report.exhausted) missionFailureExhausted = { toolName: tc.name, message: errorMessage };
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);
 
@@ -4686,6 +4700,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           toolCallId: tc.id,
           content: contextResultStr
         });
+        if (missionFailureExhausted) {
+          const exhausted = missionFailureExhausted;
+          missionFailureExhausted = null;
+          if (await returnMissionWorkerOutcome(
+            "strategy_change_required",
+            `Tool loop exhausted after repeated ${exhausted.toolName} failures: ${exhausted.message}`,
+            { terminalEntryKind: "tool_loop_exhausted", toolName: exhausted.toolName },
+          )) return;
+        }
       }
       if (browserVisionQueue.length > 0) {
         const images = browserVisionQueue.splice(0, browserVisionQueue.length);

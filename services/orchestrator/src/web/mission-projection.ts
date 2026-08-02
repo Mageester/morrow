@@ -221,6 +221,7 @@ const ACTIVITY_KIND: Record<MissionEventType, WebMissionActivity["kind"]> = {
   "mission.route_selected": "system",
   "mission.conclusion_started": "recovery",
   "mission.conclusion_gate_failed": "recovery",
+  "mission.terminal_outcome_recorded": "recovery",
 };
 
 function humanizeEventType(type: MissionEventType): string {

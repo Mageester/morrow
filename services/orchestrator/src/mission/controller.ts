@@ -12,6 +12,7 @@ import type {
   missionRuntimeRepository,
 } from "../repositories/mission-runtime.js";
 import type { GuardianDecision } from "./guardian.js";
+import { terminalDispositionForMission, type MissionTerminalOutcomeInput, type TerminalEntryKind } from "./terminal-outcome.js";
 
 type MissionRuntimeRepository = ReturnType<typeof missionRuntimeRepository>;
 
@@ -37,6 +38,9 @@ export interface ControllerSnapshot {
    * approval) or already terminal (cancelled).
    */
   missionStatus?: MissionStatus;
+  terminalOutcomeKind?: TerminalEntryKind;
+  terminalOutcomeReason?: string;
+  terminalOutcomeRecorded?: boolean;
 }
 
 export interface MissionControllerDependencies {
@@ -47,6 +51,9 @@ export interface MissionControllerDependencies {
   /** Close the accountability loop when no automatic strategy remains: run the
    *  evidence gates once and grade the mission from what they prove. */
   concludeMission?(missionId: string, reason: string): Promise<unknown> | unknown;
+  /** Production defers this to MissionControllerRunner so task cancellation,
+   * mission close-out, and runtime transition share one terminal boundary. */
+  deferTerminalOutcomes?: boolean;
   validateMission?(missionId: string): Promise<unknown> | unknown;
   reviewMission?(missionId: string): Promise<unknown> | unknown;
   resolveApproval?(approvalId: string): Promise<unknown> | unknown;
@@ -74,6 +81,7 @@ export interface ControllerTickResult {
   action: string;
   immediate: boolean;
   waitingForExternal: boolean;
+  terminalOutcome?: MissionTerminalOutcomeInput;
 }
 
 export function wakeReasonForTask(taskId: string): string {
@@ -108,13 +116,29 @@ export class MissionController {
       return this.result(missionId, `transition:${to}`, true, false);
     };
 
+    if (
+      snapshot.terminalOutcomeRecorded === false
+      && snapshot.missionStatus
+      && ["completed", "completed_with_reservations", "partially_completed", "blocked", "failed", "cancelled"].includes(snapshot.missionStatus)
+    ) {
+      return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+        kind: snapshot.terminalOutcomeKind ?? (snapshot.recovery?.exhausted ? "controller_exhausted" : "startup_reconciliation"),
+        reason: snapshot.terminalOutcomeReason ?? snapshot.recovery?.diagnosis ?? "Terminal mission was missing its durable outcome record at startup.",
+        preserveStatus: snapshot.missionStatus,
+      });
+    }
+
     // A cancelled mission aggregate always wins: park the runtime machine in
     // its own cancelled state instead of continuing to drive dead work.
     if (
       snapshot.missionStatus === "cancelled"
       && !["blocked", "completed", "cancelled", "abandoned", "superseded"].includes(runtime.state)
     ) {
-      return transition("cancelled", "mission_cancelled");
+      return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+        kind: snapshot.terminalOutcomeKind ?? "user_cancel",
+        reason: snapshot.terminalOutcomeReason ?? "Mission cancelled by user.",
+        preserveStatus: "cancelled",
+      });
     }
 
     switch (runtime.state) {
@@ -156,12 +180,11 @@ export class MissionController {
         return this.validationTick(missionId, runtime, snapshot, fence, now);
       case "recovering":
         if (snapshot.recovery?.exhausted) {
-          // Exhaustion is where a mission stops trying, and it used to be where
-          // accountability stopped too: the runtime parked in `blocked` while
-          // the mission status stayed `running`, with no gates run and no
-          // grade. Close the loop first, then park.
-          await this.concludeExhausted(missionId, snapshot);
-          return transition("blocked", "strategies_exhausted");
+          return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+            kind: snapshot.terminalOutcomeKind ?? "controller_exhausted",
+            reason: snapshot.recovery.diagnosis,
+            preserveStatus: "blocked",
+          });
         }
         this.dependencies.runtime.setActiveTask({ missionId, taskId: null, fence, now });
         return transition("replanning", "recovery_selected");
@@ -232,17 +255,11 @@ export class MissionController {
       });
       return this.result(missionId, "recover:worker", true, false);
     }
-    this.dependencies.runtime.transition({
-      missionId,
-      from: "executing",
-      to: "blocked",
-      cause: "worker_cancelled",
-      actor: "controller",
-      details: { taskId: active.id },
-      fence,
-      now,
+    return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+      kind: snapshot.terminalOutcomeKind ?? "controller_exhausted",
+      reason: `Worker ${active.id} was cancelled before the mission reached validation.`,
+      preserveStatus: "blocked",
     });
-    return this.result(missionId, "blocked:worker_cancelled", false, false);
   }
 
   private async dispatchTick(
@@ -310,17 +327,11 @@ export class MissionController {
         now,
       });
       this.dependencies.recordDispatchFailure?.(missionId, message);
-      this.dependencies.runtime.transition({
-        missionId,
-        from: "executing",
-        to: "blocked",
-        cause: "dispatch_failed",
-        actor: "controller",
-        details: { operationId: operation.id, message },
-        fence,
-        now,
+      return this.terminalOutcome(missionId, runtime, this.dependencies.loadSnapshot(missionId), fence, now, {
+        kind: "controller_exhausted",
+        reason: `Worker dispatch failed: ${message}`,
+        preserveStatus: "blocked",
       });
-      return this.result(missionId, "blocked:dispatch_failed", false, false);
     }
   }
 
@@ -430,17 +441,20 @@ export class MissionController {
         return this.result(missionId, "recover:finalization", true, false);
       }
     }
-    this.dependencies.runtime.transition({
-      missionId,
-      from: "validating",
-      to: "completed",
-      cause: "guardian_passed",
-      actor: "guardian",
-      details: { operationId: operation.id },
-      fence,
-      now,
+    const finalizedStatus = this.dependencies.loadSnapshot(missionId).missionStatus;
+    const terminalStatus = finalizedStatus && [
+      "completed",
+      "completed_with_reservations",
+      "partially_completed",
+      "blocked",
+      "failed",
+      "cancelled",
+    ].includes(finalizedStatus) ? finalizedStatus : "completed";
+    return this.terminalOutcome(missionId, runtime, snapshot, fence, now, {
+      kind: "normal_finalize",
+      reason: "Guardian passed and finalization completed.",
+      preserveStatus: terminalStatus,
     });
-    return this.result(missionId, "complete:guardian", false, false);
   }
 
   private async runGuardianAction(
@@ -497,20 +511,40 @@ export class MissionController {
     }
   }
 
-  /**
-   * Run the close-out once, and never let it keep the mission out of its
-   * terminal state. If grading itself throws, the mission still parks in
-   * `blocked` — an ungraded terminal state is bad, but a mission that cannot
-   * terminate at all is worse.
-   */
-  private async concludeExhausted(missionId: string, snapshot: ControllerSnapshot): Promise<void> {
-    if (!this.dependencies.concludeMission) return;
-    const reason = snapshot.recovery?.diagnosis ?? "No materially different automatic strategy remains.";
-    try {
-      await this.dependencies.concludeMission(missionId, reason);
-    } catch {
-      // Intentionally swallowed: see the note above.
+  private async terminalOutcome(
+    missionId: string,
+    runtime: MissionRuntime,
+    snapshot: ControllerSnapshot,
+    fence: MissionRuntimeLeaseFence,
+    now: string,
+    input: MissionTerminalOutcomeInput,
+  ): Promise<ControllerTickResult> {
+    if (this.dependencies.deferTerminalOutcomes) {
+      return { ...this.result(missionId, `terminal:pending:${input.kind}`, false, false), terminalOutcome: input };
     }
+
+    // Compatibility for direct controller callers: production defers to the
+    // runner, while isolated controller tests retain the old terminal runtime
+    // behavior and still exercise the close-out hook.
+    try {
+      await this.dependencies.concludeMission?.(missionId, input.reason);
+    } catch {
+      // Runtime termination remains authoritative for this legacy fallback.
+    }
+    const to = terminalDispositionForMission(input.preserveStatus ?? snapshot.missionStatus ?? "blocked");
+    if (runtime.state !== to) {
+      this.dependencies.runtime.transition({
+        missionId,
+        from: runtime.state,
+        to,
+        cause: to === "completed" ? "guardian_passed" : `terminal_outcome:${input.kind}`,
+        actor: "controller",
+        details: { reason: input.reason },
+        fence,
+        now,
+      });
+    }
+    return this.result(missionId, `terminal:${to}`, false, false);
   }
 
   private async recordRecovery(
