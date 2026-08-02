@@ -15,10 +15,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-function seed(db: any, workspacePath: string, mode: AgentMode) {
+function seed(db: any, workspacePath: string, mode: AgentMode, prompt = "go") {
   const project = projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });
   const conv = conversationsRepository(db).createConversation({ id: "c", projectId: "p", title: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: "go", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c", role: "user", content: prompt, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   const task = taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: new Date().toISOString() });
   conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c", role: "assistant", content: "", taskId: "t", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   taskRoutingRepository(db).upsert({
@@ -69,6 +69,16 @@ describe("agent security boundaries", () => {
     // produced a correct final answer and made no changes, so it must be
     // reported as completed, not interrupted (consumer usability baseline).
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("does not complete an inspection request from a denied tool call alone", async () => {
+    seed(db, ws, "read-only", "Inspect the workspace and report what you find.");
+    const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "inspect" }), done], [text("The inspection is complete."), done]], delayMs: 1 });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
   });
 
   // Regression: a model can violate run_command's declared `args: string[]`

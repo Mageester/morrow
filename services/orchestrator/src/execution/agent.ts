@@ -2285,6 +2285,38 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // persists observations to the durable mission ledger.
   const progressIdentity = taskMissionId ?? `task:${taskId}`;
   const missionRuntime = taskMissionId ? missionRuntimeRepository(db) : null;
+  const completionEvidenceLineage = (): NonNullable<CompletionInput["lineage"]> => {
+    const base = { taskId, operationId: null as string | null };
+    if (!taskMissionId || !missionRuntime) return base;
+    const operations = missionRuntime.listOperations(taskMissionId);
+    const taskIdFromResult = (operation: (typeof operations)[number]): string | null =>
+      typeof operation.result?.taskId === "string" ? operation.result.taskId : null;
+    const currentDispatch = operations
+      .filter((operation) => operation.kind === "dispatch_worker" && taskIdFromResult(operation) === taskId)
+      .at(-1);
+    if (!currentDispatch) return base;
+
+    const recovery = operations
+      .filter((operation) => operation.kind === "recover"
+        && operation.sequence < currentDispatch.sequence
+        && typeof operation.input.taskId === "string")
+      .at(-1);
+    const recoveredTaskId = typeof recovery?.input.taskId === "string" ? recovery.input.taskId : null;
+    const recoveredDispatch = recoveredTaskId
+      ? operations
+        .filter((operation) => operation.kind === "dispatch_worker"
+          && operation.sequence < currentDispatch.sequence
+          && taskIdFromResult(operation) === recoveredTaskId)
+        .at(-1)
+      : undefined;
+    return {
+      taskId,
+      operationId: currentDispatch.id,
+      ...(recoveredDispatch && recoveredTaskId
+        ? { inheritedFrom: { taskId: recoveredTaskId, operationId: recoveredDispatch.id } }
+        : {}),
+    };
+  };
   const progressHistory: MissionProgressObservation[] = [];
   const executionCheckpointIds: string[] = [];
   // Paths a tool reported writing this turn. Preferred over a workspace scan.
@@ -2507,37 +2539,101 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // evaluate. Preserve their existing terminal behavior, while keeping the
   // strict read-only contract for prompts that request inspection/evidence or
   // for any turn that actually records a tool observation.
-  const requestsReadOnlyEvidence = agentMode === "agent"
+  const requestsReadOnlyEvidence = taskShape === "read_only"
     && /\b(?:read|inspect|review|analy[sz]e|diagnos(?:e|is)|list|check|verify|examine|search)\b/i.test(latestUserPrompt);
   const completionContractApplies = (): boolean => {
     if (taskShape !== "read_only") return true;
     if (requestsReadOnlyEvidence || executionRequirements.some((requirement) => requirement.authoritative)) return true;
-    return convs.listToolCallsForMessage(assistantMessageRow.id).length > 0;
+    const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    // An answer-only compatibility turn may contain a tool the active mode
+    // explicitly denied. That denial is not evidence, but it also must not
+    // prevent the model from returning a plain answer. Other failed or
+    // approval-blocked calls remain subject to the strict contract.
+    if (calls.length > 0 && calls.every((call) => call.errorType === "tool_not_permitted_in_mode")) return false;
+    return calls.length > 0;
+  };
+  const parseBrowserResult = (call: ToolCallRecord): Record<string, unknown> | null => {
+    if (call.status !== "completed") return null;
+    try {
+      const result = JSON.parse(call.resultJson ?? "null") as unknown;
+      return result && typeof result === "object" && !Array.isArray(result) ? result as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  };
+  const hasBrowserFailure = (result: Record<string, unknown> | null): boolean => {
+    if (!result) return true;
+    if (result.ok === false || result.success === false || result.healthy === false) return true;
+    for (const key of ["error", "errorType", "errorMessage", "failure", "navigationError", "pageError", "snapshotError"]) {
+      const value = result[key];
+      if (value === true || (typeof value === "string" && value.trim().length > 0) || (Array.isArray(value) && value.length > 0)) return true;
+    }
+    return false;
+  };
+  const isViewport = (value: unknown): value is { width: number; height: number } => {
+    if (!value || typeof value !== "object") return false;
+    const viewport = value as { width?: unknown; height?: unknown };
+    return typeof viewport.width === "number" && Number.isFinite(viewport.width)
+      && typeof viewport.height === "number" && Number.isFinite(viewport.height);
+  };
+  const isPageSnapshot = (result: Record<string, unknown> | null): boolean => {
+    if (hasBrowserFailure(result)) return false;
+    if (typeof result?.url !== "string" || !/^https?:\/\//i.test(result.url)) return false;
+    return isViewport(result.viewport)
+      && Array.isArray(result.refs)
+      && typeof result.text === "string"
+      && typeof result.injectionFindings === "number";
+  };
+  const isCleanConsoleResult = (result: Record<string, unknown> | null): boolean => {
+    if (hasBrowserFailure(result) || !Array.isArray(result?.events)) return false;
+    return result.events.length === 0 && (result.count === undefined || result.count === 0);
+  };
+  const isValidViewportResult = (result: Record<string, unknown> | null): boolean =>
+    !hasBrowserFailure(result) && isViewport(result?.viewport) && typeof result?.url === "string";
+  const isValidInteractionResult = (call: ToolCallRecord, result: Record<string, unknown> | null): boolean => {
+    if (hasBrowserFailure(result)) return false;
+    if (call.toolName === "browser_click") return typeof result?.clicked === "string" && isPageSnapshot(result?.page as Record<string, unknown> | null);
+    if (call.toolName === "browser_type") return typeof result?.filled === "string" && typeof result?.characters === "number";
+    if (call.toolName === "browser_key") return typeof result?.key === "string";
+    if (call.toolName === "browser_select") return typeof result?.selected === "string" && typeof result?.value === "string";
+    return false;
   };
   const frontendCompletionEvidence = (calls: ToolCallRecord[]): CompletionInput["frontend"] | undefined => {
     if (!requestsFrontendBrowserValidation(latestUserPrompt)) return undefined;
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
     if (lastWrite < 0) return {};
-    const afterWrite = calls.slice(lastWrite + 1).filter((call) => call.status === "completed");
-    const names = new Set(afterWrite.map((call) => call.toolName));
+    const afterWrite = calls.slice(lastWrite + 1);
+    const browserCalls = afterWrite.filter((call) => BROWSER_EVIDENCE_TOOLS.has(call.toolName));
+    const routeCalls = browserCalls.filter((call) => call.toolName === "browser_open");
+    const snapshotCalls = browserCalls.filter((call) => call.toolName === "browser_snapshot");
+    const consoleCalls = browserCalls.filter((call) => call.toolName === "browser_console");
+    const viewportCalls = browserCalls.filter((call) => call.toolName === "browser_viewport");
+    const interactionCalls = browserCalls.filter((call) => ["browser_click", "browser_type", "browser_key", "browser_select"].includes(call.toolName));
+    const screenshotCalls = browserCalls.filter((call) => call.toolName === "browser_screenshot");
+    const routeHealthy = routeCalls.length > 0 && routeCalls.every((call) => isPageSnapshot(parseBrowserResult(call)));
+    const domSnapshot = snapshotCalls.length > 0 && snapshotCalls.every((call) => isPageSnapshot(parseBrowserResult(call)));
+    const consoleClean = consoleCalls.length > 0 && consoleCalls.every((call) => isCleanConsoleResult(parseBrowserResult(call)));
+    const interaction = interactionCalls.length > 0 && interactionCalls.every((call) => isValidInteractionResult(call, parseBrowserResult(call)));
+    const viewportResultsValid = viewportCalls.every((call) => isValidViewportResult(parseBrowserResult(call)));
     const viewports = new Set<string>();
     let visionAttached = true;
-    for (const call of afterWrite.filter((item) => item.toolName === "browser_screenshot")) {
-      try {
-        const result = JSON.parse(call.resultJson ?? "{}") as { viewport?: { width?: unknown; height?: unknown }; visionAnalysis?: unknown };
-        if (typeof result.viewport?.width === "number" && typeof result.viewport.height === "number") {
-          viewports.add(`${result.viewport.width}x${result.viewport.height}`);
-        }
-        if (result.visionAnalysis !== "attached_to_next_turn") visionAttached = false;
-      } catch {
+    let screenshotsValid = screenshotCalls.length > 0;
+    for (const call of screenshotCalls) {
+      const result = parseBrowserResult(call);
+      if (hasBrowserFailure(result) || !isViewport(result?.viewport) || typeof result?.visionAnalysis !== "string") {
+        screenshotsValid = false;
         visionAttached = false;
+        continue;
       }
+      viewports.add(`${result.viewport.width}x${result.viewport.height}`);
+      if (result.visionAnalysis !== "attached_to_next_turn") visionAttached = false;
     }
+    if (!viewportResultsValid || !screenshotsValid) viewports.clear();
     return {
-      routeHealthy: names.has("browser_open"),
-      domSnapshot: names.has("browser_snapshot"),
-      consoleClean: names.has("browser_console"),
-      interaction: afterWrite.some((call) => ["browser_click", "browser_type", "browser_key", "browser_select"].includes(call.toolName)),
+      routeHealthy,
+      domSnapshot,
+      consoleClean,
+      interaction,
       viewports: [...viewports],
       visionAttached: visionAttached && viewports.size > 0,
       visionRequired: routeSupportsVision,
@@ -2547,24 +2643,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if (!requestsFrontendBrowserValidation(latestUserPrompt)) return [];
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
     if (lastWrite < 0) return [];
-    const afterWrite = calls.slice(lastWrite + 1).filter((call) => call.status === "completed");
-    const names = new Set(afterWrite.map((call) => call.toolName));
+    const frontend = frontendCompletionEvidence(calls) ?? {};
     const gaps: string[] = [];
-    if (!names.has("browser_open")) gaps.push("approved browser route health/navigation");
-    if (!names.has("browser_snapshot")) gaps.push("explicit DOM snapshot");
-    if (!names.has("browser_console")) gaps.push("console/page-error inspection");
-    if (!afterWrite.some((call) => ["browser_click", "browser_type", "browser_key", "browser_select"].includes(call.toolName))) gaps.push("relevant browser interaction");
-    const screenshotViewports = new Set<string>();
-    let allScreenshotsVisionAttached = true;
-    for (const call of afterWrite.filter((item) => item.toolName === "browser_screenshot")) {
-      try {
-        const result = JSON.parse(call.resultJson ?? "{}") as { viewport?: { width?: unknown; height?: unknown }; visionAnalysis?: unknown };
-        if (typeof result.viewport?.width === "number" && typeof result.viewport.height === "number") {
-          screenshotViewports.add(`${result.viewport.width}x${result.viewport.height}`);
-        }
-        if (result.visionAnalysis !== "attached_to_next_turn") allScreenshotsVisionAttached = false;
-      } catch { allScreenshotsVisionAttached = false; }
-    }
+    if (frontend.routeHealthy !== true) gaps.push("approved browser route health/navigation");
+    if (frontend.domSnapshot !== true) gaps.push("explicit DOM snapshot");
+    if (frontend.consoleClean !== true) gaps.push("console/page-error inspection");
+    if (frontend.interaction !== true) gaps.push("relevant browser interaction");
+    const screenshotViewports = new Set(frontend.viewports ?? []);
     for (const viewport of ["1440x900", "768x1024", "390x844"]) {
       if (!screenshotViewports.has(viewport)) gaps.push(`${viewport} screenshot`);
     }
@@ -2574,7 +2659,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // model) â€” no amount of correct, complete work could ever pass it. The
     // viewport-coverage checks above still require the screenshots themselves
     // regardless of vision support.
-    if (routeSupportsVision && (!allScreenshotsVisionAttached || screenshotViewports.size === 0)) gaps.push("verified vision analysis attachment");
+    if (routeSupportsVision && (frontend.visionAttached !== true || screenshotViewports.size === 0)) gaps.push("verified vision analysis attachment");
     return gaps;
   };
   const completionStateFromCalls = (calls: ToolCallRecord[]): {
@@ -3031,6 +3116,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   const completionInputFor = (canonicalFinalAnswer: string | null, priorNarration: readonly string[] = []): CompletionInput => {
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
+    const lineage = completionEvidenceLineage();
     const artifactPaths = new Set<string>();
     for (const call of calls) {
       if (!WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.status !== "completed") continue;
@@ -3078,16 +3164,28 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
     const durableObservations = [
       ...calls
-        .filter((call) => call.status === "completed" || call.errorType === "tool_not_permitted_in_mode")
-        .map((call) => ({ id: call.id, kind: call.toolName, independentlyObserved: true, durable: true })),
+        .filter((call) => call.status === "completed")
+        .map((call) => ({
+          id: call.id,
+          kind: call.toolName,
+          independentlyObserved: true,
+          durable: true,
+          ownerTaskId: taskId,
+          ownerOperationId: lineage.operationId ?? null,
+          status: call.status,
+          ...(call.errorType ? { errorType: call.errorType } : {}),
+        })),
       ...(taskMissionId && missionRuntime
-        ? missionRuntime.listProgress(taskMissionId).flatMap((progress) => progress.evidenceIds.map((evidenceId) => ({
-            id: `mission-progress:${progress.id}:${evidenceId}`,
-            kind: `mission_progress:${progress.kind}`,
-            independentlyObserved: true,
-            durable: true,
-            evidenceRef: evidenceId,
-          })))
+        ? missionRuntime.listProgress(taskMissionId)
+          .filter((progress) => progress.operationId !== null)
+          .flatMap((progress) => progress.evidenceIds.map((evidenceId) => ({
+              id: `mission-progress:${progress.id}:${evidenceId}`,
+              kind: `mission_progress:${progress.kind}`,
+              independentlyObserved: true,
+              durable: true,
+              evidenceRef: evidenceId,
+              ownerOperationId: progress.operationId ?? null,
+            })))
         : []),
     ];
     const completionState = completionStateFromCalls(calls);
@@ -3099,6 +3197,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       durableArtifacts,
       independentVerifications,
       durableObservations,
+      lineage,
       ...(frontend ? { frontend } : {}),
       requirements: { requirements: executionRequirements, evaluations: requirementEvaluations },
       lastMutationOrVerification: completionState.failure ? { passed: false, detail: completionState.failure.detail } : null,
@@ -3187,7 +3286,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const calls = convs.listToolCallsForMessage(assistantMessageRow.id);
     const current = buildExecutionProgressSnapshot({
       missionId: progressIdentity,
-      operationId: null,
+      operationId: completionEvidenceLineage().operationId ?? null,
       strategyFingerprint,
       // Cumulative, so a path measured on one turn and untouched on the next
       // does not read as newly added.

@@ -1,4 +1,4 @@
-# Task 5 report: durable completion contracts
+# Task 5 report: durable completion contracts and review corrections
 
 ## Result
 
@@ -7,7 +7,10 @@ evidence-driven completion evaluator for the four declared task shapes. The
 agent evaluates the contract at the provider-turn boundary before stagnation
 accounting, closes verified work without an extra provider request, and
 replays the same decision from durable checkpoint/mission evidence after
-restart.
+restart. The review corrections keep mission evidence owned by the current
+task or an explicit recovery lineage, give delivery intent precedence over
+review wording, validate durable browser results, and prevent denied or failed
+tool calls from becoming read-only evidence.
 
 ## TDD evidence
 
@@ -24,17 +27,24 @@ restart.
 - Failed final verification, narration/existence-only delivery, unresolved
   requirements, incomplete frontend evidence, and checkpoint serialization
   are covered as non-completion cases.
+- Review RED: 7 expected failures in a 33-test run reproduced the three
+  browser-result false-completion cases and four denied/failed-observation
+  cases.
+- Review GREEN: the same focused run passed 33/33 after the production fixes;
+  the lineage and mixed-shape RED/GREEN cases also remained green.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
-| Focused Task 5 suite (5 files) | 52/52 passed |
-| Completion/restart/non-progress/requirements/security regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,717/1,717 passed |
+| Focused Task 5 brief command (5 files) | 64/64 passed |
+| Review-focused completion/frontend/security run (3 files) | 33/33 passed |
+| Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
+| 247-test regression set (9 files) | 247/247 passed |
+| Full default `@morrow/orchestrator` suite | 165 files, 1,730/1,730 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
-| Default live suite (`pnpm flagship:run`, no opt-in) | 1/1 passed; no provider call |
+| Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
 | Explicit live isolation (`MORROW_SKIP_LIVE_FLAGSHIP=1 pnpm flagship:run`) | 1/1 passed; no provider call |
 | `git diff --check` | passed |
 
@@ -52,6 +62,13 @@ suite is fully green.
   hosted dependency was added.
 - Existing tool permissions, approval handling, provider selection, and
   read-only restrictions remain in force.
+- Mission progress is imported only when it has durable operation ownership
+  matching the current task or an explicit recovery lineage. Browser route,
+  DOM, console/page-error, interaction, viewport, and screenshot evidence is
+  accepted only from successful, parseable durable results.
+- Mode-denied calls remain available for answer-only compatibility, but cannot
+  satisfy an inspection contract; failed and approval-blocked calls are never
+  independent evidence.
 - Live-provider execution was not authorized. Both live checks ran through
   their isolation paths, and no live run was appended.
 - No secrets or raw provider credentials were logged or added to the diff.
@@ -65,6 +82,6 @@ bytes and its SHA-256 is:
 
 ## Rollback
 
-Revert the Task 5 commit to remove the completion contract and its focused
-coverage. No schema or evidence migration is required; the append-only live
-evidence file remains untouched.
+Revert the focused completion-contract commit to remove the review corrections
+and their coverage. No schema or evidence migration is required; the
+append-only live evidence file remains untouched.

@@ -68,6 +68,24 @@ class FrontendBrowser implements BrowserController {
   async close() {}
 }
 
+class ConsoleErrorBrowser extends FrontendBrowser {
+  override evidence(): BrowserEvidence[] {
+    return [{ kind: "console", message: "uncaught frontend error", detail: { level: "error" }, createdAt: new Date().toISOString() }];
+  }
+}
+
+class NavigationFailureBrowser extends FrontendBrowser {
+  override async snapshot(): Promise<PageSnapshot> {
+    return { ...await super.snapshot(), navigationError: "route returned an application error" } as PageSnapshot;
+  }
+}
+
+class MalformedSnapshotBrowser extends FrontendBrowser {
+  override async snapshot(): Promise<PageSnapshot> {
+    return { ...await super.snapshot(), snapshotError: "DOM snapshot was truncated" } as PageSnapshot;
+  }
+}
+
 // The exact evidence the completion gate demands: open, snapshot, console,
 // one interaction, and a screenshot at each of the three required viewports.
 function frontendValidationTurn() {
@@ -156,6 +174,57 @@ describe("frontend-validation completion gate — vision requirement", () => {
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.reason === "stalled")).toBe(false);
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("does not complete when browser console evidence reports an error", async () => {
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        frontendValidationTurn(),
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new ConsoleErrorBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
+  it("does not complete when the durable browser route result reports navigation failure", async () => {
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        frontendValidationTurn(),
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new NavigationFailureBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
+  it("does not complete when the durable DOM snapshot result is malformed", async () => {
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        frontendValidationTurn(),
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new MalformedSnapshotBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
   });
 
   it("still requires vision-attached screenshots on a route that genuinely supports vision (no regression)", async () => {

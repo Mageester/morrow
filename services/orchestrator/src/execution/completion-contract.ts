@@ -82,6 +82,19 @@ export interface DurableObservationEvidence {
   independentlyObserved: boolean;
   durable?: boolean;
   evidenceRef?: string | null;
+  ownerTaskId?: string;
+  ownerOperationId?: string | null;
+  status?: "requested" | "running" | "completed" | "failed" | "cancelled" | "blocked" | "denied";
+  errorType?: string | null;
+}
+
+export interface CompletionEvidenceLineage {
+  taskId: string;
+  operationId?: string | null;
+  inheritedFrom?: {
+    taskId: string;
+    operationId?: string | null;
+  };
 }
 
 export interface FrontendCompletionEvidence {
@@ -114,6 +127,7 @@ export interface CompletionInput {
   verifications?: readonly IndependentVerificationEvidence[];
   durableObservations?: readonly DurableObservationEvidence[];
   readOnlyObservations?: readonly DurableObservationEvidence[];
+  lineage?: CompletionEvidenceLineage;
   frontend?: FrontendCompletionEvidence;
   requirements?: CompletionRequirementEvidence;
   executionRequirements?: readonly ExecutionRequirement[];
@@ -155,8 +169,23 @@ function isPassedVerification(verification: IndependentVerificationEvidence): bo
   return verification.passed === true || verification.exitCode === 0;
 }
 
-function hasIndependentObservation(observation: DurableObservationEvidence): boolean {
-  return observation.independentlyObserved === true && observation.durable !== false && observation.kind !== "narration";
+function belongsToLineage(observation: DurableObservationEvidence, lineage: CompletionEvidenceLineage | undefined): boolean {
+  if (observation.ownerTaskId === undefined && observation.ownerOperationId === undefined) return true;
+  if (!lineage) return false;
+  const candidates = [lineage, ...(lineage.inheritedFrom ? [lineage.inheritedFrom] : [])];
+  return candidates.some((candidate) =>
+    (observation.ownerTaskId === undefined || observation.ownerTaskId === candidate.taskId)
+    && (observation.ownerOperationId === undefined || observation.ownerOperationId === candidate.operationId),
+  );
+}
+
+function hasIndependentObservation(observation: DurableObservationEvidence, input: CompletionInput): boolean {
+  return observation.independentlyObserved === true
+    && observation.durable !== false
+    && (observation.status === undefined || observation.status === "completed")
+    && !observation.errorType
+    && observation.kind !== "narration"
+    && belongsToLineage(observation, input.lineage);
 }
 
 function hasDurableIndependentArtifact(artifact: DurableArtifactEvidence): boolean {
@@ -280,7 +309,7 @@ export const TASK_COMPLETION_CONTRACTS: Record<TaskShape, CompletionContract> = 
     minimumIndependentVerifications: 0,
     evaluate(input, blockers) {
       const observations = input.durableObservations ?? input.readOnlyObservations ?? [];
-      if (!observations.some(hasIndependentObservation)) {
+      if (!observations.some((observation) => hasIndependentObservation(observation, input))) {
         blockers.push(blocker("missing_read_only_observation", "No durable independently observed read-only evidence is available."));
       }
     },
@@ -321,10 +350,16 @@ export const TASK_COMPLETION_CONTRACTS: Record<TaskShape, CompletionContract> = 
 };
 
 export function inferTaskShape(prompt: string, mode: "agent" | "ask" | "plan-only" | "read-only" = "agent"): TaskShape {
-  if (mode !== "agent" || /\b(?:read[- ]?only|inspect|analy[sz]e|review|diagnos(?:e|is)|without\s+(?:changing|modifying|editing))\b/i.test(prompt)) return "read_only";
-  if (/\b(?:frontend|front[- ]?end|web\s*app|website|landing\s+page|user\s+interface|responsive|react|next\.js|vue|svelte|css|html\s+page|dashboard\s+ui)\b/i.test(prompt)) return "frontend_application";
-  if (/\b(?:cli|command[- ]line|terminal\s+app|console\s+app|executable|shell\s+app)\b/i.test(prompt)) return "cli_application";
-  if (/\b(?:fix|repair|patch|implement|refactor|build|develop|create|write|edit|modify|change|update)\b/i.test(prompt)) return "file_delivery";
+  if (mode !== "agent") return "read_only";
+  const frontendIntent = /\b(?:frontend|front[- ]?end|web\s*app|website|landing\s+page|user\s+interface|responsive|react|next\.js|vue|svelte|css|html\s+page|dashboard\s+ui)\b/i.test(prompt);
+  const cliIntent = /\b(?:cli|command[- ]line|terminal\s+app|console\s+app|executable|shell\s+app)\b/i.test(prompt);
+  const deliveryIntent = /\b(?:fix|repair|patch|implement|refactor|build|develop|create|write|edit|modify|change|update|deliver|ship|save)\b/i.test(prompt);
+  // Explicit delivery/application intent outranks review or inspection
+  // wording. A request to "review and fix" is still a delivery contract.
+  if (frontendIntent) return "frontend_application";
+  if (cliIntent) return "cli_application";
+  if (deliveryIntent) return "file_delivery";
+  if (/\b(?:read[- ]?only|inspect|analy[sz]e|review|diagnos(?:e|is)|without\s+(?:changing|modifying|editing))\b/i.test(prompt)) return "read_only";
   return "read_only";
 }
 

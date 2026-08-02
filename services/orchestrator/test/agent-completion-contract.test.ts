@@ -9,6 +9,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { missionRuntimeRepository } from "../src/repositories/mission-runtime.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { MockProvider } from "../src/provider/mock.js";
 
@@ -69,11 +70,11 @@ const providerTool = (id: string, name: string, args: unknown) => ({
 });
 const providerDone = { type: "done" as const };
 
-function seedCliTask(db: any, workspacePath: string): void {
+function seedCliTask(db: any, workspacePath: string, prompt = "Build a CLI application in app.mjs."): void {
   const createdAt = new Date().toISOString();
   projectRepository(db).createProject({ id: "cli-project", name: "CLI", workspacePath, createdAt });
   conversationsRepository(db).createConversation({ id: "cli-conversation", projectId: "cli-project", title: "CLI", createdAt, updatedAt: createdAt });
-  conversationsRepository(db).appendMessage({ id: "cli-user", conversationId: "cli-conversation", role: "user", content: "Build a CLI application in app.mjs.", createdAt, updatedAt: createdAt });
+  conversationsRepository(db).appendMessage({ id: "cli-user", conversationId: "cli-conversation", role: "user", content: prompt, createdAt, updatedAt: createdAt });
   taskRepository(db).createTask({ id: "cli-task", projectId: "cli-project", kind: "agent_chat", status: "queued", createdAt });
   conversationsRepository(db).appendMessage({ id: "cli-assistant", conversationId: "cli-conversation", role: "assistant", content: "", taskId: "cli-task", createdAt, updatedAt: createdAt });
   taskRoutingRepository(db).upsert({
@@ -82,6 +83,50 @@ function seedCliTask(db: any, workspacePath: string): void {
     createdAt,
   });
   taskRecordsRepository(db).transitionAgentState("cli-task", { id: "cli-state", state: "idle", details: {}, createdAt });
+}
+
+function seedMissionTask(db: any, workspacePath: string, taskId: string, missionId: string, prompt: string): void {
+  const createdAt = new Date().toISOString();
+  const projectId = "lineage-project";
+  const conversationId = "lineage-conversation";
+  if (!projectRepository(db).getProjectById(projectId)) {
+    projectRepository(db).createProject({ id: projectId, name: "Lineage", workspacePath, createdAt });
+    conversationsRepository(db).createConversation({ id: conversationId, projectId, title: "Lineage", createdAt, updatedAt: createdAt });
+  }
+  if (!(db.prepare("SELECT id FROM missions WHERE id=?").get(missionId) as { id: string } | undefined)) {
+    db.prepare(`INSERT INTO missions
+      (id,schema_version,project_id,objective,status,auto_approve,budget_json,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(missionId, 1, projectId, prompt, "running", 1, "{}", createdAt, createdAt);
+    missionRuntimeRepository(db).create({ missionId, now: createdAt });
+  }
+  conversationsRepository(db).appendMessage({ id: `${taskId}-user`, conversationId, role: "user", content: prompt, createdAt, updatedAt: createdAt });
+  taskRepository(db).createTask({ id: taskId, projectId, missionId, kind: "agent_chat", status: "queued", createdAt });
+  conversationsRepository(db).appendMessage({ id: `${taskId}-assistant`, conversationId, role: "assistant", content: "", taskId, createdAt, updatedAt: createdAt });
+  taskRoutingRepository(db).upsert({
+    taskId, presetId: "best-quality", providerId: "mock", model: "mock-model", useMemory: false,
+    decision: { version: 1, presetId: "best-quality", providerId: "mock", model: "mock-model", reason: "lineage contract test", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [], mode: "agent", autoApprove: true },
+    createdAt,
+  });
+  taskRecordsRepository(db).transitionAgentState(taskId, { id: `${taskId}-state`, state: "idle", details: {}, createdAt });
+}
+
+function seedMissionLineage(db: any, missionId: string, taskA: string, taskB: string, recoveryFromTaskA = false): void {
+  const at = new Date().toISOString();
+  const runtime = missionRuntimeRepository(db);
+  const fence = runtime.claimLease({ missionId, ownerId: "lineage-owner", now: at, expiresAt: new Date(Date.parse(at) + 60_000).toISOString() });
+  if (!fence) throw new Error("lineage test could not claim mission lease");
+  const dispatchA = runtime.enqueueOperation({ missionId, idempotencyKey: `dispatch:${taskA}`, kind: "dispatch_worker", strategyFingerprint: "worker:a", input: { taskId: taskA }, fence, now: at });
+  runtime.startOperation({ missionId, operationId: dispatchA.id, fence, now: at });
+  runtime.completeOperation({ missionId, operationId: dispatchA.id, fence, result: { taskId: taskA }, effectEvidenceIds: ["evidence-a"], now: at });
+  runtime.appendProgress({ missionId, operationId: dispatchA.id, kind: "evidence_gained", summary: "Task A inspected the workspace.", evidenceIds: ["evidence-a"], strategyFingerprint: "worker:a", now: at });
+  if (recoveryFromTaskA) {
+    const recovery = runtime.enqueueOperation({ missionId, idempotencyKey: `recover:${taskA}`, kind: "recover", strategyFingerprint: "worker:replay", input: { taskId: taskA }, fence, now: at });
+    runtime.startOperation({ missionId, operationId: recovery.id, fence, now: at });
+    runtime.completeOperation({ missionId, operationId: recovery.id, fence, result: { action: "restore_checkpoint" }, effectEvidenceIds: [], now: at });
+  }
+  const dispatchB = runtime.enqueueOperation({ missionId, idempotencyKey: `dispatch:${taskB}`, kind: "dispatch_worker", strategyFingerprint: "worker:b", input: { taskId: taskB }, fence, now: at });
+  runtime.startOperation({ missionId, operationId: dispatchB.id, fence, now: at });
+  runtime.completeOperation({ missionId, operationId: dispatchB.id, fence, result: { taskId: taskB }, effectEvidenceIds: [], now: at });
 }
 
 async function loadCompletionContractModule(): Promise<any> {
@@ -124,6 +169,16 @@ describe("evidence-driven task completion contracts", () => {
     });
 
     expect(result).toEqual({ complete: true, blockers: [] });
+  });
+
+  it.each([
+    ["Review and fix the CLI application in app.mjs.", "cli_application"],
+    ["Inspect and implement the responsive frontend dashboard.", "frontend_application"],
+    ["Analyze the existing module and create the requested report file.", "file_delivery"],
+  ] as const)("gives explicit delivery intent precedence over review wording: %s", async (prompt, expectedShape) => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+    expect(completion.inferTaskShape(prompt, "agent")).toBe(expectedShape);
   });
 
   it("completes a verified CLI artifact before repeated read-only process polling can stall it", async () => {
@@ -253,6 +308,115 @@ describe("evidence-driven task completion contracts", () => {
     expect(afterRestart).toEqual(beforeRestart);
     expect(afterRestart).toEqual({ complete: true, blockers: [] });
   });
+
+  it("does not borrow another task's mission evidence, but accepts an explicit owned recovery lineage", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    const foreignMissionEvidence = {
+      id: "progress-from-task-a",
+      kind: "mission_progress:evidence_gained",
+      independentlyObserved: true,
+      durable: true,
+      ownerTaskId: "task-a",
+      ownerOperationId: "operation-a",
+    };
+    const taskB = {
+      taskShape: "read_only",
+      taskId: "task-b",
+      operationId: "operation-b",
+      canonicalFinalAnswer: "The inspection is complete.",
+      durableObservations: [foreignMissionEvidence],
+      requirements: requirementsSatisfied,
+    };
+
+    const unrelatedTaskResult = completion.evaluateTaskCompletion(taskB);
+    expect(unrelatedTaskResult.complete).toBe(false);
+    expect(unrelatedTaskResult.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "missing_read_only_observation" }),
+    ]));
+
+    const ownedRecoveryResult = completion.evaluateTaskCompletion({
+      ...taskB,
+      lineage: {
+        taskId: "task-b",
+        operationId: "operation-b",
+        inheritedFrom: { taskId: "task-a", operationId: "operation-a" },
+      },
+    });
+    expect(ownedRecoveryResult).toEqual({ complete: true, blockers: [] });
+  });
+
+  it.each(["tool_not_permitted_in_mode", "tool_failed", "approval_required"])("does not treat %s as independent read-only evidence", async (errorType) => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    const result = completion.evaluateTaskCompletion({
+      taskShape: "read_only",
+      canonicalFinalAnswer: "The inspection is complete.",
+      durableObservations: [{
+        id: `blocked-${errorType}`,
+        kind: "run_command",
+        independentlyObserved: true,
+        durable: true,
+        status: "failed",
+        errorType,
+      }],
+      requirements: requirementsSatisfied,
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "missing_read_only_observation" }),
+    ]));
+  });
+
+  it("scopes mission progress to the current task or an explicit recovery lineage", async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-lineage-contract-")));
+    const db = openDatabase(":memory:");
+    try {
+      seedMissionTask(db, workspace, "task-a", "mission-a", "Inspect the workspace and report findings.");
+      seedMissionTask(db, workspace, "task-b", "mission-a", "Inspect the workspace and report findings.");
+      seedMissionLineage(db, "mission-a", "task-a", "task-b");
+      const unrelatedProvider = new MockProvider({ chunks: [[{ type: "text", text: "Inspection complete from unrelated task evidence." }, providerDone]] });
+      await executeAgentChatTask({ db, taskId: "task-b", provider: unrelatedProvider, maxTurns: 2 });
+      expect(taskRepository(db).getTaskById("task-b")!.status).toBe("interrupted");
+
+      seedMissionTask(db, workspace, "task-d", "mission-b", "Inspect the workspace and report findings.");
+      seedMissionTask(db, workspace, "task-c", "mission-b", "Inspect the workspace and report findings.");
+      seedMissionLineage(db, "mission-b", "task-d", "task-c", true);
+      const recoveryProvider = new MockProvider({ chunks: [[{ type: "text", text: "Inspection complete from owned recovery evidence." }, providerDone]] });
+      await executeAgentChatTask({ db, taskId: "task-c", provider: recoveryProvider, maxTurns: 2 });
+      expect(taskRepository(db).getTaskById("task-c")!.status).toBe("completed");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("keeps a mixed review-and-fix CLI task incomplete without independent verification", async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-cli-mixed-shape-")));
+    const db = openDatabase(":memory:");
+    try {
+      seedCliTask(db, workspace, "Review and fix the CLI application in app.mjs.");
+      const provider = new MockProvider({
+        chunks: [
+          [providerTool("write", "create_file", { path: "app.mjs", content: "console.log('ok');\n" }), providerDone],
+          [{ type: "text", text: "Reviewed and fixed app.mjs; the CLI is complete." }, providerDone],
+        ],
+        delayMs: 1,
+      });
+      const runner = new TaskRunner(db, async (details) => executeAgentChatTask({ db: details.db, taskId: details.taskId, provider, maxTurns: 4 }));
+      runner.run("cli-task");
+      await runner.waitFor("cli-task");
+
+      expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("interrupted");
+      expect(provider.requests).toHaveLength(2);
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("closes a verified CLI turn before requesting repeated read-only process polling", async () => {
     const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-cli-contract-")));
