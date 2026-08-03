@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
-import { openDatabase } from "../src/database.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { migrations, openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { memoryRepository } from "../src/repositories/memory.js";
@@ -107,6 +110,59 @@ describe("Search repository (FTS5)", () => {
     convs.renameConversation("c1", "Kubernetes notes", ts(6));
     expect(search.search("p1", "migration").hits.some((h) => h.kind === "conversation")).toBe(false);
     expect(search.search("p1", "kubernetes").hits.some((h) => h.refId === "c1")).toBe(true);
+  });
+
+  it("keeps assistant search hits safe for a raw legacy row while preserving safe user search", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    convs.appendMessage({ id: "assistant-current-secret", conversationId: "c1", role: "assistant", content: probe, createdAt: ts(6), updatedAt: ts(6) });
+    db.prepare(
+      `INSERT INTO conversation_messages
+       (id, conversation_id, role, content, task_id, streaming_state, provider, model, created_at, updated_at)
+       VALUES (?, 'c1', 'assistant', ?, NULL, 'completed', NULL, NULL, ?, ?)`,
+    ).run("assistant-legacy-secret", probe, ts(7), ts(7));
+    convs.appendMessage({ id: "user-searchable", conversationId: "c1", role: "user", content: "safe searchable phrase", createdAt: ts(8), updatedAt: ts(8) });
+
+    const assistantIndex = db.prepare("SELECT ref_id, body FROM search_index WHERE kind='message' AND ref_id IN (?, ?)").all("assistant-current-secret", "assistant-legacy-secret") as Array<{ ref_id: string; body: string }>;
+    expect(JSON.stringify(assistantIndex)).not.toContain(probe);
+
+    const assistantHits = search.search("p1", "credential", { kinds: ["message"] }).hits.filter((hit) => hit.refId.startsWith("assistant-"));
+    expect(assistantHits).toHaveLength(2);
+    expect(JSON.stringify(assistantHits)).not.toContain(probe);
+    expect(search.search("p1", "safe", { kinds: ["message"] }).hits.some((hit) => hit.refId === "user-searchable")).toBe(true);
+  });
+
+  it("sanitizes assistant rows and their FTS copies when reopening a pre-privacy database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "morrow-legacy-assistant-"));
+    const file = join(dir, "legacy.db");
+    const probe = "credential sk-abcdefghijklmnop";
+    const legacy = new Database(file);
+    legacy.pragma("foreign_keys = ON");
+    legacy.exec("CREATE TABLE schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+    const recordMigration = legacy.prepare("INSERT INTO schema_migrations VALUES(?,?,?)");
+    for (const migration of migrations.filter((item) => item.id <= 44)) {
+      legacy.transaction(() => {
+        if (migration.sql) legacy.exec(migration.sql);
+        if (migration.up) migration.up(legacy);
+        recordMigration.run(migration.id, migration.name, ts(0));
+      })();
+    }
+    legacy.prepare("INSERT INTO projects(id,schema_version,name,workspace_path,created_at,updated_at) VALUES(?,?,?,?,?,?)").run("legacy-project", 1, "Legacy", "C:/workspace", ts(0), ts(0));
+    legacy.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at,archived) VALUES(?,?,?,?,?,0)").run("legacy-conversation", "legacy-project", "Legacy", ts(0), ts(0));
+    legacy.prepare(
+      `INSERT INTO conversation_messages
+       (id, conversation_id, role, content, task_id, streaming_state, provider, model, created_at, updated_at)
+       VALUES ('legacy-assistant', 'legacy-conversation', 'assistant', ?, NULL, 'completed', NULL, NULL, ?, ?)`,
+    ).run(probe, ts(0), ts(0));
+    expect((legacy.prepare("SELECT body FROM search_index WHERE ref_id='legacy-assistant'").get() as { body: string }).body).toContain(probe);
+    legacy.close();
+
+    const reopened = openDatabase(file);
+    const persisted = reopened.prepare("SELECT content FROM conversation_messages WHERE id='legacy-assistant'").get() as { content: string };
+    const indexed = reopened.prepare("SELECT body FROM search_index WHERE ref_id='legacy-assistant'").get() as { body: string };
+    expect(persisted.content).not.toContain(probe);
+    expect(indexed.body).not.toContain(probe);
+    reopened.close();
+    rmSync(dir, { force: true, recursive: true });
   });
 
   it("removes messages from the index when their conversation is deleted", () => {

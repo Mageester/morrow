@@ -269,6 +269,63 @@ describe("execution continuity repository", () => {
     db.close();
   });
 
+  it("stores hostile continuation state without invoking custom serializers or getters", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-reasoner", routeJson: {}, ownerId: "worker-a", now: at });
+    const routeFingerprint = providerRouteFingerprint({ providerId: "deepseek", model: "deepseek-reasoner", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com" });
+    const probe = "credential sk-abcdefghijklmnop";
+    let getterCalls = 0;
+    const opaque = {} as Record<string, unknown>;
+    Object.defineProperty(opaque, probe, { enumerable: true, value: probe });
+    Object.defineProperty(opaque, "toJSON", { enumerable: true, value: () => ({ leaked: probe }) });
+    Object.defineProperty(opaque, "getter", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return probe;
+      },
+    });
+    opaque.bigint = BigInt(1);
+    opaque.symbol = Symbol(probe);
+    opaque.self = opaque;
+    const inherited = Object.create({ toJSON: () => ({ leaked: probe }) }) as Record<string, unknown>;
+    Object.defineProperty(inherited, "safe", { enumerable: true, value: "preserved" });
+    opaque.inherited = inherited;
+
+    repo.saveProviderContinuation({
+      id: "hostile-continuation",
+      taskId: "t",
+      segmentId: segment.id,
+      providerId: "deepseek",
+      routeFingerprint,
+      turnKey: "turn-hostile",
+      state: { reasoningContent: probe, opaque },
+      ownerId: "worker-a",
+      generation: segment.generation,
+      now: at,
+    });
+
+    const raw = db.prepare("SELECT state_json FROM agent_provider_continuations WHERE id=?").get("hostile-continuation") as { state_json: string };
+    expect(getterCalls).toBe(0);
+    expect(raw.state_json).not.toContain(probe);
+    expect(JSON.parse(raw.state_json)).toEqual({
+      reasoningContent: "credential ***redacted***",
+      opaque: {
+        "credential ***redacted***": "credential ***redacted***",
+        toJSON: "[Unserializable]",
+        getter: "[Unserializable]",
+        bigint: "[Unserializable]",
+        symbol: "[Unserializable]",
+        self: "[Circular]",
+        inherited: { safe: "preserved" },
+      },
+    });
+    expect(repo.loadProviderContinuation("t", "turn-hostile", routeFingerprint)).toEqual(JSON.parse(raw.state_json));
+    expect(repo.loadProviderContinuation("t", "turn-hostile", "different-route")).toBeNull();
+    db.close();
+  });
+
   it("deduplicates provider turns and permits exactly one canonical final answer", () => {
     const db = seeded();
     const repo = executionContinuityRepository(db);

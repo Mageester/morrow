@@ -6,6 +6,7 @@ import {
   type SearchKind,
   type SearchResponse,
 } from "@morrow/contracts";
+import { redactSecrets } from "../provider/credentials.js";
 
 const ALL_KINDS: SearchKind[] = ["conversation", "message", "task", "memory"];
 
@@ -78,18 +79,21 @@ export function searchRepository(db: Database.Database) {
           rank: number | null;
         }>;
 
-        hits = rows.map((r) =>
-          SearchHitSchema.parse({
+        hits = rows.map((r) => {
+          const assistantMessage = r.kind === "message" && r.title === "assistant";
+          const title = r.title ?? "";
+          const snippet = r.snip && r.snip.length > 0 ? r.snip : title;
+          return SearchHitSchema.parse({
             kind: r.kind,
             refId: r.ref_id,
             projectId: r.project_id,
             conversationId: r.conversation_id ?? null,
-            title: r.title ?? "",
-            snippet: r.snip && r.snip.length > 0 ? r.snip : r.title ?? "",
+            title: assistantMessage ? redactSecrets(title) : title,
+            snippet: assistantMessage ? redactSecrets(snippet) : snippet,
             createdAt: r.created_at,
             score: typeof r.rank === "number" ? r.rank : 0,
-          })
-        );
+          });
+        });
       }
 
       return SearchResponseSchema.parse({

@@ -14,7 +14,11 @@ tool calls from becoming read-only evidence. Durable assistant-message,
 provider-turn, and canonical-answer sinks also redact credential-like final
 text before it can be persisted or replayed. Task events and provider
 continuations apply the same recursive redaction before durable storage, while
-the web activity boundary sanitizes streamed narration defensively.
+the web activity boundary sanitizes streamed narration defensively. The final
+hardening also sanitizes object keys, ignores attacker-controlled serializers
+and accessors, converts cycles/non-JSON values to stable JSON-safe placeholders,
+and closes the assistant-message read, FTS, and web projection paths for legacy
+rows without altering user-message content.
 
 ## TDD evidence
 
@@ -54,6 +58,18 @@ the web activity boundary sanitizes streamed narration defensively.
 - P1 event/continuation GREEN: all four checks pass; raw SQLite event and
   continuation rows, loaded continuation state, and projected activity contain
   only redacted values while route-fingerprint lookup remains unchanged.
+- P1 serializer/assistant-index RED: four exact probes failed: cyclic/custom
+  event payloads, cyclic/custom continuation state, assistant append/read/web
+  behavior, and assistant FTS indexing all exposed or could persist the raw
+  probe.
+- P1 serializer/assistant-index RED: the pre-privacy database reopen fixture
+  separately failed 1/1 because a legacy assistant row and its FTS copy stayed
+  raw.
+- P1 serializer/assistant-index GREEN: all five probes pass; keys and values
+  are redacted, getters/toJSON are never invoked, cycles/non-JSON values are
+  stable placeholders, legacy rows are migrated, assistant search hits are
+  safe, user content remains unchanged, and routeFingerprint behavior is
+  preserved.
 
 ## Verification
 
@@ -65,11 +81,14 @@ the web activity boundary sanitizes streamed narration defensively.
 | Focused restart/review compatibility run (5 files) | 122/122 passed |
 | Privacy, continuity, security, and restart regressions (6 files) | 55/55 passed |
 | Event/web/privacy/continuity/restart/security regressions (11 files) | 111/111 passed |
+| Serializer/assistant-index RED/GREEN regression | 5/5 passed after fix |
+| Event/task-records/continuity/web/search/diagnostics/privacy/security/restart/requirements run (20 files) | 283/283 passed |
+| Replay/restart/completion-order/checkpoint matrix (8 files) | 66/66 passed |
 | Restart/recovery, completion-order, progress, requirements, security, and checkpoint regressions (21 files) | 267/267 passed |
 | Review-focused completion/frontend/security run (3 files) | 33/33 passed |
 | Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
 | 247-test regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,737/1,737 passed |
+| Full default `@morrow/orchestrator` suite | 165 files, 1,742/1,742 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
 | Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
@@ -101,8 +120,14 @@ suite is fully green, including crash-replay and privacy coverage.
   and canonical-answer persistence boundaries; ordinary final-answer text and
   completion evidence semantics remain unchanged.
 - Task event payloads are recursively redacted before SQLite serialization and
-  on reads; continuation state is recursively redacted before JSON storage and
-  on load, preserving opaque state shape and route-fingerprint selection.
+  on reads; object keys are sanitized and custom prototypes, `toJSON`, getters,
+  symbols, cycles, and non-JSON values cannot reintroduce raw data.
+- Continuation state is recursively redacted before JSON storage and on load,
+  preserving opaque state shape and route-fingerprint selection; cyclic and
+  non-JSON values use stable JSON-safe placeholders.
+- Assistant content is redacted on repository writes and reads, FTS writes and
+  legacy migration, search result projection, and web message projection.
+  User-message writes and safe search content remain unchanged.
 - Live-provider execution was not authorized. Both live checks ran through
   their isolation paths, and no live run was appended.
 - No secrets or raw provider credentials were logged or added to the diff.
@@ -116,6 +141,8 @@ bytes and its SHA-256 is:
 
 ## Rollback
 
-Revert this focused event/continuation privacy-correction commit to remove
-recursive durable redaction and its regression coverage. No schema or evidence
-migration is required; the append-only live evidence file remains untouched.
+Revert this focused privacy-hardening commit only with a database-aware
+rollback plan: migration 45 is recorded in `schema_migrations`, and redacted
+legacy values cannot be recovered without a database backup. No evidence
+file rollback is required; the append-only live evidence file remains
+untouched.

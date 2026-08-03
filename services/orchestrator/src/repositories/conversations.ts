@@ -36,7 +36,7 @@ export function conversationsRepository(db: Database.Database) {
       id: row.id,
       conversationId: row.conversation_id,
       role: row.role,
-      content: row.content,
+      content: row.role === "assistant" ? redactSecrets(row.content) : row.content,
       taskId: row.task_id,
       streamingState: row.streaming_state,
       provider: row.provider,
@@ -132,6 +132,7 @@ export function conversationsRepository(db: Database.Database) {
       createdAt: string;
       updatedAt: string;
     }): ConversationMessage {
+      const safeContent = input.role === "assistant" ? redactSecrets(input.content) : input.content;
       db.transaction(() => {
         db.prepare(
           `INSERT INTO conversation_messages 
@@ -141,7 +142,7 @@ export function conversationsRepository(db: Database.Database) {
           input.id,
           input.conversationId,
           input.role,
-          input.content,
+          safeContent,
           input.taskId || null,
           input.streamingState || "completed",
           input.provider || null,
@@ -167,7 +168,8 @@ export function conversationsRepository(db: Database.Database) {
     },
 
     updateMessageContentAndState(id: string, content: string, streamingState: string, updatedAt: string): ConversationMessage {
-      const safeContent = redactSecrets(content);
+      const current = db.prepare("SELECT role FROM conversation_messages WHERE id = ?").get(id) as { role: string } | undefined;
+      const safeContent = current?.role === "assistant" ? redactSecrets(content) : content;
       db.transaction(() => {
         db.prepare(
           "UPDATE conversation_messages SET content = ?, streaming_state = ?, updated_at = ? WHERE id = ?"

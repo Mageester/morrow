@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { redactSecrets } from "./provider/credentials.js";
 export type Migration={id:number;name:string;sql?:string;up?:(db:Database.Database)=>void};
 export const migrations:Migration[]=[
   {id:1,name:"initial_schema",sql:`CREATE TABLE projects(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,name TEXT NOT NULL,workspace_path TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE tasks(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,type TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,started_at TEXT,completed_at TEXT);CREATE TABLE plan_steps(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,position INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(task_id,position));CREATE TABLE task_events(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(task_id,sequence));CREATE TABLE execution_disclosures(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,execution_mode TEXT NOT NULL,provider TEXT NOT NULL,network_access TEXT NOT NULL,workspace_scope TEXT NOT NULL,estimated_cost_usd TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE TABLE task_evidence(id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,type TEXT NOT NULL,path TEXT NOT NULL,metadata_json TEXT NOT NULL,created_at TEXT NOT NULL);CREATE TABLE verification_results(task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,schema_version INTEGER NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,details_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);CREATE INDEX tasks_project_id_idx ON tasks(project_id);CREATE INDEX task_events_task_id_sequence_idx ON task_events(task_id,sequence);`},
@@ -1215,6 +1216,37 @@ export const migrations:Migration[]=[
     ALTER TABLE mission_terminal_outcome_claims
       ADD COLUMN verification_generation INTEGER NOT NULL DEFAULT 0;
   `}
+  ,{id:45,name:"assistant_message_privacy_boundaries",up(db){
+    // The repository boundary protects supported writes; this SQLite function
+    // keeps FTS copies safe even for rows written by older versions before the
+    // assistant-message privacy contract existed.
+    db.exec(`
+      DROP TRIGGER IF EXISTS search_msg_ai;
+      DROP TRIGGER IF EXISTS search_msg_au;
+      CREATE TRIGGER search_msg_ai AFTER INSERT ON conversation_messages BEGIN
+        INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+        VALUES('message', new.id,
+          (SELECT project_id FROM conversations WHERE id=new.conversation_id),
+          new.conversation_id, new.role,
+          CASE WHEN new.role='assistant' THEN morrow_redact(new.content) ELSE new.content END,
+          new.created_at);
+      END;
+      CREATE TRIGGER search_msg_au AFTER UPDATE OF content ON conversation_messages BEGIN
+        UPDATE search_index
+           SET body=CASE WHEN new.role='assistant' THEN morrow_redact(new.content) ELSE new.content END
+         WHERE kind='message' AND ref_id=new.id;
+      END;
+    `);
+
+    const assistants = db.prepare("SELECT id, content FROM conversation_messages WHERE role='assistant'").all() as Array<{ id: string; content: string }>;
+    const updateMessage = db.prepare("UPDATE conversation_messages SET content=? WHERE id=?");
+    const updateIndex = db.prepare("UPDATE search_index SET body=? WHERE kind='message' AND ref_id=?");
+    for (const assistant of assistants) {
+      const safeContent = redactSecrets(assistant.content);
+      if (safeContent !== assistant.content) updateMessage.run(safeContent, assistant.id);
+      updateIndex.run(safeContent, assistant.id);
+    }
+  }}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});
@@ -1222,6 +1254,7 @@ export function openDatabase(file:string){
   try{
     db.pragma("foreign_keys = ON");
     db.pragma("busy_timeout = 5000");
+    db.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
     db.exec("CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
     const applied=new Set((db.prepare("SELECT id FROM schema_migrations").all()as{id:number}[]).map(x=>x.id));
     for(const m of migrations){

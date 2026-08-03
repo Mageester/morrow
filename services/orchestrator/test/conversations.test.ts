@@ -154,6 +154,59 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("secret.txt");
   });
 
+  it("redacts assistant writes and legacy reads/indexes while preserving user content", async () => {
+    const conversation = await create("Assistant privacy boundaries");
+    const conversations = conversationsRepository(db);
+    const probe = "credential sk-abcdefghijklmnop";
+    const userContent = "user-searchable-content";
+    conversations.appendMessage({
+      id: "assistant-written-secret",
+      conversationId: conversation.id,
+      role: "assistant",
+      content: probe,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    conversations.appendMessage({
+      id: "user-safe-content",
+      conversationId: conversation.id,
+      role: "user",
+      content: userContent,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    db.prepare(
+      `INSERT INTO conversation_messages
+       (id, conversation_id, role, content, task_id, streaming_state, provider, model, created_at, updated_at)
+       VALUES (?, ?, 'assistant', ?, NULL, 'completed', NULL, NULL, ?, ?)`,
+    ).run("assistant-legacy-secret", conversation.id, probe, NOW, NOW);
+
+    expect((db.prepare("SELECT content FROM conversation_messages WHERE id=?").get("assistant-written-secret") as { content: string }).content).not.toContain(probe);
+    expect(conversations.getMessage("assistant-written-secret")?.content).toBe("credential ***redacted***");
+    expect(conversations.getMessage("assistant-legacy-secret")?.content).toBe("credential ***redacted***");
+    expect(conversations.getMessage("user-safe-content")?.content).toBe(userContent);
+
+    const indexed = db.prepare("SELECT ref_id, body FROM search_index WHERE kind='message' AND ref_id IN (?, ?)").all("assistant-written-secret", "assistant-legacy-secret") as Array<{ ref_id: string; body: string }>;
+    expect(indexed).toHaveLength(2);
+    expect(JSON.stringify(indexed)).not.toContain(probe);
+
+    const webMessages = await app.inject({ method: "GET", url: `/api/projects/project-a/conversations/${conversation.id}/messages` });
+    expect(webMessages.statusCode).toBe(200);
+    const messageBody = webMessages.json() as Array<{ id: string; role: string; content: string }>;
+    expect(messageBody.find((message) => message.id === "assistant-written-secret")?.content).toBe("credential ***redacted***");
+    expect(messageBody.find((message) => message.id === "assistant-legacy-secret")?.content).toBe("credential ***redacted***");
+    expect(messageBody.find((message) => message.id === "user-safe-content")?.content).toBe(userContent);
+
+    const searchResponse = await app.inject({ method: "GET", url: "/api/projects/project-a/search?q=credential&kind=message" });
+    expect(searchResponse.statusCode).toBe(200);
+    const searchBody = searchResponse.json() as { hits: Array<{ refId: string; snippet: string }> };
+    for (const refId of ["assistant-written-secret", "assistant-legacy-secret"]) {
+      expect(searchBody.hits.find((hit) => hit.refId === refId)?.snippet).not.toContain(probe);
+    }
+    expect(searchBody.hits.some((hit) => hit.refId === "user-safe-content")).toBe(false);
+    db.close();
+  });
+
   it("projects chronological durable activity without exposing raw arguments, secrets, output, or private reasoning", async () => {
     const conversation = await create("Inspect durable work");
     const tasks = taskRepository(db);

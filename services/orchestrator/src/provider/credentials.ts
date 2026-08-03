@@ -201,14 +201,70 @@ export function redactSecrets(input: string): string {
     .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AIza[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16})\b/gi, "***redacted***");
 }
 
-/** Recursively redact JSON-like values before they cross a durable boundary. */
+const UNSERIALIZABLE_VALUE = "[Unserializable]";
+const CIRCULAR_VALUE = "[Circular]";
+
+/**
+ * Recursively redact values before they cross a JSON durable boundary.
+ *
+ * The output is deliberately rebuilt from data descriptors into ordinary
+ * arrays/objects. That prevents an input prototype, own `toJSON`, accessor,
+ * symbol, or other custom serializer from running again when the caller later
+ * invokes JSON.stringify. Cycles and non-JSON values become stable placeholders
+ * so persistence never throws or revives the original value.
+ */
 export function redactSecretsDeep<T>(value: T): T {
-  if (typeof value === "string") return redactSecrets(value) as T;
-  if (Array.isArray(value)) return value.map((item) => redactSecretsDeep(item)) as T;
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, redactSecretsDeep(child)]),
-    ) as T;
-  }
-  return value;
+  const active = new WeakSet<object>();
+
+  const sanitize = (input: unknown): unknown => {
+    if (typeof input === "string") return redactSecrets(input);
+    if (input === null) return null;
+    if (typeof input === "boolean") return input;
+    if (typeof input === "number") return Number.isFinite(input) ? input : null;
+    if (typeof input === "undefined" || typeof input === "bigint" || typeof input === "symbol" || typeof input === "function") {
+      return UNSERIALIZABLE_VALUE;
+    }
+    if (active.has(input)) return CIRCULAR_VALUE;
+
+    active.add(input);
+    try {
+      if (Array.isArray(input)) {
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+        const length = lengthDescriptor && "value" in lengthDescriptor && typeof lengthDescriptor.value === "number"
+          && Number.isSafeInteger(lengthDescriptor.value) && lengthDescriptor.value >= 0
+          ? lengthDescriptor.value
+          : 0;
+        const output: unknown[] = [];
+        output.length = length;
+        for (let index = 0; index < length; index += 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+          if (!descriptor) continue;
+          output[index] = "value" in descriptor ? sanitize(descriptor.value) : UNSERIALIZABLE_VALUE;
+        }
+        return output;
+      }
+
+      const output: Record<string, unknown> = {};
+      const descriptors = Object.getOwnPropertyDescriptors(input);
+      for (const key of Object.keys(descriptors)) {
+        const descriptor = descriptors[key]!;
+        if (!descriptor.enumerable) continue;
+        const safeKey = redactSecrets(key);
+        const safeValue = "value" in descriptor ? sanitize(descriptor.value) : UNSERIALIZABLE_VALUE;
+        Object.defineProperty(output, safeKey, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: safeValue,
+        });
+      }
+      return output;
+    } catch {
+      return UNSERIALIZABLE_VALUE;
+    } finally {
+      active.delete(input);
+    }
+  };
+
+  return sanitize(value) as T;
 }

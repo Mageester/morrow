@@ -57,6 +57,46 @@ describe("task records repository", () => {
     db.close();
   });
 
+  it("persists a JSON-safe event when keys, serializers, accessors, cycles, and non-JSON values are hostile", () => {
+    const { db, records } = setup();
+    const probe = "credential sk-abcdefghijklmnop";
+    let getterCalls = 0;
+    const inherited = Object.create({ toJSON: () => ({ leaked: probe }) }) as Record<string, unknown>;
+    Object.defineProperty(inherited, "visible", { enumerable: true, value: probe });
+    const payload: Record<string, unknown> = {};
+    Object.defineProperty(payload, probe, { enumerable: true, value: probe });
+    Object.defineProperty(payload, "toJSON", { enumerable: true, value: () => ({ leaked: probe }) });
+    Object.defineProperty(payload, "getter", {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return probe;
+      },
+    });
+    payload.inherited = inherited;
+    payload.bigint = BigInt(1);
+    payload.symbol = Symbol(probe);
+    payload.self = payload;
+
+    const event = records.appendEvent({ id: "hostile-event", taskId: "t1", type: "assistant.turn_completed", payload, createdAt });
+    const stored = db.prepare("SELECT payload_json FROM task_events WHERE id=?").get("hostile-event") as { payload_json: string };
+
+    expect(getterCalls).toBe(0);
+    expect(stored.payload_json).not.toContain(probe);
+    expect(JSON.parse(stored.payload_json)).toEqual({
+      "credential ***redacted***": "credential ***redacted***",
+      toJSON: "[Unserializable]",
+      getter: "[Unserializable]",
+      inherited: { visible: "credential ***redacted***" },
+      bigint: "[Unserializable]",
+      symbol: "[Unserializable]",
+      self: "[Circular]",
+    });
+    expect(() => JSON.stringify(event.payload)).not.toThrow();
+    expect(JSON.stringify(event.payload)).not.toContain(probe);
+    db.close();
+  });
+
   it("executes the repository cursor query and reports its indexed SQLite plan for large histories", () => {
     const { db, records } = setup();
     const insert = db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,1,?,?,?,?,?)");
