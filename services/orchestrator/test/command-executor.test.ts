@@ -227,3 +227,71 @@ describe("runProcessSafe", () => {
     }
   }, 20000);
 });
+
+/**
+ * Reported live: a model ran a test command in a temp project and the whole
+ * task "just stopped". Reproduced directly: `filterEnv` had no `CI` in its
+ * allowlist, so it was silently dropped even when the caller's environment set
+ * it, and `spawn()` had no `stdio` option, so Node defaulted stdin to an open,
+ * unconsumed pipe rather than closing it. A CLI that checks `process.env.CI`
+ * before deciding whether to run once or enter watch mode saw neither signal —
+ * it read a live stdin pipe with no TTY and no CI flag, the two things a
+ * non-interactive CLI checks to know no human is present, and sat waiting on
+ * one of them for the entire configured timeout. `npm test` on a project
+ * wired to `react-scripts test` or a bare `jest`/`vitest` invocation is
+ * exactly this shape.
+ */
+describe("headless execution never waits on interactive input", () => {
+  it("forces CI=true into the spawned environment even when unset", () => {
+    const filtered = filterEnv({ PATH: process.env.PATH });
+    expect(filtered.CI).toBe("true");
+  });
+
+  it("forces CI=true even when the caller explicitly unset it", () => {
+    const filtered = filterEnv({ PATH: process.env.PATH, CI: "" });
+    expect(filtered.CI).toBe("true");
+  });
+
+  it("does not hang a command that only exits once it detects CI or reaches stdin EOF", async () => {
+    const script = [
+      "if (process.env.CI) { console.log('ci-path'); process.exit(0); }",
+      "process.stdin.on('end', () => { console.log('eof-path'); process.exit(0); });",
+      "process.stdin.resume();",
+    ].join("\n");
+    const dir = mkdtempSync(join(tmpdir(), "morrow-cmd-exec-"));
+    const scriptPath = join(dir, "probe.mjs");
+    writeFileSync(scriptPath, script, "utf8");
+    try {
+      const start = Date.now();
+      const result = await runProcessSafe(process.execPath, [scriptPath], dir, {}, { timeoutMs: 5000 });
+      expect(result.terminationReason).toBe("completed");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("ci-path");
+      // Real regression: this used to hit the 5s timeout every time.
+      expect(Date.now() - start).toBeLessThan(2000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 10000);
+
+  it("still gives an unforced interactive read immediate EOF, not an open pipe", async () => {
+    // Same probe, but with the CI branch unreachable, to pin the stdio half
+    // of the fix independently of the CI-forcing half.
+    const script = [
+      "process.stdin.on('end', () => { console.log('eof-path'); process.exit(0); });",
+      "process.stdin.resume();",
+    ].join("\n");
+    const dir = mkdtempSync(join(tmpdir(), "morrow-cmd-exec-"));
+    const scriptPath = join(dir, "probe.mjs");
+    writeFileSync(scriptPath, script, "utf8");
+    try {
+      const start = Date.now();
+      const result = await runProcessSafe(process.execPath, [scriptPath], dir, {}, { timeoutMs: 5000 });
+      expect(result.terminationReason).toBe("completed");
+      expect(result.stdout).toContain("eof-path");
+      expect(Date.now() - start).toBeLessThan(2000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 10000);
+});

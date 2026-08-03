@@ -41,6 +41,16 @@ export function filterEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       filtered[canonical] = env[key];
     }
   }
+  // Every spawned command runs headless with no human to answer a prompt.
+  // `CI` is the de facto standard every major test runner, package manager,
+  // and linter (npm, yarn, jest, vitest, playwright, eslint, git) already
+  // checks to skip interactive/watch-mode behavior — the allowlist above
+  // dropped it silently, so a command that would otherwise exit immediately
+  // sat in watch mode or an interactive prompt until its timeout, which reads
+  // to the model, and the user, as the command having simply stopped.
+  // Unconditional: this process is never interactive regardless of what the
+  // caller's own environment happens to have set.
+  filtered.CI = "true";
   return filtered;
 }
 
@@ -194,6 +204,14 @@ export function runProcessSafe(
       env: filteredEnv,
       shell: false,
       windowsHide: true, // every agent tool-command runs headless; a console must never flash on screen
+      // stdin defaults to an open, unconsumed pipe when unset — never closed,
+      // never a TTY. A tool that reads it (an interactive prompt, or a test
+      // runner deciding whether to enter watch mode) blocks on a pipe that
+      // will never receive data or EOF, which reads to the model — and the
+      // user — as the command having simply stopped. Explicitly closing it
+      // gives every well-behaved CLI immediate EOF, the standard non-TTY
+      // signal to run once and exit rather than wait for input.
+      stdio: ["ignore", "pipe", "pipe"],
       ...(isWindows ? {} : { detached: true }), // process group for POSIX tree-kill
     });
 
