@@ -9,9 +9,9 @@ export class GitInspectionError extends Error {
 }
 
 export type GitInspectionOptions = { maxOutputBytes?: number; timeoutMs?: number; signal?: AbortSignal; limit?: number };
-export type GitStatusResult = { lines: string[]; truncated: boolean; timedOut: boolean };
-export type GitDiffResult = { files: Array<{ path: string; diff: string }>; truncated: boolean; timedOut: boolean };
-export type GitLogResult = { commits: Array<{ hash: string; subject: string; committedAt: string }>; truncated: boolean; timedOut: boolean };
+export type GitStatusResult = { lines: string[]; truncated: boolean; timedOut: boolean; repository: boolean };
+export type GitDiffResult = { files: Array<{ path: string; diff: string }>; truncated: boolean; timedOut: boolean; repository: boolean };
+export type GitLogResult = { commits: Array<{ hash: string; subject: string; committedAt: string }>; truncated: boolean; timedOut: boolean; repository: boolean };
 
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 1_000;
@@ -129,6 +129,13 @@ function ensureSuccess(result: ProcessResult): ProcessResult {
 
 export async function gitStatus(root: string, options: GitInspectionOptions = {}): Promise<GitStatusResult> {
   const scope = await resolveGitScope(root, options);
+  // A directory Morrow itself created and never `git init`-ed is not a
+  // reporting failure — it is the ordinary state of a fresh `morrow build`
+  // target, exactly as the terminal UI already tells the user ("Run git init
+  // to enable change tracking"). Running `git status` against it anyway
+  // exits 128 and turns a normal, expected condition into a thrown tool
+  // error the model has to treat as a failure.
+  if (!scope.gitRoot) return { lines: [], truncated: false, timedOut: false, repository: false };
   const args = ["status", "--porcelain=v1", ...(scope.ancestorGitRoot ? [] : ["--branch"]), "--untracked-files=all", ...(scope.pathspec ? ["--", scope.pathspec] : [])];
   const result = ensureSuccess(await runGit(root, args, options));
   const lines = result.stdout.split(/\r?\n/).filter((line) => {
@@ -139,12 +146,13 @@ export async function gitStatus(root: string, options: GitInspectionOptions = {}
   if (scope.ancestorGitRoot) {
     lines.unshift("## ancestor Git repository detected; status scoped to the registered workspace");
   }
-  return { lines, truncated: result.truncated, timedOut: result.timedOut };
+  return { lines, truncated: result.truncated, timedOut: result.timedOut, repository: true };
 }
 
 export async function gitDiff(root: string, options: GitInspectionOptions = {}): Promise<GitDiffResult> {
   const maxOutputBytes = bounded(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, "maxOutputBytes");
   const scope = await resolveGitScope(root, { ...options, maxOutputBytes });
+  if (!scope.gitRoot) return { files: [], truncated: false, timedOut: false, repository: false };
   const names = ensureSuccess(await runGit(root, ["diff", "--name-only", "-z", ...(scope.pathspec ? ["--", scope.pathspec] : [])], { ...options, maxOutputBytes }));
   const paths = names.stdout.split("\0").filter(safePath);
   const files: Array<{ path: string; diff: string }> = [];
@@ -166,18 +174,19 @@ export async function gitDiff(root: string, options: GitInspectionOptions = {}):
     timedOut ||= result.timedOut;
     if (result.truncated || result.timedOut) break;
   }
-  return { files, truncated, timedOut };
+  return { files, truncated, timedOut, repository: true };
 }
 
 export async function gitLog(root: string, options: GitInspectionOptions = {}): Promise<GitLogResult> {
   const limit = bounded(options.limit, DEFAULT_LOG_LIMIT, "limit");
   const scope = await resolveGitScope(root, options);
+  if (!scope.gitRoot) return { commits: [], truncated: false, timedOut: false, repository: false };
   const result = ensureSuccess(await runGit(root, ["log", "--no-decorate", `-n${limit}`, "--format=%H%x09%s%x09%aI", ...(scope.pathspec ? ["--", scope.pathspec] : [])], options));
   const commits = result.stdout.split(/\r?\n/).filter(Boolean).map(redactSecrets).flatMap((line) => {
     const [hash, subject, committedAt] = line.split("\t");
     return hash && subject && committedAt ? [{ hash, subject, committedAt }] : [];
   });
-  return { commits, truncated: result.truncated, timedOut: result.timedOut };
+  return { commits, truncated: result.truncated, timedOut: result.timedOut, repository: true };
 }
 
 function stripWorkspacePrefix(line: string, prefix: string): string {
