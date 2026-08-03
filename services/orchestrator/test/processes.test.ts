@@ -44,6 +44,21 @@ describe("ProcessSupervisor (real child processes)", () => {
     rmSync(logs, { recursive: true, force: true });
   });
 
+  it("redacts background-process argument JSON on writes and legacy reads", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    const record = repo.create({
+      id: "process-privacy", projectId: "p1", command: NODE,
+      args: ["-e", JSON.stringify({ nested: { secret: probe } })], cwd: ws,
+      mode: "pipe", pid: null, runId: "run-privacy",
+    });
+    const stored = db.prepare("SELECT args_json FROM processes WHERE id=?").get(record.id) as { args_json: string };
+    expect(stored.args_json).not.toContain(probe);
+    expect(JSON.stringify(repo.get(record.id))).not.toContain(probe);
+
+    db.prepare("UPDATE processes SET args_json=? WHERE id=?").run(JSON.stringify([probe]), record.id);
+    expect(JSON.stringify(repo.get(record.id))).not.toContain(probe);
+  });
+
   it("runs a process to completion and captures stdout/stderr separately", async () => {
     const record = await supervisor.start({
       projectId: "p1",

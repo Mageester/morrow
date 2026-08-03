@@ -7,6 +7,7 @@ import { openDatabase, migrations } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
+import { missionsRepository } from "../src/repositories/missions.js";
 import { providerRouteFingerprint } from "../src/routing/effective-context.js";
 
 const at = "2026-07-13T00:00:00.000Z";
@@ -323,6 +324,99 @@ describe("execution continuity repository", () => {
     });
     expect(repo.loadProviderContinuation("t", "turn-hostile", routeFingerprint)).toEqual(JSON.parse(raw.state_json));
     expect(repo.loadProviderContinuation("t", "turn-hostile", "different-route")).toBeNull();
+    db.close();
+  });
+
+  it("redacts provider-turn tool calls and canonical evidence on writes and legacy reads", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-v4-flash", routeJson: {}, ownerId: "worker-a", now: at });
+    const fence = { ownerId: "worker-a", generation: segment.generation };
+    const probe = "credential sk-abcdefghijklmnop";
+    const unsafeToolCalls = [{
+      id: "call-secret",
+      name: "run_command",
+      arguments: JSON.stringify({ nested: { secret: probe }, [probe]: probe }),
+      opaque: { value: probe },
+    }];
+
+    repo.recordProviderTurn({ id: "turn-secret", taskId: "t", segmentId: segment.id, turnKey: "turn-secret", ordinal: 1, assistantText: "safe", toolCalls: unsafeToolCalls, isFinal: true, ...fence, now: at });
+    const storedTurn = db.prepare("SELECT tool_calls_json FROM agent_provider_turns WHERE id=?").get("turn-secret") as { tool_calls_json: string };
+    expect(storedTurn.tool_calls_json).not.toContain(probe);
+    expect(JSON.stringify(repo.listProviderTurns("t"))).not.toContain(probe);
+
+    db.prepare("UPDATE agent_provider_turns SET tool_calls_json=? WHERE id=?")
+      .run(JSON.stringify({ version: 1, toolCalls: unsafeToolCalls, isFinal: true }), "turn-secret");
+    expect(JSON.stringify(repo.listProviderTurns("t"))).not.toContain(probe);
+
+    const evidence = { verification: { nested: { secret: probe } }, [probe]: { value: probe } };
+    repo.createCanonicalAnswer({ id: "answer-secret", taskId: "t", missionId: null, segmentId: segment.id, content: "safe answer", evidenceJson: evidence, ...fence, now: at });
+    const storedAnswer = db.prepare("SELECT evidence_json FROM canonical_task_answers WHERE task_id=?").get("t") as { evidence_json: string };
+    expect(storedAnswer.evidence_json).not.toContain(probe);
+    expect(JSON.stringify(repo.getCanonicalAnswer("t"))).not.toContain(probe);
+
+    db.prepare("UPDATE canonical_task_answers SET evidence_json=? WHERE task_id=?")
+      .run(JSON.stringify(evidence), "t");
+    expect(JSON.stringify(repo.getCanonicalAnswer("t"))).not.toContain(probe);
+    repo.updateCanonicalAnswerEvidence("t", { updated: { nested: probe } });
+    const updatedAnswer = db.prepare("SELECT evidence_json FROM canonical_task_answers WHERE task_id=?").get("t") as { evidence_json: string };
+    expect(updatedAnswer.evidence_json).not.toContain(probe);
+    expect(JSON.stringify(repo.getCanonicalAnswer("t"))).not.toContain(probe);
+    db.close();
+  });
+
+  it("redacts provider route metadata before durable segment persistence", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const probe = "credential sk-abcdefghijklmnop";
+    const segment = repo.openSegment({
+      taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-v4-flash",
+      routeJson: { [probe]: { nested: probe }, safe: "preserved" }, ownerId: "worker-a", now: at,
+    });
+    const raw = db.prepare("SELECT route_json FROM agent_execution_segments WHERE id=?").get(segment.id) as { route_json: string };
+    expect(raw.route_json).not.toContain(probe);
+    expect(JSON.stringify(repo.listSegments("t"))).not.toContain(probe);
+    db.close();
+  });
+
+  it("redacts checkpoint structured fields with collision-safe keys before persistence", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-v4-flash", routeJson: {}, ownerId: "worker-a", now: at });
+    const probe = "credential sk-abcdefghijklmnop";
+    const secretKey = "sk-abcdefghijklmnop";
+    const snapshot = {
+      ...checkpointSnapshot(),
+      approvals: { [secretKey]: "secret-key value", "***redacted***": "literal marker value", raw: probe },
+    };
+    repo.saveCheckpoint({ id: "checkpoint-secret", taskId: "t", missionId: null, segmentId: segment.id, cursor: 1, snapshot, ownerId: "worker-a", generation: segment.generation, now: at });
+    const raw = db.prepare("SELECT snapshot_json FROM agent_execution_checkpoints WHERE id=?").get("checkpoint-secret") as { snapshot_json: string };
+    expect(raw.snapshot_json).not.toContain(probe);
+    expect(JSON.parse(raw.snapshot_json).approvals).toEqual({
+      "***redacted***": "secret-key value",
+      "***redacted***#2": "literal marker value",
+      raw: "credential ***redacted***",
+    });
+    expect(JSON.stringify(repo.latestCheckpoint("t"))).not.toContain(probe);
+    db.close();
+  });
+
+  it("redacts canonical evidence in the mission-linked export for legacy rows", () => {
+    const db = seeded();
+    const mission = missionsRepository(db).create({
+      id: "mission-secret", projectId: "p", objective: "Inspect evidence", budget: { maxUsd: null, maxAttempts: null, maxReviewCycles: 2, spentUsd: 0, attemptsUsed: 0, reviewCyclesUsed: 0 },
+    }, at);
+    taskRepository(db).createTask({ id: "mission-task-secret", projectId: "p", kind: "agent_chat", status: "running", missionId: mission.id, createdAt: at });
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "mission-task-secret", missionId: mission.id, providerId: "deepseek", model: "deepseek-v4-flash", routeJson: {}, ownerId: "worker-a", now: at });
+    const fence = { ownerId: "worker-a", generation: segment.generation };
+    repo.createCanonicalAnswer({ id: "mission-answer-secret", taskId: "mission-task-secret", missionId: mission.id, segmentId: segment.id, content: "safe", evidenceJson: { safe: true }, ...fence, now: at });
+    const probe = "credential sk-abcdefghijklmnop";
+    db.prepare("UPDATE canonical_task_answers SET evidence_json=? WHERE task_id=?")
+      .run(JSON.stringify({ nested: { secret: probe } }), "mission-task-secret");
+
+    const exported = missionsRepository(db).missionLinkedAgentAnswerState(mission.id);
+    expect(JSON.stringify(exported)).not.toContain(probe);
     db.close();
   });
 

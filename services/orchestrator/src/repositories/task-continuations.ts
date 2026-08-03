@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { redactJsonText } from "../provider/credentials.js";
 
 export interface TaskContinuation {
   taskId: string;
@@ -19,7 +20,7 @@ export function taskContinuationsRepository(db: Database.Database) {
            tool_name = excluded.tool_name,
            args_json = excluded.args_json,
            created_at = excluded.created_at`
-      ).run(input.taskId, input.toolCallId, input.toolName, JSON.stringify(input.args), now);
+      ).run(input.taskId, input.toolCallId, input.toolName, redactJsonText(JSON.stringify(input.args)) ?? "null", now);
     },
 
     get(taskId: string): TaskContinuation | undefined {
@@ -29,7 +30,7 @@ export function taskContinuationsRepository(db: Database.Database) {
         taskId: row.task_id,
         toolCallId: row.tool_call_id,
         toolName: row.tool_name,
-        args: JSON.parse(row.args_json),
+        args: JSON.parse(redactJsonText(row.args_json) ?? "null"),
         createdAt: row.created_at,
       };
     },

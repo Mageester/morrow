@@ -50,6 +50,7 @@ import { runProcessSafe } from "./tools/command-executor.js";
 import { gitStatus } from "./tools/git.js";
 import { loadAdaptersFromEnv, notifyAll, type MessageAdapter } from "./messaging/adapter.js";
 import { SearchKindSchema, CreateScheduleSchema, DiagnosticToolSchema, SpawnSubagentSchema, NotifyRequestSchema, CreateCheckpointSchema, StartProcessSchema, CreateWorktreeSchema } from "@morrow/contracts";
+import { redactJsonText } from "./provider/credentials.js";
 
 export type DiagnosticsCommandResult = { stdout: string; stderr: string; exitCode: number | null };
 export type DiagnosticsRunner = (tool: "tsc" | "eslint", cwd: string) => Promise<DiagnosticsCommandResult>;
@@ -742,7 +743,11 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
     const task = tasks.getTaskById(taskId);
     if (!task) throw new ApiError(404, "Task not found", "NOT_FOUND");
     const agg = records.getAggregate(taskId);
-    const toolCalls = convs.listToolCallsForTask(taskId);
+    const toolCalls = convs.listToolCallsForTask(taskId).map((call) => ({
+      ...call,
+      argsJson: redactJsonText(call.argsJson) ?? "{}",
+      resultJson: call.resultJson === null || call.resultJson === undefined ? call.resultJson : redactJsonText(call.resultJson) ?? "null",
+    }));
     const routing = routingRepo.get(taskId)?.decision ?? null;
     const latestSummary = contextSummariesRepo.latestForTask(taskId);
     const context = contextUsageFromEvents(agg.events, latestSummary);
@@ -1349,12 +1354,12 @@ export function buildServer(deps: ServerDependencies): FastifyInstance {
         if (!raw || typeof raw !== "object") return [];
         const call = raw as { id?: unknown; name?: unknown; arguments?: unknown };
         return typeof call.id === "string" && typeof call.name === "string" && typeof call.arguments === "string"
-          ? [{ id: call.id, name: call.name, arguments: call.arguments }]
+          ? [{ id: call.id, name: call.name, arguments: redactJsonText(call.arguments) ?? call.arguments }]
           : [];
       }),
     }));
     const toolResults = convs.listToolCallsForTask(taskId).flatMap((call) =>
-      typeof call.resultJson === "string" ? [{ id: call.id, toolName: call.toolName, result: call.resultJson }] : [],
+      typeof call.resultJson === "string" ? [{ id: call.id, toolName: call.toolName, result: redactJsonText(call.resultJson) ?? call.resultJson }] : [],
     );
     const messages = buildProviderProjection({ prefixMessages, turns, toolResults });
     if (messages.length < 2) throw new ApiError(409, "Not enough task history to compact", "CONTEXT_NOT_COMPACTABLE");

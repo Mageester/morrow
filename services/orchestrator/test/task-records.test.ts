@@ -6,6 +6,7 @@ import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
+import { redactSecretsDeep } from "../src/provider/credentials.js";
 
 const createdAt = "2026-01-01T00:00:00.000Z";
 const updatedAt = "2026-01-01T00:01:00.000Z";
@@ -54,6 +55,27 @@ describe("task records repository", () => {
       payload_json: JSON.stringify(event.payload),
     });
     expect(JSON.stringify(records.listEvents("t1"))).not.toContain(probe);
+    db.close();
+  });
+
+  it("preserves every entry when secret-shaped keys collide with the redaction marker", () => {
+    const { db, records } = setup();
+    const probe = "sk-abcdefghijklmnop";
+    const payload: Record<string, unknown> = {};
+    Object.defineProperty(payload, probe, { enumerable: true, value: "secret-key value" });
+    payload["***redacted***"] = "literal marker value";
+
+    records.appendEvent({ id: "collision-event", taskId: "t1", type: "evidence.persisted", payload, createdAt });
+
+    const raw = db.prepare("SELECT payload_json FROM task_events WHERE id=?").get("collision-event") as { payload_json: string };
+    const expected = JSON.stringify(redactSecretsDeep(payload));
+    expect(raw.payload_json).toBe(expected);
+    expect(raw.payload_json).not.toContain(probe);
+    expect(JSON.parse(raw.payload_json)).toEqual({
+      "***redacted***": "secret-key value",
+      "***redacted***#2": "literal marker value",
+    });
+    expect(JSON.stringify(redactSecretsDeep(payload))).toBe(expected);
     db.close();
   });
 

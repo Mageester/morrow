@@ -1247,6 +1247,42 @@ export const migrations:Migration[]=[
       updateIndex.run(safeContent, assistant.id);
     }
   }}
+  ,{id:46,name:"assistant_message_role_fts_rebuild",up(db){
+    // Role changes are privacy-relevant: a user row may become an assistant
+    // row without its content changing. Rebuild the message partition so old
+    // rows and trigger-managed updates share the same safe projection.
+    const assistants = db.prepare("SELECT id, content FROM conversation_messages WHERE role='assistant'").all() as Array<{ id: string; content: string }>;
+    const updateMessage = db.prepare("UPDATE conversation_messages SET content=? WHERE id=?");
+    for (const assistant of assistants) {
+      const safeContent = redactSecrets(assistant.content);
+      if (safeContent !== assistant.content) updateMessage.run(safeContent, assistant.id);
+    }
+    db.exec(`
+      DROP TRIGGER IF EXISTS search_msg_ai;
+      DROP TRIGGER IF EXISTS search_msg_au;
+      CREATE TRIGGER search_msg_ai AFTER INSERT ON conversation_messages BEGIN
+        INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+        VALUES('message', new.id,
+          (SELECT project_id FROM conversations WHERE id=new.conversation_id),
+          new.conversation_id, new.role,
+          CASE WHEN new.role='assistant' THEN morrow_redact(new.content) ELSE new.content END,
+          new.created_at);
+      END;
+      CREATE TRIGGER search_msg_au AFTER UPDATE OF content, role ON conversation_messages BEGIN
+        UPDATE search_index
+           SET title=new.role,
+               body=CASE WHEN new.role='assistant' THEN morrow_redact(new.content) ELSE new.content END
+         WHERE kind='message' AND ref_id=new.id;
+      END;
+      DELETE FROM search_index WHERE kind='message';
+      INSERT INTO search_index(kind,ref_id,project_id,conversation_id,title,body,created_at)
+        SELECT 'message', m.id, c.project_id, m.conversation_id, m.role,
+          CASE WHEN m.role='assistant' THEN morrow_redact(m.content) ELSE m.content END,
+          m.created_at
+        FROM conversation_messages m
+        JOIN conversations c ON c.id=m.conversation_id;
+    `);
+  }}
 ];
 export function openDatabase(file:string){
   if(file!==":memory:")mkdirSync(dirname(file),{recursive:true});

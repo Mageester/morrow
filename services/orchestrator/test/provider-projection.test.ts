@@ -85,6 +85,20 @@ describe("durable provider projection", () => {
     expect(projectionFingerprint(second)).toBe(projectionFingerprint(first));
   });
 
+  it("does not forward raw legacy tool-call JSON through compaction projection", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "legacy-turn",
+        assistantText: "safe",
+        toolCalls: [{ id: "legacy-call", name: "run_command", arguments: JSON.stringify({ nested: { secret: probe } }) }],
+      }],
+      toolResults: [{ id: "legacy-call", toolName: "run_command", result: JSON.stringify({ output: probe }) }],
+    });
+    expect(JSON.stringify(messages)).not.toContain(probe);
+  });
+
   it("compacts completed write arguments but preserves failed write bodies for repair", () => {
     const buildProviderProjection = providerProjectionModule.buildProviderProjection;
     const body = "full file body";

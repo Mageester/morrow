@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ProviderContinuationState } from "../provider/base.js";
-import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
+import { redactJsonText, redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
 import type { ExecutionRequirement, RequirementEvaluation } from "../execution/requirements.js";
 
@@ -145,25 +145,35 @@ function segment(row: SegmentRow): ExecutionSegment {
   return {
     id: row.id, taskId: row.task_id, missionId: row.mission_id, sequence: row.sequence,
     status: row.status, boundaryReason: row.boundary_reason, providerId: row.provider_id,
-    model: row.model, routeJson: JSON.parse(row.route_json) as Record<string, unknown>,
+    model: row.model, routeJson: redactSecretsDeep(JSON.parse(row.route_json)) as Record<string, unknown>,
     ownerId: row.owner_id, generation: row.lease_generation, leaseExpiresAt: row.lease_expires_at, startedAt: row.started_at, closedAt: row.closed_at,
   };
 }
 
 function providerTurnPayload(raw: string): { toolCalls: unknown[]; isFinal: boolean } {
-  const parsed = JSON.parse(raw) as unknown;
+  const parsed = redactSecretsDeep(JSON.parse(raw)) as unknown;
   // Migration-32 rows stored only the tool-call array. They remain readable,
   // but are not safe to replay as canonical final turns because their finality
   // was inferred rather than durably asserted.
-  if (Array.isArray(parsed)) return { toolCalls: parsed, isFinal: false };
+  if (Array.isArray(parsed)) return { toolCalls: sanitizeProviderToolCalls(parsed), isFinal: false };
   if (parsed && typeof parsed === "object") {
     const payload = parsed as { toolCalls?: unknown; isFinal?: unknown };
     return {
-      toolCalls: Array.isArray(payload.toolCalls) ? payload.toolCalls : [],
+      toolCalls: sanitizeProviderToolCalls(payload.toolCalls),
       isFinal: payload.isFinal === true,
     };
   }
   return { toolCalls: [], isFinal: false };
+}
+
+function sanitizeProviderToolCalls(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((call) => {
+    if (!call || typeof call !== "object" || Array.isArray(call)) return call;
+    const result = { ...(call as Record<string, unknown>) };
+    if (typeof result.arguments === "string") result.arguments = redactJsonText(result.arguments) ?? result.arguments;
+    return result;
+  });
 }
 
 export function executionContinuityRepository(db: Database.Database) {
@@ -190,7 +200,7 @@ export function executionContinuityRepository(db: Database.Database) {
       const sequence = (db.prepare("SELECT COALESCE(MAX(sequence),0)+1 AS n FROM agent_execution_segments WHERE task_id=?").get(input.taskId) as { n: number }).n;
       const id = randomUUID();
       const defaultLease = new Date(Date.parse(input.now) + 5 * 60_000).toISOString();
-      insertSegment.run(id, input.taskId, input.missionId, sequence, input.providerId, input.model, JSON.stringify(input.routeJson), input.ownerId, input.leaseExpiresAt ?? defaultLease, input.now);
+      insertSegment.run(id, input.taskId, input.missionId, sequence, input.providerId, input.model, JSON.stringify(redactSecretsDeep(input.routeJson)), input.ownerId, input.leaseExpiresAt ?? defaultLease, input.now);
       return segment(getSegment.get(id) as SegmentRow);
     })();
   };
@@ -272,8 +282,9 @@ export function executionContinuityRepository(db: Database.Database) {
       return db.transaction(() => {
         assertFence(input.segmentId, input);
         const safeAssistantText = redactSecrets(input.assistantText);
+        const safeToolCalls = sanitizeProviderToolCalls(redactSecretsDeep(input.toolCalls));
         db.prepare(`INSERT INTO agent_provider_turns(id,task_id,segment_id,turn_key,ordinal,assistant_text,tool_calls_json,created_at)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO NOTHING`).run(input.id, input.taskId, input.segmentId, input.turnKey, input.ordinal, safeAssistantText, JSON.stringify({ version: 1, toolCalls: input.toolCalls, isFinal: input.isFinal === true }), input.now);
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO NOTHING`).run(input.id, input.taskId, input.segmentId, input.turnKey, input.ordinal, safeAssistantText, JSON.stringify({ version: 1, toolCalls: safeToolCalls, isFinal: input.isFinal === true }), input.now);
         const row = db.prepare("SELECT * FROM agent_provider_turns WHERE task_id=? AND turn_key=?").get(input.taskId, input.turnKey) as any;
         const payload = providerTurnPayload(row.tool_calls_json as string);
         return { id: row.id as string, taskId: row.task_id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: redactSecrets(row.assistant_text as string), ...payload };
@@ -303,7 +314,7 @@ export function executionContinuityRepository(db: Database.Database) {
     },
     latestCheckpoint(taskId: string): ExecutionCheckpoint | null {
       const row = db.prepare("SELECT * FROM agent_execution_checkpoints WHERE task_id=? ORDER BY durable_event_cursor DESC,id DESC LIMIT 1").get(taskId) as any;
-      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, segmentId: row.segment_id, cursor: row.durable_event_cursor, snapshot: JSON.parse(row.snapshot_json), createdAt: row.created_at } : null;
+      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, segmentId: row.segment_id, cursor: row.durable_event_cursor, snapshot: redactSecretsDeep(JSON.parse(row.snapshot_json)) as ExecutionCheckpointSnapshot, createdAt: row.created_at } : null;
     },
     saveProviderContinuation(input: { id: string; taskId: string; segmentId: string; providerId: string; routeFingerprint: string; turnKey: string; state: ProviderContinuationState; ownerId: string; generation: number; now: string }): void {
       db.transaction(() => {
@@ -323,31 +334,32 @@ export function executionContinuityRepository(db: Database.Database) {
     createCanonicalAnswer(input: { id: string; taskId: string; missionId: string | null; segmentId: string; content: string; evidenceJson: Record<string, unknown>; ownerId: string; generation: number; now: string }) {
       assertFence(input.segmentId, input);
       const safeContent = redactSecrets(input.content);
+      const safeEvidenceJson = redactSecretsDeep(input.evidenceJson) as Record<string, unknown>;
       try {
-        db.prepare("INSERT INTO canonical_task_answers(id,task_id,mission_id,content,evidence_json,created_at) VALUES(?,?,?,?,?,?)").run(input.id, input.taskId, input.missionId, safeContent, JSON.stringify(input.evidenceJson), input.now);
+        db.prepare("INSERT INTO canonical_task_answers(id,task_id,mission_id,content,evidence_json,created_at) VALUES(?,?,?,?,?,?)").run(input.id, input.taskId, input.missionId, safeContent, JSON.stringify(safeEvidenceJson), input.now);
       } catch (error) {
         if (/UNIQUE constraint failed/.test(error instanceof Error ? error.message : String(error))) {
           const row = db.prepare("SELECT * FROM canonical_task_answers WHERE task_id=?")
             .get(input.taskId) as any;
           if (row) {
-            const existing = { id: row.id as string, taskId: row.task_id as string, missionId: row.mission_id as string | null, content: redactSecrets(row.content as string), evidenceJson: JSON.parse(row.evidence_json as string) as Record<string, unknown>, createdAt: row.created_at as string };
+            const existing = { id: row.id as string, taskId: row.task_id as string, missionId: row.mission_id as string | null, content: redactSecrets(row.content as string), evidenceJson: redactSecretsDeep(JSON.parse(row.evidence_json as string)) as Record<string, unknown>, createdAt: row.created_at as string };
             if (existing.taskId === input.taskId
               && existing.missionId === input.missionId
               && existing.content === safeContent
-              && isDeepStrictEqual(existing.evidenceJson, input.evidenceJson)) return existing;
+              && isDeepStrictEqual(existing.evidenceJson, safeEvidenceJson)) return existing;
           }
           throw new Error("Canonical answer already exists for this task");
         }
         throw error;
       }
-      return { id: input.id, taskId: input.taskId, missionId: input.missionId, content: safeContent, evidenceJson: input.evidenceJson, createdAt: input.now };
+      return { id: input.id, taskId: input.taskId, missionId: input.missionId, content: safeContent, evidenceJson: safeEvidenceJson, createdAt: input.now };
     },
     getCanonicalAnswer(taskId: string): { id: string; taskId: string; missionId: string | null; content: string; evidenceJson: Record<string, unknown>; createdAt: string } | null {
       const row = db.prepare("SELECT * FROM canonical_task_answers WHERE task_id=?").get(taskId) as any;
-      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, content: redactSecrets(row.content), evidenceJson: JSON.parse(row.evidence_json), createdAt: row.created_at } : null;
+      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, content: redactSecrets(row.content), evidenceJson: redactSecretsDeep(JSON.parse(row.evidence_json)) as Record<string, unknown>, createdAt: row.created_at } : null;
     },
     updateCanonicalAnswerEvidence(taskId: string, evidenceJson: Record<string, unknown>): void {
-      const result = db.prepare("UPDATE canonical_task_answers SET evidence_json=? WHERE task_id=?").run(JSON.stringify(evidenceJson), taskId);
+      const result = db.prepare("UPDATE canonical_task_answers SET evidence_json=? WHERE task_id=?").run(JSON.stringify(redactSecretsDeep(evidenceJson)), taskId);
       if (result.changes !== 1) throw new Error("Canonical answer not found for task");
     },
   };

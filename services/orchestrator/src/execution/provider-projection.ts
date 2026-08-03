@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ChatMessage } from "../provider/base.js";
 import type { ModelBudget } from "../routing/model-budget.js";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
+import { redactJsonText, redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import {
   admitProviderRequest,
   measureProviderRequest,
@@ -61,10 +62,13 @@ export function buildProviderProjection(input: {
   for (const turn of input.turns) {
     messages.push({
       role: "assistant",
-      content: turn.assistantText,
+      content: redactSecrets(turn.assistantText),
       ...(turn.toolCalls.length > 0 ? {
       toolCalls: turn.toolCalls.map((call) => {
           const observation = results.get(call.id);
+          const normalizedArguments = observation?.status === "failed"
+            ? call.arguments
+            : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments;
           return {
             id: call.id,
             type: "function" as const,
@@ -73,14 +77,12 @@ export function buildProviderProjection(input: {
               // Failed write calls need their original body on the next turn
               // so provider can repair one bad field. Compact only calls whose
               // effect completed durably.
-              arguments: observation?.status === "failed"
-                ? call.arguments
-                : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments,
+              arguments: redactJsonText(normalizedArguments) ?? redactSecrets(normalizedArguments),
             },
           };
         }),
       } : {}),
-      ...(turn.providerContinuation ? { providerContinuation: turn.providerContinuation } : {}),
+      ...(turn.providerContinuation ? { providerContinuation: redactSecretsDeep(turn.providerContinuation) } : {}),
       ...(turn.providerContinuationRouteFingerprint ? { providerContinuationRouteFingerprint: turn.providerContinuationRouteFingerprint } : {}),
     });
     for (const call of turn.toolCalls) {
@@ -92,7 +94,7 @@ export function buildProviderProjection(input: {
         role: "tool",
         name: result.toolName,
         toolCallId: result.id,
-        content: input.normalizeToolResult?.(result.toolName, result.result) ?? result.result,
+        content: redactJsonText(input.normalizeToolResult?.(result.toolName, result.result) ?? result.result) ?? redactSecrets(result.result),
       });
     }
   }

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { ConversationSchema, ConversationMessageSchema, type Conversation, type ConversationMessage } from "@morrow/contracts";
-import { redactSecrets } from "../provider/credentials.js";
+import { redactJsonText, redactSecrets } from "../provider/credentials.js";
 
 export interface ToolCallRecord {
   id: string;
@@ -52,8 +52,8 @@ export function conversationsRepository(db: Database.Database) {
       messageId: row.message_id,
       taskId: row.task_id,
       toolName: row.tool_name,
-      argsJson: row.args_json,
-      resultJson: row.result_json,
+      argsJson: redactJsonText(row.args_json) ?? "{}",
+      resultJson: row.result_json === null || row.result_json === undefined ? row.result_json : redactJsonText(row.result_json),
       status: row.status,
       errorType: row.error_type,
       errorMessage: row.error_message,
@@ -219,6 +219,10 @@ export function conversationsRepository(db: Database.Database) {
           `Tool-call id collision: "${input.id}" is already recorded under task ${existingTaskId.task_id} and cannot be rewritten by task ${input.taskId}. Tool-call ids must be unique per task; the provider adapter that minted this id is reusing it across streams.`
         );
       }
+      const safeArgsJson = redactJsonText(input.argsJson) ?? "{}";
+      const safeResultJson = input.resultJson === null || input.resultJson === undefined
+        ? null
+        : redactJsonText(input.resultJson) ?? "null";
       db.prepare(
         `INSERT INTO message_tool_calls
          (id, message_id, task_id, tool_name, args_json, result_json, status, error_type, error_message, created_at, started_at, completed_at)
@@ -235,8 +239,8 @@ export function conversationsRepository(db: Database.Database) {
         input.messageId,
         input.taskId,
         input.toolName,
-        input.argsJson,
-        input.resultJson || null,
+        safeArgsJson,
+        safeResultJson,
         input.status,
         input.errorType || null,
         input.errorMessage || null,

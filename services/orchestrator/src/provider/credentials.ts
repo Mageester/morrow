@@ -245,11 +245,19 @@ export function redactSecretsDeep<T>(value: T): T {
       }
 
       const output: Record<string, unknown> = {};
+      const usedKeys = new Set<string>();
       const descriptors = Object.getOwnPropertyDescriptors(input);
       for (const key of Object.keys(descriptors)) {
         const descriptor = descriptors[key]!;
         if (!descriptor.enumerable) continue;
-        const safeKey = redactSecrets(key);
+        const baseKey = redactSecrets(key);
+        let safeKey = baseKey;
+        let suffix = 2;
+        while (usedKeys.has(safeKey)) {
+          safeKey = `${baseKey}#${suffix}`;
+          suffix += 1;
+        }
+        usedKeys.add(safeKey);
         const safeValue = "value" in descriptor ? sanitize(descriptor.value) : UNSERIALIZABLE_VALUE;
         Object.defineProperty(output, safeKey, {
           configurable: true,
@@ -267,4 +275,16 @@ export function redactSecretsDeep<T>(value: T): T {
   };
 
   return sanitize(value) as T;
+}
+
+/** Sanitize a JSON text field at a persistence boundary while preserving its
+ * original JSON-string contract, including legacy malformed text. */
+export function redactJsonText(input: string | null | undefined): string | null | undefined {
+  if (input === null || input === undefined) return input;
+  try {
+    const serialized = JSON.stringify(redactSecretsDeep(JSON.parse(input))) ?? "null";
+    return serialized;
+  } catch {
+    return redactSecrets(input);
+  }
 }

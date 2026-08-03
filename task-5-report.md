@@ -18,7 +18,11 @@ the web activity boundary sanitizes streamed narration defensively. The final
 hardening also sanitizes object keys, ignores attacker-controlled serializers
 and accessors, converts cycles/non-JSON values to stable JSON-safe placeholders,
 and closes the assistant-message read, FTS, and web projection paths for legacy
-rows without altering user-message content.
+rows without altering user-message content. Provider-turn tool-call JSON,
+canonical-answer evidence, task tool-call arguments/results, task continuation
+arguments, background-process arguments, route metadata, and checkpoint
+structured fields now share the same durable JSON sanitation boundary. The
+role-aware FTS migration rebuilds legacy message rows and preserves user search.
 
 ## TDD evidence
 
@@ -70,12 +74,23 @@ rows without altering user-message content.
   stable placeholders, legacy rows are migrated, assistant search hits are
   safe, user content remains unchanged, and routeFingerprint behavior is
   preserved.
+- Review RED: the five new durable-boundary probes produced 7 failures in the
+  54-test focused set (provider-turn/canonical evidence, task tool calls,
+  collision-safe keys, checkpoint/route fields, and role-only FTS behavior).
+  The scoped mission-export and task-continuation audit probes added 2 more
+  expected failures before their boundary fixes.
+- Review GREEN: the same boundary probes passed 9/9 after implementation;
+  direct raw-input provider projection passed, and the background-process
+  argument audit passed its 11-test suite. Legacy rows are sanitized on reads,
+  task APIs, compaction projection, mission export, and FTS rebuild.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
 | Focused Task 5 brief command (5 files) | 64/64 passed |
+| New provider/canonical/tool/FTS/collision/export/continuation probes | 10/10 passed |
+| Background-process JSON privacy suite | 11/11 passed |
 | Focused privacy/replay regression | 2/2 passed |
 | Event/web/continuity RED/GREEN regression | 4/4 passed after fix |
 | Focused restart/review compatibility run (5 files) | 122/122 passed |
@@ -88,7 +103,7 @@ rows without altering user-message content.
 | Review-focused completion/frontend/security run (3 files) | 33/33 passed |
 | Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
 | 247-test regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,742/1,742 passed |
+| Full default `@morrow/orchestrator` suite | 166 files, 1,753/1,753 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
 | Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
@@ -117,8 +132,9 @@ suite is fully green, including crash-replay and privacy coverage.
   satisfy an inspection contract; failed and approval-blocked calls are never
   independent evidence.
 - Credential-like final text is redacted at assistant-message, provider-turn,
-  and canonical-answer persistence boundaries; ordinary final-answer text and
-  completion evidence semantics remain unchanged.
+  canonical-answer, task-tool-call, continuation, and background-process
+  persistence boundaries; ordinary final-answer text and completion evidence
+  semantics remain unchanged.
 - Task event payloads are recursively redacted before SQLite serialization and
   on reads; object keys are sanitized and custom prototypes, `toJSON`, getters,
   symbols, cycles, and non-JSON values cannot reintroduce raw data.
@@ -128,6 +144,9 @@ suite is fully green, including crash-replay and privacy coverage.
 - Assistant content is redacted on repository writes and reads, FTS writes and
   legacy migration, search result projection, and web message projection.
   User-message writes and safe search content remain unchanged.
+- Role-only user-to-assistant updates refresh both FTS title/body projections;
+  migration 46 rebuilds the message partition, sanitizes legacy assistant
+  content, and retains user-message searchability.
 - Live-provider execution was not authorized. Both live checks ran through
   their isolation paths, and no live run was appended.
 - No secrets or raw provider credentials were logged or added to the diff.
@@ -142,7 +161,7 @@ bytes and its SHA-256 is:
 ## Rollback
 
 Revert this focused privacy-hardening commit only with a database-aware
-rollback plan: migration 45 is recorded in `schema_migrations`, and redacted
+rollback plan: migrations 45 and 46 are recorded in `schema_migrations`, and redacted
 legacy values cannot be recovered without a database backup. No evidence
 file rollback is required; the append-only live evidence file remains
 untouched.

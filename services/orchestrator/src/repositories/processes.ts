@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { redactJsonText } from "../provider/credentials.js";
 
 /**
  * Persisted background-process registry rows.
@@ -37,7 +38,7 @@ function mapRow(row: any): ProcessRecord {
     taskId: row.task_id,
     agentId: row.agent_id,
     command: row.command,
-    args: JSON.parse(row.args_json),
+    args: JSON.parse(redactJsonText(row.args_json) ?? "[]"),
     cwd: row.cwd,
     mode: row.mode,
     pid: row.pid,
@@ -74,7 +75,7 @@ export function processesRepository(db: Database.Database) {
         input.taskId ?? null,
         input.agentId ?? null,
         input.command,
-        JSON.stringify(input.args),
+        redactJsonText(JSON.stringify(input.args)) ?? "[]",
         input.cwd,
         input.mode,
         input.pid,

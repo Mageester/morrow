@@ -10,6 +10,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { TaskRunner } from "../src/runner.js";
 import { buildServer } from "../src/server.js";
+import { buildProviderProjection } from "../src/execution/provider-projection.js";
 
 const NOW = "2026-07-22T12:00:00.000Z";
 
@@ -152,6 +153,45 @@ describe("project-scoped conversation API", () => {
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
     expect(JSON.stringify(body)).not.toContain("private artifact contents");
     expect(JSON.stringify(body)).not.toContain("secret.txt");
+  });
+
+  it("redacts tool-call JSON on writes, legacy reads, task APIs, and provider projection", async () => {
+    const conversation = await create("Tool-call privacy boundaries");
+    const tasks = taskRepository(db);
+    const conversations = conversationsRepository(db);
+    tasks.createTask({ id: "task-tool-privacy", projectId: "project-a", kind: "agent_chat", status: "running", createdAt: NOW });
+    conversations.appendMessage({
+      id: "assistant-tool-privacy", conversationId: conversation.id, role: "assistant", content: "Working",
+      taskId: "task-tool-privacy", streamingState: "streaming", createdAt: NOW, updatedAt: NOW,
+    });
+    const probe = "credential sk-abcdefghijklmnop";
+    const argsJson = JSON.stringify({ nested: { secret: probe }, opaque: [probe] });
+    const resultJson = JSON.stringify({ output: { secret: probe } });
+    conversations.upsertToolCall({
+      id: "tool-privacy", messageId: "assistant-tool-privacy", taskId: "task-tool-privacy", toolName: "run_command",
+      argsJson, resultJson, status: "completed", createdAt: NOW, completedAt: NOW,
+    });
+
+    const stored = db.prepare("SELECT args_json, result_json FROM message_tool_calls WHERE id=?").get("tool-privacy") as { args_json: string; result_json: string };
+    expect(stored.args_json).not.toContain(probe);
+    expect(stored.result_json).not.toContain(probe);
+    expect(JSON.stringify(conversations.getToolCall("tool-privacy"))).not.toContain(probe);
+
+    db.prepare("UPDATE message_tool_calls SET args_json=?, result_json=? WHERE id=?").run(argsJson, resultJson, "tool-privacy");
+    const legacy = conversations.getToolCall("tool-privacy")!;
+    expect(JSON.stringify(legacy)).not.toContain(probe);
+
+    const taskResponse = await app.inject({ method: "GET", url: "/api/tasks/task-tool-privacy" });
+    expect(taskResponse.statusCode).toBe(200);
+    expect(JSON.stringify(taskResponse.json())).not.toContain(probe);
+
+    const projection = buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "Question" }],
+      turns: [{ turnKey: "legacy", assistantText: "", toolCalls: [{ id: legacy.id, name: legacy.toolName, arguments: legacy.argsJson }] }],
+      toolResults: [{ id: legacy.id, toolName: legacy.toolName, result: legacy.resultJson ?? "" }],
+    });
+    expect(JSON.stringify(projection)).not.toContain(probe);
+    expect(JSON.stringify(projection)).toContain("credential ***redacted***");
   });
 
   it("redacts assistant writes and legacy reads/indexes while preserving user content", async () => {

@@ -9,6 +9,7 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { memoryRepository } from "../src/repositories/memory.js";
 import { taskRepository } from "../src/repositories/tasks.js";
 import { searchRepository, buildMatchQuery } from "../src/repositories/search.js";
+import { redactSecrets } from "../src/provider/credentials.js";
 
 describe("buildMatchQuery", () => {
   it("returns null for empty, whitespace, or operator-only input", () => {
@@ -112,6 +113,19 @@ describe("Search repository (FTS5)", () => {
     expect(search.search("p1", "kubernetes").hits.some((h) => h.refId === "c1")).toBe(true);
   });
 
+  it("rebuilds and redacts message FTS rows when only the role changes", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    convs.appendMessage({ id: "role-change-secret", conversationId: "c1", role: "user", content: probe, createdAt: ts(6), updatedAt: ts(6) });
+    expect((db.prepare("SELECT body FROM search_index WHERE kind='message' AND ref_id=?").get("role-change-secret") as { body: string }).body).toContain(probe);
+
+    db.prepare("UPDATE conversation_messages SET role='assistant' WHERE id=?").run("role-change-secret");
+
+    const indexed = db.prepare("SELECT title, body FROM search_index WHERE kind='message' AND ref_id=?").get("role-change-secret") as { title: string; body: string };
+    expect(indexed.title).toBe("assistant");
+    expect(indexed.body).not.toContain(probe);
+    expect(JSON.stringify(search.search("p1", "credential", { kinds: ["message"] }))).not.toContain(probe);
+  });
+
   it("keeps assistant search hits safe for a raw legacy row while preserving safe user search", () => {
     const probe = "credential sk-abcdefghijklmnop";
     convs.appendMessage({ id: "assistant-current-secret", conversationId: "c1", role: "assistant", content: probe, createdAt: ts(6), updatedAt: ts(6) });
@@ -161,6 +175,45 @@ describe("Search repository (FTS5)", () => {
     const indexed = reopened.prepare("SELECT body FROM search_index WHERE ref_id='legacy-assistant'").get() as { body: string };
     expect(persisted.content).not.toContain(probe);
     expect(indexed.body).not.toContain(probe);
+    reopened.close();
+    rmSync(dir, { force: true, recursive: true });
+  });
+
+  it("rebuilds legacy message FTS rows while preserving safe user search when role-aware migration runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "morrow-role-fts-migration-"));
+    const file = join(dir, "legacy-role.db");
+    const probe = "credential sk-abcdefghijklmnop";
+    const legacy = new Database(file);
+    legacy.pragma("foreign_keys = ON");
+    legacy.function("morrow_redact", { deterministic: true }, (value: unknown) => typeof value === "string" ? redactSecrets(value) : "");
+    legacy.exec("CREATE TABLE schema_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)");
+    const recordMigration = legacy.prepare("INSERT INTO schema_migrations VALUES(?,?,?)");
+    for (const migration of migrations.filter((item) => item.id <= 45)) {
+      legacy.transaction(() => {
+        if (migration.sql) legacy.exec(migration.sql);
+        if (migration.up) migration.up(legacy);
+        recordMigration.run(migration.id, migration.name, ts(0));
+      })();
+    }
+    legacy.prepare("INSERT INTO projects(id,schema_version,name,workspace_path,created_at,updated_at) VALUES(?,?,?,?,?,?)").run("legacy-role-project", 1, "Legacy", "C:/workspace", ts(0), ts(0));
+    legacy.prepare("INSERT INTO conversations(id,project_id,title,created_at,updated_at,archived) VALUES(?,?,?,?,?,0)").run("legacy-role-conversation", "legacy-role-project", "Legacy", ts(0), ts(0));
+    legacy.prepare(
+      `INSERT INTO conversation_messages
+       (id, conversation_id, role, content, task_id, streaming_state, provider, model, created_at, updated_at)
+       VALUES ('legacy-role-secret', 'legacy-role-conversation', 'user', ?, NULL, 'completed', NULL, NULL, ?, ?),
+              ('legacy-safe-user', 'legacy-role-conversation', 'user', 'safe searchable phrase', NULL, 'completed', NULL, NULL, ?, ?)`,
+    ).run(probe, ts(1), ts(1), ts(2), ts(2));
+    legacy.prepare("UPDATE conversation_messages SET role='assistant' WHERE id='legacy-role-secret'").run();
+    expect((legacy.prepare("SELECT body FROM search_index WHERE ref_id='legacy-role-secret'").get() as { body: string }).body).toContain(probe);
+    legacy.close();
+
+    const reopened = openDatabase(file);
+    const persisted = reopened.prepare("SELECT content FROM conversation_messages WHERE id='legacy-role-secret'").get() as { content: string };
+    const indexed = reopened.prepare("SELECT title, body FROM search_index WHERE ref_id='legacy-role-secret'").get() as { title: string; body: string };
+    expect(persisted.content).not.toContain(probe);
+    expect(indexed.title).toBe("assistant");
+    expect(indexed.body).not.toContain(probe);
+    expect(JSON.stringify(searchRepository(reopened).search("legacy-role-project", "safe", { kinds: ["message"] }))).toContain("legacy-safe-user");
     reopened.close();
     rmSync(dir, { force: true, recursive: true });
   });

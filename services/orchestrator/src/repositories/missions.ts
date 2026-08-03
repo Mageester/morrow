@@ -7,6 +7,7 @@ import type {
   RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
   InvalidationEntry, MissionOperationStatus, TaskStatus, ApprovalStatus,
 } from "@morrow/contracts";
+import { redactSecretsDeep } from "../provider/credentials.js";
 
 /** A requirement node as supplied at contract-build time (before persistence). */
 export interface ContractRequirementNodeInput {
@@ -477,7 +478,7 @@ export function missionsRepository(db: Database.Database) {
         ownerTaskId: row.task_id,
         ownerTaskStatus: row.task_status,
         hasCanonicalAnswer: row.evidence_json !== null,
-        canonicalEvidence: row.evidence_json === null ? null : JSON.parse(row.evidence_json) as Record<string, unknown>,
+        canonicalEvidence: row.evidence_json === null ? null : redactSecretsDeep(JSON.parse(row.evidence_json)) as Record<string, unknown>,
         evidenceCursorExists: row.evidence_cursor_exists === 1,
         verificationEvidenceCovered: row.verification_evidence_covered === 1,
         sourceTurnIsFinal: row.source_turn_is_final === 1,

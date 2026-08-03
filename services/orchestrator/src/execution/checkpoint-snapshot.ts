@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExecutionCheckpointSnapshot } from "../repositories/execution-continuity.js";
-import { redactSecrets } from "../provider/credentials.js";
+import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { sanitizeExecutionRequirement, sanitizeRequirementEvaluation, type ExecutionRequirement, type RequirementEvaluation } from "./requirements.js";
 
 /** Hard upper bound for one serialized internal recovery checkpoint. */
@@ -190,14 +190,18 @@ function boundedBaselinePaths(values: string[], maxBytes = 24 * 1024): { paths: 
   };
 }
 
-function redactStructured(value: unknown, depth = 0): unknown {
+function boundStructured(value: unknown, depth = 0): unknown {
   if (depth > 6) return "[REDACTED]";
-  if (typeof value === "string") return redactSecrets(value);
-  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ENTRIES).map((item) => redactStructured(item, depth + 1));
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ENTRIES).map((item) => boundStructured(item, depth + 1));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, MAX_ARRAY_ENTRIES).map(([key, item]) => [key, redactStructured(item, depth + 1)]));
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, MAX_ARRAY_ENTRIES).map(([key, item]) => [key, boundStructured(item, depth + 1)]));
   }
   return value;
+}
+
+function redactStructured(value: unknown): unknown {
+  return boundStructured(redactSecretsDeep(value));
 }
 
 function compactRecord(value: Record<string, unknown>, maxBytes: number): Record<string, unknown> {
