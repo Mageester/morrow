@@ -3233,7 +3233,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     await refreshKnownArtifacts();
     await refreshRequirementEvaluations();
     if (!completionContractApplies()) return { complete: true, blockers: [] };
-    return evaluateTaskCompletion(completionInputFor(canonicalFinalAnswer, priorNarration));
+    return evaluateTaskCompletion(completionInputFor(
+      canonicalFinalAnswer === null ? null : redactSecrets(canonicalFinalAnswer),
+      priorNarration.map((text) => redactSecrets(text)),
+    ));
   };
 
   const returnCompletionContractBlock = async (evaluation: CompletionResult): Promise<boolean> => {
@@ -3473,6 +3476,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       throw new Error("Cannot create canonical answer while an explicit execution requirement is unresolved");
     }
     const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
+    const safeFinalText = redactSecrets(finalText);
     const evidenceJson = {
       sourceTurnKey,
       durableEventCursor: records.latestEvent(taskId)?.sequence ?? 0,
@@ -3486,7 +3490,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     };
     db.transaction(() => {
       continuity.createCanonicalAnswer({
-        id: randomUUID(), taskId, missionId: taskMissionId, segmentId: currentSegment.id, content: finalText, evidenceJson, ...currentFence(), now: now(),
+        id: randomUUID(), taskId, missionId: taskMissionId, segmentId: currentSegment.id, content: safeFinalText, evidenceJson, ...currentFence(), now: now(),
       });
       if (!continuity.completeSegment(
         currentSegment.id,
@@ -3506,7 +3510,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       if (preCompletionState === "waiting_for_approval" || preCompletionState === "executing_tool") transitionAgentState("observing", { event: "canonical_completion_resume" });
       if (records.getAgentState(taskId)?.state !== "completed") transitionAgentState("completed");
       records.transitionTask(taskId, "completed", { id: randomUUID(), createdAt: now(), payload: {} });
-      convs.updateMessageContentAndState(assistantMessageRow.id, finalText, "completed", now());
+      convs.updateMessageContentAndState(assistantMessageRow.id, safeFinalText, "completed", now());
     })();
   };
 
@@ -4198,10 +4202,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       closeCurrentTurn({ final: false, aborted: true });
       const retryableProviderError = isRetryableProviderError(e);
       const providerContextRejection = isProviderContextRejection(e);
+      const safeProviderMessage = redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 2_000);
       event("provider.error_classified", {
         errorName: e instanceof Error ? e.name : typeof e,
-        message: e instanceof Error ? e.message : String(e),
-        ...(e instanceof ProviderError ? { kind: e.kind, retryableFlag: e.retryable, status: e.status ?? null } : {}),
+        message: safeProviderMessage.slice(0, 500),
+        ...(e instanceof ProviderError ? { kind: e.kind, retryableFlag: e.retryable, status: e.status ?? null } : { kind: "unknown" }),
         retryable: retryableProviderError,
         contextRejection: providerContextRejection,
         recoveryAttemptsUsed: providerRecoverySegments,
@@ -4236,8 +4241,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         turn = 0;
         continue;
       }
-      console.error("Provider stream error", e);
-      const errMessage = e.message || "Failed to query AI provider";
+      console.error("Provider stream error", {
+        errorName: e instanceof Error ? e.name : typeof e,
+        ...(e instanceof ProviderError ? { kind: e.kind, status: e.status ?? null } : {}),
+        retryable: retryableProviderError,
+        contextRejection: providerContextRejection,
+      });
+      const errMessage = safeProviderMessage || "Failed to query AI provider";
       if (await returnMissionWorkerOutcome("provider_recovery_required", errMessage, {
         provider: e instanceof ProviderError ? {
           kind: e.kind,
@@ -5477,23 +5487,44 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
     if (artifactBoundary === "stop") return;
 
-    // Some providers append a concise conclusion to the same turn that
-    // performs the final verification. Once durable evidence is complete,
-    // commit that text here rather than treating the turn as provisional and
-    // opening another provider request that can drift into read-only polling.
-    const verificationCompletedThisTurn = currentToolCalls.some((toolCall) => {
-      if (toolCall.name !== "run_command") return false;
-      try {
-        return runCommandIsVerification(JSON.parse(toolCall.arguments) as Record<string, unknown>);
-      } catch {
-        return false;
-      }
-    });
-    if (!completedWithoutMoreTools && verificationCompletedThisTurn) {
-      const candidateFinalText = responseContent.slice(responseLengthAtTurnStart);
+    // Every provider turn has now had its tool observations recorded. Evaluate
+    // a visible candidate before progress/stagnation accounting regardless of
+    // which tool produced the evidence; the old fast path only recognized
+    // run_command and let verified file-delivery turns drift into another
+    // provider request.
+    if (!completedWithoutMoreTools) {
+      const candidateFinalText = redactSecrets(responseContent.slice(responseLengthAtTurnStart));
       if (candidateFinalText.trim()) {
-        const candidateCompletion = await evaluateCurrentTaskCompletion(candidateFinalText);
-        if (candidateCompletion.complete) {
+        const recordedTurnsAtBoundary = continuity.listProviderTurns(taskId);
+        const persistedToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+        const currentTurnHasSuccessfulVerification = currentToolCalls.some((toolCall) => {
+          const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
+          if (persistedCall?.status !== "completed" || persistedCall.errorType || toolCall.name !== "run_command") return false;
+          try {
+            return runCommandIsVerification(JSON.parse(toolCall.arguments) as Record<string, unknown>);
+          } catch {
+            return false;
+          }
+        });
+        const currentTurnEstablishedCompletionEvidence = currentToolCalls.some((toolCall) => {
+          const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
+          if (persistedCall?.status !== "completed" || persistedCall.errorType) return false;
+          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || BROWSER_EVIDENCE_TOOLS.has(toolCall.name)) return true;
+          return currentTurnHasSuccessfulVerification && toolCall.name === "run_command";
+        });
+        const candidateCompletion = await evaluateCurrentTaskCompletion(
+          candidateFinalText,
+          recordedTurnsAtBoundary.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
+        );
+        // Read-only tool narration remains provisional even when its
+        // observation makes the contract evaluable; only a verification turn
+        // has the established same-turn final-answer semantics. Write,
+        // verification, and frontend evidence are completion-relevant deltas
+        // for delivery/application contracts.
+        const candidateIsBoundToNewEvidence = taskShape === "read_only"
+          ? currentTurnHasSuccessfulVerification
+          : currentTurnEstablishedCompletionEvidence;
+        if (candidateCompletion.complete && candidateIsBoundToNewEvidence) {
           for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
           completeWithCanonicalAnswer(candidateFinalText, durableTurnKey);
           return;

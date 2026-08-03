@@ -19,6 +19,7 @@ import {
   type MissionRuntimeTransitionActor,
 } from "@morrow/contracts";
 import { assertMissionRuntimeTransition } from "../mission/runtime-state.js";
+import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 
 export interface MissionRuntimeLeaseFence {
   ownerId: string;
@@ -32,6 +33,10 @@ export class MissionRuntimeLeaseFenceError extends Error {
     super(message);
     this.name = "MissionRuntimeLeaseFenceError";
   }
+}
+
+function safeRuntimeText(value: string | null | undefined): string | null | undefined {
+  return value === null || value === undefined ? value : redactSecrets(value);
 }
 
 function runtimeFromRow(row: any): MissionRuntime {
@@ -63,7 +68,7 @@ function transitionFromRow(row: any): MissionRuntimeTransition {
     to: row.to_state,
     cause: row.cause,
     actor: row.actor,
-    details: JSON.parse(row.details_json),
+    details: redactSecretsDeep(JSON.parse(row.details_json)) as Record<string, unknown>,
     createdAt: row.created_at,
   });
 }
@@ -77,10 +82,10 @@ function operationFromRow(row: any): MissionOperation {
     idempotencyKey: row.idempotency_key,
     kind: row.kind,
     status: row.status,
-    strategyFingerprint: row.strategy_fingerprint ?? null,
-    input: JSON.parse(row.input_json),
-    result: row.result_json === null ? null : JSON.parse(row.result_json),
-    effectEvidenceIds: JSON.parse(row.effect_evidence_ids_json),
+    strategyFingerprint: safeRuntimeText(row.strategy_fingerprint) ?? null,
+    input: redactSecretsDeep(JSON.parse(row.input_json)) as Record<string, unknown>,
+    result: row.result_json === null ? null : redactSecretsDeep(JSON.parse(row.result_json)) as Record<string, unknown>,
+    effectEvidenceIds: redactSecretsDeep(JSON.parse(row.effect_evidence_ids_json)) as string[],
     attempt: row.attempt,
     startedAt: row.started_at ?? null,
     completedAt: row.completed_at ?? null,
@@ -161,7 +166,7 @@ export function missionRuntimeRepository(db: Database.Database) {
         db.prepare(`INSERT INTO mission_runtime_transitions
           (id,mission_id,sequence,from_state,to_state,cause,actor,details_json,created_at)
           VALUES(?,?,?,?,?,?,?,?,?)`)
-          .run(id, input.missionId, sequence, input.from, input.to, input.cause, input.actor, JSON.stringify(input.details ?? {}), input.now);
+          .run(id, input.missionId, sequence, input.from, input.to, input.cause, input.actor, JSON.stringify(redactSecretsDeep(input.details ?? {})), input.now);
         return transitionFromRow(db.prepare("SELECT * FROM mission_runtime_transitions WHERE id=?").get(id));
       })();
     },
@@ -244,6 +249,7 @@ export function missionRuntimeRepository(db: Database.Database) {
     }): MissionOperation {
       return db.transaction(() => {
         if (input.fence) assertFence(input.missionId, input.fence, input.now);
+        const safeInput = redactSecretsDeep(input.input) as Record<string, unknown>;
         const existingRow = db.prepare("SELECT * FROM mission_operations WHERE mission_id=? AND idempotency_key=?")
           .get(input.missionId, input.idempotencyKey) as any;
         if (existingRow) {
@@ -251,7 +257,7 @@ export function missionRuntimeRepository(db: Database.Database) {
           if (
             existing.kind !== input.kind
             || existing.strategyFingerprint !== input.strategyFingerprint
-            || !isDeepStrictEqual(existing.input, input.input)
+            || !isDeepStrictEqual(existing.input, safeInput)
           ) {
             throw new Error(`Mission operation idempotency key ${input.idempotencyKey} was reused with different input`);
           }
@@ -264,7 +270,7 @@ export function missionRuntimeRepository(db: Database.Database) {
           (id,mission_id,sequence,idempotency_key,kind,status,strategy_fingerprint,input_json,result_json,
            effect_evidence_ids_json,attempt,started_at,completed_at,created_at,updated_at)
           VALUES(?,?,?,?,?,'pending',?,?,NULL,'[]',0,NULL,NULL,?,?)`)
-          .run(id, input.missionId, sequence, input.idempotencyKey, input.kind, input.strategyFingerprint, JSON.stringify(input.input), input.now, input.now);
+          .run(id, input.missionId, sequence, input.idempotencyKey, input.kind, safeRuntimeText(input.strategyFingerprint), JSON.stringify(safeInput), input.now, input.now);
         const updated = db.prepare(`UPDATE mission_runtime
           SET operation_sequence=?,active_operation_id=?,updated_at=?
           WHERE mission_id=? AND operation_sequence=?`)
@@ -311,7 +317,7 @@ export function missionRuntimeRepository(db: Database.Database) {
         db.prepare(`UPDATE mission_operations
           SET status='completed',result_json=?,effect_evidence_ids_json=?,completed_at=?,updated_at=?
           WHERE id=? AND mission_id=?`)
-          .run(JSON.stringify(input.result), JSON.stringify(input.effectEvidenceIds), input.now, input.now, input.operationId, input.missionId);
+          .run(JSON.stringify(redactSecretsDeep(input.result)), JSON.stringify(redactSecretsDeep(input.effectEvidenceIds)), input.now, input.now, input.operationId, input.missionId);
         db.prepare(`UPDATE mission_runtime SET active_operation_id=NULL,updated_at=?
           WHERE mission_id=? AND active_operation_id=?`)
           .run(input.now, input.missionId, input.operationId);
@@ -341,7 +347,7 @@ export function missionRuntimeRepository(db: Database.Database) {
         db.prepare(`UPDATE mission_operations
           SET status=?,result_json=?,effect_evidence_ids_json=?,completed_at=?,updated_at=?
           WHERE id=? AND mission_id=?`)
-          .run(status, JSON.stringify(input.result), JSON.stringify(input.effectEvidenceIds ?? []), input.now, input.now, input.operationId, input.missionId);
+          .run(status, JSON.stringify(redactSecretsDeep(input.result)), JSON.stringify(redactSecretsDeep(input.effectEvidenceIds ?? [])), input.now, input.now, input.operationId, input.missionId);
         db.prepare(`UPDATE mission_runtime SET active_operation_id=NULL,updated_at=?
           WHERE mission_id=? AND active_operation_id=?`)
           .run(input.now, input.missionId, input.operationId);
@@ -370,16 +376,16 @@ export function missionRuntimeRepository(db: Database.Database) {
         missionId: input.missionId,
         operationId: input.operationId,
         kind: input.kind,
-        summary: input.summary,
-        evidenceIds: input.evidenceIds,
-        strategyFingerprint: input.strategyFingerprint,
+        summary: redactSecrets(input.summary),
+        evidenceIds: redactSecretsDeep(input.evidenceIds) as string[],
+        strategyFingerprint: safeRuntimeText(input.strategyFingerprint),
         createdAt: input.now,
       });
       db.prepare(`INSERT INTO mission_progress
         (id,mission_id,operation_id,kind,summary,evidence_ids_json,strategy_fingerprint,created_at)
         VALUES(?,?,?,?,?,?,?,?)`)
         .run(observation.id, observation.missionId, observation.operationId, observation.kind,
-          observation.summary, JSON.stringify(observation.evidenceIds), observation.strategyFingerprint, observation.createdAt);
+          redactSecrets(observation.summary), JSON.stringify(redactSecretsDeep(observation.evidenceIds)), safeRuntimeText(observation.strategyFingerprint), observation.createdAt);
       return observation;
     },
 
@@ -391,9 +397,9 @@ export function missionRuntimeRepository(db: Database.Database) {
           missionId: row.mission_id,
           operationId: row.operation_id ?? null,
           kind: row.kind,
-          summary: row.summary,
-          evidenceIds: JSON.parse(row.evidence_ids_json),
-          strategyFingerprint: row.strategy_fingerprint ?? null,
+          summary: redactSecrets(row.summary),
+          evidenceIds: redactSecretsDeep(JSON.parse(row.evidence_ids_json)) as string[],
+          strategyFingerprint: safeRuntimeText(row.strategy_fingerprint) ?? null,
           createdAt: row.created_at,
         }));
     },
@@ -420,11 +426,11 @@ export function missionRuntimeRepository(db: Database.Database) {
           missionId: input.missionId,
           operationId: input.operationId,
           category: input.category,
-          diagnosis: input.diagnosis,
-          failedStrategyFingerprint: input.failedStrategyFingerprint,
-          nextStrategyFingerprint: input.nextStrategyFingerprint,
+          diagnosis: redactSecrets(input.diagnosis),
+          failedStrategyFingerprint: safeRuntimeText(input.failedStrategyFingerprint),
+          nextStrategyFingerprint: safeRuntimeText(input.nextStrategyFingerprint),
           action: input.action,
-          retryCondition: input.retryCondition,
+          retryCondition: safeRuntimeText(input.retryCondition),
           exhausted: input.exhausted,
           createdAt: input.now,
         });
@@ -432,9 +438,9 @@ export function missionRuntimeRepository(db: Database.Database) {
           (id,mission_id,operation_id,category,diagnosis,failed_strategy_fingerprint,next_strategy_fingerprint,
            action,retry_condition,exhausted,created_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(decision.id, decision.missionId, decision.operationId, decision.category, decision.diagnosis,
-            decision.failedStrategyFingerprint, decision.nextStrategyFingerprint, decision.action,
-            decision.retryCondition, decision.exhausted ? 1 : 0, decision.createdAt);
+          .run(decision.id, decision.missionId, decision.operationId, decision.category, redactSecrets(decision.diagnosis),
+            safeRuntimeText(decision.failedStrategyFingerprint), safeRuntimeText(decision.nextStrategyFingerprint), decision.action,
+            safeRuntimeText(decision.retryCondition), decision.exhausted ? 1 : 0, decision.createdAt);
         return decision;
       })();
     },
@@ -447,11 +453,11 @@ export function missionRuntimeRepository(db: Database.Database) {
         missionId: row.mission_id,
         operationId: row.operation_id ?? null,
         category: row.category,
-        diagnosis: row.diagnosis,
-        failedStrategyFingerprint: row.failed_strategy_fingerprint ?? null,
-        nextStrategyFingerprint: row.next_strategy_fingerprint ?? null,
+        diagnosis: redactSecrets(row.diagnosis),
+        failedStrategyFingerprint: safeRuntimeText(row.failed_strategy_fingerprint) ?? null,
+        nextStrategyFingerprint: safeRuntimeText(row.next_strategy_fingerprint) ?? null,
         action: row.action,
-        retryCondition: row.retry_condition ?? null,
+        retryCondition: safeRuntimeText(row.retry_condition) ?? null,
         exhausted: row.exhausted === 1,
         createdAt: row.created_at,
       }));

@@ -3,6 +3,7 @@ import {
   type ExecutionRequirement,
   type RequirementEvaluation,
 } from "./requirements.js";
+import { redactSecrets } from "../provider/credentials.js";
 
 export const TASK_SHAPES = [
   "read_only",
@@ -161,7 +162,12 @@ const blocker = (
 
 function hasCanonicalAnswer(input: CompletionInput): boolean {
   const value = input.canonicalFinalAnswer ?? input.finalAnswer;
-  return typeof value === "string" && value.trim().length > 0;
+  if (typeof value !== "string") return false;
+  const sanitized = redactSecrets(value).trim();
+  // A response made only of a redaction marker contains no visible answer.
+  // It must not become canonical merely because the raw provider text was
+  // non-empty before the privacy boundary ran.
+  return sanitized.length > 0 && !/^[\s"'`]*\*{3}redacted\*{3}[\s"'`.,;:!?]*$/i.test(sanitized);
 }
 
 function isPassedVerification(verification: IndependentVerificationEvidence): boolean {
@@ -267,9 +273,10 @@ function evaluateFrontend(input: CompletionInput, blockers: CompletionBlocker[])
 }
 
 function evaluateCommon(input: CompletionInput, contract: CompletionContract, blockers: CompletionBlocker[]): void {
+  const canonicalAnswer = input.canonicalFinalAnswer ?? input.finalAnswer;
   if (!hasCanonicalAnswer(input)) {
     blockers.push(blocker("missing_canonical_final_answer", "A concise canonical final answer is missing."));
-  } else if (input.priorNarration && input.priorNarration.some((text) => text.trim().replace(/\s+/g, " ") === (input.canonicalFinalAnswer ?? input.finalAnswer ?? "").trim().replace(/\s+/g, " "))) {
+  } else if (typeof canonicalAnswer === "string" && input.priorNarration && input.priorNarration.some((text) => redactSecrets(text).trim().replace(/\s+/g, " ") === redactSecrets(canonicalAnswer).trim().replace(/\s+/g, " "))) {
     blockers.push(blocker("duplicate_canonical_narration", "The proposed canonical answer duplicates earlier intermediate narration."));
   }
 

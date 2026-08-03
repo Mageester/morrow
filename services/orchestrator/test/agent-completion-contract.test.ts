@@ -233,6 +233,23 @@ describe("evidence-driven task completion contracts", () => {
     ]));
   });
 
+  it("does not treat a redaction marker as a visible canonical answer", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    const result = completion.evaluateTaskCompletion({
+      taskShape: "file_delivery",
+      canonicalFinalAnswer: "sk-abcdefghijklmnop",
+      durableArtifacts: [{ path: "report.md", exists: true, contentHash: "sha256:report", independentlyObserved: true }],
+      requirements: requirementsSatisfied,
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "missing_canonical_final_answer" }),
+    ]));
+  });
+
   it("never treats file existence or model narration alone as delivery evidence", async () => {
     const completion = await loadCompletionContractModule();
     if (!completion) return;
@@ -446,6 +463,35 @@ describe("evidence-driven task completion contracts", () => {
       expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
       expect(provider.requests).toHaveLength(3);
       expect(conversationsRepository(db).listToolCallsForTask("cli-task").map((call: any) => call.id)).toEqual(["write", "syntax", "behavior"]);
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("evaluates a visible candidate after a non-verification provider turn before another request", async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-file-delivery-turn-")));
+    const db = openDatabase(":memory:");
+    try {
+      seedCliTask(db, workspace, "Create the requested report file.");
+      const provider = new MockProvider({
+        chunks: [
+          [
+            { type: "text", text: "The requested report is delivered." },
+            providerTool("write", "create_file", { path: "report.md", content: "# Report\n" }),
+            providerDone,
+          ],
+          [{ type: "text", text: "unnecessary follow-up" }, providerDone],
+        ],
+        delayMs: 1,
+      });
+      const runner = new TaskRunner(db, async (details) => executeAgentChatTask({ db: details.db, taskId: details.taskId, provider, maxTurns: 4 }));
+      runner.run("cli-task");
+      await runner.waitFor("cli-task");
+
+      expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
+      expect(provider.requests).toHaveLength(1);
+      expect(conversationsRepository(db).getMessage("cli-assistant")!.content).toBe("The requested report is delivered.");
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

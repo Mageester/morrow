@@ -1,4 +1,5 @@
 import type { ToolArtifactRepository } from "../repositories/tool-artifacts.js";
+import { redactSecrets } from "../provider/credentials.js";
 
 /**
  * Artifact-backed externalization for oversized tool results (§3+§4).
@@ -13,9 +14,9 @@ import type { ToolArtifactRepository } from "../repositories/tool-artifacts.js";
  *   artifacts (e.g. the same build log captured twice) share one row and
  *   increment its refcount.
  *
- * No secrets are stripped here. The agent must apply redaction BEFORE this
- * function is called if the content carries credentials. (The artifact store
- * itself is opaque bytes; the agent's redaction layer is upstream.)
+ * Text is sanitized before the inline/artifact split, and the repository
+ * repeats that protection at its durable boundary for direct callers and
+ * legacy reads.
  */
 
 // A compacted request keeps its most recent tool group. Keeping multiple
@@ -56,17 +57,18 @@ export function externalizeToolResult(
   text: string,
   options: ExternalizeOptions
 ): ExternalizedToolResult {
-  const bytes = Buffer.byteLength(text, "utf8");
+  const safeText = redactSecrets(text);
+  const bytes = Buffer.byteLength(safeText, "utf8");
   const inlineByteLimit = options.inlineByteLimit ?? DEFAULT_INLINE_BYTE_LIMIT;
   if (bytes <= inlineByteLimit) {
-    return { kind: "inline", text, bytes };
+    return { kind: "inline", text: safeText, bytes };
   }
   const artifact = repo.create({
     taskId: options.taskId ?? null,
     toolName: options.toolName,
     kind: options.kind,
     contentType: options.contentType ?? "text/plain",
-    content: text,
+    content: safeText,
   });
   return {
     kind: "artifact",
@@ -150,11 +152,12 @@ export function readArtifactRange(
 
   const rawOffset = typeof input.offset === "number" ? input.offset : 0;
   if (!Number.isFinite(rawOffset) || rawOffset < 0) return { ok: false, error: "\"offset\" must be a non-negative byte offset." };
-  const offset = Math.min(Math.floor(rawOffset), row.bytes);
+  const totalBytes = content.byteLength;
+  const offset = Math.min(Math.floor(rawOffset), totalBytes);
   const rawLength = typeof input.length === "number" ? input.length : MAX_ARTIFACT_READ_BYTES;
   if (!Number.isFinite(rawLength) || rawLength <= 0) return { ok: false, error: "\"length\" must be a positive byte count." };
   const length = Math.min(Math.floor(rawLength), MAX_ARTIFACT_READ_BYTES);
-  const end = Math.min(offset + length, row.bytes);
+  const end = Math.min(offset + length, totalBytes);
 
   return {
     ok: true,
@@ -162,7 +165,7 @@ export function readArtifactRange(
       artifactId: row.id,
       toolName: row.toolName,
       contentType: row.contentType,
-      totalBytes: row.bytes,
+      totalBytes,
       offset,
       returnedBytes: end - offset,
       truncated: end < row.bytes,

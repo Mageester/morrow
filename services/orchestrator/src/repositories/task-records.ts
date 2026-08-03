@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { redactSecretsDeep } from "../provider/credentials.js";
+import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import {
   ExecutionDisclosureSchema,
   AgentStateTransitionSchema,
@@ -77,6 +77,10 @@ function parseJson(value: unknown, label: string): Record<string, unknown> {
   }
 }
 
+function safeText(value: unknown): string {
+  return redactSecrets(typeof value === "string" ? value : String(value ?? ""));
+}
+
 export function taskRecordsRepository(db: Database.Database) {
   const mapTask = (row: unknown): Task => {
     const value = row as Record<string, unknown>;
@@ -99,23 +103,23 @@ export function taskRecordsRepository(db: Database.Database) {
   };
   const mapPlan = (row: unknown): PlanStep => {
     const value = row as Record<string, unknown>;
-    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: value.title, description: value.description, status: value.status });
+    return PlanStepSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, position: value.position, title: safeText(value.title), description: safeText(value.description), status: value.status });
   };
   const mapDisclosure = (row: unknown): ExecutionDisclosure => {
     const value = row as Record<string, unknown>;
-    return ExecutionDisclosureSchema.parse({ version: value.schema_version, taskId: value.task_id, executionMode: value.execution_mode, provider: value.provider, networkAccess: value.network_access, filesystemAccess: value.filesystem_access, shellExecution: Number(value.shell_execution) !== 0, modelInvocation: Number(value.model_invocation) !== 0, workspaceScope: value.workspace_scope, estimatedCostUsd: value.estimated_cost_usd, createdAt: value.created_at, updatedAt: value.updated_at });
+    return ExecutionDisclosureSchema.parse({ version: value.schema_version, taskId: value.task_id, executionMode: value.execution_mode, provider: safeText(value.provider), networkAccess: safeText(value.network_access), filesystemAccess: safeText(value.filesystem_access), shellExecution: Number(value.shell_execution) !== 0, modelInvocation: Number(value.model_invocation) !== 0, workspaceScope: safeText(value.workspace_scope), estimatedCostUsd: value.estimated_cost_usd, createdAt: value.created_at, updatedAt: value.updated_at });
   };
   const mapEvidence = (row: unknown): TaskEvidence => {
     const value = row as Record<string, unknown>;
-    return TaskEvidenceSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, type: value.type, path: value.path, metadata: parseJson(value.metadata_json, "evidence metadata"), createdAt: value.created_at });
+    return TaskEvidenceSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, type: safeText(value.type), path: safeText(value.path), metadata: redactSecretsDeep(parseJson(value.metadata_json, "evidence metadata")), createdAt: value.created_at });
   };
   const mapVerification = (row: unknown): VerificationResult => {
     const value = row as Record<string, unknown>;
-    return VerificationResultSchema.parse({ version: value.schema_version, taskId: value.task_id, status: value.status, summary: value.summary, details: parseJson(value.details_json, "verification details"), createdAt: value.created_at, updatedAt: value.updated_at });
+    return VerificationResultSchema.parse({ version: value.schema_version, taskId: value.task_id, status: value.status, summary: safeText(value.summary), details: redactSecretsDeep(parseJson(value.details_json, "verification details")), createdAt: value.created_at, updatedAt: value.updated_at });
   };
   const mapAgentState = (row: unknown): AgentStateTransition => {
     const value = row as Record<string, unknown>;
-    return AgentStateTransitionSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, sequence: value.sequence, state: value.state, details: parseJson(value.details_json, "agent state details"), createdAt: value.created_at });
+    return AgentStateTransitionSchema.parse({ version: value.schema_version, id: value.id, taskId: value.task_id, sequence: value.sequence, state: value.state, details: redactSecretsDeep(parseJson(value.details_json, "agent state details")), createdAt: value.created_at });
   };
 
   const appendEvent = (input: EventInput): TaskEvent => db.transaction(() => {
@@ -163,7 +167,7 @@ export function taskRecordsRepository(db: Database.Database) {
     }
 
     const sequence = (db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM agent_state_transitions WHERE task_id=?").get(taskId) as { sequence: number }).sequence;
-    const value = AgentStateTransitionSchema.parse({ ...input, version: 1, taskId, sequence });
+    const value = AgentStateTransitionSchema.parse({ ...input, version: 1, taskId, sequence, details: redactSecretsDeep(input.details) });
     db.prepare("INSERT INTO agent_state_transitions(id,schema_version,task_id,sequence,state,details_json,created_at) VALUES(?,1,?,?,?,?,?)").run(value.id, taskId, value.sequence, value.state, JSON.stringify(value.details), value.createdAt);
     appendEvent({ id: value.id, taskId, type: "agent.state_changed", payload: { ...value.details, state: value.state }, createdAt: value.createdAt });
     return value;
@@ -258,7 +262,7 @@ export function taskRecordsRepository(db: Database.Database) {
         db.prepare("DELETE FROM plan_steps WHERE task_id=?").run(taskId);
         const insert = db.prepare("INSERT INTO plan_steps(id,schema_version,task_id,position,title,description,status,created_at,updated_at) VALUES(?,1,?,?,?,?,?,?,?)");
         const timestamp = new Date().toISOString();
-        for (const step of steps) insert.run(step.id, taskId, step.position, step.title, step.description, step.status, timestamp, timestamp);
+        for (const step of steps) insert.run(step.id, taskId, step.position, safeText(step.title), safeText(step.description), step.status, timestamp, timestamp);
       })();
       return this.listPlanSteps(taskId);
     },
@@ -269,19 +273,27 @@ export function taskRecordsRepository(db: Database.Database) {
       return row ? mapPlan(row) : undefined;
     },
     upsertDisclosure(input: DisclosureInput) {
-      const value = ExecutionDisclosureSchema.parse({ ...input, version: 1 });
+      const value = ExecutionDisclosureSchema.parse({
+        ...input,
+        version: 1,
+        executionMode: safeText(input.executionMode),
+        provider: safeText(input.provider),
+        networkAccess: safeText(input.networkAccess),
+        filesystemAccess: safeText(input.filesystemAccess),
+        workspaceScope: safeText(input.workspaceScope),
+      });
       db.prepare("INSERT INTO execution_disclosures(task_id,schema_version,execution_mode,provider,network_access,workspace_scope,estimated_cost_usd,created_at,updated_at,filesystem_access,shell_execution,model_invocation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET execution_mode=excluded.execution_mode,provider=excluded.provider,network_access=excluded.network_access,filesystem_access=excluded.filesystem_access,shell_execution=excluded.shell_execution,model_invocation=excluded.model_invocation,workspace_scope=excluded.workspace_scope,estimated_cost_usd=excluded.estimated_cost_usd,updated_at=excluded.updated_at").run(value.taskId, 1, value.executionMode, value.provider, value.networkAccess, value.workspaceScope, value.estimatedCostUsd, value.createdAt, value.updatedAt, value.filesystemAccess, value.shellExecution ? 1 : 0, value.modelInvocation ? 1 : 0);
       return this.getDisclosure(value.taskId)!;
     },
     getDisclosure(taskId: string) { const row = db.prepare("SELECT * FROM execution_disclosures WHERE task_id=?").get(taskId); return row ? mapDisclosure(row) : undefined; },
     appendEvidence(input: EvidenceInput) {
-      const value = TaskEvidenceSchema.parse({ ...input, version: 1 });
+      const value = TaskEvidenceSchema.parse({ ...input, version: 1, type: safeText(input.type), path: safeText(input.path), metadata: redactSecretsDeep(input.metadata) });
       db.prepare("INSERT INTO task_evidence(id,schema_version,task_id,type,path,metadata_json,created_at) VALUES(?,1,?,?,?,?,?)").run(value.id, value.taskId, value.type, value.path, JSON.stringify(value.metadata), value.createdAt);
       return value;
     },
     listEvidence(taskId: string) { return db.prepare("SELECT * FROM task_evidence WHERE task_id=? ORDER BY created_at ASC,id ASC").all(taskId).map(mapEvidence); },
     upsertVerification(input: VerificationInput) {
-      const value = VerificationResultSchema.parse({ ...input, version: 1 });
+      const value = VerificationResultSchema.parse({ ...input, version: 1, summary: safeText(input.summary), details: redactSecretsDeep(input.details) });
       db.prepare("INSERT INTO verification_results(task_id,schema_version,status,summary,details_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,summary=excluded.summary,details_json=excluded.details_json,updated_at=excluded.updated_at").run(value.taskId, 1, value.status, value.summary, JSON.stringify(value.details), value.createdAt, value.updatedAt);
       return this.getVerification(value.taskId)!;
     },

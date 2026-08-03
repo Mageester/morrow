@@ -7,6 +7,8 @@
  * the command execution is wired separately behind the existing command policy.
  */
 
+import { redactSecrets } from "../provider/credentials.js";
+
 export interface Diagnostic {
   file: string;
   line: number;
@@ -18,20 +20,29 @@ export interface Diagnostic {
 
 const TSC_LINE = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
 
+function sanitizeDiagnostic(diagnostic: Diagnostic): Diagnostic {
+  return {
+    ...diagnostic,
+    file: redactSecrets(diagnostic.file),
+    code: redactSecrets(diagnostic.code),
+    message: redactSecrets(diagnostic.message),
+  };
+}
+
 /** Parse `tsc --noEmit` / `tsc --pretty false` output into diagnostics. */
 export function parseTscDiagnostics(output: string): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const raw of output.split(/\r?\n/)) {
     const match = TSC_LINE.exec(raw.trim());
     if (!match) continue;
-    diagnostics.push({
+    diagnostics.push(sanitizeDiagnostic({
       file: match[1]!.replace(/\\/g, "/"),
       line: Number(match[2]),
       column: Number(match[3]),
       severity: match[4] as "error" | "warning",
       code: match[5]!,
       message: match[6]!.trim(),
-    });
+    }));
   }
   return diagnostics;
 }
@@ -49,14 +60,14 @@ export function parseEslintDiagnostics(json: string): Diagnostic[] {
   for (const fileResult of parsed as Array<{ filePath?: string; messages?: Array<{ line?: number; column?: number; severity?: number; ruleId?: string | null; message?: string }> }>) {
     const file = (fileResult.filePath ?? "").replace(/\\/g, "/");
     for (const m of fileResult.messages ?? []) {
-      diagnostics.push({
+      diagnostics.push(sanitizeDiagnostic({
         file,
         line: m.line ?? 0,
         column: m.column ?? 0,
         severity: m.severity === 2 ? "error" : "warning",
         code: m.ruleId ?? "eslint",
         message: (m.message ?? "").trim(),
-      });
+      }));
     }
   }
   return diagnostics;
@@ -85,6 +96,8 @@ function countErrors(list: Diagnostic[]): number {
 
 /** Compare diagnostics captured before vs after a change. */
 export function compareBaseline(before: Diagnostic[], after: Diagnostic[]): BaselineComparison {
+  before = before.map(sanitizeDiagnostic);
+  after = after.map(sanitizeDiagnostic);
   const beforeKeys = new Map<string, number>();
   for (const d of before) beforeKeys.set(identity(d), (beforeKeys.get(identity(d)) ?? 0) + 1);
   const afterKeys = new Map<string, number>();
@@ -129,6 +142,7 @@ export interface DiagnosticsReport {
 }
 
 export function summarizeDiagnostics(tool: "tsc" | "eslint", diagnostics: Diagnostic[]): DiagnosticsReport {
+  diagnostics = diagnostics.map(sanitizeDiagnostic);
   return {
     tool,
     count: diagnostics.length,

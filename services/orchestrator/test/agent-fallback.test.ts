@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
@@ -130,5 +130,35 @@ describe("agent live provider fallback", () => {
     });
     expect(taskRepository(db).getTaskById("t1")?.status).toBe("failed");
     expect(conversationsRepository(db).getMessage("ma")?.content).not.toContain("should not run");
+  });
+
+  it("logs only a sanitized provider classification and persists a bounded redacted failure", async () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    const error = new ProviderError("invalid_request", `provider response body: ${probe}`, {
+      kind: "invalid_request",
+      retryable: false,
+      status: 400,
+    });
+    const primary: AiProvider = {
+      async *streamChat(): AsyncIterable<ProviderChunk> {
+        throw error;
+      },
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await executeAgentChatTask({ db, taskId: "t1", provider: primary });
+
+      expect(consoleError.mock.calls.flat().map(String).join(" ")).not.toContain(probe);
+      const durable = JSON.stringify({
+        task: taskRepository(db).getTaskById("t1"),
+        message: conversationsRepository(db).getMessage("ma"),
+        events: taskRecordsRepository(db).listEvents("t1"),
+        segments: executionContinuityRepository(db).listSegments("t1"),
+      });
+      expect(durable).not.toContain(probe);
+      expect(durable).toContain("***redacted***");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

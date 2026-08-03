@@ -7,7 +7,7 @@ import type {
   RequirementSource, RequirementNodeStatus, RequirementCategory, ReopenCondition,
   InvalidationEntry, MissionOperationStatus, TaskStatus, ApprovalStatus,
 } from "@morrow/contracts";
-import { redactSecretsDeep } from "../provider/credentials.js";
+import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 
 /** A requirement node as supplied at contract-build time (before persistence). */
 export interface ContractRequirementNodeInput {
@@ -33,6 +33,21 @@ export interface ContractRequirementNodeInput {
 }
 
 const SCHEMA_VERSION = 1;
+
+function safeMissionText(value: string | null | undefined, maxLength?: number): string | null | undefined {
+  if (value === null || value === undefined) return value;
+  const safe = redactSecrets(value);
+  return maxLength === undefined ? safe : safe.slice(0, maxLength);
+}
+
+function safeMissionJson(raw: string | null | undefined, fallback: unknown): unknown {
+  if (raw === null || raw === undefined) return fallback;
+  try {
+    return redactSecretsDeep(JSON.parse(raw));
+  } catch {
+    return fallback;
+  }
+}
 
 /** A durable review-cycle reservation. `status` distinguishes an in-flight
  *  (reserved) cycle from one whose review has actually been applied. */
@@ -75,10 +90,10 @@ export interface MissionTerminalOutcomeClaimInput {
 function mapTerminalOutcomeClaim(row: any): MissionTerminalOutcomeClaim {
   return {
     missionId: row.mission_id,
-    kind: row.kind,
-    reason: row.reason,
-    preserveStatus: row.preserve_status ?? null,
-    ownerId: row.owner_id,
+    kind: safeMissionText(row.kind) ?? "unknown",
+    reason: safeMissionText(row.reason) ?? "",
+    preserveStatus: safeMissionText(row.preserve_status) ?? null,
+    ownerId: safeMissionText(row.owner_id) ?? "unknown",
     status: row.status,
     verificationStatus: row.verification_status ?? "pending",
     generation: Number(row.verification_generation ?? 0),
@@ -106,12 +121,12 @@ function mapCriterion(row: any): MissionCriterion {
     id: row.id,
     missionId: row.mission_id,
     order: row.ordering,
-    description: row.description,
+    description: safeMissionText(row.description, 2000) ?? "[redacted]",
     state: row.state as MissionCriterionState,
-    verification: JSON.parse(row.verification_json) as MissionVerificationStrategy,
-    evidenceIds: JSON.parse(row.evidence_ids_json ?? "[]"),
-    failureReason: row.failure_reason ?? null,
-    waiverReason: row.waiver_reason ?? null,
+    verification: safeMissionJson(row.verification_json, {}) as MissionVerificationStrategy,
+    evidenceIds: safeMissionJson(row.evidence_ids_json ?? "[]", []) as string[],
+    failureReason: safeMissionText(row.failure_reason, 2000) ?? null,
+    waiverReason: safeMissionText(row.waiver_reason, 2000) ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -121,13 +136,13 @@ function mapEvidence(row: any): MissionEvidence {
   return {
     id: row.id,
     missionId: row.mission_id,
-    criterionIds: JSON.parse(row.criterion_ids_json ?? "[]"),
+    criterionIds: safeMissionJson(row.criterion_ids_json ?? "[]", []) as string[],
     type: row.type,
-    summary: row.summary,
-    command: row.command ?? null,
+    summary: safeMissionText(row.summary, 1000) ?? "[redacted]",
+    command: safeMissionText(row.command, 2000) ?? null,
     exitCode: row.exit_code ?? null,
-    outputRef: row.output_ref ?? null,
-    artifactPath: row.artifact_path ?? null,
+    outputRef: safeMissionText(row.output_ref, 500) ?? null,
+    artifactPath: safeMissionText(row.artifact_path, 1024) ?? null,
     status: row.status,
     recordedAt: row.recorded_at,
   };
@@ -139,12 +154,12 @@ function mapFailure(row: any): MissionFailure {
     missionId: row.mission_id,
     taskId: row.task_id ?? null,
     agentId: row.agent_id ?? null,
-    operation: row.operation,
-    normalizedSignature: row.normalized_signature,
+    operation: safeMissionText(row.operation, 500) ?? "[redacted]",
+    normalizedSignature: safeMissionText(row.normalized_signature, 500) ?? "[redacted]",
     category: row.category,
-    message: row.message,
+    message: safeMissionText(row.message, 2000) ?? "",
     attempt: row.attempt,
-    recoveryStrategy: row.recovery_strategy ?? null,
+    recoveryStrategy: safeMissionText(row.recovery_strategy, 500) ?? null,
     recovered: row.recovered === 1,
     createdAt: row.created_at,
   };
@@ -154,31 +169,31 @@ function mapCheckpoint(row: any): MissionCheckpoint {
   return {
     id: row.id,
     missionId: row.mission_id,
-    label: row.label,
-    reason: row.reason,
-    gitRef: row.git_ref ?? null,
-    checkpointName: row.checkpoint_name ?? null,
-    affectedFiles: JSON.parse(row.affected_files_json ?? "[]"),
+    label: safeMissionText(row.label, 200) ?? "[redacted]",
+    reason: safeMissionText(row.reason, 500) ?? "",
+    gitRef: safeMissionText(row.git_ref, 200) ?? null,
+    checkpointName: safeMissionText(row.checkpoint_name, 200) ?? null,
+    affectedFiles: safeMissionJson(row.affected_files_json ?? "[]", []) as string[],
     rollbackAvailable: row.rollback_available === 1,
     createdAt: row.created_at,
   };
 }
 
 function mapReview(row: any): MissionReview {
-  const payload = JSON.parse(row.payload_json);
+  const payload = (safeMissionJson(row.payload_json, {}) as Record<string, any>);
   return {
     id: row.id,
     missionId: row.mission_id,
     verdict: row.verdict,
-    reviewerProvider: row.reviewer_provider ?? null,
-    reviewerModel: row.reviewer_model ?? null,
-    criterionJudgments: payload.criterionJudgments ?? [],
-    regressionRisks: payload.regressionRisks ?? [],
-    suspiciousChanges: payload.suspiciousChanges ?? [],
-    missingVerification: payload.missingVerification ?? [],
-    concerns: payload.concerns ?? [],
+    reviewerProvider: safeMissionText(row.reviewer_provider, 100) ?? null,
+    reviewerModel: safeMissionText(row.reviewer_model, 200) ?? null,
+    criterionJudgments: redactSecretsDeep(payload.criterionJudgments ?? []),
+    regressionRisks: redactSecretsDeep(payload.regressionRisks ?? []),
+    suspiciousChanges: redactSecretsDeep(payload.suspiciousChanges ?? []),
+    missingVerification: redactSecretsDeep(payload.missingVerification ?? []),
+    concerns: redactSecretsDeep(payload.concerns ?? []),
     recommendedStatus: payload.recommendedStatus,
-    summary: payload.summary ?? "",
+    summary: safeMissionText(payload.summary, 8000) ?? "",
     createdAt: row.created_at,
   };
 }
@@ -189,8 +204,8 @@ function mapEvent(row: any): MissionEvent {
     missionId: row.mission_id,
     sequence: row.sequence,
     type: row.type,
-    summary: row.summary,
-    data: JSON.parse(row.data_json ?? "{}"),
+    summary: safeMissionText(row.summary, 1000) ?? "",
+    data: (safeMissionJson(row.data_json, {}) as Record<string, unknown>),
     createdAt: row.created_at,
   };
 }
@@ -201,23 +216,23 @@ function mapRequirementNode(row: any): MissionRequirementNode {
     id: row.id,
     missionId: row.mission_id,
     order: row.ordering,
-    statement: row.statement,
+    statement: safeMissionText(row.statement, 2000) ?? "[redacted]",
     category: row.category as RequirementCategory,
-    sourcePromptExcerpt: row.source_prompt_excerpt ?? "",
-    sourceLocator: row.source_locator ?? null,
+    sourcePromptExcerpt: safeMissionText(row.source_prompt_excerpt, 2000) ?? "",
+    sourceLocator: safeMissionText(row.source_locator, 500) ?? null,
     source: row.source as RequirementSource,
     confidence: row.confidence,
     approved: row.approved === 1,
     authoritative: row.authoritative === 1,
     status: row.status as RequirementNodeStatus,
-    dependencies: JSON.parse(row.dependencies_json ?? "[]"),
-    evidenceRefs: JSON.parse(row.evidence_refs_json ?? "[]"),
-    affectedFiles: JSON.parse(row.affected_files_json ?? "[]"),
-    verifiedFileHashes: JSON.parse(row.verified_file_hashes_json ?? "[]"),
+    dependencies: safeMissionJson(row.dependencies_json ?? "[]", []) as string[],
+    evidenceRefs: safeMissionJson(row.evidence_refs_json ?? "[]", []) as string[],
+    affectedFiles: safeMissionJson(row.affected_files_json ?? "[]", []) as string[],
+    verifiedFileHashes: safeMissionJson(row.verified_file_hashes_json ?? "[]", []) as string[],
     attempts: row.attempts ?? 0,
-    lastFailure: row.last_failure_json ?? null,
+    lastFailure: safeMissionText(row.last_failure_json, 2000) ?? null,
     completedAt: row.completed_at ?? null,
-    invalidationHistory: JSON.parse(row.invalidation_history_json ?? "[]"),
+    invalidationHistory: safeMissionJson(row.invalidation_history_json ?? "[]", []) as InvalidationEntry[],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -227,14 +242,14 @@ function mapContract(row: any): MissionContract {
   return {
     version: 1,
     missionId: row.mission_id,
-    sourcePrompt: row.source_prompt,
-    objective: row.objective,
-    expectedArtifacts: JSON.parse(row.expected_artifacts_json ?? "[]"),
-    acceptanceCriteria: JSON.parse(row.acceptance_criteria_json ?? "[]"),
-    verificationCommands: JSON.parse(row.verification_commands_json ?? "[]"),
-    requiredGitResult: row.required_git_result ?? null,
+    sourcePrompt: safeMissionText(row.source_prompt) ?? "",
+    objective: safeMissionText(row.objective) ?? "",
+    expectedArtifacts: safeMissionJson(row.expected_artifacts_json ?? "[]", []) as string[],
+    acceptanceCriteria: safeMissionJson(row.acceptance_criteria_json ?? "[]", []) as string[],
+    verificationCommands: safeMissionJson(row.verification_commands_json ?? "[]", []) as string[],
+    requiredGitResult: safeMissionText(row.required_git_result) ?? null,
     requirements: [],
-    unresolvedAmbiguities: JSON.parse(row.unresolved_ambiguities_json ?? "[]"),
+    unresolvedAmbiguities: safeMissionJson(row.unresolved_ambiguities_json ?? "[]", []) as string[],
     frozen: row.frozen === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -246,12 +261,12 @@ function mapCursor(row: any): MissionCursor {
     version: 1,
     missionId: row.mission_id,
     activeNodeId: row.active_node_id ?? null,
-    activeObjective: row.active_objective ?? null,
-    allowedNextActions: JSON.parse(row.allowed_next_actions_json ?? "[]"),
-    blockedReason: row.blocked_reason ?? null,
-    lastCompletedAction: row.last_completed_action ?? null,
-    frozenNodeIds: JSON.parse(row.frozen_node_ids_json ?? "[]"),
-    invalidatedNodeIds: JSON.parse(row.invalidated_node_ids_json ?? "[]"),
+    activeObjective: safeMissionText(row.active_objective) ?? null,
+    allowedNextActions: safeMissionJson(row.allowed_next_actions_json ?? "[]", []) as string[],
+    blockedReason: safeMissionText(row.blocked_reason) ?? null,
+    lastCompletedAction: safeMissionText(row.last_completed_action) ?? null,
+    frozenNodeIds: safeMissionJson(row.frozen_node_ids_json ?? "[]", []) as string[],
+    invalidatedNodeIds: safeMissionJson(row.invalidated_node_ids_json ?? "[]", []) as string[],
     updatedAt: row.updated_at,
   };
 }
@@ -279,10 +294,10 @@ export function missionsRepository(db: Database.Database) {
       db.prepare(
         `INSERT INTO missions (id, schema_version, project_id, conversation_id, objective, status, auto_approve, task_tree_root_id, budget_json, result_json, execution_json, created_at, updated_at, started_at, completed_at)
          VALUES (?, ?, ?, ?, ?, 'draft', ?, NULL, ?, NULL, ?, ?, ?, NULL, NULL)`,
-      ).run(input.id, SCHEMA_VERSION, input.projectId, input.conversationId ?? null, input.objective,
-        input.autoApprove ? 1 : 0, JSON.stringify(input.budget), JSON.stringify(input.execution ?? {
+      ).run(input.id, SCHEMA_VERSION, input.projectId, input.conversationId ?? null, safeMissionText(input.objective),
+        input.autoApprove ? 1 : 0, JSON.stringify(redactSecretsDeep(input.budget)), JSON.stringify(redactSecretsDeep(input.execution ?? {
           preset: "balanced", providerId: null, model: null, reasoning: { mode: "auto" },
-        }), now, now);
+        })), now, now);
       return repo.get(input.id)!;
     },
 
@@ -311,18 +326,18 @@ export function missionsRepository(db: Database.Database) {
         id: row.id,
         projectId: row.project_id,
         conversationId: row.conversation_id ?? null,
-        objective: row.objective,
+        objective: safeMissionText(row.objective) ?? "",
         status: row.status as MissionStatus,
         autoApprove: row.auto_approve === 1,
-        execution: JSON.parse(row.execution_json ?? '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}'),
+        execution: safeMissionJson(row.execution_json ?? '{"preset":"balanced","providerId":null,"model":null,"reasoning":{"mode":"auto"}}', {}) as Mission["execution"],
         criteria,
         taskTreeRootId: row.task_tree_root_id ?? null,
-        budget: JSON.parse(row.budget_json) as MissionBudget,
+        budget: safeMissionJson(row.budget_json, {}) as MissionBudget,
         checkpoints,
         evidence,
         failures,
         finalReview: reviewRow ? mapReview(reviewRow) : null,
-        result: row.result_json ? (JSON.parse(row.result_json) as MissionResult) : null,
+        result: row.result_json ? safeMissionJson(row.result_json, null) as MissionResult : null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         startedAt: row.started_at ?? null,
@@ -361,7 +376,7 @@ export function missionsRepository(db: Database.Database) {
     },
 
     updateBudget(id: string, budget: MissionBudget, now = new Date().toISOString()): void {
-      db.prepare("UPDATE missions SET budget_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(budget), now, id);
+      db.prepare("UPDATE missions SET budget_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(redactSecretsDeep(budget)), now, id);
     },
 
     setTaskTreeRoot(id: string, taskId: string, now = new Date().toISOString()): void {
@@ -369,7 +384,7 @@ export function missionsRepository(db: Database.Database) {
     },
 
     setResult(id: string, result: MissionResult, now = new Date().toISOString()): void {
-      db.prepare("UPDATE missions SET result_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(result), now, id);
+      db.prepare("UPDATE missions SET result_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(redactSecretsDeep(result)), now, id);
     },
 
     // ── criteria ──────────────────────────────────────────────────────────
@@ -380,19 +395,19 @@ export function missionsRepository(db: Database.Database) {
          VALUES (?, ?, ?, ?, ?, ?, '[]', NULL, NULL, ?, ?)`,
       );
       db.transaction(() => {
-        criteria.forEach((c, i) => stmt.run(c.id, missionId, startOrder + i, c.description, c.state ?? "proposed", JSON.stringify(c.verification), now, now));
+        criteria.forEach((c, i) => stmt.run(c.id, missionId, startOrder + i, safeMissionText(c.description, 2000), c.state ?? "proposed", JSON.stringify(redactSecretsDeep(c.verification)), now, now));
       })();
     },
 
     updateCriterion(id: string, patch: Partial<{ description: string; state: MissionCriterionState; verification: MissionVerificationStrategy; failureReason: string | null; waiverReason: string | null; evidenceIds: string[] }>, now = new Date().toISOString()): MissionCriterion | undefined {
       const sets: string[] = ["updated_at = ?"];
       const params: any[] = [now];
-      if (patch.description !== undefined) { sets.push("description = ?"); params.push(patch.description); }
+      if (patch.description !== undefined) { sets.push("description = ?"); params.push(safeMissionText(patch.description, 2000)); }
       if (patch.state !== undefined) { sets.push("state = ?"); params.push(patch.state); }
-      if (patch.verification !== undefined) { sets.push("verification_json = ?"); params.push(JSON.stringify(patch.verification)); }
-      if (patch.failureReason !== undefined) { sets.push("failure_reason = ?"); params.push(patch.failureReason); }
-      if (patch.waiverReason !== undefined) { sets.push("waiver_reason = ?"); params.push(patch.waiverReason); }
-      if (patch.evidenceIds !== undefined) { sets.push("evidence_ids_json = ?"); params.push(JSON.stringify(patch.evidenceIds)); }
+      if (patch.verification !== undefined) { sets.push("verification_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.verification))); }
+      if (patch.failureReason !== undefined) { sets.push("failure_reason = ?"); params.push(safeMissionText(patch.failureReason, 2000)); }
+      if (patch.waiverReason !== undefined) { sets.push("waiver_reason = ?"); params.push(safeMissionText(patch.waiverReason, 2000)); }
+      if (patch.evidenceIds !== undefined) { sets.push("evidence_ids_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.evidenceIds))); }
       params.push(id);
       db.prepare(`UPDATE mission_criteria SET ${sets.join(", ")} WHERE id = ?`).run(...params);
       const row = db.prepare("SELECT * FROM mission_criteria WHERE id = ?").get(id) as any;
@@ -418,7 +433,7 @@ export function missionsRepository(db: Database.Database) {
       db.prepare(
         `INSERT INTO mission_evidence (id, mission_id, criterion_ids_json, type, summary, command, exit_code, output_ref, artifact_path, status, recorded_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(e.id, e.missionId, JSON.stringify(e.criterionIds ?? []), e.type, e.summary, e.command ?? null, e.exitCode ?? null, e.outputRef ?? null, e.artifactPath ?? null, e.status, now);
+      ).run(e.id, e.missionId, JSON.stringify(redactSecretsDeep(e.criterionIds ?? [])), e.type, safeMissionText(e.summary, 1000), safeMissionText(e.command, 2000) ?? null, e.exitCode ?? null, safeMissionText(e.outputRef, 500) ?? null, safeMissionText(e.artifactPath, 1024) ?? null, e.status, now);
       // Link evidence into each referenced criterion's evidenceIds list.
       for (const cid of e.criterionIds ?? []) {
         const c = repo.getCriterion(cid);
@@ -496,12 +511,12 @@ export function missionsRepository(db: Database.Database) {
       db.prepare(
         `INSERT INTO mission_failures (id, mission_id, task_id, agent_id, operation, normalized_signature, category, message, attempt, recovery_strategy, recovered, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(f.id, f.missionId, f.taskId ?? null, f.agentId ?? null, f.operation, f.normalizedSignature, f.category, f.message, f.attempt, f.recoveryStrategy ?? null, f.recovered ? 1 : 0, now);
+      ).run(f.id, f.missionId, f.taskId ?? null, f.agentId ?? null, safeMissionText(f.operation, 500), safeMissionText(f.normalizedSignature, 500), f.category, safeMissionText(f.message, 2000) ?? "", f.attempt, safeMissionText(f.recoveryStrategy, 500) ?? null, f.recovered ? 1 : 0, now);
       return mapFailure(db.prepare("SELECT * FROM mission_failures WHERE id = ?").get(f.id));
     },
 
     markFailureRecovered(id: string, recoveryStrategy: string): void {
-      db.prepare("UPDATE mission_failures SET recovered = 1, recovery_strategy = COALESCE(recovery_strategy, ?) WHERE id = ?").run(recoveryStrategy, id);
+      db.prepare("UPDATE mission_failures SET recovered = 1, recovery_strategy = COALESCE(recovery_strategy, ?) WHERE id = ?").run(safeMissionText(recoveryStrategy, 500), id);
     },
 
     countBySignature(missionId: string, signature: string): number {
@@ -518,7 +533,7 @@ export function missionsRepository(db: Database.Database) {
       db.prepare(
         `INSERT INTO mission_checkpoints (id, mission_id, label, reason, git_ref, checkpoint_name, affected_files_json, rollback_available, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(c.id, c.missionId, c.label, c.reason, c.gitRef ?? null, c.checkpointName ?? null, JSON.stringify(c.affectedFiles ?? []), c.rollbackAvailable ? 1 : 0, now);
+      ).run(c.id, c.missionId, safeMissionText(c.label, 200), safeMissionText(c.reason, 500), safeMissionText(c.gitRef, 200) ?? null, safeMissionText(c.checkpointName, 200) ?? null, JSON.stringify(redactSecretsDeep(c.affectedFiles ?? [])), c.rollbackAvailable ? 1 : 0, now);
       return mapCheckpoint(db.prepare("SELECT * FROM mission_checkpoints WHERE id = ?").get(c.id));
     },
 
@@ -538,7 +553,7 @@ export function missionsRepository(db: Database.Database) {
      *  (see reserveReviewCycle), so a review can never be persisted without a
      *  durable cycle identity to anchor it to. */
     setReview(r: MissionReview, reviewCycleId: string): MissionReview {
-      const payload = {
+      const payload = redactSecretsDeep({
         criterionJudgments: r.criterionJudgments,
         regressionRisks: r.regressionRisks,
         suspiciousChanges: r.suspiciousChanges,
@@ -546,12 +561,12 @@ export function missionsRepository(db: Database.Database) {
         concerns: r.concerns,
         recommendedStatus: r.recommendedStatus,
         summary: r.summary,
-      };
+      }) as Record<string, unknown>;
       db.prepare(
         `INSERT INTO mission_reviews (id, mission_id, verdict, reviewer_provider, reviewer_model, payload_json, created_at, review_cycle_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(r.id, r.missionId, r.verdict, r.reviewerProvider ?? null, r.reviewerModel ?? null, JSON.stringify(payload), r.createdAt, reviewCycleId);
-      return r;
+      ).run(r.id, r.missionId, r.verdict, safeMissionText(r.reviewerProvider, 100) ?? null, safeMissionText(r.reviewerModel, 200) ?? null, JSON.stringify(payload), r.createdAt, reviewCycleId);
+      return mapReview(db.prepare("SELECT * FROM mission_reviews WHERE id = ?").get(r.id));
     },
 
     // ── review cycles (durable ownership; see migration 30) ─────────────────
@@ -640,10 +655,12 @@ export function missionsRepository(db: Database.Database) {
     appendEvent(missionId: string, type: MissionEventType, summary: string, data: Record<string, unknown> = {}, now = new Date().toISOString()): MissionEvent {
       const seq = (db.prepare("SELECT COALESCE(MAX(sequence), 0) n FROM mission_events WHERE mission_id = ?").get(missionId) as any).n + 1;
       const id = `${missionId}-ev-${seq}`;
+      const safeSummary = safeMissionText(summary, 1000) ?? "";
+      const safeData = redactSecretsDeep(data) as Record<string, unknown>;
       db.prepare(
         `INSERT INTO mission_events (id, mission_id, sequence, type, summary, data_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, missionId, seq, type, summary, JSON.stringify(data), now);
-      return { id, missionId, sequence: seq, type, summary, data, createdAt: now };
+      ).run(id, missionId, seq, type, safeSummary, JSON.stringify(safeData), now);
+      return mapEvent(db.prepare("SELECT * FROM mission_events WHERE id = ?").get(id));
     },
 
     listEvents(missionId: string): MissionEvent[] {
@@ -659,13 +676,16 @@ export function missionsRepository(db: Database.Database) {
     // ── Advanced Execution Kernel: contract + requirement ledger ──────────
     claimTerminalOutcome(input: MissionTerminalOutcomeClaimInput): { acquired: boolean; claim: MissionTerminalOutcomeClaim } {
       return db.transaction(() => {
+        const safeKind = safeMissionText(input.kind) ?? "unknown";
+        const safeReason = safeMissionText(input.reason) ?? "";
+        const safePreserveStatus = safeMissionText(input.preserveStatus) ?? null;
         const read = () => db.prepare("SELECT * FROM mission_terminal_outcome_claims WHERE mission_id=?").get(input.missionId) as any;
         const existing = read();
         if (!existing) {
           db.prepare(`INSERT INTO mission_terminal_outcome_claims
             (mission_id,kind,reason,preserve_status,owner_id,status,verification_status,verification_generation,claimed_at,lease_expires_at,completed_at)
             VALUES(?,?,?,?,?,'reserved','pending',0,?,?,NULL)`)
-            .run(input.missionId, input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt);
+            .run(input.missionId, safeKind, safeReason, safePreserveStatus, input.ownerId, input.now, input.leaseExpiresAt);
           return { acquired: true, claim: mapTerminalOutcomeClaim(read()) };
         }
 
@@ -695,7 +715,7 @@ export function missionsRepository(db: Database.Database) {
               verification_status=?, verification_generation=verification_generation+1
           WHERE mission_id=? AND status='reserved' AND owner_id=? AND verification_generation=?
             AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
-          .run(input.kind, input.reason, input.preserveStatus ?? null, input.ownerId, input.now, input.leaseExpiresAt,
+          .run(safeKind, safeReason, safePreserveStatus, input.ownerId, input.now, input.leaseExpiresAt,
             claim.verificationStatus === "completed" ? "completed" : "pending",
             input.missionId, claim.ownerId, claim.generation, input.now);
         if (updated.changes !== 1) return { acquired: false, claim: mapTerminalOutcomeClaim(read()) };
@@ -764,10 +784,10 @@ export function missionsRepository(db: Database.Database) {
         `INSERT INTO mission_contracts (mission_id, schema_version, source_prompt, objective, expected_artifacts_json, acceptance_criteria_json, verification_commands_json, required_git_result, unresolved_ambiguities_json, frozen, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       ).run(
-        input.missionId, SCHEMA_VERSION, input.sourcePrompt, input.objective,
-        JSON.stringify(input.expectedArtifacts ?? []), JSON.stringify(input.acceptanceCriteria ?? []),
-        JSON.stringify(input.verificationCommands ?? []), input.requiredGitResult ?? null,
-        JSON.stringify(input.unresolvedAmbiguities ?? []), now, now,
+        input.missionId, SCHEMA_VERSION, safeMissionText(input.sourcePrompt) ?? "", safeMissionText(input.objective) ?? "",
+        JSON.stringify(redactSecretsDeep(input.expectedArtifacts ?? [])), JSON.stringify(redactSecretsDeep(input.acceptanceCriteria ?? [])),
+        JSON.stringify(redactSecretsDeep(input.verificationCommands ?? [])), safeMissionText(input.requiredGitResult) ?? null,
+        JSON.stringify(redactSecretsDeep(input.unresolvedAmbiguities ?? [])), now, now,
       );
       this.addRequirementNodes(input.missionId, input.nodes, now);
       return this.getContract(input.missionId)!;
@@ -783,7 +803,7 @@ export function missionsRepository(db: Database.Database) {
 
     updateContractAmbiguities(missionId: string, ambiguities: string[], now = new Date().toISOString()): void {
       db.prepare("UPDATE mission_contracts SET unresolved_ambiguities_json = ?, updated_at = ? WHERE mission_id = ?")
-        .run(JSON.stringify(ambiguities), now, missionId);
+        .run(JSON.stringify(redactSecretsDeep(ambiguities)), now, missionId);
     },
 
     setContractFrozen(missionId: string, frozen: boolean, now = new Date().toISOString()): void {
@@ -799,17 +819,17 @@ export function missionsRepository(db: Database.Database) {
       );
       db.transaction(() => {
         nodes.forEach((n) => stmt.run(
-          n.id, missionId, n.order, n.statement, n.category, n.sourcePromptExcerpt ?? "",
-          n.sourceLocator ?? null,
+          n.id, missionId, n.order, safeMissionText(n.statement, 2000) ?? "", n.category, safeMissionText(n.sourcePromptExcerpt, 2000) ?? "",
+          safeMissionText(n.sourceLocator, 500) ?? null,
           n.source, n.confidence, n.approved ? 1 : 0, n.authoritative ? 1 : 0, n.status ?? "pending",
-          JSON.stringify(n.dependencies ?? []),
-          JSON.stringify(n.evidenceRefs ?? []),
-          JSON.stringify(n.affectedFiles ?? []),
-          JSON.stringify(n.verifiedFileHashes ?? []),
+          JSON.stringify(redactSecretsDeep(n.dependencies ?? [])),
+          JSON.stringify(redactSecretsDeep(n.evidenceRefs ?? [])),
+          JSON.stringify(redactSecretsDeep(n.affectedFiles ?? [])),
+          JSON.stringify(redactSecretsDeep(n.verifiedFileHashes ?? [])),
           n.attempts ?? 0,
-          n.lastFailure ?? null,
+          safeMissionText(n.lastFailure, 2000) ?? null,
           n.completedAt ?? null,
-          JSON.stringify(n.invalidationHistory ?? []),
+          JSON.stringify(redactSecretsDeep(n.invalidationHistory ?? [])),
           now, now,
         ));
       })();
@@ -827,21 +847,21 @@ export function missionsRepository(db: Database.Database) {
       // read-copy-overwrite bypass that could silently drop history.
       const sets: string[] = ["updated_at = ?"];
       const params: any[] = [now];
-      if (patch.statement !== undefined) { sets.push("statement = ?"); params.push(patch.statement); }
+      if (patch.statement !== undefined) { sets.push("statement = ?"); params.push(safeMissionText(patch.statement, 2000)); }
       if (patch.category !== undefined) { sets.push("category = ?"); params.push(patch.category); }
-      if (patch.sourcePromptExcerpt !== undefined) { sets.push("source_prompt_excerpt = ?"); params.push(patch.sourcePromptExcerpt); }
-      if (patch.sourceLocator !== undefined) { sets.push("source_locator = ?"); params.push(patch.sourceLocator); }
+      if (patch.sourcePromptExcerpt !== undefined) { sets.push("source_prompt_excerpt = ?"); params.push(safeMissionText(patch.sourcePromptExcerpt, 2000)); }
+      if (patch.sourceLocator !== undefined) { sets.push("source_locator = ?"); params.push(safeMissionText(patch.sourceLocator, 500)); }
       if (patch.source !== undefined) { sets.push("source = ?"); params.push(patch.source); }
       if (patch.confidence !== undefined) { sets.push("confidence = ?"); params.push(patch.confidence); }
       if (patch.approved !== undefined) { sets.push("approved = ?"); params.push(patch.approved ? 1 : 0); }
       if (patch.authoritative !== undefined) { sets.push("authoritative = ?"); params.push(patch.authoritative ? 1 : 0); }
       if (patch.status !== undefined) { sets.push("status = ?"); params.push(patch.status); }
-      if (patch.dependencies !== undefined) { sets.push("dependencies_json = ?"); params.push(JSON.stringify(patch.dependencies)); }
-      if (patch.evidenceRefs !== undefined) { sets.push("evidence_refs_json = ?"); params.push(JSON.stringify(patch.evidenceRefs)); }
-      if (patch.affectedFiles !== undefined) { sets.push("affected_files_json = ?"); params.push(JSON.stringify(patch.affectedFiles)); }
-      if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(patch.verifiedFileHashes)); }
+      if (patch.dependencies !== undefined) { sets.push("dependencies_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.dependencies))); }
+      if (patch.evidenceRefs !== undefined) { sets.push("evidence_refs_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.evidenceRefs))); }
+      if (patch.affectedFiles !== undefined) { sets.push("affected_files_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.affectedFiles))); }
+      if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.verifiedFileHashes))); }
       if (patch.attempts !== undefined) { sets.push("attempts = ?"); params.push(patch.attempts); }
-      if (patch.lastFailure !== undefined) { sets.push("last_failure_json = ?"); params.push(patch.lastFailure); }
+      if (patch.lastFailure !== undefined) { sets.push("last_failure_json = ?"); params.push(safeMissionText(patch.lastFailure, 2000)); }
       if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
       params.push(id);
       db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
@@ -868,9 +888,9 @@ export function missionsRepository(db: Database.Database) {
         const history: InvalidationEntry[] = JSON.parse(existing.invalidation_history_json ?? "[]");
         history.push(entry);
         const sets: string[] = ["updated_at = ?", "invalidation_history_json = ?"];
-        const params: any[] = [now, JSON.stringify(history)];
+        const params: any[] = [now, JSON.stringify(redactSecretsDeep(history))];
         if (patch.status !== undefined) { sets.push("status = ?"); params.push(patch.status); }
-        if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(patch.verifiedFileHashes)); }
+        if (patch.verifiedFileHashes !== undefined) { sets.push("verified_file_hashes_json = ?"); params.push(JSON.stringify(redactSecretsDeep(patch.verifiedFileHashes))); }
         if (patch.completedAt !== undefined) { sets.push("completed_at = ?"); params.push(patch.completedAt); }
         params.push(id);
         db.prepare(`UPDATE mission_requirement_nodes SET ${sets.join(", ")} WHERE id = ?`).run(...params);
@@ -901,8 +921,8 @@ export function missionsRepository(db: Database.Database) {
          ON CONFLICT(mission_id) DO UPDATE SET active_node_id = excluded.active_node_id, active_objective = excluded.active_objective, allowed_next_actions_json = excluded.allowed_next_actions_json, blocked_reason = excluded.blocked_reason, last_completed_action = excluded.last_completed_action, frozen_node_ids_json = excluded.frozen_node_ids_json, invalidated_node_ids_json = excluded.invalidated_node_ids_json, updated_at = excluded.updated_at`,
       ).run(
         cursor.missionId, SCHEMA_VERSION, cursor.activeNodeId, cursor.activeObjective ?? null,
-        JSON.stringify(cursor.allowedNextActions), cursor.blockedReason ?? null, cursor.lastCompletedAction ?? null,
-        JSON.stringify(cursor.frozenNodeIds ?? []), JSON.stringify(cursor.invalidatedNodeIds ?? []), now,
+        JSON.stringify(redactSecretsDeep(cursor.allowedNextActions)), safeMissionText(cursor.blockedReason) ?? null, safeMissionText(cursor.lastCompletedAction) ?? null,
+        JSON.stringify(redactSecretsDeep(cursor.frozenNodeIds ?? [])), JSON.stringify(redactSecretsDeep(cursor.invalidatedNodeIds ?? [])), now,
       );
       const row = db.prepare("SELECT * FROM mission_cursors WHERE mission_id = ?").get(cursor.missionId) as any;
       return mapCursor(row);
@@ -931,7 +951,7 @@ export function missionsRepository(db: Database.Database) {
         }>).map((row) => ({
         id: row.id,
         status: row.status as MissionOperationStatus,
-        effectEvidenceIds: JSON.parse(row.effect_evidence_ids_json) as string[],
+        effectEvidenceIds: redactSecretsDeep(JSON.parse(row.effect_evidence_ids_json)) as string[],
       }));
       // A worker the controller recovered from is superseded: production leaves
       // the old row `interrupted` and dispatches a replacement rather than

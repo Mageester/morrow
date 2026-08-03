@@ -84,4 +84,16 @@ describe("summarizeDiagnostics", () => {
     ]);
     expect(report).toMatchObject({ tool: "tsc", count: 2, errorCount: 1, warningCount: 1 });
   });
+
+  it("redacts diagnostic paths and messages before current or legacy values are returned", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    const parsed = parseTscDiagnostics(`src/apiKey=${probe}.ts(1,1): error TS2304: ${probe}`);
+    const report = summarizeDiagnostics("tsc", [
+      ...parsed,
+      { file: probe, line: 2, column: 1, severity: "warning", code: "legacy", message: probe },
+    ]);
+
+    expect(JSON.stringify(report)).not.toContain(probe);
+    expect(report.diagnostics[1]).toMatchObject({ file: "credential ***redacted***", message: "credential ***redacted***" });
+  });
 });

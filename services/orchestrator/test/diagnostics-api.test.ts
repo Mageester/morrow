@@ -7,15 +7,25 @@ import { projectRepository } from "../src/repositories/projects.js";
 describe("GET /api/projects/:id/diagnostics", () => {
   let db: any;
   let app: any;
+  let includeSecretDiagnostics = false;
   const fakeRunner: DiagnosticsRunner = async (tool, _cwd) => {
     if (tool === "tsc") {
       return { stdout: "src/foo.ts(3,1): error TS2304: Cannot find name 'z'.\nFound 1 error.", stderr: "", exitCode: 1 };
+    }
+    if (includeSecretDiagnostics) {
+      const probe = "credential sk-abcdefghijklmnop";
+      return {
+        stdout: JSON.stringify([{ filePath: `/workspace/${probe}.ts`, messages: [{ line: 1, column: 1, severity: 2, ruleId: probe, message: probe }] }]),
+        stderr: "",
+        exitCode: 1,
+      };
     }
     return { stdout: JSON.stringify([{ filePath: "/x/a.ts", messages: [{ line: 1, column: 1, severity: 1, ruleId: "semi", message: "Missing semicolon" }] }]), stderr: "", exitCode: 1 };
   };
 
   beforeEach(() => {
     db = openDatabase(":memory:");
+    includeSecretDiagnostics = false;
     app = buildServer({ db, runner: new TaskRunner(db, async () => {}), diagnosticsRunner: fakeRunner });
     projectRepository(db).createProject({ id: "p1", name: "P1", workspacePath: process.cwd(), createdAt: new Date().toISOString() });
   });
@@ -34,6 +44,15 @@ describe("GET /api/projects/:id/diagnostics", () => {
   it("supports the eslint tool via query param", async () => {
     const res = await app.inject({ method: "GET", url: "/api/projects/p1/diagnostics?tool=eslint" });
     expect(res.json()).toMatchObject({ tool: "eslint", count: 1, errorCount: 0, warningCount: 1 });
+  });
+
+  it("redacts diagnostic paths and messages before returning the API payload", async () => {
+    includeSecretDiagnostics = true;
+    const res = await app.inject({ method: "GET", url: "/api/projects/p1/diagnostics?tool=eslint" });
+    const body = res.json();
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(body)).not.toContain("credential sk-abcdefghijklmnop");
+    expect(body.diagnostics[0]).toMatchObject({ file: "/workspace/credential ***redacted***.ts", code: "credential ***redacted***", message: "credential ***redacted***" });
   });
 
   it("404s on an unknown project and 400s on an unknown tool", async () => {

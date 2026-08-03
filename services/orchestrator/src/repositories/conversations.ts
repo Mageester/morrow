@@ -2,6 +2,10 @@ import type Database from "better-sqlite3";
 import { ConversationSchema, ConversationMessageSchema, type Conversation, type ConversationMessage } from "@morrow/contracts";
 import { redactJsonText, redactSecrets } from "../provider/credentials.js";
 
+function safeErrorText(value: string | null | undefined): string | null {
+  return value === null || value === undefined ? null : redactSecrets(value).slice(0, 2_000);
+}
+
 export interface ToolCallRecord {
   id: string;
   messageId: string;
@@ -55,8 +59,8 @@ export function conversationsRepository(db: Database.Database) {
       argsJson: redactJsonText(row.args_json) ?? "{}",
       resultJson: row.result_json === null || row.result_json === undefined ? row.result_json : redactJsonText(row.result_json),
       status: row.status,
-      errorType: row.error_type,
-      errorMessage: row.error_message,
+      errorType: safeErrorText(row.error_type),
+      errorMessage: safeErrorText(row.error_message),
       createdAt: row.created_at,
       startedAt: row.started_at,
       completedAt: row.completed_at
@@ -242,8 +246,8 @@ export function conversationsRepository(db: Database.Database) {
         safeArgsJson,
         safeResultJson,
         input.status,
-        input.errorType || null,
-        input.errorMessage || null,
+        safeErrorText(input.errorType) || null,
+        safeErrorText(input.errorMessage) || null,
         input.createdAt,
         input.startedAt || null,
         input.completedAt || null

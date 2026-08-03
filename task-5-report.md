@@ -165,3 +165,109 @@ rollback plan: migrations 45 and 46 are recorded in `schema_migrations`, and red
 legacy values cannot be recovered without a database backup. No evidence
 file rollback is required; the append-only live evidence file remains
 untouched.
+
+## Reviewed Task 5 fix round 1 — privacy/completion boundaries
+
+This round addresses only the six reviewed Task 5 findings. The changes keep
+redaction at durable repository/API boundaries, sanitize legacy reads, protect
+provider failure recovery state, and evaluate completion after every provider
+turn without treating read-only scene-setting narration as canonical.
+
+### TDD evidence
+
+RED was captured before the production fixes with all live-provider flags
+removed:
+
+```text
+Remove-Item Env:MORROW_LIVE_FLAGSHIP,Env:MORROW_LIVE_OPENCODE_GO,Env:MORROW_FLAGSHIP_RUNS,Env:MORROW_FLAGSHIP_PROVIDERS,Env:OPENCODE_ZEN_MODEL -ErrorAction SilentlyContinue
+pnpm --filter @morrow/orchestrator exec vitest run test/artifact-externalization.test.ts test/diagnostics.test.ts test/agent-completion-contract.test.ts test/agent-fallback.test.ts test/task-5-privacy-boundaries.test.ts
+```
+
+RED output: 5 test files, 49 tests; 9 failed and 40 passed. Two fixture/import
+setup issues in the first test edit were corrected before production changes;
+the nine behavioral failures remained the captured RED signal.
+
+Final focused privacy/completion GREEN:
+
+```text
+pnpm --filter @morrow/orchestrator exec vitest run test/artifact-externalization.test.ts test/diagnostics.test.ts test/diagnostics-api.test.ts test/agent-completion-contract.test.ts test/agent-completion-gate.test.ts test/agent-fallback.test.ts test/task-5-privacy-boundaries.test.ts test/task-records.test.ts test/mission-runtime-repository.test.ts test/mission-service.test.ts
+```
+
+GREEN output: 10 test files passed; 120 tests passed. The required Task 5
+brief command passed 5 files and 66 tests. The mission/API compatibility set
+passed 7 files and 222 tests. A first full-suite run exposed one provisional
+read-only narration regression (1 failure); after the narrower evidence-bound
+completion gate, the final full suite passed 167 files and 1,764 tests.
+
+### Final verification
+
+| Check | Result |
+| --- | --- |
+| Focused amended privacy/completion command | 10 files, 120/120 passed |
+| Required Task 5 brief command | 5 files, 66/66 passed |
+| Mission/API compatibility set | 7 files, 222/222 passed |
+| `pnpm --filter @morrow/orchestrator check` | passed |
+| `pnpm --filter @morrow/contracts check` | passed |
+| `git diff --check` | passed |
+| Explicit live isolation (`MORROW_SKIP_LIVE_FLAGSHIP=1 pnpm flagship:run`) | 1/1 passed; no provider call |
+| Final full default `@morrow/orchestrator` suite | 167 files, 1,764/1,764 passed |
+
+Every test command explicitly removed `MORROW_LIVE_FLAGSHIP`,
+`MORROW_LIVE_OPENCODE_GO`, `MORROW_FLAGSHIP_RUNS`,
+`MORROW_FLAGSHIP_PROVIDERS`, and `OPENCODE_ZEN_MODEL`.
+
+### Changed-file scope
+
+Production boundaries:
+
+- `services/orchestrator/src/execution/agent.ts`
+- `services/orchestrator/src/execution/artifact-externalization.ts`
+- `services/orchestrator/src/execution/completion-contract.ts`
+- `services/orchestrator/src/repositories/conversations.ts`
+- `services/orchestrator/src/repositories/mission-runtime.ts`
+- `services/orchestrator/src/repositories/missions.ts`
+- `services/orchestrator/src/repositories/task-records.ts`
+- `services/orchestrator/src/repositories/tool-artifacts.ts`
+- `services/orchestrator/src/workspace/diagnostics.ts`
+
+Focused tests:
+
+- `services/orchestrator/test/agent-completion-contract.test.ts`
+- `services/orchestrator/test/agent-fallback.test.ts`
+- `services/orchestrator/test/artifact-externalization.test.ts`
+- `services/orchestrator/test/diagnostics-api.test.ts`
+- `services/orchestrator/test/diagnostics.test.ts`
+- `services/orchestrator/test/task-5-privacy-boundaries.test.ts`
+
+### Self-review and limitations
+
+- Oversized text/JSON tool artifacts are redacted before inline/artifact
+  selection, again at artifact creation, and on metadata/content/range reads;
+  legacy raw artifact rows cannot bypass the read boundary.
+- Conversation failures, task evidence/verification/state projections, mission
+  objective/result/failure/evidence/event/review metadata, runtime operations,
+  progress, recovery, and transition details use string/deep redaction on both
+  writes and reads. Diagnostics are sanitized in parsers, summaries, and the
+  API projection.
+- Provider exceptions are classified without logging the exception object or
+  provider body; durable recovery state receives only a bounded redacted
+  message.
+- Completion evaluates the sanitized candidate before progress/stagnation. A
+  marker-only sanitized answer is incomplete. Write, verification, or
+  frontend evidence may establish a same-turn canonical answer; read-only
+  tool narration remains provisional until the final visible answer.
+- The boundary is pattern-based credential redaction, not full DLP. Opaque
+  binary artifacts remain opaque bytes, and legacy database rows are sanitized
+  on read rather than rewritten. No live provider canary was authorized.
+
+### Evidence integrity
+
+The append-only evidence file was unchanged before and after this round:
+
+```text
+Before: SHA-256 0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A; 875 bytes
+After:  SHA-256 0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A; 875 bytes
+```
+
+No credentials, raw provider exception bodies, raw reasoning, or live-run
+output were added to logs, checkpoints, this report, or the commit.

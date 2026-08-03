@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import { redactSecrets } from "../provider/credentials.js";
 
 /**
  * Artifact-backed externalization for oversized tool results.
@@ -10,9 +11,10 @@ import { createHash, randomUUID } from "node:crypto";
  * inlines a 24 KB head/tail fragment into every future turn; instead the
  * model sees a small metadata ref and can request targeted range retrieval.
  *
- * Security: the blob is the raw tool output; it must be sanitized at
- * ingestion time by the caller if it contains secrets. The repository
- * stores and re-emits it verbatim.
+ * Security: tool output crosses this repository boundary before it can become
+ * durable or be returned by `read_artifact`. Text and JSON are sanitized here
+ * so callers cannot accidentally bypass the privacy boundary; reads sanitize
+ * legacy rows written before this guard existed.
  */
 
 export interface ToolArtifactRow {
@@ -62,11 +64,19 @@ function rowToArtifact(row: PersistedRow): ToolArtifactRow {
     contentType: row.content_type,
     bytes: row.bytes,
     contentHash: row.content_hash,
-    summary: row.summary,
-    excerpt: row.excerpt,
+    summary: redactSecrets(row.summary),
+    excerpt: redactSecrets(row.excerpt),
     refcount: row.refcount,
     createdAt: row.created_at,
   };
+}
+
+function sanitizeContent(content: Buffer, contentType: string): Buffer {
+  // Artifact callers currently store text/plain and application/json. Keep
+  // opaque binary artifacts byte-for-byte intact while protecting every text
+  // representation that can be shown to a model or operator.
+  const textual = contentType.startsWith("text/") || /(?:json|javascript|xml|yaml|csv|sql)/i.test(contentType);
+  return textual ? Buffer.from(redactSecrets(content.toString("utf8")), "utf8") : content;
 }
 
 function makeExcerpt(content: string, maxChars = 480): string {
@@ -90,9 +100,10 @@ export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepo
   return {
     create(input, now) {
       const createdAt = now ?? new Date().toISOString();
-      const buffer = Buffer.isBuffer(input.content) ? input.content : Buffer.from(input.content, "utf8");
-      const contentHash = createHash("sha256").update(buffer).digest("hex");
       const contentType = input.contentType ?? "text/plain";
+      const rawBuffer = Buffer.isBuffer(input.content) ? input.content : Buffer.from(input.content, "utf8");
+      const buffer = sanitizeContent(rawBuffer, contentType);
+      const contentHash = createHash("sha256").update(buffer).digest("hex");
       // Dedup by (hash, kind, contentType) — same exact bytes already stored.
       const existing = db
         .prepare("SELECT * FROM tool_artifacts WHERE content_hash = ? AND kind = ? AND content_type = ? ORDER BY created_at ASC LIMIT 1")
@@ -105,7 +116,7 @@ export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepo
       const id = randomUUID();
       const text = buffer.toString("utf8");
       const excerpt = makeExcerpt(text);
-      const summary = input.summary?.trim() || excerpt.split(/\n/, 1)[0]!.slice(0, 160);
+      const summary = redactSecrets(input.summary?.trim() || excerpt.split(/\n/, 1)[0]!.slice(0, 160));
       // A newly created artifact has been referenced by the caller exactly
       // once. refcount starts at 1 so `get(id).refcount === 1` immediately
       // after `create()`, and dedup hits become >= 2.
@@ -135,8 +146,8 @@ export function toolArtifactsRepository(db: Database.Database): ToolArtifactRepo
       return row ? rowToArtifact(row) : null;
     },
     getContent(id) {
-      const row = db.prepare("SELECT content FROM tool_artifacts WHERE id = ?").get(id) as { content: Buffer } | undefined;
-      return row?.content ?? null;
+      const row = db.prepare("SELECT content, content_type FROM tool_artifacts WHERE id = ?").get(id) as { content: Buffer; content_type: string } | undefined;
+      return row ? sanitizeContent(row.content, row.content_type) : null;
     },
     findByHashAndKindAndContentType(contentHash, kind, contentType) {
       const row = db

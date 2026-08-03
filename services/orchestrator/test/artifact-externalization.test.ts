@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "../src/database.js";
 import { toolArtifactsRepository, type ToolArtifactRepository } from "../src/repositories/tool-artifacts.js";
-import { externalizeToolResult, renderExternalizedForContext, DEFAULT_INLINE_BYTE_LIMIT } from "../src/execution/artifact-externalization.js";
+import { externalizeToolResult, readArtifactRange, renderExternalizedForContext, DEFAULT_INLINE_BYTE_LIMIT, MAX_ARTIFACT_READ_BYTES } from "../src/execution/artifact-externalization.js";
 
 /**
  * §3+§4 acceptance: oversized tool results are externalized to the durable
@@ -89,5 +89,34 @@ describe("externalizeToolResult: dedup", () => {
     expect(b.kind).toBe("artifact");
     if (a.kind !== "artifact" || b.kind !== "artifact") return;
     expect(a.id).not.toBe(b.id);
+  });
+
+  it("redacts oversized text at the artifact boundary before storing or returning it", () => {
+    const probe = "credential sk-abcdefghijklmnop";
+    const out = externalizeToolResult(repo, `${probe}\n`.repeat(2_000), { toolName: "run_command", kind: "tool_result" });
+    expect(out.kind).toBe("artifact");
+    if (out.kind !== "artifact") return;
+
+    expect(JSON.stringify(repo.get(out.id))).not.toContain(probe);
+    expect(repo.getContent(out.id)?.toString("utf8")).not.toContain(probe);
+    const read = readArtifactRange(repo, new Set([out.id]), { id: out.id, length: MAX_ARTIFACT_READ_BYTES });
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(JSON.stringify(read.payload)).not.toContain(probe);
+  });
+
+  it("redacts legacy artifact metadata and content on reads", () => {
+    const out = externalizeToolResult(repo, "safe\n".repeat(2_000), { toolName: "run_command", kind: "tool_result" });
+    expect(out.kind).toBe("artifact");
+    if (out.kind !== "artifact") return;
+    const probe = "credential sk-abcdefghijklmnop";
+    const raw = Buffer.from(`${probe}\nlegacy output`, "utf8");
+    db.prepare("UPDATE tool_artifacts SET summary=?, excerpt=?, content=?, bytes=? WHERE id=?")
+      .run(probe, probe, raw, raw.byteLength, out.id);
+
+    expect(JSON.stringify(repo.get(out.id))).not.toContain(probe);
+    expect(repo.getContent(out.id)?.toString("utf8")).not.toContain(probe);
+    const read = readArtifactRange(repo, new Set([out.id]), { id: out.id });
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(JSON.stringify(read.payload)).not.toContain(probe);
   });
 });
