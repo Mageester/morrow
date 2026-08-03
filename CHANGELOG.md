@@ -54,6 +54,31 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - ADR 0010 records the decision to freeze new surface for one cycle and turn
   each bug class into a guard.
 
+## [0.1.0-beta.39] - 2026-08-03
+
+### Fixed - a command that checks for CI or reads stdin could hang the task
+
+Reported live: a build ran a test command in a temp project and the task just
+stopped. Every command the agent runs goes through one shared executor, and it
+had two related gaps. `CI` was silently dropped from the spawned environment
+even when set — the executor's allowlist never carried it. And the child
+process's stdin was left as Node's default open, unconsumed pipe rather than
+closed. A CLI that checks `process.env.CI`, or reads stdin, to decide whether to
+run once or wait for interactive input — a bare `jest`/`vitest` invocation, an
+`npm test` wired to a runner with watch mode on by default, an install prompt —
+saw neither of the two standard non-interactive signals and blocked until the
+command's timeout.
+
+Reproduced directly before fixing: a probe that waits on stdin absent `CI` ran
+5177ms and was killed by its own 5-second timeout, having printed only that it
+was waiting for input. After the fix: 64ms, clean exit, CI path taken.
+
+`CI=true` is now forced into every spawned environment unconditionally, since
+Morrow's execution is never interactive regardless of what the caller's own
+environment has set. Stdin is now explicitly closed rather than left open, so a
+tool that reads stdin directly instead of checking `CI` still gets immediate
+EOF.
+
 ## [0.1.0-beta.38] - 2026-08-03
 
 ### Fixed - runaway loops, checkpoint bloat, and a 30x context cut
