@@ -121,6 +121,48 @@ describe("durable agent segments", () => {
     }
   });
 
+  it("does not durably persist credential-like text from a live final answer", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-final-answer-redaction-"));
+    const db = openDatabase(":memory:");
+    const probe = "credential sk-abcdefghijklmnop";
+    const safeProbe = "credential ***redacted***";
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Finish once.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+      let providerCalls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          providerCalls++;
+          yield { type: "text", text: probe };
+          yield { type: "done" };
+        },
+      };
+
+      await executeAgentChatTask({ db, taskId: "t", provider });
+
+      const continuity = executionContinuityRepository(db);
+      expect(providerCalls).toBe(1);
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+      expect(continuity.getCanonicalAnswer("t")?.content).toBe(safeProbe);
+      expect(convs.getMessage("a")?.content).toBe(safeProbe);
+      expect(continuity.listProviderTurns("t").at(-1)?.assistantText).toBe(safeProbe);
+      expect(db.prepare("SELECT content FROM canonical_task_answers WHERE task_id=?").get("t")).toEqual({ content: safeProbe });
+      expect(db.prepare("SELECT content FROM conversation_messages WHERE id=?").get("a")).toEqual({ content: safeProbe });
+      expect(db.prepare("SELECT assistant_text FROM agent_provider_turns WHERE task_id=?").get("t")).toEqual({ assistant_text: safeProbe });
+      expect(convs.getMessage("a")?.content).not.toContain("sk-abcdefghijklmnop");
+      expect(continuity.getCanonicalAnswer("t")?.content).not.toContain("sk-abcdefghijklmnop");
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("checkpoints and automatically continues across an adaptive turn boundary", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-segments-"));
     const db = openDatabase(":memory:");
@@ -337,7 +379,7 @@ describe("durable agent segments", () => {
       const continuity = executionContinuityRepository(db);
       const deadOwnerId = "morrow-pid:999999999:final";
       const segment = continuity.openSegment({ taskId: "t", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId: deadOwnerId, now: at, leaseExpiresAt: "2000-01-01T00:00:00.000Z" });
-      continuity.recordProviderTurn({ id: "final-turn", taskId: "t", segmentId: segment.id, turnKey: "final-key", ordinal: 1, assistantText: "FINAL_ONCE", toolCalls: [], isFinal: true, ownerId: deadOwnerId, generation: segment.generation, now: at });
+      continuity.recordProviderTurn({ id: "final-turn", taskId: "t", segmentId: segment.id, turnKey: "final-key", ordinal: 1, assistantText: "credential sk-abcdefghijklmnop", toolCalls: [], isFinal: true, ownerId: deadOwnerId, generation: segment.generation, now: at });
       continuity.saveCheckpoint({ id: "cp", taskId: "t", missionId: null, segmentId: segment.id, cursor: 1, snapshot: { version: 1, originalMission: "Finish once.", hardRequirements: ["Finish once."], prohibitedActions: [], acceptanceCriteria: [], decisions: [], completedWork: [], currentPhase: "final", filesChanged: [], gitStatus: "", tests: [], unresolvedFailures: [], recoveryAttempts: [], pendingWork: [], approvals: {}, taskId: "t", missionId: null, providerRouting: {}, providerContinuationRefs: [], evidenceRequired: ["final answer"] }, ownerId: deadOwnerId, generation: segment.generation, now: at });
       let providerCalls = 0;
       const provider: AiProvider = { id: "mock", async *streamChat(): AsyncIterable<ProviderChunk> { providerCalls++; yield { type: "text", text: "DUPLICATE" }; yield { type: "done" }; } };
@@ -348,8 +390,12 @@ describe("durable agent segments", () => {
 
       expect(providerCalls).toBe(0);
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
-      expect(continuity.getCanonicalAnswer("t")?.content).toBe("FINAL_ONCE");
-      expect(convs.getMessage("a")?.content).toBe("FINAL_ONCE");
+      expect(continuity.listProviderTurns("t").at(-1)?.assistantText).toBe("credential ***redacted***");
+      expect(continuity.getCanonicalAnswer("t")?.content).toBe("credential ***redacted***");
+      expect(convs.getMessage("a")?.content).toBe("credential ***redacted***");
+      expect(db.prepare("SELECT content FROM canonical_task_answers WHERE task_id=?").get("t")).toEqual({ content: "credential ***redacted***" });
+      expect(db.prepare("SELECT content FROM conversation_messages WHERE id=?").get("a")).toEqual({ content: "credential ***redacted***" });
+      expect(db.prepare("SELECT assistant_text FROM agent_provider_turns WHERE task_id=?").get("t")).toEqual({ assistant_text: "credential ***redacted***" });
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

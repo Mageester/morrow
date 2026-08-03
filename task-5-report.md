@@ -10,7 +10,9 @@ replays the same decision from durable checkpoint/mission evidence after
 restart. The review corrections keep mission evidence owned by the current
 task or an explicit recovery lineage, give delivery intent precedence over
 review wording, validate durable browser results, and prevent denied or failed
-tool calls from becoming read-only evidence.
+tool calls from becoming read-only evidence. Durable assistant-message,
+provider-turn, and canonical-answer sinks also redact credential-like final
+text before it can be persisted or replayed.
 
 ## TDD evidence
 
@@ -39,18 +41,25 @@ tool calls from becoming read-only evidence.
 - P1 restart GREEN: the unchanged artifact completed with zero provider calls;
   changed and missing artifacts both interrupted with zero provider calls
   (3/3).
+- P1 privacy RED: the live and crash-replay final-answer regressions both
+  persisted the exact probe `credential sk-abcdefghijklmnop` raw in the
+  provider turn, canonical answer, and assistant message (2 failures).
+- P1 privacy GREEN: both paths now persist `credential ***redacted***` in all
+  three SQLite sinks, with no provider call added during replay.
 
 ## Verification
 
 | Check | Result |
 | --- | --- |
 | Focused Task 5 brief command (5 files) | 64/64 passed |
+| Focused privacy/replay regression | 2/2 passed |
 | Focused restart/review compatibility run (5 files) | 122/122 passed |
+| Privacy, continuity, security, and restart regressions (6 files) | 55/55 passed |
 | Restart/recovery, completion-order, progress, requirements, security, and checkpoint regressions (21 files) | 267/267 passed |
 | Review-focused completion/frontend/security run (3 files) | 33/33 passed |
 | Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
 | 247-test regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,733/1,733 passed |
+| Full default `@morrow/orchestrator` suite | 165 files, 1,734/1,734 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
 | Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
@@ -62,7 +71,8 @@ fallback, plan-mode, restart, and sustained-mission paths. The runtime now
 preserves answer-only completion when no evidence contract applies, while
 keeping strict read-only evidence checks for inspection/tool turns. Mission
 recovery turns import independently recorded progress evidence from the
-The final full suite is fully green, including the new crash-replay coverage.
+mission ledger, preserving completion across task restarts. The final full
+suite is fully green, including crash-replay and privacy coverage.
 
 ## Security and privacy
 
@@ -77,6 +87,9 @@ The final full suite is fully green, including the new crash-replay coverage.
 - Mode-denied calls remain available for answer-only compatibility, but cannot
   satisfy an inspection contract; failed and approval-blocked calls are never
   independent evidence.
+- Credential-like final text is redacted at assistant-message, provider-turn,
+  and canonical-answer persistence boundaries; ordinary final-answer text and
+  completion evidence semantics remain unchanged.
 - Live-provider execution was not authorized. Both live checks ran through
   their isolation paths, and no live run was appended.
 - No secrets or raw provider credentials were logged or added to the diff.
@@ -90,6 +103,6 @@ bytes and its SHA-256 is:
 
 ## Rollback
 
-Revert this focused restart-correction commit to remove task-owned artifact
-fingerprint persistence and its crash-replay coverage. No schema or evidence
-migration is required; the append-only live evidence file remains untouched.
+Revert this focused privacy-correction commit to remove durable final-text
+redaction and its regression coverage. No schema or evidence migration is
+required; the append-only live evidence file remains untouched.

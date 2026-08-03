@@ -50,6 +50,7 @@ import { translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
+import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
@@ -5726,7 +5727,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // the replayable-final-turn path above completes it without another request.
   const recordedTurns = continuity.listProviderTurns(taskId);
   const finalTurn = recordedTurns.at(-1);
-  if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== canonicalFinalText) {
+  if (!finalTurn || finalTurn.toolCalls.length > 0 || finalTurn.assistantText !== redactSecrets(canonicalFinalText)) {
     throw new Error("Canonical final turn is not durably recorded");
   }
 

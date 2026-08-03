@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ProviderContinuationState } from "../provider/base.js";
+import { redactSecrets } from "../provider/credentials.js";
 import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
 import type { ExecutionRequirement, RequirementEvaluation } from "../execution/requirements.js";
 
@@ -270,17 +271,18 @@ export function executionContinuityRepository(db: Database.Database) {
     recordProviderTurn(input: { id: string; taskId: string; segmentId: string; turnKey: string; ordinal: number; assistantText: string; toolCalls: unknown[]; isFinal?: boolean; ownerId: string; generation: number; now: string }) {
       return db.transaction(() => {
         assertFence(input.segmentId, input);
+        const safeAssistantText = redactSecrets(input.assistantText);
         db.prepare(`INSERT INTO agent_provider_turns(id,task_id,segment_id,turn_key,ordinal,assistant_text,tool_calls_json,created_at)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO NOTHING`).run(input.id, input.taskId, input.segmentId, input.turnKey, input.ordinal, input.assistantText, JSON.stringify({ version: 1, toolCalls: input.toolCalls, isFinal: input.isFinal === true }), input.now);
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO NOTHING`).run(input.id, input.taskId, input.segmentId, input.turnKey, input.ordinal, safeAssistantText, JSON.stringify({ version: 1, toolCalls: input.toolCalls, isFinal: input.isFinal === true }), input.now);
         const row = db.prepare("SELECT * FROM agent_provider_turns WHERE task_id=? AND turn_key=?").get(input.taskId, input.turnKey) as any;
         const payload = providerTurnPayload(row.tool_calls_json as string);
-        return { id: row.id as string, taskId: row.task_id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: row.assistant_text as string, ...payload };
+        return { id: row.id as string, taskId: row.task_id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: redactSecrets(row.assistant_text as string), ...payload };
       })();
     },
     listProviderTurns(taskId: string) {
       return (db.prepare(`SELECT turn.* FROM agent_provider_turns AS turn
         JOIN agent_execution_segments AS segment ON segment.id=turn.segment_id
-        WHERE turn.task_id=? ORDER BY segment.sequence,turn.ordinal,turn.id`).all(taskId) as any[]).map((row) => ({ id: row.id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: row.assistant_text as string, ...providerTurnPayload(row.tool_calls_json as string) }));
+        WHERE turn.task_id=? ORDER BY segment.sequence,turn.ordinal,turn.id`).all(taskId) as any[]).map((row) => ({ id: row.id as string, segmentId: row.segment_id as string, turnKey: row.turn_key as string, ordinal: row.ordinal as number, assistantText: redactSecrets(row.assistant_text as string), ...providerTurnPayload(row.tool_calls_json as string) }));
     },
     saveCheckpoint(input: { id: string; taskId: string; missionId: string | null; segmentId: string; cursor: number; snapshot: ExecutionCheckpointSnapshot; ownerId: string; generation: number; now: string }): void {
       const snapshot = boundExecutionCheckpointSnapshot(input.snapshot);
@@ -319,28 +321,29 @@ export function executionContinuityRepository(db: Database.Database) {
     },
     createCanonicalAnswer(input: { id: string; taskId: string; missionId: string | null; segmentId: string; content: string; evidenceJson: Record<string, unknown>; ownerId: string; generation: number; now: string }) {
       assertFence(input.segmentId, input);
+      const safeContent = redactSecrets(input.content);
       try {
-        db.prepare("INSERT INTO canonical_task_answers(id,task_id,mission_id,content,evidence_json,created_at) VALUES(?,?,?,?,?,?)").run(input.id, input.taskId, input.missionId, input.content, JSON.stringify(input.evidenceJson), input.now);
+        db.prepare("INSERT INTO canonical_task_answers(id,task_id,mission_id,content,evidence_json,created_at) VALUES(?,?,?,?,?,?)").run(input.id, input.taskId, input.missionId, safeContent, JSON.stringify(input.evidenceJson), input.now);
       } catch (error) {
         if (/UNIQUE constraint failed/.test(error instanceof Error ? error.message : String(error))) {
           const row = db.prepare("SELECT * FROM canonical_task_answers WHERE task_id=?")
             .get(input.taskId) as any;
           if (row) {
-            const existing = { id: row.id as string, taskId: row.task_id as string, missionId: row.mission_id as string | null, content: row.content as string, evidenceJson: JSON.parse(row.evidence_json as string) as Record<string, unknown>, createdAt: row.created_at as string };
+            const existing = { id: row.id as string, taskId: row.task_id as string, missionId: row.mission_id as string | null, content: redactSecrets(row.content as string), evidenceJson: JSON.parse(row.evidence_json as string) as Record<string, unknown>, createdAt: row.created_at as string };
             if (existing.taskId === input.taskId
               && existing.missionId === input.missionId
-              && existing.content === input.content
+              && existing.content === safeContent
               && isDeepStrictEqual(existing.evidenceJson, input.evidenceJson)) return existing;
           }
           throw new Error("Canonical answer already exists for this task");
         }
         throw error;
       }
-      return { id: input.id, taskId: input.taskId, missionId: input.missionId, content: input.content, evidenceJson: input.evidenceJson, createdAt: input.now };
+      return { id: input.id, taskId: input.taskId, missionId: input.missionId, content: safeContent, evidenceJson: input.evidenceJson, createdAt: input.now };
     },
     getCanonicalAnswer(taskId: string): { id: string; taskId: string; missionId: string | null; content: string; evidenceJson: Record<string, unknown>; createdAt: string } | null {
       const row = db.prepare("SELECT * FROM canonical_task_answers WHERE task_id=?").get(taskId) as any;
-      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, content: row.content, evidenceJson: JSON.parse(row.evidence_json), createdAt: row.created_at } : null;
+      return row ? { id: row.id, taskId: row.task_id, missionId: row.mission_id, content: redactSecrets(row.content), evidenceJson: JSON.parse(row.evidence_json), createdAt: row.created_at } : null;
     },
     updateCanonicalAnswerEvidence(taskId: string, evidenceJson: Record<string, unknown>): void {
       const result = db.prepare("UPDATE canonical_task_answers SET evidence_json=? WHERE task_id=?").run(JSON.stringify(evidenceJson), taskId);

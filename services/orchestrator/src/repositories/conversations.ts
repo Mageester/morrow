@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { ConversationSchema, ConversationMessageSchema, type Conversation, type ConversationMessage } from "@morrow/contracts";
+import { redactSecrets } from "../provider/credentials.js";
 
 export interface ToolCallRecord {
   id: string;
@@ -166,10 +167,11 @@ export function conversationsRepository(db: Database.Database) {
     },
 
     updateMessageContentAndState(id: string, content: string, streamingState: string, updatedAt: string): ConversationMessage {
+      const safeContent = redactSecrets(content);
       db.transaction(() => {
         db.prepare(
           "UPDATE conversation_messages SET content = ?, streaming_state = ?, updated_at = ? WHERE id = ?"
-        ).run(content, streamingState, updatedAt, id);
+        ).run(safeContent, streamingState, updatedAt, id);
         
         const msg = this.getMessage(id);
         if (msg) {
