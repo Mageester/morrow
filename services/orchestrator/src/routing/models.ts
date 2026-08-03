@@ -304,7 +304,19 @@ function resolveSelectedDeclaration(providerId: string, selectedId: string): { m
   const exact = activeCatalogModels.find((model) => model.providerId === providerId && model.id === selectedId);
   if (exact) return { model: exact, selectedId };
   const alias = activeCatalogModels.find((model) => model.providerId === providerId && model.aliases.includes(selectedId));
-  return alias ? { model: alias, selectedId } : undefined;
+  if (alias) return { model: alias, selectedId };
+
+  // Model ids are case-insensitive identities but case-sensitive payloads. A
+  // user who types DEEPSEEK-V4-FLASH-FREE means the same model as the catalog's
+  // lowercase entry, and must get its context window, pricing, and reasoning
+  // contract — otherwise the route silently falls back to the conservative
+  // 32k ceiling and compacts constantly. The caller still sends the id exactly
+  // as supplied; only metadata lookup is case-insensitive.
+  const folded = selectedId.toLowerCase();
+  const insensitive = activeCatalogModels.find((model) =>
+    model.providerId === providerId
+    && (model.id.toLowerCase() === folded || model.aliases.some((entry) => entry.toLowerCase() === folded)));
+  return insensitive ? { model: insensitive, selectedId } : undefined;
 }
 
 function resolveCanonicalDeclaration(model: ModelInfo): ModelInfo {
