@@ -1,5 +1,30 @@
 # Handoff — real-task reliability cycle, stopped 2026-08-02
 
+## Resume attempt later on 2026-08-02
+
+The cycle resumed from `6b7dd1b`. The live-isolated baseline was confirmed at
+166 files / 1,753 tests, with the flagship evidence SHA-256 unchanged at
+`0FE914A924AC3B780299ECBC7000831A447E630AAA5EFDD2B7E2A0C8E3FC3A5A`.
+
+Task 5 review round 1 found 2 Critical and 4 Important completion/privacy
+defects. The delegated Luna-max implementation landed `c2c3795`
+(`fix(orchestrator): complete tasks from durable evidence`). Its final focused
+set passed 120/120; the full live-isolated orchestrator suite passed 167 files /
+1,764 tests; both package typechecks and `git diff --check` passed; the evidence
+hash remained unchanged.
+
+Task 5 is still **not CLEAN**. Review round 2 reproduced two suspected fix
+regressions before the Luna-max review task failed at the system level:
+
+- legacy artifact range pagination uses pre-redaction byte metadata;
+- mission-runtime idempotency compares redacted persisted values with raw retry
+  inputs.
+
+Two fresh Luna-max replacement review tasks then failed immediately with system
+errors. The cycle stopped because the required Luna-max model was no longer
+reachable and model substitution was prohibited. No Task 6-9 work and no live
+provider run occurred. Current implementation HEAD is `c2c3795`; do not merge.
+
 Stopped by user direction (usage budget), not because the work reached its
 definition of done. This records exactly what is true at `eac76e8`.
 
