@@ -309,8 +309,12 @@ export function missionRuntimeRepository(db: Database.Database) {
         assertFence(input.missionId, input.fence, input.now);
         const current = operationFromRow(requireOperationRow(input.missionId, input.operationId));
         if (current.status === "completed") {
-          if (isDeepStrictEqual(current.result, input.result)
-            && isDeepStrictEqual(current.effectEvidenceIds, input.effectEvidenceIds)) return current;
+          // `current` is redacted on read, so the retry input has to be put
+          // through the same redaction the write path applies before the two
+          // can be compared. Comparing redacted against raw made an idempotent
+          // retry whose payload contained a secret look like a conflict.
+          if (isDeepStrictEqual(current.result, redactSecretsDeep(input.result))
+            && isDeepStrictEqual(current.effectEvidenceIds, redactSecretsDeep(input.effectEvidenceIds))) return current;
           throw new Error("Mission operation already completed with a different result");
         }
         if (current.status !== "running") throw new Error(`Mission operation cannot complete from ${current.status}`);
@@ -339,8 +343,9 @@ export function missionRuntimeRepository(db: Database.Database) {
         const current = operationFromRow(requireOperationRow(input.missionId, input.operationId));
         const status = input.unknownEffect ? "unknown_effect" : "failed";
         if (current.status === status) {
-          if (isDeepStrictEqual(current.result, input.result)
-            && isDeepStrictEqual(current.effectEvidenceIds, input.effectEvidenceIds ?? [])) return current;
+          // Same redacted-vs-raw comparison hazard as completeOperation.
+          if (isDeepStrictEqual(current.result, redactSecretsDeep(input.result))
+            && isDeepStrictEqual(current.effectEvidenceIds, redactSecretsDeep(input.effectEvidenceIds ?? []))) return current;
           throw new Error(`Mission operation already ${status} with a different result`);
         }
         if (current.status !== "running") throw new Error(`Mission operation cannot fail from ${current.status}`);

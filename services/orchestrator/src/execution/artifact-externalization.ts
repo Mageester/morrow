@@ -168,8 +168,14 @@ export function readArtifactRange(
       totalBytes,
       offset,
       returnedBytes: end - offset,
-      truncated: end < row.bytes,
-      ...(end < row.bytes ? { nextOffset: end } : {}),
+      // Truncation is measured against the bytes actually served, never the
+      // stored `bytes` column. A legacy artifact written before content
+      // sanitization carries a pre-redaction byte count, and redaction shrinks
+      // what `getContent` returns — mixing the two reported `truncated` at the
+      // true end of the content and handed back a `nextOffset` that yielded
+      // zero further bytes, so a compliant model paginated forever.
+      truncated: end < totalBytes,
+      ...(end < totalBytes ? { nextOffset: end } : {}),
       content: content.subarray(offset, end).toString("utf8"),
     },
   };
