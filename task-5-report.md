@@ -12,7 +12,9 @@ task or an explicit recovery lineage, give delivery intent precedence over
 review wording, validate durable browser results, and prevent denied or failed
 tool calls from becoming read-only evidence. Durable assistant-message,
 provider-turn, and canonical-answer sinks also redact credential-like final
-text before it can be persisted or replayed.
+text before it can be persisted or replayed. Task events and provider
+continuations apply the same recursive redaction before durable storage, while
+the web activity boundary sanitizes streamed narration defensively.
 
 ## TDD evidence
 
@@ -46,6 +48,12 @@ text before it can be persisted or replayed.
   provider turn, canonical answer, and assistant message (2 failures).
 - P1 privacy GREEN: both paths now persist `credential ***redacted***` in all
   three SQLite sinks, with no provider call added during replay.
+- P1 event/continuation RED: four exact nested-data checks failed: task-event
+  payloads, web narration, provider continuation `state_json`, and the real
+  agent event stream all retained `credential sk-abcdefghijklmnop`.
+- P1 event/continuation GREEN: all four checks pass; raw SQLite event and
+  continuation rows, loaded continuation state, and projected activity contain
+  only redacted values while route-fingerprint lookup remains unchanged.
 
 ## Verification
 
@@ -53,13 +61,15 @@ text before it can be persisted or replayed.
 | --- | --- |
 | Focused Task 5 brief command (5 files) | 64/64 passed |
 | Focused privacy/replay regression | 2/2 passed |
+| Event/web/continuity RED/GREEN regression | 4/4 passed after fix |
 | Focused restart/review compatibility run (5 files) | 122/122 passed |
 | Privacy, continuity, security, and restart regressions (6 files) | 55/55 passed |
+| Event/web/privacy/continuity/restart/security regressions (11 files) | 111/111 passed |
 | Restart/recovery, completion-order, progress, requirements, security, and checkpoint regressions (21 files) | 267/267 passed |
 | Review-focused completion/frontend/security run (3 files) | 33/33 passed |
 | Broader completion/restart/non-progress/requirements/security run (16 files) | 319/319 passed |
 | 247-test regression set (9 files) | 247/247 passed |
-| Full default `@morrow/orchestrator` suite | 165 files, 1,734/1,734 passed |
+| Full default `@morrow/orchestrator` suite | 165 files, 1,737/1,737 passed |
 | `pnpm --filter @morrow/orchestrator check` | passed |
 | `pnpm --filter @morrow/contracts check` | passed |
 | Default live-isolated behavior (included in full orchestrator suite) | passed; no provider call |
@@ -90,6 +100,9 @@ suite is fully green, including crash-replay and privacy coverage.
 - Credential-like final text is redacted at assistant-message, provider-turn,
   and canonical-answer persistence boundaries; ordinary final-answer text and
   completion evidence semantics remain unchanged.
+- Task event payloads are recursively redacted before SQLite serialization and
+  on reads; continuation state is recursively redacted before JSON storage and
+  on load, preserving opaque state shape and route-fingerprint selection.
 - Live-provider execution was not authorized. Both live checks ran through
   their isolation paths, and no live run was appended.
 - No secrets or raw provider credentials were logged or added to the diff.
@@ -103,6 +116,6 @@ bytes and its SHA-256 is:
 
 ## Rollback
 
-Revert this focused privacy-correction commit to remove durable final-text
-redaction and its regression coverage. No schema or evidence migration is
-required; the append-only live evidence file remains untouched.
+Revert this focused event/continuation privacy-correction commit to remove
+recursive durable redaction and its regression coverage. No schema or evidence
+migration is required; the append-only live evidence file remains untouched.

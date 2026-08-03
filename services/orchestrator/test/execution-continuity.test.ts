@@ -236,6 +236,39 @@ describe("execution continuity repository", () => {
     db.close();
   });
 
+  it("redacts nested credentials in provider continuation state while preserving route lookup", () => {
+    const db = seeded();
+    const repo = executionContinuityRepository(db);
+    const segment = repo.openSegment({ taskId: "t", missionId: null, providerId: "deepseek", model: "deepseek-reasoner", routeJson: {}, ownerId: "worker-a", now: at });
+    const routeFingerprint = providerRouteFingerprint({ providerId: "deepseek", model: "deepseek-reasoner", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com" });
+    const probe = "credential sk-abcdefghijklmnop";
+    repo.saveProviderContinuation({
+      id: "private-redacted",
+      taskId: "t",
+      segmentId: segment.id,
+      providerId: "deepseek",
+      routeFingerprint,
+      turnKey: "turn-redacted",
+      state: {
+        reasoningContent: probe,
+        opaque: { nested: { probe }, array: [probe, { value: probe }], safe: "preserved" },
+      },
+      ownerId: "worker-a",
+      generation: segment.generation,
+      now: at,
+    });
+
+    const raw = db.prepare("SELECT state_json FROM agent_provider_continuations WHERE id=?").get("private-redacted") as { state_json: string };
+    expect(raw.state_json).not.toContain(probe);
+    expect(JSON.parse(raw.state_json)).toEqual({
+      reasoningContent: "credential ***redacted***",
+      opaque: { nested: { probe: "credential ***redacted***" }, array: ["credential ***redacted***", { value: "credential ***redacted***" }], safe: "preserved" },
+    });
+    expect(repo.loadProviderContinuation("t", "turn-redacted", routeFingerprint)).toEqual(JSON.parse(raw.state_json));
+    expect(repo.loadProviderContinuation("t", "turn-redacted", "different-route")).toBeNull();
+    db.close();
+  });
+
   it("deduplicates provider turns and permits exactly one canonical final answer", () => {
     const db = seeded();
     const repo = executionContinuityRepository(db);

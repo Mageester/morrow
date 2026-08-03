@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type Database from "better-sqlite3";
 import type { ProviderContinuationState } from "../provider/base.js";
-import { redactSecrets } from "../provider/credentials.js";
+import { redactSecrets, redactSecretsDeep } from "../provider/credentials.js";
 import { boundExecutionCheckpointSnapshot } from "../execution/checkpoint-snapshot.js";
 import type { ExecutionRequirement, RequirementEvaluation } from "../execution/requirements.js";
 
@@ -308,13 +308,14 @@ export function executionContinuityRepository(db: Database.Database) {
     saveProviderContinuation(input: { id: string; taskId: string; segmentId: string; providerId: string; routeFingerprint: string; turnKey: string; state: ProviderContinuationState; ownerId: string; generation: number; now: string }): void {
       db.transaction(() => {
         assertFence(input.segmentId, input);
+        const safeState = redactSecretsDeep(input.state) as ProviderContinuationState;
         db.prepare(`INSERT INTO agent_provider_continuations(id,task_id,segment_id,provider_id,route_fingerprint,turn_key,state_json,created_at)
-          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO UPDATE SET state_json=excluded.state_json,segment_id=excluded.segment_id,provider_id=excluded.provider_id,route_fingerprint=excluded.route_fingerprint,created_at=excluded.created_at`).run(input.id, input.taskId, input.segmentId, input.providerId, input.routeFingerprint, input.turnKey, JSON.stringify(input.state), input.now);
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,turn_key) DO UPDATE SET state_json=excluded.state_json,segment_id=excluded.segment_id,provider_id=excluded.provider_id,route_fingerprint=excluded.route_fingerprint,created_at=excluded.created_at`).run(input.id, input.taskId, input.segmentId, input.providerId, input.routeFingerprint, input.turnKey, JSON.stringify(safeState), input.now);
       })();
     },
     loadProviderContinuation(taskId: string, turnKey: string, routeFingerprint: string): ProviderContinuationState | null {
       const row = db.prepare("SELECT state_json FROM agent_provider_continuations WHERE task_id=? AND turn_key=? AND route_fingerprint=?").get(taskId, turnKey, routeFingerprint) as { state_json: string } | undefined;
-      return row ? JSON.parse(row.state_json) as ProviderContinuationState : null;
+      return row ? redactSecretsDeep(JSON.parse(row.state_json)) as ProviderContinuationState : null;
     },
     listProviderContinuationRefs(taskId: string): string[] {
       return (db.prepare("SELECT id FROM agent_provider_continuations WHERE task_id=? ORDER BY created_at,id").all(taskId) as { id: string }[]).map((row) => row.id);

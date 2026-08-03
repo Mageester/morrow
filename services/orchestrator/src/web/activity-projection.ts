@@ -415,7 +415,7 @@ export function projectConversationActivity(
     const deltaText = event.type === "evidence.persisted"
       && event.payload.action === undefined
       && typeof event.payload.deltaText === "string"
-      ? event.payload.deltaText
+      ? redactSecrets(event.payload.deltaText)
       : null;
     if (deltaText !== null) {
       const turnId = identifier(event.payload.turnId) ?? `${taskId}:turn`;

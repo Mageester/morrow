@@ -19,6 +19,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { buildServer } from "../src/server.js";
+import { projectConversationActivity } from "../src/web/activity-projection.js";
 
 describe("durable agent segments", () => {
   it("enforces the unattended segment cap before a context-pressure rollover", async () => {
@@ -155,6 +156,10 @@ describe("durable agent segments", () => {
       expect(db.prepare("SELECT content FROM canonical_task_answers WHERE task_id=?").get("t")).toEqual({ content: safeProbe });
       expect(db.prepare("SELECT content FROM conversation_messages WHERE id=?").get("a")).toEqual({ content: safeProbe });
       expect(db.prepare("SELECT assistant_text FROM agent_provider_turns WHERE task_id=?").get("t")).toEqual({ assistant_text: safeProbe });
+      const taskEvents = taskRecordsRepository(db).listEvents("t");
+      expect(JSON.stringify(db.prepare("SELECT payload_json FROM task_events WHERE task_id=?").all("t"))).not.toContain(probe);
+      const activity = projectConversationActivity({ projectId: "p", conversationId: "c", tasks: [{ taskId: "t", events: taskEvents }] });
+      expect(JSON.stringify(activity)).not.toContain(probe);
       expect(convs.getMessage("a")?.content).not.toContain("sk-abcdefghijklmnop");
       expect(continuity.getCanonicalAnswer("t")?.content).not.toContain("sk-abcdefghijklmnop");
     } finally {

@@ -88,6 +88,23 @@ describe("conversation activity projection", () => {
     });
     expect(JSON.stringify(activity)).not.toContain("secret-value");
   });
+
+  it("redacts credential-like streamed narration before it reaches web activity", () => {
+    const activity = projectConversationActivity({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      tasks: [{
+        taskId: "task-1",
+        events: [event(1, "evidence.persisted", {
+          deltaText: "credential sk-abcdefghijklmnop",
+          turnId: "task-1:turn-1",
+        })],
+      }],
+    });
+
+    expect(activity.entries[0]?.text).toBe("credential ***redacted***");
+    expect(JSON.stringify(activity)).not.toContain("sk-abcdefghijklmnop");
+  });
 });
 
 describe("interleaved transcript ordering", () => {

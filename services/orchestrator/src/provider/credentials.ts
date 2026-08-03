@@ -200,3 +200,15 @@ export function redactSecrets(input: string): string {
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1***redacted***@")
     .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AIza[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16})\b/gi, "***redacted***");
 }
+
+/** Recursively redact JSON-like values before they cross a durable boundary. */
+export function redactSecretsDeep<T>(value: T): T {
+  if (typeof value === "string") return redactSecrets(value) as T;
+  if (Array.isArray(value)) return value.map((item) => redactSecretsDeep(item)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, redactSecretsDeep(child)]),
+    ) as T;
+  }
+  return value;
+}

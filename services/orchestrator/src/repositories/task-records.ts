@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { redactSecretsDeep } from "../provider/credentials.js";
 import {
   ExecutionDisclosureSchema,
   AgentStateTransitionSchema,
@@ -94,7 +95,7 @@ export function taskRecordsRepository(db: Database.Database) {
   };
   const mapEvent = (row: unknown): TaskEvent => {
     const value = row as Record<string, unknown>;
-    return TaskEventSchema.parse({ id: value.id, taskId: value.task_id, sequence: value.sequence, type: value.type, payload: parseJson(value.payload_json, "event payload"), createdAt: value.created_at });
+    return TaskEventSchema.parse({ id: value.id, taskId: value.task_id, sequence: value.sequence, type: value.type, payload: redactSecretsDeep(parseJson(value.payload_json, "event payload")), createdAt: value.created_at });
   };
   const mapPlan = (row: unknown): PlanStep => {
     const value = row as Record<string, unknown>;
@@ -119,7 +120,7 @@ export function taskRecordsRepository(db: Database.Database) {
 
   const appendEvent = (input: EventInput): TaskEvent => db.transaction(() => {
     const sequence = (db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM task_events WHERE task_id = ?").get(input.taskId) as { sequence: number }).sequence;
-    const event = TaskEventSchema.parse({ ...input, sequence });
+    const event = TaskEventSchema.parse({ ...input, payload: redactSecretsDeep(input.payload), sequence });
     db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,1,?,?,?,?,?)").run(event.id, event.taskId, event.sequence, event.type, JSON.stringify(event.payload), event.createdAt);
     return event;
   })();

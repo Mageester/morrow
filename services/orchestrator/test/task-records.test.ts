@@ -32,6 +32,31 @@ describe("task records repository", () => {
     db.close();
   });
 
+  it("redacts nested credential-like values before persisting task event payloads", () => {
+    const { db, records } = setup();
+    const probe = "credential sk-abcdefghijklmnop";
+    const event = records.appendEvent({
+      id: "secret-event",
+      taskId: "t1",
+      type: "assistant.turn_completed",
+      payload: {
+        text: probe,
+        nested: { reasoning: probe, array: [probe, { value: probe }] },
+      },
+      createdAt,
+    });
+
+    expect(event.payload).toEqual({
+      text: "credential ***redacted***",
+      nested: { reasoning: "credential ***redacted***", array: ["credential ***redacted***", { value: "credential ***redacted***" }] },
+    });
+    expect(db.prepare("SELECT payload_json FROM task_events WHERE id=?").get("secret-event")).toEqual({
+      payload_json: JSON.stringify(event.payload),
+    });
+    expect(JSON.stringify(records.listEvents("t1"))).not.toContain(probe);
+    db.close();
+  });
+
   it("executes the repository cursor query and reports its indexed SQLite plan for large histories", () => {
     const { db, records } = setup();
     const insert = db.prepare("INSERT INTO task_events(id,schema_version,task_id,sequence,type,payload_json,created_at) VALUES(?,1,?,?,?,?,?)");
