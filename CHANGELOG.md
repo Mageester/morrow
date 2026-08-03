@@ -54,6 +54,73 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 - ADR 0010 records the decision to freeze new surface for one cycle and turn
   each bug class into a guard.
 
+## [0.1.0-beta.38] - 2026-08-03
+
+### Fixed - runaway loops, checkpoint bloat, and a 30x context cut
+
+This release targets one complaint: Morrow was slow, sometimes looped, and took
+a long time to do simple things. The causes were measured from a real packaged
+install whose database had reached 259 MB, 206 MB of which was execution
+checkpoints, with single tasks recording 300+ provider turns, 800+ tool calls,
+270+ compactions, and the same read repeated up to 92 times before the first
+file was written.
+
+- **Non-progress is now bounded by an epoch model.** The old six-call sliding
+  window could not see interleaved repeats. Only a durable artifact mutation
+  starts a new epoch; observations, persisted evidence, and context compaction
+  explicitly do not count as progress, which was the loophole that let a task
+  feel productive while delivering nothing. One identical observation may run at
+  most three times per epoch, and a delivery task with no mutation gets
+  action-only recovery at turn 6 and a hard stop or replan at turn 12.
+- **Checkpoints are capped at 128 KB** with deterministic truncation and
+  hash-tagged elision, instead of copying cumulative raw tool arguments and
+  results. Secrets are redacted from checkpoint diagnostics.
+- **OpenCode Zen had no catalog entry**, so it fell back to the conservative
+  32k context ceiling while serving a 200k model — a 30x cut that forced
+  near-constant compaction. It is now declared with its real limit.
+- **Model ids are case-insensitive identities.** An id typed in a different case
+  resolved as an unknown model with no context window, no pricing, no reasoning
+  contract, and a different route fingerprint, so provider continuation was
+  never reused. The id sent to the provider is still verbatim.
+- **Legacy artifact pagination could not terminate.** Legacy rows carry a
+  pre-redaction byte count while reads are redacted; the last page of an
+  artifact containing a secret reported more data remaining and handed back an
+  offset that returned nothing, so a compliant model paginated forever.
+- **SSE and checkpoint writes no longer rescan full task history** on every
+  poll.
+
+### Fixed - completion and recovery correctness
+
+- **A mission can no longer go terminal independently of its runtime and worker
+  task.** Crash and restart recovery, lease fencing, atomic takeover of stale
+  claims, and exactly-once close-out verification.
+- **Explicit constraints are enforced at runtime**, not just phrased in a
+  prompt. "Backend only", "no database", "no new dependencies", and
+  "only edit these files" are checked at planning, tool-execution, and
+  completion boundaries, with durable, explicitly authorized waivers.
+- **Idempotent retries are no longer rejected.** Operation completion compared
+  the redacted persisted result against the caller's raw retry input, so a
+  retry whose payload contained a secret looked like a conflicting result.
+- **Billing failures are no longer scored as model failures.** A provider that
+  refuses before generating (observed as HTTP 402) produced no artifact and was
+  recorded as though the model had failed to build the app; ten such runs then
+  filled a provider's entire release-gate window.
+
+### Changed
+
+- Read-only and provider-continuation boundaries are guarded as classes across
+  the whole tool catalog and every provider protocol.
+- Flagship provider eligibility is declared per provider with a stated reason
+  for each exclusion, and a guard asserts the table covers the provider registry.
+
+### Still unproven
+
+The flagship release gate still reports **unproven**. It requires two real
+providers each passing 9 of their most recent 10 runs, and those runs have not
+been completed — the first live canary was blocked by an unfunded provider
+account. Everything above is verified by unit and conformance tests, not by a
+real-model run. Reliability is improved and measured; it is not yet proven.
+
 ## [0.1.0-beta.37] - 2026-08-01
 
 ### Added - unified clay UI, interleaved transcript
