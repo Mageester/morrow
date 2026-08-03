@@ -352,7 +352,7 @@ function inferIndicators(topLevel: { entries: Array<{ path: string; type: "file"
  * tool count is derived from this one list instead of a hand-maintained
  * literal that silently drifts whenever a read-only tool is added.
  */
-const READ_ONLY_TOOL_NAMES = new Set([
+export const READ_ONLY_TOOL_NAMES = new Set([
   "inspect_workspace", "list_files", "read_file", "search_text", "search_files", "search_symbols",
   "git_status", "git_diff", "git_log", "read_artifact", "find_skill", "load_skill",
 ]);
