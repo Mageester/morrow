@@ -44,7 +44,7 @@ export interface FlagshipGateResult {
   summary: string;
   providers: FlagshipProviderResult[];
   /** Runs excluded from scoring, and why — never silently dropped. */
-  excluded: { mockRuns: number; otherScenarios: number };
+  excluded: { mockRuns: number; otherScenarios: number; harnessErrorRuns: number };
 }
 
 export interface FlagshipGateOptions {
@@ -68,8 +68,18 @@ export function evaluateFlagshipGate(runs: FlagshipBuildRun[], options: Flagship
   const mockRuns = scenarioRuns.filter((run) => run.mode !== "real").length;
   const realRuns = scenarioRuns.filter((run) => run.mode === "real");
 
+  // Runs where the harness or the environment failed are not evidence about
+  // the model, so they are not scored — but they stay in the log, and they are
+  // counted and surfaced so an unrunnable gate can never look like a quiet
+  // pass. Without this, ten HTTP 402 (no balance) runs filled a provider's
+  // entire 10-run window and pinned it at 0/10 until ten real runs displaced
+  // them. This exclusion is strictly limited to `harness_error`; every failure
+  // the model is actually responsible for still scores against it.
+  const harnessErrorRuns = realRuns.filter((run) => !run.passed && run.failureReason === "harness_error").length;
+  const scorableRuns = realRuns.filter((run) => run.passed || run.failureReason !== "harness_error");
+
   const byProvider = new Map<string, FlagshipBuildRun[]>();
-  for (const run of realRuns) {
+  for (const run of scorableRuns) {
     const bucket = byProvider.get(run.providerId) ?? [];
     bucket.push(run);
     byProvider.set(run.providerId, bucket);
@@ -95,11 +105,11 @@ export function evaluateFlagshipGate(runs: FlagshipBuildRun[], options: Flagship
   const summary = passed
     ? `Flagship workflow proven: ${qualified.map((p) => `${p.providerId} ${p.passes}/${p.runs}`).join(", ")}.`
     : providers.length === 0
-      ? `Flagship workflow unproven: no real-provider runs recorded (${mockRuns} mock run(s) present, which do not count).`
+      ? `Flagship workflow unproven: no real-provider runs recorded that are scorable (${mockRuns} mock run(s) and ${harnessErrorRuns} harness/environment failure(s) present, which do not count).`
       : `Flagship workflow unproven: ${qualified.length}/${minProviders} providers at ${minPasses}/${minRuns}. ` +
         providers.map((p) => `${p.providerId} ${p.passes}/${p.runs}${p.runs < minRuns ? ` (needs ${minRuns - p.runs} more run(s))` : ""}`).join("; ") + ".";
 
-  return { passed, summary, providers, excluded: { mockRuns, otherScenarios } };
+  return { passed, summary, providers, excluded: { mockRuns, otherScenarios, harnessErrorRuns } };
 }
 
 /** Read a JSONL run log. A missing log reads as no runs, not as an error —

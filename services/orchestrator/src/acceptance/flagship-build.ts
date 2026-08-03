@@ -252,6 +252,23 @@ export async function runFlagshipBuild(input: FlagshipBuildInput): Promise<Flags
     // known open failure this scenario was written to measure. Recording it as
     // a build failure would hide it; recording the artifact as verified while
     // still failing the run on task status names it precisely.
+    // A run in which the provider emitted nothing at all — no tool call, no
+    // output token — tells us nothing about the model. Observed live as HTTP
+    // 402 (no account balance): the request was refused before generation, so
+    // `app.mjs` was necessarily absent and the run was being recorded as
+    // `artifact_missing`, i.e. scored as a model capability failure. Billing,
+    // auth, and reachability failures are environment problems and must be
+    // classified as such. This is deliberately narrow: any run where the model
+    // produced a single token or a single tool call is judged on its output.
+    if (task?.status === "failed" && measured.toolCalls === 0 && measured.completionTokens === 0) {
+      return {
+        ...measured,
+        passed: false,
+        failureReason: "harness_error",
+        failureDetail: `the provider returned no output at all (task ended "${task?.status ?? "unknown"}"); this run is not evidence about the model`,
+      };
+    }
+
     const verification = verifyFlagshipArtifact(workspace, join(input.root, "verify"));
     if (!verification.ok) {
       return { ...measured, passed: false, failureReason: verification.reason, failureDetail: verification.detail };
