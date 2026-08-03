@@ -32,6 +32,7 @@ const PROTOCOL_BY_PROVIDER: Record<string, ProviderProtocol> = {
   deepseek: "openai-chat",
   openrouter: "openai-chat",
   ollama: "openai-chat",
+  "opencode-zen": "openai-chat",
 };
 
 describe("reasoning capability matches what the provider protocol can carry", () => {

@@ -155,6 +155,13 @@ export const BUILT_IN_MODELS: BundledModelInfo[] = [
   // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
   model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
 
+  // OpenCode Zen. The gateway re-serves other vendors' models, so these are
+  // declared in their own right rather than aliased across providers — the
+  // gateway's limits are its own, not the upstream vendor's. Without an entry
+  // the route fell back to the conservative 32k ceiling and compacted
+  // constantly, despite serving a long-context model.
+  model("opencode-zen", "deepseek-v4-flash-free", "DeepSeek V4 Flash (free, via OpenCode Zen)", { contextWindow: 200000, speed: "fast", cost: "low" }),
+
   // Ollama (local)
   model("ollama", "llama3.1", "Llama 3.1 (local)", { contextWindow: 128000, pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
   model("ollama", "qwen2.5", "Qwen 2.5 (local)", { pricing: freeLocal, tokenUsage: false, streamingUsage: false, vision: false, speed: "balanced", cost: "free", privacy: "local" }),
