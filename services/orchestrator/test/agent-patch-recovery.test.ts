@@ -64,14 +64,21 @@ const noOpPatch = [
   "",
 ].join("\n");
 
+// Deliberately zero "+" lines: a header claiming a replacement (old=3,
+// new=3) whose body was truncated right after the deletion, before any
+// addition line was ever written — the shape parseUnifiedDiff refuses to
+// silently repair (services/orchestrator/src/tools/diff-applier.ts), because
+// a header/body count mismatch with no addition lines at all is
+// indistinguishable from a model that was cut off mid-hunk. A header-only
+// arithmetic slip on an otherwise complete edit (real content on both sides)
+// is tolerantly repaired instead of rejected — see diff-applier.test.ts's
+// "repairs a hunk header that miscounts its own line count" for that case.
 const malformedHunkPatch = [
   "--- a/index.html",
   "+++ b/index.html",
-  "@@ -1,3 +1,5 @@",
+  "@@ -1,3 +1,3 @@",
   " <main>",
   "-  <h1>current</h1>",
-  "+  <h1>improved</h1>",
-  " </main>",
   "",
 ].join("\n");
 
@@ -249,8 +256,10 @@ describe("agent patch recovery", () => {
       chunks: [
         [tool("create", "create_file", { path: "index.html", content: "<main>\n  <h1>current</h1>\n</main>\n" }), done],
         [text("Trying a visual improvement."), tool("bad-1", "propose_patch", { patch: malformedHunkPatch, explanation: "bad hunk 1", files: ["index.html"] }), done],
-        [text("Trying again with more detail."), tool("bad-2", "propose_patch", { patch: malformedHunkPatch.replace("+  <h1>improved</h1>", "+  <h1>better</h1>"), explanation: "bad hunk 2", files: ["index.html"] }), done],
-        [text("One more attempt."), tool("bad-3", "propose_patch", { patch: malformedHunkPatch.replace("+  <h1>improved</h1>", "+  <h1>best</h1>"), explanation: "bad hunk 3", files: ["index.html"] }), done],
+        // Each attempt differs (different hash) but stays the same truncated
+        // shape — zero addition lines — so every one independently fails.
+        [text("Trying again with more detail."), tool("bad-2", "propose_patch", { patch: malformedHunkPatch.replace("<h1>current</h1>", "<h1>currently</h1>"), explanation: "bad hunk 2", files: ["index.html"] }), done],
+        [text("One more attempt."), tool("bad-3", "propose_patch", { patch: malformedHunkPatch.replace("<h1>current</h1>", "<h1>curr</h1>"), explanation: "bad hunk 3", files: ["index.html"] }), done],
         [text("should not reach this turn"), done],
       ],
       delayMs: 1,

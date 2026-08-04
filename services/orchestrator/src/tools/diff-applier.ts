@@ -180,8 +180,22 @@ export function parseUnifiedDiff(diffStr: string): PatchFile[] {
       } else if (line.trim() === "" && i === lines.length - 1) {
         // Allowed EOF empty line
       } else {
-        // Stop chunk accumulation on other headers
-        currentChunk = null;
+        // A line starting with "--- " or "@@ " never reaches this branch —
+        // the outer if/else-if chain above already intercepts those as the
+        // next file or hunk header. Anything that does reach here is inside
+        // an open hunk and carries none of the three valid markers (space,
+        // -, +) — not a structural boundary, a malformed hunk body, most
+        // often a model dropping the leading context-space on a line. This
+        // used to be silently discarded here, ending chunk collection early
+        // with no signal; the remaining, dropped lines (here, everything
+        // after the bad line) never became part of the patch at all. Before
+        // hunk line counts were tolerantly repaired, that silent truncation
+        // was usually caught downstream by the header no longer matching the
+        // (now-shorter) body — but a repair that trusts the body's own count
+        // removes that accidental safety net, so a truncated hunk can apply
+        // "successfully" with silently missing content. Failing loudly here
+        // is the direct fix, not a narrower header-repair.
+        throw new Error(`Malformed patch: hunk line lacks a valid +/-/space prefix: ${JSON.stringify(line)}`);
       }
     }
   }
@@ -191,14 +205,39 @@ export function parseUnifiedDiff(diffStr: string): PatchFile[] {
     for (const chunk of file.chunks) {
       let expectedOld = 0;
       let expectedNew = 0;
+      let additionLines = 0;
       for (const chunkLine of chunk.lines) {
         const prefix = chunkLine.charAt(0);
         if (prefix === " " || prefix === "-") expectedOld++;
         if (prefix === " " || prefix === "+") expectedNew++;
+        if (prefix === "+") additionLines++;
       }
       if (expectedOld !== chunk.oldLines || expectedNew !== chunk.newLines) {
-        // Models frequently miscount lines in hunk headers (e.g. @@ -19,7 +19,9 @@).
-        // Instead of strictly rejecting the patch, we repair the header using the true line counts.
+        // A well-formed hunk — even a pure deletion with no replacement —
+        // already has correct header counts and never reaches this branch at
+        // all. Landing here with zero real "+" lines is inherently
+        // suspicious: either a rare arithmetic slip on a genuine
+        // pure-deletion edit, or — reproduced directly — a model that
+        // generated a diff and got cut off mid-hunk (token limit, connection
+        // drop) before ever writing the "+" line it intended. Both a
+        // net-growth header (@@ -1,5 +1,9 @@) and a net-shrink header
+        // (@@ -1,5 +1,2 @@) truncated right after the deletion line applied
+        // "successfully" under a naive repair and silently deleted the
+        // target line with nothing put back — reporting success while
+        // quietly losing content, worse than the hard failure it replaced.
+        // The asymmetric cost — a false reject just asks the model to retry;
+        // a false accept silently corrupts the file — means zero additions
+        // in a mismatched hunk is refused outright, regardless of which
+        // direction the header's arithmetic was wrong in.
+        if (additionLines === 0) {
+          throw new Error(
+            `Hunk line count mismatch for ${file.newPath}: @@ -${chunk.oldStart},${chunk.oldLines} +${chunk.newStart},${chunk.newLines} @@. Expected old=${chunk.oldLines}, actual=${expectedOld}. Expected new=${chunk.newLines}, actual=${expectedNew}. The header promises added content this hunk never provides — this looks like a truncated patch, not a miscounted header.`
+          );
+        }
+        // Otherwise: models frequently miscount lines in hunk headers (e.g.
+        // @@ -19,7 +19,9 @@) on an otherwise complete, unambiguous edit.
+        // Repair the header using the true line counts rather than reject a
+        // valid patch over pure arithmetic.
         chunk.oldLines = expectedOld;
         chunk.newLines = expectedNew;
       }
