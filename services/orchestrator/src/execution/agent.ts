@@ -169,6 +169,26 @@ export function proposePatchTarget(
 }
 
 /**
+ * True when a run_command result reports that the command was detached as a
+ * long-running background process (a dev/preview server, a watcher) rather than
+ * run to completion. Such a call has no exit code yet — it is intentionally
+ * still running — so it must never be scored as a pass/fail *verification*.
+ * Treating a started server as a failed verification produced a spurious
+ * `failed_final_verification` completion blocker that stopped an otherwise
+ * finished frontend build from ever completing.
+ */
+export function runCommandStartedBackgroundProcess(resultJson: string | null | undefined): boolean {
+  if (!resultJson) return false;
+  try {
+    const result = JSON.parse(resultJson) as { status?: unknown; processId?: unknown; pid?: unknown; exitCode?: unknown };
+    if (typeof result.exitCode === "number") return false;
+    return result.status === "running" && (result.processId !== undefined || result.pid !== undefined);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detect a write tool call that merely echoes one of Morrow's own externalized
  * history entries. To keep long runs inside the context window,
  * `capToolArgumentsForContext` rewrites an already-applied create_file /
@@ -3250,6 +3270,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>; } catch { /* failure remains unverified */ }
       if (!runCommandIsVerification(args) && call.errorType !== "invalid_tool_arguments") return [];
+      // A command that was detached as a background server has not produced a
+      // pass/fail outcome; it is intentionally still running. Scoring it as a
+      // failed verification wrongly blocks completion of a finished build.
+      if (runCommandStartedBackgroundProcess(call.resultJson)) return [];
       let exitCode: number | null | undefined;
       try {
         const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
