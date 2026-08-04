@@ -190,6 +190,10 @@ export const MissionRecoveryDecisionSchema = z.object({
   if (
     decision.failedStrategyFingerprint !== null
     && decision.failedStrategyFingerprint === decision.nextStrategyFingerprint
+    && decision.action !== "retry_same_provider"
+    && decision.action !== "switch_model"
+    && decision.action !== "switch_provider"
+    && decision.action !== "await_retry_condition"
   ) {
     context.addIssue({
       code: "custom",
