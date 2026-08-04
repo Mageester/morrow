@@ -2094,8 +2094,18 @@ function gitDiff(workspace: string): string {
   const staged = spawnSync("git", ["diff", "--no-color"], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, windowsHide: true });
   const untrackedList = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   let out = staged.status === 0 ? staged.stdout : "";
+  
   if (untrackedList.status === 0 && untrackedList.stdout.trim()) {
-    out += `\n# untracked files:\n${untrackedList.stdout.trim()}`;
+    const untrackedFiles = untrackedList.stdout.trim().split(/\r?\n/).filter(Boolean);
+    for (const file of untrackedFiles) {
+      // Use --no-index to generate a unified diff for the new file against /dev/null
+      const newFileDiff = spawnSync("git", ["diff", "--no-index", "--no-color", "/dev/null", file], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      if (newFileDiff.stdout) {
+        out += (out.length > 0 && !out.endsWith("\n") ? "\n" : "") + newFileDiff.stdout;
+      } else {
+        out += `\n# untracked empty file: ${file}\n`;
+      }
+    }
   }
   return out;
 }
