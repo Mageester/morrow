@@ -5737,22 +5737,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   await refreshRequirementEvaluations();
   if (await returnRequirementBlock()) return;
 
-  // Completion gate: the model stopped emitting tool calls (its "I'm done"
-  // signal), but the last workspace mutation or verification it ran failed and
-  // was never recovered. Reporting "completed" here would be dishonest â€” the
-  // required change or check did not actually pass. Stop cleanly with an
-  // incomplete status instead, so the CLI and /output show the truth.
-  if (completedWithoutMoreTools && lastVerificationFailure) {
-    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
-    if (await returnMissionWorkerOutcome("validation_required", message)) return;
-    failCurrentSegment("unverified_completion");
-    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
-  }
-
   // Final transition is atomic with canonical-answer creation. If the process
   // dies after the final provider turn was recorded but before this transaction,
   // the replayable-final-turn path above completes it without another request.
@@ -5766,7 +5750,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     canonicalFinalText,
     recordedTurns.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
   );
-  if (!finalCompletionEvaluation.complete) {
+  const completionIsDurablySatisfied = finalCompletionEvaluation.complete;
+
+  // Completion gate: the model stopped emitting tool calls (its "I'm done"
+  // signal), but the last workspace mutation or verification it ran failed and
+  // was never recovered. Reporting "completed" here would be dishonest â€” the
+  // required change or check did not actually pass. Stop cleanly with an
+  // incomplete status instead, so the CLI and /output show the truth.
+  if (completedWithoutMoreTools && lastVerificationFailure && !completionIsDurablySatisfied) {
+    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
+    if (await returnMissionWorkerOutcome("validation_required", message)) return;
+    failCurrentSegment("unverified_completion");
+    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return;
+  }
+
+  if (!completionIsDurablySatisfied) {
     if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
   }
 
