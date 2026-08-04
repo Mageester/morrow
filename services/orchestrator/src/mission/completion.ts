@@ -75,7 +75,16 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
 
   return async (messages, o) => {
     const baseBudget = OUTPUT_BUDGET_TOKENS[o.purpose];
-    const first = await runOnce(messages, o, baseBudget);
+    let first;
+    try {
+      first = await runOnce(messages, o, baseBudget);
+    } catch (err) {
+      if (o.purpose === "review") {
+        first = await runOnce(messages, { ...o, purpose: "planning" }, baseBudget);
+      } else {
+        throw err;
+      }
+    }
     // Bounded, deterministic escalation: exactly one retry, only for review,
     // only when the response was genuinely truncated with nothing usable —
     // never a general "just try again" retry storm.
