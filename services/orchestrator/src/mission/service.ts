@@ -42,7 +42,13 @@ import { redactSecrets } from "../provider/credentials.js";
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
   messages: ChatMessage[],
-  opts: { purpose: "planning" | "review"; temperature?: number },
+  opts: {
+    purpose: "planning" | "review";
+    temperature?: number;
+    missionProviderId?: string | null;
+    missionModel?: string | null;
+    missionPreset?: string;
+  },
 ) => Promise<{ text: string; provider?: string; model?: string; usdCost?: number; finishReason?: string | null }>;
 
 type ActiveTerminalVerification = {
@@ -236,7 +242,13 @@ export class MissionService {
           { role: "system", content: "You output only JSON. No prose." },
           { role: "user", content: buildCriteriaPrompt(objective, repoSummary) },
         ];
-        const res = await this.deps.completion(messages, { purpose: "planning", temperature: 0.1 });
+        const res = await this.deps.completion(messages, {
+          purpose: "planning",
+          temperature: 0.1,
+          missionProviderId: mission.execution.providerId,
+          missionModel: mission.execution.model,
+          missionPreset: mission.execution.preset,
+        });
         drafts = parseCriteriaFromModel(res.text);
         drafts = this.sanitizeModelCriteria(drafts, this.deps.getWorkspacePath(mission.projectId));
         if (res.usdCost) this.addSpend(mission.id, res.usdCost);
@@ -716,7 +728,13 @@ export class MissionService {
     try {
       if (this.deps.completion) {
         try {
-          const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
+          const res = await this.deps.completion(messages, {
+            purpose: "review",
+            temperature: 0,
+            missionProviderId: mission.execution.providerId,
+            missionModel: mission.execution.model,
+            missionPreset: mission.execution.preset,
+          });
           const first = parseReviewVerdictWithDiagnostics(res.text, mission.criteria, { finishReason: res.finishReason ?? null });
           parsed = first.parsed;
           provider = res.provider ?? null; model = res.model ?? null;
@@ -727,7 +745,13 @@ export class MissionService {
             // prior answer — never to re-decide. The bounded local extraction
             // pipeline above already tried every deterministic recovery; this
             // is the single network-bound fallback, capped here.
-            const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
+            const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), {
+              purpose: "review",
+              temperature: 0,
+              missionProviderId: mission.execution.providerId,
+              missionModel: mission.execution.model,
+              missionPreset: mission.execution.preset,
+            });
             const second = parseReviewVerdictWithDiagnostics(repaired.text, mission.criteria, { finishReason: repaired.finishReason ?? null });
             if (isReviewParseFailure(second.parsed)) logReviewParseFailure(missionId, "repair", second.diagnostics);
             else parsed = second.parsed;

@@ -379,6 +379,38 @@ describe("mission completion routing", () => {
     ], { purpose: "review", temperature: 0 })).rejects.toThrow();
     expect(callCount).toBe(2);
   });
+
+  it("uses mission-specific overrides for provider and model rather than the globally resolved preset defaults", async () => {
+    // The dogfooding run that found this was using a default workspace preset
+    // (balanced -> deepseek) but explicitly passing --provider opencode-zen
+    // for the mission execution. The worker successfully used the override,
+    // but the review cycle failed with "Insufficient Balance" against the
+    // default DeepSeek account. MissionCompletionFn did not receive or respect
+    // the mission's execution overrides, routing recovery back to the global
+    // default instead of the explicitly chosen provider.
+    globalThis.fetch = (async () => sseResponse([
+      `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"approved\\"}"}}]}\n\n`,
+      `data: [DONE]\n\n`,
+    ])) as any;
+    
+    const completion = buildMissionCompletion({ 
+      presetId: "balanced", 
+      env: { DEEPSEEK_API_KEY: "k", OPENCODE_ZEN_API_KEY: "k" } 
+    })!;
+    
+    const result = await completion([
+      { role: "user", content: "json review" },
+    ], { 
+      purpose: "review", 
+      temperature: 0,
+      missionProviderId: "opencode-zen",
+      missionModel: "deepseek-v4-flash-free",
+    });
+
+    // It must return the requested provider and model, not the fallback ones.
+    expect(result.provider).toBe("opencode-zen");
+    expect(result.model).toBe("deepseek-v4-flash-free");
+  });
 });
 
 describe("Anthropic provider normalization", () => {
