@@ -7,7 +7,7 @@ import { classify } from "../../../installer/templates/dispatch.mjs";
 import { COMMANDS, resolveInvocation } from "../src/main.js";
 import { parseArgs } from "../src/cli/args.js";
 import { resolveProject, resolveWorkspaceScope } from "../src/commands/common.js";
-import { buildCommand } from "../src/commands/build.js";
+import { buildContextFlags } from "../src/commands/build.js";
 
 /**
  * Regression coverage for the packaged `morrow build` dead-end.
@@ -222,15 +222,25 @@ describe("morrow build: --in workspace scoping", () => {
   });
 
   it("clears --in from build context flags so resolveProject does not conflict with --project", async () => {
+    // Exercises the real function `buildCommand` calls, not a re-implementation
+    // of its logic — a revert of the fix in build.ts fails this test.
     const target = tempRoot();
-    const { ctx } = fakeCtx({ in: target });
+    const flags = buildContextFlags({ in: target, provider: "deepseek" }, "p-1", true);
+
+    expect(flags).not.toHaveProperty("in");
+    expect(flags.project).toBe("p-1");
+    expect(flags.yolo).toBe(true);
+    expect(flags.provider).toBe("deepseek");
+
     const existing = { version: 1, id: "p-1", name: "taskflow", workspacePath: target, createdAt: new Date().toISOString() } as Project;
     const { api } = fakeApi([existing]);
-
-    const flags = { ...ctx.flags, project: "p-1" };
-    delete flags.in;
     const resolved = await resolveProject({ flags } as any, api, { required: true });
     expect(resolved?.id).toBe("p-1");
+  });
+
+  it("does not force yolo when --no-yolo was requested", () => {
+    const flags = buildContextFlags({ "no-yolo": true }, "p-1", false);
+    expect(flags.yolo).toBeUndefined();
   });
 });
 
