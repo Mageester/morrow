@@ -116,6 +116,15 @@ describe("repairAndParseToolArguments", () => {
     expect(repairAndParseToolArguments("I cannot do that")).toMatchObject({ ok: false, reason: "invalid_json" });
   });
 
+  it("repairs invalid single quote escapes in JSON strings", () => {
+    const r = repairAndParseToolArguments('{"content":"import { it } from \\\'vitest\\\';"}');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({ content: "import { it } from 'vitest';" });
+      expect(r.strategies).toContain("removed_invalid_single_quote_escape");
+    }
+  });
+
   it("performs only a single repair pass (does not iterate)", () => {
     // A properly-escaped Windows path survives; the double backslash is valid JSON.
     const r = repairAndParseToolArguments('{"path":"C:\\\\Users\\\\a.ts","content":"x"}');
