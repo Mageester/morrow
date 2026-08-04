@@ -23,7 +23,7 @@
  *    autonomy the rest of Morrow uses, with the same hard denials, audit trail,
  *    and undo. `--no-yolo` steps back to approval-per-change.
  */
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Context } from "../cli/context.js";
@@ -137,6 +137,11 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
   // A build workspace must be a git repository so the autonomous mission runner
   // and its reviewer can diff changes.
   spawnSync("git", ["init", "--initial-branch=main"], { cwd: target, windowsHide: true });
+
+  const gitignorePath = join(target, ".gitignore");
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, "node_modules\n.DS_Store\n");
+  }
 
   const project = await api.createProject(name, target);
   ctx.out.success(`New project "${project.name}" — ${project.workspacePath}`);
