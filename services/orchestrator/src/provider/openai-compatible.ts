@@ -115,6 +115,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
         type: "function",
         function: { name: t.name, description: t.description, parameters: t.parameters },
       }));
+      if (options.toolChoice === "required") body.tool_choice = "required";
     }
 
     const controller = new AbortController();

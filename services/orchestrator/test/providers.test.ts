@@ -102,6 +102,28 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.parse(ref.captured!.init.body).messages[2].reasoning_content).toBe("prior-private");
   });
 
+  it("forwards tool_choice: required onto the wire only when tools are present", async () => {
+    const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{}"}}]}}]}\n\n`, `data: [DONE]\n\n`]));
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-v4-flash" });
+    await collect(provider, userMessages, {
+      toolChoice: "required",
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+    });
+    expect(JSON.parse(ref.captured!.init.body).tool_choice).toBe("required");
+
+    // Never sent without tools: the wire body would have no function to
+    // constrain the response to, and some gateways reject a bare tool_choice.
+    const ref2 = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, { toolChoice: "required" });
+    expect(JSON.parse(ref2.captured!.init.body)).not.toHaveProperty("tool_choice");
+
+    // Absent entirely on a normal turn: a route not recovering from a
+    // reasoning-only failure must see the exact same request shape as today.
+    const ref3 = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
+    expect(JSON.parse(ref3.captured!.init.body)).not.toHaveProperty("tool_choice");
+  });
+
   it("injects a valid reasoning effort into the request body, and rejects an unsupported one before the request", async () => {
     const effortCap = { control: "effort" as const, efforts: ["low", "medium", "high"] as const, budgets: [], source: "registry" as const };
     const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));

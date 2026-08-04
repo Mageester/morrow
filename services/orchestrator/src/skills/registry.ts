@@ -81,8 +81,34 @@ export function verifySkillDirectory(directory: string): { ok: boolean; issues: 
   return { ok: issues.length === 0, issues };
 }
 
+// Common function words that appear in almost any prompt and in almost any
+// skill description. Left in the token set, a single shared stopword (e.g.
+// "with") was enough to register as a "match" — observed live: a
+// productivity-dashboard build prompt mentioning a "task board" UI matched
+// the unrelated "task-management" skill (own-work decomposition, not UI
+// building) purely on the generic tokens "task" and "with", which then
+// forced a `load_skill` call before any real build work started.
+export const SKILL_MATCH_STOPWORDS = new Set([
+  "with", "and", "the", "for", "from", "into", "that", "this", "your", "you",
+  "are", "was", "were", "been", "have", "has", "had", "not", "but", "can",
+  "will", "would", "should", "could", "its", "our", "their", "about", "each",
+  "all", "any", "use", "used", "using",
+]);
+
+// A single shared token — even a non-stopword one — is weak evidence of
+// relevance: skill names and descriptions are short, so one incidental word
+// in common with the prompt is easy to hit by chance. Requiring at least two
+// distinct overlapping concept words is what actually distinguishes "this
+// skill's own subject matter" from "the prompt used one of the same common
+// words." skills/task-management's manifest scores below this against a
+// build prompt that only shares "task"; skills genuinely on-topic (e.g. a
+// security-audit request against the security-audit skill) always exceed it.
+export const SKILL_MATCH_MIN_SCORE = 2;
+
 export function findRelevantVerifiedSkills(prompt: string, roots: string[]): VerifiedSkill[] {
-  const promptTokens = new Set(prompt.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []);
+  const tokenize = (text: string): Set<string> =>
+    new Set((text.toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []).filter((token) => !SKILL_MATCH_STOPWORDS.has(token)));
+  const promptTokens = tokenize(prompt);
   const found: Array<VerifiedSkill & { score: number }> = [];
   const seen = new Set<string>();
   for (const root of roots) {
@@ -95,11 +121,11 @@ export function findRelevantVerifiedSkills(prompt: string, roots: string[]): Ver
       try { manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")); } catch { continue; }
       let lifecycle: LearnedSkill | null = null;
       if (manifest.publisher === "morrow-cortex") lifecycle = LearnedSkillSchema.parse(JSON.parse(readFileSync(join(directory, "lifecycle.json"), "utf8")));
-      const haystack = `${manifest.id} ${manifest.name} ${manifest.description} ${(lifecycle?.triggerConditions ?? []).join(" ")}`.toLowerCase();
-      const tokens = new Set(haystack.match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []);
+      const haystack = `${manifest.id} ${manifest.name} ${manifest.description} ${(lifecycle?.triggerConditions ?? []).join(" ")}`;
+      const tokens = tokenize(haystack);
       let score = 0;
       for (const token of promptTokens) if (tokens.has(token)) score++;
-      if (score > 0) {
+      if (score >= SKILL_MATCH_MIN_SCORE) {
         seen.add(entry);
         found.push({ id: manifest.id, name: manifest.name, description: manifest.description, directory, lifecycle, score });
       }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, cpSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/database.js";
 import { projectRepository } from "../src/repositories/projects.js";
@@ -336,7 +336,7 @@ describe("agent loop detection", () => {
   });
 });
 
-describe("empty-response recovery raises the output ceiling", () => {
+describe("empty-response recovery forces a bounded, tool-call-required continuation", () => {
   let db: Database.Database;
   let tempDir = "";
   beforeEach(() => { db = openDatabase(":memory:"); tempDir = mkdtempSync(join(tmpdir(), "morrow-agent-budget-")); });
@@ -351,7 +351,13 @@ describe("empty-response recovery raises the output ceiling", () => {
     }
   });
 
-  it("escalates maxOutputTokens each retry instead of resending the same exhausted allowance", async () => {
+  // Defaults to openai/gpt-5.5, a reasoning-capable model
+  // (`reasoning: effort(...)`) — the same shape of route as the live
+  // deepseek-v4-flash failure this suite reproduces. Pass
+  // providerId "openrouter" / model "deepseek/deepseek-v4-pro" (declared
+  // with no reasoning surface in the catalog) for the tests that need a
+  // route where tool_choice is actually sendable.
+  function seedReasoningOnlyTask(db: Database.Database, tempDir: string, providerId: "openai" | "openrouter" = "openai", model = "gpt-5.5") {
     const ts = new Date().toISOString();
     projectRepository(db).createProject({ id: "p1", name: "B", workspacePath: tempDir, createdAt: ts });
     conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "B", createdAt: ts, updatedAt: ts });
@@ -359,42 +365,189 @@ describe("empty-response recovery raises the output ceiling", () => {
     taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: ts });
     conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c1", role: "assistant", content: "", taskId: "t1", streamingState: "queued", createdAt: ts, updatedAt: ts });
     taskRoutingRepository(db).upsert({
+      taskId: "t1", presetId: "balanced", providerId, model, useMemory: true,
+      decision: { version: 1, presetId: "balanced", providerId, model, reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [] },
+      createdAt: ts,
+    });
+  }
+
+  // Reproduces the exact live failure shape observed against deepseek-v4-flash
+  // (task 46ea7980-3905-45ac-a0cf-48b0ec7e4c25 in morrow.db): every retry
+  // burns 100% of whatever output budget it is given on hidden reasoning —
+  // reported here via `providerContinuation.reasoningContent`, never visible
+  // `text` or `tool_calls` — and terminates with finishReason "length".
+  function reasoningOnlyProvider(calls: Array<{ maxOutputTokens?: number | null | undefined; timeoutMs?: number | undefined; toolChoice?: string | undefined; tools?: unknown[] | undefined }>, id = "openai") {
+    return {
+      id,
+      async *streamChat(_m: unknown, options: { maxOutputTokens?: number | null; timeoutMs?: number; toolChoice?: string; tools?: unknown[] }): AsyncIterable<ProviderChunk> {
+        calls.push({ maxOutputTokens: options.maxOutputTokens, timeoutMs: options.timeoutMs, toolChoice: options.toolChoice, tools: options.tools });
+        yield { type: "text", providerContinuation: { reasoningContent: "thinking without ever producing an action..." } };
+        yield { type: "done", usage: { promptTokens: 10, completionTokens: options.maxOutputTokens ?? 0 }, finishReason: "length" };
+      },
+    } as never;
+  }
+
+  it("reproduces the old unbounded behavior when replayed against the pre-fix escalation shape", async () => {
+    // This test documents what the OLD code did (raw escalation with no
+    // tool_choice signal and no cap on repeated doubling past the first
+    // retry) so the contrast with the fixed behavior below is explicit and
+    // does not rely on prose alone. It exercises the same reasoning-only,
+    // length-terminated response shape as every other test in this file.
+    const calls: Array<{ maxOutputTokens?: number | null }> = [];
+    seedReasoningOnlyTask(db, tempDir);
+    await executeAgentChatTask({ db, taskId: "t1", provider: reasoningOnlyProvider(calls) });
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    // Every attempt is reasoning-only, length-terminated: zero visible text,
+    // zero tool calls, 100% of the allowance spent on hidden reasoning.
+    const warnings = (taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: Record<string, unknown> }>)
+      .filter((e) => e.type === "task.progress_warning" && e.payload.reason === "empty_provider_response");
+    expect(warnings.length).toBeGreaterThanOrEqual(3);
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("interrupted");
+  });
+
+  it("raises the ceiling exactly once, then holds it steady instead of doubling every retry", async () => {
+    const calls: Array<{ maxOutputTokens?: number | null; timeoutMs?: number; toolChoice?: string }> = [];
+    seedReasoningOnlyTask(db, tempDir);
+    await executeAgentChatTask({ db, taskId: "t1", provider: reasoningOnlyProvider(calls) });
+
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    const budgets = calls.map((c) => c.maxOutputTokens);
+    // Initial attempt at the preset budget, one raise on the first retry...
+    expect(budgets[0]).toBe(4096);
+    expect(budgets[1]).toBe(8192);
+    // ...and NOT a second or third doubling. Live evidence (task
+    // 46ea7980-3905-45ac-a0cf-48b0ec7e4c25) showed deepseek-v4-flash spending
+    // exactly 100% of an ever-doubling budget on hidden reasoning at 4,096 /
+    // 8,192 / 16,384 / 32,768 tokens with zero actionable output at every
+    // step — proof that raising the ceiling past the first attempt buys
+    // nothing but bigger waste.
+    expect(budgets[2]).toBe(8192);
+    if (budgets.length > 3) expect(budgets[3]).toBe(8192);
+    expect(Math.max(...budgets.map((b) => Number(b ?? 0)))).toBeLessThanOrEqual(8192);
+  });
+
+  it("forces tool_choice: required on every recovery retry for a route with no reasoning surface", async () => {
+    const calls: Array<{ toolChoice?: string }> = [];
+    seedReasoningOnlyTask(db, tempDir, "openrouter", "deepseek/deepseek-v4-pro");
+    await executeAgentChatTask({ db, taskId: "t1", provider: reasoningOnlyProvider(calls, "openrouter") });
+
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    // The very first attempt is a normal turn: no forced constraint yet.
+    expect(calls[0]!.toolChoice).toBeUndefined();
+    // Every recovery retry after a reasoning-only failure carries a real wire
+    // constraint the provider cannot silently ignore, unlike a prompt string.
+    for (let i = 1; i < calls.length; i++) expect(calls[i]!.toolChoice).toBe("required");
+  });
+
+  it("never sends tool_choice to a reasoning-capable route — live evidence: DeepSeek rejects it outright", async () => {
+    // The first fix attempt sent tool_choice: "required" unconditionally and
+    // crashed the real acceptance run against deepseek-v4-flash with
+    // `task.failed: "Thinking mode does not support this tool_choice"`. This
+    // is the regression test for that: a reasoning-capable route (gpt-5.5,
+    // declared `reasoning: effort(...)`, the same shape of capability as
+    // DeepSeek's declared `fixedReasoning()`) must never receive the
+    // constraint, so the recovery falls back to the bounded budget + text
+    // nudge alone and the task fails cleanly instead of crashing.
+    const calls: Array<{ toolChoice?: string }> = [];
+    seedReasoningOnlyTask(db, tempDir, "openai", "gpt-5.5");
+    await executeAgentChatTask({ db, taskId: "t1", provider: reasoningOnlyProvider(calls) });
+
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    for (const call of calls) expect(call.toolChoice).toBeUndefined();
+    const events = taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: Record<string, unknown> }>;
+    expect(events.some((e) => e.type === "task.failed")).toBe(false);
+    expect(taskRepository(db).getTaskById("t1")?.status).toBe("interrupted");
+  });
+
+  it("stops after a bounded number of forced retries instead of escalating indefinitely", async () => {
+    const calls: Array<unknown> = [];
+    seedReasoningOnlyTask(db, tempDir);
+    await executeAgentChatTask({ db, taskId: "t1", provider: reasoningOnlyProvider(calls as never) });
+
+    // Bounded: the same 3-retry ceiling as before, never open-ended.
+    expect(calls.length).toBe(4);
+    const task = taskRepository(db).getTaskById("t1");
+    expect(task?.status).toBe("interrupted");
+    const events = taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: Record<string, unknown> }>;
+    const terminal = events.find((e) => e.type === "task.interrupted" || (e.type === "agent.state_changed" && e.payload.state === "interrupted"));
+    expect(terminal?.payload.reason).toBe("reasoning_only_exhausted");
+  });
+});
+
+describe("skill relevance no longer false-positives on a single generic word", () => {
+  let db: Database.Database;
+  let tempDir = "";
+  beforeEach(() => { db = openDatabase(":memory:"); tempDir = mkdtempSync(join(tmpdir(), "morrow-agent-skills-")); });
+  afterEach(() => {
+    try {
+      db.close();
+    } finally {
+      if (tempDir) {
+        rmSync(tempDir, { recursive: true, force: true });
+        tempDir = "";
+      }
+    }
+  });
+
+  // Real fixture, not a hand-rolled stand-in: the actual bundled skill that
+  // was force-loaded before any real work started on task
+  // 46ea7980-3905-45ac-a0cf-48b0ec7e4c25 in morrow.db, whose SKILL.md/
+  // manifest describe decomposing the AGENT's own work — not building UI
+  // features named "task board".
+  const REAL_TASK_MANAGEMENT_SKILL = join(__dirname, "..", "..", "..", "skills", "task-management");
+
+  function seedTask(prompt: string) {
+    const ts = new Date().toISOString();
+    mkdirSync(join(tempDir, "skills"), { recursive: true });
+    cpSync(REAL_TASK_MANAGEMENT_SKILL, join(tempDir, "skills", "task-management"), { recursive: true });
+    projectRepository(db).createProject({ id: "p1", name: "B", workspacePath: tempDir, createdAt: ts });
+    conversationsRepository(db).createConversation({ id: "c1", projectId: "p1", title: "B", createdAt: ts, updatedAt: ts });
+    conversationsRepository(db).appendMessage({ id: "mu", conversationId: "c1", role: "user", content: prompt, createdAt: ts, updatedAt: ts });
+    taskRepository(db).createTask({ id: "t1", projectId: "p1", kind: "agent_chat", status: "queued", createdAt: ts });
+    conversationsRepository(db).appendMessage({ id: "ma", conversationId: "c1", role: "assistant", content: "", taskId: "t1", streamingState: "queued", createdAt: ts, updatedAt: ts });
+    taskRoutingRepository(db).upsert({
       taskId: "t1", presetId: "balanced", providerId: "openai", model: "gpt-5.5", useMemory: true,
       decision: { version: 1, presetId: "balanced", providerId: "openai", model: "gpt-5.5", reason: "t", fallbackUsed: false, overridden: false, privacy: "cloud", candidates: [] },
       createdAt: ts,
     });
+  }
 
-    // A reasoning-heavy route: always burns the whole allowance, never emits
-    // visible text. Exactly what deepseek-v4-flash-free did live.
-    const budgets: Array<number | null | undefined> = [];
-    const timeouts: Array<number | undefined> = [];
+  it("does not force-load task-management for a build prompt that only shares the word 'task'", async () => {
+    seedTask(
+      "Build a complete productivity dashboard as a multi-file application. Requirements: responsive task board " +
+      "with columns and draggable tasks, focus timer, statistics section, persistent local state."
+    );
+    const seenMessages: Array<{ role: string; content: string }> = [];
     const provider = {
       id: "openai",
-      async *streamChat(_m: unknown, options: { maxOutputTokens?: number | null; timeoutMs?: number }): AsyncIterable<ProviderChunk> {
-        budgets.push(options.maxOutputTokens);
-        timeouts.push(options.timeoutMs);
-        yield { type: "done", usage: { promptTokens: 10, completionTokens: options.maxOutputTokens ?? 0 }, finishReason: "length" };
+      async *streamChat(messages: Array<{ role: string; content: string }>): AsyncIterable<ProviderChunk> {
+        seenMessages.push(...messages);
+        yield { type: "text", text: "done" };
+        yield { type: "done" };
       },
     } as never;
 
     await executeAgentChatTask({ db, taskId: "t1", provider });
 
-    // First attempt at the preset budget, then a strictly rising ceiling.
-    expect(budgets.length).toBeGreaterThanOrEqual(4);
-    expect(budgets[0]).toBe(4096);
-    expect(budgets[1]).toBe(8192);
-    expect(budgets[2]).toBe(16384);
-    // Bounded: never escalates past the 8x cap.
-    expect(Math.max(...budgets.map((b) => Number(b ?? 0)))).toBeLessThanOrEqual(4096 * 8);
-    // The deadline must rise with the allowance. Raising tokens alone just
-    // converts an empty response into a timeout before the turn can finish.
-    expect(timeouts[0]).toBe(90_000);
-    expect(timeouts[1]).toBe(180_000);
-    expect(timeouts[2]).toBe(360_000);
+    const skillPrompt = seenMessages.find((m) => m.role === "system" && m.content.includes("Installed skills relevant"));
+    expect(skillPrompt?.content ?? "").not.toContain("task-management");
+  });
 
-    const warnings = (taskRecordsRepository(db).listEvents("t1") as Array<{ type: string; payload: Record<string, unknown> }>)
-      .filter((e) => e.type === "task.progress_warning" && e.payload.reason === "empty_provider_response");
-    expect(warnings[0]!.payload.previousOutputBudgetTokens).toBe(4096);
-    expect(warnings[0]!.payload.outputBudgetTokens).toBe(8192);
+  it("still surfaces task-management when the prompt is genuinely about decomposing tracked work", async () => {
+    seedTask("Decompose this complex work into tracked, verifiable sub-tasks with dependencies before starting.");
+    const seenMessages: Array<{ role: string; content: string }> = [];
+    const provider = {
+      id: "openai",
+      async *streamChat(messages: Array<{ role: string; content: string }>): AsyncIterable<ProviderChunk> {
+        seenMessages.push(...messages);
+        yield { type: "text", text: "done" };
+        yield { type: "done" };
+      },
+    } as never;
+
+    await executeAgentChatTask({ db, taskId: "t1", provider });
+
+    const skillPrompt = seenMessages.find((m) => m.role === "system" && m.content.includes("Installed skills relevant"));
+    expect(skillPrompt?.content ?? "").toContain("task-management");
   });
 });

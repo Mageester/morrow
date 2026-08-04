@@ -86,7 +86,7 @@ import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, Reasoning
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
-import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "../skills/registry.js";
+import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -226,7 +226,18 @@ function isTrustedSkillDirectory(directory: string, env: NodeJS.ProcessEnv, lear
 
 function discoverRelevantSkills(prompt: string, workspacePath: string, projectId: string, env: NodeJS.ProcessEnv, learnedById?: Map<string, LearnedSkill>): { id: string; name: string; description: string }[] {
   const dirs = agentSkillRoots(workspacePath, projectId, env);
-  const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []));
+  // A shared word alone is weak evidence of relevance — skill names and
+  // one-line descriptions are short, so any prompt easily shares one
+  // incidental word with an unrelated skill by chance. Observed live: a
+  // productivity-dashboard build prompt mentioning a "task board" UI matched
+  // the unrelated task-management skill (decomposing the AGENT's own work,
+  // not building a UI feature) purely on the generic tokens "task" and
+  // "with", forcing a load_skill call before any real build work started
+  // (task 46ea7980-3905-45ac-a0cf-48b0ec7e4c25 in morrow.db). Filtering
+  // common function words and requiring at least two overlapping content
+  // words keeps genuinely on-topic matches (e.g. "security" + "audit")
+  // while dropping single-generic-word coincidences.
+  const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t)));
   if (promptTokens.size === 0) return [];
   const seen = new Set<string>();
   const scored: { id: string; name: string; description: string; score: number }[] = [];
@@ -251,10 +262,10 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, projectId
         name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
         desc = lines.slice(1).find((l) => l.trim() && !l.startsWith("#"))?.trim() || "";
       }
-      const hayTokens = `${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? [];
+      const hayTokens = (`${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t));
       let score = 0;
       for (const t of new Set(hayTokens)) if (promptTokens.has(t)) score++;
-      if (score > 0) scored.push({ id: entry, name, description: desc, score });
+      if (score >= SKILL_MATCH_MIN_SCORE) scored.push({ id: entry, name, description: desc, score });
     }
   }
   scored.sort((a, b) => b.score - a.score);
@@ -1502,7 +1513,7 @@ Ask mode: you can read this project but not change it. You have no write tools a
 `;
 
   const agentModeInstructions = `
-Build mode: you may change this project. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
+Build mode: you may change this project. On a multi-file build, call create_file for the first file as soon as you've decided it — do not silently draft every file before your first tool call. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
 ${writeToolInstructions}`;
 
   chatMessages.push({
@@ -2846,6 +2857,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   // tokens before its first visible token on a single-file WebGL task. A 4x
   // ceiling (16k on the 4096 presets) still cut it off mid-thought.
   const MAX_OUTPUT_BUDGET_MULTIPLIER = 8;
+  // One-shot flag consumed by the very next provider request: forces
+  // `tool_choice: "required"` after a reasoning-only, length-terminated turn.
+  // Set in the empty-response recovery branch below, read and cleared at the
+  // top of the next loop iteration so it never leaks into a later, unrelated
+  // turn.
+  let forceNextTurnToolChoice = false;
   const effectiveOutputBudget = (): number | null =>
     typeof preset.outputBudgetTokens === "number"
       ? preset.outputBudgetTokens * outputBudgetMultiplier
@@ -3683,6 +3700,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     renewExecutionLease();
     applyLatestTaskProjection();
 
+    // Consume the one-shot forced-tool-choice flag for exactly this turn's
+    // request, then clear it so a later, unrelated turn never inherits it.
+    const requireToolCallThisTurn = forceNextTurnToolChoice;
+    forceNextTurnToolChoice = false;
+
     turn++;
     absoluteTurn++;
     const responseLengthAtTurnStart = responseContent.length;
@@ -3885,6 +3907,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           temperature: preset.temperature,
           maxOutputTokens: effectiveOutputBudget(),
           ...(candidateReasoning ? { reasoning: candidateReasoning, reasoningCapability: resolution.reasoning } : {}),
+          // A reasoning/"thinking" route rejects a forced tool_choice outright
+          // (live evidence: DeepSeek returned "Thinking mode does not support
+          // this tool_choice" for deepseek-v4-flash, which is declared
+          // `reasoning: fixedReasoning()`). Only constrain the response on a
+          // route with no reasoning surface, where the constraint is both
+          // supported and meaningful.
+          ...(requireToolCallThisTurn && resolution.reasoning.control === "none" ? { toolChoice: "required" as const } : {}),
         };
         const envelope = {
           providerId: candidate.id,
@@ -3993,13 +4022,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
           maxOutputTokens: effectiveOutputBudget(),
-          // Reasoning intentionally omitted here: this object is only a
+          // Reasoning — and, for the same reason, the forced tool_choice
+          // recovery — intentionally omitted here: this object is only a
           // fallback default fallback.ts uses when a candidate lacks its own
           // `request.options` (see FallbackCandidate) — every admitted
           // candidate above always sets one, with its own per-candidate
-          // validated `reasoning`/`reasoningCapability`. Forwarding the raw,
-          // unvalidated `requestedReasoning` here would risk sending a
-          // combination that was never checked against this specific route.
+          // validated `reasoning`/`reasoningCapability`. Forwarding either
+          // here would risk sending a combination that was never checked
+          // against this specific route's real reasoning capability — a
+          // route with reasoning enabled rejects a forced tool_choice
+          // outright (live evidence: DeepSeek's "Thinking mode does not
+          // support this tool_choice").
         },
         globalRateGuard
       );
@@ -5441,32 +5474,62 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         // in this branch, so continuation cannot duplicate a side effect.
         if (emptyFinalResponseRetries < 3) {
           emptyFinalResponseRetries++;
-          // Raise the ceiling before retrying. Without this the next attempt
-          // has the exact same allowance the model just exhausted on hidden
-          // reasoning, so all three retries fail identically and the task is
-          // interrupted having learned nothing.
+          // Raise the ceiling exactly once. A route that was genuinely a
+          // little short on room (measured: deepseek-v4-flash-free needed
+          // 15,565 reasoning tokens before its first visible token on a
+          // single-file task) recovers on this first, larger attempt.
+          // Escalating further on top of that is not backed by evidence: a
+          // live productivity-dashboard run against deepseek-v4-flash spent
+          // 100% of an ever-doubling budget on hidden reasoning at every one
+          // of 4,096 / 8,192 / 16,384 / 32,768 tokens, with zero visible
+          // content or tool calls at any step (task 46ea7980, evidence in
+          // docs/evidence/flagship-runs.jsonl). Doubling a shared
+          // reasoning+output budget for a model that fills whatever room it
+          // is given just lets it reason longer, not converge — so only the
+          // first retry raises the ceiling; later retries hold it steady and
+          // rely on the `tool_choice: required` constraint below instead.
           const previousBudget = effectiveOutputBudget();
-          if (outputBudgetMultiplier < MAX_OUTPUT_BUDGET_MULTIPLIER) outputBudgetMultiplier *= 2;
+          if (emptyFinalResponseRetries === 1 && outputBudgetMultiplier < MAX_OUTPUT_BUDGET_MULTIPLIER) outputBudgetMultiplier *= 2;
+          // A reasoning-only, length-terminated turn means the provider spent
+          // its entire budget on hidden chain-of-thought and never reached a
+          // tool call or answer. A text nudge alone is unenforceable — the
+          // model can (and did) ignore it and reason just as long again.
+          // `tool_choice: required` is a real wire constraint on OpenAI-chat
+          // protocol providers (DeepSeek, OpenAI, OpenRouter, generic
+          // OpenAI-compatible gateways): the response is structurally
+          // required to include a tool call. But it is NOT available on a
+          // route with reasoning enabled — live evidence: DeepSeek rejects it
+          // outright ("Thinking mode does not support this tool_choice") for
+          // deepseek-v4-flash. The flag below is applied only where the next
+          // turn's resolved route has no reasoning surface (see
+          // `resolution.reasoning.control === "none"` at the request-building
+          // site); on a reasoning route this recovery falls back to the text
+          // nudge alone, same as before tool_choice existed.
+          forceNextTurnToolChoice = true;
+          const continuationPrompt = currentReasoningContent
+            ? "Your prior reasoning reached its token limit before emitting a tool call or answer. Stop reasoning about the overall design and call the single most useful next tool now — e.g. create_file for one concrete file. Do not try to finish planning every file before acting; write one file, then continue from there."
+            : lastVerificationFailure
+              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
+              : "Your prior response reached its output limit without a usable action or final answer. Call the next required tool now, or if work is complete, return a concise final result under 500 words.";
           chatMessages.push({
             role: "user",
-            content: lastVerificationFailure
-              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
-              : "Your prior response reached its output limit without a usable action or final answer. Do not repeat analysis. Call the next required tool now, or if work is complete, return a concise final result under 500 words.",
+            content: continuationPrompt,
           });
           event("task.progress_warning", {
             reason: "empty_provider_response",
-            message: `Provider returned no usable answer after tool completion; raising the output allowance to ${effectiveOutputBudget() ?? "provider default"} and requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
+            message: `Provider returned no usable answer after tool completion; requesting a tool-call-required continuation where the route supports it (${emptyFinalResponseRetries}/3)${emptyFinalResponseRetries === 1 ? ` and raising the output allowance to ${effectiveOutputBudget() ?? "provider default"}` : " without raising the output allowance further"}.`,
             turns: turn,
             previousOutputBudgetTokens: previousBudget ?? null,
             outputBudgetTokens: effectiveOutputBudget() ?? null,
+            toolChoiceRequested: true,
           });
           continue;
         }
         const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
         if (await returnMissionWorkerOutcome("provider_recovery_required", message)) return;
-        failCurrentSegment("missing_final_answer");
-        transitionAgentState("interrupted", { reason: "missing_final_answer", message, turns: turn });
-        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_final_answer", message, turns: turn } });
+        failCurrentSegment(currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer");
+        transitionAgentState("interrupted", { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn });
+        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn } });
         convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
         if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
         return;
