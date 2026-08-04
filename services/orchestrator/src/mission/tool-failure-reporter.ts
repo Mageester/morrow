@@ -30,7 +30,9 @@ function describeTarget(args: unknown): string {
   for (const key of ["path", "file", "filePath", "target"]) {
     if (typeof a[key] === "string" && a[key]) return String(a[key]);
   }
-  if (typeof a.command === "string" && a.command) return String(a.command).slice(0, 120);
+  for (const key of ["CommandLine", "commandLine", "command", "cmd"]) {
+    if (typeof a[key] === "string" && a[key]) return String(a[key]).slice(0, 120);
+  }
   // propose_patch carries the diff; name the first patched file instead of the body.
   if (typeof a.patch === "string") {
     const m = /^[+-]{3} [ab]\/(\S+)/m.exec(String(a.patch));
