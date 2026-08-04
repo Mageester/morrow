@@ -180,13 +180,16 @@ describe("live: the flagship workflow against real models", () => {
         const root = mkdtempSync(join(tmpdir(), "morrow-flagship-live-"));
         roots.push(root);
         const run = await runFlagshipBuild({ root, providerId, model });
+        if (!run.passed) {
+          roots.splice(roots.indexOf(root), 1);
+        }
         // Appended before any assertion: a failed run is exactly the evidence
         // this log exists to keep. A run that only records itself on success
         // measures nothing.
         appendFlagshipRun(logPath, run);
         recorded.push(run);
         // eslint-disable-next-line no-console
-        console.log(`[live] flagship ${providerId}/${model} run ${attempt + 1}/${runsPerProvider}: ${run.passed ? "PASS" : `FAIL (${run.failureReason})`} — ${run.toolCalls} tool calls, ${run.completionTokens} output tokens, ${Math.round(run.wallClockMs / 1000)}s${run.failureDetail ? ` — ${run.failureDetail}` : ""}`);
+        console.log(`[live] flagship ${providerId}/${model} run ${attempt + 1}/${runsPerProvider}: ${run.passed ? "PASS" : `FAIL (${run.failureReason})`} — ${run.toolCalls} tool calls, ${run.completionTokens} output tokens, ${Math.round(run.wallClockMs / 1000)}s${run.failureDetail ? ` — ${run.failureDetail}` : ""}\n[live] retained workspace: ${root}`);
       }
     }
 

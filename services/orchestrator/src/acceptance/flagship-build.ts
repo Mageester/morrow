@@ -261,11 +261,13 @@ export async function runFlagshipBuild(input: FlagshipBuildInput): Promise<Flags
     // classified as such. This is deliberately narrow: any run where the model
     // produced a single token or a single tool call is judged on its output.
     if (task?.status === "failed" && measured.toolCalls === 0 && measured.completionTokens === 0) {
+      const agentState = taskRecordsRepository(db).getAgentState(taskId);
+      const specificError = agentState?.details?.message ? `: ${agentState.details.message}` : "";
       return {
         ...measured,
         passed: false,
         failureReason: "harness_error",
-        failureDetail: `the provider returned no output at all (task ended "${task?.status ?? "unknown"}"); this run is not evidence about the model`,
+        failureDetail: `the provider returned no output at all (task ended "${task?.status ?? "unknown"}")${specificError}; this run is not evidence about the model`,
       };
     }
 

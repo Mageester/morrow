@@ -139,6 +139,23 @@ describe("flagship build scenario", () => {
     expect(run.failureReason).toBe("contract_violated");
     expect(run.failureDetail).toContain("empty list");
   }, 60_000);
+
+  it("records the underlying provider error when generation fails before the first token", async () => {
+    const run = await runFlagshipBuild({
+      root: scratch(),
+      providerId: "openai",
+      model: "scripted-error",
+      provider: {
+        id: "openai",
+        async *streamChat() {
+          throw new Error("Simulated 401 Unauthorized");
+        }
+      },
+    });
+    expect(run.passed).toBe(false);
+    expect(run.failureReason).toBe("harness_error");
+    expect(run.failureDetail).toContain("Simulated 401 Unauthorized");
+  }, 60_000);
 });
 
 describe("flagship artifact verification", () => {
