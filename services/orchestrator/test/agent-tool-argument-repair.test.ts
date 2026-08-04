@@ -383,6 +383,36 @@ describe("agent tool-argument recovery", () => {
     expect(readFileSync(join(ws, "note.txt"), "utf8")).toBe("hello world");
   });
 
+  it("does not let an echoed-placeholder loop for a missing file kill the whole task", async () => {
+    // deepseek-v4-pro mimics Morrow's compaction marker for a file it never
+    // wrote and ignores corrections. That self-inflicted confusion must not
+    // spend the whole-task budget and interrupt an otherwise-recoverable run;
+    // the model can still recover by writing real content.
+    seedYolo(db, ws);
+    const ph = (bytes: number) => ({
+      path: "src/Ghost.tsx",
+      _morrowAppliedWrite: { kind: "create_file", contentBytes: bytes, contentSha256: `sha${bytes}`, instruction: "Historical applied write." },
+      truncatedForContext: true,
+      originalArgumentBytes: bytes + 40,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("g1", "create_file", ph(100)), done],
+        [tool("g2", "create_file", ph(200)), done],
+        [tool("g3", "create_file", ph(300)), done],
+        [tool("real", "create_file", { path: "src/Ghost.tsx", content: "export default () => null\n" }), done],
+        [text("wrote the file for real"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider, 12);
+
+    expect(
+      taskRecordsRepository(db).listEvents("t").some((e: any) => e.payload.reason === "tool_arguments_unrecoverable"),
+    ).toBe(false);
+    expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
+  });
+
   it("keeps propose_patch correction budgets independent across target files", async () => {
     // Reproduces the production deepseek-v4-pro failure (task 98159b5c): three
     // propose_patch calls on THREE DIFFERENT files, each with a missing patch,

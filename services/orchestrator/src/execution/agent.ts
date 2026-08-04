@@ -4640,7 +4640,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               argumentProblemsRecordedThisTurn.add(attemptKey);
               malformedArgAttemptsByTool.set(attemptKey, attempts);
               const retryExhausted = attempts >= 2;
-              if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
+              // The model is echoing Morrow's own history placeholder
+              // (_morrowAppliedWrite) for a file that does not exist on disk â€”
+              // it copied/mimicked the compacted shape from its context instead
+              // of writing real content. Left with a generic "fix the content"
+              // hint it re-copies the placeholder. Name the confusion explicitly
+              // so it can break the loop.
+              const echoedPlaceholderNoContent =
+                tc.name === "create_file"
+                && problem.field === "content"
+                && problem.problem === "missing"
+                && !!(args as any)._morrowAppliedWrite;
+              // Do NOT let this specific self-inflicted confusion spend the
+              // whole-task correction budget: killing the entire run because the
+              // model mimicked our compaction marker is the worst outcome. The
+              // per-action loop detector still bounds an endless repeat, and a
+              // real build failure later will surface any genuinely missing
+              // file, giving the model a focused chance to write it for real.
+              if (attempts > 2 && !argumentBudgetSpent && !echoedPlaceholderNoContent) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
               // A model that cannot emit a valid `patch` for a file after the
               // correction budget is spent should not be told to give up: it has
@@ -4648,17 +4665,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // which auto-converts to an edit when the target exists). Redirect
               // it there rather than letting the whole task interrupt. The redirect
               // target is the file the patch was meant to change.
-              // The model is echoing Morrow's own history placeholder
-              // (_morrowAppliedWrite) for a file that does not exist on disk â€”
-              // it copied the compacted shape from its context instead of
-              // writing real content. Left with a generic "fix the content"
-              // hint it re-copies the placeholder until the budget dies. Name
-              // the confusion explicitly so it can break the loop.
-              const echoedPlaceholderNoContent =
-                tc.name === "create_file"
-                && problem.field === "content"
-                && problem.problem === "missing"
-                && !!(args as any)._morrowAppliedWrite;
               const echoTargetPath = typeof args.path === "string" && args.path.trim() ? args.path : "the file";
               const patchRedirect =
                 tc.name === "propose_patch" && problem.field === "patch" && retryExhausted;
