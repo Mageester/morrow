@@ -7,6 +7,7 @@ import type { MissionCompletionFn } from "./service.js";
 import { admitProviderRequest } from "../execution/context-budget.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import type { ChatMessage } from "../provider/base.js";
+import type { ProviderId, PresetId } from "@morrow/contracts";
 
 /**
  * Build a provider-independent completion function for mission planning and
@@ -41,9 +42,9 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
     o: {
       purpose: "planning" | "review";
       temperature?: number;
-      missionProviderId?: string | null;
+      missionProviderId?: ProviderId | null;
       missionModel?: string | null;
-      missionPreset?: string;
+      missionPreset?: PresetId;
     },
     outputBudgetTokens: number,
     options: { forcePrimaryModel?: boolean } = {},
