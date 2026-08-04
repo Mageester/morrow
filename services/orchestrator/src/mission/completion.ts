@@ -40,9 +40,10 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
     messages: ChatMessage[],
     o: { purpose: "planning" | "review"; temperature?: number },
     outputBudgetTokens: number,
+    options: { forcePrimaryModel?: boolean } = {},
   ): Promise<{ text: string; provider: string; model: string; finishReason: string | null }> => {
     let model = primary.model;
-    if (o.purpose === "review") {
+    if (o.purpose === "review" && !options.forcePrimaryModel) {
       const others = listModelsForProvider(primary.providerId).map((m) => m.id).filter((id) => id !== primary.model);
       if (others.length > 0) model = others[0]!;
     }
@@ -79,8 +80,16 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
     try {
       first = await runOnce(messages, o, baseBudget);
     } catch (err) {
+      // The independent-review model is `routing`'s first non-primary catalog
+      // entry for this provider — a real one, but not necessarily one this
+      // account can actually reach (e.g. gated on the current plan). When it
+      // fails, retry on the model already proven to work rather than losing
+      // review entirely. Purpose stays "review": switching it to "planning"
+      // silently drops `responseFormat: "json_object"`, which is what makes
+      // the provider return a parseable verdict in the first place, turning a
+      // recovered review into an unparseable one.
       if (o.purpose === "review") {
-        first = await runOnce(messages, { ...o, purpose: "planning" }, baseBudget);
+        first = await runOnce(messages, o, baseBudget, { forcePrimaryModel: true });
       } else {
         throw err;
       }

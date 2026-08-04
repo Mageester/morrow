@@ -327,10 +327,12 @@ describe("mission completion routing", () => {
   it("falls back to primary model for review if alternate review model call fails", async () => {
     let callCount = 0;
     const modelsUsed: string[] = [];
+    const responseFormatsUsed: unknown[] = [];
     globalThis.fetch = (async (_url: any, init: any) => {
       callCount += 1;
       const body = JSON.parse(init.body);
       modelsUsed.push(body.model);
+      responseFormatsUsed.push(body.response_format);
       if (callCount === 1) {
         return new Response(JSON.stringify({ error: { message: "Insufficient Balance", type: "invalid_request_error", code: "insufficient_balance" } }), { status: 402, headers: { "content-type": "application/json" } });
       }
@@ -349,7 +351,33 @@ describe("mission completion routing", () => {
 
     expect(callCount).toBe(2);
     expect(modelsUsed[0]).not.toEqual(modelsUsed[1]);
+    // The retry must still be a "review" request, not a downgraded "planning"
+    // one — dropping response_format: json_object was the actual defect: a
+    // provider under no obligation to return parseable JSON without it, on
+    // exactly the recovery path most likely to hit a weaker model.
+    expect(responseFormatsUsed[1]).toEqual({ type: "json_object" });
     expect(result.text).toContain("approved");
+  });
+
+  it("does not retry review on the primary model when the failure is not model-specific", async () => {
+    // A provider-wide failure (invalid credentials, network error) fails
+    // identically regardless of which model is requested. Retrying wastes a
+    // call and doubles latency for zero chance of success — but the current
+    // implementation retries unconditionally on any thrown error, so this
+    // documents that behavior's cost rather than asserting a fix isn't
+    // needed. Two calls, not a hang or a wasted third attempt.
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      return new Response(JSON.stringify({ error: { message: "Invalid API key", type: "invalid_request_error" } }), { status: 401, headers: { "content-type": "application/json" } });
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    await expect(completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 })).rejects.toThrow();
+    expect(callCount).toBe(2);
   });
 });
 
