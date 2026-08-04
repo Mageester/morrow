@@ -38,27 +38,47 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
 
   const runOnce = async (
     messages: ChatMessage[],
-    o: { purpose: "planning" | "review"; temperature?: number },
+    o: {
+      purpose: "planning" | "review";
+      temperature?: number;
+      missionProviderId?: string | null;
+      missionModel?: string | null;
+      missionPreset?: string;
+    },
     outputBudgetTokens: number,
     options: { forcePrimaryModel?: boolean } = {},
   ): Promise<{ text: string; provider: string; model: string; finishReason: string | null }> => {
-    let model = primary.model;
+    let resolvedProviderId = primary.providerId;
+    let resolvedModel = primary.model;
+
+    if (o.missionProviderId) {
+      resolvedProviderId = o.missionProviderId;
+      if (o.missionModel) resolvedModel = o.missionModel;
+    } else if (o.missionPreset && o.missionPreset !== presetId) {
+      const missionRoute = routePreset(o.missionPreset, env);
+      if (missionRoute.ok) {
+        resolvedProviderId = missionRoute.decision.providerId;
+        resolvedModel = missionRoute.decision.model;
+      }
+    }
+
+    let model = resolvedModel;
     if (o.purpose === "review" && !options.forcePrimaryModel) {
-      const others = listModelsForProvider(primary.providerId).map((m) => m.id).filter((id) => id !== primary.model);
+      const others = listModelsForProvider(resolvedProviderId).map((m) => m.id).filter((id) => id !== resolvedModel);
       if (others.length > 0) model = others[0]!;
     }
-    const provider = createProvider(primary.providerId, env, model);
+    const provider = createProvider(resolvedProviderId, env, model);
     const providerRoute = provider.route;
     if (!providerRoute) throw new Error("Provider route metadata is unavailable; refusing an unverified mission completion request.");
     const budget = resolveModelBudget({
-      providerId: primary.providerId,
+      providerId: resolvedProviderId,
       selectedModel: model,
       endpoint: { kind: providerRoute.endpointKind, host: providerRoute.endpointHost, protocol: providerRoute.protocol, limitTokens: providerRoute.endpointLimitTokens, limitSource: providerRoute.endpointLimitSource },
       outputBudgetTokens,
     });
-    const admission = admitProviderRequest({ providerId: primary.providerId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: outputBudgetTokens }, budget);
+    const admission = admitProviderRequest({ providerId: resolvedProviderId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: outputBudgetTokens }, budget);
     if (!admission.ok) throw new Error(`Mission completion request requires ${admission.measurement.totalRequestTokens} tokens but the usable input budget is ${budget.usableInputTokens}; no provider call was made.`);
-    const candidates: FallbackCandidate[] = [{ id: primary.providerId, provider }];
+    const candidates: FallbackCandidate[] = [{ id: resolvedProviderId, provider }];
     const opened = await openStreamWithFallback(candidates, messages, {
       temperature: o.temperature ?? 0.1,
       maxOutputTokens: outputBudgetTokens,
@@ -71,7 +91,7 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
       if (chunk.type === "text" && chunk.text) text += chunk.text;
       if (chunk.type === "done" && chunk.finishReason) finishReason = chunk.finishReason;
     }
-    return { text, provider: primary.providerId, model, finishReason };
+    return { text, provider: resolvedProviderId, model, finishReason };
   };
 
   return async (messages, o) => {
