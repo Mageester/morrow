@@ -66,6 +66,27 @@ export function directoryHasContents(path: string): boolean {
   }
 }
 
+/**
+ * The flags handed to the mission engine's own `Context`, scoped to the
+ * project `build` just created.
+ *
+ * `--in` selected the directory that became this project; carrying it forward
+ * makes `resolveProject` see both `--in` and `--project` and reject the
+ * context outright ("--in and --project both select a workspace"), which
+ * turned every `morrow build --in <dir>` into a dead end. `--in` did its job
+ * choosing the workspace — `--project` is now the authoritative selector for
+ * everything downstream, so `--in` is cleared here rather than carried along.
+ */
+export function buildContextFlags(
+  flags: Record<string, string | boolean>,
+  projectId: string,
+  autonomous: boolean,
+): Record<string, string | boolean> {
+  const next: Record<string, string | boolean> = { ...flags, project: projectId, ...(autonomous ? { yolo: true } : {}) };
+  delete next.in;
+  return next;
+}
+
 export async function buildCommand(ctx: Context, args: string[]): Promise<number> {
   const description = args.filter(Boolean).join(" ").trim();
   if (!description) {
@@ -118,13 +139,11 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
   // Scope every subsequent step to the project just created, so the mission can
   // never resolve to some previously-saved default workspace.
   const autonomous = !flagBool(ctx.flags, "no-yolo");
-  const flags: Record<string, string | boolean> = { ...ctx.flags, project: project.id, ...(autonomous ? { yolo: true } : {}) };
-  delete flags.in;
   const buildCtx = new (ctx.constructor as typeof Context)({
     out: ctx.out,
     config: ctx.config,
     paths: ctx.paths,
-    flags,
+    flags: buildContextFlags(ctx.flags, project.id, autonomous),
   });
 
   ctx.out.info(
