@@ -25,6 +25,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { Context } from "../cli/context.js";
 import { EXIT, usageError } from "../cli/errors.js";
 import { flagBool, flagString } from "../cli/args.js";
@@ -132,6 +133,10 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
     mkdirSync(target, { recursive: true });
     ctx.out.info(`Created ${target}`);
   }
+
+  // A build workspace must be a git repository so the autonomous mission runner
+  // and its reviewer can diff changes.
+  spawnSync("git", ["init", "--initial-branch=main"], { cwd: target, windowsHide: true });
 
   const project = await api.createProject(name, target);
   ctx.out.success(`New project "${project.name}" — ${project.workspacePath}`);
