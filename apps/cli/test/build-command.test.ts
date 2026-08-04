@@ -7,6 +7,7 @@ import { classify } from "../../../installer/templates/dispatch.mjs";
 import { COMMANDS, resolveInvocation } from "../src/main.js";
 import { parseArgs } from "../src/cli/args.js";
 import { resolveProject, resolveWorkspaceScope } from "../src/commands/common.js";
+import { buildCommand } from "../src/commands/build.js";
 
 /**
  * Regression coverage for the packaged `morrow build` dead-end.
@@ -219,4 +220,17 @@ describe("morrow build: --in workspace scoping", () => {
 
     await expect(resolveWorkspaceScope(ctx, api, "   ")).rejects.toThrow(/--in requires a directory path/);
   });
+
+  it("clears --in from build context flags so resolveProject does not conflict with --project", async () => {
+    const target = tempRoot();
+    const { ctx } = fakeCtx({ in: target });
+    const existing = { version: 1, id: "p-1", name: "taskflow", workspacePath: target, createdAt: new Date().toISOString() } as Project;
+    const { api } = fakeApi([existing]);
+
+    const flags = { ...ctx.flags, project: "p-1" };
+    delete flags.in;
+    const resolved = await resolveProject({ flags } as any, api, { required: true });
+    expect(resolved?.id).toBe("p-1");
+  });
 });
+

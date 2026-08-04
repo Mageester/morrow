@@ -118,11 +118,13 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
   // Scope every subsequent step to the project just created, so the mission can
   // never resolve to some previously-saved default workspace.
   const autonomous = !flagBool(ctx.flags, "no-yolo");
+  const flags: Record<string, string | boolean> = { ...ctx.flags, project: project.id, ...(autonomous ? { yolo: true } : {}) };
+  delete flags.in;
   const buildCtx = new (ctx.constructor as typeof Context)({
     out: ctx.out,
     config: ctx.config,
     paths: ctx.paths,
-    flags: { ...ctx.flags, project: project.id, ...(autonomous ? { yolo: true } : {}) },
+    flags,
   });
 
   ctx.out.info(
