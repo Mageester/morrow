@@ -359,7 +359,12 @@ describe("agent tool-argument recovery", () => {
 
     const ghost = calls(db).find((c: any) => c.id === "ghost")!;
     expect(ghost.status).toBe("failed");
-    expect(JSON.parse(ghost.resultJson!)).toMatchObject({ invalidField: "content", problem: "missing" });
+    const feedback = JSON.parse(ghost.resultJson!);
+    expect(feedback).toMatchObject({ invalidField: "content", problem: "missing" });
+    // The correction must name the placeholder confusion explicitly so the
+    // model stops copying the marker and writes real content.
+    expect(feedback.instruction).toMatch(/_morrowAppliedWrite/);
+    expect(feedback.instruction).toMatch(/does not exist/);
     expect(existsSync(join(ws, "src/Missing.tsx"))).toBe(false);
   });
 

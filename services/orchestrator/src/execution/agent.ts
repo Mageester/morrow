@@ -4624,6 +4624,18 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // which auto-converts to an edit when the target exists). Redirect
               // it there rather than letting the whole task interrupt. The redirect
               // target is the file the patch was meant to change.
+              // The model is echoing Morrow's own history placeholder
+              // (_morrowAppliedWrite) for a file that does not exist on disk â€”
+              // it copied the compacted shape from its context instead of
+              // writing real content. Left with a generic "fix the content"
+              // hint it re-copies the placeholder until the budget dies. Name
+              // the confusion explicitly so it can break the loop.
+              const echoedPlaceholderNoContent =
+                tc.name === "create_file"
+                && problem.field === "content"
+                && problem.problem === "missing"
+                && !!(args as any)._morrowAppliedWrite;
+              const echoTargetPath = typeof args.path === "string" && args.path.trim() ? args.path : "the file";
               const patchRedirect =
                 tc.name === "propose_patch" && problem.field === "patch" && retryExhausted;
               const redirectTarget = patchRedirect
@@ -4649,7 +4661,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 attempts,
                 retryLimit: 2,
                 retryExhausted,
-                instruction: patchRedirect
+                instruction: echoedPlaceholderNoContent
+                  ? `"_morrowAppliedWrite" is a Morrow history marker, NOT file content, and ${echoTargetPath} does not exist yet. Do not copy that marker. Call create_file for ${echoTargetPath} with "content" set to the complete source of the file, and omit "_morrowAppliedWrite" entirely.`
+                  : patchRedirect
                   ? `Stop trying to patch ${redirectTarget}. Emit a single create_file call that writes the entire intended contents of ${redirectTarget} (the file already exists, so this overwrites it). Do not send another propose_patch for it.`
                   : retryExhausted
                   ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
