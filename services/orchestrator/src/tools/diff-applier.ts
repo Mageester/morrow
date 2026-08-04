@@ -197,9 +197,10 @@ export function parseUnifiedDiff(diffStr: string): PatchFile[] {
         if (prefix === " " || prefix === "+") expectedNew++;
       }
       if (expectedOld !== chunk.oldLines || expectedNew !== chunk.newLines) {
-        throw new Error(
-          `Hunk line count mismatch for ${file.newPath}: @@ -${chunk.oldStart},${chunk.oldLines} +${chunk.newStart},${chunk.newLines} @@. Expected old=${chunk.oldLines}, actual=${expectedOld}. Expected new=${chunk.newLines}, actual=${expectedNew}.`
-        );
+        // Models frequently miscount lines in hunk headers (e.g. @@ -19,7 +19,9 @@).
+        // Instead of strictly rejecting the patch, we repair the header using the true line counts.
+        chunk.oldLines = expectedOld;
+        chunk.newLines = expectedNew;
       }
     }
   }
