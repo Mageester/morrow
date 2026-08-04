@@ -323,6 +323,34 @@ describe("mission completion routing", () => {
 
     expect(call).toBe(1); // a real (non-empty) insufficient_evidence verdict is not a truncation — never retried here
   });
+
+  it("falls back to primary model for review if alternate review model call fails", async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      callCount += 1;
+      const body = JSON.parse(init.body);
+      modelsUsed.push(body.model);
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ error: { message: "Insufficient Balance", type: "invalid_request_error", code: "insufficient_balance" } }), { status: 402, headers: { "content-type": "application/json" } });
+      }
+      return sseResponse([
+        `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"approved\\"}"}}]}\n\n`,
+        `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ]);
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    const result = await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 });
+
+    expect(callCount).toBe(2);
+    expect(modelsUsed[0]).not.toEqual(modelsUsed[1]);
+    expect(result.text).toContain("approved");
+  });
 });
 
 describe("Anthropic provider normalization", () => {
