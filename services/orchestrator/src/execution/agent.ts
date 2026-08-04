@@ -169,6 +169,32 @@ export function proposePatchTarget(
 }
 
 /**
+ * Detect a write tool call that merely echoes one of Morrow's own externalized
+ * history entries. To keep long runs inside the context window,
+ * `capToolArgumentsForContext` rewrites an already-applied create_file /
+ * propose_patch in the model's conversation history as
+ * `{ path, _morrowAppliedWrite: { contentBytes, contentSha256, â€¦ } }` with the
+ * body stripped. Weaker models (observed with deepseek-v4-pro) sometimes copy
+ * that exact shape back verbatim â€” including the real sha256 they can see in
+ * context â€” when they want to re-touch a file. The result is a create_file /
+ * propose_patch with no `content` / `patch`, which validation would reject as
+ * "missing", burning the correction budget and eventually interrupting the
+ * whole task even though the file was already written correctly earlier.
+ *
+ * Such a call is not a defect to punish; it is a no-op referencing a durable
+ * write that already happened. Recognizing it lets the executor return an
+ * idempotent success instead of a fatal argument error.
+ */
+export function isEchoedAppliedWrite(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName !== "create_file" && toolName !== "propose_patch") return false;
+  const marker = (args as any)?._morrowAppliedWrite;
+  if (!marker || typeof marker !== "object") return false;
+  const bodyField = toolName === "create_file" ? args.content : args.patch;
+  const bodyPresent = typeof bodyField === "string" && bodyField.trim() !== "";
+  return !bodyPresent;
+}
+
+/**
  * Normalize a persisted `provider.usage` event payload into a RequestUsage
  * for folding into the cumulative seed on resume. Accepts both the current
  * canonical shape and every pre-canonical legacy shape (inputTokens as the
@@ -4499,6 +4525,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         let errorType = null;
         let errorMessage = null;
         let args: any = {};
+        let echoedAppliedWrite = false;
         let observationRecord: ObservationRecord | null = null;
 
         try {
@@ -4546,11 +4573,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });
           }
 
+          // A write tool that only echoes Morrow's own externalized history
+          // marker (`_morrowAppliedWrite`, body stripped) references a durable
+          // write that already happened. It is a no-op, not a missing-argument
+          // defect: validating it would reject it as "content missing", spend
+          // the correction budget, and can interrupt the whole task even though
+          // the file is already correct on disk. Skip validation for it here;
+          // the dispatch below turns it into an idempotent success â€” but only
+          // when the referenced file genuinely exists on disk. A model that has
+          // learned the placeholder shape can also emit it for a file it never
+          // actually wrote; treating that as "already applied" would silently
+          // skip a real, required creation. When the target is missing, fall
+          // through to normal validation so the model is told to resend with
+          // full content.
+          echoedAppliedWrite = false;
+          if (isEchoedAppliedWrite(tc.name, args)) {
+            const echoTargets = tc.name === "create_file"
+              ? (typeof args.path === "string" ? [args.path] : [])
+              : (Array.isArray(args.files) ? args.files.filter((f: unknown): f is string => typeof f === "string") : []);
+            echoedAppliedWrite = echoTargets.length > 0 && echoTargets.every((rel: string) => {
+              try { return existsSync(assertContainedRealPath(workspacePath, rel)); } catch { return false; }
+            });
+          }
+
           // Reject required-field, wrong-type, and absolute-path defects for the
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
           // argument can never reach the applying_changes state. One bounded
           // correction is offered; the second failure stops cleanly.
-          if (toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
+          if (!echoedAppliedWrite && toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
             // Curated load-bearing fields only â€” the executor tolerates omitted
             // explanation/files on propose_patch, so we don't newly reject them.
             const criticalRequired: Record<string, string[]> = {
@@ -4993,6 +5043,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             });
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
+          } else if (echoedAppliedWrite) {
+            // The model copied one of Morrow's externalized history entries back
+            // as a fresh write. The referenced content is already durable on
+            // disk; re-applying is impossible (the body was stripped) and
+            // unnecessary. Report an idempotent success and nudge the model to
+            // send full content only if it actually wants to change the file.
+            const marker = (args as any)._morrowAppliedWrite ?? {};
+            const targetPath = typeof args.path === "string" && args.path.trim()
+              ? args.path
+              : proposePatchTarget(args, tc.arguments) ?? "the referenced file";
+            event("tool.strategy_switch", {
+              tool: tc.name,
+              from: "echoed_applied_write",
+              to: "noop",
+              path: targetPath,
+              reason: "already_applied",
+            });
+            resultStr = JSON.stringify({
+              status: "already_applied",
+              path: targetPath,
+              note: `${targetPath} was already written in an earlier step; no change was needed. To modify it, send create_file with the full new file content (not the _morrowAppliedWrite placeholder).`,
+              ...(typeof marker.contentSha256 === "string" ? { contentSha256: marker.contentSha256 } : {}),
+              ...(typeof marker.patchSha256 === "string" ? { patchSha256: marker.patchSha256 } : {}),
+            });
           } else if (tc.name === "propose_patch" || tc.name === "create_file") {
             // create_file is a thin, reliable front end over propose_patch: it
             // takes plain path + content and synthesizes a creation diff, then
@@ -5467,11 +5541,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // Attribute workspace effects for progress fingerprinting. A patch can
           // span files and a command can write anything, so those fall back to a
           // bounded Git read instead of guessing.
-          if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
-          else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
-          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) {
-            deliveryStarted = true;
-            progressEpoch.recordMutation(progressFingerprint);
+          // An echoed already-applied write mutated nothing this turn; the real
+          // write already recorded its delivery. Counting it again would let a
+          // no-op masquerade as fresh progress and reset the stagnation guard.
+          if (!echoedAppliedWrite) {
+            if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
+            else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
+            if (WORKSPACE_WRITE_TOOLS.has(tc.name)) {
+              deliveryStarted = true;
+              progressEpoch.recordMutation(progressFingerprint);
+            }
           }
         }
         let summary = isSuccess ? "completed" : "failed";

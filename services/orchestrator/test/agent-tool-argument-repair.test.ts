@@ -7,7 +7,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
-import { executeAgentChatTask, proposePatchTarget } from "../src/execution/agent.js";
+import { executeAgentChatTask, proposePatchTarget, isEchoedAppliedWrite } from "../src/execution/agent.js";
 import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,6 +59,25 @@ describe("proposePatchTarget", () => {
   });
   it("ignores /dev/null headers", () => {
     expect(proposePatchTarget({ patch: "--- a\n+++ /dev/null\n" }, "")).toBeNull();
+  });
+});
+
+describe("isEchoedAppliedWrite", () => {
+  const marker = { kind: "create_file", contentBytes: 2958, contentSha256: "abc", instruction: "Historical applied write." };
+  it("is true for a create_file echoing the externalized marker with no content", () => {
+    expect(isEchoedAppliedWrite("create_file", { path: "src/App.tsx", _morrowAppliedWrite: marker })).toBe(true);
+  });
+  it("is true for a propose_patch echoing the marker with no patch", () => {
+    expect(isEchoedAppliedWrite("propose_patch", { files: ["a.ts"], _morrowAppliedWrite: { kind: "propose_patch" } })).toBe(true);
+  });
+  it("is false when real content is present alongside the marker", () => {
+    expect(isEchoedAppliedWrite("create_file", { path: "a.ts", content: "real", _morrowAppliedWrite: marker })).toBe(false);
+  });
+  it("is false without the marker", () => {
+    expect(isEchoedAppliedWrite("create_file", { path: "a.ts" })).toBe(false);
+  });
+  it("is false for non-write tools", () => {
+    expect(isEchoedAppliedWrite("read_file", { _morrowAppliedWrite: marker })).toBe(false);
   });
 });
 
@@ -280,6 +299,83 @@ describe("agent tool-argument recovery", () => {
     expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
     expect(readFileSync(join(ws, "done.txt"), "utf8")).toBe("done\n");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
+  });
+
+  const echoedMarker = (path: string) => ({
+    path,
+    _morrowAppliedWrite: {
+      kind: "create_file",
+      contentBytes: 2958,
+      contentSha256: "da9e3471b3688c7ed78a3e9167519ff6b32dfab65926e86ea288567ed53e47f2",
+      instruction: "Historical applied write. Read workspace file for current content.",
+    },
+    truncatedForContext: true,
+    originalArgumentBytes: 3326,
+  });
+
+  it("treats an echoed applied-write for an existing file as an idempotent no-op, not a missing-content failure", async () => {
+    // Reproduces the production deepseek-v4-pro failure: after really writing a
+    // file, the model copies Morrow's own externalized history entry (content
+    // stripped, replaced by _morrowAppliedWrite) back as a fresh create_file.
+    // Previously the echo was rejected as "content missing", burned the
+    // correction budget, and interrupted the whole task.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("real", "create_file", { path: "src/App.tsx", content: "export default function App(){return null}\n" }), done],
+        [tool("echo", "create_file", echoedMarker("src/App.tsx")), done],
+        [text("all done"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const call = calls(db).find((c: any) => c.id === "echo")!;
+    expect(call.status).toBe("completed");
+    expect(JSON.parse(call.resultJson!).status).toBe("already_applied");
+    expect(argEvents(db)).toHaveLength(0);
+    expect(
+      taskRecordsRepository(db).listEvents("t").some((e: any) => e.payload.reason === "tool_arguments_unrecoverable"),
+    ).toBe(false);
+    // The no-op must not overwrite the real content already on disk.
+    expect(readFileSync(join(ws, "src/App.tsx"), "utf8")).toContain("export default function App");
+  });
+
+  it("does NOT no-op an applied-write placeholder for a file that was never written", async () => {
+    // A model that has learned the placeholder shape can emit it for a file it
+    // never actually created. Skipping it as "already applied" would silently
+    // drop a required file, so this must fall through to a real content
+    // correction instead of a false success.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("ghost", "create_file", echoedMarker("src/Missing.tsx")), done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const ghost = calls(db).find((c: any) => c.id === "ghost")!;
+    expect(ghost.status).toBe("failed");
+    expect(JSON.parse(ghost.resultJson!)).toMatchObject({ invalidField: "content", problem: "missing" });
+    expect(existsSync(join(ws, "src/Missing.tsx"))).toBe(false);
+  });
+
+  it("still writes normally when real content accompanies the applied-write marker", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("real", "create_file", { path: "note.txt", content: "hello world", _morrowAppliedWrite: { kind: "create_file" } }), done],
+        [text("done"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(readFileSync(join(ws, "note.txt"), "utf8")).toBe("hello world");
   });
 
   it("keeps propose_patch correction budgets independent across target files", async () => {
