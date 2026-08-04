@@ -131,6 +131,44 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; c
 }
 
 /**
+ * Derive a stable per-target key for a propose_patch call. Unlike create_file,
+ * propose_patch carries no top-level `path`; its target lives in the `files`
+ * array or, failing that, the unified-diff `+++` headers inside `patch`. The
+ * argument-correction budget keys on this so that independent propose_patch
+ * calls on *different* files never share one budget â€” the deepseek-v4-pro
+ * failure (task 98159b5c) collapsed three distinct first attempts on three
+ * files onto `unknown-target`, climbing 1â†’2â†’3 and interrupting the whole task
+ * as `tool_arguments_unrecoverable`. Returns null when no target is derivable
+ * (e.g. a fully empty/missing argument object), so the caller can fall back.
+ */
+export function proposePatchTarget(
+  parsed: Record<string, unknown> | undefined,
+  rawArguments: string,
+): string | null {
+  const filesFromArray = Array.isArray(parsed?.files)
+    ? (parsed!.files as unknown[]).filter((f): f is string => typeof f === "string" && f.trim() !== "")
+    : [];
+  if (filesFromArray.length > 0) return [...new Set(filesFromArray)].sort().join(",");
+  if (typeof parsed?.files === "string" && parsed.files.trim() !== "") return parsed.files.trim();
+
+  const patch = typeof parsed?.patch === "string" ? parsed.patch : null;
+  if (patch) {
+    const headerFiles = [...patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n]+)$/gm)]
+      .map((m) => m[1]!)
+      .filter((p) => p !== "/dev/null");
+    if (headerFiles.length > 0) return [...new Set(headerFiles)].sort().join(",");
+  }
+
+  // Last resort: recover a target from the raw (possibly-malformed) JSON text so
+  // that even a call whose `patch` failed to parse still keys on its own file.
+  const rawFile = rawArguments.match(/"files"\s*:\s*\[\s*"([^"]+)"/)?.[1]
+    ?? rawArguments.match(/"files"\s*:\s*"([^"]+)"/)?.[1]
+    ?? rawArguments.match(/\+\+\+\s+(?:b\/)?([^\r\n"\\]+)/)?.[1]
+    ?? null;
+  return rawFile && rawFile !== "/dev/null" ? rawFile : null;
+}
+
+/**
  * Normalize a persisted `provider.usage` event payload into a RequestUsage
  * for folding into the cumulative seed on resume. Accepts both the current
  * canonical shape and every pre-canonical legacy shape (inputTokens as the
@@ -2367,7 +2405,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const toolArgumentAttemptKey = (toolName: string, rawArguments: string, field = "format", parsed?: Record<string, unknown>) => {
     const parsedPath = typeof parsed?.path === "string" ? parsed.path : null;
     const rawPath = rawArguments.match(/"path"\s*:\s*"([^"]+)"/)?.[1] ?? null;
-    const target = parsedPath ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
+    // propose_patch has no top-level `path`; without a per-target key every
+    // patch failure across different files shares one correction budget and a
+    // handful of distinct first attempts spuriously exhaust it, interrupting
+    // the whole task. Key on the affected file(s) instead.
+    const patchTarget = toolName === "propose_patch" ? proposePatchTarget(parsed, rawArguments) : null;
+    const target = parsedPath ?? patchTarget ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
     return `${toolName}:${field}:${target}`;
   };
   // Tight per-action loop detection: catches the same tool+args recurring within
@@ -4525,6 +4568,26 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               const retryExhausted = attempts >= 2;
               if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
+              // A model that cannot emit a valid `patch` for a file after the
+              // correction budget is spent should not be told to give up: it has
+              // demonstrably succeeded with create_file (full-file overwrite,
+              // which auto-converts to an edit when the target exists). Redirect
+              // it there rather than letting the whole task interrupt. The redirect
+              // target is the file the patch was meant to change.
+              const patchRedirect =
+                tc.name === "propose_patch" && problem.field === "patch" && retryExhausted;
+              const redirectTarget = patchRedirect
+                ? (proposePatchTarget(args, tc.arguments) ?? "the target file")
+                : null;
+              if (patchRedirect) {
+                event("tool.strategy_switch", {
+                  tool: "propose_patch",
+                  from: "patch",
+                  to: "create_file",
+                  path: redirectTarget,
+                  reason: "patch_arguments_unrecoverable",
+                });
+              }
               throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
                 error: `Invalid argument "${problem.field}" for ${tc.name}`,
                 kind: "invalid_tool_arguments",
@@ -4536,7 +4599,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 attempts,
                 retryLimit: 2,
                 retryExhausted,
-                instruction: retryExhausted
+                instruction: patchRedirect
+                  ? `Stop trying to patch ${redirectTarget}. Emit a single create_file call that writes the entire intended contents of ${redirectTarget} (the file already exists, so this overwrites it). Do not send another propose_patch for it.`
+                  : retryExhausted
                   ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
                   // Naming only the broken field matters most when the rest of
                   // the call is expensive: create_file carries the entire file

@@ -7,7 +7,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
-import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executeAgentChatTask, proposePatchTarget } from "../src/execution/agent.js";
 import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -39,6 +39,28 @@ function run(db: any, provider: MockProvider, maxTurns = 8) {
 function calls(db: any) { return conversationsRepository(db).listToolCallsForTask("t"); }
 function states(db: any) { return taskRecordsRepository(db).listAgentStates("t").map((s: any) => s.state); }
 function argEvents(db: any) { return taskRecordsRepository(db).listEvents("t").filter((e: any) => e.type === "tool.arguments_rejected"); }
+
+describe("proposePatchTarget", () => {
+  it("keys on the files array (deduped, order-independent)", () => {
+    expect(proposePatchTarget({ files: ["b.ts", "a.ts", "b.ts"] }, "")).toBe("a.ts,b.ts");
+  });
+  it("keys on a single file given as a bare string", () => {
+    expect(proposePatchTarget({ files: "only.ts" }, "")).toBe("only.ts");
+  });
+  it("falls back to unified-diff +++ headers when files is absent", () => {
+    const patch = "--- a/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(proposePatchTarget({ patch }, "")).toBe("src/x.ts");
+  });
+  it("recovers a target from raw malformed JSON text", () => {
+    expect(proposePatchTarget(undefined, '{"files":["raw.ts"],"patch":')).toBe("raw.ts");
+  });
+  it("returns null when no target is derivable", () => {
+    expect(proposePatchTarget({ explanation: "x" }, '{"explanation":"x"}')).toBeNull();
+  });
+  it("ignores /dev/null headers", () => {
+    expect(proposePatchTarget({ patch: "--- a\n+++ /dev/null\n" }, "")).toBeNull();
+  });
+});
 
 describe("agent tool-argument recovery", () => {
   let db: any;
@@ -258,6 +280,55 @@ describe("agent tool-argument recovery", () => {
     expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
     expect(readFileSync(join(ws, "done.txt"), "utf8")).toBe("done\n");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload.reason === "tool_arguments_unrecoverable")).toBe(false);
+  });
+
+  it("keeps propose_patch correction budgets independent across target files", async () => {
+    // Reproduces the production deepseek-v4-pro failure (task 98159b5c): three
+    // propose_patch calls on THREE DIFFERENT files, each with a missing patch,
+    // collapsed onto one shared correction budget (propose_patch has no `path`),
+    // climbed 1→2→3, and interrupted the whole task as
+    // `tool_arguments_unrecoverable` even though each was a distinct first
+    // attempt on a distinct file.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("pa", "propose_patch", { files: ["a.ts"], explanation: "e" }), done],
+        [tool("pb", "propose_patch", { files: ["b.ts"], explanation: "e" }), done],
+        [tool("pc", "propose_patch", { files: ["c.ts"], explanation: "e" }), done],
+        [text("stopped"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    expect(argEvents(db).map((event: any) => event.payload.attempts)).toEqual([1, 1, 1]);
+    expect(
+      taskRecordsRepository(db)
+        .listEvents("t")
+        .some((event: any) => event.payload.reason === "tool_arguments_unrecoverable"),
+    ).toBe(false);
+  });
+
+  it("redirects an unrecoverable propose_patch to create_file for the same file", async () => {
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("p1", "propose_patch", { files: ["x.ts"], explanation: "e" }), done],
+        [tool("p2", "propose_patch", { files: ["x.ts"], explanation: "e" }), done],
+        [text("ok"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const p2 = JSON.parse(calls(db).find((c: any) => c.id === "p2")!.resultJson!);
+    expect(p2).toMatchObject({
+      kind: "invalid_tool_arguments",
+      toolName: "propose_patch",
+      invalidField: "patch",
+      retryExhausted: true,
+    });
+    expect(p2.instruction).toMatch(/create_file/);
   });
 
   it("rejects an absolute path argument as a structured correction", async () => {
