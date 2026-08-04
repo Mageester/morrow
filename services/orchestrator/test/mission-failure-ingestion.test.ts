@@ -152,6 +152,15 @@ describe("mission tool-failure reporter (unit)", () => {
     noop.reportFailure("run_command", { command: "x" }, "boom", "tool_failed");
     expect(service.get(missionId).failures).toHaveLength(0);
   });
+
+  it("distinguishes run_command invocations passed with CommandLine or commandLine flags so different commands do not collapse into the same failure signature", () => {
+    const r = reporter();
+    r.reportFailure("run_command", { CommandLine: "node hash-file.js" }, "Command node exited with status 1.", "command_exit_nonzero");
+    r.reportFailure("run_command", { CommandLine: "node hash-file.js .verify/does-not-exist.txt" }, "Command node exited with status 1.", "command_exit_nonzero");
+    const failures = service.get(missionId).failures;
+    expect(failures).toHaveLength(2);
+    expect(failures[0]!.normalizedSignature).not.toEqual(failures[1]!.normalizedSignature);
+  });
 });
 
 // ── end-to-end: real agent execution feeds the mission ledger ────────────────
