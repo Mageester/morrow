@@ -350,6 +350,72 @@ describe("MissionService — independent review and honest grading", () => {
     expect(final.result!.reviewVerdict).toBe("insufficient_evidence");
   });
 
+  /**
+   * Found dogfooding: a mission created with an explicit provider override
+   * (`--provider opencode-zen`) had its worker correctly use that provider,
+   * but review and criteria drafting silently fell back to the workspace's
+   * default preset provider — DeepSeek in the reproduction — which failed
+   * with an unrelated billing error, even though the explicitly requested
+   * provider was configured and working. `MissionService` now forwards
+   * `mission.execution.providerId/model/preset` on every completion call;
+   * this pins it at the real integration point, not just inside
+   * `buildMissionCompletion` in isolation.
+   */
+  it("routes review to the mission's explicit provider override, not the workspace default preset", async () => {
+    const seenOpts: Array<Parameters<MissionCompletionFn>[1]> = [];
+    const completion: MissionCompletionFn = async (_messages, opts) => {
+      seenOpts.push(opts);
+      return opts.purpose === "review"
+        ? { text: JSON.stringify({ verdict: "approved", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], recommendedStatus: "completed", summary: "ok" }) }
+        : { text: "[]" };
+    };
+    const { service, workspace } = setup({ completion });
+    writeFileSync(join(workspace, "a.js"), "const a=1;\n");
+    const m = service.create("p1", { objective: "Repair", providerId: "opencode-zen", model: "deepseek-v4-flash-free" });
+    const c = service.addCriterion(m.id, "a.js parses", { kind: "command", command: "node --check a.js", expectExitCode: 0 });
+    service.approveCriteria(m.id);
+    await service.verifyCriterion(m.id, c.id);
+    await service.runReview(m.id);
+
+    const reviewCall = seenOpts.find((opts) => opts.purpose === "review");
+    expect(reviewCall?.missionProviderId).toBe("opencode-zen");
+    expect(reviewCall?.missionModel).toBe("deepseek-v4-flash-free");
+  });
+
+  /**
+   * Untracked-file diffing (added to show a reviewer real content for newly
+   * created files, which previously only appeared as bare filenames) spawns
+   * one `git diff --no-index` subprocess per untracked file with no ceiling.
+   * A build that generates many small output files — not just a dependency
+   * install, which `.gitignore` now excludes — would otherwise spawn a
+   * subprocess per file on every review cycle. Pins that the cap exists:
+   * content beyond it is still named, not silently dropped.
+   */
+  it("caps how many untracked files get individually diffed, naming the remainder", async () => {
+    // Spawns real `git diff --no-index` subprocesses (one per untracked file
+    // up to the cap) — real wall-clock work that can exceed the default
+    // per-test timeout under full-suite parallel contention even though it
+    // is fast in isolation.
+    const seen: ChatMessage[][] = [];
+    const completion: MissionCompletionFn = async (messages, opts) => {
+      seen.push(messages);
+      return opts.purpose === "review"
+        ? { text: JSON.stringify({ verdict: "approved", criterionJudgments: [], regressionRisks: [], suspiciousChanges: [], missingVerification: [], concerns: [], recommendedStatus: "completed", summary: "ok" }) }
+        : { text: "[]" };
+    };
+    const { service, workspace } = setup({ completion });
+    for (let i = 0; i < 55; i += 1) writeFileSync(join(workspace, `generated-${String(i).padStart(2, "0")}.txt`), `file ${i}\n`);
+    const m = service.create("p1", { objective: "Repair" });
+    const c = service.addCriterion(m.id, "generated files exist", { kind: "command", command: "node -e \"process.exit(0)\"", expectExitCode: 0 });
+    service.approveCriteria(m.id);
+    await service.verifyCriterion(m.id, c.id);
+    await service.runReview(m.id);
+
+    const reviewMessages = seen[seen.length - 1]!.map((m) => m.content).join("\n");
+    expect(reviewMessages).toContain("file 0\n"); // one of the first 50 gets real content
+    expect(reviewMessages).toMatch(/\d+ additional untracked file\(s\) not individually diffed/);
+  }, 20000);
+
   it("approved_with_risks yields completed_with_reservations and records unresolved risks", async () => {
     const completion: MissionCompletionFn = async (_m, opts) =>
       opts.purpose === "review"
