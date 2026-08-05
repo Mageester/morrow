@@ -2811,6 +2811,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     let failure: { tool: string; detail: string } | null = null;
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
+      // Frontend verification is browser-driven, not run_command-driven. A
+      // completed browser observation that post-dates a workspace write IS the
+      // verification of that change — the app was re-served and driven in a real
+      // browser — so let it clear an outstanding "workspace changed without
+      // subsequent verification" failure. Scope is deliberately tight: only the
+      // frontend shape, only that specific write-without-verify failure (never a
+      // real command exit failure), and only a genuine non-duplicate browser
+      // result. The frontend completion contract still independently gates on
+      // browser-evidence QUALITY (route health, clean console, DOM snapshot,
+      // interaction, viewports), so this removes a redundant run_command-shaped
+      // check that was interrupting fully browser-verified frontend edits
+      // (deepseek-v4-flash, task 53b36eb3: a working, multi-viewport-verified
+      // app rejected as unverified_completion after a final edit).
+      if (taskShape === "frontend_application"
+        && BROWSER_EVIDENCE_TOOLS.has(call.toolName)
+        && call.status === "completed"
+        && failure !== null
+        && failure.detail.startsWith("workspace changed without subsequent verification")
+        && verification.status === "missing"
+        && !isDuplicateBrowserResult(parseBrowserResult(call))) {
+        verification = { status: "passed", toolCallId: call.id };
+        failure = null;
+        continue;
+      }
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
       if (call.toolName === "run_command") {
         try {
