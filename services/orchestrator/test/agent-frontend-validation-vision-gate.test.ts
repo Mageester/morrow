@@ -176,6 +176,38 @@ describe("frontend-validation completion gate — vision requirement", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
+  it("does not let a deduplicated repeated interaction poison frontend completion evidence", async () => {
+    // Live deepseek-v4-pro runs clicked the same element twice; the second call
+    // was deduplicated to a `{ duplicate: true }` placeholder. Because the
+    // interaction check used `.every()`, that placeholder (clicked: undefined)
+    // failed validation and made `interaction` false for the whole task —
+    // blocking completion of a fully-built, browser-verified app.
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        [tool("bo", "browser_open", { url: "http://127.0.0.1:4173/" }), done],
+        [tool("bs", "browser_snapshot", {}), done],
+        [tool("bc", "browser_console", {}), done],
+        [tool("bi", "browser_click", { ref: "e1" }), done],
+        [tool("bi2", "browser_click", { ref: "e1" }), done], // identical → deduplicated placeholder
+        [tool("bd", "browser_viewport", { preset: "desktop" }), done],
+        [tool("bds", "browser_screenshot", { label: "desktop" }), done],
+        [tool("bt", "browser_viewport", { preset: "tablet" }), done],
+        [tool("bts", "browser_screenshot", { label: "tablet" }), done],
+        [tool("bm", "browser_viewport", { preset: "mobile" }), done],
+        [tool("bms", "browser_screenshot", { label: "mobile" }), done],
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 24 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("does not complete when browser console evidence reports an error", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
     const provider = new MockProvider({

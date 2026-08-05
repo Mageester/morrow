@@ -2691,6 +2691,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
   const isValidViewportResult = (result: Record<string, unknown> | null): boolean =>
     !hasBrowserFailure(result) && isViewport(result?.viewport) && typeof result?.url === "string";
+  // A repeated browser call is deduplicated to a `{ duplicate: true }` placeholder
+  // that reuses the prior observation. It is neither new evidence nor a failure â€”
+  // but because the category checks below use `.every()`, leaving it in would let
+  // one repeated click/snapshot/screenshot poison an entire category of otherwise
+  // valid evidence and permanently block frontend completion. Exclude it: the
+  // original call it duplicates is still counted.
+  const isDuplicateBrowserResult = (result: Record<string, unknown> | null): boolean => result?.duplicate === true;
   const isValidInteractionResult = (call: ToolCallRecord, result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result)) return false;
     if (call.toolName === "browser_click") return typeof result?.clicked === "string" && isPageSnapshot(result?.page as Record<string, unknown> | null);
@@ -2704,7 +2711,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
     if (lastWrite < 0) return {};
     const afterWrite = calls.slice(lastWrite + 1);
-    const browserCalls = afterWrite.filter((call) => BROWSER_EVIDENCE_TOOLS.has(call.toolName));
+    const browserCalls = afterWrite.filter((call) =>
+      BROWSER_EVIDENCE_TOOLS.has(call.toolName) && !isDuplicateBrowserResult(parseBrowserResult(call)));
     const routeCalls = browserCalls.filter((call) => call.toolName === "browser_open");
     const snapshotCalls = browserCalls.filter((call) => call.toolName === "browser_snapshot");
     const consoleCalls = browserCalls.filter((call) => call.toolName === "browser_console");
