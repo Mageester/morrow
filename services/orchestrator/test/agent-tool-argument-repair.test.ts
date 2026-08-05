@@ -153,6 +153,35 @@ describe("agent tool-argument recovery", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
+  it("treats a run_command missing executable as a retryable arg error, then completes on the corrected retry", async () => {
+    // Live regression (deepseek-v4-flash, task 97dfe323): the model sent
+    // run_command with args ["-e", "<node http server>"] but omitted
+    // `executable: "node"`. Thrown as a bare Error it was unretryable and — as
+    // the last verify-or-write call — became a `failed_final_verification`
+    // completion blocker that INTERRUPTED a fully-built, browser-verified app.
+    // It must instead be a recoverable invalid_tool_arguments correction.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("noexec", "run_command", { args: ["--version"], purpose: "check node" }), done],
+        [tool("fixed", "run_command", { executable: "node", args: ["--version"], purpose: "check node" }), done],
+        [text("finished"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const noexec = calls(db).find((c: any) => c.id === "noexec")!;
+    expect(noexec.status).toBe("failed");
+    expect(JSON.parse(noexec.resultJson!)).toMatchObject({
+      kind: "invalid_tool_arguments",
+      invalidField: "executable",
+    });
+    // Recovered, not interrupted: the corrected retry runs and the task closes.
+    expect(calls(db).find((c: any) => c.id === "fixed")!.status).toBe("completed");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("returns structured feedback for truncated arguments, then applies a corrected retry", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({

@@ -2177,10 +2177,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           throw new AgentToolFailure(feedback.message, feedback.result);
         }
         if (pf.oldPath !== "/dev/null" && originalContent !== null && hashString(newContent) === hashString(originalContent)) {
+          // A valid patch that changes nothing is not an argument error, so it
+          // bypasses the malformed-argument correction budget and its create_file
+          // redirect entirely. Track it per target: the first no-op gets a plain
+          // "regenerate" nudge, but a repeat means the model is looping on a dead
+          // patch, so escalate to a full-file create_file rewrite (which
+          // auto-converts to a backed-up edit when the target exists) instead of
+          // letting it re-propose until the stagnation kill.
+          const noEffectAttempts = (patchNoEffectCountsByFile.get(pf.newPath) ?? 0) + 1;
+          patchNoEffectCountsByFile.set(pf.newPath, noEffectAttempts);
+          const escalateToCreateFile = noEffectAttempts >= 2;
+          if (escalateToCreateFile) {
+            event("tool.strategy_switch", {
+              tool: "propose_patch",
+              from: "patch",
+              to: "create_file",
+              path: pf.newPath,
+              reason: "patch_no_effect_repeated",
+            });
+          }
           throw new AgentToolFailure(`Patch produced no content changes for: ${pf.newPath}`, {
             error: `Patch produced no content changes for: ${pf.newPath}`,
             kind: "patch_no_effect",
             targetFile: pf.newPath,
+            attemptsForFile: noEffectAttempts,
+            retryLimit: 2,
+            switchToCreateFile: escalateToCreateFile,
             currentFile: {
               path: pf.newPath,
               hash: hashString(originalContent),
@@ -2188,7 +2210,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               truncated: Buffer.byteLength(originalContent, "utf8") > 16 * 1024,
               content: originalContent.slice(0, 16 * 1024),
             },
-            instruction: "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
+            instruction: escalateToCreateFile
+              ? `Patching ${pf.newPath} has now produced no change ${noEffectAttempts} times. Stop authoring diffs for this file. Call create_file with path "${pf.newPath}" and content set to the COMPLETE, final text of the file (take currentFile.content and apply your intended change to it). Morrow applies it as a safe, backed-up whole-file edit. If no change is actually needed, stop cleanly instead.`
+              : "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
           });
         }
         const destPath = assertContainedRealPath(workspacePath, pf.newPath);
@@ -2441,6 +2465,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // keeps emitting differently-broken diffs for the same file never trips the
   // per-hash ceiling; this counter drives the escalation to create_file.
   const patchFailureCountsByFile = new Map<string, number>();
+  // propose_patch calls that PARSE and APPLY cleanly but leave the file byte-for-
+  // byte unchanged ("Patch produced no content changes"). These have *valid*
+  // arguments, so they never touch the malformed-argument correction budget or
+  // its create_file redirect â€” the model is free to re-propose the same dead
+  // patch until the no-progress stagnation kill. Observed live on
+  // deepseek-v4-flash for a complex build (task f318d8a8: four no-effect patches
+  // on the same file). Keyed by target so a repeated no-op on one file escalates
+  // to a full-file create_file rewrite instead of looping.
+  const patchNoEffectCountsByFile = new Map<string, number>();
   // create_file may repair one target once, but repeated whole-file rewrites
   // are not meaningful delivery progress.
   const createFileWritesByPath = new Map<string, number>();
@@ -4985,7 +5018,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             const purpose = args.purpose || "";
 
             if (typeof exec !== "string") {
-              throw new Error("Missing required argument: executable");
+              // A run_command missing `executable` is a recoverable schema slip,
+              // not a failed verification. Observed live on deepseek-v4-flash: the
+              // model sent `args: ["-e", "<node http server>"]` but omitted
+              // `executable: "node"`, meaning the whole `node -e ...` verification
+              // never ran. Thrown as a bare Error it was unretryable AND â€” as the
+              // last verify-or-write call â€” became a `failed_final_verification`
+              // completion blocker that interrupted a fully-built, browser-verified
+              // app. Classify it like the sibling args-shape check below so the
+              // argument-correction budget hands the model a retry with a clear
+              // fix instead of discarding the finished work.
+              const detail = `Invalid argument: "executable" is required for run_command â€” the program to run (e.g. "node", "npm", "python"). Received args ${JSON.stringify(rawArgs ?? [])} with no executable.`;
+              throw new AgentToolFailure(detail, {
+                error: detail,
+                kind: "invalid_tool_arguments",
+                invalidField: "executable",
+                instruction: 'Resend run_command with "executable" set to the program name (for example "node") and "args" as the argument array (for example ["-e", "..."]).',
+              }, "invalid_tool_arguments");
             }
             // A model can violate the declared `args: string[]` schema (e.g. send
             // a single space-joined string instead of an array). Reject that with

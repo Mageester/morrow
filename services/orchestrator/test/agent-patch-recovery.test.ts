@@ -73,6 +73,21 @@ const noOpPatch = [
 // arithmetic slip on an otherwise complete edit (real content on both sides)
 // is tolerantly repaired instead of rejected — see diff-applier.test.ts's
 // "repairs a hunk header that miscounts its own line count" for that case.
+// A second, structurally different no-op: it rewrites the closing tag to itself
+// instead of the heading. Different hash from noOpPatch (so the identical-call
+// deduplicator does not fold it away), same file, still zero net change — the
+// shape of the real loop, where each attempt was a distinct dead patch.
+const noOpPatch2 = [
+  "--- a/index.html",
+  "+++ b/index.html",
+  "@@ -1,3 +1,3 @@",
+  " <main>",
+  "   <h1>current</h1>",
+  "-</main>",
+  "+</main>",
+  "",
+].join("\n");
+
 const malformedHunkPatch = [
   "--- a/index.html",
   "+++ b/index.html",
@@ -221,6 +236,47 @@ describe("agent patch recovery", () => {
       kind: "patch_no_effect",
       targetFile: "index.html",
     });
+  });
+
+  it("escalates a repeated no-op patch to a create_file rewrite instead of looping", async () => {
+    // A patch that applies cleanly but changes nothing is a *valid-argument*
+    // failure, so it never touches the malformed-argument correction budget or
+    // its create_file redirect. Without an escalation of its own, a model can
+    // re-propose the same dead patch until the stagnation kill (observed live on
+    // deepseek-v4-flash, task f318d8a8: four no-op patches on watch-anim.css).
+    // The second no-op on a file must escalate to a whole-file create_file
+    // rewrite, mirroring the stale/malformed-patch path.
+    seedYolo(db, ws);
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "index.html", content: "<main>\n  <h1>current</h1>\n</main>\n" }), done],
+        [tool("noop-1", "propose_patch", { patch: noOpPatch, explanation: "claim improvement", files: ["index.html"] }), done],
+        [tool("noop-2", "propose_patch", { patch: noOpPatch2, explanation: "claim improvement again", files: ["index.html"] }), done],
+        [text("switching to a full rewrite"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const calls = conversationsRepository(db).listToolCallsForTask("t");
+    const first = JSON.parse(calls.find((c: any) => c.id === "noop-1")!.resultJson!);
+    expect(first.kind).toBe("patch_no_effect");
+    expect(first.switchToCreateFile).toBe(false);
+    expect(first.instruction).toMatch(/Regenerate a patch/);
+
+    const second = JSON.parse(calls.find((c: any) => c.id === "noop-2")!.resultJson!);
+    expect(second.kind).toBe("patch_no_effect");
+    expect(second.switchToCreateFile).toBe(true);
+    expect(second.instruction).toMatch(/create_file/);
+
+    const switches = taskRecordsRepository(db).listEvents("t")
+      .filter((e: any) => e.type === "tool.strategy_switch");
+    expect(switches.some((e: any) =>
+      e.payload.to === "create_file" &&
+      e.payload.reason === "patch_no_effect_repeated" &&
+      e.payload.path === "index.html")).toBe(true);
   });
 
   it("returns actionable feedback for malformed hunk line-count mismatches", async () => {
