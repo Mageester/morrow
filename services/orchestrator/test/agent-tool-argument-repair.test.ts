@@ -413,6 +413,33 @@ describe("agent tool-argument recovery", () => {
     expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
   });
 
+  it("does not let an echoed propose_patch placeholder loop kill the whole task", async () => {
+    seedYolo(db, ws);
+    const ph = (bytes: number) => ({
+      files: ["src/Ghost.tsx"],
+      explanation: "e",
+      _morrowAppliedWrite: { kind: "propose_patch", patchBytes: bytes, patchSha256: `sha${bytes}`, instruction: "Historical applied patch." },
+      truncatedForContext: true,
+      originalArgumentBytes: bytes + 40,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("p1", "propose_patch", ph(100)), done],
+        [tool("p2", "propose_patch", ph(200)), done],
+        [tool("p3", "propose_patch", ph(300)), done],
+        [tool("real", "create_file", { path: "src/Ghost.tsx", content: "export default () => null\n" }), done],
+        [text("recovered"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider, 12);
+
+    expect(
+      taskRecordsRepository(db).listEvents("t").some((e: any) => e.payload.reason === "tool_arguments_unrecoverable"),
+    ).toBe(false);
+    expect(existsSync(join(ws, "src/Ghost.tsx"))).toBe(true);
+  });
+
   it("keeps propose_patch correction budgets independent across target files", async () => {
     // Reproduces the production deepseek-v4-pro failure (task 98159b5c): three
     // propose_patch calls on THREE DIFFERENT files, each with a missing patch,

@@ -4651,13 +4651,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
                 && problem.field === "content"
                 && problem.problem === "missing"
                 && !!(args as any)._morrowAppliedWrite;
-              // Do NOT let this specific self-inflicted confusion spend the
-              // whole-task correction budget: killing the entire run because the
-              // model mimicked our compaction marker is the worst outcome. The
+              // The same mimicry surfaces through propose_patch too (marker
+              // present, patch missing). Any write tool echoing our compaction
+              // marker without a real body is the self-inflicted-confusion
+              // pattern, regardless of tool.
+              const echoedPlaceholderMissingBody =
+                !!(args as any)._morrowAppliedWrite
+                && problem.problem === "missing"
+                && ((tc.name === "create_file" && problem.field === "content")
+                  || (tc.name === "propose_patch" && problem.field === "patch"));
+              // Do NOT let this self-inflicted confusion spend the whole-task
+              // correction budget: killing the entire run because the model
+              // mimicked our compaction marker is the worst outcome. The
               // per-action loop detector still bounds an endless repeat, and a
               // real build failure later will surface any genuinely missing
               // file, giving the model a focused chance to write it for real.
-              if (attempts > 2 && !argumentBudgetSpent && !echoedPlaceholderNoContent) argumentBudgetSpent = { toolName: tc.name, attempts };
+              if (attempts > 2 && !argumentBudgetSpent && !echoedPlaceholderMissingBody) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
               // A model that cannot emit a valid `patch` for a file after the
               // correction budget is spent should not be told to give up: it has
