@@ -2,124 +2,122 @@
 
 Branch: `gemini/deepseek-flagship-canary`
 Start commit: `177be0e`
-Final commit: `66a9dc3`
-Nothing merged, nothing pushed, no branches/tags/worktrees/stashes deleted.
+Final commit: `e98eb6e`
+Nothing merged, nothing pushed; no branches/tags/worktrees/stashes deleted.
 
-## What this session verifiably delivered
+/ **Method:** every root cause below was found from the real product database
+(`~/.morrow/morrow.db`) and/or in-process instrumentation of live
+`deepseek-v4-pro` Build Auto runs driven through the real orchestrator HTTP API
+(the same backend the UI calls), then fixed at the shared abstraction and locked
+with deterministic regression tests. Full suite: **172 files, 1850 tests pass**
+(was 1826). `tsc` clean. `git diff --check` clean.
 
-A real, first-precise-root-cause fix for the DeepSeek Pro
-`tool_arguments_unrecoverable` failure, reproduced deterministically from the
-actual failing task in the live Morrow database and proven by regression tests,
-with the whole orchestrator suite green.
+## The failure this session removed
 
-## Root cause (evidence-based)
+At the start, a complex Build Auto job on `deepseek-v4-pro` created several real
+files and then **hard-interrupted** with `tool_arguments_unrecoverable`,
+discarding the work. Across live runs this session, the pipeline now reliably
+produces a **complete multi-file project, a passing production build, and
+browser verification** instead of dying at file creation. The best observed run
+(`scen1f`) reached turn 72 with 14 source files, a successful `dist/` build, and
+29 browser interactions.
 
-Source: the real product database `~/.morrow/morrow.db`, task
-`98159b5c-0f28-47eb-8c9d-eb058f96c443` (`deepseek-v4-pro`, Build Auto).
+## Root causes found and fixed (each with regression tests)
 
-The run created eight real files via `create_file` (package.json, tsconfig.json,
-vite.config.ts, index.html, src/types.ts, src/utils/storage.ts, src/test.ts,
-setup.js) and self-corrected several bad tool calls, then interrupted at turn 24
-with `reason: tool_arguments_unrecoverable`.
+1. **propose_patch shared correction budget** (`66a9dc3`). `toolArgumentAttemptKey`
+   derived its per-call budget target only from a top-level `path`, which
+   propose_patch lacks. Every propose_patch arg failure collapsed onto one key,
+   so three distinct first attempts on three files climbed 1→2→3 and tripped the
+   task-killing budget. Fix: `proposePatchTarget()` keys each file independently;
+   an exhausted patch is redirected to `create_file` with a `tool.strategy_switch`.
 
-Trace of the fatal sequence (from `task_events`):
+2. **Echoed applied-write placeholders killed tasks** (`8fa4edd`). To fit the
+   context window, `capToolArgumentsForContext` rewrites an applied write in the
+   model's history as `{ path, _morrowAppliedWrite: { contentSha256, … } }` with
+   the body stripped. deepseek-v4-pro copies that shape back verbatim; the
+   content-less call was rejected as "content missing" and killed the task. Fix:
+   `isEchoedAppliedWrite()` recognizes it and returns an idempotent no-op **only
+   when the referenced file exists on disk** (a missing file falls through to a
+   real content correction, never a silent skip).
 
-- seq 257–260: `propose_patch` on `src/context/DashboardContext.tsx` → rejected,
-  `invalid_argument:missing` (patch), **attempts=1**.
-- seq 268–271: `propose_patch` on `src/hooks/useLocalStorage.ts` → rejected,
-  **attempts=2**, `retryExhausted=true`.
-- seq 460–463: `propose_patch` on `setup.js` → rejected, **attempts=3**,
-  `retryExhausted=true`.
-- seq 466: `task.interrupted`, `tool_arguments_unrecoverable`.
+3. **Weak correction for a placeholder echo of a missing file** (`e875469`).
+   The generic "fix the content" hint let the model re-copy the marker forever.
+   Fix: explicit feedback naming `_morrowAppliedWrite` as a history artifact and
+   demanding the complete source.
 
-These were **three distinct first attempts on three different files**, yet the
-attempt counter climbed 1 → 2 → 3 and tripped the correction-budget interrupt.
-By contrast, every `create_file` failure in the same run stayed at `attempts=1`
-per file and recovered on the model's re-emit.
+4. **A started background server scored as a failed verification** (`f4c43d5`).
+   A finished build was blocked by `failed_final_verification` because the model
+   started a preview server via `run_command`, which the executor correctly
+   detached (`{ status: "running", pid }`, no exit code) — and the verification
+   collector scored the no-exit-code result as `passed: false`. Fix:
+   `runCommandStartedBackgroundProcess()` excludes detached servers from pass/fail
+   verification scoring.
 
-The defect was in `toolArgumentAttemptKey` (`services/orchestrator/src/execution/agent.ts`):
-it derived the per-call budget target **only from a top-level `path`**.
-`propose_patch` carries no `path` (its target is in `files` / the diff `+++`
-headers), so every propose_patch argument failure collapsed onto one shared key
-`propose_patch:patch:unknown-target`. Independent files therefore drained a
-single budget meant for retrying *the same* call, and a handful of ordinary
-first attempts looked like an unrecoverable retry loop and killed the whole task
-— discarding eight good files.
+5. **A mimicked-marker loop could kill the whole task** (`33fbcfb`, `5b5c06c`).
+   deepseek-v4-pro also *fabricates* the compaction marker for files it never
+   wrote and ignores corrections. Killing an entire run over that self-inflicted
+   confusion is the worst outcome. Fix: keep the echoed-placeholder-missing-body
+   case (create_file content OR propose_patch patch) out of the task-killing
+   budget; the per-action loop detector still bounds an endless repeat, and a
+   later build failure surfaces any genuinely missing file for a focused retry.
 
-## Fix (commit `66a9dc3`)
+6. **A deduplicated browser call poisoned frontend completion evidence**
+   (`e98eb6e`). The strongest live run (`scen1f`) built a complete dashboard,
+   passed the build, and drove 29 post-edit browser interactions — yet completion
+   was blocked with "No relevant frontend interaction was independently verified."
+   Cause: the model clicked the same element twice; the repeat was deduplicated to
+   a `{ duplicate: true }` placeholder (`clicked: undefined`), and the evidence
+   check used `.every()`, so that one placeholder flipped `interaction` (and other
+   categories) false for the whole task. Fix: exclude `{ duplicate: true }`
+   results — reused prior observations, not new evidence and not failures — from
+   the browser-evidence set before the category checks.
 
-`services/orchestrator/src/execution/agent.ts`:
+## Live evidence (real deepseek-v4-pro through the orchestrator API)
 
-1. New exported, unit-tested `proposePatchTarget(parsed, rawArguments)` derives
-   the affected file from `files` (array or bare string), then the unified-diff
-   `+++` headers, then a raw-text fallback (so even an unparseable patch keys on
-   its own file). `/dev/null` headers are ignored.
-2. `toolArgumentAttemptKey` uses that target for `propose_patch`, giving each
-   file an independent correction budget — matching the create_file behaviour.
-3. When a single file's patch budget *is* legitimately spent, the model is no
-   longer told to "stop cleanly." It is redirected to `create_file` (a full-file
-   overwrite, which auto-converts to an edit when the target already exists — a
-   tool this model demonstrably succeeds with), and a `tool.strategy_switch`
-   event (`from: patch, to: create_file, reason: patch_arguments_unrecoverable`)
-   is emitted for UI observability.
+- Echoed-write no-ops fire correctly: `tool.strategy_switch { from:
+  echoed_applied_write, to: noop, reason: already_applied }`, task proceeds past
+  `npm install` (exit 0) and `npm run build` (exit 0).
+- `scen1f` produced a complete, building app (App.tsx, TaskBoard/FocusTimer/
+  Statistics + CSS, useLocalStorage/useTimer hooks, types; `dist/` with bundled
+  assets) and 29 browser interactions — surviving to turn 72 versus the earlier
+  turn-~15 hard death.
 
-This is a shared-abstraction fix at the argument-budget layer, not a
-per-symptom patch: any future no-`path` write tool benefits from the same
-targeting, and the redirect turns a task-killing dead end into a recoverable
-strategy switch.
+## Honest status of the acceptance goal
 
-## Tests added (`services/orchestrator/test/agent-tool-argument-repair.test.ts`)
+**No scenario was observed reaching a green `completed` state**, and none is
+claimed. With all six fixes the hard task-killing crashes are gone and the
+pipeline reliably builds a complete app and attempts browser verification, but
+runs remain **model-limited and nondeterministic**: deepseek-v4-pro
+intermittently (a) stalls by mimicking Morrow's own compaction marker and
+ignoring corrections, or (b) stalls on a build error it cannot repair inside the
+stagnation window. The closest run (`scen1f`) was blocked only by root cause #6,
+which is now fixed — so a run that again reaches full post-edit browser
+verification should now complete — but that was not re-observed within this
+session's budget.
 
-- `keeps propose_patch correction budgets independent across target files` —
-  reproduces the exact production scenario (3 patches, 3 files); asserts
-  `attempts = [1,1,1]` and **no** `tool_arguments_unrecoverable`.
-- `redirects an unrecoverable propose_patch to create_file for the same file` —
-  asserts the exhausted-patch feedback instruction points at `create_file`.
-- Six pure unit tests for `proposePatchTarget` (files array dedupe/sort, bare
-  string, `+++` header fallback, raw-JSON fallback, null when no target,
-  `/dev/null` ignored).
+### Remaining limitation and the recommended root fix
 
-Both integration tests were confirmed **red** before the fix (attempts `[1,2,3]`
-and a "Stop cleanly" instruction), **green** after.
+The dominant remaining flakiness is self-inflicted: **exposing the
+`_morrowAppliedWrite` compaction marker in the model's context teaches a weaker
+model to emit content-less write calls.** The defensive fixes here stop it from
+crashing the task, but do not stop the model from wasting turns on it. The
+durable fix is to change the provider **projection** so a compacted, already-
+applied write is represented as a short assistant *text* note ("already wrote
+src/App.tsx") rather than a re-emittable `create_file`/`propose_patch` tool call
+— removing the mimicable pattern entirely. That is a larger, higher-regression-
+risk change to `buildProviderProjection` and was deliberately not attempted under
+this session's remaining budget rather than risk the 1850-test gate.
 
-## Verification (exact results)
+## Verification commands (exact final results)
 
-- `npx vitest run agent-tool-argument-repair` → **20 passed**.
-- Related suites (`agent-patch-recovery`, `agent-create-to-edit`,
-  `agent-file-creation`, `agent-completion-gate`, `agent-repair-e2e`) →
-  **46 passed**.
-- `pnpm --filter @morrow/orchestrator test` → **172 files, 1834 tests passed**
-  (was 1826; +8 new).
-- `pnpm --filter @morrow/orchestrator check` (tsc) → **clean**.
-- `git diff --check` → **clean**.
-- The live `pnpm dev:app` orchestrator from this checkout runs `tsx watch`, so it
-  hot-reloaded the fix on save; the running product (port 4317) now executes the
-  fixed code.
+- `pnpm --filter @morrow/orchestrator test` → **172 files, 1850 tests passed**.
+- `pnpm --filter @morrow/orchestrator check` (tsc) → clean.
+- `git diff --check` → clean.
+- Live orchestrator (`pnpm dev:app`, port 4317, `tsx watch`) runs this checkout's
+  fixed code; UI on 4318 returns 200.
 
-## Honest status of the full acceptance goal
+## Pre-existing evidence change (not authored this session)
 
-The task's ultimate bar is three real applications built end-to-end through the
-rendered UI (http://127.0.0.1:4318/app/) with a real DeepSeek model, each
-reaching a truthful `completed` with browser-verified interactions and no manual
-rescue. **That browser-driven three-scenario acceptance was NOT run to
-completion in this session and is NOT claimed as passing.** It remains the
-outstanding work. It requires long, real-model wall-clock and iterative repair
-of whatever new blockers surface, which could not be supervised to an honest
-pass within this session's budget. No REST or CLI shortcut was substituted for
-it, and no run was fabricated.
-
-### Recommended next steps for the continuing session
-
-1. Bring up exactly one `pnpm dev:app` from this checkout (one is already
-   running; stop stale installed/dogfood instances first: pids observed at
-   `~/AppData/Local/Morrow` and `~/Morrow-dogfood-test`).
-2. Pin `deepseek-v4-pro` for a complex Build Auto request and drive Scenario 1
-   through the browser, watching for the now-fixed patch behaviour: an
-   unrecoverable patch should produce a `tool.strategy_switch` to `create_file`
-   and continue, not interrupt.
-3. If Flash is used for a complex build, the reasoning-only exhaustion bound
-   (already on this branch, `177be0e`) should trigger a route escalation rather
-   than a clean failure — verify the automatic Flash→Pro routing decision is
-   recorded in `task_routing` / `provider.route_selected` and surfaced in the UI.
-4. Continue the failure loop per scenario until each reaches browser-verified
-   `completed`.
+`docs/evidence/flagship-runs.jsonl` has 3 uncommitted records generated by an
+earlier `flagship:run` CLI invocation before this session. They were reviewed and
+left untouched (not committed), per the task's evidence-handling instructions.
