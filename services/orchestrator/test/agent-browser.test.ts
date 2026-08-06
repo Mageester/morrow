@@ -218,6 +218,41 @@ describe("agent browser and vision bridge", () => {
     expect(after?.resultJson).not.toContain('"duplicate":true');
   });
 
+  it("executes a repeated click on the same ref instead of deduplicating a toggle button's second press", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): a Start/Pause control is
+    // the SAME DOM ref clicked twice with opposite intent. The second click
+    // (Pause) had an identical tool-call signature to the first (Start), so it
+    // was deduplicated into a { duplicate: true } placeholder and never reached
+    // the browser — the timer kept running and the model had to notice and
+    // retry. A click is a state mutation, not a re-observation: repeating it is
+    // a genuine distinct action and must always execute.
+    class ToggleBrowser extends FakeBrowser {
+      // Faithfully model the toggle: the button's accessible name flips on
+      // each press, exactly like the live Start/Pause control.
+      override async snapshot(): Promise<PageSnapshot> {
+        const name = this.clicks % 2 === 0 ? "Start" : "Pause";
+        return { url: "http://127.0.0.1:4173/", title: "Pomodoro", viewport: this.viewport, refs: [{ ref: "e1", role: "button", name }], text: "Timer", injectionFindings: 0 };
+      }
+    }
+    const browser = new ToggleBrowser();
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", toolCalls: [
+        { ...tool("open", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!, index: 0 },
+        { ...tool("start", "browser_click", { ref: "e1" }).toolCalls[0]!, index: 1 },
+        { ...tool("pause", "browser_click", { ref: "e1" }).toolCalls[0]!, index: 2 },
+      ] }, done],
+      [{ type: "text", text: "Started then paused the timer." }, done],
+    ]);
+
+    await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => browser, maxTurns: 4 });
+
+    // Ground truth: the controller received BOTH presses.
+    expect(browser.clicks).toBe(2);
+    const pause = conversationsRepository(db).listToolCallsForTask("t").find((item) => item.id === "pause");
+    expect(pause?.status).toBe("completed");
+    expect(pause?.resultJson).not.toContain('"duplicate":true');
+  });
+
   it("does not let auto-approval authorize a purchase-like browser action", async () => {
     const browser = new FakeBrowser("Buy now");
     const provider = new ScriptedProvider([

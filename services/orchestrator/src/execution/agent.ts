@@ -4607,8 +4607,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const toolSignature = `${tc.name}:${tc.arguments}`;
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
-        const dynamicBrowserObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
-        const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
+        // The interaction tools (click/type/key/select) are never duplicate
+        // work either: each is a state MUTATION whose effect depends on the
+        // page's current state, so repeating one with identical arguments is a
+        // genuine distinct action, not a re-observation. Live bug (Pomodoro
+        // build, deepseek-v4-flash): a Start/Pause toggle is the same DOM ref
+        // clicked twice with opposite intent; the second click (Pause) matched
+        // the first click's signature, was deduplicated into a
+        // `{ duplicate: true }` placeholder, and never executed â€” the timer
+        // kept running and the model had to notice and retry. The loop
+        // detector (below) still catches a genuine repeated-action stall.
+        const dynamicBrowserCall = [
+          "browser_open", "browser_snapshot", "browser_console", "browser_screenshot",
+          "browser_click", "browser_type", "browser_key", "browser_select",
+        ].includes(tc.name);
+        const repeatedTool = !dynamicBrowserCall && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loopSignature = toolCallSignature(tc.name, tc.arguments);
         const loop = loopSignaturesRecordedThisTurn.has(loopSignature)
