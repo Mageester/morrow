@@ -4695,7 +4695,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
               attempts,
               retryLimit: 2,
               retryExhausted,
-              instruction: retryExhausted
+              // Truncation is not a formatting defect — the JSON was well-formed
+              // until the model ran out of output budget mid-emit, which the
+              // generic "emit valid JSON, no fences/commas" hint does not
+              // address. Live bug (Pomodoro build, deepseek-v4-flash): the very
+              // first create_file call — a large multi-line scaffold — was cut
+              // off mid-string, classified truncated_json, and the model was
+              // told to fix its formatting. It correctly self-diagnosed ("the
+              // first call got truncated") and fell back to raw `node -e` shell
+              // writes instead of create_file. Naming the real cause and
+              // prescribing a smaller payload lets it recover with the proper
+              // tool deterministically, without having to reverse-engineer the
+              // failure itself.
+              instruction: parsedArgs.reason === "truncated_json"
+                ? (retryExhausted
+                  ? "Your tool call was cut off before it finished — the arguments are incomplete, not malformed, almost always because the single call was too large for one response. Do not resend the same oversized call. Split the work into smaller pieces (for create_file, write one file per call, and if a single file is very large, write it in parts) so each call fits well within one response."
+                  : "Your previous tool call was cut off mid-output before its JSON finished — this is a size limit, not a formatting error, so do not just reformat and resend the same large call. Retry with a smaller payload: for create_file, write a single file per call (and split a very large file's content across successive create_file/append calls) so the whole call comfortably fits in one response.")
+                : retryExhausted
                 ? "Stop cleanly and report that the tool arguments could not be parsed. Do not resend the same malformed call."
                 : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });

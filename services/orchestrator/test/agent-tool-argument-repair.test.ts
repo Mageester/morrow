@@ -250,7 +250,11 @@ describe("agent tool-argument recovery", () => {
       retryExhausted: false,
     });
     expect(feedback.expectedSchema).toContain("path");
-    expect(feedback.instruction).toMatch(/single valid JSON object/);
+    // Truncation feedback must name the real cause (cut off / size), not tell
+    // the model to fix formatting, and must steer it to a smaller payload.
+    expect(feedback.instruction).toMatch(/cut off/i);
+    expect(feedback.instruction).toMatch(/smaller/i);
+    expect(feedback.instruction).not.toMatch(/single valid JSON object/);
 
     expect(calls(db).find((c: any) => c.id === "good")!.status).toBe("completed");
     expect(argEvents(db)).toHaveLength(1);
@@ -270,10 +274,13 @@ describe("agent tool-argument recovery", () => {
 
   it("stops cleanly after a second malformed retry for the same tool", async () => {
     seedYolo(db, ws);
+    // Genuinely malformed (not truncated) input: no JSON object at all. This
+    // exercises the generic exhausted-budget instruction, distinct from the
+    // size-specific guidance truncation now receives (next test).
     const provider = new MockProvider({
       chunks: [
-        [rawTool("bad1", "create_file", "{\"path\":\"note.txt\",\"content\":\"hi"), done],
-        [rawTool("bad2", "create_file", "{\"path\":\"note.txt\",\"content\":\"ho"), done],
+        [rawTool("bad1", "create_file", "garbage, not json"), done],
+        [rawTool("bad2", "create_file", "still not json"), done],
         [text("could not parse arguments"), done],
       ],
       delayMs: 1,
@@ -281,12 +288,47 @@ describe("agent tool-argument recovery", () => {
     await run(db, provider);
 
     const second = JSON.parse(calls(db).find((c: any) => c.id === "bad2")!.resultJson!);
-    expect(second).toMatchObject({ kind: "malformed_tool_arguments", retryExhausted: true });
+    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "invalid_json", retryExhausted: true });
     expect(second.instruction).toMatch(/Stop cleanly/);
     expect(argEvents(db)).toHaveLength(2);
     // Nothing was written for either malformed attempt.
     expect(readdirSync(ws)).toHaveLength(0);
     expect(states(db)).not.toContain("applying_changes");
+  });
+
+  it("tells a repeatedly-truncated create_file to split into smaller calls, not to fix formatting", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): a large multi-line
+    // create_file scaffold was cut off mid-string on output-token exhaustion,
+    // classified truncated_json, and given the generic "emit valid JSON, no
+    // fences/commas" hint — useless, because the JSON was never malformed, only
+    // incomplete. The model self-diagnosed ("the first call got truncated") and
+    // fell back to raw `node -e` shell writes. Truncation feedback must name the
+    // size cause and prescribe a smaller payload at BOTH attempts.
+    seedYolo(db, ws);
+    const bigOpen = `{"path":"index.html","content":"${"a".repeat(4000)}`; // never closes: truncated mid-string
+    const provider = new MockProvider({
+      chunks: [
+        [rawTool("cut1", "create_file", bigOpen), done],
+        [rawTool("cut2", "create_file", bigOpen), done],
+        [text("splitting into smaller writes"), done],
+      ],
+      delayMs: 1,
+    });
+    await run(db, provider);
+
+    const first = JSON.parse(calls(db).find((c: any) => c.id === "cut1")!.resultJson!);
+    expect(first).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json", retryExhausted: false });
+    expect(first.instruction).toMatch(/cut off/i);
+    expect(first.instruction).toMatch(/smaller|single file/i);
+    expect(first.instruction).not.toMatch(/Stop cleanly|single valid JSON object/);
+
+    const second = JSON.parse(calls(db).find((c: any) => c.id === "cut2")!.resultJson!);
+    expect(second).toMatchObject({ kind: "malformed_tool_arguments", reason: "truncated_json", retryExhausted: true });
+    // Even when the budget is exhausted, truncation guidance is about size, not
+    // a formatting stop-clean message.
+    expect(second.instruction).toMatch(/Split the work|smaller/i);
+    expect(second.instruction).not.toMatch(/could not be parsed/i);
+    expect(readdirSync(ws)).toHaveLength(0);
   });
 
   it("rejects a missing required field without mutating the filesystem", async () => {
