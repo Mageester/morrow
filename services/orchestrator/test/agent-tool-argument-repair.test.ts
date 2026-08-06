@@ -8,6 +8,8 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask, proposePatchTarget, isEchoedAppliedWrite } from "../src/execution/agent.js";
+import { processesRepository } from "../src/repositories/processes.js";
+import { ProcessSupervisor } from "../src/processes/supervisor.js";
 import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -180,6 +182,47 @@ describe("agent tool-argument recovery", () => {
     // Recovered, not interrupted: the corrected retry runs and the task closes.
     expect(calls(db).find((c: any) => c.id === "fixed")!.status).toBe("completed");
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("clears a stale invalid_tool_arguments failure once the corrected retry is a running background process", async () => {
+    // Live regression (deepseek-v4-flash, converter build): the model's
+    // purpose text for a static-file-server command said "...for browser
+    // verification", so BOTH the rejected call (missing "executable") and
+    // its corrected retry were classified verification-shaped by that
+    // wording alone. The successful retry was then (correctly) excluded from
+    // independentVerifications as a running background process with no
+    // pass/fail outcome — but that left the stale rejection as the only
+    // entry in the list, and a fully browser-verified frontend app was
+    // rejected as failed_final_verification on a mistake fixed three turns
+    // earlier.
+    seedYolo(db, ws);
+    const logsDir = mkdtempSync(join(tmpdir(), "morrow-toolargs-logs-"));
+    const supervisor = new ProcessSupervisor(processesRepository(db), logsDir);
+    const purpose = "Serve the production build for browser verification";
+    const provider = new MockProvider({
+      chunks: [
+        [tool("noexec", "run_command", { args: ["-e", "require('http').createServer(()=>{}).listen(0);setInterval(()=>{},1000);"], purpose }), done],
+        [tool("fixed", "run_command", { executable: "node", args: ["-e", "require('http').createServer(()=>{}).listen(0);setInterval(()=>{},1000);"], purpose, background: true }), done],
+        [text("finished"), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 8 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const noexec = calls(db).find((c: any) => c.id === "noexec")!;
+    expect(noexec.status).toBe("failed");
+    expect(JSON.parse(noexec.resultJson!)).toMatchObject({ kind: "invalid_tool_arguments", invalidField: "executable" });
+    const fixed = calls(db).find((c: any) => c.id === "fixed")!;
+    expect(fixed.status).toBe("completed");
+    const fixedResult = JSON.parse(fixed.resultJson!);
+    expect(fixedResult.status).toBe("running");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+
+    await supervisor.terminate(fixedResult.processId, { force: true });
+    await new Promise((r) => setTimeout(r, 300));
+    rmSync(logsDir, { recursive: true, force: true });
   });
 
   it("returns structured feedback for truncated arguments, then applies a corrected retry", async () => {

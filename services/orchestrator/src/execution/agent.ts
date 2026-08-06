@@ -2718,9 +2718,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       && typeof result.text === "string"
       && typeof result.injectionFindings === "number";
   };
+  // Benign console noise (React DevTools banner, Vite HMR "connected" logs,
+  // non-error warnings) is normal on almost every real page and must not
+  // block completion â€” only genuine runtime errors should. A page-error is
+  // always an uncaught exception; a console-kind entry is only severe when
+  // Playwright classified it as `type() === "error"` (console.error).
+  const isSevereConsoleEvent = (event: unknown): boolean => {
+    if (!event || typeof event !== "object") return false;
+    const item = event as { kind?: unknown; detail?: unknown };
+    if (item.kind === "page-error") return true;
+    if (item.kind === "console") return (item.detail as { level?: unknown } | undefined)?.level === "error";
+    return false;
+  };
   const isCleanConsoleResult = (result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result) || !Array.isArray(result?.events)) return false;
-    return result.events.length === 0 && (result.count === undefined || result.count === 0);
+    return !result.events.some(isSevereConsoleEvent);
   };
   const isValidViewportResult = (result: Record<string, unknown> | null): boolean =>
     !hasBrowserFailure(result) && isViewport(result?.viewport) && typeof result?.url === "string";
@@ -2837,13 +2849,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       }
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
       if (call.toolName === "run_command") {
+        let isVerificationShaped = false;
         try {
-          // A host-side argument/schema rejection is never skipped: the model's
-          // action never executed, so an "I'm done" after it is unverified.
-          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)
-            && call.errorType !== "invalid_tool_arguments") continue;
-        } catch {
-          if (call.errorType !== "invalid_tool_arguments") continue;
+          isVerificationShaped = runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>);
+        } catch { /* malformed args are classified via call.errorType below */ }
+        if (!isVerificationShaped && call.errorType !== "invalid_tool_arguments") {
+          // A host-side argument/schema rejection is never skipped: the
+          // model's action never executed, so an "I'm done" right after it is
+          // unverified. But that rejection must not become a PERMANENT block
+          // once the model demonstrably recovers â€” live bug: a run_command
+          // rejected for a missing "executable" field (a malformed static-
+          // file-server call) set a standing failed-verification state that
+          // no later evidence could clear, because the model's corrected
+          // retry was a background server start, not a "verification-shaped"
+          // command, so it never reached the exitCode bookkeeping below. The
+          // task then failed completion despite full subsequent browser
+          // verification. Any later run_command that actually completes
+          // proves the model got past the rejection, so clear it here.
+          if (call.status === "completed" && failure?.tool === "run_command") failure = null;
+          continue;
         }
       }
       // A call denied purely because the current mode forbids it (read-only /
@@ -3330,11 +3354,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       };
     });
 
-    const independentVerifications = calls.flatMap((call) => {
+    const independentVerifications = calls.flatMap((call, index) => {
       if (call.toolName !== "run_command") return [];
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>; } catch { /* failure remains unverified */ }
-      if (!runCommandIsVerification(args) && call.errorType !== "invalid_tool_arguments") return [];
+      const isVerificationShaped = runCommandIsVerification(args);
+      if (!isVerificationShaped && call.errorType !== "invalid_tool_arguments") return [];
+      // A host-side argument rejection means the command never executed, so
+      // it is only evidence of an unverified "I'm done" if it is truly the
+      // LAST action the model attempted for that purpose â€” once any later
+      // run_command call completes, the model has demonstrably moved past
+      // it. This must apply regardless of whether the rejected call happens
+      // to be classified "verification-shaped": live bug â€” a background
+      // static-file-server command whose purpose said "...for browser
+      // verification" was rejected for a missing "executable" field, then
+      // corrected and successfully re-run three turns later. Both the
+      // rejection and its successful retry shared the identical purpose
+      // text, so BOTH counted as verification-shaped; the successful retry
+      // was then (correctly) excluded below as a background process with no
+      // pass/fail outcome, leaving the stale rejection as the only entry and
+      // wrongly blocking a fully browser-verified frontend app.
+      if (call.errorType === "invalid_tool_arguments") {
+        const recoveredLater = calls.slice(index + 1).some((later) => later.toolName === "run_command" && later.status === "completed");
+        if (recoveredLater) return [];
+      }
       // A command that was detached as a background server has not produced a
       // pass/fail outcome; it is intentionally still running. Scoring it as a
       // failed verification wrongly blocks completion of a finished build.
@@ -5850,7 +5893,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         const currentTurnEstablishedCompletionEvidence = currentToolCalls.some((toolCall) => {
           const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
           if (persistedCall?.status !== "completed" || persistedCall.errorType) return false;
-          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || BROWSER_EVIDENCE_TOOLS.has(toolCall.name)) return true;
+          // browser_open is exploratory: the model wrote its narration BEFORE
+          // seeing whether the navigation actually revealed a healthy page.
+          // Live bug: a turn saying "Final check: reload the page to confirm
+          // clean route health" plus a browser_open call was accepted as the
+          // canonical final answer purely because a completed browser-evidence
+          // tool call was present in the same turn â€” the model never got to
+          // react to what the reload actually showed. Every other evidence
+          // tool (click, snapshot, console, screenshot) reports on state the
+          // model already observed before writing its narration, so only
+          // browser_open needs this exclusion.
+          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || (BROWSER_EVIDENCE_TOOLS.has(toolCall.name) && toolCall.name !== "browser_open")) return true;
           return currentTurnHasSuccessfulVerification && toolCall.name === "run_command";
         });
         const candidateCompletion = await evaluateCurrentTaskCompletion(

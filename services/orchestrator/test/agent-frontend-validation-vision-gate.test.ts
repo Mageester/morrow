@@ -74,6 +74,20 @@ class ConsoleErrorBrowser extends FrontendBrowser {
   }
 }
 
+// Real pages almost always log something benign (a React DevTools banner, a
+// Vite HMR "connected" message, a non-error warning). None of that is a
+// functional problem and must not block completion the way an actual error
+// does.
+class BenignConsoleBrowser extends FrontendBrowser {
+  override evidence(): BrowserEvidence[] {
+    return [
+      { kind: "console", message: "Download the React DevTools for a better development experience", detail: { level: "log" }, createdAt: new Date().toISOString() },
+      { kind: "console", message: "[vite] connected.", detail: { level: "info" }, createdAt: new Date().toISOString() },
+      { kind: "console", message: "React Router Future Flag Warning", detail: { level: "warning" }, createdAt: new Date().toISOString() },
+    ];
+  }
+}
+
 class NavigationFailureBrowser extends FrontendBrowser {
   override async snapshot(): Promise<PageSnapshot> {
     return { ...await super.snapshot(), navigationError: "route returned an application error" } as PageSnapshot;
@@ -223,6 +237,32 @@ describe("frontend-validation completion gate — vision requirement", () => {
     await runner.waitFor("t");
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
+  it("completes despite benign non-error console noise (regression: diligent console checks were penalized)", async () => {
+    // Live deepseek-v4-pro run building ShiftFlow: the model opened a real
+    // browser, ran browser_console repeatedly, correctly diagnosed the only
+    // observed messages as harmless Vite HMR/React DevTools noise unrelated
+    // to app functionality, and said so in its final report. The completion
+    // gate still blocked with frontend_console_unclean because it demanded
+    // zero console events of ANY kind, not zero actual errors — punishing
+    // the exact thorough investigation behavior we want.
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        frontendValidationTurn(),
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new BenignConsoleBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.completionBlockers?.some((b: any) => b.code === "frontend_console_unclean"))).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("does not complete when the durable browser route result reports navigation failure", async () => {
