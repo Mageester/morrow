@@ -215,6 +215,41 @@ export function isEchoedAppliedWrite(toolName: string, args: Record<string, unkn
 }
 
 /**
+ * True when a turn's text announces an action the model is ABOUT to take
+ * rather than reporting a concluded result — the fingerprint of a mid-work
+ * narration that must not be shipped to the user as the final report.
+ *
+ * The completion fast path accepts the current turn's text as the final answer
+ * because the model usually writes that text after seeing its evidence. But the
+ * text is emitted in the same turn as tool calls whose results the model has
+ * not seen yet, so it can be forward-looking. Live example (Pomodoro build,
+ * deepseek-v4-flash): "All three viewports captured. Final check: confirm the
+ * controls still render correctly on mobile and grab final console evidence." —
+ * accompanied by browser_snapshot + browser_console calls, then accepted as the
+ * entire final report even though the model was describing what it was about to
+ * do, not what it had concluded.
+ *
+ * The cue set is deliberately biased toward first-person-future / next-action
+ * phrasing (and a trailing colon) and deliberately EXCLUDES common words that
+ * appear in genuine conclusions ("verified", "confirmed", "works", "passed",
+ * "done"). A false positive costs one extra tool-free summary turn; a false
+ * negative ships a bad report — so the check errs toward flagging. Only the
+ * final sentence is weighed, since a conclusion often recaps earlier actions.
+ */
+export function isForwardLookingNarration(text: string): boolean {
+  const normalized = (text ?? "").trim();
+  if (!normalized) return true; // no text at all is certainly not a real report
+  if (normalized.endsWith(":")) return true;
+  // Weigh the last sentence: a real conclusion frequently narrates the steps it
+  // took ("I clicked Start, then paused…") before its verdict, and only the
+  // trailing clause reveals whether the model believes it is finished.
+  const sentences = normalized.split(/(?<=[.!?])\s+/);
+  const tail = (sentences[sentences.length - 1] ?? normalized).toLowerCase();
+  const forwardCue = /\b(let me|i'?ll|i will|i'?m going to|i am going to|about to|now i|now let|let'?s|next[,:]?\s|continuing|proceeding|capturing|grab(?:bing)?|reload(?:ing)?|final check|one (?:more|last) (?:check|step)|remaining|still need)\b/;
+  return forwardCue.test(tail);
+}
+
+/**
  * Normalize a persisted `provider.usage` event payload into a RequestUsage
  * for folding into the cumulative seed on resume. Accepts both the current
  * canonical shape and every pre-canonical legacy shape (inputTokens as the
@@ -3062,6 +3097,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   let totalBytesRead = 0;
   let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
   let artifactDeliveryRecoverySent = false;
+  // One-shot guard for the directed final-summary turn (see the fast-path
+  // completion block): a fast-path completion accepts the current turn's text
+  // as the final report, but that text was written alongside the same turn's
+  // tool calls and can be forward-looking narration ("Final check: … grab
+  // final console evidence") rather than a real conclusion. When it is, we
+  // give the model exactly ONE more tool-free turn to write a genuine summary
+  // instead of shipping the narration as the report.
+  let finalSummaryTurnRequested = false;
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -5948,6 +5991,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           ? currentTurnHasSuccessfulVerification
           : currentTurnEstablishedCompletionEvidence;
         if (candidateCompletion.complete && candidateIsBoundToNewEvidence) {
+          // The work is durably done and verified, but candidateFinalText was
+          // written in the SAME turn as this turn's tool calls, so it can be
+          // forward-looking narration rather than a real conclusion. Shipping
+          // that as the report is the "silent completion" defect (live:
+          // Pomodoro build ended with "Final check: … grab final console
+          // evidence" as its entire final message). When the text reads as
+          // mid-work narration, spend exactly one tool-free turn asking the
+          // model to write a genuine summary, then let that clean text-only
+          // turn complete through the main boundary below. Guarded so it can
+          // fire at most once — if the model still won't conclude, we fall
+          // through and complete with whatever text we have rather than loop.
+          if (!finalSummaryTurnRequested && isForwardLookingNarration(candidateFinalText)) {
+            finalSummaryTurnRequested = true;
+            const directive = "The implementation is complete and all required verification has already passed — every check you were about to run is unnecessary. Reply now with a short, concrete final summary for the user: what you built and what you verified. Do NOT call any tools; respond with prose only.";
+            event("task.progress_warning", { reason: "final_summary_requested", message: directive, turn: absoluteTurn });
+            chatMessages.push({ role: "user", content: `MORROW FINAL SUMMARY (turn ${absoluteTurn}): ${directive}` });
+            noProgressTurns = 0;
+            continue;
+          }
           for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
           completeWithCanonicalAnswer(candidateFinalText, durableTurnKey);
           return;

@@ -7,7 +7,7 @@ import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { MockProvider } from "../src/provider/mock.js";
-import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executeAgentChatTask, isForwardLookingNarration } from "../src/execution/agent.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../src/browser/types.js";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -132,5 +132,95 @@ describe("completion fast path — browser_open exclusion", () => {
     const finalMessage = conversationsRepository(db).getMessage("ma");
     expect(finalMessage?.content ?? "").not.toContain("Final check: reload the page");
     expect(finalMessage?.content ?? "").toContain("Verified: the reload showed a clean, working page.");
+  });
+
+  it("requests a tool-free summary turn instead of shipping forward-looking narration as the report", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): the task completed green
+    // but its entire final report was "All three viewports captured. Final
+    // check: confirm the controls still render correctly on mobile and grab
+    // final console evidence." — forward-looking narration written alongside a
+    // browser_snapshot + browser_console pair, accepted by the fast path
+    // because those evidence tools satisfied the contract. browser_open is not
+    // involved, so the earlier browser_open-only exclusion cannot catch it.
+    // The framework must recognize the narration is not a conclusion and spend
+    // one directed, tool-free turn getting a real summary.
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body><button id=e1>Inspect</button></body></html>\n" }), done],
+        // Establish every category of frontend completion evidence.
+        [
+          {
+            type: "tool_call" as const,
+            toolCalls: [
+              tool("bo1", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!,
+              tool("bs", "browser_snapshot", {}).toolCalls[0]!,
+              tool("bc", "browser_console", {}).toolCalls[0]!,
+              tool("bi", "browser_click", { ref: "e1" }).toolCalls[0]!,
+              tool("bd", "browser_viewport", { preset: "desktop" }).toolCalls[0]!,
+              tool("bds", "browser_screenshot", { label: "desktop" }).toolCalls[0]!,
+              tool("bt", "browser_viewport", { preset: "tablet" }).toolCalls[0]!,
+              tool("bts", "browser_screenshot", { label: "tablet" }).toolCalls[0]!,
+              tool("bm", "browser_viewport", { preset: "mobile" }).toolCalls[0]!,
+              tool("bms", "browser_screenshot", { label: "mobile" }).toolCalls[0]!,
+            ].map((call, index) => ({ ...call, index })),
+          },
+          done,
+        ],
+        // Forward-looking narration paired with same-turn evidence tools (NOT
+        // browser_open). The contract is already satisfiable, so the fast path
+        // would otherwise ship this sentence as the report.
+        [text("All three viewports captured. Final check: confirm the controls still render correctly on mobile and grab final console evidence."),
+          {
+            type: "tool_call" as const,
+            toolCalls: [
+              tool("fs", "browser_snapshot", {}).toolCalls[0]!,
+              tool("fc", "browser_console", {}).toolCalls[0]!,
+            ].map((call, index) => ({ ...call, index })),
+          },
+          done],
+        // The directed summary turn: a genuine, tool-free closing report.
+        [text("Built the Pomodoro timer (index.html): a 25:00 countdown with working Start, Pause, and Reset controls, verified in the browser with a clean console across desktop, tablet, and mobile."), done],
+      ],
+      delayMs: 1,
+    });
+    seed(db, ws, "Build a small website and verify it in the browser.");
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const finalMessage = conversationsRepository(db).getMessage("ma");
+    // The throwaway narration must not be the report; the genuine summary must.
+    expect(finalMessage?.content ?? "").not.toContain("Final check: confirm the controls");
+    expect(finalMessage?.content ?? "").toContain("Built the Pomodoro timer");
+    // And the directed-summary turn must have actually been requested.
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.progress_warning" && e.payload?.reason === "final_summary_requested")).toBe(true);
+  });
+});
+
+describe("isForwardLookingNarration", () => {
+  it("flags mid-work narration that announces an upcoming action", () => {
+    for (const text of [
+      "All three viewports captured. Final check: confirm the controls still render correctly on mobile and grab final console evidence.",
+      "Now let me start a static server for pomodoro/ and open it in the browser for validation.",
+      "Screenshot captured. Continuing with tablet and mobile.",
+      "Reset works. Now I'll verify the responsive layout.",
+      "Here is the plan:",
+      "",
+    ]) {
+      expect(isForwardLookingNarration(text)).toBe(true);
+    }
+  });
+
+  it("does not flag a genuine concluding report", () => {
+    for (const text of [
+      "Built the Pomodoro timer (index.html): a 25:00 countdown with working Start, Pause, and Reset controls, verified in the browser with a clean console.",
+      "Verified: the reload showed a clean, working page. Built and verified the page.",
+      "The responsive frontend passed DOM, console, interaction, and visual checks.",
+      "Done — all three controls work and the console is clean.",
+    ]) {
+      expect(isForwardLookingNarration(text)).toBe(false);
+    }
   });
 });
