@@ -24,14 +24,18 @@ const WORK_UNITS = 96;
  * product grows — with nothing about the actual rollover/compaction/recovery
  * behavior under test having changed.
  */
-const ROUTE = {
-  providerId: "mock" as const,
-  protocol: "openai-chat" as const,
-  endpointKind: "default" as const,
-  endpointHost: null,
-  endpointLimitTokens: 32_000,
-  endpointLimitSource: "provider-metadata" as const,
-};
+const DEFAULT_ENDPOINT_LIMIT_TOKENS = 32_000;
+
+function routeFor(endpointLimitTokens: number) {
+  return {
+    providerId: "mock" as const,
+    protocol: "openai-chat" as const,
+    endpointKind: "default" as const,
+    endpointHost: null,
+    endpointLimitTokens,
+    endpointLimitSource: "provider-metadata" as const,
+  };
+}
 
 export interface SustainedAutonomyAcceptanceResult {
   scenarioId: "sustained-autonomy-v1";
@@ -75,10 +79,10 @@ interface Script {
  * production code (MissionControllerRunner, TaskRunner, executeAgentChatTask,
  * the recovery planner, and the real Guardian) reacting to these turns.
  */
-function scriptedProvider(script: Script, phase: "break" | "fix"): AiProvider {
+function scriptedProvider(script: Script, phase: "break" | "fix", endpointLimitTokens: number): AiProvider {
   return {
     id: "mock",
-    route: ROUTE,
+    route: routeFor(endpointLimitTokens),
     async *streamChat(_messages: ChatMessage[]): AsyncIterable<ProviderChunk> {
       if (phase === "break") {
         if (script.readUnits === 12 && script.providerFailures === 0) {
@@ -120,8 +124,16 @@ function scriptedProvider(script: Script, phase: "break" | "fix"): AiProvider {
   };
 }
 
-export async function runSustainedAutonomyAcceptance(input: { root: string }): Promise<SustainedAutonomyAcceptanceResult> {
+export async function runSustainedAutonomyAcceptance(input: {
+  root: string;
+  /** Context window of the route the workload runs against. Defaults to the
+   * deliberately narrow 32k that forces rollovers in a short run. Raising it
+   * is how the same workload demonstrates the opposite property: that a route
+   * with real capacity stops paying for compaction it does not need. */
+  endpointLimitTokens?: number;
+}): Promise<SustainedAutonomyAcceptanceResult> {
   const startedAt = Date.now();
+  const endpointLimitTokens = input.endpointLimitTokens ?? DEFAULT_ENDPOINT_LIMIT_TOKENS;
   mkdirSync(input.root, { recursive: true });
   const workspace = mkdtempSync(join(input.root, "ws-"));
   const home = mkdtempSync(join(input.root, "home-"));
@@ -136,7 +148,7 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
     "process.exit(ok ? 0 : 1);",
   ].join("\n"));
   // Per-unit payload sized so 96 units drive at least three real context
-  // rollovers against ROUTE's 32k window. This is a pressure knob, not a
+  // rollovers against the default narrow 32k window. This is a pressure knob, not a
   // behavioral contract: context accounting legitimately gets *more* efficient
   // over time (tool-result externalization, bounded recent-tool context), and
   // when it does the same fixture stops reaching the pressure the scenario
@@ -180,7 +192,7 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
       const runner = new TaskRunner(db, async ({ db: taskDb, taskId, abortSignal, recovery }) => {
         await executeAgentChatTask({
           db: taskDb, taskId,
-          provider: scriptedProvider(script, phase),
+          provider: scriptedProvider(script, phase, endpointLimitTokens),
           maxTurns: 200,
           ...(abortSignal ? { abortSignal } : {}),
           ...(recovery ? { recovery } : {}),
@@ -271,7 +283,11 @@ export async function runSustainedAutonomyAcceptance(input: { root: string }): P
       && guardianRejections.length > 0
       && guardianAuthorizations.length === 1
       && runtime.leaseGeneration > leaseGenerationBeforeRestart
-      && rollovers.length >= 3
+      // Rollovers are required evidence only on the narrow route, where this
+      // workload genuinely cannot fit. On a route with real capacity, needing
+      // none of them is the correct outcome, not a missing gate — the durability
+      // properties below are asserted identically either way.
+      && (endpointLimitTokens > DEFAULT_ENDPOINT_LIMIT_TOKENS || rollovers.length >= 3)
       && checkpoints.length > 0
       && recoveries.length >= 2
       && databaseRestartCount === 1
