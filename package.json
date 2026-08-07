@@ -20,6 +20,7 @@
     "branches:inventory": "node scripts/branch-inventory.mjs",
     "branches:freshness": "node scripts/check-branch-freshness.mjs",
     "flagship:gate": "pnpm --filter @morrow/orchestrator exec tsx scripts/flagship-gate.ts",
+    "flagship:canary": "pnpm --filter @morrow/orchestrator exec tsx scripts/flagship-canary.ts",
     "flagship:run": "pnpm --filter @morrow/orchestrator exec vitest run test/live/flagship-build.test.ts",
     "smoke:acceptance-foundation": "node scripts/acceptance-foundation-smoke.mjs",
     "smoke:acceptance-durable": "node scripts/acceptance-foundation-smoke.mjs --scenario durable-autonomy-v1",
