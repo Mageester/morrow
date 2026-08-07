@@ -3368,6 +3368,24 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       requirements: { requirements: executionRequirements, evaluations: requirementEvaluations },
       lastMutationOrVerification: completionState.failure ? { passed: false, detail: completionState.failure.detail } : null,
       stagnation: { stalled: noProgressTurns >= 3 },
+      // Did this task change code that existed before it started?
+      //
+      // `propose_patch` edits an existing file, but "existing" must mean
+      // pre-existing: a task that creates a file and then refines it with a
+      // patch has produced nothing it could regress, and demanding a
+      // verification command for that would be noise. So a patch only counts
+      // when its target was not also created by this same task.
+      modifiedExistingFiles: (() => {
+        const createdHere = new Set(
+          calls
+            .filter((call) => call.toolName === "create_file" && call.status === "completed")
+            .flatMap((call) => writeTargetsOf(call)),
+        );
+        return calls.some((call) =>
+          call.toolName === "propose_patch"
+          && call.status === "completed"
+          && writeTargetsOf(call).some((target) => !createdHere.has(target)));
+      })(),
     };
   };
 

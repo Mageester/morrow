@@ -135,6 +135,13 @@ export interface CompletionInput {
   requirementEvaluations?: readonly RequirementEvaluation[];
   /** A durable gate result supplied by the agent when the last mutation failed. */
   lastMutationOrVerification?: { passed: boolean; detail?: string } | null;
+  /**
+   * True when the task edited code that already existed, rather than only
+   * creating new files. Changing someone's working code and never running
+   * anything is the case where "did you break it?" has an answer and nobody
+   * looked. Creation-only work has nothing to regress, so it is unaffected.
+   */
+  modifiedExistingFiles?: boolean;
   stagnation?: { stalled?: boolean; reason?: string; interruptionPending?: boolean };
 }
 
@@ -325,9 +332,29 @@ export const TASK_COMPLETION_CONTRACTS: Record<TaskShape, CompletionContract> = 
     taskShape: "file_delivery",
     requiredEvidence: ["canonical_final_answer", "durable_artifact", "requirements"],
     requiresArtifact: true,
+    // Creating files needs no verification — there is nothing to regress, and
+    // demanding a command for "write me a script" would be noise. Editing code
+    // that already worked is the opposite case, handled below.
     requiresIndependentVerification: false,
     minimumIndependentVerifications: 0,
-    evaluate: () => undefined,
+    evaluate(input, blockers) {
+      if (!input.modifiedExistingFiles) return;
+      // Measured on a feature task: the agent read the repo, patched `src/`,
+      // wrote a test file, ran NOTHING, and the task closed as `completed` with
+      // the feature unimplemented — 5 of 10 runs. `file_delivery` required zero
+      // verification, so "implement X in src/" was graded like "create a file".
+      //
+      // This is also what drives the behavior, not just the reporting: the
+      // blocker is fed back into the loop, so the agent is told to run its
+      // verification and continues instead of stopping.
+      const verifications = input.independentVerifications ?? input.verifications ?? [];
+      if (!verifications.some((verification) => verification.passed === true)) {
+        blockers.push(blocker(
+          "missing_independent_verification",
+          "Existing code was changed but no verification command passed. Run the project's tests or build and make them pass before finishing.",
+        ));
+      }
+    },
   },
   cli_application: {
     taskShape: "cli_application",
