@@ -2159,10 +2159,19 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           throw new AgentToolFailure(feedback.message, feedback.result);
         }
         if (pf.oldPath !== "/dev/null" && originalContent !== null && hashString(newContent) === hashString(originalContent)) {
+          // A no-op patch is a failed write attempt on this file like any other,
+          // so it counts toward the per-file tally that drives the escalation
+          // out of diff authoring. Leaving it uncounted let a model burn its
+          // first attempt for free and reach the escape hatch a turn later than
+          // it should have.
+          const noEffectAttempts = (patchFailureCountsByFile.get(pf.newPath) ?? 0) + 1;
+          patchFailureCountsByFile.set(pf.newPath, noEffectAttempts);
           throw new AgentToolFailure(`Patch produced no content changes for: ${pf.newPath}`, {
             error: `Patch produced no content changes for: ${pf.newPath}`,
             kind: "patch_no_effect",
             targetFile: pf.newPath,
+            attemptsForFile: noEffectAttempts,
+            switchToCreateFile: noEffectAttempts >= 1,
             currentFile: {
               path: pf.newPath,
               hash: hashString(originalContent),
@@ -2170,7 +2179,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               truncated: Buffer.byteLength(originalContent, "utf8") > 16 * 1024,
               content: originalContent.slice(0, 16 * 1024),
             },
-            instruction: "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
+            instruction: "The patch changed nothing. Do not resend a diff for this file â€” call create_file with the complete intended contents of the file instead; Morrow applies it as a safe, backed-up whole-file edit.",
           });
         }
         const destPath = assertContainedRealPath(workspacePath, pf.newPath);
