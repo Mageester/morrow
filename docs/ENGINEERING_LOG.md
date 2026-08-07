@@ -2,6 +2,53 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-08-07 - first real-provider evidence, and paced provider retries
+
+- **DeepSeek qualifies at 10/10.** The flagship workflow ran 12 consecutive
+  times against `deepseek/deepseek-v4-flash` and passed every time: 5-7 tool
+  calls, 3,138-5,537 output tokens, 33.5-60.8s per run, a distinct artifact
+  hash each time. These are the first passing real-provider runs in the
+  project's history — before this the log held 13 runs, all HTTP 402 with zero
+  tool calls. `pnpm flagship:gate` now reports `deepseek 10/10 (qualified)`.
+- **The gate is still not passed, and says so.** It requires *two* providers at
+  9/10. Only one credential was available, so the verdict remains
+  "unproven: 1/2 providers". One provider passing proves the route, not the
+  product — that is the gate working, not a gap in it.
+- **Issue.** A rate limit ended a run. `Retry-After` was parsed off the 429,
+  carried through `ProviderError`, and written into the durable event — then
+  the agent retried *immediately*, twice, and failed the task, all inside a
+  second. `RateGuard` computed a correct cooldown too, but it is advisory and
+  only reorders candidates, so with a single configured provider the right
+  number was calculated and never waited. Anyone running one API key hit this
+  the moment their provider throttled them.
+- **Implementation.** `execution/provider-backoff.ts` states retry pacing once,
+  as a pure function of the error and what has already been spent. Faults are
+  classified by *what would actually fix them*, because "wait for the window
+  the provider named" and "recompact and try again" are different remedies:
+  - `rate_limit` — up to 6 attempts. `Retry-After` always wins over any
+    computed schedule; otherwise 2s doubling. Ignoring a stated window is how a
+    client earns a longer ban.
+  - `transport` (resets, timeouts, 5xx) — up to 4 attempts, 1s doubling.
+  - `context_rejection` — unchanged at 2 attempts and no delay; the remedy is
+    compaction and waiting only postpones it.
+  - `fatal` (auth, invalid request) — never retried.
+  Bounded two ways so a wedged provider still ends the task honestly: 60s per
+  wait, and a 300s total transient-fault budget per task. The 60s cap keeps any
+  single wait well under the 5-minute execution lease, and the lease is renewed
+  after each wait so a paced retry can never look like an abandoned worker.
+  Waits are abortable — cancelling does not sit through a rate limit.
+- **Testability.** The wait is injected (`backoffSleep`), so tests assert the
+  *pacing* rather than sleeping through it. The exhaustion test went from 15s
+  of real sleeping to asserting `[1000, 2000, 4000, 8000]`.
+- **Privacy/security impact.** None. No credential is read, printed, logged, or
+  committed. Backoff events carry only fault class, delay, and reason.
+- **Tests.** `test/provider-backoff.test.ts` (16 cases: classification,
+  Retry-After precedence, rising schedule, both ceilings, both budgets,
+  cancellation) plus an end-to-end case in `test/segmented-agent.test.ts` where
+  a provider throttles twice with a stated window and the task **completes**
+  instead of failing. Orchestrator 174 files / 1836 tests; `pnpm check`,
+  `pnpm test` (14 packages), `pnpm build` green.
+
 ## 2026-08-07 - context windows, and why long tasks did not finish
 
 Resolves KNOWN_ISSUES 15 (*Incorrect DeepSeek V4 context limit prevents valid

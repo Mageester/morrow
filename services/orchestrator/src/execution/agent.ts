@@ -46,6 +46,7 @@ import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, 
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
 import { globalRateGuard } from "../provider/rate-guard.js";
+import { classifyProviderFault, decideProviderRetry, sleepUnlessAborted, type ProviderFaultClass } from "./provider-backoff.js";
 import { translateReasoning } from "../provider/reasoning.js";
 import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata } from "../routing/models.js";
@@ -477,6 +478,11 @@ type Dependencies = {
   recovery?: { checkpointCursor: number; executionLease: { segmentId: string; ownerId: string; generation: number } };
   /** Deterministic crash-boundary hook used by restart tests. Production callers omit it. */
   onSegmentBoundary?: (reason: "context_pressure" | "turn_budget" | "provider_failure") => void | Promise<void>;
+  /** How a retry backoff actually waits. Injected by tests so they can assert
+   * the *pacing* rather than sit through it â€” a suite that really sleeps out a
+   * rate-limit schedule is both slow and testing the clock instead of the
+   * decision. Production uses the real timer. */
+  backoffSleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable for deterministic browser-policy tests. Production uses the
    * hardened Playwright controller. */
   browserFactory?: (options: PlaywrightControllerOptions) => BrowserController;
@@ -661,6 +667,7 @@ export async function executeAgentChatTask({
   onSegmentBoundary,
   browserFactory,
   supervisor,
+  backoffSleep = sleepUnlessAborted,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
@@ -2869,6 +2876,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       ? preset.timeoutMs * outputBudgetMultiplier
       : preset.timeoutMs;
   let providerRecoverySegments = 0;
+  // Retry budget is tracked per fault class, because "wait for the window the
+  // provider named" and "recompact and try again" are different remedies that
+  // deserve different patience. See execution/provider-backoff.ts.
+  const providerRetryState = new Map<ProviderFaultClass, number>();
+  let providerBackoffSpentMs = 0;
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
   let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
@@ -4209,6 +4221,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       const retryableProviderError = isRetryableProviderError(e);
       const providerContextRejection = isProviderContextRejection(e);
       const safeProviderMessage = redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 2_000);
+      const faultClass = classifyProviderFault(e, retryableProviderError, providerContextRejection);
+      const decision = decideProviderRetry({
+        error: e,
+        isRetryable: retryableProviderError,
+        isContextRejection: providerContextRejection,
+        state: { attemptsUsed: providerRetryState.get(faultClass) ?? 0, totalBackoffMs: providerBackoffSpentMs },
+        guardRemainingMs: globalRateGuard.remainingMs(providerType),
+      });
       event("provider.error_classified", {
         errorName: e instanceof Error ? e.name : typeof e,
         message: safeProviderMessage.slice(0, 500),
@@ -4216,10 +4236,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         retryable: retryableProviderError,
         contextRejection: providerContextRejection,
         recoveryAttemptsUsed: providerRecoverySegments,
+        faultClass: decision.faultClass,
+        willRetry: decision.retry,
+        backoffMs: decision.delayMs,
+        retryReason: decision.reason,
       });
-      if ((retryableProviderError || providerContextRejection) && providerRecoverySegments < 2) {
+      if (decision.retry) {
+        providerRetryState.set(faultClass, (providerRetryState.get(faultClass) ?? 0) + 1);
         providerRecoverySegments++;
         forceProviderCompaction = providerContextRejection;
+        if (decision.delayMs > 0) {
+          // Paced, not spun. Retrying a 429 instantly is how a client turns a
+          // brief throttle into a longer one.
+          event("provider.retry_backoff", {
+            faultClass: decision.faultClass,
+            delayMs: decision.delayMs,
+            reason: decision.reason,
+            totalBackoffMsBefore: providerBackoffSpentMs,
+          });
+          await backoffSleep(decision.delayMs, abortSignal);
+          providerBackoffSpentMs += decision.delayMs;
+          if (abortSignal?.aborted || tasks.getTaskById(taskId)?.status === "cancelled") {
+            handleCancellation();
+            return;
+          }
+          // The lease is five minutes and a wait consumes part of it. Renewing
+          // here keeps a paced retry from ever looking like an abandoned worker.
+          renewExecutionLease();
+        }
         const checkpointId = await persistExecutionCheckpoint("provider_recovery");
         if (interruptAtSegmentLimit(checkpointId)) return;
         const failedProvider = currentServedBy;

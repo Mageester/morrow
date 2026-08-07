@@ -16,6 +16,7 @@ import { reconcileTasksOnStartup } from "../src/recovery.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { countChatTokens, measureProviderRequest } from "../src/execution/context-budget.js";
 import { resolveModelBudget } from "../src/routing/model-budget.js";
+import { TRANSPORT_ATTEMPTS } from "../src/execution/provider-backoff.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
@@ -290,6 +291,57 @@ describe("durable agent segments", () => {
     }
   });
 
+  it("survives a rate limit instead of failing the task", async () => {
+    // The shape that made single-key runs unreliable: the provider throttles
+    // once, names its window, and Morrow used to burn both instant retries
+    // inside a second and fail. A 429 is a queue signal, not a defect.
+    const workspace = mkdtempSync(join(tmpdir(), "morrow-rate-limit-survival-"));
+    const db = openDatabase(":memory:");
+    try {
+      const at = new Date().toISOString();
+      projectRepository(db).createProject({ id: "p", name: "P", workspacePath: workspace, createdAt: at });
+      const convs = conversationsRepository(db);
+      convs.createConversation({ id: "c", projectId: "p", title: "C", createdAt: at, updatedAt: at });
+      convs.appendMessage({ id: "u", conversationId: "c", role: "user", content: "Answer after the throttle clears.", createdAt: at, updatedAt: at });
+      taskRepository(db).createTask({ id: "t", projectId: "p", kind: "agent_chat", status: "queued", createdAt: at });
+      convs.appendMessage({ id: "a", conversationId: "c", role: "assistant", content: "", taskId: "t", streamingState: "queued", createdAt: at, updatedAt: at });
+
+      let calls = 0;
+      const provider: AiProvider = {
+        id: "mock",
+        async *streamChat(): AsyncIterable<ProviderChunk> {
+          calls += 1;
+          if (calls <= 2) {
+            throw new ProviderError("rate_limit", "Too Many Requests", { kind: "rate_limit", retryable: true, status: 429, retryAfterMs: 12_000 });
+          }
+          yield { type: "text", text: "THROTTLE_CLEARED" };
+          yield { type: "done" };
+        },
+      };
+
+      const waits: number[] = [];
+      await executeAgentChatTask({
+        db, taskId: "t", provider,
+        backoffSleep: async (delayMs) => { waits.push(delayMs); },
+      });
+
+      // The run completes. This is the whole point.
+      expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+      expect(calls).toBe(3);
+      // And it waited the window the provider actually named, both times,
+      // rather than retrying instantly and earning a longer throttle.
+      expect(waits).toEqual([12_000, 12_000]);
+
+      const backoffEvents = taskRecordsRepository(db).listEvents("t")
+        .filter((event) => event.type === "provider.retry_backoff");
+      expect(backoffEvents).toHaveLength(2);
+      expect(backoffEvents[0]!.payload).toMatchObject({ faultClass: "rate_limit", delayMs: 12_000 });
+    } finally {
+      db.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("returns an exhausted mission provider failure to controller recovery", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "morrow-mission-provider-recovery-"));
     const db = openDatabase(":memory:");
@@ -314,9 +366,20 @@ describe("durable agent segments", () => {
         },
       };
 
-      await executeAgentChatTask({ db, taskId: "t", provider });
+      // Backoff is injected rather than slept: this asserts the *pacing*, and a
+      // suite that really waited out the schedule would be testing the clock.
+      const waits: number[] = [];
+      await executeAgentChatTask({
+        db, taskId: "t", provider,
+        backoffSleep: async (delayMs) => { waits.push(delayMs); },
+      });
 
-      expect(calls).toBe(3);
+      // A connection reset is a transport fault: retried on a rising schedule,
+      // then given up on. One initial call plus TRANSPORT_ATTEMPTS retries.
+      expect(calls).toBe(1 + TRANSPORT_ATTEMPTS);
+      // Each retry waits longer than the last, so a flapping endpoint is not
+      // hammered. Previously every retry fired instantly.
+      expect(waits).toEqual([1_000, 2_000, 4_000, 8_000]);
       expect(taskRepository(db).getTaskById("t")?.status).toBe("interrupted");
       expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.currentPhase)
         .toBe("provider_recovery_required");
