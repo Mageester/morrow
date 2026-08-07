@@ -147,6 +147,14 @@ export const BUILT_IN_MODELS: BundledModelInfo[] = [
   model("openrouter", "openrouter/auto", "OpenRouter Auto", { tokenUsage: true, streamingUsage: true, speed: "balanced", cost: "unknown" }),
   model("openrouter", "deepseek/deepseek-v4-pro", "DeepSeek V4 Pro (via OpenRouter)", { contextWindow: 1000000, speed: "powerful", cost: "low" }),
   model("openrouter", "deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (via OpenRouter)", { contextWindow: 1000000, speed: "fast", cost: "low" }),
+  // The legacy DeepSeek slugs are reachable through OpenRouter too, and were
+  // declared only on the native route. Selecting one here resolved to no
+  // metadata at all, so the request fell to the 32,768-token safe fallback and
+  // a well-within-spec mission was refused with "36160 tokens needed, 24432
+  // available" against a model that actually accepts 1,000,000. Same canonical
+  // target and same deprecation as the native entries below.
+  model("openrouter", "deepseek/deepseek-chat", "DeepSeek Chat (via OpenRouter)", { canonicalTarget: { providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash" }, lifecycle: "deprecated", speed: "balanced", cost: "low" }),
+  model("openrouter", "deepseek/deepseek-reasoner", "DeepSeek Reasoner (via OpenRouter)", { canonicalTarget: { providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),
 
   // DeepSeek
   model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, speed: "powerful", cost: "low" }),

@@ -125,6 +125,24 @@ describe("DeepSeek V4 resolves its published window on every selection", () => {
     expect(budget.contextWindowConfidence).toBe("verified");
   });
 
+  it("resolves the same DeepSeek selections through OpenRouter", () => {
+    // Known issue 15: the legacy slugs were declared on the native route only,
+    // so selecting one through the gateway resolved to no metadata and fell to
+    // the 32,768-token safe fallback -- "36160 tokens needed, 24432 available"
+    // on a model that accepts 1,000,000. A slug reachable on two routes must
+    // resolve on both.
+    for (const selectedModel of ["deepseek/deepseek-chat", "deepseek/deepseek-reasoner", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"]) {
+      const budget = resolveModelBudget({
+        providerId: "openrouter",
+        selectedModel,
+        endpoint: { kind: "default", host: "openrouter.ai", protocol: "openai-chat", limitTokens: null, limitSource: "unknown" },
+        outputBudgetTokens: 4_096,
+      });
+      expect(budget.contextWindowTokens, selectedModel).toBe(1_000_000);
+      expect(budget.contextWindowSource, selectedModel).toBe("model-metadata");
+    }
+  });
+
   it("admits the 148,403-token request the live incident refused", () => {
     // test/context-budget.test.ts pins the rejection when 131,072 is the route's
     // actual limit; that stays correct. This is the same request on the route
