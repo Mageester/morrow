@@ -31,7 +31,26 @@ that it is unproven, and the gate says so.
 To add runs:
 
 ```
-MORROW_FLAGSHIP_RUNS=10 pnpm --filter @morrow/orchestrator exec vitest run test/live/flagship-build.test.ts
+MORROW_LIVE_FLAGSHIP=1 pnpm flagship:canary
+```
+
+That resolves each configured provider's model — its configured default, or
+live discovery for gateway routes whose available ids vary by account — runs
+the canaries, appends every outcome here before asserting anything, and prints
+where the gate stands. On a failure it also prints the classification, task
+status, tool-call count, tokens, and wall clock, which are the inputs a
+root-cause diagnosis needs.
+
+```
+MORROW_FLAGSHIP_RUNS=10 MORROW_FLAGSHIP_PROVIDERS=deepseek,opencode-zen \
+  MORROW_LIVE_FLAGSHIP=1 pnpm flagship:canary
+```
+
+`MORROW_LIVE_FLAGSHIP=1` is required every time: having credentials configured
+is not consent to spend them. The equivalent vitest invocation still works:
+
+```
+MORROW_LIVE_FLAGSHIP=1 MORROW_FLAGSHIP_RUNS=10 pnpm --filter @morrow/orchestrator exec vitest run test/live/flagship-build.test.ts
 ```
 
 Credentials are read from the ambient environment through the ordinary provider

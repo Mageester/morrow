@@ -1,5 +1,55 @@
 # Handoff — real-task reliability cycle, stopped 2026-08-02
 
+## Context-window defect found and fixed, 2026-08-07
+
+Branch `claude/morrow-reliability-long-tasks-rg778y`. Three commits; full
+repository validation green (`pnpm check`, `pnpm test` across 14 packages —
+orchestrator 173 files / 1819 tests, `pnpm build`, `git diff --check`).
+
+**What was wrong.** DeepSeek V4's published 1,000,000-token window was being
+used as 131,072. Three independent throttles, detailed in the 2026-08-07
+`docs/ENGINEERING_LOG.md` entry: a stale bundled endpoint constant applied as a
+ceiling over verified model metadata, the preset byte budget capping the
+working context independently of the route, and the legacy DeepSeek slugs
+resolving to no metadata at all through OpenRouter. This is KNOWN_ISSUES 15,
+now resolved.
+
+This matters for *this* cycle because it is a plausible contributor to the
+loop pathology Task 2 was built to bound. Running at an eighth of the window
+compacts about eight times more often than needed, and every compaction
+discards context the model already paid to gather — which is what produces
+re-reading the same file 31–92 times. Task 2's epoch bounds remain correct and
+necessary; they were bounding a loop that was partly being *caused* by a
+context ceiling that should never have applied.
+
+Measured on the sustained-autonomy scenario: the identical 96-unit workload
+takes 8 context rollovers at a 32,000-token window and **0** at 1,000,000,
+with every durability property unchanged.
+
+**Task 7 step 2 is now complete.** `pnpm flagship:canary` resolves each
+provider's model — configured default, or live discovery for gateway routes
+whose ids vary by account — runs the canaries, appends every outcome before
+asserting, and prints a classified diagnosis on failure. This closes the
+reason OpenCode Zen, one of the two declared gate providers, had never
+contributed a single run.
+
+**Still outstanding, and it is the whole point of the cycle.** Task 7 steps
+3–6, Task 8, Task 9. **No live-provider proof exists for any of this work.**
+The environment it was written in has no provider credentials, so not one real
+model was called. `pnpm flagship:gate` still reports *unproven*, which is the
+correct verdict. Do not merge claiming reliability is proven.
+
+To resume, on a machine with credentials:
+
+```bash
+MORROW_LIVE_FLAGSHIP=1 MORROW_FLAGSHIP_PROVIDERS=deepseek,opencode-zen pnpm flagship:canary
+```
+
+One canary per provider first. Classify any failure from the printed evidence,
+add a failing structural test, fix the root cause, rerun that provider only
+(Task 7 step 4). Only once canaries are stable, raise `MORROW_FLAGSHIP_RUNS=10`
+for the full windows, then Task 8.
+
 ## Inline continuation, 2026-08-03 — current state
 
 Luna max was still unreachable, so this pass was implemented inline rather than

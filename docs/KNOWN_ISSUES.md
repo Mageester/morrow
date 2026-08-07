@@ -584,82 +584,15 @@ largest published number.
 
 ## 15. Incorrect DeepSeek V4 context limit prevents valid long-running missions
 
-- **Severity:** P1 — mission reliability / provider capability metadata
-- **Area:** Context preflight / provider capability registry
-- **Verified reproduction:**
-  - The active UI identified the provider/model family as DeepSeek V4.
-  - A mission failed with: `"Context is too large for
-    deepseek/deepseek-chat (36160 tokens needed, 24432 available)."`
-  - Morrow recommended retrying with `/continue`.
-  - Per the verified external facts above, the official DeepSeek V4 Flash
-    and Pro context window is 1,000,000 tokens. A 36,160-token request
-    should fit easily on the official V4 endpoint if no external gateway
-    imposes a smaller documented limit.
-- **Expected:**
-  - Morrow resolves aliases to the canonical model before capability
-    calculation.
-  - The provider registry uses current, verified model metadata.
-  - Context preflight reflects the actual endpoint and model.
-  - A 36K request is not rejected against a fabricated or stale 24K
-    allowance.
-  - Morrow verifies gateway-specific restrictions if a custom base URL is in
-    use, and reports the true effective limit for that endpoint.
-  - Morrow does not tell the user to restart a session when the selected
-    model can accept the request.
-- **Likely component (confirmed via code inspection — this is evidence, not
-  proof of the exact runtime failure):**
-  `services/orchestrator/src/routing/models.ts:88-91` — `deepseek-v4-pro`
-  and `deepseek-v4-flash` are registered with `contextWindow: 1000000`
-  (correct, matches the verified official spec), but the legacy alias
-  entries `deepseek-chat` (line 90) and `deepseek-reasoner` (line 91) have
-  **no `contextWindow` field set at all**, which resolves to `null`
-  ("unknown") per the registry's documented deliberate-conservatism comment
-  (`models.ts:8-11`, `model()` helper defaulting `contextWindow: opts.contextWindow
-  ?? null` at `models.ts:39`). The rejection message names
-  `deepseek/deepseek-chat` — the unresolved alias — not
-  `deepseek-v4-flash`, which is consistent with the alias being used for
-  capability lookup instead of being resolved to its canonical model first.
-  **This confirms the registry gap; it does not by itself prove where the
-  specific "24432 available" number comes from or which code path performs
-  the preflight rejection** — that computation was not located in this
-  pass.
-- **Likely causes to investigate later (hypotheses — do not treat any one
-  as proven):**
-  - Stale ~32K-class context metadata used as a fallback for models with a
-    `null`/unknown `contextWindow`.
-  - An excessive fixed output reserve producing an effective ~24,432 usable
-    tokens from a larger nominal budget.
-  - Alias resolution occurring after context validation instead of before
-    it.
-  - Model-selection UI and the runtime model actually in use diverging (see
-    issue 17).
-  - Fallback-provider metadata (e.g. an OpenRouter or other secondary
-    provider's DeepSeek entry) overriding canonical DeepSeek metadata.
-  - A custom gateway's capabilities being confused with official DeepSeek
-    capabilities.
-- **User impact:** valid, well-within-spec requests are rejected, and the
-  user is told to `/continue` — advice that, per issue 7, may not actually
-  help and can mask the same instruction repeating indefinitely against the
-  same stale limit.
-- **Proposed improvement:** see **Correct provider capability registry** and
-  **Canonical model resolution** in the roadmap below.
-- **Acceptance criteria:**
-  - A deterministic provider-registry test asserts 1M context for V4 Flash
-    and V4 Pro.
-  - `deepseek-chat` is canonicalized to V4 Flash before preflight.
-  - A simulated 36,160-token request passes context preflight.
-  - Context calculations include system prompts, tool schemas, messages,
-    expected output reserve, and provider-specific fields.
-  - The effective limit and source of that limit can be inspected in
-    diagnostics.
-  - Custom base URLs can override model metadata explicitly without
-    silently inheriting incorrect defaults.
-  - The UI displays the actual runtime model and canonical model
-    consistently (see issue 17).
-- **Evidence source:** manual acceptance test, 2026-07-11 (mission
-  transcript with exact rejection text) + code inspection
-  (`services/orchestrator/src/routing/models.ts:8-11,39,88-91`) + DeepSeek
-  API Docs — Models & Pricing (see "External model facts" above).
+- **Status:** **[RESOLVED 2026-08-07]** — root cause found and fixed as a
+  class. Moved to `docs/ENGINEERING_LOG.md`; see the 2026-08-07 entry for the
+  mechanism, the fix, and the guards. Two of the hypotheses recorded here were
+  close but neither was the whole cause: the alias gap was real (and had been
+  partly closed by canonical model identity), and a stale fallback was real,
+  but the dominant throttle was a bundled 131,072-token endpoint constant on
+  the *native* DeepSeek route being applied as a ceiling over verified model
+  metadata, compounded by the preset byte budget capping the working context
+  independently of the route.
 
 ## 16. Deprecated DeepSeek aliases remain exposed and may use stale capabilities
 
@@ -861,6 +794,6 @@ evidence.
 | 12 | Duplicate create/change activity events | P2 | Activity feed |
 | 13 | Inaccurate task plan/report grading and duration values | P2 | Task report |
 | 14 | Top-level help discoverability (confirmed) | P3 | `morrow help` |
-| 15 | Incorrect DeepSeek V4 context limit prevents valid long-running missions | P1 | Provider registry |
+| 15 | Incorrect DeepSeek V4 context limit prevents valid long-running missions — **RESOLVED 2026-08-07** | P1 | Provider registry |
 | 16 | Deprecated DeepSeek aliases remain exposed | P1/P2 | Provider registry |
 | 17 | Stale model display and effective-model confusion | P2 | Model selection UI |

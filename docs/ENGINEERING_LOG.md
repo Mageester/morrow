@@ -2,6 +2,80 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-08-07 - context windows, and why long tasks did not finish
+
+Resolves KNOWN_ISSUES 15 (*Incorrect DeepSeek V4 context limit prevents valid
+long-running missions*, P1).
+
+- **Issue.** DeepSeek V4 publishes a 1,000,000-token context window. Morrow was
+  sending requests against 131,072 of it, and had been for as long as the V4
+  models have existed. Nothing failed loudly: the model answered and the suite
+  stayed green, so the symptom only surfaced on long work, where a well-within-
+  spec mission was refused outright — the recorded transcript reads *"36160
+  tokens needed, 24432 available"* against a model that accepts a million.
+- **Root cause, in three parts.** Issue 15 recorded five hypotheses. Two were in
+  the right neighborhood; none was the whole cause.
+  1. `provider/registry.ts` declared `defaultEndpointLimitTokens: 131_072` on
+     the DeepSeek route — a constant predating V4. `resolveEffectiveContext`
+     takes the *smallest* of advertised model capacity and endpoint limit, so
+     the stale constant won every request. DeepSeek was the only provider
+     carrying such a constant, which is why nothing else showed the symptom.
+  2. The preset byte budget (`contextBudgetBytes: 524288`) became
+     `compactionTargetTokens` through a `min()`, pinning the working context at
+     131,072 tokens regardless of the route's real size.
+  3. The legacy slugs `deepseek/deepseek-chat` and `deepseek/deepseek-reasoner`
+     were declared on the native route only. Selected through OpenRouter they
+     resolved to no metadata at all and fell to the 32,768-token safe fallback
+     — 27,504 usable after reserves, which is the *"24432 available"* in the
+     original transcript modulo the reserve formula of the day.
+- **Why it broke long tasks specifically.** Compaction is not free: each one
+  discards context the model already paid to gather, so the work gets re-done.
+  Running at an eighth of the available window meant compacting roughly eight
+  times more often than the route required. That is the mechanism behind the
+  measured pathology already recorded in this repository — the same file read
+  31–92 times, 276 compactions and ~201 MB of checkpoint rows inside a single
+  task that never finished, first mutation only after 70–190 provider turns.
+- **Fix, stated as one rule.** A bundled default is a fallback for what Morrow
+  does not know, never a ceiling on what it does.
+  - A `provider-metadata` limit on a *default* route now applies only when the
+    selected model has no metadata of its own. It still keeps unrecognized
+    model ids off the 32,768 fallback, which is the job it was actually for.
+  - An `endpoint-override` still caps: an operator naming a number is narrowing
+    the window deliberately. Custom and injected routes keep the existing safe
+    wipe untouched.
+  - The preset byte budget became a floor; the compaction target is a share of
+    the route's real usable input (`COMPACTION_TARGET_RATIO`). An explicit
+    caller `maxContextBytes` travels a separate channel and still caps.
+  - The OpenRouter legacy slugs gained the same canonical target and
+    deprecation as their native counterparts.
+- **Measured result.** DeepSeek's default route resolves 1,000,000 tokens
+  (`model-metadata`, verified) and compacts at 829,083 instead of 131,072. On
+  the sustained-autonomy scenario, the identical 96-unit workload takes **8
+  context rollovers at a 32,000-token window and 0 at 1,000,000**, with the
+  same durable outcomes — checkpoints, recovery, restart, lease generation,
+  Guardian authorization and SQLite integrity all unchanged.
+- **Guards.** `test/context-window-fidelity.test.ts` enforces the rule as a
+  class over the whole registry: no provider's default route may report less
+  context than its model advertises, and a slug reachable on two routes must
+  resolve on both. Negative controls pin that operator overrides still cap and
+  unverified custom endpoints still wipe. The wide-window sustained-autonomy
+  case fails if rollovers ever climb back above zero.
+- **Privacy/security impact.** None. No credential is read, printed, logged, or
+  committed; no permission boundary moves. Requests may now be larger, which is
+  the point — the ceiling was under-reporting a published capability, not
+  protecting anything.
+- **Also landed.** `pnpm flagship:canary` makes the live release gate a single
+  command, including live model discovery for gateway routes whose ids vary by
+  account. That closes the reason OpenCode Zen — one of the two *declared* gate
+  providers — had never contributed a run. The gate itself is unchanged and
+  **still unproven**: it requires two providers at 9/10 against real models, and
+  no such run exists.
+- **Validation.** `pnpm check`, `pnpm test` (14 packages; orchestrator 173
+  files / 1819 tests), `pnpm build`, `git diff --check` green. The canary path
+  was exercised end to end against a scratch log with a deliberately invalid
+  key: the resulting HTTP 401 classified as `harness_error` rather than scoring
+  against the model, and the committed evidence log was untouched.
+
 ## 2026-07-16 - beta.31 packaged durable-autonomy gates
 
 - **Durable routing and recovery:** mission preset/provider/model/reasoning are
