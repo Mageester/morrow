@@ -354,6 +354,12 @@ const BUILTIN_DESCRIPTORS: ProviderDescriptor[] = [
           protocol: "openai-chat",
           endpointKind: c.endpointType,
           endpointHost: c.host,
+          // Floor for a DeepSeek model id this build has no metadata for — it
+          // keeps an unrecognized selection off the 32,768-token safe fallback.
+          // It is NOT a ceiling: `resolveEffectiveContext` ignores it whenever
+          // the selected model has verified metadata, so the V4 models resolve
+          // to their published 1,000,000-token window. See the precedence rules
+          // in routing/effective-context.ts.
           defaultEndpointLimitTokens: 131_072,
         }),
       });

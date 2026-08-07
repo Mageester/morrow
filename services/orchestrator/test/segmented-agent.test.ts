@@ -15,6 +15,7 @@ import { TaskRunner } from "../src/runner.js";
 import { reconcileTasksOnStartup } from "../src/recovery.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { countChatTokens, measureProviderRequest } from "../src/execution/context-budget.js";
+import { resolveModelBudget } from "../src/routing/model-budget.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
@@ -264,7 +265,11 @@ describe("durable agent segments", () => {
       let providerCalls = 0;
       const provider: AiProvider = {
         id: "deepseek",
-        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com", endpointLimitTokens: 131_072, endpointLimitSource: "provider-metadata" },
+        // An operator-capped route, so the oversized requirement genuinely
+        // cannot fit. On DeepSeek's real 1,000,000-token window a 700 KB
+        // requirement *does* fit and is correctly sent — this test is about the
+        // rollover path when it truly does not.
+        route: { providerId: "deepseek", protocol: "openai-chat", endpointKind: "default", endpointHost: "api.deepseek.com", endpointLimitTokens: 131_072, endpointLimitSource: "endpoint-override" },
         async *streamChat(): AsyncIterable<ProviderChunk> {
           providerCalls += 1;
           yield { type: "done" };
@@ -565,7 +570,17 @@ describe("durable agent segments", () => {
 
       const taskId = "852da246-615d-481a-812e-550791ca89b3";
       expect(taskRepository(db).getTaskById(taskId)?.status).toBe("completed");
-      expect(sentMeasurements.every((tokens) => tokens <= 131_072)).toBe(true);
+      // The invariant is "never send more than this route verifiably accepts",
+      // not a hardcoded number. Pinning 131_072 here only looked correct while
+      // Morrow was under-reporting DeepSeek's window by ~8x; asserting against
+      // the resolved budget keeps the guard true at any window size.
+      const routeUsableInputTokens = resolveModelBudget({
+        providerId: "deepseek",
+        selectedModel: "deepseek-v4-flash",
+        endpoint: { kind: route.endpointKind, host: route.endpointHost, protocol: route.protocol, limitTokens: route.endpointLimitTokens, limitSource: route.endpointLimitSource },
+        outputBudgetTokens: 2_048,
+      }).usableInputTokens;
+      expect(sentMeasurements.every((tokens) => tokens <= routeUsableInputTokens)).toBe(true);
       expect(convs.listToolCallsForMessage("a").filter((call) => call.id === "write-result")).toHaveLength(1);
       expect(convs.listToolCallsForMessage("a").find((call) => call.id === "verify-node")?.status).toBe("completed");
       expect(readFileSync(join(workspace, "result.txt"), "utf8")).toBe("written once\n");

@@ -61,10 +61,11 @@ export interface ModelBudget {
    * live-fallback admission, and mission-completion requests all gate on
    * this, independent of any local preset/dev budget. */
   usableInputTokens: number;
-  /** usableInputTokens, additionally capped by a local preset/dev context
-   * budget (bytes) when one is configured. This is a *soft* efficiency
-   * target for the first-pass deterministic history trim, never a provider
-   * constraint — it must never be used to reject a request outright. */
+  /** Where the first-pass deterministic history trim aims: a share of
+   * `usableInputTokens` (COMPACTION_TARGET_RATIO), raised to the local
+   * preset/dev context budget when that byte budget is the larger of the two.
+   * A *soft* efficiency target, never a provider constraint — it must never be
+   * used to reject a request outright. */
   compactionTargetTokens: number;
 
   /**
@@ -79,11 +80,28 @@ export interface ModelBudget {
   routeFallbackIdentity: RouteFallbackIdentity;
 }
 
+/**
+ * Share of a route's verified usable input the deterministic trim aims to stay
+ * under before it compacts. Headroom, not a limit: the remainder absorbs the
+ * turn that crosses the line — a large tool result or a long assistant turn —
+ * so crossing it triggers one orderly compaction instead of an admission
+ * rejection. `usableInputTokens` remains the only number that can refuse a
+ * request.
+ */
+export const COMPACTION_TARGET_RATIO = 0.85;
+
 export function resolveModelBudget(input: {
   providerId: string;
   selectedModel: string;
   endpoint: EffectiveContextEndpointInput;
+  /** The preset's generic byte budget. A FLOOR: it may raise a small route's
+   * working context, never shrink a large one. */
   presetContextBudgetBytes?: number;
+  /** A byte budget the caller asked for explicitly (`maxContextBytes`). Unlike
+   * the preset default this still CAPS — someone naming a number is giving an
+   * instruction, not a baseline, and a dev/CLI knob that silently did nothing
+   * would be worse than not having one. */
+  explicitContextBudgetBytes?: number;
   outputBudgetTokens?: number;
   toolCount?: number;
   userContextWindowTokens?: number | null;
@@ -128,10 +146,28 @@ export function resolveModelBudget(input: {
   const totalReserveTokens = outputReserveTokens + safetyMarginTokens + toolReserveTokens + framingReserveTokens;
 
   const usableInputTokens = Math.max(1, contextWindowTokens - totalReserveTokens);
-  const presetBudget = input.presetContextBudgetBytes !== undefined
+  // The preset byte budget is a FLOOR, not a ceiling. Read as a ceiling it
+  // throttled every large-window route to whichever constant the presets happened
+  // to carry: `balanced` at 524288 bytes pinned a 1,000,000-token model to a
+  // 131,072-token working context, so a long task compacted roughly eight times
+  // more often than the route required. Every premature compaction discards
+  // context the model already paid to gather, which is what drove the measured
+  // long-run pathology — the same file read 31-92 times, 276 compactions and
+  // ~201 MB of checkpoints in a single task.
+  //
+  // Small-window routes are unaffected: their floor lands above the ratio and the
+  // clamp to `usableInputTokens` puts them exactly where the old `min` did.
+  const routeTargetTokens = Math.max(1, Math.floor(usableInputTokens * COMPACTION_TARGET_RATIO));
+  const presetFloorTokens = input.presetContextBudgetBytes !== undefined
     ? Math.max(1, Math.floor(input.presetContextBudgetBytes / 4))
+    : routeTargetTokens;
+  const explicitCapTokens = input.explicitContextBudgetBytes !== undefined
+    ? Math.max(1, Math.floor(input.explicitContextBudgetBytes / 4))
     : usableInputTokens;
-  const compactionTargetTokens = Math.max(1, Math.min(presetBudget, usableInputTokens));
+  const compactionTargetTokens = Math.max(
+    1,
+    Math.min(Math.max(routeTargetTokens, presetFloorTokens), explicitCapTokens, usableInputTokens),
+  );
 
   return {
     providerId: input.providerId,

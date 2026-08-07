@@ -865,6 +865,8 @@ export async function executeAgentChatTask({
     ? null
     : Math.max(1, maxAutomaticSegments);
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
+  // Governs how many raw bytes a single tool read may pull into context. The
+  // explicit caller value wins over the preset for that purpose either way.
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
 
   // Resolve active provider: an injected provider wins (tests); otherwise the
@@ -1003,7 +1005,11 @@ export async function executeAgentChatTask({
       limitTokens: primaryRoute.endpointLimitTokens,
       limitSource: primaryRoute.endpointLimitSource,
     },
-    presetContextBudgetBytes: contextBytesLimit,
+    // Separate channels on purpose: the preset number is a generic default that
+    // must not throttle a large-window route, while an explicit `maxContextBytes`
+    // from the caller is an instruction that still caps.
+    presetContextBudgetBytes: preset.contextBudgetBytes,
+    ...(maxContextBytes !== undefined ? { explicitContextBudgetBytes: maxContextBytes } : {}),
     outputBudgetTokens: preset.outputBudgetTokens ?? outputReserveTokens,
     toolCount: activeToolProfile === "none" ? 0 : activeToolProfile === "agent" ? IMPLEMENTED_TOOL_NAMES.length : READ_ONLY_TOOL_NAMES.size,
   });

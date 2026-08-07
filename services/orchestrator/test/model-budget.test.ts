@@ -116,12 +116,18 @@ describe("canonical model budget (single source of truth)", () => {
   });
 
   it("labels a genuinely provider-reported endpoint limit as verified, distinct from a configured override", () => {
+    // A provider-metadata limit governs when the selected model has no metadata
+    // of its own; on a known model the canonical window wins instead (see
+    // context-window-fidelity.test.ts). Either way the source is provider-
+    // reported, so it is "verified" — unlike an operator-supplied override,
+    // which is a claim Morrow cannot check.
     const budget = resolveModelBudget({
       providerId: "deepseek",
-      selectedModel: "deepseek-v4-flash",
+      selectedModel: "deepseek-not-a-released-model",
       endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
       outputBudgetTokens: 16_384,
     });
+    expect(budget.contextWindowTokens).toBe(131_072);
     expect(budget.contextWindowSource).toBe("provider-metadata");
     expect(budget.contextWindowConfidence).toBe("verified");
   });

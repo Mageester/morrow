@@ -138,7 +138,24 @@ export function resolveEffectiveContext(input: EffectiveContextInput): Effective
 
   const candidates: Array<{ tokens: number; source: ContextLimitSource }> = [];
   if (advertised !== null) candidates.push({ tokens: advertised, source: "model-metadata" });
-  if (endpointLimit !== null) candidates.push({ tokens: endpointLimit, source: input.endpoint.limitSource });
+  // A provider-declared default-route ceiling is a *fallback for models we have
+  // no metadata about*, not a cap on the ones we do. Treating it as a cap is how
+  // DeepSeek V4's published 1,000,000-token window silently became 131,072: the
+  // bundled per-provider constant predated the model and won the `min` below on
+  // every request. The result was compaction roughly eight times sooner than the
+  // route required and, at the extreme, a 148,403-token request refused against
+  // a limit the provider would have accepted.
+  //
+  // An `endpoint-override` is different in kind and still caps: the operator
+  // configured that number deliberately (DEEPSEEK_CONTEXT_LIMIT and friends),
+  // and narrowing a window on request is exactly what it is for.
+  const endpointLimitIsFallbackOnly =
+    input.endpoint.kind === "default"
+    && input.endpoint.limitSource === "provider-metadata"
+    && advertised !== null;
+  if (endpointLimit !== null && !endpointLimitIsFallbackOnly) {
+    candidates.push({ tokens: endpointLimit, source: input.endpoint.limitSource });
+  }
 
   // A custom/injected route with no verified endpoint ceiling must not inherit
   // marketing metadata from a model served by some other route. The single

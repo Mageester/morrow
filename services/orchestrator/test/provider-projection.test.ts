@@ -27,6 +27,14 @@ const snapshot: ExecutionCheckpointSnapshot = {
   evidenceRequired: ["tests pass"],
 };
 
+/**
+ * A genuinely narrow route, so these fixtures actually reach the compaction
+ * threshold they are written to exercise. The ceiling is stated as an
+ * `endpoint-override` because that is the kind that really does cap a model
+ * whose own window is larger — a bundled provider-metadata constant no longer
+ * does (context-window-fidelity.test.ts). This file is about the projection
+ * machinery; the exact provider is incidental.
+ */
 const resolution = resolveModelBudget({
   providerId: "deepseek",
   selectedModel: "deepseek-v4-flash",
@@ -35,7 +43,7 @@ const resolution = resolveModelBudget({
     host: "api.deepseek.com",
     protocol: "openai-chat",
     limitTokens: 131_072,
-    limitSource: "provider-metadata",
+    limitSource: "endpoint-override",
   },
   outputBudgetTokens: 16_384,
 });
@@ -297,7 +305,7 @@ describe("durable provider projection", () => {
     const smallResolution = resolveModelBudget({
       providerId: "opencode-zen",
       selectedModel: "deepseek-v4-flash-free",
-      endpoint: { kind: "default", host: "opencode.ai", protocol: "openai-chat", limitTokens: 32_768, limitSource: "provider-metadata" },
+      endpoint: { kind: "default", host: "opencode.ai", protocol: "openai-chat", limitTokens: 32_768, limitSource: "endpoint-override" },
       outputBudgetTokens: 4_096,
     });
     const result = projectProviderRequest({

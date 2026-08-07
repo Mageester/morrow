@@ -250,12 +250,15 @@ describe("context budget", () => {
     const resolution = resolveModelBudget({
       providerId: "deepseek",
       selectedModel: "deepseek-v4-flash",
+      // An operator-configured ceiling, which is the kind that still caps a
+      // model whose own window is larger. (A bundled provider-metadata constant
+      // no longer does — see context-window-fidelity.test.ts.)
       endpoint: {
         kind: "default",
         host: "api.deepseek.com",
         protocol: "openai-chat",
         limitTokens: 131_072,
-        limitSource: "provider-metadata",
+        limitSource: "endpoint-override",
       },
       outputBudgetTokens: 16_384,
     });
@@ -275,10 +278,15 @@ describe("context budget", () => {
     expect(admission.measurement.outputReserveTokens).toBe(16_384);
   });
 
-  it("rejects the incident's exact 148403-token request against 131072 before invocation", () => {
+  it("rejects the incident's exact 148403-token request against a real 131072 ceiling", () => {
+    // The original incident was recorded on a DeepSeek route Morrow *believed*
+    // was capped at 131,072. That belief was Morrow's own defect: DeepSeek V4
+    // publishes 1,000,000, and the same request is now admitted there
+    // (context-window-fidelity.test.ts). What remains under test here is the
+    // admission arithmetic itself, against a ceiling that is genuinely 131,072.
     const resolution = resolveModelBudget({
       providerId: "deepseek", selectedModel: "deepseek-v4-flash",
-      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "provider-metadata" },
+      endpoint: { kind: "default", host: "api.deepseek.com", protocol: "openai-chat", limitTokens: 131_072, limitSource: "endpoint-override" },
       outputBudgetTokens: 16_384,
     });
     const measurement = {

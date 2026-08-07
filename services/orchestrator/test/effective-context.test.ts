@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { providerRouteFingerprint, resolveEffectiveContext } from "../src/routing/effective-context.js";
 
 describe("route-aware effective context", () => {
-  it("uses a 131072 endpoint limit for an advertised 1M model", () => {
+  it("does not let a bundled endpoint constant cap an advertised 1M model", () => {
     const resolved = resolveEffectiveContext({
       providerId: "deepseek",
       selectedModel: "deepseek-v4-flash",
@@ -20,10 +20,16 @@ describe("route-aware effective context", () => {
     expect(resolved.canonicalModelId).toBe("deepseek-v4-flash");
     expect(resolved.advertisedModelCapacityTokens).toBe(1_000_000);
     expect(resolved.advertisedModelCapacitySource).toBe("model-metadata");
+    // The route still *declares* the bundled constant, and that is reported
+    // honestly — it is what a model with no metadata would fall back to.
     expect(resolved.configuredEndpointLimitTokens).toBe(131_072);
     expect(resolved.endpointLimitSource).toBe("provider-metadata");
-    expect(resolved.effectiveRequestLimitTokens).toBe(131_072);
-    expect(resolved.maximumInputTokens).toBe(114_688);
+    // But it does not govern: a provider-metadata default-route constant is a
+    // fallback for unknown models, not a ceiling on known ones. Capping here is
+    // what silently reduced DeepSeek V4 to an eighth of its published window.
+    expect(resolved.effectiveRequestLimitTokens).toBe(1_000_000);
+    expect(resolved.effectiveLimitSource).toBe("model-metadata");
+    expect(resolved.maximumInputTokens).toBe(1_000_000 - 16_384);
   });
 
   it("uses an endpoint override only for the actual custom route", () => {
