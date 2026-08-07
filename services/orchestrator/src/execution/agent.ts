@@ -2750,15 +2750,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           }
         } catch { /* malformed raw results cannot establish passed verification */ }
       } else if (call.toolName === "run_command" && call.status === "failed"
-        && commandExitMatchedExpectation(commandArgs(), commandExitCode(call) ?? 1)) {
+        && commandExitCode(call) !== undefined
+        && commandExitMatchedExpectation(commandArgs(), commandExitCode(call)!)) {
         // The executor classifies any non-zero exit as a failed tool call. When
         // that non-zero exit is exactly what the caller declared it was checking
         // for, the check passed â€” treating it as an outstanding failure is what
         // blocked completed work from ever closing.
-        const exitCode = commandExitCode(call);
-        verification = exitCode === undefined
-          ? { status: "passed", toolCallId: call.id }
-          : { status: "passed", toolCallId: call.id, exitCode };
+        //
+        // A real exit code is required. A timeout or a cancellation records
+        // none, and defaulting those to "non-zero" would let `expectNonZeroExit`
+        // launder a command that never actually ran to completion into a pass.
+        verification = { status: "passed", toolCallId: call.id, exitCode: commandExitCode(call)! };
         failedOutcome = null;
       } else if (call.toolName === "run_command" && call.status === "failed") {
         // Throw-classified command failures (non-zero exit, timeout, cancel)

@@ -75,6 +75,15 @@ describe("a command may declare that failing is the correct outcome", () => {
     }
   });
 
+  it("does not let a declared expectation launder a timeout into a pass", () => {
+    // A timeout or cancellation records no exit code. Treating "no exit code"
+    // as "non-zero, as declared" would mean a command that never ran to
+    // completion counted as a passing check.
+    const args = { executable: "node", args: ["cli.mjs", "missing.txt"], purpose: "check the CLI rejects a missing file", expectNonZeroExit: true };
+    const noExitCode = { status: "failed" as const, toolName: "run_command" as const, argsJson: JSON.stringify(args), resultJson: JSON.stringify({ terminationReason: "timeout" }) };
+    expect(toolCallPassedVerification(noExitCode)).toBe(false);
+  });
+
   it("honors the declaration when the executor classified the call as failed", () => {
     // A non-zero exit arrives as a *failed tool call*, so the declaration has to
     // be honored on that branch too or the fix does nothing in practice.
