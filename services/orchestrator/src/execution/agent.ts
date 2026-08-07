@@ -4667,7 +4667,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const repeatedTool = !dynamicBrowserCall && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loopSignature = toolCallSignature(tc.name, tc.arguments);
-        const loop = loopSignaturesRecordedThisTurn.has(loopSignature)
+        // A dynamic browser OBSERVATION (snapshot/console/screenshot/reload)
+        // re-reads mutable page state; repeating one with identical arguments
+        // after each interaction is diligent verification, not a stall, so it
+        // must not feed the repeated-signature loop detector. Live bug
+        // (Pomodoro build, deepseek-v4-flash): a healthy verify flow
+        // (click Start → snapshot → click Pause → snapshot → snapshot → click
+        // Start → snapshot → click Reset → snapshot) put 4 identical
+        // `browser_snapshot {}` calls inside the 6-wide window and was killed
+        // with "loop_detected" at turn 16 despite every call succeeding and
+        // making real progress. These reads mutate nothing and are already
+        // treated as fresh, non-duplicate evidence by the dedup logic above;
+        // the loop detector must share that classification. Interaction tools
+        // (click/type/key/select) still feed the detector, so a genuinely
+        // stuck action still trips it, and the turn budget still bounds a task
+        // that only ever observes.
+        const loopExemptObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
+        const loop = (loopExemptObservation || loopSignaturesRecordedThisTurn.has(loopSignature))
           ? null
           : loopDetector.record(loopSignature);
         loopSignaturesRecordedThisTurn.add(loopSignature);
