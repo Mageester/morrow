@@ -59,6 +59,7 @@ import { evaluateTaskCompletion, inferTaskShape, type CompletionInput, type Comp
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
 import {
   canCompleteWithRequirements,
+  unverifiableRequirements,
   enforceToolRequirement,
   evaluateRequirementObservations,
   extractExecutionRequirements,
@@ -441,8 +442,39 @@ export function runCommandIsVerification(args: Record<string, unknown>): boolean
   const executable = typeof args.executable === "string" ? args.executable : "";
   const argv = Array.isArray(args.args) ? args.args.filter((item): item is string => typeof item === "string") : [];
   const intent = `${purpose} ${executable} ${argv.join(" ")}`;
-  return /\b(?:build|test|verify|verification|check|lint|typecheck|compile)\b/i.test(intent)
+  // Declaring an expected exit code IS declaring the command a check.
+  if (args.expectNonZeroExit === true) return true;
+  return /\b(?:build|test|verify|verification|check|confirm|validate|assert|ensure|lint|typecheck|compile)\b/i.test(intent)
     || /\b(?:tsc|vitest|jest|pytest)\b/i.test(executable);
+}
+
+/**
+ * Did this command exit the way the caller said it would?
+ *
+ * A non-zero exit is normally a failed check, but not always: "confirm the CLI
+ * rejects a missing file" is *supposed* to exit non-zero, and scoring it as a
+ * failure punished an agent for testing an error path the user explicitly asked
+ * for. Observed live â€” a run wrote 15 correct files, its own suite printed ALL
+ * TESTS PASSED, and the task still reported `interrupted` because one
+ * deliberate error-path check exited 1.
+ *
+ * The expectation is declared in the same call that runs the command, before
+ * any result exists, so this reads a commitment rather than trusting narration
+ * after the fact. And it cuts both ways: a command declared to fail that
+ * *succeeds* is equally a failed check â€” the guard under test did not fire.
+ */
+export function commandExitMatchedExpectation(args: Record<string, unknown>, exitCode: number): boolean {
+  return args.expectNonZeroExit === true ? exitCode !== 0 : exitCode === 0;
+}
+
+/** Durable exit code of a run_command call, when it recorded one. */
+export function commandExitCode(call: Pick<ToolCallRecord, "resultJson">): number | undefined {
+  try {
+    const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
+    return typeof result.exitCode === "number" ? result.exitCode : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function toolCallPassedVerification(call: Pick<ToolCallRecord, "status" | "toolName" | "resultJson" | "argsJson">): boolean {
@@ -452,7 +484,7 @@ export function toolCallPassedVerification(call: Pick<ToolCallRecord, "status" |
     const args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
     if (!runCommandIsVerification(args)) return false;
     const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
-    return result.exitCode === 0;
+    return typeof result.exitCode === "number" && commandExitMatchedExpectation(args, result.exitCode);
   } catch {
     return false;
   }
@@ -1248,6 +1280,7 @@ export async function executeAgentChatTask({
           args: { type: "array", items: { type: "string" }, description: "Command arguments" },
           cwd: { type: "string", description: "Optional working directory relative to project root" },
           purpose: { type: "string", description: "Reason for running this command" },
+          expectNonZeroExit: { type: "boolean", description: "Set true when a NON-ZERO exit is the expected, correct result â€” e.g. checking that a CLI rejects bad input, or that a guard fails as designed. Without this a non-zero exit is treated as a failed verification and will block the task from completing." },
           background: { type: "boolean", description: "Start a long-running process (e.g. 'npm run dev') without waiting for it to exit. Returns { processId, pid } instead of exit output." }
         },
         required: ["executable", "args", "purpose"]
@@ -2700,14 +2733,33 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // bookkeeping above.
       if (call.errorType === "tool_not_permitted_in_mode") continue;
       let failedOutcome: string | null = call.status === "failed" ? (call.errorMessage ?? "tool failed") : null;
+      const commandArgs = (): Record<string, unknown> => {
+        try { return JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>; } catch { return {}; }
+      };
       if (call.toolName === "run_command" && call.status === "completed") {
         try {
           const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: number | null };
           if (typeof result.exitCode === "number") {
-            verification = { status: result.exitCode === 0 ? "passed" : "failed", toolCallId: call.id, exitCode: result.exitCode };
-            if (result.exitCode !== 0) failedOutcome = `command exited ${result.exitCode}`;
+            const matched = commandExitMatchedExpectation(commandArgs(), result.exitCode);
+            verification = { status: matched ? "passed" : "failed", toolCallId: call.id, exitCode: result.exitCode };
+            if (!matched) {
+              failedOutcome = commandArgs().expectNonZeroExit === true
+                ? `command was expected to fail but exited 0`
+                : `command exited ${result.exitCode}`;
+            }
           }
         } catch { /* malformed raw results cannot establish passed verification */ }
+      } else if (call.toolName === "run_command" && call.status === "failed"
+        && commandExitMatchedExpectation(commandArgs(), commandExitCode(call) ?? 1)) {
+        // The executor classifies any non-zero exit as a failed tool call. When
+        // that non-zero exit is exactly what the caller declared it was checking
+        // for, the check passed â€” treating it as an outstanding failure is what
+        // blocked completed work from ever closing.
+        const exitCode = commandExitCode(call);
+        verification = exitCode === undefined
+          ? { status: "passed", toolCallId: call.id }
+          : { status: "passed", toolCallId: call.id, exitCode };
+        failedOutcome = null;
       } else if (call.toolName === "run_command" && call.status === "failed") {
         // Throw-classified command failures (non-zero exit, timeout, cancel)
         // never reach the completed branch above. Leaving verification
@@ -3494,7 +3546,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       throw new Error("Cannot create canonical answer while an explicit execution requirement is unresolved");
     }
     const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
-    const safeFinalText = redactSecrets(finalText);
+    // Constraints Morrow read but could not mechanically check are disclosed on
+    // the answer itself, so a success claim is never unqualified. They do not
+    // block completion â€” nothing could ever satisfy them, so gating on them only
+    // ever destroyed finished work.
+    const unverifiable = unverifiableRequirements(executionRequirements, requirementEvaluations);
+    const disclosure = unverifiable.length > 0
+      ? `\n\nNot mechanically verified (${unverifiable.length} stated constraint${unverifiable.length === 1 ? "" : "s"} Morrow could not check automatically â€” please confirm):\n`
+        + unverifiable.map((requirement) => `- ${redactSecrets(requirement.sourceExcerpt.trim())}`).join("\n")
+      : "";
+    const safeFinalText = redactSecrets(finalText) + disclosure;
     const evidenceJson = {
       sourceTurnKey,
       durableEventCursor: records.latestEvent(taskId)?.sequence ?? 0,
@@ -3504,6 +3565,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       executionRequirements: executionRequirements.map(sanitizeExecutionRequirement),
       requirementEvaluations: requirementEvaluations.map(sanitizeRequirementEvaluation),
       requirementsSatisfied: canCompleteWithRequirements(executionRequirements, requirementEvaluations),
+      // Durable, not just prose: the record itself says which stated
+      // constraints were never machine-checked.
+      unverifiedRequirements: unverifiable.map((requirement) => redactSecrets(requirement.sourceExcerpt.trim())),
       status: taskMissionId ? "pending_mission_verification" : "completed",
     };
     db.transaction(() => {
@@ -5360,15 +5424,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           || (tc.name === "run_command" && errorType === "invalid_tool_arguments");
         if (gatesCompletion && errorType !== "tool_not_permitted_in_mode") {
           let failedOutcome: string | null = null;
-          if (!isSuccess) {
+          // A declared non-zero expectation is honored on both the failed and
+          // the succeeded branch, because the executor classifies a non-zero
+          // exit as a failed tool call. Without this the live view and the
+          // durable view disagree about the same command.
+          let runExitCode: number | undefined;
+          try {
+            const parsedRun = JSON.parse(resultStr) as { exitCode?: number | null };
+            if (typeof parsedRun.exitCode === "number") runExitCode = parsedRun.exitCode;
+          } catch { /* non-JSON result carries no exit code */ }
+          const declaredExpectation = tc.name === "run_command" && runExitCode !== undefined
+            && commandExitMatchedExpectation(args, runExitCode);
+          if (declaredExpectation) {
+            failedOutcome = args.expectNonZeroExit === true && runExitCode === 0
+              ? `${args.executable ?? "command"} was expected to fail but exited 0`
+              : null;
+          } else if (!isSuccess) {
             failedOutcome = errorMessage ?? "tool failed";
           } else if (tc.name === "run_command") {
-            try {
-              const parsedRun = JSON.parse(resultStr) as { exitCode?: number | null };
-              if (parsedRun.exitCode !== undefined && parsedRun.exitCode !== null && parsedRun.exitCode !== 0) {
-                failedOutcome = `${args.executable ?? "command"} exited ${parsedRun.exitCode}`;
-              }
-            } catch { /* non-JSON result â€” treat as clean */ }
+            failedOutcome = runExitCode !== undefined && runExitCode !== 0
+              ? `${args.executable ?? "command"} exited ${runExitCode}`
+              : null;
           }
           lastVerificationFailure = failedOutcome ? { tool: tc.name, detail: failedOutcome } : null;
           if (failedOutcome) progressEpoch.recordVerificationFailure(`${tc.name}:${failedOutcome}`);

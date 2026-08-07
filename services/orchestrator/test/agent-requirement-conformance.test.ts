@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EXECUTION_REQUIREMENT_REGISTRY,
   canCompleteWithRequirements,
+  unverifiableRequirements,
   enforceToolRequirement,
   evaluateRequirementObservations,
   extractExecutionRequirements,
@@ -188,14 +189,67 @@ describe("explicit execution requirement conformance", () => {
     expect(canCompleteWithRequirements([requirement], violatingEvaluation)).toBe(false);
   });
 
-  it("leaves an explicit constraint it cannot map unevaluated and blocks completion", () => {
+  it("discloses an explicit constraint it cannot map instead of blocking on it forever", () => {
+    // An unmapped constraint is permanently `unevaluated` by construction --
+    // `evaluateRequirementObservations` returns exactly that for `kind === null`
+    // unconditionally, so nothing the agent could ever do would satisfy it.
+    // Gating completion on it therefore enforced nothing and made finished,
+    // verified work report as `interrupted`.
     const requirements = extractExecutionRequirements("Build the backend. Use the organization's approved protocol exactly.");
     const unmapped = requirements.find((item) => item.kind === null);
     expect(unmapped).toMatchObject({ authoritative: true, status: "unevaluated" });
     expect(unmapped?.sourceExcerpt).toContain("approved protocol");
+
     const evaluations = evaluateRequirementObservations(requirements, []);
+    // Still honestly unevaluated -- Morrow does not claim it checked this.
     expect(evaluations.find((item) => item.requirementId === unmapped?.id)).toMatchObject({ status: "unevaluated" });
-    expect(canCompleteWithRequirements(requirements, evaluations)).toBe(false);
+    // But it no longer destroys the run.
+    expect(canCompleteWithRequirements(requirements, evaluations)).toBe(true);
+    // It is surfaced instead, so the success claim is qualified rather than
+    // unqualified -- which is what the anti-fabrication rule actually asked for.
+    const disclosed = unverifiableRequirements(requirements, evaluations);
+    expect(disclosed).toHaveLength(1);
+    expect(disclosed[0]!.sourceExcerpt).toContain("approved protocol");
+  });
+
+  it("still blocks when a constraint it CAN map is unresolved", () => {
+    // The negative control for the change above: real enforcement is untouched.
+    const requirement = requirementFor("Build the backend only. No frontend.", "no_frontend");
+    const violated = evaluateRequirementObservations([requirement], [{ type: "changed_paths", paths: ["src/App.tsx"], evidence: "frontend changed" }]);
+    expect(violated[0]).toMatchObject({ status: "failed" });
+    expect(canCompleteWithRequirements([requirement], violated)).toBe(false);
+    expect(unverifiableRequirements([requirement], violated)).toEqual([]);
+  });
+
+  it("does not let a restatement of a satisfied rule block it", () => {
+    // The self-defeating shape: one sentence yields both a mapped clause and an
+    // unmapped restatement of the same rule. `no_frontend` verified while its
+    // own paraphrase blocked completion forever.
+    const requirements = extractExecutionRequirements("Do not create any frontend files; backend only.");
+    expect(requirements.some((item) => item.kind === "no_frontend")).toBe(true);
+    expect(requirements.some((item) => item.kind === null)).toBe(true);
+    const evaluations = evaluateRequirementObservations(requirements, [
+      { type: "changed_paths", paths: ["server/api.mjs"], pathTypes: [{ path: "server/api.mjs", type: "file" }], measured: true, authoritative: true, evidence: "diff" },
+    ]);
+    expect(evaluations.find((item) => item.kind === "no_frontend")).toMatchObject({ status: "verified" });
+    expect(canCompleteWithRequirements(requirements, evaluations)).toBe(true);
+  });
+
+  it("keeps ordinary instructions from making a task structurally uncompletable", () => {
+    // Every one of these is a normal thing to write, and every one of them used
+    // to make `completed` unreachable no matter how well the work went.
+    for (const prompt of [
+      "Do not finish until `node test/run-all.mjs` prints ALL TESTS PASSED.",
+      "Use the standard release process when you are done.",
+      "Never commit secrets, and keep the api contract stable.",
+      "Follow the existing schema exactly.",
+    ]) {
+      const requirements = extractExecutionRequirements(prompt);
+      const evaluations = evaluateRequirementObservations(requirements, [
+        { type: "changed_paths", paths: ["lib/a.mjs"], pathTypes: [{ path: "lib/a.mjs", type: "file" }], measured: true, authoritative: true, evidence: "diff" },
+      ]);
+      expect(canCompleteWithRequirements(requirements, evaluations), prompt).toBe(true);
+    }
   });
 
   it("does not allow a failed requirement to be hidden by an unrelated passing observation", () => {

@@ -855,14 +855,57 @@ export function evaluateRequirementObservations(
 }
 
 /** Full completion is possible only after every authoritative requirement is terminal and verified/waived. */
+/**
+ * May the task close?
+ *
+ * Only *mapped* constraints gate this. A mapped requirement that is failed or
+ * unevaluated still blocks — that is the real enforcement, and it is unchanged.
+ *
+ * A constraint the extractor could not map to a deterministic evaluator is a
+ * different thing entirely: it is permanently `unevaluated` by construction
+ * (`evaluateRequirementObservations` returns exactly that for `kind === null`,
+ * unconditionally). Gating on it did not enforce anything, because nothing
+ * could ever satisfy it. It made completion structurally unreachable for any
+ * prompt containing an ordinary sentence like "Use the standard release
+ * process" or "Never commit secrets, and keep the api contract stable" — and,
+ * self-defeatingly, for "Do not create any frontend files; backend only",
+ * where the mapped `no_frontend` clause verified while the restatement of the
+ * same rule blocked forever.
+ *
+ * The design requirement was that Morrow "does not pretend to understand
+ * arbitrary prose perfectly" and makes no *unqualified* success claim. That is
+ * satisfied by disclosing what could not be checked (see
+ * `unverifiableRequirements`), which is what the completion path now does.
+ * Reporting finished, verified work as `interrupted` was not a stricter reading
+ * of that rule — it was a less honest one.
+ */
 export function canCompleteWithRequirements(requirements: ExecutionRequirement[], evaluations: RequirementEvaluation[]): boolean {
   const byId = new Map(evaluations.map((evaluation) => [evaluation.requirementId, evaluation]));
   return requirements
-    .filter((requirement) => requirement.authoritative)
+    .filter((requirement) => requirement.authoritative && requirement.kind !== null)
     .every((requirement) => {
       const evaluation = byId.get(requirement.id);
       return evaluation?.status === "verified" || (evaluation?.status === "waived" && validRequirementWaiver(requirement));
     });
+}
+
+/**
+ * Constraints stated by the user that Morrow could not mechanically verify.
+ *
+ * These do not block completion, but they must never be silently dropped: the
+ * completion is qualified with them so a success claim always says what was
+ * actually checked and what was only read.
+ */
+export function unverifiableRequirements(
+  requirements: ExecutionRequirement[],
+  evaluations: RequirementEvaluation[],
+): ExecutionRequirement[] {
+  const byId = new Map(evaluations.map((evaluation) => [evaluation.requirementId, evaluation]));
+  return requirements.filter((requirement) => {
+    if (!requirement.authoritative || requirement.kind !== null) return false;
+    const evaluation = byId.get(requirement.id);
+    return evaluation?.status !== "verified" && evaluation?.status !== "waived";
+  });
 }
 
 /** Return a structured failure payload for a tool call that would violate policy. */
