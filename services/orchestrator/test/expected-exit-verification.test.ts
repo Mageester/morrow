@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandExitMatchedExpectation, runCommandIsVerification, toolCallPassedVerification } from "../src/execution/agent.js";
+import { commandExitMatchedExpectation, runCommandIsVerification, toolCallPassedVerification, writeTargetsOf } from "../src/execution/agent.js";
 
 /**
  * Checking that something fails is checking.
@@ -90,5 +90,24 @@ describe("a command may declare that failing is the correct outcome", () => {
     const args = { executable: "node", args: ["cli.mjs", "missing.txt"], purpose: "check the CLI rejects a missing file", expectNonZeroExit: true };
     expect(commandExitMatchedExpectation(args, 1)).toBe(true);
     expect(call(args, 1, "failed").status).toBe("failed");
+  });
+});
+
+describe("a failed write stays outstanding until that file is written", () => {
+  it("names the files a write call targeted", () => {
+    expect(writeTargetsOf({ toolName: "create_file", argsJson: JSON.stringify({ path: "src/a.mjs" }) })).toEqual(["src/a.mjs"]);
+    expect(writeTargetsOf({ toolName: "propose_patch", argsJson: JSON.stringify({ files: ["src/a.mjs", "src/b.mjs"] }) })).toEqual(["src/a.mjs", "src/b.mjs"]);
+    // A patch that omits `files` still names its targets in the diff headers.
+    expect(writeTargetsOf({
+      toolName: "propose_patch",
+      argsJson: JSON.stringify({ patch: "--- a/src/q.mjs\n+++ b/src/q.mjs\n@@ -1,1 +1,1 @@\n-a\n+b\n" }),
+    })).toEqual(["src/q.mjs"]);
+    // Unknown target falls back to the previous behavior rather than guessing.
+    expect(writeTargetsOf({ toolName: "create_file", argsJson: "{}" })).toEqual([]);
+    expect(writeTargetsOf({ toolName: "create_file", argsJson: "not json" })).toEqual([]);
+  });
+
+  it("normalizes separators so the same file is one target", () => {
+    expect(writeTargetsOf({ toolName: "create_file", argsJson: JSON.stringify({ path: "./src\\a.mjs" }) })).toEqual(["src/a.mjs"]);
   });
 });

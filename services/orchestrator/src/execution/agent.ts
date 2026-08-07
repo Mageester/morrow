@@ -467,6 +467,37 @@ export function commandExitMatchedExpectation(args: Record<string, unknown>, exi
   return args.expectNonZeroExit === true ? exitCode !== 0 : exitCode === 0;
 }
 
+/**
+ * Which workspace paths a write call was aiming at.
+ *
+ * Used to keep a failed write outstanding until *that* file is successfully
+ * written, rather than until any later write succeeds. Returns an empty list
+ * when the target cannot be determined, which falls back to the previous
+ * last-one-wins behavior rather than inventing a target.
+ */
+export function writeTargetsOf(call: Pick<ToolCallRecord, "toolName" | "argsJson">): string[] {
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+  if (typeof args.path === "string" && args.path.trim()) return [norm(args.path)];
+  if (Array.isArray(args.files)) {
+    const files = args.files.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map(norm);
+    if (files.length > 0) return files;
+  }
+  // A patch names its targets in the unified-diff headers when `files` was omitted.
+  if (typeof args.patch === "string") {
+    const targets = [...args.patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n]+)$/gm)]
+      .map((m) => norm(m[1]!))
+      .filter((p) => p !== "/dev/null");
+    if (targets.length > 0) return [...new Set(targets)];
+  }
+  return [];
+}
+
 /** Durable exit code of a run_command call, when it recorded one. */
 export function commandExitCode(call: Pick<ToolCallRecord, "resultJson">): number | undefined {
   try {
@@ -2714,6 +2745,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number };
   } => {
     let failure: { tool: string; detail: string } | null = null;
+    const outstandingWriteFailures = new Map<string, { tool: string; detail: string }>();
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
@@ -2784,9 +2816,41 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           failedOutcome = "workspace changed without subsequent verification; run verification after the final write";
         }
       }
-      failure = failedOutcome ? { tool: call.toolName, detail: failedOutcome } : null;
+      // A *failed* write stays outstanding until that same file is written
+      // successfully. Clearing it on any later success let an unrelated write
+      // bury it: measured, a run failed `propose_patch src/queue.mjs` three
+      // times, gave up, wrote `test/retry.mjs` instead, and closed as
+      // `completed` with the requested feature entirely unimplemented.
+      //
+      // Only genuine write failures are tracked this way. The
+      // "changed without subsequent verification" condition below is set on a
+      // *successful* write and is cleared by a passing command, not by another
+      // write, so it stays on the last-one-wins path with command outcomes â€”
+      // where re-running a suite is supposed to supersede the previous result.
+      // A path the permission profile forbids is a *constraint*, not an
+      // unresolved failure: it will never succeed, correctly, and the agent is
+      // right to move on. Tracking it as outstanding would make completion
+      // unreachable for any run that touched a denied path â€” the same mistake
+      // the `tool_not_permitted_in_mode` skip above already avoids for modes.
+      const deniedByPolicy = /denied path pattern|outside the workspace|escapes the workspace/i.test(call.errorMessage ?? "");
+      const writeTargets = call.status === "failed" && WORKSPACE_WRITE_TOOLS.has(call.toolName) && !deniedByPolicy
+        ? writeTargetsOf(call)
+        : [];
+      if (writeTargets.length > 0) {
+        for (const target of writeTargets) {
+          outstandingWriteFailures.set(target, { tool: call.toolName, detail: failedOutcome ?? "write failed" });
+        }
+      } else {
+        if (call.status === "completed" && WORKSPACE_WRITE_TOOLS.has(call.toolName)) {
+          for (const target of writeTargetsOf(call)) outstandingWriteFailures.delete(target);
+        }
+        failure = failedOutcome ? { tool: call.toolName, detail: failedOutcome } : null;
+      }
     }
-    return { failure, verification };
+    // An unresolved write failure outranks a clean command run: a passing suite
+    // proves nothing about a file that was never successfully changed.
+    const outstandingWrite = [...outstandingWriteFailures.values()][0];
+    return { failure: failure ?? outstandingWrite ?? null, verification };
   };
 
   const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
