@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { StrictMode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "../features/placeholders/connections-page.js";
 import { MissionStatusSummary } from "./mission-status.js";
@@ -33,10 +34,17 @@ function healthResponse(service = "morrow-orchestrator"): Response {
 }
 
 function renderConnections({ strict = false }: { strict?: boolean } = {}) {
+  // The provider lives inside the query client in the real app: recovering from
+  // an offline runtime has to refetch everything that failed while it was down.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   const content = (
-    <RuntimeStatusProvider>
-      <ConnectionsPage />
-    </RuntimeStatusProvider>
+    <QueryClientProvider client={queryClient}>
+      <RuntimeStatusProvider>
+        <ConnectionsPage />
+      </RuntimeStatusProvider>
+    </QueryClientProvider>
   );
   return render(strict ? <StrictMode>{content}</StrictMode> : content);
 }
@@ -261,6 +269,49 @@ function missionSnapshot(
     version: 1,
   };
 }
+
+describe("RuntimeStatusProvider recovery without a page reload", () => {
+  it("keeps retrying until a runtime that started late answers", async () => {
+    // The reported failure, exactly: Vite is ready in under 200ms, the
+    // orchestrator takes seconds to compile and resume missions, and every
+    // request in between is refused. A single check on mount left the page
+    // saying "Runtime offline" forever.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(healthResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnections();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("The local Morrow runtime is unavailable."));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("The local Morrow runtime is connected."));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("notices on its own when a live runtime stops answering", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(healthResponse())
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnections();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("The local Morrow runtime is connected."));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000);
+    });
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("The local Morrow runtime is unavailable."));
+  });
+});
 
 describe("MissionStatusSummary", () => {
   it.each([
