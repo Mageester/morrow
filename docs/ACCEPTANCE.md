@@ -70,7 +70,22 @@ controller. PASS requires all of the following:
 - drive five deterministic controller faults: premature completion, context
   rollover, provider failure, legitimate no-progress investigation, and an
   abrupt controller restart, while retaining one mission ID, unique durable
-  operation keys, expected recovery decisions, and Guardian-gated completion.
+  operation keys, expected recovery decisions, and Guardian-gated completion;
+  and
+- sustain one 26-turn chat conversation through the real dispatch and execution
+  path (`dispatchAgentTask` -> `executeAgentChatTask`), covering exploration,
+  locating a definition, editing a file, verifying, retrying, documenting, and
+  a long tail of further turns. The stand-in model here is reactive rather than
+  scripted: each turn it decides from the transcript Morrow actually handed it,
+  so the result measures what the product carried across turns. PASS requires
+  zero re-discovery after the first turn (no repeated `inspect_workspace`,
+  `list_files`, or search once the conversation has established those facts),
+  zero re-runs of a command already recorded as failing against an unchanged
+  tree, zero turns Morrow failed to carry out, and carried working memory
+  bounded at 3,000 characters no matter how long the session runs. A turn
+  stopped by a genuinely failing verification is counted separately and does
+  not fail the gate — refusing to call an unverified result complete is the
+  product working.
 
 The deterministic browser provider and coding provider are local, scripted, and
 unmetered, but they cross the real agent/tool/persistence boundaries. They do

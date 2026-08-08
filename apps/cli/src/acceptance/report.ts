@@ -33,6 +33,8 @@ export const REQUIRED_DURABLE_AUTONOMY_CHECKS = [
   "sustained_autonomy_terminal",
   "sustained_autonomy_no_deadline",
   "sustained_autonomy_integrity",
+  "long_session_no_wasted_work",
+  "long_session_bounded_memory",
 ] as const;
 
 /** Only enforced for packaged runs (see runner.ts's `options.packaged` gate). */

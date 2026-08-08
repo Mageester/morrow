@@ -2,6 +2,53 @@
 
 Concise, append-only record of verified changes. Newest first.
 
+## 2026-08-08 - long-session efficiency and cross-turn chat memory
+
+Both defects below were found by driving the real production path
+(`dispatchAgentTask` -> `executeAgentChatTask`) through a long multi-turn chat
+rather than a single agent run — see
+`services/orchestrator/src/acceptance/long-session.ts`. The stand-in model in
+that scenario is reactive, not scripted: it decides from the transcript it is
+actually handed, so the numbers measure what Morrow carried, not what a script
+emitted.
+
+- **[RESOLVED 2026-08-08] Every chat turn re-explored the project from
+  nothing.** `executeAgentChatTask` replays prior conversation turns as plain
+  user/assistant text. Tool calls are recorded per task and never projected
+  forward, so turn N had no record that turn N-1 had read a file, run a command,
+  or applied a patch. Reproduced directly: a second turn asking about a constant
+  the first turn had just read contained no trace of either file it read.
+  `execution/conversation-working-set.ts` now rebuilds a bounded digest from the
+  durable tool-call log and injects it as a system message — mandatory under
+  context trimming, so structural memory survives when raw history is dropped.
+  Scoped to the same conversation, worktree, and post-compaction window.
+  Evidence: `conversation-working-set.test.ts` (11),
+  `agent-conversation-memory.test.ts` (4), `long-session-efficiency.test.ts`.
+  Measured A/B on the identical 6-turn scenario: 19 -> 10 tool calls,
+  4 -> 0 redundant discovery calls, 1 -> 0 repeated failing commands.
+
+- **[RESOLVED 2026-08-08] A successful edit did not satisfy the file-delivery
+  completion contract.** `completedArtifactPaths()` read delivered paths from a
+  write tool's `path`/`files` arguments only. `propose_patch` carries its files
+  inside the unified diff, so a patch-only turn produced zero durable artifacts
+  and stopped with `missing_durable_artifact` — reporting an applied,
+  evidence-recorded patch as `interrupted`. `workspaceWritePaths()` now also
+  reads `+++` diff headers, treating a `/dev/null` target as delivering nothing.
+  Evidence: `agent-patch-delivery.test.ts`.
+
+- **[RESOLVED 2026-08-08] `smoke:agent-alpha` failed on an untouched tree.**
+  The script asserted HTTP 200 from `POST /api/projects/:id/conversations`,
+  which answers 201 Created — as `POST /api/projects` above it already does,
+  and which that step already accepted. The assertion also reported only
+  "Failed to create conversation", with no status or body, so the failure gave
+  nothing to act on. Both fixed; all four orchestrator smokes
+  (`sqlite`, `vertical-slice`, `agent-alpha`, `providers`) now pass.
+
+- **Not a defect, kept as-is:** a turn whose verification command genuinely
+  fails still stops at `interrupted`/`unverified_completion`. The long-session
+  scenario counts that separately (`honestlyBlockedTurns`) so an honest refusal
+  to claim success is never mistaken for a Morrow failure.
+
 ## 2026-07-16 - beta.31 packaged durable-autonomy gates
 
 - **Durable routing and recovery:** mission preset/provider/model/reasoning are

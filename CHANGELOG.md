@@ -6,6 +6,45 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Added - the chat remembers what it already did
+
+- **A follow-up turn no longer starts from nothing.** Earlier turns in a
+  conversation were replayed to the model as plain user/assistant text, so every
+  file read, search, command, and patch from those turns was dropped. The model
+  had no way to know it had already looked at a file, and re-explored the project
+  once per turn, forever. Each turn now carries a bounded digest of the work the
+  conversation has already done, rebuilt from the durable tool-call log.
+  Measured on the same 6-turn session: 19 tool calls and 4 wasted discovery
+  calls before, 10 tool calls and none after.
+- **Remembering stays cheap.** The digest is capped at ~2.4 KB over a sliding
+  12-turn window, ordered so changes and command outcomes survive truncation
+  ahead of exploration. A 26-turn session holds it under 900 characters.
+- **A command that already failed is not re-run blind.** Command outcomes carry
+  their exit code across turns, so "try that again" can act on what happened
+  instead of repeating it.
+- **`morrow acceptance run --scenario durable-autonomy-v1` gained a
+  long-session gate.** It drives 26 real chat turns through the production
+  dispatch and execution path and fails if any turn re-discovers what the
+  conversation already established, re-runs a known-failing command, or lets
+  carried memory grow unbounded.
+
+### Fixed - a documented check that could not pass
+
+- **`pnpm --filter @morrow/orchestrator smoke:agent-alpha` failed on an
+  untouched tree.** It asserted HTTP 200 where the conversation route answers
+  201 Created, and reported the failure without a status or body to act on.
+  All four orchestrator smokes now pass.
+
+### Fixed - editing a file counts as delivering it
+
+- **A patch-only turn no longer reports finished work as interrupted.** The
+  completion contract collected delivered artifacts from a write tool's `path`
+  argument, but `propose_patch` names its files only inside the unified diff. So
+  editing an existing file — the most common thing an agent does — produced zero
+  observed artifacts and blocked with `missing_durable_artifact`, after the patch
+  had already applied successfully. Delivered paths are now read from the diff
+  headers too, with a `/dev/null` target correctly delivering nothing.
+
 ### Changed - reliability cycle: bug classes became structural guards
 
 - **Every provider adapter now normalizes the same situations identically, and

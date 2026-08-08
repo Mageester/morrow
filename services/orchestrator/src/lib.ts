@@ -33,6 +33,7 @@ export { executeAgentChatTask } from "./execution/agent.js";
 export { runBrowserSiteAcceptance, MORROW_COMPANY_SITE_PROMPT, type BrowserSiteAcceptanceResult } from "./acceptance/browser-site.js";
 export { runCortexLearningAcceptance, type CortexLearningAcceptanceResult } from "./acceptance/cortex-learning.js";
 export { runSustainedAutonomyAcceptance, type SustainedAutonomyAcceptanceResult } from "./acceptance/sustained-autonomy.js";
+export { runLongSessionAcceptance, type LongSessionAcceptanceResult } from "./acceptance/long-session.js";
 export { MockProvider } from "./provider/mock.js";
 
 export { listProviderStatuses, getProviderStatus, isProviderConfigured, createProvider, PROVIDER_IDS } from "./provider/registry.js";
