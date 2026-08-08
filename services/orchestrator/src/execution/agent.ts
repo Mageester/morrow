@@ -3177,9 +3177,35 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         authoritative: workspace.authoritative,
       },
     ));
-    return evaluateRequirementObservations(executionRequirements, observations);
+    const packageScripts = workspacePackageScripts();
+    return evaluateRequirementObservations(executionRequirements, observations, {
+      ...(packageScripts ? { packageScripts } : {}),
+    });
   };
   let requirementEvaluations: RequirementEvaluation[] = evaluateRequirementObservations(executionRequirements, []);
+
+  /**
+   * The workspace's package scripts, so a required command named as
+   * `node test/run.mjs` is still satisfied when the agent runs `npm test` and
+   * that is what the script does. Read fresh because the agent may create or
+   * change package.json mid-task; absent or unreadable means no resolution is
+   * attempted rather than one being assumed.
+   */
+  const workspacePackageScripts = (): Record<string, string> | undefined => {
+    try {
+      const manifest = join(project.workspacePath, "package.json");
+      if (!existsSync(manifest)) return undefined;
+      const parsed = JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: unknown };
+      if (!parsed.scripts || typeof parsed.scripts !== "object" || Array.isArray(parsed.scripts)) return undefined;
+      const scripts: Record<string, string> = {};
+      for (const [name, value] of Object.entries(parsed.scripts as Record<string, unknown>)) {
+        if (typeof value === "string") scripts[name] = value;
+      }
+      return Object.keys(scripts).length > 0 ? scripts : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const completedArtifactPaths = (): string[] => {
     const paths = new Set<string>();

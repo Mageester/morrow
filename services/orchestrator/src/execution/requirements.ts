@@ -105,6 +105,16 @@ export interface RequirementEvaluation {
 
 export interface RequirementEvaluationOptions {
   platform?: NodeJS.Platform;
+  /**
+   * The workspace's `package.json` scripts, when it has any.
+   *
+   * A required command is matched exactly, which is right — the user named it.
+   * But `npm test` *is* `node test/run.mjs` when that is the `test` script, and
+   * scoring a run that used the package-manager alias as a failed verification
+   * would be a wrong failure, not a strict one. Supplying the real scripts lets
+   * the indirection be resolved from fact rather than guessed at.
+   */
+  packageScripts?: Readonly<Record<string, string>>;
 }
 
 export interface RequirementEnforcementOptions {
@@ -263,6 +273,48 @@ function commandEqual(left: { executable: string; args: string[] }, right: { exe
   return normalizeExecutable(left.executable) === normalizeExecutable(right.executable)
     && left.args.length === right.args.length
     && left.args.every((arg, index) => arg === right.args[index]);
+}
+
+/**
+ * Resolve a package-manager alias to the command it actually runs.
+ *
+ * `npm test` / `pnpm test` / `yarn run build` are indirections through
+ * `package.json`. Returns null when the command is not an alias, or when the
+ * named script does not exist — in which case nothing is assumed.
+ */
+export function resolvePackageScriptCommand(
+  command: { executable: string; args: string[] },
+  scripts: Readonly<Record<string, string>> | undefined,
+): { executable: string; args: string[] } | null {
+  if (!scripts) return null;
+  const manager = executableName(command.executable).replace(/\.(?:cmd|exe|ps1)$/i, "").toLowerCase();
+  if (!["npm", "pnpm", "yarn", "bun"].includes(manager)) return null;
+  const args = command.args.filter((arg) => arg !== "--");
+  const scriptName = args[0] === "run" || args[0] === "run-script" ? args[1] : args[0];
+  if (!scriptName) return null;
+  const script = scripts[scriptName];
+  if (typeof script !== "string" || script.trim().length === 0) return null;
+  // Only a plain single command is resolved. A script that chains (&&, ||, |,
+  // ;) is not one command and must not be claimed to be the required one.
+  if (/[&|;><]/.test(script)) return null;
+  const parts = script.trim().split(/\s+/);
+  const executable = parts[0];
+  if (!executable) return null;
+  return { executable, args: parts.slice(1) };
+}
+
+/** Does an observed command satisfy a required one, directly or via a script alias? */
+function commandSatisfies(
+  actual: { executable: string; args: string[] },
+  required: { executable: string; args: string[] },
+  scripts: Readonly<Record<string, string>> | undefined,
+): boolean {
+  if (commandEqual(actual, required)) return true;
+  const resolvedActual = resolvePackageScriptCommand(actual, scripts);
+  if (resolvedActual && commandEqual(resolvedActual, required)) return true;
+  const resolvedRequired = resolvePackageScriptCommand(required, scripts);
+  if (resolvedRequired && commandEqual(actual, resolvedRequired)) return true;
+  return Boolean(resolvedActual && resolvedRequired && commandEqual(resolvedActual, resolvedRequired));
 }
 
 function executableName(value: string): string {
@@ -901,7 +953,8 @@ export function evaluateRequirementObservations(
         const required = requirement.parameters.command;
         const matching = commandObservations.filter((observation) => {
           const actual = observationCommand(observation);
-          return Boolean(actual && required && typeof required === "object" && commandEqual(actual, required as { executable: string; args: string[] }));
+          return Boolean(actual && required && typeof required === "object"
+            && commandSatisfies(actual, required as { executable: string; args: string[] }, options.packageScripts));
         });
         const failed = matching.find((observation) => observation.passed === false || (typeof observation.exitCode === "number" && observation.exitCode !== 0));
         const inconsistent = matching.find((observation) => observation.passed === true && observation.exitCode !== undefined && observation.exitCode !== 0);

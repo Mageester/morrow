@@ -9,6 +9,7 @@ import {
   observeRequirementChangedPaths,
   observeRequirementToolCall,
   restoreExecutionRequirementWaivers,
+  resolvePackageScriptCommand,
   type ExecutionRequirement,
   type RequirementKind,
   type RequirementObservation,
@@ -965,5 +966,51 @@ describe("required verification stated before the modal", () => {
     for (const prompt of ["The report must still pass review.", "Your answer should pass muster."]) {
       expect(extractExecutionRequirements(prompt).some((r) => r.kind === "required_verification"), prompt).toBe(false);
     }
+  });
+});
+
+describe("a package-script alias satisfies the command it actually runs", () => {
+  const scripts = { test: "node test/run.mjs", build: "tsc -p tsconfig.json" };
+
+  it("resolves an alias to its real command", () => {
+    expect(resolvePackageScriptCommand({ executable: "npm", args: ["test"] }, scripts))
+      .toEqual({ executable: "node", args: ["test/run.mjs"] });
+    expect(resolvePackageScriptCommand({ executable: "pnpm", args: ["run", "build"] }, scripts))
+      .toEqual({ executable: "tsc", args: ["-p", "tsconfig.json"] });
+  });
+
+  it("assumes nothing when there is no such script or no manifest", () => {
+    expect(resolvePackageScriptCommand({ executable: "npm", args: ["lint"] }, scripts)).toBeNull();
+    expect(resolvePackageScriptCommand({ executable: "npm", args: ["test"] }, undefined)).toBeNull();
+    expect(resolvePackageScriptCommand({ executable: "node", args: ["x.mjs"] }, scripts)).toBeNull();
+  });
+
+  it("refuses to resolve a chained script to one command", () => {
+    // "lint && test" is not the required command, and claiming it is would let
+    // an unrelated half of the chain stand in for the verification.
+    expect(resolvePackageScriptCommand({ executable: "npm", args: ["ci"] }, { ci: "npm run lint && npm test" })).toBeNull();
+  });
+
+  it("counts `npm test` as the required `node test/run.mjs`", () => {
+    // Without this, a run that verified correctly through the package-manager
+    // alias would be scored a failed verification -- a wrong failure, not a
+    // strict one.
+    const requirement = requirementFor("The existing suite (`node test/run.mjs`) must still pass unchanged.", "required_verification");
+    const evaluations = evaluateRequirementObservations(
+      [requirement],
+      [{ type: "command", command: { executable: "npm", args: ["test"] }, exitCode: 0, passed: true, evidence: "suite green" }],
+      { packageScripts: scripts },
+    );
+    expect(evaluations[0]).toMatchObject({ status: "verified" });
+  });
+
+  it("still fails when the alias resolves to a different command", () => {
+    const requirement = requirementFor("The existing suite (`node test/run.mjs`) must still pass unchanged.", "required_verification");
+    const evaluations = evaluateRequirementObservations(
+      [requirement],
+      [{ type: "command", command: { executable: "npm", args: ["build"] }, exitCode: 0, passed: true, evidence: "built" }],
+      { packageScripts: scripts },
+    );
+    expect(evaluations[0]).not.toMatchObject({ status: "verified" });
   });
 });
