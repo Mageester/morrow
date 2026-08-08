@@ -99,6 +99,26 @@ describe("ProcessSupervisor (real child processes)", () => {
     expect(done.exitCode).toBe(3);
   });
 
+  it("gives a background process EOF on stdin instead of an open pipe", async () => {
+    // Pipe mode is unattended: with stdin left as an open, unconsumed pipe, a
+    // dev server that asks anything at startup blocks forever on an answer
+    // that can never arrive — holding its port and never becoming reachable,
+    // which every later health check and browser gate then reports as a broken
+    // app. This process exits 0 only if it saw EOF; a hang fails the wait.
+    const record = await supervisor.start({
+      projectId: "p1",
+      command: NODE,
+      args: ["-e", "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));"],
+      cwd: ws,
+    });
+    const done = await waitFor(() => {
+      const r = repo.get(record.id);
+      return r && r.status !== "running" ? r : undefined;
+    });
+    expect(done.status).toBe("exited");
+    expect(done.exitCode).toBe(0);
+  });
+
   it("supports incremental output retrieval by byte offset", async () => {
     const record = await supervisor.start({
       projectId: "p1",
