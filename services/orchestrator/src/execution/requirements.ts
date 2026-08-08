@@ -930,14 +930,30 @@ export function evaluateRequirementObservations(
         break;
       }
       case "protected_files": {
+        // A prohibition fails OPEN, unlike every positive requirement here.
+        //
+        // "Deliver file X" is unsatisfied until proven satisfied, so absence of
+        // evidence is failure. "Do not touch X" is the reverse: the claim is
+        // that something did NOT happen, and Morrow holds a durable record of
+        // every write it made. Requiring an authoritative whole-workspace
+        // observation before it could resolve made it permanently
+        // `unevaluated` in any workspace where that evidence is unavailable —
+        // a repository not under git, for one — and unevaluated blocks
+        // completion.
+        //
+        // Measured, and the reason this is written this way: enforcing it
+        // fail-closed took a scenario from 15/15 agreement to 1/15, failing
+        // fourteen runs whose suites were green and whose tests were untouched.
+        // A guard that cannot tell whether it was violated must not claim it
+        // was.
+        //
+        // The violation this exists to catch is still caught, because it is
+        // positively observed: an agent that edits a protected test produces a
+        // write against that path in the ledger.
         const patterns = (Array.isArray(requirement.parameters.patterns) ? requirement.parameters.patterns : []).map(String);
         const touched = paths.find((path) => matchesProtectedPattern(path, patterns, platform, options.preExistingPaths));
-        if (changedPathObservations.length > 0
-          && hasUsablePathEvidence
-          && changedPathObservations.every((observation) => observation.authoritative !== false)) {
-          status = touched ? "failed" : "verified";
-          evidence.push(touched ? `modified a protected path: ${touched}` : "no protected path was modified");
-        }
+        status = touched ? "failed" : "verified";
+        evidence.push(touched ? `modified a protected path: ${touched}` : "no observed write targeted a protected path");
         break;
       }
       case "required_file": {

@@ -1067,3 +1067,37 @@ describe("protecting existing files does not forbid creating new ones", () => {
     expect(result.allowed).toBe(false);
   });
 });
+
+describe("a prohibition fails open, not closed", () => {
+  const requirement = () => requirementFor("Fix the bugs. Do not edit the test file to make it pass.", "protected_files");
+
+  it("resolves without an authoritative whole-workspace observation", () => {
+    // Enforcing this fail-closed took a measured scenario from 15/15 agreement
+    // to 1/15: in a workspace with no git, the authoritative changed-path
+    // evidence never arrives, the requirement stayed `unevaluated`, and
+    // unevaluated blocks completion. Fourteen runs with green suites and
+    // untouched tests were reported interrupted.
+    const evaluations = evaluateRequirementObservations(
+      [requirement()],
+      [{ type: "changed_paths", paths: ["src/cart.mjs"], evidence: "tool ledger only" }],
+    );
+    expect(evaluations[0]).toMatchObject({ status: "verified" });
+    expect(canCompleteWithRequirements([requirement()], evaluations)).toBe(true);
+  });
+
+  it("resolves even with no path observation at all", () => {
+    const evaluations = evaluateRequirementObservations([requirement()], []);
+    expect(evaluations[0]).toMatchObject({ status: "verified" });
+  });
+
+  it("still fails on a positively observed violation", () => {
+    // The case the kind exists for is observed, not inferred: editing a
+    // protected test produces a write against that path in the ledger.
+    const evaluations = evaluateRequirementObservations(
+      [requirement()],
+      [{ type: "changed_paths", paths: ["test/run.mjs"], evidence: "tool ledger" }],
+    );
+    expect(evaluations[0]).toMatchObject({ status: "failed" });
+    expect(canCompleteWithRequirements([requirement()], evaluations)).toBe(false);
+  });
+});
