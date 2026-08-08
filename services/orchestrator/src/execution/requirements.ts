@@ -7,6 +7,7 @@ export const REQUIREMENT_KINDS = [
   "no_database",
   "no_new_dependencies",
   "allowed_files",
+  "protected_files",
   "required_file",
   "required_verification",
 ] as const;
@@ -30,6 +31,12 @@ export const EXECUTION_REQUIREMENT_REGISTRY: Record<RequirementKind, Requirement
   no_database: { preAction: true, observation: "changed_paths" },
   no_new_dependencies: { preAction: true, observation: "command" },
   allowed_files: { preAction: true, observation: "changed_paths" },
+  // "Do not edit the tests" is the inverse of an allow-list and needs its own
+  // kind: an allow-list names what may change, this names what may not. Left
+  // unmapped, an agent that could not make the tests pass was free to edit the
+  // tests instead — observed once in a measured batch, and a run that can
+  // rewrite its own acceptance criteria cannot be trusted unattended.
+  protected_files: { preAction: true, observation: "changed_paths" },
   required_file: { preAction: false, observation: "final_workspace" },
   required_verification: { preAction: false, observation: "command" },
 };
@@ -563,6 +570,11 @@ function requirementViolation(requirement: ExecutionRequirement, call: Requireme
       const allowed = new Set((Array.isArray(requirement.parameters.paths) ? requirement.parameters.paths : []).map((path) => canonicalRequirementPath(String(path), platform)));
       return paths.find((path) => !allowed.has(canonicalRequirementPath(path, platform))) ? "the action targets a file outside the user's allowed-file boundary" : null;
     }
+    case "protected_files": {
+      const patterns = (Array.isArray(requirement.parameters.patterns) ? requirement.parameters.patterns : []).map(String);
+      const hit = paths.find((path) => matchesProtectedPattern(path, patterns, platform));
+      return hit ? `the action modifies ${hit}, which the user placed off limits` : null;
+    }
     case "required_file":
       return null;
     case "required_verification":
@@ -579,6 +591,7 @@ function correctionInstruction(kind: RequirementKind): string {
     case "no_database": return "Keep persistence in the permitted backend boundary and do not create database or migration files.";
     case "no_new_dependencies": return "Use the existing dependencies or standard library; do not run an install/add command or add dependency declarations.";
     case "allowed_files": return "Use only the files named in the user's allowed-file requirement.";
+    case "protected_files": return "Do not modify the files the user placed off limits. If they appear to be wrong, say so in your final answer instead of changing them.";
     case "required_file": return "Deliver the required file before claiming completion.";
     case "required_verification": return "Run the exact required verification command and report its real result.";
   }
@@ -604,6 +617,25 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
   addPattern("no_frontend", /\bbackend\s+only\b|\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use))?\s+(?:a\s+)?front[- ]?end\b(?!\s+(?:tests?|testing|test[- ]?suite|specs?)\b)/gi);
   addPattern("no_database", /\b(?:no|without|never use|do not|don't|must not|mustn't)(?:\s+(?:build|create|add|include|use|require))?\s+(?:a\s+)?(?:database|db)(?:\s+server)?\b(?!\s+(?:tests?|testing|test[- ]?suite|queries?|migrations?)\b)/gi);
   addPattern("no_new_dependencies", /\bno\s+(?:new\s+)?dependencies\b|\b(?:without|do not|don't|must not)\s+(?:adding\s+)?(?:any\s+)?(?:new\s+)?dependencies\b/gi);
+  // "Do not edit the tests" / "do not modify src/config.ts". A prohibition on
+  // named files, which is the inverse of the allow-list below. Both the plain
+  // noun form ("the tests", "the test file") and an explicit path are matched,
+  // because a user protecting their acceptance criteria rarely spells out every
+  // filename.
+  addPattern(
+    "protected_files",
+    /\b(?:do not|don't|never|must not|mustn't|no)\s+(?:edit|modify|change|alter|rewrite|delete|remove|touch|skip)\b[^.!?\n]{0,80}/gi,
+    (match) => {
+      const clause = match[0];
+      const patterns: string[] = [];
+      if (/\btests?\b|\btest[- ]?(?:file|suite)s?\b|\bspecs?\b/i.test(clause)) patterns.push("test");
+      for (const item of clause.matchAll(PATH_PATTERN)) {
+        const path = displayPath(item[0].replace(/[.,;]+$/, ""));
+        if (path.includes("/") || /\.[A-Za-z0-9_-]+$/.test(path)) patterns.push(path);
+      }
+      return { patterns: [...new Set(patterns)] };
+    },
+  );
   addPattern("allowed_files", /\b(?:modify|change|edit|touch)\s+only\s+(?:these\s+)?files?\s*:\s*[^!?\n]+/gi, (match) => {
     const afterColon = match[0].split(":").slice(1).join(":");
     const paths = [...afterColon.matchAll(PATH_PATTERN)]
@@ -667,6 +699,23 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     authoritative: true,
     status: "unevaluated",
   }));
+}
+
+/**
+ * Does this path fall under a protected pattern?
+ *
+ * `test` is a category rather than a filename: a user who says "do not edit the
+ * tests" means the suite, not one file they happened to name. Anything else is
+ * matched as a concrete path, prefix-wise so naming a directory protects what
+ * is inside it.
+ */
+export function matchesProtectedPattern(path: string, patterns: readonly string[], platform: NodeJS.Platform = process.platform): boolean {
+  const key = canonicalRequirementPath(path, platform);
+  return patterns.some((pattern) => {
+    if (pattern === "test") return /(^|\/)(?:tests?|__tests__|spec)(?:\/|$)|\.(?:test|spec)\.[A-Za-z0-9]+$/i.test(key);
+    const target = canonicalRequirementPath(pattern, platform);
+    return key === target || key.startsWith(`${target}/`);
+  });
 }
 
 function observationPaths(observation: RequirementObservation): string[] {
@@ -787,6 +836,17 @@ export function evaluateRequirementObservations(
           && changedPathObservations.every((observation) => observation.authoritative !== false)) {
           status = outside ? "failed" : "verified";
           evidence.push(outside ? `path outside allowlist: ${outside}` : "all final changed paths are allowed");
+        }
+        break;
+      }
+      case "protected_files": {
+        const patterns = (Array.isArray(requirement.parameters.patterns) ? requirement.parameters.patterns : []).map(String);
+        const touched = paths.find((path) => matchesProtectedPattern(path, patterns, platform));
+        if (changedPathObservations.length > 0
+          && hasUsablePathEvidence
+          && changedPathObservations.every((observation) => observation.authoritative !== false)) {
+          status = touched ? "failed" : "verified";
+          evidence.push(touched ? `modified a protected path: ${touched}` : "no protected path was modified");
         }
         break;
       }
