@@ -2853,6 +2853,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         if (call.status === "completed" && WORKSPACE_WRITE_TOOLS.has(call.toolName)) {
           for (const target of writeTargetsOf(call)) outstandingWriteFailures.delete(target);
         }
+        // A passing verification clears every outstanding write failure.
+        //
+        // A failed write attempt is not a commitment to write that file. A
+        // model may patch three files, fail, and then correctly decide two of
+        // them should not change after all. Measured: a run failed a patch
+        // listing `src/queue.mjs, test/run.mjs, README.md`, succeeded via
+        // create_file on the one file that mattered, ran both suites green â€”
+        // and was reported `interrupted`, because two files it had rightly
+        // abandoned were still marked outstanding.
+        //
+        // If the project's own checks pass on the end state, an abandoned
+        // earlier approach is moot. What this still catches is the case it was
+        // written for: writes that failed and were never followed by any
+        // passing verification at all.
+        if (verification.status === "passed") outstandingWriteFailures.clear();
         failure = failedOutcome ? { tool: call.toolName, detail: failedOutcome } : null;
       }
     }
