@@ -1537,6 +1537,31 @@ export async function executeAgentChatTask({
   };
   const postDeliveryReadTurnLimit = /\b(?:inspect|read|review|analy[sz]e)\b[\s\S]{0,80}\bevidence\b/i.test(latestUserPrompt) ? 24 : 8;
   const allowedWriteFiles = extractOnlyFileContract(latestUserPrompt);
+  /**
+   * Workspace files present before this task ran anything.
+   *
+   * A `protected_files` requirement prohibits changing what is already there.
+   * Without this snapshot, "do not edit or delete existing tests" also blocked
+   * "write your own tests in a NEW file under test/" â€” which the same prompt
+   * asked for â€” and failed a run whose work was correct. Captured once, so a
+   * file the agent creates later is correctly not protected.
+   */
+  const preExistingWorkspacePaths: ReadonlySet<string> = (() => {
+    const paths = new Set<string>();
+    const walk = (dir: string, prefix: string, depth: number): void => {
+      if (depth > 12 || paths.size > 20_000) return;
+      let entries: import("node:fs").Dirent[];
+      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name === "node_modules" || entry.name === ".git") continue;
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) walk(join(dir, entry.name), rel, depth + 1);
+        else paths.add(canonicalRequirementPath(rel));
+      }
+    };
+    walk(project.workspacePath, "", 0);
+    return paths;
+  })();
   const browserToolsRequested = requestsFrontendBrowserValidation(latestUserPrompt)
     || /\b(?:browser|webpage|web\s+page|site|dom|screenshot|viewport|console\s+error|url)\b/i.test(latestUserPrompt);
   const exposedTools: ToolDefinition[] = activeToolProfile === "none"
@@ -1856,6 +1881,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const requirementResult = enforceToolRequirement(
       { toolName, args: (args && typeof args === "object" && !Array.isArray(args)) ? args as Record<string, unknown> : {} },
       refreshExecutionRequirements(),
+      { preExistingPaths: preExistingWorkspacePaths },
     );
     if (!requirementResult.allowed) {
       let payload: Record<string, unknown> = { errorType: "requirement_violation" };
@@ -3179,6 +3205,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     ));
     const packageScripts = workspacePackageScripts();
     return evaluateRequirementObservations(executionRequirements, observations, {
+      preExistingPaths: preExistingWorkspacePaths,
       ...(packageScripts ? { packageScripts } : {}),
     });
   };
@@ -4788,6 +4815,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           const requirementResult = enforceToolRequirement(
             { toolName: tc.name, args: args as Record<string, unknown> },
             refreshExecutionRequirements(),
+            { preExistingPaths: preExistingWorkspacePaths },
           );
           if (!requirementResult.allowed) {
             let payload: Record<string, unknown> = { errorType: "requirement_violation" };

@@ -1014,3 +1014,56 @@ describe("a package-script alias satisfies the command it actually runs", () => 
     expect(evaluations[0]).not.toMatchObject({ status: "verified" });
   });
 });
+
+describe("protecting existing files does not forbid creating new ones", () => {
+  const requirement = () => requirementFor("Implement the feature. Do not edit or delete existing tests.", "protected_files");
+  const preExisting = new Set(["test/run.mjs", "src/queue.mjs"]);
+
+  it("allows a NEW test file the same prompt asked for", () => {
+    // The measured false failure: "do not edit existing tests" plus "write your
+    // own tests in a NEW file under test/" made the requested file a violation.
+    const result = enforceToolRequirement(
+      { toolName: "create_file", args: { path: "test/retry.mjs", content: "// new coverage" } },
+      [requirement()],
+      { preExistingPaths: preExisting },
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it("still refuses to touch an existing test", () => {
+    const result = enforceToolRequirement(
+      { toolName: "create_file", args: { path: "test/run.mjs", content: "// weakened" } },
+      [requirement()],
+      { preExistingPaths: preExisting },
+    );
+    expect(result.allowed).toBe(false);
+  });
+
+  it("verifies when only a new test file was added", () => {
+    const evaluations = evaluateRequirementObservations(
+      [requirement()],
+      [{ type: "changed_paths", paths: ["test/retry.mjs", "src/queue.mjs"], measured: true, authoritative: true, evidence: "diff" }],
+      { preExistingPaths: preExisting },
+    );
+    expect(evaluations[0]).toMatchObject({ status: "verified" });
+  });
+
+  it("fails when an existing test was modified", () => {
+    const evaluations = evaluateRequirementObservations(
+      [requirement()],
+      [{ type: "changed_paths", paths: ["test/run.mjs"], measured: true, authoritative: true, evidence: "diff" }],
+      { preExistingPaths: preExisting },
+    );
+    expect(evaluations[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("protects everything matching when the caller cannot tell what pre-existed", () => {
+    // No snapshot means no information; the prohibition applies broadly, which
+    // is the safe reading.
+    const result = enforceToolRequirement(
+      { toolName: "create_file", args: { path: "test/retry.mjs", content: "x" } },
+      [requirement()],
+    );
+    expect(result.allowed).toBe(false);
+  });
+});

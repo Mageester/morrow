@@ -105,6 +105,8 @@ export interface RequirementEvaluation {
 
 export interface RequirementEvaluationOptions {
   platform?: NodeJS.Platform;
+  /** Files present when the task started. See `matchesProtectedPattern`. */
+  preExistingPaths?: ReadonlySet<string>;
   /**
    * The workspace's `package.json` scripts, when it has any.
    *
@@ -119,6 +121,8 @@ export interface RequirementEvaluationOptions {
 
 export interface RequirementEnforcementOptions {
   platform?: NodeJS.Platform;
+  /** Files present when the task started. See `matchesProtectedPattern`. */
+  preExistingPaths?: ReadonlySet<string>;
 }
 
 export type RequirementEnforcementResult =
@@ -604,7 +608,7 @@ function matchesRequiredVerification(call: RequirementToolCall, requirement: Exe
   return Boolean(actual && required && typeof required === "object" && commandEqual(actual, required as { executable: string; args: string[] }));
 }
 
-function requirementViolation(requirement: ExecutionRequirement, call: RequirementToolCall, platform: NodeJS.Platform): string | null {
+function requirementViolation(requirement: ExecutionRequirement, call: RequirementToolCall, platform: NodeJS.Platform, preExistingPaths?: ReadonlySet<string>): string | null {
   if (!requirement.authoritative || (requirement.status === "waived" && validRequirementWaiver(requirement)) || !requirement.kind) return null;
   const paths = affectedPaths(call);
   switch (requirement.kind) {
@@ -624,7 +628,7 @@ function requirementViolation(requirement: ExecutionRequirement, call: Requireme
     }
     case "protected_files": {
       const patterns = (Array.isArray(requirement.parameters.patterns) ? requirement.parameters.patterns : []).map(String);
-      const hit = paths.find((path) => matchesProtectedPattern(path, patterns, platform));
+      const hit = paths.find((path) => matchesProtectedPattern(path, patterns, platform, preExistingPaths));
       return hit ? `the action modifies ${hit}, which the user placed off limits` : null;
     }
     case "required_file":
@@ -777,8 +781,26 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
  * matched as a concrete path, prefix-wise so naming a directory protects what
  * is inside it.
  */
-export function matchesProtectedPattern(path: string, patterns: readonly string[], platform: NodeJS.Platform = process.platform): boolean {
+export function matchesProtectedPattern(
+  path: string,
+  patterns: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  /**
+   * Files that existed when the task started, when the caller knows them.
+   *
+   * "Do not edit or delete existing tests" prohibits changing what is already
+   * there; it does not prohibit adding a new test, which the same prompt often
+   * asks for in the next breath. Matching every path under `test/` turned
+   * "write your own tests in a NEW file under test/" into a requirement
+   * violation and failed a run whose work was correct.
+   *
+   * Omitted means the caller cannot tell, and the prohibition applies to any
+   * match — the safe reading when nothing is known.
+   */
+  preExistingPaths?: ReadonlySet<string>,
+): boolean {
   const key = canonicalRequirementPath(path, platform);
+  if (preExistingPaths && !preExistingPaths.has(key)) return false;
   return patterns.some((pattern) => {
     if (pattern === "test") return /(^|\/)(?:tests?|__tests__|spec)(?:\/|$)|\.(?:test|spec)\.[A-Za-z0-9]+$/i.test(key);
     const target = canonicalRequirementPath(pattern, platform);
@@ -909,7 +931,7 @@ export function evaluateRequirementObservations(
       }
       case "protected_files": {
         const patterns = (Array.isArray(requirement.parameters.patterns) ? requirement.parameters.patterns : []).map(String);
-        const touched = paths.find((path) => matchesProtectedPattern(path, patterns, platform));
+        const touched = paths.find((path) => matchesProtectedPattern(path, patterns, platform, options.preExistingPaths));
         if (changedPathObservations.length > 0
           && hasUsablePathEvidence
           && changedPathObservations.every((observation) => observation.authoritative !== false)) {
@@ -1046,7 +1068,7 @@ export function enforceToolRequirement(
   const platform = options.platform ?? process.platform;
   for (const requirement of requirements) {
     if (requirement.kind && !EXECUTION_REQUIREMENT_REGISTRY[requirement.kind].preAction) continue;
-    const reason = requirementViolation(requirement, call, platform);
+    const reason = requirementViolation(requirement, call, platform, options.preExistingPaths);
     if (!reason || !requirement.kind) continue;
     return {
       allowed: false,
