@@ -270,8 +270,9 @@ describe("frontend-validation completion gate — vision requirement", () => {
 
     const events = taskRecordsRepository(db).listEvents("t");
     const blocked = events.find((e: any) => e.type === "task.interrupted");
-    expect(blocked?.payload?.completionBlockers?.map((b: any) => b.code) ?? []).not.toContain("frontend_route_missing");
-    expect(blocked?.payload?.completionBlockers?.map((b: any) => b.code) ?? []).not.toContain("frontend_interaction_missing");
+    const blockerCodes = ((blocked?.payload as any)?.completionBlockers ?? []).map((b: any) => b.code);
+    expect(blockerCodes).not.toContain("frontend_route_missing");
+    expect(blockerCodes).not.toContain("frontend_interaction_missing");
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
