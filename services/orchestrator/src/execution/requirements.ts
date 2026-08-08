@@ -656,6 +656,22 @@ export function extractExecutionRequirements(prompt: string): ExecutionRequireme
     return { command: normalizedCommand(commandText) };
   });
 
+  // "`node test/run.mjs` must still pass" — the command stated BEFORE the
+  // modal. Both patterns above require it after ("must run <cmd>"), so this
+  // extremely ordinary phrasing extracted nothing, and a task that named the
+  // exact command to keep green could close without ever running it.
+  addPattern(
+    "required_verification",
+    /`?\b(?:pnpm|npm|yarn|bun|node|deno|npx)\b[^`\n]{0,80}?`?[)\]}"']*\s+(?:must|should)\s+(?:still\s+|all\s+|again\s+)*(?:pass|passes|succeed|succeeds)\b/gi,
+    (match) => {
+      const commandText = match[0]
+        .replace(/\s+(?:must|should)\s+(?:still\s+|all\s+|again\s+)*(?:pass|passes|succeed|succeeds)\b.*$/i, "")
+        .replace(/[`)\]}"']/g, "")
+        .trim();
+      return { command: normalizedCommand(commandText) };
+    },
+  );
+
   const recognized = matches
     .filter((match) => match.kind !== "required_verification" || match.parameters.command !== null)
     .sort((left, right) => left.start - right.start || left.end - right.end);

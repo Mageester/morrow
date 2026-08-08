@@ -936,3 +936,34 @@ describe("agent requirement boundary integration", () => {
     }
   });
 });
+
+describe("required verification stated before the modal", () => {
+  it("extracts a command named as 'X must still pass'", () => {
+    // The ordinary way people write it, and the way it appeared in a measured
+    // task: the command comes BEFORE the modal. Both original patterns required
+    // it after ("must run X"), so a prompt naming the exact suite to keep green
+    // produced no requirement and the task could close without ever running it.
+    for (const prompt of [
+      "The existing suite (`node test/run.mjs`) must still pass unchanged.",
+      "`pnpm test` must pass before you finish.",
+      "npm run build should succeed when you are done.",
+    ]) {
+      const reqs = extractExecutionRequirements(prompt);
+      const verification = reqs.find((r) => r.kind === "required_verification");
+      expect(verification, prompt).toBeDefined();
+      expect(verification!.parameters.command, prompt).not.toBeNull();
+    }
+  });
+
+  it("parses the executable and args off the named command", () => {
+    const reqs = extractExecutionRequirements("The existing suite (`node test/run.mjs`) must still pass unchanged.");
+    expect(reqs.find((r) => r.kind === "required_verification")!.parameters.command)
+      .toEqual({ executable: "node", args: ["test/run.mjs"] });
+  });
+
+  it("does not invent a verification from ordinary prose", () => {
+    for (const prompt of ["The report must still pass review.", "Your answer should pass muster."]) {
+      expect(extractExecutionRequirements(prompt).some((r) => r.kind === "required_verification"), prompt).toBe(false);
+    }
+  });
+});
