@@ -2778,6 +2778,21 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // valid evidence and permanently block frontend completion. Exclude it: the
   // original call it duplicates is still counted.
   const isDuplicateBrowserResult = (result: Record<string, unknown> | null): boolean => result?.duplicate === true;
+  // An execution-FAILED browser call (the tool itself errored â€” a browser_open
+  // that hit a not-yet-ready server, a click on a ref that had gone stale, etc.)
+  // is a transient attempt, not evidence. Because the category checks below use
+  // `.every()`, leaving a failed attempt in permanently poisons the whole
+  // category even after the model recovers. Live bug (Pomodoro build,
+  // deepseek-v4-flash): port 4173 was already taken, so the model's first
+  // browser_open failed, it moved its server to 4187, and re-opened and verified
+  // there successfully â€” but the failed 4173 opens (and a stale-ref click) left
+  // routeHealthy and interaction stuck false via `.every()`, and a fully
+  // browser-verified app was blocked with frontend_route_missing +
+  // frontend_interaction_missing. Only the model's successful calls are evidence;
+  // a recovered-from failure must not count against it. (A genuinely unrecovered
+  // failure still blocks: with no successful call the category stays empty, and a
+  // failed LAST action is caught separately by the unverified-completion gate.)
+  const isCompletedBrowserCall = (call: ToolCallRecord): boolean => call.status === "completed";
   const isValidInteractionResult = (call: ToolCallRecord, result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result)) return false;
     if (call.toolName === "browser_click") return typeof result?.clicked === "string" && isPageSnapshot(result?.page as Record<string, unknown> | null);
@@ -2792,7 +2807,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     if (lastWrite < 0) return {};
     const afterWrite = calls.slice(lastWrite + 1);
     const browserCalls = afterWrite.filter((call) =>
-      BROWSER_EVIDENCE_TOOLS.has(call.toolName) && !isDuplicateBrowserResult(parseBrowserResult(call)));
+      BROWSER_EVIDENCE_TOOLS.has(call.toolName)
+      && isCompletedBrowserCall(call)
+      && !isDuplicateBrowserResult(parseBrowserResult(call)));
     const routeCalls = browserCalls.filter((call) => call.toolName === "browser_open");
     const snapshotCalls = browserCalls.filter((call) => call.toolName === "browser_snapshot");
     const consoleCalls = browserCalls.filter((call) => call.toolName === "browser_console");
