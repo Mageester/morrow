@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
 import { appendFlagshipRun, evaluateFlagshipGate, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
+import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
+import { resolveMorrowHome } from "../../src/home.js";
 import { ProviderIdSchema, type ProviderId } from "@morrow/contracts";
 
 /**
@@ -104,7 +106,23 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+/**
+ * Take the same credentials production takes.
+ *
+ * The orchestrator hydrates provider environment from `MORROW_HOME/secrets.env`
+ * at startup, which is where the app itself stores a key the user configured
+ * through the UI. This suite read only the ambient environment, so a provider
+ * the product considers configured — `opencode-zen`, the declared second gate
+ * provider, among them — read here as absent. The two-provider gate could not
+ * be met on a machine that was in fact configured for it, and the shortfall
+ * looked like a missing credential rather than a harness that never looked.
+ */
+function hydrateFromMorrowHome(): void {
+  hydrateProviderEnvFromSecrets(join(resolveMorrowHome(process.env), "secrets.env"), process.env);
+}
+
 function configuredProviders(): ProviderId[] {
+  hydrateFromMorrowHome();
   const requested = (process.env.MORROW_FLAGSHIP_PROVIDERS ?? "")
     .split(",")
     .map((id) => id.trim())

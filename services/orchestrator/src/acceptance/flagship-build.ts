@@ -158,6 +158,13 @@ export interface FlagshipBuildInput {
    * registry using the ambient environment, exactly as production does. */
   provider?: AiProvider;
   presetId?: PresetId;
+  /**
+   * Left unset by a real run on purpose: the budget then comes from the
+   * selected preset, which is the only budget production ever uses. A run
+   * scored under a hand-picked ceiling proves that ceiling, not the product —
+   * this defaulted to 24 turns while a Build Auto on `best-quality` gets 8,
+   * so the gate measured a configuration no user can select.
+   */
   maxTurns?: number;
 }
 
@@ -215,7 +222,7 @@ export async function runFlagshipBuild(input: FlagshipBuildInput): Promise<Flags
       db,
       taskId,
       ...(input.provider ? { provider: input.provider } : {}),
-      maxTurns: input.maxTurns ?? 24,
+      ...(input.maxTurns === undefined ? {} : { maxTurns: input.maxTurns }),
     });
 
     const task = taskRepository(db).getTaskById(taskId);

@@ -6,6 +6,45 @@ The format follows Keep a Changelog, and releases will use Semantic Versioning o
 
 ## [Unreleased]
 
+### Fixed - the beta.39 stdin/CI fix had reached one caller, not the boundary
+
+beta.39 fixed "a command that reads stdin or checks CI can hang the task" in the
+agent's tool executor. Three other places in the product still spawned processes
+their own way, and none of them inherited it. The class was never fixed; one of
+its four callers was.
+
+- **Mission verification commands** ran through a private `spawn(shell, ...)` in
+  `mission/evidence-runner.ts` with an open stdin and the orchestrator's whole
+  environment — so no `CI`, so watch mode. A `pnpm test` gate consumed its full
+  120s timeout and scored `inconclusive`: a mission that had done the work and
+  could not prove it. Its timeout then called `child.kill()`, which killed the
+  `cmd.exe` wrapper and left the real test process alive holding its ports and
+  file locks, breaking the *next* run too. The same file's `git status` diff gate
+  had no timeout at all and could wait forever.
+- **Background processes** — every dev server Morrow starts — were spawned by
+  `ProcessSupervisor` in pipe mode with stdin left open. A server that asks
+  anything at startup ("Port 3000 is in use, use another?") waits on an answer
+  that cannot arrive, never becomes reachable, and every later health check and
+  browser gate reports a working app as broken.
+- **Mission checkpointing**'s three `git` calls were synchronous, unbounded, and
+  interactive-capable. `spawnSync` blocks the whole event loop, so one stalled
+  `git` took every mission, task, and HTTP request in the process with it.
+
+There is now one shell-command boundary, `runShellCommandSafe`, alongside the
+existing `runProcessSafe`, and mission verification uses it. Both share one
+environment policy, one stdin policy, one process-tree kill, and one settle
+path. Two further defects surfaced while proving it: a force-killed tree that
+never emitted `close` left the caller pending forever (now bounded by a grace
+window), and Node's Windows argument escaping (`\"`) is not the convention
+`cmd.exe` parses, so any verification command containing a quoted argument
+reached the shell mangled (now passed verbatim).
+
+### Changed - the flagship gate is scored under the budget production uses
+
+`runFlagshipBuild` passed `maxTurns: 24`. A Build Auto on `best-quality` gets
+`maxToolIterations: 8`. The gate was measuring a configuration no user can
+select; it now takes the budget from the preset, like production does.
+
 ### Changed - reliability cycle: bug classes became structural guards
 
 - **Every provider adapter now normalizes the same situations identically, and
