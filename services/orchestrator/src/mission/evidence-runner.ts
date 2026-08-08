@@ -394,7 +394,9 @@ function defaultStartService(command: string, cwd: string): Promise<ServiceHandl
     env: filterEnv(process.env),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-    ...(isWin ? {} : { detached: true }),
+    // As in runShellCommandSafe: cmd.exe does not parse Node's backslash-quote
+    // escaping, so a start command with a quoted argument arrives mangled.
+    ...(isWin ? { windowsVerbatimArguments: true } : { detached: true }),
   });
 
   let output = "";
