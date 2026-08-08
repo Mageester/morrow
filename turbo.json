@@ -15,6 +15,9 @@
       "outputs": ["coverage/**"]
     },
     "dev": {
+      // `turbo dev --parallel` ignores the task graph by design, so a
+      // `dependsOn` here does nothing. The dev scripts build their upstream
+      // workspace packages explicitly instead — see `dev:app` in package.json.
       "cache": false,
       "persistent": true
     }
