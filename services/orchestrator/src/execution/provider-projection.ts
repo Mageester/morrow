@@ -274,10 +274,11 @@ export function projectProviderRequest(input: {
   }
   let envelope = { ...input.envelope, messages };
   let admission = admitProviderRequest(envelope, input.resolution);
-  // A batch can contain many individually-safe reads/writes. If their combined
-  // newest group still cannot fit, compact that completed group too instead of
-  // failing after claiming automatic compaction succeeded.
-  if (!admission.ok) {
+  // A batch can contain many individually-safe reads/writes. Leave the same
+  // headroom that triggered compaction instead of merely fitting the hard
+  // route limit; otherwise the accepted projection is guaranteed to compact
+  // again on the very next turn.
+  if (!admission.ok || admission.measurement.inputTokens >= thresholdTokens) {
     envelope = { ...input.envelope, messages: [...system, checkpointMessage(input.checkpoint), compactLatestBatch(groups)] };
     admission = admitProviderRequest(envelope, input.resolution);
   }

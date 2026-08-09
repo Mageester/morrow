@@ -4973,7 +4973,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             throw new AgentToolFailure(`Explicit task requirement violated: ${reason}`, payload, "requirement_violation");
           }
 
-          if (OBSERVATION_TOOL_NAMES.has(tc.name)) {
+          // A repeated successful observation reuses its prior bounded result
+          // below, so it does not execute against the workspace again. Count
+          // only real executions toward the epoch limit; otherwise a cached
+          // read can be mislabeled as a repeated-strategy failure despite no
+          // duplicate operation having run.
+          const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
+          if (OBSERVATION_TOOL_NAMES.has(tc.name) && duplicateBytes === undefined) {
             observationRecord = progressEpoch.recordObservation(tc.name, args);
             if (observationRecord.exceeded) {
               const message = `Observation ${tc.name} with the same arguments exceeded the per-epoch execution limit (${observationRecord.executionsPerSignature}).`;
@@ -4995,7 +5001,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             }
           }
 
-          const duplicateBytes = repeatedTool ? toolResultBytesBySignature.get(toolSignature) : undefined;
           if (duplicateBytes !== undefined) {
             resultStr = duplicateToolResult(tc.name, duplicateBytes);
             event("workspace.inspected", { kind: "duplicate_tool", toolName: tc.name, resultCount: 0, duplicate: true });

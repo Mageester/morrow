@@ -273,6 +273,42 @@ describe("durable provider projection", () => {
     expect(projection).not.toContain("source contents source contents");
   });
 
+  it("leaves headroom below the compaction threshold after projecting a large recent batch", () => {
+    const result = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: {
+        providerId: "deepseek",
+        model: "deepseek-v4-flash",
+        protocol: "openai-chat",
+        messages: [
+          { role: "system", content: "rules" },
+          { role: "user", content: "old context ".repeat(40_000) },
+          { role: "assistant", content: "Inspect the generated page", toolCalls: [{ id: "read-large", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "index.html" }) } }] },
+          { role: "tool", name: "read_file", toolCallId: "read-large", content: "generated page contents ".repeat(14_000) },
+        ],
+        tools: [],
+        outputReserveTokens: 16_384,
+      },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.admission.ok).toBe(true);
+    expect(result.admission.measurement.inputTokens).toBeLessThan(result.thresholdTokens);
+    expect(result.envelope.messages.map((message) => message.content).join("\n")).toContain("latest completed execution batch");
+
+    const nextTurn = projectProviderRequest({
+      checkpoint: snapshot,
+      envelope: { ...result.envelope, messages: [...result.envelope.messages, { role: "user", content: "Continue with the next required action." }] },
+      resolution,
+      thresholdRatio: 0.8,
+      recentRawGroups: 1,
+    });
+    expect(nextTurn.compacted).toBe(false);
+  });
+
   it("bounds dependency-heavy checkpoint file and git status data", () => {
     const noisySnapshot = {
       ...snapshot,

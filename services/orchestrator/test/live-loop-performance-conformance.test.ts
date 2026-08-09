@@ -583,4 +583,55 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
     expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(0);
   });
+
+  it("does not record cached repeated reads as exhausted observation executions", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-cached-observation-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const write = (id: string, path: string, content: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: {
+            name: "create_file",
+            arguments: JSON.stringify({ path, content, purpose: `Create ${path}` }),
+          },
+        }],
+      },
+      { type: "done" },
+    ];
+    const read = (id: string): ProviderChunk[] => [
+      {
+        type: "tool_call",
+        toolCalls: [{
+          id,
+          index: 0,
+          type: "function",
+          function: { name: "read_file", arguments: JSON.stringify({ path: "first.txt" }) },
+        }],
+      },
+      { type: "done" },
+    ];
+    const provider = new MockProvider({
+      chunks: [
+        write("write-first", "first.txt", "first\n"),
+        ...Array.from({ length: MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 1 }, (_, index) => read(`read-first-${index}`)),
+        write("write-second", "second.txt", "second\n"),
+        [{ type: "text", text: "Both requested files are complete." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    const calls = conversationsRepository(db).listToolCallsForTask("task-1");
+    const reads = calls.filter((call) => call.toolName === "read_file");
+    expect(reads).toHaveLength(MAX_OBSERVATION_SIGNATURE_EXECUTIONS + 1);
+    expect(reads.every((call) => call.status === "completed")).toBe(true);
+    expect(calls.find((call) => call.id === "write-second")?.status).toBe("completed");
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "observation_epoch_exhausted")).toBe(false);
+  });
 });
