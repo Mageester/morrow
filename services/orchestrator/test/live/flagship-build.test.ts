@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { getProviderDefaultModel, isProviderConfigured } from "../../src/provide
 import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
 import { resolveMorrowHome } from "../../src/home.js";
 import { ProviderIdSchema, type ProviderId } from "@morrow/contracts";
+import { readFlagshipEvidenceScenarioIds } from "../flagship-evidence.js";
 
 /**
  * The flagship workflow, against real models.
@@ -195,12 +196,7 @@ describe("flagship scenario eligibility is declared, not implied", () => {
   });
 
   it("registers and classifies every distinct evidence scenario", () => {
-    const scenarioIds = [...new Set(readFileSync(DEFAULT_LOG, "utf8")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith("#"))
-      .map((line) => (JSON.parse(line) as { scenarioId?: unknown }).scenarioId)
-      .filter((scenarioId): scenarioId is string => typeof scenarioId === "string"))];
+    const scenarioIds = [...new Set(readFlagshipEvidenceScenarioIds(DEFAULT_LOG))];
     const registry = new Set<string>(FLAGSHIP_SCENARIO_IDS);
     const declared = new Set<string>(FLAGSHIP_SCENARIO_ELIGIBILITY.map((entry) => entry.scenarioId));
 
@@ -210,7 +206,6 @@ describe("flagship scenario eligibility is declared, not implied", () => {
 
   it("gives every declared scenario a stated eligibility reason", () => {
     const unexplained = FLAGSHIP_SCENARIO_ELIGIBILITY
-      .filter((entry) => !entry.eligible)
       .filter((entry) => entry.reason.trim().length === 0)
       .map((entry) => entry.scenarioId);
     expect(unexplained).toEqual([]);

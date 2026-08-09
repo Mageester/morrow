@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FLAGSHIP_BUILD_PROMPT,
@@ -10,12 +10,14 @@ import {
 import {
   appendFlagshipRun,
   evaluateFlagshipGate,
+  FLAGSHIP_SCENARIO_IDS,
   readFlagshipLog,
   FLAGSHIP_GATE_MIN_PASSES,
   FLAGSHIP_GATE_MIN_RUNS,
 } from "../src/acceptance/flagship-gate.js";
 import type { FlagshipBuildRun } from "../src/acceptance/flagship-build.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions, ToolCall } from "../src/provider/base.js";
+import { readFlagshipEvidenceScenarioIds } from "./flagship-evidence.js";
 
 /**
  * These tests prove the flagship HARNESS — that the scenario runs end to end,
@@ -29,6 +31,7 @@ import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions, ToolCall } 
  */
 
 const roots: string[] = [];
+const FLAGSHIP_EVIDENCE_LOG = resolve(import.meta.dirname, "../../../docs/evidence/flagship-runs.jsonl");
 
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), "morrow-flagship-"));
@@ -246,6 +249,25 @@ describe("flagship release gate", () => {
   it("requires an explicit registered scenario id", () => {
     expect(() => evaluateFlagshipGate([], undefined as never)).toThrow(/scenarioId is required/i);
     expect(() => evaluateFlagshipGate([], { scenarioId: "flagship-unsupported-v1" as never })).toThrow(/unsupported.*scenarioId/i);
+  });
+
+  it("registers every scenario id found in append-only evidence", () => {
+    const scenarioIds = readFlagshipEvidenceScenarioIds(FLAGSHIP_EVIDENCE_LOG);
+    const registered = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const undeclared = [...new Set(scenarioIds)].filter((scenarioId) => !registered.has(scenarioId));
+
+    expect(undeclared).toEqual([]);
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { scenarioId: null }],
+    ["numeric", { scenarioId: 42 }],
+  ] as const)("rejects %s scenarioId in evidence", (label, record) => {
+    const path = join(scratch(), `${label}.jsonl`);
+    writeFileSync(path, JSON.stringify(record));
+
+    expect(() => readFlagshipEvidenceScenarioIds(path)).toThrow(/scenarioId/i);
   });
 
   it("scores supported scenarios independently and keeps the build gate isolated", () => {
