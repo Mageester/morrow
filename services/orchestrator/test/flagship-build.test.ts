@@ -1,6 +1,6 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FLAGSHIP_BUILD_PROMPT,
@@ -10,7 +10,6 @@ import {
 import {
   appendFlagshipRun,
   evaluateFlagshipGate,
-  FLAGSHIP_SCENARIO_IDS,
   readFlagshipLog,
   FLAGSHIP_GATE_MIN_PASSES,
   FLAGSHIP_GATE_MIN_RUNS,
@@ -30,7 +29,6 @@ import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions, ToolCall } 
  */
 
 const roots: string[] = [];
-const FLAGSHIP_EVIDENCE_LOG = resolve(import.meta.dirname, "../../../docs/evidence/flagship-runs.jsonl");
 
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), "morrow-flagship-"));
@@ -248,19 +246,6 @@ describe("flagship release gate", () => {
   it("requires an explicit registered scenario id", () => {
     expect(() => evaluateFlagshipGate([], undefined as never)).toThrow(/scenarioId is required/i);
     expect(() => evaluateFlagshipGate([], { scenarioId: "flagship-unsupported-v1" as never })).toThrow(/unsupported.*scenarioId/i);
-  });
-
-  it("registers every scenario id found in the append-only evidence log", () => {
-    const scenarioIds = readFileSync(FLAGSHIP_EVIDENCE_LOG, "utf8")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith("#"))
-      .map((line) => (JSON.parse(line) as { scenarioId?: unknown }).scenarioId)
-      .filter((scenarioId): scenarioId is string => typeof scenarioId === "string");
-    const registered = new Set<string>(FLAGSHIP_SCENARIO_IDS);
-    const undeclared = [...new Set(scenarioIds)].filter((scenarioId) => !registered.has(scenarioId));
-
-    expect(undeclared).toEqual([]);
   });
 
   it("scores supported scenarios independently and keeps the build gate isolated", () => {

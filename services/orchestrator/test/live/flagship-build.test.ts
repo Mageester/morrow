@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
-import { appendFlagshipRun, evaluateFlagshipGate, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
+import { appendFlagshipRun, evaluateFlagshipGate, FLAGSHIP_SCENARIO_IDS, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
+import type { FlagshipScenarioId } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
 import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
 import { resolveMorrowHome } from "../../src/home.js";
@@ -96,6 +97,23 @@ export const FLAGSHIP_PROVIDER_ELIGIBILITY: readonly FlagshipProviderEligibility
   { providerId: "sambanova", eligible: false, requiresLiveModelDiscovery: true, reason: "Inference host; catalog varies and is not gate-declared." },
 ];
 
+/**
+ * Which production-registered flagship scenarios the live suite may prove,
+ * stated beside provider eligibility instead of inferred from the run log.
+ * The scenario coverage tests below assert this table cannot drift from the
+ * production scoring registry or recorded evidence.
+ */
+export interface FlagshipScenarioEligibility {
+  scenarioId: FlagshipScenarioId;
+  eligible: boolean;
+  reason: string;
+}
+
+export const FLAGSHIP_SCENARIO_ELIGIBILITY: readonly FlagshipScenarioEligibility[] = [
+  { scenarioId: "flagship-build-v1", eligible: true, reason: "Existing real-provider command-line build scenario." },
+  { scenarioId: "flagship-web-v1", eligible: true, reason: "Registered real-provider web acceptance scenario." },
+];
+
 /** Providers this gate may actually run against. */
 const CANDIDATES: ProviderId[] = FLAGSHIP_PROVIDER_ELIGIBILITY
   .filter((entry) => entry.eligible)
@@ -161,6 +179,41 @@ describe("flagship provider eligibility is declared, not implied", () => {
     for (const providerId of ["mock", "deterministic-local"] as ProviderId[]) {
       expect(CANDIDATES).not.toContain(providerId);
     }
+  });
+});
+
+describe("flagship scenario eligibility is declared, not implied", () => {
+  it("classifies every production scenario exactly once in the live declaration", () => {
+    const declared = FLAGSHIP_SCENARIO_ELIGIBILITY.map((entry) => entry.scenarioId);
+    expect(new Set(declared).size).toBe(declared.length);
+    const registry = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const declaredSet = new Set<string>(declared);
+    const undeclared = [...registry].filter((scenarioId) => !declaredSet.has(scenarioId));
+    expect(undeclared).toEqual([]);
+    const unknown = declared.filter((scenarioId) => !registry.has(scenarioId));
+    expect(unknown).toEqual([]);
+  });
+
+  it("registers and classifies every distinct evidence scenario", () => {
+    const scenarioIds = [...new Set(readFileSync(DEFAULT_LOG, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      .map((line) => (JSON.parse(line) as { scenarioId?: unknown }).scenarioId)
+      .filter((scenarioId): scenarioId is string => typeof scenarioId === "string"))];
+    const registry = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const declared = new Set<string>(FLAGSHIP_SCENARIO_ELIGIBILITY.map((entry) => entry.scenarioId));
+
+    expect(scenarioIds.filter((scenarioId) => !registry.has(scenarioId))).toEqual([]);
+    expect(scenarioIds.filter((scenarioId) => !declared.has(scenarioId))).toEqual([]);
+  });
+
+  it("gives every declared scenario a stated eligibility reason", () => {
+    const unexplained = FLAGSHIP_SCENARIO_ELIGIBILITY
+      .filter((entry) => !entry.eligible)
+      .filter((entry) => entry.reason.trim().length === 0)
+      .map((entry) => entry.scenarioId);
+    expect(unexplained).toEqual([]);
   });
 });
 
