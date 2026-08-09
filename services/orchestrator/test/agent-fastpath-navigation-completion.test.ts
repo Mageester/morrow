@@ -250,6 +250,84 @@ describe("completion fast path — browser_open exclusion", () => {
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((event: any) => event.type === "task.progress_warning" && event.payload?.reason === "final_summary_requested")).toBe(false);
   });
+
+  it("gives one bounded completion recovery turn for a task-owned running process", async () => {
+    seed(db, ws, "Create the requested file, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "artifact.txt", content: "delivered\n" }), done],
+        [text("The file is ready, but the background process is still running."), done],
+        [tool("stop", "stop_process", { processId: started.id, force: true }), done],
+        [text("Created the requested file and stopped the task-owned background process."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 8 }));
+
+    try {
+      runner.run("t");
+      await runner.waitFor("t");
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+      expect(processesRepository(db).get(started.id)?.status).not.toBe("running");
+      const calls = conversationsRepository(db).listToolCallsForTask("t");
+      expect(calls.map((call) => call.id)).toEqual(["create", "stop"]);
+      expect(calls.find((call) => call.id === "stop")?.status).toBe("completed");
+      expect(provider.requests).toHaveLength(4);
+
+      const recoveryPrompt = provider.requests[2]!.map((message) => message.content).join("\n");
+      expect(recoveryPrompt).toContain("background_process_running");
+      expect(recoveryPrompt).toContain(started.id);
+      expect(taskRecordsRepository(db).listEvents("t").filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(1);
+    } finally {
+      await supervisor.terminate(started.id, { force: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
+
+  it("interrupts after the single completion recovery when the blocker remains", async () => {
+    seed(db, ws, "Create the requested file, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("create", "create_file", { path: "artifact.txt", content: "delivered\n" }), done],
+        [text("The file is ready, but the background process is still running."), done],
+        [text("The file is ready, but the background process is still running."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, maxTurns: 8 }));
+
+    try {
+      runner.run("t");
+      await runner.waitFor("t");
+
+      expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+      expect(processesRepository(db).get(started.id)?.status).toBe("running");
+      expect(provider.requests).toHaveLength(3);
+      const events = taskRecordsRepository(db).listEvents("t");
+      expect(events.filter((event: any) => event.payload?.reason === "completion_contract_recovery")).toHaveLength(1);
+      expect(events.at(-1)?.payload).toMatchObject({ reason: "completion_contract_blocked" });
+    } finally {
+      await supervisor.terminate(started.id, { force: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
 });
 
 describe("isForwardLookingNarration", () => {

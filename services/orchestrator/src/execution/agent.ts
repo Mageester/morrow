@@ -3122,6 +3122,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // give the model exactly ONE more tool-free turn to write a genuine summary
   // instead of shipping the narration as the report.
   let finalSummaryTurnRequested = false;
+  // A repairable completion blocker gets one explicit model continuation. The
+  // guard is intentionally local and one-shot so a model that returns another
+  // blocked final answer still reaches the strict interruption path below.
+  let completionRecoveryTurnRequested = false;
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -3520,6 +3524,42 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       canonicalFinalAnswer === null ? null : redactSecrets(canonicalFinalAnswer),
       priorNarration.map((text) => redactSecrets(text)),
     ));
+  };
+
+  const requestCompletionContractRecovery = (evaluation: CompletionResult): boolean => {
+    if (completionRecoveryTurnRequested) return false;
+    const processBlocker = evaluation.blockers.find((item) => item.code === "background_process_running");
+    if (!processBlocker) return false;
+
+    // Re-read only processes owned by this task. The completion contract uses
+    // the same ownership boundary; never put a foreign process identifier into
+    // a provider continuation even if another process in the project is live.
+    const taskOwnedProcessIds = processesRepo
+      .listByProject(projectId, "running")
+      .filter((process) => process.taskId === taskId)
+      .map((process) => process.id);
+    if (taskOwnedProcessIds.length === 0) return false;
+
+    completionRecoveryTurnRequested = true;
+    const message = [
+      `The completion contract is blocked by ${processBlocker.code}: ${processBlocker.message}`,
+      `Task-owned running process ID(s): ${taskOwnedProcessIds.join(", ")}.`,
+      "Call stop_process for each listed process ID, then return a concise final answer after cleanup succeeds.",
+      "Do not stop any process not listed here.",
+    ].join(" ");
+    event("task.progress_warning", {
+      reason: "completion_contract_recovery",
+      message,
+      blocker: processBlocker.code,
+      processIds: taskOwnedProcessIds,
+      turn: absoluteTurn,
+    });
+    chatMessages.push({
+      role: "user",
+      content: `MORROW COMPLETION RECOVERY (turn ${absoluteTurn}): ${message}`,
+    });
+    noProgressTurns = 0;
+    return true;
   };
 
   const returnCompletionContractBlock = async (evaluation: CompletionResult): Promise<boolean> => {
@@ -6065,9 +6105,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
         canonicalFinalText,
         recordedTurnsAtBoundary.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
       );
-      // This is the last provider turn. The final gate below either commits
-      // this verified result or records the exact durable blockers; no
-      // stagnation recovery turn is allowed after a canonical answer.
+      if (!finalCompletionEvaluation.complete && requestCompletionContractRecovery(finalCompletionEvaluation)) {
+        completedWithoutMoreTools = false;
+        canonicalFinalText = "";
+        finalCompletionEvaluation = null;
+        continue;
+      }
+      // This is the last provider turn after any bounded completion recovery.
+      // The final gate below either commits this verified result or records the
+      // exact durable blockers; no further recovery turn is allowed.
       break;
     }
 
