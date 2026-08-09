@@ -44,12 +44,13 @@ class WebProvider implements AiProvider {
   constructor(
     private readonly startServer = true,
     private readonly directNodeServer = false,
+    private readonly decoyPackageCommand = false,
   ) {}
   async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
     this.turn += 1;
     if (this.turn === 1) {
       const files = [
-        ["package.json", `${JSON.stringify({ private: true, type: "module", scripts: { start: "node server.mjs --port 0", test: 'node scripts/test-runner.mjs "tests/acceptance check.test.mjs"' } }, null, 2)}\n`],
+        ["package.json", `${JSON.stringify({ private: true, type: "module", scripts: { start: "node server.mjs --port 0", ...(this.decoyPackageCommand ? { dev: "node server.mjs --port 0" } : {}), test: 'node scripts/test-runner.mjs "tests/acceptance check.test.mjs"' } }, null, 2)}\n`],
         ["index.html", INDEX], ["styles.css", STYLES], ["app.js", APP], ["server.mjs", SERVER],
         ["scripts/test-runner.mjs", TEST_RUNNER], ["tests/acceptance check.test.mjs", GENERATED_TEST],
       ];
@@ -70,7 +71,9 @@ class WebProvider implements AiProvider {
       }
       const command = this.directNodeServer
         ? { executable: "node", args: ["server.mjs", "--port", "0"] }
-        : { executable: "pnpm", args: ["start"] };
+        : this.decoyPackageCommand
+          ? { executable: "pnpm", args: ["run", "dev", "start"] }
+          : { executable: "pnpm", args: ["start"] };
       yield { type: "tool_call", toolCalls: [tool("web-server", 0, "run_command", { ...command, purpose: "start dev server", background: true })] };
       yield done;
       return;
@@ -297,6 +300,41 @@ describe("flagship web scenario", () => {
 
     expect(run).toMatchObject({ passed: false, failureReason: "contract_violated" });
     expect(run.failureDetail).toContain("supervisor boundary");
+  }, 60_000);
+
+  it("rejects a task-owned package command that only contains start positionally", async () => {
+    const root = scratch();
+    const run = await runFlagshipWeb({
+      root,
+      providerId: "openai",
+      model: "scripted-decoy-package-command",
+      provider: new WebProvider(true, false, true),
+      browser: () => browser(),
+      agentBrowserFactory: () => browser(),
+      maxTurns: 12,
+    });
+
+    expect(run, JSON.stringify(run, null, 2)).toMatchObject({
+      passed: false,
+      failureReason: "contract_violated",
+    });
+    expect(run.failureDetail).toContain("agent did not inspect and verify the supervised dev server");
+
+    const db = openDatabase(join(root, "flagship.db"));
+    try {
+      const calls = conversationsRepository(db).listToolCallsForTask(run.taskId!);
+      expect(calls.map((call) => call.id)).toEqual(expect.arrayContaining([
+        "web-test", "web-server", "web-output", "web-open", "web-stop",
+      ]));
+      expect(processesRepository(db).listByProject("project-flagship-web-v1")[0]).toMatchObject({
+        command: "pnpm",
+        args: ["run", "dev", "start"],
+        cwd: join(root, "workspace"),
+      });
+      expect(processesRepository(db).listByProject("project-flagship-web-v1")[0]?.status).not.toBe("running");
+    } finally {
+      db.close();
+    }
   }, 60_000);
 
   it("accepts a task-owned server started directly through the supervisor", async () => {

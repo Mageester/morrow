@@ -37,6 +37,21 @@ const REQUIRED_FILES = [
   "tests/acceptance check.test.mjs",
 ] as const;
 
+const PACKAGE_MANAGER_START_FORMS: Record<string, readonly (readonly string[])[]> = {
+  pnpm: [["start"], ["run", "start"]],
+  npm: [["start"], ["run", "start"]],
+  yarn: [["start"], ["run", "start"]],
+};
+
+export function isDeclaredServerCommand(command: string, args: string[], declaredStart: string): boolean {
+  if (declaredStart.length === 0) return false;
+  if ([command, ...args].join(" ") === declaredStart) return true;
+
+  return PACKAGE_MANAGER_START_FORMS[command]?.some((form) =>
+    form.length === args.length && form.every((value, index) => value === args[index]),
+  ) ?? false;
+}
+
 export interface FlagshipWebVerificationOutcomes {
   generatedTest: EvidenceOutcome;
   hiddenTest: EvidenceOutcome;
@@ -256,9 +271,7 @@ export async function runFlagshipWeb(input: FlagshipWebInput): Promise<FlagshipR
       }
       const pkg = JSON.parse(readFileSync(join(workspace, "package.json"), "utf8")) as { scripts?: { start?: unknown } };
       const declaredStart = typeof pkg.scripts?.start === "string" ? pkg.scripts.start : "";
-      const processCommand = [process.command, ...process.args].join(" ");
-      const runsDeclaredServer = processCommand === declaredStart
-        || (["pnpm", "npm", "yarn"].includes(process.command) && process.args.includes("start"));
+      const runsDeclaredServer = isDeclaredServerCommand(process.command, process.args, declaredStart);
       const inspectedProcess = toolCalls.some((call) => {
         const args = parseArgs(call);
         return call.toolName === "read_process_output" && args.processId === process.id && call.status === "completed";
