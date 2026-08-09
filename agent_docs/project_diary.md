@@ -30,6 +30,10 @@ Mentioning stdin is not enough to exercise the supervisor's closed-stdin behavio
 
 Completed `create_file` and `propose_patch` arguments may be compacted after their effects are durable, but the compacted `_morrowAppliedWrite` representation must never remain in an assistant tool-call slot. `buildProviderProjection`, the shared reconstruction boundary used by agent execution and the server endpoint, converts those markers and their observations into a non-executable historical record. Failed writes retain their original arguments so the provider can repair them.
 
+### 2026-08-09 - Harness predicates verify boundaries, not command spelling
+
+A supervised-development-server assertion must join the completed task-owned background tool call to its persisted process record. Requiring one spelling such as `pnpm start` produces false failures when the agent validly invokes the declared script directly. The flagship web predicate additionally requires process inspection, loopback browser navigation, and terminal cleanup so accepting equivalent command forms does not reduce the behavioral contract.
+
 ## Reliability lessons
 
 - A passing deterministic suite does not prove a boundary has survived a real provider and real process lifecycle.

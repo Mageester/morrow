@@ -41,7 +41,10 @@ const tool = (id: string, index: number, name: string, args: unknown): ToolCall 
 class WebProvider implements AiProvider {
   readonly id = "openai" as const;
   private turn = 0;
-  constructor(private readonly startServer = true) {}
+  constructor(
+    private readonly startServer = true,
+    private readonly directNodeServer = false,
+  ) {}
   async *streamChat(messages: ChatMessage[], _options: StreamOptions): AsyncIterable<ProviderChunk> {
     this.turn += 1;
     if (this.turn === 1) {
@@ -65,7 +68,10 @@ class WebProvider implements AiProvider {
         yield done;
         return;
       }
-      yield { type: "tool_call", toolCalls: [tool("web-server", 0, "run_command", { executable: "pnpm", args: ["start"], purpose: "start dev server", background: true })] };
+      const command = this.directNodeServer
+        ? { executable: "node", args: ["server.mjs", "--port", "0"] }
+        : { executable: "pnpm", args: ["start"] };
+      yield { type: "tool_call", toolCalls: [tool("web-server", 0, "run_command", { ...command, purpose: "start dev server", background: true })] };
       yield done;
       return;
     }
@@ -291,5 +297,30 @@ describe("flagship web scenario", () => {
 
     expect(run).toMatchObject({ passed: false, failureReason: "contract_violated" });
     expect(run.failureDetail).toContain("supervisor boundary");
+  }, 60_000);
+
+  it("accepts a task-owned server started directly through the supervisor", async () => {
+    const root = scratch();
+    const run = await runFlagshipWeb({
+      root,
+      providerId: "openai",
+      model: "scripted-direct-node-server",
+      provider: new WebProvider(true, true),
+      browser: () => browser(),
+      agentBrowserFactory: () => browser(),
+      maxTurns: 12,
+    });
+
+    expect(run, JSON.stringify(run, null, 2)).toMatchObject({ passed: true, taskStatus: "completed" });
+    const db = openDatabase(join(root, "flagship.db"));
+    try {
+      expect(processesRepository(db).listByProject("project-flagship-web-v1")[0]).toMatchObject({
+        command: "node",
+        args: ["server.mjs", "--port", "0"],
+        cwd: join(root, "workspace"),
+      });
+    } finally {
+      db.close();
+    }
   }, 60_000);
 });

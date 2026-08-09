@@ -235,16 +235,41 @@ export async function runFlagshipWeb(input: FlagshipWebInput): Promise<FlagshipR
       });
       if (!testCall) return { ok: false, reason: "contract_violated", detail: "agent did not complete the required quoted test command" };
 
+      const processes = processesRepository(db).listByProject(projectId)
+        .filter((record) => record.taskId === taskId && record.cwd === workspace);
       const backgroundCall = toolCalls.find((call) => {
         const args = parseArgs(call);
-        return call.toolName === "run_command" && args.executable === "pnpm"
-          && JSON.stringify(args.args) === JSON.stringify(["start"])
-          && args.background === true && call.status === "completed";
+        if (call.toolName !== "run_command" || args.background !== true || call.status !== "completed") return false;
+        try {
+          const result = JSON.parse(call.resultJson ?? "{}") as Record<string, unknown>;
+          return processes.some((record) => record.id === result.processId);
+        } catch {
+          return false;
+        }
       });
-      const process = processesRepository(db).listByProject(projectId)
-        .find((record) => record.taskId === taskId && record.command === "pnpm" && record.cwd === workspace);
+      const backgroundResult = backgroundCall
+        ? JSON.parse(backgroundCall.resultJson ?? "{}") as Record<string, unknown>
+        : {};
+      const process = processes.find((record) => record.id === backgroundResult.processId);
       if (!backgroundCall || !process) {
         return { ok: false, reason: "contract_violated", detail: "agent did not start the dev server through the supervisor boundary" };
+      }
+      const pkg = JSON.parse(readFileSync(join(workspace, "package.json"), "utf8")) as { scripts?: { start?: unknown } };
+      const declaredStart = typeof pkg.scripts?.start === "string" ? pkg.scripts.start : "";
+      const processCommand = [process.command, ...process.args].join(" ");
+      const runsDeclaredServer = processCommand === declaredStart
+        || (["pnpm", "npm", "yarn"].includes(process.command) && process.args.includes("start"));
+      const inspectedProcess = toolCalls.some((call) => {
+        const args = parseArgs(call);
+        return call.toolName === "read_process_output" && args.processId === process.id && call.status === "completed";
+      });
+      const openedLoopback = toolCalls.some((call) => {
+        const args = parseArgs(call);
+        return call.toolName === "browser_open" && typeof args.url === "string"
+          && /^http:\/\/127\.0\.0\.1:\d+\/$/.test(args.url) && call.status === "completed";
+      });
+      if (!runsDeclaredServer || !inspectedProcess || !openedLoopback) {
+        return { ok: false, reason: "contract_violated", detail: "agent did not inspect and verify the supervised dev server" };
       }
       const stopCall = toolCalls.find((call) => call.toolName === "stop_process" && call.status === "completed"
         && call.resultJson?.includes(process.id));

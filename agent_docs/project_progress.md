@@ -32,7 +32,7 @@
 | FWV1-1 | main | Generalize flagship gate per scenario using TDD | FWV1-0 | focused red/green unit test and relevant regression | completed |
 | FWV1-2 | main | Add flagship-web-v1 harness scenario and harness-owned verification using TDD | FWV1-1 | focused deterministic scenario tests and relevant regression | completed |
 | FWV1-3 | main | Verify deterministic behavior and repository compatibility | FWV1-2 | focused tests, full orchestrator suite, typecheck, build | completed |
-| FWV1-4 | main | Run serialized DeepSeek evidence streak and stop on first failure | FWV1-3 | append-only evidence plus failure diagnosis | in progress |
+| FWV1-4 | main | Run serialized DeepSeek evidence streak and stop on first failure | FWV1-3 | append-only evidence plus failure diagnosis | deferred to next session |
 | FWV1-5 | main | Run serialized OpenCode Zen evidence streak | FWV1-4 | append-only evidence | pending |
 | FWV1-6 | main | Reconcile durable documentation and session handoff | FWV1-5 | links and status consistency | pending |
 
@@ -47,6 +47,6 @@
 
 ## Blockers and next action
 
-No current blocker. The latest live run reached the required quoted foreground test and failed because its generated runner treated pnpm's forwarded literal `--` as the verification label. The retained trace also proved that completed-write compaction markers were projected back as executable write calls, including content-less failures. The scenario now specifies separator handling, and `buildProviderProjection` converts applied-write markers into non-executable historical records for both projection consumers. Focused regressions, the full orchestrator suite, repository check/typecheck, and production build are green.
+No current blocker. The latest live execution successfully built, tested, supervised, browser-verified, and stopped the web artifact, but the harness recorded a false failure because its supervisor predicate required the literal command spelling `pnpm start`. The corrected predicate now proves the task-owned background call maps to the actual supervised process record, executes the declared development-server script, is inspected, opens a loopback browser URL, and reaches a terminal process state. Focused regressions, the full orchestrator suite, repository check/typecheck, and production build are green.
 
-Next: finish deterministic verification, commit the owning-boundary regressions and append-only evidence, then rerun one DeepSeek `flagship-web-v1` task. Stop immediately on any failure before another attempt.
+Next session: resume the serialized DeepSeek streak from the committed harness predicate. Run one task at a time and stop at the first genuine failure. Do not begin OpenCode Zen before ten consecutive DeepSeek passes.

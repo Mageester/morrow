@@ -24,17 +24,18 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - The same trace proved the previously deferred projection defect was active: five `_morrowAppliedWrite` markers were replayed as executable writes, including two content-less failures. `buildProviderProjection` is the single implementation used by both agent execution and the server reconstruction endpoint; it now projects completed-write markers only as non-executable historical records while preserving ordinary and failed calls.
 - Added red-first deterministic coverage for both projection behavior and the visible separator contract. The focused provider-projection, tool-argument, web-scenario, and restart suites pass.
 - Revalidated the complete orchestrator suite (175 files, 1,890 tests), repository check/typecheck, and production build after the corrections.
+- Ran one final serialized DeepSeek task. It completed the quoted test, started `node server.mjs --port 0` through the real supervisor, inspected the process, browser-verified the served page across required viewports and interaction, and stopped the process. The harness nevertheless recorded `contract_violated` because it hardcoded `pnpm start`; this was a harness false failure, not a Morrow runtime failure.
+- Replaced the command-spelling predicate with the actual invariant: a completed task-owned `run_command background:true` result must identify a persisted supervised process in the workspace, that process must run the declared start script (directly or through a package manager), the agent must inspect it and open loopback in the browser, and the process must be stopped.
+- Added a deterministic direct-`node server.mjs --port 0` regression. The focused web suite passes 8/8, the complete orchestrator suite passes 175 files / 1,891 tests, and repository check/typecheck and production build pass.
 
 ## In progress
 
-- Commit the verified projection and separator corrections with the append-only failure evidence.
+- None. This session is ending after the verified harness predicate commit.
 
 ## Pending
 
-- Stop and diagnose again if the rerun fails; never launch a second unresolved attempt.
 - Reach ten consecutive DeepSeek passes before invoking OpenCode Zen.
-- Reconcile documentation and evidence at completion or handoff.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md`. After deterministic verification and commit, run one explicit DeepSeek web scenario with `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts.
+Read `agent_docs/project_progress.md`. Resume with one explicit DeepSeek web scenario using `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts. The last recorded live failure is known to be a corrected harness false negative, so the streak has not yet been established.
