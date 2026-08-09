@@ -4,6 +4,8 @@
 
 **Starting evidence:** Run `6658f501-2768-48a1-82f9-fccdf19b4c75` is the first passing row after the reviewed runtime and evaluator repairs. The append-only evidence log remains authoritative.
 
+**Stopped attempt:** The next serialized run, `8d334d0d-f7fa-44b3-bc71-dac2ec8dd7f1`, failed before browser verification because stagnation accounting did not recognize newly emitted supervised-process output as progress. This streak is stopped and must restart only after the bounded repair in `2026-08-09-process-observation-progress.md` is reviewed, deterministically green, and passes one explicit canary.
+
 ## Execution protocol
 
 1. Run at most one live canary at a time with `MORROW_FLAGSHIP_RUNS=1`, provider `deepseek`, model `deepseek-v4-flash`, and scenario `flagship-web-v1`.

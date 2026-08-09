@@ -32,12 +32,15 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 
 - The baseline campaign integrated cached-observation and projection-compaction repairs, then added one bounded completion-contract cleanup recovery turn.
 - Two independently reviewed evaluator false negatives were corrected: package-manager start-command matching and undocumented/static DOM predicates. The web evaluator now uses rendered accessibility refs and visible text across its browser viewports.
-- The first post-repair real DeepSeek web canary passed with a completed task and artifact hash. The serialized streak package is now active.
+- The first post-repair real DeepSeek web canary passed with a completed task and artifact hash.
+- The next serialized run, `8d334d0d-f7fa-44b3-bc71-dac2ec8dd7f1`, stopped the streak. Its supervised server emitted a new URL on the first successful output read, but post-delivery stagnation accounting immediately classified the turn as the third non-progress turn and interrupted before browser verification and cleanup.
+- Preserved the failed row and retained workspace at `C:\Users\aidan\AppData\Local\Temp\morrow-flagship-live-2sInn4`; no automatic retry was issued.
+- Opened bounded package RPR-4 under `docs/superpowers/plans/2026-08-09-process-observation-progress.md`.
 
 ## Pending
 
-- Append nine more consecutive DeepSeek web passes before invoking OpenCode Zen.
+- Complete and independently review RPR-4, then run exactly one DeepSeek canary. A pass starts a new streak; a failure stops again. Do not invoke OpenCode Zen before DeepSeek qualifies.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-deepseek-web-streak.md`. Run one explicit DeepSeek web scenario using `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; classify and commit the new row before authorizing another attempt.
+Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-process-observation-progress.md`. Implement the result-sensitive process-observation progress repair with a red full-agent regression, obtain independent review, and complete deterministic verification before authorizing one explicit live canary.
