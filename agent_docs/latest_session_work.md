@@ -40,11 +40,14 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - Strict regressions cover the retained third-stall boundary, failed polls, repeated/overlapping/subrange/offset-only reads, UTF-8 splits, status transitions, and JSON `1e999` non-finite offsets.
 - Independent Luna Max review first rejected decoded UTF-8/per-slice retention and then a non-finite-offset edge; both were repaired and the final review returned `APPROVED`.
 - Main verification passed the exact web file 19/19, the complete orchestrator suite 175 files / 1,914 tests, and orchestrator TypeScript. An initial full run had one transient Windows `EPERM` during test temp cleanup after 1,913 passing tests; the exact file and complete rerun both passed.
+- Preflight found and safely terminated two old Morrow-owned `server.mjs --port 0` process trees whose served artifact hashes matched retained failed runs `73065230-...` and `d41ca59c-...`; their workspaces and evidence remain preserved.
+- The one authorized RPR-4 canary, `5cbe11ee-3c4a-438c-a1d6-4d8ed923ece9`, failed after three discovery calls. The original prompt was durably present and below compaction thresholds, but DeepSeek repeatedly claimed no request existed; Morrow then spent three reasoning-only retries and interrupted after 235 seconds. The failed evidence row is committed at `8a1daf4` and no server leaked.
+- Opened RPR-5 to perform one trusted fresh-context artifact recovery and bypass generic reasoning-only escalation if that fresh attempt is also empty.
 
 ## Pending
 
-- Run exactly one DeepSeek canary. A pass starts a new streak; a failure stops again. Do not invoke OpenCode Zen before DeepSeek qualifies.
+- Complete and independently review RPR-5 before one new DeepSeek canary. Do not invoke OpenCode Zen before DeepSeek qualifies.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-process-observation-progress.md`. Run the one authorized explicit DeepSeek canary, inspect the append-only evidence row, commit it, and stop on any failed or ambiguous result.
+Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-fresh-artifact-recovery.md`. Implement the one-shot trusted context reset with strict red/green coverage, obtain independent review, and complete deterministic verification before authorizing another provider call.
