@@ -36,11 +36,15 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - The next serialized run, `8d334d0d-f7fa-44b3-bc71-dac2ec8dd7f1`, stopped the streak. Its supervised server emitted a new URL on the first successful output read, but post-delivery stagnation accounting immediately classified the turn as the third non-progress turn and interrupted before browser verification and cleanup.
 - Preserved the failed row and retained workspace at `C:\Users\aidan\AppData\Local\Temp\morrow-flagship-live-2sInn4`; no automatic retry was issued.
 - Opened bounded package RPR-4 under `docs/superpowers/plans/2026-08-09-process-observation-progress.md`.
+- Implemented RPR-4 at `4c86a7e`: progress now uses task-owned process-plus-stream status and merged raw byte intervals, without retaining or re-encoding output strings.
+- Strict regressions cover the retained third-stall boundary, failed polls, repeated/overlapping/subrange/offset-only reads, UTF-8 splits, status transitions, and JSON `1e999` non-finite offsets.
+- Independent Luna Max review first rejected decoded UTF-8/per-slice retention and then a non-finite-offset edge; both were repaired and the final review returned `APPROVED`.
+- Main verification passed the exact web file 19/19, the complete orchestrator suite 175 files / 1,914 tests, and orchestrator TypeScript. An initial full run had one transient Windows `EPERM` during test temp cleanup after 1,913 passing tests; the exact file and complete rerun both passed.
 
 ## Pending
 
-- Complete and independently review RPR-4, then run exactly one DeepSeek canary. A pass starts a new streak; a failure stops again. Do not invoke OpenCode Zen before DeepSeek qualifies.
+- Run exactly one DeepSeek canary. A pass starts a new streak; a failure stops again. Do not invoke OpenCode Zen before DeepSeek qualifies.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-process-observation-progress.md`. Implement the result-sensitive process-observation progress repair with a red full-agent regression, obtain independent review, and complete deterministic verification before authorizing one explicit live canary.
+Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-process-observation-progress.md`. Run the one authorized explicit DeepSeek canary, inspect the append-only evidence row, commit it, and stop on any failed or ambiguous result.

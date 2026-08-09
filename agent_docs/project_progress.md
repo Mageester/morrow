@@ -8,7 +8,7 @@
 
 **Current evidence:** Treat [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` and [docs/evidence/flagship-runs.jsonl](../docs/evidence/flagship-runs.jsonl) as the durable campaign record. Do not copy run counts, streak outcomes, or landed-fix lists here.
 
-**Current state:** The baseline, completion-cleanup, and semantic rendered-evaluator packages are complete. One real `deepseek-v4-flash` web canary passed, but the next serialized run failed when a first successful `read_process_output` returned a new server URL and the same turn was interrupted as stalled before browser verification or cleanup. The streak is stopped; `docs/superpowers/plans/2026-08-09-process-observation-progress.md` governs the repair.
+**Current state:** The result-sensitive process-observation repair is committed at `4c86a7e`. New task-owned process status and previously unseen raw output byte intervals reset stagnation once; empty, repeated, overlapping, failed, offset-only, cross-task, and non-finite-offset polls do not. Independent process/tool review approved the final diff after UTF-8, memory-retention, and non-finite-offset defects were corrected. The complete non-live suite and TypeScript pass; exactly one explicit canary is now authorized.
 
 ## Acceptance criteria
 
@@ -22,10 +22,10 @@
 
 | ID | Role | Package | Dependency | Verification gate | Status |
 | --- | --- | --- | --- | --- | --- |
-| RPR-4.1 | explorer companion | Confirm the smallest result-sensitive progress predicate | retained failed run | read-only code/test report | in progress |
-| RPR-4.2 | Luna Max implementer | Add red regression and minimal accounting repair | approved plan | focused green evidence | pending |
-| RPR-4.3 | independent Luna Max reviewer | Review process/tool boundary and regression strength | implementation diff | approve or precise defects | pending |
-| RPR-4.4 | main | Integrate, verify full non-live suite, and run one canary | approved green change | committed evidence row | pending |
+| RPR-4.1 | explorer companion | Confirm the smallest result-sensitive progress predicate | retained failed run | read-only code/test report | complete |
+| RPR-4.2 | Luna Max implementer | Add red regression and minimal accounting repair | approved plan | focused green evidence | complete |
+| RPR-4.3 | independent Luna Max reviewer | Review process/tool boundary and regression strength | implementation diff | approve or precise defects | complete |
+| RPR-4.4 | main | Integrate, verify full non-live suite, and run one canary | approved green change | committed evidence row | in progress |
 
 ## Constraints and parallel boundaries
 
@@ -38,4 +38,4 @@
 
 ## Blockers and next action
 
-Live streak execution is intentionally blocked by the retained failure. Complete `docs/superpowers/plans/2026-08-09-process-observation-progress.md`, then run one explicit canary. Do not issue another provider call before deterministic review and verification complete.
+Deterministic review and verification are complete. Run exactly one explicit `deepseek-v4-flash` `flagship-web-v1` canary, inspect and commit its append-only row, and stop immediately if it fails or is ambiguous.
