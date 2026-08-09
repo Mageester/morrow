@@ -1,45 +1,40 @@
 # Project Progress
 
-## Active package: FWV1 - flagship-web-v1
+## Active package: RPR-0 - reliability baseline and DeepSeek canary
 
 **State:** active deployment package on `codex/flagship-web-v1`.
 
-**Goal:** Add a second real-provider scenario, `flagship-web-v1`, that builds a small multi-file frontend, starts a development server, verifies the served page through the real browser boundary, and runs a test command. Preserve `flagship-build-v1`.
+**Goal:** Integrate the two runtime fixes demonstrated by recent failed chats, independently calibrate the committed `flagship-web-v1` evaluator, and record one correctly classified DeepSeek `deepseek-v4-flash` canary before beginning a streak.
 
 **Current evidence:** Treat [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` and [docs/evidence/flagship-runs.jsonl](../docs/evidence/flagship-runs.jsonl) as the durable campaign record. Do not copy run counts, streak outcomes, or landed-fix lists here.
 
-**Current state:** The web scenario now reaches the real command, supervisor, browser, Git, and evidence-runner boundaries. Serialized live runs are actively exposing cross-boundary defects before a streak can be claimed.
+**Current state:** FWV1-0 through FWV1-3 are complete. Four live web rows remain non-passing. The latest historical row predates the committed supervised-process predicate. Four uncommitted runtime/test files contain the cached-observation and compaction-headroom fixes from two subsequently diagnosed chat failures. Design `06eed01` and plan `8b7e169` govern the new campaign.
 
 ## Acceptance criteria
 
-1. Generalize `flagship-gate.ts` to score supported scenarios independently; unknown scenarios remain excluded.
-2. Prove gate generalization with a deterministic unit test before adding the new scenario.
-3. Add `flagship-web-v1` in the existing harness without replacing `flagship-build-v1`.
-4. The scenario requires a small multi-file frontend, a supervised development server, a browser check against the served page, and a test command.
-5. The pass/fail checker is owned by the harness and never exposed to the model.
-6. Scoring semantics remain equivalent across supported flagship scenarios.
-7. A control run proves the existing live path before the new scenario is introduced.
-8. Build, typecheck, and deterministic tests pass before live web validation.
-9. Run real providers serially: stop at the first failure, diagnose and fix the owning boundary with a deterministic regression, then resume the same task.
-10. Reach ten consecutive DeepSeek passes before beginning OpenCode Zen.
-11. The protected prototype UI surfaces remain untouched.
+1. Preserve and independently review the four existing runtime/test changes.
+2. Retain red evidence for cached observations and compaction headroom; focused and adjacent deterministic gates pass.
+3. TypeScript, the full orchestrator suite, and `git diff --check` pass after the runtime fixes.
+4. An independent evaluator review proves direct and package-script supervised servers, inspection, browser use, cleanup, append ordering, and failure scoring.
+5. Exactly one live DeepSeek `deepseek-v4-flash` web canary runs after deterministic gates.
+6. The canary appends exactly one redacted evidence row before any assertion.
+7. A failure stops the campaign and becomes one bounded deterministic repair package; a pass advances to the streak plan.
+8. No OpenCode run begins in this package.
 
 ## Ordered work packages
 
 | ID | Role | Package | Dependency | Verification gate | Status |
 | --- | --- | --- | --- | --- | --- |
-| FWV1-0 | main | Bootstrap verified project documentation and implementation design | none | bounded source/doc inspection | completed |
-| FWV1-1 | main | Generalize flagship gate per scenario using TDD | FWV1-0 | focused red/green unit test and relevant regression | completed |
-| FWV1-2 | main | Add flagship-web-v1 harness scenario and harness-owned verification using TDD | FWV1-1 | focused deterministic scenario tests and relevant regression | completed |
-| FWV1-3 | main | Verify deterministic behavior and repository compatibility | FWV1-2 | focused tests, full orchestrator suite, typecheck, build | completed |
-| FWV1-4 | main | Run serialized DeepSeek evidence streak and stop on first failure | FWV1-3 | append-only evidence plus failure diagnosis | deferred to next session |
-| FWV1-5 | main | Run serialized OpenCode Zen evidence streak | FWV1-4 | append-only evidence | pending |
-| FWV1-6 | main | Reconcile durable documentation and session handoff | FWV1-5 | links and status consistency | pending |
+| RPR-0.1 | Luna Max implementer | Audit and verify cached-observation and compaction-headroom fixes | approved plan | focused, adjacent, typecheck, full orchestrator, diff check | in progress |
+| RPR-0.2 | Luna Max tester/reviewer | Independently review Task 1 and calibrate flagship evaluator | RPR-0.1 | diff review plus focused evaluator gate | pending |
+| RPR-0.3 | main | Integrate accepted fixes as a focused commit | RPR-0.2 | exact scope and clean staged diff | pending |
+| RPR-0.4 | main | Run one DeepSeek flagship-web canary and classify it | RPR-0.3 | exactly one append-only live row | pending |
+| RPR-0.5 | main | Reconcile package evidence and select pass/streak or failure/repair path | RPR-0.4 | design taxonomy and evidence consistency | pending |
 
 ## Constraints and parallel boundaries
 
-- All remaining work is sequential because live runs share ports, SQLite state, and temporary workspaces.
-- The persistent explorer remains read-only and may investigate supplementary call sites.
+- All implementation, review, integration, and live work is sequential because the runtime files and live resources overlap.
+- The persistent Luna Max explorer task remains read-only and may investigate supplementary call sites.
 - Workers must not edit Git state, `project_progress.md`, or `latest_session_work.md`.
 - Do not weaken assertions, extend sleeps, raise timeouts, or skip tests to obtain green.
 - Do not add features, UI work, or aesthetic refactors.
@@ -47,6 +42,4 @@
 
 ## Blockers and next action
 
-No current blocker. The latest live execution successfully built, tested, supervised, browser-verified, and stopped the web artifact, but the harness recorded a false failure because its supervisor predicate required the literal command spelling `pnpm start`. The corrected predicate now proves the task-owned background call maps to the actual supervised process record, executes the declared development-server script, is inspected, opens a loopback browser URL, and reaches a terminal process state. Focused regressions, the full orchestrator suite, repository check/typecheck, and production build are green.
-
-Next session: resume the serialized DeepSeek streak from the committed harness predicate. Run one task at a time and stop at the first genuine failure. Do not begin OpenCode Zen before ten consecutive DeepSeek passes.
+No current blocker. Dispatch RPR-0.1 to one Luna Max implementation task. Do not run a provider until the independent RPR-0.2 verdict and main integration commit are complete.
