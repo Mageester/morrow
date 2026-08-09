@@ -27,8 +27,11 @@ afterEach(() => {
 });
 
 const INDEX = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Flagship Task Board</title><link rel="stylesheet" href="/styles.css"></head><body><main><h1>Flagship Task Board</h1><p id="count">0 tasks</p><button id="add-task" type="button">Add sample task</button><ul id="tasks"></ul></main><script src="/app.js"></script></body></html>`;
+const CONTROL_MARKUP = '<p id="count">0 tasks</p><button id="add-task" type="button">Add sample task</button>';
+const SEMANTIC_INDEX = INDEX.replace('id="count"', 'id="task-count"').replace('id="add-task"', 'id="add-sample-task"');
 const STYLES = `body{font-family:sans-serif;margin:0;padding:2rem}main{max-width:48rem;margin:auto}button{padding:.75rem 1rem}@media(max-width:600px){body{padding:1rem}}`;
 const APP = `const tasks=[];const list=document.querySelector('#tasks');const count=document.querySelector('#count');document.querySelector('#add-task').addEventListener('click',()=>{tasks.push('Verify Morrow');const item=document.createElement('li');item.textContent=tasks.at(-1);list.append(item);count.textContent=tasks.length+' task';});`;
+const SEMANTIC_APP = APP.replaceAll("'#count'", "'#task-count'").replaceAll("'#add-task'", "'#add-sample-task'");
 const SERVER = `import { createServer } from "node:http";import { readFileSync } from "node:fs";import { extname,join } from "node:path";const args=process.argv.slice(2);const requested=Number(args[args.indexOf("--port")+1]??0);process.stdin.resume();process.stdin.once("end",()=>{const server=createServer((req,res)=>{const target=req.url==="/app.js"?"app.js":req.url==="/styles.css"?"styles.css":"index.html";res.setHeader("content-type",extname(target)===".js"?"text/javascript":extname(target)===".css"?"text/css":"text/html");res.end(readFileSync(join(process.cwd(),target)));});server.listen(requested,"127.0.0.1",()=>{const address=server.address();console.log('http://127.0.0.1:'+address.port+'/');});});`;
 const TEST_RUNNER = `import { pathToFileURL } from "node:url";import { resolve } from "node:path";const [file,...forwarded]=process.argv.slice(2);const label=forwarded.filter((arg)=>arg!=="--").join(" ");if(process.env.CI!=="true"){console.log("watch mode");setInterval(()=>{},1000);}else if(label!=="flagship web verification"){console.error("quoted verification argument missing");process.exit(1);}else{await import(pathToFileURL(resolve(file)).href);}`;
 const GENERATED_TEST = `import assert from "node:assert/strict";import { readFileSync } from "node:fs";assert.match(readFileSync("index.html","utf8"),/Flagship Task Board/);console.log("generated test passed");`;
@@ -123,7 +126,7 @@ class WebProvider implements AiProvider {
   }
 }
 
-function writeFixture(workspace: string, overrides: { index?: string; generatedTest?: string; server?: string } = {}): void {
+function writeFixture(workspace: string, overrides: { index?: string; app?: string; generatedTest?: string; server?: string } = {}): void {
   mkdirSync(join(workspace, "scripts"), { recursive: true });
   mkdirSync(join(workspace, "tests"), { recursive: true });
   writeFileSync(join(workspace, "package.json"), `${JSON.stringify({
@@ -136,21 +139,21 @@ function writeFixture(workspace: string, overrides: { index?: string; generatedT
   }, null, 2)}\n`);
   writeFileSync(join(workspace, "index.html"), overrides.index ?? INDEX);
   writeFileSync(join(workspace, "styles.css"), STYLES);
-  writeFileSync(join(workspace, "app.js"), APP);
+  writeFileSync(join(workspace, "app.js"), overrides.app ?? APP);
   writeFileSync(join(workspace, "server.mjs"), overrides.server ?? SERVER);
   writeFileSync(join(workspace, "scripts", "test-runner.mjs"), TEST_RUNNER);
   writeFileSync(join(workspace, "tests", "acceptance check.test.mjs"), overrides.generatedTest ?? GENERATED_TEST);
 }
 
-function browser(options: { failStart?: boolean } = {}): BrowserController {
+function browser(options: { failStart?: boolean; rendered?: Pick<PageSnapshot, "refs" | "text"> } = {}): BrowserController {
   let viewport = { width: 1280, height: 800 };
   let url = "about:blank";
   const snapshot = (): PageSnapshot => ({
     url,
     title: "Flagship Task Board",
     viewport,
-    refs: [{ ref: "e1", role: "button", name: "Add sample task" }],
-    text: "Flagship Task Board 0 tasks Add sample task",
+    refs: options.rendered?.refs ?? [{ ref: "e1", role: "button", name: "Add sample task" }],
+    text: options.rendered?.text ?? "Flagship Task Board 0 tasks Add sample task",
     injectionFindings: 0,
   });
   return {
@@ -217,6 +220,31 @@ describe("flagship web scenario", () => {
     }
   }, 30_000);
 
+  it("accepts visible semantic controls with valid alternative IDs", async () => {
+    const root = scratch();
+    const workspace = join(root, "workspace");
+    await initializeFlagshipWebWorkspace(workspace);
+    writeFixture(workspace, { index: SEMANTIC_INDEX, app: SEMANTIC_APP });
+
+    const result = await verifyFlagshipWebArtifact({ root, workspace, browser: () => browser() });
+
+    expect(result, JSON.stringify(result, null, 2)).toMatchObject({ ok: true });
+  }, 30_000);
+
+  it("accepts semantic IDs with nested visible initial count markup", async () => {
+    const root = scratch();
+    const workspace = join(root, "workspace");
+    await initializeFlagshipWebWorkspace(workspace);
+    writeFixture(workspace, {
+      index: SEMANTIC_INDEX.replace("0 tasks", "0 <span>tasks</span>"),
+      app: SEMANTIC_APP,
+    });
+
+    const result = await verifyFlagshipWebArtifact({ root, workspace, browser: () => browser() });
+
+    expect(result, JSON.stringify(result, null, 2)).toMatchObject({ ok: true });
+  }, 30_000);
+
   it("rejects agreeable generated tests when the hidden contract is wrong", async () => {
     const root = scratch();
     const workspace = join(root, "workspace");
@@ -230,6 +258,91 @@ describe("flagship web scenario", () => {
 
     expect(result).toMatchObject({ ok: false, reason: "contract_violated" });
     if (!result.ok) expect(result.detail).toContain("hidden");
+  }, 30_000);
+
+  it.each([
+    {
+      label: "wrong button text",
+      index: INDEX.replace("Add sample task", "Create sample task"),
+      rendered: {
+        refs: [{ ref: "e1", role: "button", name: "Create sample task" }],
+        text: "Flagship Task Board 0 tasks Create sample task",
+      },
+      expected: "Add sample task",
+    },
+    {
+      label: "missing button",
+      index: INDEX.replace(CONTROL_MARKUP, '<p id="count">0 tasks</p>'),
+      rendered: { refs: [], text: "Flagship Task Board 0 tasks" },
+      expected: "Add sample task",
+    },
+    {
+      label: "missing initial count",
+      index: INDEX.replace('<p id="count">0 tasks</p>', ""),
+      rendered: {
+        refs: [{ ref: "e1", role: "button", name: "Add sample task" }],
+        text: "Flagship Task Board Add sample task",
+      },
+      expected: "0 tasks",
+    },
+    {
+      label: "wrong initial count",
+      index: INDEX.replace("0 tasks", "1 task"),
+      rendered: {
+        refs: [{ ref: "e1", role: "button", name: "Add sample task" }],
+        text: "Flagship Task Board 1 task Add sample task",
+      },
+      expected: "0 tasks",
+    },
+  ])("rejects $label from rendered snapshot", async ({ index, rendered, expected }) => {
+    const root = scratch();
+    const workspace = join(root, "workspace");
+    await initializeFlagshipWebWorkspace(workspace);
+    writeFixture(workspace, { index });
+
+    const result = await verifyFlagshipWebArtifact({ root, workspace, browser: () => browser({ rendered }) });
+
+    expect(result).toMatchObject({ ok: false, reason: "contract_violated" });
+    if (!result.ok) {
+      expect(result.detail).toContain("browser verification");
+      expect(result.detail).toContain(expected);
+    }
+  }, 30_000);
+
+  it.each([
+    {
+      label: "template",
+      index: INDEX.replace(CONTROL_MARKUP, `<template>${CONTROL_MARKUP}</template>`),
+    },
+    {
+      label: "head",
+      index: INDEX.replace(CONTROL_MARKUP, "").replace("</head>", `${CONTROL_MARKUP}</head>`),
+    },
+    {
+      label: "hidden",
+      index: INDEX.replace(CONTROL_MARKUP, `<div hidden>${CONTROL_MARKUP}</div>`),
+    },
+    {
+      label: "attribute",
+      index: INDEX.replace(CONTROL_MARKUP, `<div data-template='${CONTROL_MARKUP}'></div>`),
+    },
+  ])("rejects $label decoys that are not rendered controls or text", async ({ index }) => {
+    const root = scratch();
+    const workspace = join(root, "workspace");
+    await initializeFlagshipWebWorkspace(workspace);
+    writeFixture(workspace, { index });
+
+    const result = await verifyFlagshipWebArtifact({
+      root,
+      workspace,
+      browser: () => browser({ rendered: { refs: [], text: "Flagship Task Board" } }),
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: "contract_violated" });
+    if (!result.ok) {
+      expect(result.detail).toContain("browser verification");
+      expect(result.detail).toContain("Add sample task");
+    }
   }, 30_000);
 
   it("rejects a server that treats stdin EOF as shutdown instead of its listen signal", async () => {

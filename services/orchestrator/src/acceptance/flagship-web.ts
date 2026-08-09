@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import type { BrowserController } from "../browser/types.js";
+import type { BrowserController, PageSnapshot } from "../browser/types.js";
 import { playwrightController, resolvePlaywrightChannel } from "../browser/playwright.js";
 import { runVerification, type EvidenceOutcome } from "../mission/evidence-runner.js";
 import { runProcessSafe } from "../tools/command-executor.js";
@@ -88,8 +88,6 @@ const pkg = JSON.parse(read("package.json"));
 assert.equal(pkg.scripts?.start, "node server.mjs --port 0", "hidden: start script");
 assert.equal(pkg.scripts?.test, "node scripts/test-runner.mjs \\\"tests/acceptance check.test.mjs\\\"", "hidden: quoted test script");
 assert.match(read("index.html"), /<title>Flagship Task Board<\\/title>/, "hidden: title");
-assert.match(read("index.html"), /id=["']add-task["']/, "hidden: add button");
-assert.match(read("index.html"), /id=["']count["'][^>]*>0 tasks</, "hidden: initial count");
 assert.match(read("app.js"), /addEventListener/, "hidden: interaction listener");
 assert.match(read("app.js"), /Verify Morrow/, "hidden: sample task");
 assert.match(read("styles.css"), /@media/, "hidden: responsive rule");
@@ -202,13 +200,63 @@ export async function verifyFlagshipWebArtifact(input: {
     return failure("contract_violated", "Git changed-file verification", detail, outcomes);
   }
 
+  const renderedSnapshots: PageSnapshot[] = [];
+  const recordingBrowser = () => {
+    const controller = input.browser();
+    return new Proxy<BrowserController>(controller, {
+      get(target, property) {
+        if (property === "open") {
+          return async (...args: Parameters<BrowserController["open"]>): Promise<PageSnapshot> => {
+            const snapshot = await target.open(...args);
+            renderedSnapshots.push(snapshot);
+            return snapshot;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
   const browser = await runVerification(
     { kind: "browser", command: "pnpm start", service: true, expectStatus: 200 },
-    { workspacePath: input.workspace, browser: input.browser },
+    { workspacePath: input.workspace, browser: recordingBrowser },
   );
   outcomes.browser = browser;
   if (browser.status === "inconclusive") return failure("harness_error", "browser verification unavailable", browser, outcomes);
   if (browser.status !== "passed") return failure("contract_violated", "browser verification", browser, outcomes);
+
+  const normalizeSnapshotText = (value: string): string => value.replace(/\s+/g, " ").trim();
+  const containsNormalizedSnapshotText = (value: string, expected: string): boolean => {
+    const normalized = normalizeSnapshotText(value);
+    return normalized === expected
+      || normalized.startsWith(`${expected} `)
+      || normalized.endsWith(` ${expected}`)
+      || normalized.includes(` ${expected} `);
+  };
+  const browserFailure = renderedSnapshots.length === 0
+    ? "browser verification produced no viewport snapshots"
+    : (() => {
+      const invalidIndex = renderedSnapshots.findIndex((snapshot) => {
+        const hasButton = snapshot.refs.some((ref) => ref.role.trim().toLowerCase() === "button"
+          && normalizeSnapshotText(ref.name) === "Add sample task");
+        const hasCount = containsNormalizedSnapshotText(snapshot.text, "0 tasks");
+        return !hasButton || !hasCount;
+      });
+      if (invalidIndex < 0) return null;
+      const snapshot = renderedSnapshots[invalidIndex]!;
+      const hasButton = snapshot.refs.some((ref) => ref.role.trim().toLowerCase() === "button"
+        && normalizeSnapshotText(ref.name) === "Add sample task");
+      const hasCount = containsNormalizedSnapshotText(snapshot.text, "0 tasks");
+      const missing: string[] = [];
+      if (!hasButton) missing.push('accessible button "Add sample task"');
+      if (!hasCount) missing.push('visible text "0 tasks"');
+      return `rendered viewport snapshot ${invalidIndex + 1} (${snapshot.viewport.width}x${snapshot.viewport.height}) missing ${missing.join(" and ")}`;
+    })();
+  if (browserFailure) {
+    const failedBrowser: EvidenceOutcome = { ...browser, status: "failed", summary: browserFailure };
+    outcomes.browser = failedBrowser;
+    return failure("contract_violated", "browser verification", failedBrowser, outcomes);
+  }
 
   const hash = createHash("sha256");
   for (const path of REQUIRED_FILES) {
