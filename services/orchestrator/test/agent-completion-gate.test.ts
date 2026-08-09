@@ -9,12 +9,31 @@ import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { missionsRepository } from "../src/repositories/missions.js";
 import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
-import { executeAgentChatTask } from "../src/execution/agent.js";
+import { executeAgentChatTask, runCommandStartedBackgroundProcess } from "../src/execution/agent.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { actionAttemptsRepository } from "../src/repositories/action-attempts.js";
 import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+describe("runCommandStartedBackgroundProcess", () => {
+  it("is true for a detached background server result (running, has pid, no exit code)", () => {
+    expect(runCommandStartedBackgroundProcess(JSON.stringify({ processId: "abc", pid: 30768, status: "running", note: "Started in the background." }))).toBe(true);
+  });
+  it("is false for a completed command with exit code 0", () => {
+    expect(runCommandStartedBackgroundProcess(JSON.stringify({ exitCode: 0, stdout: "ok" }))).toBe(false);
+  });
+  it("is false for a completed command with a non-zero exit code", () => {
+    expect(runCommandStartedBackgroundProcess(JSON.stringify({ exitCode: 1, stderr: "boom" }))).toBe(false);
+  });
+  it("is false for a running result without a process id", () => {
+    expect(runCommandStartedBackgroundProcess(JSON.stringify({ status: "running" }))).toBe(false);
+  });
+  it("is false for null/malformed results", () => {
+    expect(runCommandStartedBackgroundProcess(null)).toBe(false);
+    expect(runCommandStartedBackgroundProcess("not json")).toBe(false);
+  });
+});
 
 function seedYolo(db: any, workspacePath: string, prompt = "verify it", missionLinked = false) {
   projectRepository(db).createProject({ id: "p", name: "P", workspacePath, createdAt: new Date().toISOString() });

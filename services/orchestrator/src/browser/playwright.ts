@@ -230,6 +230,12 @@ class PlaywrightBrowserController implements BrowserController {
     await assertBrowserUrlAllowed(url, this.options);
     await this.start();
     const page = this.requirePage();
+    // A navigation loads a fresh JS context, so console/page-error evidence
+    // from the page being left behind no longer describes the current page —
+    // e.g. an error fixed by an edit and cleared by a reload must not keep
+    // blocking a "clean console" check forever. Other evidence kinds (audit
+    // history of clicks, snapshots, etc.) are left intact.
+    this.events = this.events.filter((event) => event.kind !== "console" && event.kind !== "page-error");
     await this.abortable(() => page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs }), options);
     this.refs.clear();
     this.record("navigation", "Browser navigated", { url: safeUrlForEvidence(url) });

@@ -8,6 +8,7 @@ import type {
   MissionVerificationStrategy, CreateMissionInput,
   MissionContract, MissionRequirementNode, MissionCursor, ProjectActiveMission,
   RequirementNodeStatus, ReopenCondition, InvalidationEntry,
+  ProviderId, PresetId,
 } from "@morrow/contracts";
 import { assertMissionTransition, canTransitionMission, gradeMission, isTerminalMissionStatus } from "@morrow/contracts";
 import type { MissionsRepository } from "../repositories/missions.js";
@@ -42,7 +43,13 @@ import { redactSecrets } from "../provider/credentials.js";
 /** A single completion from the provider abstraction (planning or review). */
 export type MissionCompletionFn = (
   messages: ChatMessage[],
-  opts: { purpose: "planning" | "review"; temperature?: number },
+  opts: {
+    purpose: "planning" | "review";
+    temperature?: number;
+    missionProviderId?: ProviderId | null;
+    missionModel?: string | null;
+    missionPreset?: PresetId;
+  },
 ) => Promise<{ text: string; provider?: string; model?: string; usdCost?: number; finishReason?: string | null }>;
 
 type ActiveTerminalVerification = {
@@ -236,7 +243,13 @@ export class MissionService {
           { role: "system", content: "You output only JSON. No prose." },
           { role: "user", content: buildCriteriaPrompt(objective, repoSummary) },
         ];
-        const res = await this.deps.completion(messages, { purpose: "planning", temperature: 0.1 });
+        const res = await this.deps.completion(messages, {
+          purpose: "planning",
+          temperature: 0.1,
+          missionProviderId: mission.execution.providerId,
+          missionModel: mission.execution.model,
+          missionPreset: mission.execution.preset,
+        });
         drafts = parseCriteriaFromModel(res.text);
         drafts = this.sanitizeModelCriteria(drafts, this.deps.getWorkspacePath(mission.projectId));
         if (res.usdCost) this.addSpend(mission.id, res.usdCost);
@@ -716,7 +729,13 @@ export class MissionService {
     try {
       if (this.deps.completion) {
         try {
-          const res = await this.deps.completion(messages, { purpose: "review", temperature: 0 });
+          const res = await this.deps.completion(messages, {
+            purpose: "review",
+            temperature: 0,
+            missionProviderId: mission.execution.providerId,
+            missionModel: mission.execution.model,
+            missionPreset: mission.execution.preset,
+          });
           const first = parseReviewVerdictWithDiagnostics(res.text, mission.criteria, { finishReason: res.finishReason ?? null });
           parsed = first.parsed;
           provider = res.provider ?? null; model = res.model ?? null;
@@ -727,7 +746,13 @@ export class MissionService {
             // prior answer — never to re-decide. The bounded local extraction
             // pipeline above already tried every deterministic recovery; this
             // is the single network-bound fallback, capped here.
-            const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), { purpose: "review", temperature: 0 });
+            const repaired = await this.deps.completion(buildReviewRepairMessages(messages, res.text), {
+              purpose: "review",
+              temperature: 0,
+              missionProviderId: mission.execution.providerId,
+              missionModel: mission.execution.model,
+              missionPreset: mission.execution.preset,
+            });
             const second = parseReviewVerdictWithDiagnostics(repaired.text, mission.criteria, { finishReason: repaired.finishReason ?? null });
             if (isReviewParseFailure(second.parsed)) logReviewParseFailure(missionId, "repair", second.diagnostics);
             else parsed = second.parsed;
@@ -2066,12 +2091,37 @@ export class MissionService {
   }
 }
 
+// The rendered diff is truncated to 12,000 chars before it ever reaches a
+// prompt (reviewer.ts), so an unbounded loop here cannot corrupt or blow up
+// review evidence — but it can still spawn one `git diff` subprocess per
+// untracked file with no ceiling on count. node_modules is excluded by
+// morrow build's default .gitignore, but any build that generates many
+// small output files (not just dependency installs) would otherwise spawn a
+// subprocess per file on every single review cycle. Capped at the point
+// content stops being reviewable anyway; the remainder is still named.
+const MAX_UNTRACKED_FILES_DIFFED = 50;
+
 function gitDiff(workspace: string): string {
   const staged = spawnSync("git", ["diff", "--no-color"], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, windowsHide: true });
   const untrackedList = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: workspace, encoding: "utf8", windowsHide: true });
   let out = staged.status === 0 ? staged.stdout : "";
+
   if (untrackedList.status === 0 && untrackedList.stdout.trim()) {
-    out += `\n# untracked files:\n${untrackedList.stdout.trim()}`;
+    const untrackedFiles = untrackedList.stdout.trim().split(/\r?\n/).filter(Boolean);
+    const toDiff = untrackedFiles.slice(0, MAX_UNTRACKED_FILES_DIFFED);
+    const remainder = untrackedFiles.slice(MAX_UNTRACKED_FILES_DIFFED);
+    for (const file of toDiff) {
+      // Use --no-index to generate a unified diff for the new file against /dev/null
+      const newFileDiff = spawnSync("git", ["diff", "--no-index", "--no-color", "/dev/null", file], { cwd: workspace, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      if (newFileDiff.stdout) {
+        out += (out.length > 0 && !out.endsWith("\n") ? "\n" : "") + newFileDiff.stdout;
+      } else {
+        out += `\n# untracked empty file: ${file}\n`;
+      }
+    }
+    if (remainder.length > 0) {
+      out += `\n# ${remainder.length} additional untracked file(s) not individually diffed:\n${remainder.join("\n")}`;
+    }
   }
   return out;
 }

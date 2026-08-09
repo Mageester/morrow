@@ -24,13 +24,35 @@ export interface CheckpointSnapshot {
   gitRef: string | null;
 }
 
+/**
+ * These run synchronously, which blocks the entire orchestrator event loop for
+ * their duration — so "how long can this take" is not a detail. Unbounded and
+ * with an inheritable stdin, a `git` that stalls on a held `index.lock` or
+ * stops to ask a credential helper something takes every mission, task and HTTP
+ * request in the process down with it, with no timeout to recover from. Bound
+ * them, and give stdin EOF so nothing can wait on an answer.
+ */
+const GIT_TIMEOUT_MS = 30_000;
+
+function git(workspace: string, args: string[], maxBuffer?: number): { status: number | null; stdout: string } {
+  const r = spawnSync("git", args, {
+    cwd: workspace,
+    encoding: "utf8",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: GIT_TIMEOUT_MS,
+    ...(maxBuffer === undefined ? {} : { maxBuffer }),
+  });
+  return { status: r.status, stdout: r.stdout ?? "" };
+}
+
 export function isGitRepo(workspace: string): boolean {
-  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspace, encoding: "utf8", windowsHide: true });
+  const r = git(workspace, ["rev-parse", "--is-inside-work-tree"]);
   return r.status === 0 && r.stdout.trim() === "true";
 }
 
 export function gitHeadRef(workspace: string): string | null {
-  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8", windowsHide: true });
+  const r = git(workspace, ["rev-parse", "HEAD"]);
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
@@ -45,7 +67,7 @@ export function gitHeadRef(workspace: string): string | null {
  * Filtering first means the bound applies to meaningful changes.
  */
 export function candidateFiles(workspace: string, limit = 500): string[] {
-  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: workspace, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+  const r = git(workspace, ["status", "--porcelain", "--untracked-files=all"], 16 * 1024 * 1024);
   if (r.status !== 0) return [];
   return r.stdout.split("\n")
     .map((l) => l.slice(3).trim())

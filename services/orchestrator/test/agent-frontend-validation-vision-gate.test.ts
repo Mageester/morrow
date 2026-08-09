@@ -74,6 +74,20 @@ class ConsoleErrorBrowser extends FrontendBrowser {
   }
 }
 
+// Real pages almost always log something benign (a React DevTools banner, a
+// Vite HMR "connected" message, a non-error warning). None of that is a
+// functional problem and must not block completion the way an actual error
+// does.
+class BenignConsoleBrowser extends FrontendBrowser {
+  override evidence(): BrowserEvidence[] {
+    return [
+      { kind: "console", message: "Download the React DevTools for a better development experience", detail: { level: "log" }, createdAt: new Date().toISOString() },
+      { kind: "console", message: "[vite] connected.", detail: { level: "info" }, createdAt: new Date().toISOString() },
+      { kind: "console", message: "React Router Future Flag Warning", detail: { level: "warning" }, createdAt: new Date().toISOString() },
+    ];
+  }
+}
+
 class NavigationFailureBrowser extends FrontendBrowser {
   override async snapshot(): Promise<PageSnapshot> {
     return { ...await super.snapshot(), navigationError: "route returned an application error" } as PageSnapshot;
@@ -176,6 +190,92 @@ describe("frontend-validation completion gate — vision requirement", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
+  it("does not let a deduplicated repeated interaction poison frontend completion evidence", async () => {
+    // Live deepseek-v4-pro runs clicked the same element twice; the second call
+    // was deduplicated to a `{ duplicate: true }` placeholder. Because the
+    // interaction check used `.every()`, that placeholder (clicked: undefined)
+    // failed validation and made `interaction` false for the whole task —
+    // blocking completion of a fully-built, browser-verified app.
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        [tool("bo", "browser_open", { url: "http://127.0.0.1:4173/" }), done],
+        [tool("bs", "browser_snapshot", {}), done],
+        [tool("bc", "browser_console", {}), done],
+        [tool("bi", "browser_click", { ref: "e1" }), done],
+        [tool("bi2", "browser_click", { ref: "e1" }), done], // identical → deduplicated placeholder
+        [tool("bd", "browser_viewport", { preset: "desktop" }), done],
+        [tool("bds", "browser_screenshot", { label: "desktop" }), done],
+        [tool("bt", "browser_viewport", { preset: "tablet" }), done],
+        [tool("bts", "browser_screenshot", { label: "tablet" }), done],
+        [tool("bm", "browser_viewport", { preset: "mobile" }), done],
+        [tool("bms", "browser_screenshot", { label: "mobile" }), done],
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FrontendBrowser(), maxTurns: 24 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
+  it("does not let a transient failed browser_open/click poison frontend completion evidence", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): the default static-server
+    // port was already taken, so the model's first browser_open FAILED; it moved
+    // its server to another port and re-opened and verified there successfully,
+    // and one interaction hit a momentarily-stale ref before a clean retry.
+    // Because routeHealthy/interaction used `.every()` over all calls, the failed
+    // attempts poisoned both categories permanently, and a fully browser-verified
+    // app was blocked with frontend_route_missing + frontend_interaction_missing.
+    // A recovered-from failure must not count against the evidence.
+    class FlakyThenHealthyBrowser extends FrontendBrowser {
+      opens = 0;
+      clicks = 0;
+      override async open(url: string): Promise<PageSnapshot> {
+        this.opens += 1;
+        if (this.opens === 1) throw new Error("EADDRINUSE: static server not ready on that port");
+        return super.open(url);
+      }
+      override async click(): Promise<void> {
+        this.clicks += 1;
+        if (this.clicks === 1) throw new Error("element ref went stale before the click landed");
+      }
+    }
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        [tool("bo_fail", "browser_open", { url: "http://127.0.0.1:4173/" }), done], // fails: port taken
+        [tool("bo", "browser_open", { url: "http://127.0.0.1:4187/" }), done],       // recovers on a new port
+        [tool("bs", "browser_snapshot", {}), done],
+        [tool("bc", "browser_console", {}), done],
+        [tool("bi_fail", "browser_click", { ref: "e1" }), done], // fails: stale ref
+        [tool("bi", "browser_click", { ref: "e1" }), done],       // clean retry
+        [tool("bd", "browser_viewport", { preset: "desktop" }), done],
+        [tool("bds", "browser_screenshot", { label: "desktop" }), done],
+        [tool("bt", "browser_viewport", { preset: "tablet" }), done],
+        [tool("bts", "browser_screenshot", { label: "tablet" }), done],
+        [tool("bm", "browser_viewport", { preset: "mobile" }), done],
+        [tool("bms", "browser_screenshot", { label: "mobile" }), done],
+        [text("Built and verified the page after recovering from the port conflict."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new FlakyThenHealthyBrowser(), maxTurns: 28 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    const blocked = events.find((e: any) => e.type === "task.interrupted");
+    const blockerCodes = ((blocked?.payload as any)?.completionBlockers ?? []).map((b: any) => b.code);
+    expect(blockerCodes).not.toContain("frontend_route_missing");
+    expect(blockerCodes).not.toContain("frontend_interaction_missing");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+  });
+
   it("does not complete when browser console evidence reports an error", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
     const provider = new MockProvider({
@@ -191,6 +291,32 @@ describe("frontend-validation completion gate — vision requirement", () => {
     await runner.waitFor("t");
 
     expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+  });
+
+  it("completes despite benign non-error console noise (regression: diligent console checks were penalized)", async () => {
+    // Live deepseek-v4-pro run building ShiftFlow: the model opened a real
+    // browser, ran browser_console repeatedly, correctly diagnosed the only
+    // observed messages as harmless Vite HMR/React DevTools noise unrelated
+    // to app functionality, and said so in its final report. The completion
+    // gate still blocked with frontend_console_unclean because it demanded
+    // zero console events of ANY kind, not zero actual errors — punishing
+    // the exact thorough investigation behavior we want.
+    seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body>Hi</body></html>\n" }), done],
+        frontendValidationTurn(),
+        [text("Built and verified the page."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, browserFactory: () => new BenignConsoleBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((e: any) => e.type === "task.interrupted" && e.payload?.completionBlockers?.some((b: any) => b.code === "frontend_console_unclean"))).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("does not complete when the durable browser route result reports navigation failure", async () => {

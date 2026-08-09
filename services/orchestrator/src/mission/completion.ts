@@ -7,6 +7,7 @@ import type { MissionCompletionFn } from "./service.js";
 import { admitProviderRequest } from "../execution/context-budget.js";
 import { resolveModelBudget } from "../routing/model-budget.js";
 import type { ChatMessage } from "../provider/base.js";
+import type { ProviderId, PresetId } from "@morrow/contracts";
 
 /**
  * Build a provider-independent completion function for mission planning and
@@ -38,26 +39,47 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
 
   const runOnce = async (
     messages: ChatMessage[],
-    o: { purpose: "planning" | "review"; temperature?: number },
+    o: {
+      purpose: "planning" | "review";
+      temperature?: number;
+      missionProviderId?: ProviderId | null;
+      missionModel?: string | null;
+      missionPreset?: PresetId;
+    },
     outputBudgetTokens: number,
+    options: { forcePrimaryModel?: boolean } = {},
   ): Promise<{ text: string; provider: string; model: string; finishReason: string | null }> => {
-    let model = primary.model;
-    if (o.purpose === "review") {
-      const others = listModelsForProvider(primary.providerId).map((m) => m.id).filter((id) => id !== primary.model);
+    let resolvedProviderId = primary.providerId;
+    let resolvedModel = primary.model;
+
+    if (o.missionProviderId) {
+      resolvedProviderId = o.missionProviderId;
+      if (o.missionModel) resolvedModel = o.missionModel;
+    } else if (o.missionPreset && o.missionPreset !== presetId) {
+      const missionRoute = routePreset(o.missionPreset, env);
+      if (missionRoute.ok) {
+        resolvedProviderId = missionRoute.decision.providerId;
+        resolvedModel = missionRoute.decision.model;
+      }
+    }
+
+    let model = resolvedModel;
+    if (o.purpose === "review" && !options.forcePrimaryModel) {
+      const others = listModelsForProvider(resolvedProviderId).map((m) => m.id).filter((id) => id !== resolvedModel);
       if (others.length > 0) model = others[0]!;
     }
-    const provider = createProvider(primary.providerId, env, model);
+    const provider = createProvider(resolvedProviderId, env, model);
     const providerRoute = provider.route;
     if (!providerRoute) throw new Error("Provider route metadata is unavailable; refusing an unverified mission completion request.");
     const budget = resolveModelBudget({
-      providerId: primary.providerId,
+      providerId: resolvedProviderId,
       selectedModel: model,
       endpoint: { kind: providerRoute.endpointKind, host: providerRoute.endpointHost, protocol: providerRoute.protocol, limitTokens: providerRoute.endpointLimitTokens, limitSource: providerRoute.endpointLimitSource },
       outputBudgetTokens,
     });
-    const admission = admitProviderRequest({ providerId: primary.providerId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: outputBudgetTokens }, budget);
+    const admission = admitProviderRequest({ providerId: resolvedProviderId, model, protocol: providerRoute.protocol, messages, tools: [], outputReserveTokens: outputBudgetTokens }, budget);
     if (!admission.ok) throw new Error(`Mission completion request requires ${admission.measurement.totalRequestTokens} tokens but the usable input budget is ${budget.usableInputTokens}; no provider call was made.`);
-    const candidates: FallbackCandidate[] = [{ id: primary.providerId, provider }];
+    const candidates: FallbackCandidate[] = [{ id: resolvedProviderId, provider }];
     const opened = await openStreamWithFallback(candidates, messages, {
       temperature: o.temperature ?? 0.1,
       maxOutputTokens: outputBudgetTokens,
@@ -70,12 +92,29 @@ export function buildMissionCompletion(opts: { presetId?: string; env?: NodeJS.P
       if (chunk.type === "text" && chunk.text) text += chunk.text;
       if (chunk.type === "done" && chunk.finishReason) finishReason = chunk.finishReason;
     }
-    return { text, provider: primary.providerId, model, finishReason };
+    return { text, provider: resolvedProviderId, model, finishReason };
   };
 
   return async (messages, o) => {
     const baseBudget = OUTPUT_BUDGET_TOKENS[o.purpose];
-    const first = await runOnce(messages, o, baseBudget);
+    let first;
+    try {
+      first = await runOnce(messages, o, baseBudget);
+    } catch (err) {
+      // The independent-review model is `routing`'s first non-primary catalog
+      // entry for this provider — a real one, but not necessarily one this
+      // account can actually reach (e.g. gated on the current plan). When it
+      // fails, retry on the model already proven to work rather than losing
+      // review entirely. Purpose stays "review": switching it to "planning"
+      // silently drops `responseFormat: "json_object"`, which is what makes
+      // the provider return a parseable verdict in the first place, turning a
+      // recovered review into an unparseable one.
+      if (o.purpose === "review") {
+        first = await runOnce(messages, o, baseBudget, { forcePrimaryModel: true });
+      } else {
+        throw err;
+      }
+    }
     // Bounded, deterministic escalation: exactly one retry, only for review,
     // only when the response was genuinely truncated with nothing usable —
     // never a general "just try again" retry storm.

@@ -175,6 +175,12 @@ export interface StreamOptions {
   /** The resolved route's verified reasoning capability, paired with
    * `reasoning` so the adapter validates against real support, never a guess. */
   reasoningCapability?: RouteReasoningCapability;
+  /** When "required", constrains the response to structurally include a tool
+   * call — used only to recover from a reasoning-only, length-terminated turn
+   * (see agent.ts's empty-response handling), never on a normal turn. Only
+   * adapters that speak an OpenAI-compatible `tool_choice` wire field act on
+   * this; other protocols ignore it, so it is safe to set unconditionally. */
+  toolChoice?: "required";
 }
 
 /** Capability flags surfaced to the UI and used by the router. */

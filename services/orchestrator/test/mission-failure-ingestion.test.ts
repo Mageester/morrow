@@ -152,6 +152,38 @@ describe("mission tool-failure reporter (unit)", () => {
     noop.reportFailure("run_command", { command: "x" }, "boom", "tool_failed");
     expect(service.get(missionId).failures).toHaveLength(0);
   });
+
+  /**
+   * The dogfooding run that found this initially fixed `describeTarget` to
+   * check `CommandLine`/`commandLine`/`command`/`cmd` — none of which a real
+   * `run_command` call ever carries. The tool's actual argument schema
+   * (services/orchestrator/src/tools/catalog.ts) is `{ executable, args, cwd,
+   * purpose, timeoutMs, background }`; there is no single command-string
+   * field at all. That fix was inert for every real failure: describeTarget
+   * still fell through to "", and two genuinely different commands
+   * ("node hash-file.js" vs. "npm test") still collapsed into the same
+   * "unknown:run_command" signature — the exact loop-detection false
+   * positive the fix was meant to close. Fixed to build the target string
+   * from `executable` + `args`, the fields the tool actually sends.
+   */
+  it("distinguishes real run_command invocations, shaped as the tool actually sends them", () => {
+    const r = reporter();
+    r.reportFailure(
+      "run_command",
+      { executable: "node", args: ["hash-file.js"], purpose: "run the CLI" },
+      "Command node exited with status 1.",
+      "command_exit_nonzero",
+    );
+    r.reportFailure(
+      "run_command",
+      { executable: "npm", args: ["test"], purpose: "run the test suite" },
+      "Command npm exited with status 1.",
+      "command_exit_nonzero",
+    );
+    const failures = service.get(missionId).failures;
+    expect(failures).toHaveLength(2);
+    expect(failures[0]!.normalizedSignature).not.toEqual(failures[1]!.normalizedSignature);
+  });
 });
 
 // ── end-to-end: real agent execution feeds the mission ledger ────────────────

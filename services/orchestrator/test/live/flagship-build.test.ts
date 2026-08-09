@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
 import { appendFlagshipRun, evaluateFlagshipGate, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
+import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
+import { resolveMorrowHome } from "../../src/home.js";
 import { ProviderIdSchema, type ProviderId } from "@morrow/contracts";
 
 /**
@@ -104,7 +106,23 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+/**
+ * Take the same credentials production takes.
+ *
+ * The orchestrator hydrates provider environment from `MORROW_HOME/secrets.env`
+ * at startup, which is where the app itself stores a key the user configured
+ * through the UI. This suite read only the ambient environment, so a provider
+ * the product considers configured — `opencode-zen`, the declared second gate
+ * provider, among them — read here as absent. The two-provider gate could not
+ * be met on a machine that was in fact configured for it, and the shortfall
+ * looked like a missing credential rather than a harness that never looked.
+ */
+function hydrateFromMorrowHome(): void {
+  hydrateProviderEnvFromSecrets(join(resolveMorrowHome(process.env), "secrets.env"), process.env);
+}
+
 function configuredProviders(): ProviderId[] {
+  hydrateFromMorrowHome();
   const requested = (process.env.MORROW_FLAGSHIP_PROVIDERS ?? "")
     .split(",")
     .map((id) => id.trim())
@@ -180,13 +198,16 @@ describe("live: the flagship workflow against real models", () => {
         const root = mkdtempSync(join(tmpdir(), "morrow-flagship-live-"));
         roots.push(root);
         const run = await runFlagshipBuild({ root, providerId, model });
+        if (!run.passed) {
+          roots.splice(roots.indexOf(root), 1);
+        }
         // Appended before any assertion: a failed run is exactly the evidence
         // this log exists to keep. A run that only records itself on success
         // measures nothing.
         appendFlagshipRun(logPath, run);
         recorded.push(run);
         // eslint-disable-next-line no-console
-        console.log(`[live] flagship ${providerId}/${model} run ${attempt + 1}/${runsPerProvider}: ${run.passed ? "PASS" : `FAIL (${run.failureReason})`} — ${run.toolCalls} tool calls, ${run.completionTokens} output tokens, ${Math.round(run.wallClockMs / 1000)}s${run.failureDetail ? ` — ${run.failureDetail}` : ""}`);
+        console.log(`[live] flagship ${providerId}/${model} run ${attempt + 1}/${runsPerProvider}: ${run.passed ? "PASS" : `FAIL (${run.failureReason})`} — ${run.toolCalls} tool calls, ${run.completionTokens} output tokens, ${Math.round(run.wallClockMs / 1000)}s${run.failureDetail ? ` — ${run.failureDetail}` : ""}\n[live] retained workspace: ${root}`);
       }
     }
 

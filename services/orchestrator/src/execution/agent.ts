@@ -86,7 +86,7 @@ import type { AgentExecutionState, AgentMode, ProviderId, ToolProfile, Reasoning
 import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
-import { isSafeSkillInstructionDirectory, verifySkillDirectory } from "../skills/registry.js";
+import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -128,6 +128,125 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; c
   } catch {
     return {};
   }
+}
+
+/**
+ * Derive a stable per-target key for a propose_patch call. Unlike create_file,
+ * propose_patch carries no top-level `path`; its target lives in the `files`
+ * array or, failing that, the unified-diff `+++` headers inside `patch`. The
+ * argument-correction budget keys on this so that independent propose_patch
+ * calls on *different* files never share one budget — the deepseek-v4-pro
+ * failure (task 98159b5c) collapsed three distinct first attempts on three
+ * files onto `unknown-target`, climbing 1→2→3 and interrupting the whole task
+ * as `tool_arguments_unrecoverable`. Returns null when no target is derivable
+ * (e.g. a fully empty/missing argument object), so the caller can fall back.
+ */
+export function proposePatchTarget(
+  parsed: Record<string, unknown> | undefined,
+  rawArguments: string,
+): string | null {
+  const filesFromArray = Array.isArray(parsed?.files)
+    ? (parsed!.files as unknown[]).filter((f): f is string => typeof f === "string" && f.trim() !== "")
+    : [];
+  if (filesFromArray.length > 0) return [...new Set(filesFromArray)].sort().join(",");
+  if (typeof parsed?.files === "string" && parsed.files.trim() !== "") return parsed.files.trim();
+
+  const patch = typeof parsed?.patch === "string" ? parsed.patch : null;
+  if (patch) {
+    const headerFiles = [...patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\r\n]+)$/gm)]
+      .map((m) => m[1]!)
+      .filter((p) => p !== "/dev/null");
+    if (headerFiles.length > 0) return [...new Set(headerFiles)].sort().join(",");
+  }
+
+  // Last resort: recover a target from the raw (possibly-malformed) JSON text so
+  // that even a call whose `patch` failed to parse still keys on its own file.
+  const rawFile = rawArguments.match(/"files"\s*:\s*\[\s*"([^"]+)"/)?.[1]
+    ?? rawArguments.match(/"files"\s*:\s*"([^"]+)"/)?.[1]
+    ?? rawArguments.match(/\+\+\+\s+(?:b\/)?([^\r\n"\\]+)/)?.[1]
+    ?? null;
+  return rawFile && rawFile !== "/dev/null" ? rawFile : null;
+}
+
+/**
+ * True when a run_command result reports that the command was detached as a
+ * long-running background process (a dev/preview server, a watcher) rather than
+ * run to completion. Such a call has no exit code yet — it is intentionally
+ * still running — so it must never be scored as a pass/fail *verification*.
+ * Treating a started server as a failed verification produced a spurious
+ * `failed_final_verification` completion blocker that stopped an otherwise
+ * finished frontend build from ever completing.
+ */
+export function runCommandStartedBackgroundProcess(resultJson: string | null | undefined): boolean {
+  if (!resultJson) return false;
+  try {
+    const result = JSON.parse(resultJson) as { status?: unknown; processId?: unknown; pid?: unknown; exitCode?: unknown };
+    if (typeof result.exitCode === "number") return false;
+    return result.status === "running" && (result.processId !== undefined || result.pid !== undefined);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect a write tool call that merely echoes one of Morrow's own externalized
+ * history entries. To keep long runs inside the context window,
+ * `capToolArgumentsForContext` rewrites an already-applied create_file /
+ * propose_patch in the model's conversation history as
+ * `{ path, _morrowAppliedWrite: { contentBytes, contentSha256, … } }` with the
+ * body stripped. Weaker models (observed with deepseek-v4-pro) sometimes copy
+ * that exact shape back verbatim — including the real sha256 they can see in
+ * context — when they want to re-touch a file. The result is a create_file /
+ * propose_patch with no `content` / `patch`, which validation would reject as
+ * "missing", burning the correction budget and eventually interrupting the
+ * whole task even though the file was already written correctly earlier.
+ *
+ * Such a call is not a defect to punish; it is a no-op referencing a durable
+ * write that already happened. Recognizing it lets the executor return an
+ * idempotent success instead of a fatal argument error.
+ */
+export function isEchoedAppliedWrite(toolName: string, args: Record<string, unknown>): boolean {
+  if (toolName !== "create_file" && toolName !== "propose_patch") return false;
+  const marker = (args as any)?._morrowAppliedWrite;
+  if (!marker || typeof marker !== "object") return false;
+  const bodyField = toolName === "create_file" ? args.content : args.patch;
+  const bodyPresent = typeof bodyField === "string" && bodyField.trim() !== "";
+  return !bodyPresent;
+}
+
+/**
+ * True when a turn's text announces an action the model is ABOUT to take
+ * rather than reporting a concluded result — the fingerprint of a mid-work
+ * narration that must not be shipped to the user as the final report.
+ *
+ * The completion fast path accepts the current turn's text as the final answer
+ * because the model usually writes that text after seeing its evidence. But the
+ * text is emitted in the same turn as tool calls whose results the model has
+ * not seen yet, so it can be forward-looking. Live example (Pomodoro build,
+ * deepseek-v4-flash): "All three viewports captured. Final check: confirm the
+ * controls still render correctly on mobile and grab final console evidence." —
+ * accompanied by browser_snapshot + browser_console calls, then accepted as the
+ * entire final report even though the model was describing what it was about to
+ * do, not what it had concluded.
+ *
+ * The cue set is deliberately biased toward first-person-future / next-action
+ * phrasing (and a trailing colon) and deliberately EXCLUDES common words that
+ * appear in genuine conclusions ("verified", "confirmed", "works", "passed",
+ * "done"). A false positive costs one extra tool-free summary turn; a false
+ * negative ships a bad report — so the check errs toward flagging. Only the
+ * final sentence is weighed, since a conclusion often recaps earlier actions.
+ */
+export function isForwardLookingNarration(text: string): boolean {
+  const normalized = (text ?? "").trim();
+  if (!normalized) return true; // no text at all is certainly not a real report
+  if (normalized.endsWith(":")) return true;
+  // Weigh the last sentence: a real conclusion frequently narrates the steps it
+  // took ("I clicked Start, then paused…") before its verdict, and only the
+  // trailing clause reveals whether the model believes it is finished.
+  const sentences = normalized.split(/(?<=[.!?])\s+/);
+  const tail = (sentences[sentences.length - 1] ?? normalized).toLowerCase();
+  const forwardCue = /\b(let me|i'?ll|i will|i'?m going to|i am going to|about to|now i|now let|let'?s|next[,:]?\s|continuing|proceeding|capturing|grab(?:bing)?|reload(?:ing)?|final check|one (?:more|last) (?:check|step)|remaining|still need)\b/;
+  return forwardCue.test(tail);
 }
 
 /**
@@ -226,7 +345,18 @@ function isTrustedSkillDirectory(directory: string, env: NodeJS.ProcessEnv, lear
 
 function discoverRelevantSkills(prompt: string, workspacePath: string, projectId: string, env: NodeJS.ProcessEnv, learnedById?: Map<string, LearnedSkill>): { id: string; name: string; description: string }[] {
   const dirs = agentSkillRoots(workspacePath, projectId, env);
-  const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []));
+  // A shared word alone is weak evidence of relevance — skill names and
+  // one-line descriptions are short, so any prompt easily shares one
+  // incidental word with an unrelated skill by chance. Observed live: a
+  // productivity-dashboard build prompt mentioning a "task board" UI matched
+  // the unrelated task-management skill (decomposing the AGENT's own work,
+  // not building a UI feature) purely on the generic tokens "task" and
+  // "with", forcing a load_skill call before any real build work started
+  // (task 46ea7980-3905-45ac-a0cf-48b0ec7e4c25 in morrow.db). Filtering
+  // common function words and requiring at least two overlapping content
+  // words keeps genuinely on-topic matches (e.g. "security" + "audit")
+  // while dropping single-generic-word coincidences.
+  const promptTokens = new Set((prompt.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t)));
   if (promptTokens.size === 0) return [];
   const seen = new Set<string>();
   const scored: { id: string; name: string; description: string; score: number }[] = [];
@@ -251,10 +381,10 @@ function discoverRelevantSkills(prompt: string, workspacePath: string, projectId
         name = lines[0]?.replace(/^#\s*/, "").trim() || entry;
         desc = lines.slice(1).find((l) => l.trim() && !l.startsWith("#"))?.trim() || "";
       }
-      const hayTokens = `${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? [];
+      const hayTokens = (`${entry} ${name} ${desc}`.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((t) => !SKILL_MATCH_STOPWORDS.has(t));
       let score = 0;
       for (const t of new Set(hayTokens)) if (promptTokens.has(t)) score++;
-      if (score > 0) scored.push({ id: entry, name, description: desc, score });
+      if (score >= SKILL_MATCH_MIN_SCORE) scored.push({ id: entry, name, description: desc, score });
     }
   }
   scored.sort((a, b) => b.score - a.score);
@@ -1502,7 +1632,7 @@ Ask mode: you can read this project but not change it. You have no write tools a
 `;
 
   const agentModeInstructions = `
-Build mode: you may change this project. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
+Build mode: you may change this project. On a multi-file build, call create_file for the first file as soon as you've decided it — do not silently draft every file before your first tool call. Finish the job, then verify it with run_command rather than declaring success from reading your own diff.
 ${writeToolInstructions}`;
 
   chatMessages.push({
@@ -2082,10 +2212,32 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           throw new AgentToolFailure(feedback.message, feedback.result);
         }
         if (pf.oldPath !== "/dev/null" && originalContent !== null && hashString(newContent) === hashString(originalContent)) {
+          // A valid patch that changes nothing is not an argument error, so it
+          // bypasses the malformed-argument correction budget and its create_file
+          // redirect entirely. Track it per target: the first no-op gets a plain
+          // "regenerate" nudge, but a repeat means the model is looping on a dead
+          // patch, so escalate to a full-file create_file rewrite (which
+          // auto-converts to a backed-up edit when the target exists) instead of
+          // letting it re-propose until the stagnation kill.
+          const noEffectAttempts = (patchNoEffectCountsByFile.get(pf.newPath) ?? 0) + 1;
+          patchNoEffectCountsByFile.set(pf.newPath, noEffectAttempts);
+          const escalateToCreateFile = noEffectAttempts >= 2;
+          if (escalateToCreateFile) {
+            event("tool.strategy_switch", {
+              tool: "propose_patch",
+              from: "patch",
+              to: "create_file",
+              path: pf.newPath,
+              reason: "patch_no_effect_repeated",
+            });
+          }
           throw new AgentToolFailure(`Patch produced no content changes for: ${pf.newPath}`, {
             error: `Patch produced no content changes for: ${pf.newPath}`,
             kind: "patch_no_effect",
             targetFile: pf.newPath,
+            attemptsForFile: noEffectAttempts,
+            retryLimit: 2,
+            switchToCreateFile: escalateToCreateFile,
             currentFile: {
               path: pf.newPath,
               hash: hashString(originalContent),
@@ -2093,7 +2245,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
               truncated: Buffer.byteLength(originalContent, "utf8") > 16 * 1024,
               content: originalContent.slice(0, 16 * 1024),
             },
-            instruction: "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
+            instruction: escalateToCreateFile
+              ? `Patching ${pf.newPath} has now produced no change ${noEffectAttempts} times. Stop authoring diffs for this file. Call create_file with path "${pf.newPath}" and content set to the COMPLETE, final text of the file (take currentFile.content and apply your intended change to it). Morrow applies it as a safe, backed-up whole-file edit. If no change is actually needed, stop cleanly instead.`
+              : "Regenerate a patch that changes the target file, or stop cleanly if no change is needed.",
           });
         }
         const destPath = assertContainedRealPath(workspacePath, pf.newPath);
@@ -2346,6 +2500,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   // keeps emitting differently-broken diffs for the same file never trips the
   // per-hash ceiling; this counter drives the escalation to create_file.
   const patchFailureCountsByFile = new Map<string, number>();
+  // propose_patch calls that PARSE and APPLY cleanly but leave the file byte-for-
+  // byte unchanged ("Patch produced no content changes"). These have *valid*
+  // arguments, so they never touch the malformed-argument correction budget or
+  // its create_file redirect — the model is free to re-propose the same dead
+  // patch until the no-progress stagnation kill. Observed live on
+  // deepseek-v4-flash for a complex build (task f318d8a8: four no-effect patches
+  // on the same file). Keyed by target so a repeated no-op on one file escalates
+  // to a full-file create_file rewrite instead of looping.
+  const patchNoEffectCountsByFile = new Map<string, number>();
   // create_file may repair one target once, but repeated whole-file rewrites
   // are not meaningful delivery progress.
   const createFileWritesByPath = new Map<string, number>();
@@ -2356,7 +2519,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   const toolArgumentAttemptKey = (toolName: string, rawArguments: string, field = "format", parsed?: Record<string, unknown>) => {
     const parsedPath = typeof parsed?.path === "string" ? parsed.path : null;
     const rawPath = rawArguments.match(/"path"\s*:\s*"([^"]+)"/)?.[1] ?? null;
-    const target = parsedPath ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
+    // propose_patch has no top-level `path`; without a per-target key every
+    // patch failure across different files shares one correction budget and a
+    // handful of distinct first attempts spuriously exhaust it, interrupting
+    // the whole task. Key on the affected file(s) instead.
+    const patchTarget = toolName === "propose_patch" ? proposePatchTarget(parsed, rawArguments) : null;
+    const target = parsedPath ?? patchTarget ?? rawPath ?? (field === "path" ? "missing-path" : "unknown-target");
     return `${toolName}:${field}:${target}`;
   };
   // Tight per-action loop detection: catches the same tool+args recurring within
@@ -2585,12 +2753,46 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       && typeof result.text === "string"
       && typeof result.injectionFindings === "number";
   };
+  // Benign console noise (React DevTools banner, Vite HMR "connected" logs,
+  // non-error warnings) is normal on almost every real page and must not
+  // block completion — only genuine runtime errors should. A page-error is
+  // always an uncaught exception; a console-kind entry is only severe when
+  // Playwright classified it as `type() === "error"` (console.error).
+  const isSevereConsoleEvent = (event: unknown): boolean => {
+    if (!event || typeof event !== "object") return false;
+    const item = event as { kind?: unknown; detail?: unknown };
+    if (item.kind === "page-error") return true;
+    if (item.kind === "console") return (item.detail as { level?: unknown } | undefined)?.level === "error";
+    return false;
+  };
   const isCleanConsoleResult = (result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result) || !Array.isArray(result?.events)) return false;
-    return result.events.length === 0 && (result.count === undefined || result.count === 0);
+    return !result.events.some(isSevereConsoleEvent);
   };
   const isValidViewportResult = (result: Record<string, unknown> | null): boolean =>
     !hasBrowserFailure(result) && isViewport(result?.viewport) && typeof result?.url === "string";
+  // A repeated browser call is deduplicated to a `{ duplicate: true }` placeholder
+  // that reuses the prior observation. It is neither new evidence nor a failure —
+  // but because the category checks below use `.every()`, leaving it in would let
+  // one repeated click/snapshot/screenshot poison an entire category of otherwise
+  // valid evidence and permanently block frontend completion. Exclude it: the
+  // original call it duplicates is still counted.
+  const isDuplicateBrowserResult = (result: Record<string, unknown> | null): boolean => result?.duplicate === true;
+  // An execution-FAILED browser call (the tool itself errored — a browser_open
+  // that hit a not-yet-ready server, a click on a ref that had gone stale, etc.)
+  // is a transient attempt, not evidence. Because the category checks below use
+  // `.every()`, leaving a failed attempt in permanently poisons the whole
+  // category even after the model recovers. Live bug (Pomodoro build,
+  // deepseek-v4-flash): port 4173 was already taken, so the model's first
+  // browser_open failed, it moved its server to 4187, and re-opened and verified
+  // there successfully — but the failed 4173 opens (and a stale-ref click) left
+  // routeHealthy and interaction stuck false via `.every()`, and a fully
+  // browser-verified app was blocked with frontend_route_missing +
+  // frontend_interaction_missing. Only the model's successful calls are evidence;
+  // a recovered-from failure must not count against it. (A genuinely unrecovered
+  // failure still blocks: with no successful call the category stays empty, and a
+  // failed LAST action is caught separately by the unverified-completion gate.)
+  const isCompletedBrowserCall = (call: ToolCallRecord): boolean => call.status === "completed";
   const isValidInteractionResult = (call: ToolCallRecord, result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result)) return false;
     if (call.toolName === "browser_click") return typeof result?.clicked === "string" && isPageSnapshot(result?.page as Record<string, unknown> | null);
@@ -2604,7 +2806,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     const lastWrite = calls.map((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed").lastIndexOf(true);
     if (lastWrite < 0) return {};
     const afterWrite = calls.slice(lastWrite + 1);
-    const browserCalls = afterWrite.filter((call) => BROWSER_EVIDENCE_TOOLS.has(call.toolName));
+    const browserCalls = afterWrite.filter((call) =>
+      BROWSER_EVIDENCE_TOOLS.has(call.toolName)
+      && isCompletedBrowserCall(call)
+      && !isDuplicateBrowserResult(parseBrowserResult(call)));
     const routeCalls = browserCalls.filter((call) => call.toolName === "browser_open");
     const snapshotCalls = browserCalls.filter((call) => call.toolName === "browser_snapshot");
     const consoleCalls = browserCalls.filter((call) => call.toolName === "browser_console");
@@ -2670,15 +2875,51 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     let failure: { tool: string; detail: string } | null = null;
     let verification: { status: "passed" | "failed" | "missing"; toolCallId?: string; exitCode?: number } = { status: "missing" };
     for (const call of calls) {
+      // Frontend verification is browser-driven, not run_command-driven. A
+      // completed browser observation that post-dates a workspace write IS the
+      // verification of that change — the app was re-served and driven in a real
+      // browser — so let it clear an outstanding "workspace changed without
+      // subsequent verification" failure. Scope is deliberately tight: only the
+      // frontend shape, only that specific write-without-verify failure (never a
+      // real command exit failure), and only a genuine non-duplicate browser
+      // result. The frontend completion contract still independently gates on
+      // browser-evidence QUALITY (route health, clean console, DOM snapshot,
+      // interaction, viewports), so this removes a redundant run_command-shaped
+      // check that was interrupting fully browser-verified frontend edits
+      // (deepseek-v4-flash, task 53b36eb3: a working, multi-viewport-verified
+      // app rejected as unverified_completion after a final edit).
+      if (taskShape === "frontend_application"
+        && BROWSER_EVIDENCE_TOOLS.has(call.toolName)
+        && call.status === "completed"
+        && failure !== null
+        && failure.detail.startsWith("workspace changed without subsequent verification")
+        && verification.status === "missing"
+        && !isDuplicateBrowserResult(parseBrowserResult(call))) {
+        verification = { status: "passed", toolCallId: call.id };
+        failure = null;
+        continue;
+      }
       if (!VERIFY_OR_WRITE_TOOLS.has(call.toolName)) continue;
       if (call.toolName === "run_command") {
+        let isVerificationShaped = false;
         try {
-          // A host-side argument/schema rejection is never skipped: the model's
-          // action never executed, so an "I'm done" after it is unverified.
-          if (!runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>)
-            && call.errorType !== "invalid_tool_arguments") continue;
-        } catch {
-          if (call.errorType !== "invalid_tool_arguments") continue;
+          isVerificationShaped = runCommandIsVerification(JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>);
+        } catch { /* malformed args are classified via call.errorType below */ }
+        if (!isVerificationShaped && call.errorType !== "invalid_tool_arguments") {
+          // A host-side argument/schema rejection is never skipped: the
+          // model's action never executed, so an "I'm done" right after it is
+          // unverified. But that rejection must not become a PERMANENT block
+          // once the model demonstrably recovers — live bug: a run_command
+          // rejected for a missing "executable" field (a malformed static-
+          // file-server call) set a standing failed-verification state that
+          // no later evidence could clear, because the model's corrected
+          // retry was a background server start, not a "verification-shaped"
+          // command, so it never reached the exitCode bookkeeping below. The
+          // task then failed completion despite full subsequent browser
+          // verification. Any later run_command that actually completes
+          // proves the model got past the rejection, so clear it here.
+          if (call.status === "completed" && failure?.tool === "run_command") failure = null;
+          continue;
         }
       }
       // A call denied purely because the current mode forbids it (read-only /
@@ -2846,6 +3087,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   // tokens before its first visible token on a single-file WebGL task. A 4x
   // ceiling (16k on the 4096 presets) still cut it off mid-thought.
   const MAX_OUTPUT_BUDGET_MULTIPLIER = 8;
+  // One-shot flag consumed by the very next provider request: forces
+  // `tool_choice: "required"` after a reasoning-only, length-terminated turn.
+  // Set in the empty-response recovery branch below, read and cleared at the
+  // top of the next loop iteration so it never leaks into a later, unrelated
+  // turn.
+  let forceNextTurnToolChoice = false;
   const effectiveOutputBudget = (): number | null =>
     typeof preset.outputBudgetTokens === "number"
       ? preset.outputBudgetTokens * outputBudgetMultiplier
@@ -2867,6 +3114,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   let totalBytesRead = 0;
   let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
   let artifactDeliveryRecoverySent = false;
+  // One-shot guard for the directed final-summary turn (see the fast-path
+  // completion block): a fast-path completion accepts the current turn's text
+  // as the final report, but that text was written alongside the same turn's
+  // tool calls and can be forward-looking narration ("Final check: … grab
+  // final console evidence") rather than a real conclusion. When it is, we
+  // give the model exactly ONE more tool-free turn to write a genuine summary
+  // instead of shipping the narration as the report.
+  let finalSummaryTurnRequested = false;
   // Tracks the outcome of the most recent workspace-mutating or verification
   // action so a natural end-of-conversation stop can be gated: the model must
   // not report "completed" when the last patch/file write failed, or the last
@@ -3159,11 +3414,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
       };
     });
 
-    const independentVerifications = calls.flatMap((call) => {
+    const independentVerifications = calls.flatMap((call, index) => {
       if (call.toolName !== "run_command") return [];
       let args: Record<string, unknown> = {};
       try { args = JSON.parse(call.argsJson ?? "{}") as Record<string, unknown>; } catch { /* failure remains unverified */ }
-      if (!runCommandIsVerification(args) && call.errorType !== "invalid_tool_arguments") return [];
+      const isVerificationShaped = runCommandIsVerification(args);
+      if (!isVerificationShaped && call.errorType !== "invalid_tool_arguments") return [];
+      // A host-side argument rejection means the command never executed, so
+      // it is only evidence of an unverified "I'm done" if it is truly the
+      // LAST action the model attempted for that purpose — once any later
+      // run_command call completes, the model has demonstrably moved past
+      // it. This must apply regardless of whether the rejected call happens
+      // to be classified "verification-shaped": live bug — a background
+      // static-file-server command whose purpose said "...for browser
+      // verification" was rejected for a missing "executable" field, then
+      // corrected and successfully re-run three turns later. Both the
+      // rejection and its successful retry shared the identical purpose
+      // text, so BOTH counted as verification-shaped; the successful retry
+      // was then (correctly) excluded below as a background process with no
+      // pass/fail outcome, leaving the stale rejection as the only entry and
+      // wrongly blocking a fully browser-verified frontend app.
+      if (call.errorType === "invalid_tool_arguments") {
+        const recoveredLater = calls.slice(index + 1).some((later) => later.toolName === "run_command" && later.status === "completed");
+        if (recoveredLater) return [];
+      }
+      // A command that was detached as a background server has not produced a
+      // pass/fail outcome; it is intentionally still running. Scoring it as a
+      // failed verification wrongly blocks completion of a finished build.
+      if (runCommandStartedBackgroundProcess(call.resultJson)) return [];
       let exitCode: number | null | undefined;
       try {
         const result = JSON.parse(call.resultJson ?? "{}") as { exitCode?: unknown };
@@ -3683,6 +3961,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     renewExecutionLease();
     applyLatestTaskProjection();
 
+    // Consume the one-shot forced-tool-choice flag for exactly this turn's
+    // request, then clear it so a later, unrelated turn never inherits it.
+    const requireToolCallThisTurn = forceNextTurnToolChoice;
+    forceNextTurnToolChoice = false;
+
     turn++;
     absoluteTurn++;
     const responseLengthAtTurnStart = responseContent.length;
@@ -3885,6 +4168,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           temperature: preset.temperature,
           maxOutputTokens: effectiveOutputBudget(),
           ...(candidateReasoning ? { reasoning: candidateReasoning, reasoningCapability: resolution.reasoning } : {}),
+          // A reasoning/"thinking" route rejects a forced tool_choice outright
+          // (live evidence: DeepSeek returned "Thinking mode does not support
+          // this tool_choice" for deepseek-v4-flash, which is declared
+          // `reasoning: fixedReasoning()`). Only constrain the response on a
+          // route with no reasoning surface, where the constraint is both
+          // supported and meaningful.
+          ...(requireToolCallThisTurn && resolution.reasoning.control === "none" ? { toolChoice: "required" as const } : {}),
         };
         const envelope = {
           providerId: candidate.id,
@@ -3993,13 +4283,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           ...(effectiveTimeoutMs() !== undefined ? { timeoutMs: effectiveTimeoutMs()! } : {}),
           temperature: preset.temperature,
           maxOutputTokens: effectiveOutputBudget(),
-          // Reasoning intentionally omitted here: this object is only a
+          // Reasoning — and, for the same reason, the forced tool_choice
+          // recovery — intentionally omitted here: this object is only a
           // fallback default fallback.ts uses when a candidate lacks its own
           // `request.options` (see FallbackCandidate) — every admitted
           // candidate above always sets one, with its own per-candidate
-          // validated `reasoning`/`reasoningCapability`. Forwarding the raw,
-          // unvalidated `requestedReasoning` here would risk sending a
-          // combination that was never checked against this specific route.
+          // validated `reasoning`/`reasoningCapability`. Forwarding either
+          // here would risk sending a combination that was never checked
+          // against this specific route's real reasoning capability — a
+          // route with reasoning enabled rejects a forced tool_choice
+          // outright (live evidence: DeepSeek's "Thinking mode does not
+          // support this tool_choice").
         },
         globalRateGuard
       );
@@ -4373,11 +4667,40 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const toolSignature = `${tc.name}:${tc.arguments}`;
         // These browser reads observe mutable page state. Repeating one after
         // a click, repair, or navigation is fresh evidence, not duplicate work.
-        const dynamicBrowserObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
-        const repeatedTool = !dynamicBrowserObservation && seenToolSignatures.has(toolSignature);
+        // The interaction tools (click/type/key/select) are never duplicate
+        // work either: each is a state MUTATION whose effect depends on the
+        // page's current state, so repeating one with identical arguments is a
+        // genuine distinct action, not a re-observation. Live bug (Pomodoro
+        // build, deepseek-v4-flash): a Start/Pause toggle is the same DOM ref
+        // clicked twice with opposite intent; the second click (Pause) matched
+        // the first click's signature, was deduplicated into a
+        // `{ duplicate: true }` placeholder, and never executed — the timer
+        // kept running and the model had to notice and retry. The loop
+        // detector (below) still catches a genuine repeated-action stall.
+        const dynamicBrowserCall = [
+          "browser_open", "browser_snapshot", "browser_console", "browser_screenshot",
+          "browser_click", "browser_type", "browser_key", "browser_select",
+        ].includes(tc.name);
+        const repeatedTool = !dynamicBrowserCall && seenToolSignatures.has(toolSignature);
         if (!repeatedTool) seenToolSignatures.add(toolSignature);
         const loopSignature = toolCallSignature(tc.name, tc.arguments);
-        const loop = loopSignaturesRecordedThisTurn.has(loopSignature)
+        // A dynamic browser OBSERVATION (snapshot/console/screenshot/reload)
+        // re-reads mutable page state; repeating one with identical arguments
+        // after each interaction is diligent verification, not a stall, so it
+        // must not feed the repeated-signature loop detector. Live bug
+        // (Pomodoro build, deepseek-v4-flash): a healthy verify flow
+        // (click Start → snapshot → click Pause → snapshot → snapshot → click
+        // Start → snapshot → click Reset → snapshot) put 4 identical
+        // `browser_snapshot {}` calls inside the 6-wide window and was killed
+        // with "loop_detected" at turn 16 despite every call succeeding and
+        // making real progress. These reads mutate nothing and are already
+        // treated as fresh, non-duplicate evidence by the dedup logic above;
+        // the loop detector must share that classification. Interaction tools
+        // (click/type/key/select) still feed the detector, so a genuinely
+        // stuck action still trips it, and the turn budget still bounds a task
+        // that only ever observes.
+        const loopExemptObservation = ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"].includes(tc.name);
+        const loop = (loopExemptObservation || loopSignaturesRecordedThisTurn.has(loopSignature))
           ? null
           : loopDetector.record(loopSignature);
         loopSignaturesRecordedThisTurn.add(loopSignature);
@@ -4423,6 +4746,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         let errorType = null;
         let errorMessage = null;
         let args: any = {};
+        let echoedAppliedWrite = false;
         let observationRecord: ObservationRecord | null = null;
 
         try {
@@ -4447,7 +4771,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
               attempts,
               retryLimit: 2,
               retryExhausted,
-              instruction: retryExhausted
+              // Truncation is not a formatting defect — the JSON was well-formed
+              // until the model ran out of output budget mid-emit, which the
+              // generic "emit valid JSON, no fences/commas" hint does not
+              // address. Live bug (Pomodoro build, deepseek-v4-flash): the very
+              // first create_file call — a large multi-line scaffold — was cut
+              // off mid-string, classified truncated_json, and the model was
+              // told to fix its formatting. It correctly self-diagnosed ("the
+              // first call got truncated") and fell back to raw `node -e` shell
+              // writes instead of create_file. Naming the real cause and
+              // prescribing a smaller payload lets it recover with the proper
+              // tool deterministically, without having to reverse-engineer the
+              // failure itself.
+              instruction: parsedArgs.reason === "truncated_json"
+                ? (retryExhausted
+                  ? "Your tool call was cut off before it finished — the arguments are incomplete, not malformed, almost always because the single call was too large for one response. Do not resend the same oversized call. Split the work into smaller pieces (for create_file, write one file per call, and if a single file is very large, write it in parts) so each call fits well within one response."
+                  : "Your previous tool call was cut off mid-output before its JSON finished — this is a size limit, not a formatting error, so do not just reformat and resend the same large call. Retry with a smaller payload: for create_file, write a single file per call (and split a very large file's content across successive create_file/append calls) so the whole call comfortably fits in one response.")
+                : retryExhausted
                 ? "Stop cleanly and report that the tool arguments could not be parsed. Do not resend the same malformed call."
                 : "Call the tool again with a single valid JSON object matching the schema. No prose, code fences, or trailing commas.",
             });
@@ -4470,11 +4810,34 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             event("tool.arguments_normalized", { toolName: tc.name, applied: normalized.applied });
           }
 
+          // A write tool that only echoes Morrow's own externalized history
+          // marker (`_morrowAppliedWrite`, body stripped) references a durable
+          // write that already happened. It is a no-op, not a missing-argument
+          // defect: validating it would reject it as "content missing", spend
+          // the correction budget, and can interrupt the whole task even though
+          // the file is already correct on disk. Skip validation for it here;
+          // the dispatch below turns it into an idempotent success — but only
+          // when the referenced file genuinely exists on disk. A model that has
+          // learned the placeholder shape can also emit it for a file it never
+          // actually wrote; treating that as "already applied" would silently
+          // skip a real, required creation. When the target is missing, fall
+          // through to normal validation so the model is told to resend with
+          // full content.
+          echoedAppliedWrite = false;
+          if (isEchoedAppliedWrite(tc.name, args)) {
+            const echoTargets = tc.name === "create_file"
+              ? (typeof args.path === "string" ? [args.path] : [])
+              : (Array.isArray(args.files) ? args.files.filter((f: unknown): f is string => typeof f === "string") : []);
+            echoedAppliedWrite = echoTargets.length > 0 && echoTargets.every((rel: string) => {
+              try { return existsSync(assertContainedRealPath(workspacePath, rel)); } catch { return false; }
+            });
+          }
+
           // Reject required-field, wrong-type, and absolute-path defects for the
           // workspace-mutating tools BEFORE dispatch, so a malformed patch/file
           // argument can never reach the applying_changes state. One bounded
           // correction is offered; the second failure stops cleanly.
-          if (toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
+          if (!echoedAppliedWrite && toolDef && (tc.name === "create_file" || tc.name === "propose_patch" || tc.name === "create_directory")) {
             // Curated load-bearing fields only — the executor tolerates omitted
             // explanation/files on propose_patch, so we don't newly reject them.
             const criticalRequired: Record<string, string[]> = {
@@ -4490,8 +4853,55 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
               argumentProblemsRecordedThisTurn.add(attemptKey);
               malformedArgAttemptsByTool.set(attemptKey, attempts);
               const retryExhausted = attempts >= 2;
-              if (attempts > 2 && !argumentBudgetSpent) argumentBudgetSpent = { toolName: tc.name, attempts };
+              // The model is echoing Morrow's own history placeholder
+              // (_morrowAppliedWrite) for a file that does not exist on disk —
+              // it copied/mimicked the compacted shape from its context instead
+              // of writing real content. Left with a generic "fix the content"
+              // hint it re-copies the placeholder. Name the confusion explicitly
+              // so it can break the loop.
+              const echoedPlaceholderNoContent =
+                tc.name === "create_file"
+                && problem.field === "content"
+                && problem.problem === "missing"
+                && !!(args as any)._morrowAppliedWrite;
+              // The same mimicry surfaces through propose_patch too (marker
+              // present, patch missing). Any write tool echoing our compaction
+              // marker without a real body is the self-inflicted-confusion
+              // pattern, regardless of tool.
+              const echoedPlaceholderMissingBody =
+                !!(args as any)._morrowAppliedWrite
+                && problem.problem === "missing"
+                && ((tc.name === "create_file" && problem.field === "content")
+                  || (tc.name === "propose_patch" && problem.field === "patch"));
+              // Do NOT let this self-inflicted confusion spend the whole-task
+              // correction budget: killing the entire run because the model
+              // mimicked our compaction marker is the worst outcome. The
+              // per-action loop detector still bounds an endless repeat, and a
+              // real build failure later will surface any genuinely missing
+              // file, giving the model a focused chance to write it for real.
+              if (attempts > 2 && !argumentBudgetSpent && !echoedPlaceholderMissingBody) argumentBudgetSpent = { toolName: tc.name, attempts };
               event("tool.arguments_rejected", { toolName: tc.name, reason: `invalid_argument:${problem.problem}`, attempts, retryExhausted });
+              // A model that cannot emit a valid `patch` for a file after the
+              // correction budget is spent should not be told to give up: it has
+              // demonstrably succeeded with create_file (full-file overwrite,
+              // which auto-converts to an edit when the target exists). Redirect
+              // it there rather than letting the whole task interrupt. The redirect
+              // target is the file the patch was meant to change.
+              const echoTargetPath = typeof args.path === "string" && args.path.trim() ? args.path : "the file";
+              const patchRedirect =
+                tc.name === "propose_patch" && problem.field === "patch" && retryExhausted;
+              const redirectTarget = patchRedirect
+                ? (proposePatchTarget(args, tc.arguments) ?? "the target file")
+                : null;
+              if (patchRedirect) {
+                event("tool.strategy_switch", {
+                  tool: "propose_patch",
+                  from: "patch",
+                  to: "create_file",
+                  path: redirectTarget,
+                  reason: "patch_arguments_unrecoverable",
+                });
+              }
               throw new AgentToolFailure(`Invalid argument "${problem.field}" for ${tc.name}`, {
                 error: `Invalid argument "${problem.field}" for ${tc.name}`,
                 kind: "invalid_tool_arguments",
@@ -4503,7 +4913,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
                 attempts,
                 retryLimit: 2,
                 retryExhausted,
-                instruction: retryExhausted
+                instruction: echoedPlaceholderNoContent
+                  ? `"_morrowAppliedWrite" is a Morrow history marker, NOT file content, and ${echoTargetPath} does not exist yet. Do not copy that marker. Call create_file for ${echoTargetPath} with "content" set to the complete source of the file, and omit "_morrowAppliedWrite" entirely.`
+                  : patchRedirect
+                  ? `Stop trying to patch ${redirectTarget}. Emit a single create_file call that writes the entire intended contents of ${redirectTarget} (the file already exists, so this overwrites it). Do not send another propose_patch for it.`
+                  : retryExhausted
                   ? "Stop cleanly and report the invalid argument. Do not resend the same invalid call."
                   // Naming only the broken field matters most when the rest of
                   // the call is expensive: create_file carries the entire file
@@ -4776,7 +5190,23 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             const purpose = args.purpose || "";
 
             if (typeof exec !== "string") {
-              throw new Error("Missing required argument: executable");
+              // A run_command missing `executable` is a recoverable schema slip,
+              // not a failed verification. Observed live on deepseek-v4-flash: the
+              // model sent `args: ["-e", "<node http server>"]` but omitted
+              // `executable: "node"`, meaning the whole `node -e ...` verification
+              // never ran. Thrown as a bare Error it was unretryable AND — as the
+              // last verify-or-write call — became a `failed_final_verification`
+              // completion blocker that interrupted a fully-built, browser-verified
+              // app. Classify it like the sibling args-shape check below so the
+              // argument-correction budget hands the model a retry with a clear
+              // fix instead of discarding the finished work.
+              const detail = `Invalid argument: "executable" is required for run_command — the program to run (e.g. "node", "npm", "python"). Received args ${JSON.stringify(rawArgs ?? [])} with no executable.`;
+              throw new AgentToolFailure(detail, {
+                error: detail,
+                kind: "invalid_tool_arguments",
+                invalidField: "executable",
+                instruction: 'Resend run_command with "executable" set to the program name (for example "node") and "args" as the argument array (for example ["-e", "..."]).',
+              }, "invalid_tool_arguments");
             }
             // A model can violate the declared `args: string[]` schema (e.g. send
             // a single space-joined string instead of an array). Reject that with
@@ -4895,6 +5325,30 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
             });
               resultStr = await executeApprovedTool(tc.name, args, tc.id);
             }
+          } else if (echoedAppliedWrite) {
+            // The model copied one of Morrow's externalized history entries back
+            // as a fresh write. The referenced content is already durable on
+            // disk; re-applying is impossible (the body was stripped) and
+            // unnecessary. Report an idempotent success and nudge the model to
+            // send full content only if it actually wants to change the file.
+            const marker = (args as any)._morrowAppliedWrite ?? {};
+            const targetPath = typeof args.path === "string" && args.path.trim()
+              ? args.path
+              : proposePatchTarget(args, tc.arguments) ?? "the referenced file";
+            event("tool.strategy_switch", {
+              tool: tc.name,
+              from: "echoed_applied_write",
+              to: "noop",
+              path: targetPath,
+              reason: "already_applied",
+            });
+            resultStr = JSON.stringify({
+              status: "already_applied",
+              path: targetPath,
+              note: `${targetPath} was already written in an earlier step; no change was needed. To modify it, send create_file with the full new file content (not the _morrowAppliedWrite placeholder).`,
+              ...(typeof marker.contentSha256 === "string" ? { contentSha256: marker.contentSha256 } : {}),
+              ...(typeof marker.patchSha256 === "string" ? { patchSha256: marker.patchSha256 } : {}),
+            });
           } else if (tc.name === "propose_patch" || tc.name === "create_file") {
             // create_file is a thin, reliable front end over propose_patch: it
             // takes plain path + content and synthesizes a creation diff, then
@@ -5369,11 +5823,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           // Attribute workspace effects for progress fingerprinting. A patch can
           // span files and a command can write anything, so those fall back to a
           // bounded Git read instead of guessing.
-          if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
-          else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
-          if (WORKSPACE_WRITE_TOOLS.has(tc.name)) {
-            deliveryStarted = true;
-            progressEpoch.recordMutation(progressFingerprint);
+          // An echoed already-applied write mutated nothing this turn; the real
+          // write already recorded its delivery. Counting it again would let a
+          // no-op masquerade as fresh progress and reset the stagnation guard.
+          if (!echoedAppliedWrite) {
+            if (WORKSPACE_WRITE_TOOLS.has(tc.name) && typeof args.path === "string") touchedPaths.add(args.path);
+            else if (WORKSPACE_WRITE_TOOLS.has(tc.name) || tc.name === "run_command") unattributedWorkspaceWrite = true;
+            if (WORKSPACE_WRITE_TOOLS.has(tc.name)) {
+              deliveryStarted = true;
+              progressEpoch.recordMutation(progressFingerprint);
+            }
           }
         }
         let summary = isSuccess ? "completed" : "failed";
@@ -5441,32 +5900,62 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         // in this branch, so continuation cannot duplicate a side effect.
         if (emptyFinalResponseRetries < 3) {
           emptyFinalResponseRetries++;
-          // Raise the ceiling before retrying. Without this the next attempt
-          // has the exact same allowance the model just exhausted on hidden
-          // reasoning, so all three retries fail identically and the task is
-          // interrupted having learned nothing.
+          // Raise the ceiling exactly once. A route that was genuinely a
+          // little short on room (measured: deepseek-v4-flash-free needed
+          // 15,565 reasoning tokens before its first visible token on a
+          // single-file task) recovers on this first, larger attempt.
+          // Escalating further on top of that is not backed by evidence: a
+          // live productivity-dashboard run against deepseek-v4-flash spent
+          // 100% of an ever-doubling budget on hidden reasoning at every one
+          // of 4,096 / 8,192 / 16,384 / 32,768 tokens, with zero visible
+          // content or tool calls at any step (task 46ea7980, evidence in
+          // docs/evidence/flagship-runs.jsonl). Doubling a shared
+          // reasoning+output budget for a model that fills whatever room it
+          // is given just lets it reason longer, not converge — so only the
+          // first retry raises the ceiling; later retries hold it steady and
+          // rely on the `tool_choice: required` constraint below instead.
           const previousBudget = effectiveOutputBudget();
-          if (outputBudgetMultiplier < MAX_OUTPUT_BUDGET_MULTIPLIER) outputBudgetMultiplier *= 2;
+          if (emptyFinalResponseRetries === 1 && outputBudgetMultiplier < MAX_OUTPUT_BUDGET_MULTIPLIER) outputBudgetMultiplier *= 2;
+          // A reasoning-only, length-terminated turn means the provider spent
+          // its entire budget on hidden chain-of-thought and never reached a
+          // tool call or answer. A text nudge alone is unenforceable — the
+          // model can (and did) ignore it and reason just as long again.
+          // `tool_choice: required` is a real wire constraint on OpenAI-chat
+          // protocol providers (DeepSeek, OpenAI, OpenRouter, generic
+          // OpenAI-compatible gateways): the response is structurally
+          // required to include a tool call. But it is NOT available on a
+          // route with reasoning enabled — live evidence: DeepSeek rejects it
+          // outright ("Thinking mode does not support this tool_choice") for
+          // deepseek-v4-flash. The flag below is applied only where the next
+          // turn's resolved route has no reasoning surface (see
+          // `resolution.reasoning.control === "none"` at the request-building
+          // site); on a reasoning route this recovery falls back to the text
+          // nudge alone, same as before tool_choice existed.
+          forceNextTurnToolChoice = true;
+          const continuationPrompt = currentReasoningContent
+            ? "Your prior reasoning reached its token limit before emitting a tool call or answer. Stop reasoning about the overall design and call the single most useful next tool now — e.g. create_file for one concrete file. Do not try to finish planning every file before acting; write one file, then continue from there."
+            : lastVerificationFailure
+              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
+              : "Your prior response reached its output limit without a usable action or final answer. Call the next required tool now, or if work is complete, return a concise final result under 500 words.";
           chatMessages.push({
             role: "user",
-            content: lastVerificationFailure
-              ? `Your prior response ended before a usable action or answer. Do not repeat analysis. Fix the outstanding failure now (${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}), run required verification, then return a concise final result.`
-              : "Your prior response reached its output limit without a usable action or final answer. Do not repeat analysis. Call the next required tool now, or if work is complete, return a concise final result under 500 words.",
+            content: continuationPrompt,
           });
           event("task.progress_warning", {
             reason: "empty_provider_response",
-            message: `Provider returned no usable answer after tool completion; raising the output allowance to ${effectiveOutputBudget() ?? "provider default"} and requesting a concise continuation (${emptyFinalResponseRetries}/3).`,
+            message: `Provider returned no usable answer after tool completion; requesting a tool-call-required continuation where the route supports it (${emptyFinalResponseRetries}/3)${emptyFinalResponseRetries === 1 ? ` and raising the output allowance to ${effectiveOutputBudget() ?? "provider default"}` : " without raising the output allowance further"}.`,
             turns: turn,
             previousOutputBudgetTokens: previousBudget ?? null,
             outputBudgetTokens: effectiveOutputBudget() ?? null,
+            toolChoiceRequested: true,
           });
           continue;
         }
         const message = "Provider ended without a final answer after tool execution; the result remains incomplete.";
         if (await returnMissionWorkerOutcome("provider_recovery_required", message)) return;
-        failCurrentSegment("missing_final_answer");
-        transitionAgentState("interrupted", { reason: "missing_final_answer", message, turns: turn });
-        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_final_answer", message, turns: turn } });
+        failCurrentSegment(currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer");
+        transitionAgentState("interrupted", { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn });
+        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: currentReasoningContent ? "reasoning_only_exhausted" : "missing_final_answer", message, turns: turn } });
         convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
         if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
         return;
@@ -5509,7 +5998,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
         const currentTurnEstablishedCompletionEvidence = currentToolCalls.some((toolCall) => {
           const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
           if (persistedCall?.status !== "completed" || persistedCall.errorType) return false;
-          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || BROWSER_EVIDENCE_TOOLS.has(toolCall.name)) return true;
+          // browser_open is exploratory: the model wrote its narration BEFORE
+          // seeing whether the navigation actually revealed a healthy page.
+          // Live bug: a turn saying "Final check: reload the page to confirm
+          // clean route health" plus a browser_open call was accepted as the
+          // canonical final answer purely because a completed browser-evidence
+          // tool call was present in the same turn — the model never got to
+          // react to what the reload actually showed. Every other evidence
+          // tool (click, snapshot, console, screenshot) reports on state the
+          // model already observed before writing its narration, so only
+          // browser_open needs this exclusion.
+          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || (BROWSER_EVIDENCE_TOOLS.has(toolCall.name) && toolCall.name !== "browser_open")) return true;
           return currentTurnHasSuccessfulVerification && toolCall.name === "run_command";
         });
         const candidateCompletion = await evaluateCurrentTaskCompletion(
@@ -5525,6 +6024,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
           ? currentTurnHasSuccessfulVerification
           : currentTurnEstablishedCompletionEvidence;
         if (candidateCompletion.complete && candidateIsBoundToNewEvidence) {
+          // The work is durably done and verified, but candidateFinalText was
+          // written in the SAME turn as this turn's tool calls, so it can be
+          // forward-looking narration rather than a real conclusion. Shipping
+          // that as the report is the "silent completion" defect (live:
+          // Pomodoro build ended with "Final check: … grab final console
+          // evidence" as its entire final message). When the text reads as
+          // mid-work narration, spend exactly one tool-free turn asking the
+          // model to write a genuine summary, then let that clean text-only
+          // turn complete through the main boundary below. Guarded so it can
+          // fire at most once — if the model still won't conclude, we fall
+          // through and complete with whatever text we have rather than loop.
+          if (!finalSummaryTurnRequested && isForwardLookingNarration(candidateFinalText)) {
+            finalSummaryTurnRequested = true;
+            const directive = "The implementation is complete and all required verification has already passed — every check you were about to run is unnecessary. Reply now with a short, concrete final summary for the user: what you built and what you verified. Do NOT call any tools; respond with prose only.";
+            event("task.progress_warning", { reason: "final_summary_requested", message: directive, turn: absoluteTurn });
+            chatMessages.push({ role: "user", content: `MORROW FINAL SUMMARY (turn ${absoluteTurn}): ${directive}` });
+            noProgressTurns = 0;
+            continue;
+          }
           for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
           completeWithCanonicalAnswer(candidateFinalText, durableTurnKey);
           return;
@@ -5737,22 +6255,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
   await refreshRequirementEvaluations();
   if (await returnRequirementBlock()) return;
 
-  // Completion gate: the model stopped emitting tool calls (its "I'm done"
-  // signal), but the last workspace mutation or verification it ran failed and
-  // was never recovered. Reporting "completed" here would be dishonest — the
-  // required change or check did not actually pass. Stop cleanly with an
-  // incomplete status instead, so the CLI and /output show the truth.
-  if (completedWithoutMoreTools && lastVerificationFailure) {
-    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
-    if (await returnMissionWorkerOutcome("validation_required", message)) return;
-    failCurrentSegment("unverified_completion");
-    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
-  }
-
   // Final transition is atomic with canonical-answer creation. If the process
   // dies after the final provider turn was recorded but before this transaction,
   // the replayable-final-turn path above completes it without another request.
@@ -5766,7 +6268,25 @@ Morrow ships installed skills (reusable expert workflows). They ARE available �
     canonicalFinalText,
     recordedTurns.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
   );
-  if (!finalCompletionEvaluation.complete) {
+  const completionIsDurablySatisfied = finalCompletionEvaluation.complete;
+
+  // Completion gate: the model stopped emitting tool calls (its "I'm done"
+  // signal), but the last workspace mutation or verification it ran failed and
+  // was never recovered. Reporting "completed" here would be dishonest — the
+  // required change or check did not actually pass. Stop cleanly with an
+  // incomplete status instead, so the CLI and /output show the truth.
+  if (completedWithoutMoreTools && lastVerificationFailure && !completionIsDurablySatisfied) {
+    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
+    if (await returnMissionWorkerOutcome("validation_required", message)) return;
+    failCurrentSegment("unverified_completion");
+    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
+    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
+    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+    return;
+  }
+
+  if (!completionIsDurablySatisfied) {
     if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
   }
 

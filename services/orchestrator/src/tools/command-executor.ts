@@ -133,22 +133,34 @@ export interface SpawnResult {
 // eslint-disable-next-line no-control-regex
 export const SHELL_META_CHARS = /["&|<>^%()!\x00-\x1f]/;
 
+export interface RunProcessOptions {
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  abortSignal?: AbortSignal;
+  onChunk?: (data: { stdout?: string; stderr?: string }) => void;
+}
+
+/**
+ * How long a force-killed process may take to release its pipes before the
+ * caller is answered anyway. `close` fires once the tree is gone, which is the
+ * normal path; a process that survives `taskkill /F /T` (a wedged driver, a
+ * handle held by a crashed child) would otherwise leave this promise pending
+ * forever, and a verification gate awaiting it never returns. A caller that
+ * waited out its own timeout has already decided the command is over — from
+ * here, reporting the timeout is strictly better than hanging on it.
+ */
+const KILL_GRACE_MS = 5_000;
+
 export function runProcessSafe(
   executable: string,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-  options: {
-    timeoutMs?: number;
-    maxOutputBytes?: number;
-    abortSignal?: AbortSignal;
-    onChunk?: (data: { stdout?: string; stderr?: string }) => void;
-  } = {}
+  options: RunProcessOptions = {}
 ): Promise<SpawnResult> {
   return new Promise((resolveResult) => {
     const isWindows = process.platform === "win32";
     const filteredEnv = filterEnv(env);
-    const start = Date.now();
 
     // Never spawn if cancellation already happened (e.g. the task was cancelled
     // while the approval was pending).
@@ -199,123 +211,200 @@ export function runProcessSafe(
       spawnArgs = ["/c", resolvedPath, ...args];
     }
 
-    const child = spawn(spawnCmd, spawnArgs, {
-      cwd,
-      env: filteredEnv,
-      shell: false,
-      windowsHide: true, // every agent tool-command runs headless; a console must never flash on screen
-      // stdin defaults to an open, unconsumed pipe when unset — never closed,
-      // never a TTY. A tool that reads it (an interactive prompt, or a test
-      // runner deciding whether to enter watch mode) blocks on a pipe that
-      // will never receive data or EOF, which reads to the model — and the
-      // user — as the command having simply stopped. Explicitly closing it
-      // gives every well-behaved CLI immediate EOF, the standard non-TTY
-      // signal to run once and exit rather than wait for input.
-      stdio: ["ignore", "pipe", "pipe"],
-      ...(isWindows ? {} : { detached: true }), // process group for POSIX tree-kill
-    });
+    runSpawned(spawnCmd, spawnArgs, cwd, filteredEnv, options, resolveResult);
+  });
+}
 
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    const maxBytes = options.maxOutputBytes ?? 65536; // 64 KB default
-    let isTerminated = false;
-    let terminationReason: SpawnResult["terminationReason"] = "completed";
+/**
+ * The one way a shell command string is executed.
+ *
+ * Callers that need `pnpm test && pnpm build` rather than an argv array used to
+ * reach for a bare `spawn(shell, ...)`, and every hardening the agent's tool
+ * executor earned — an EOF stdin, `CI=true`, a filtered environment, a
+ * process-tree kill, normalized Windows exit codes — had to be rediscovered
+ * there or, in practice, was not. Mission verification ran on that second,
+ * weaker path: a `pnpm test` that entered watch mode consumed its whole timeout
+ * and reported `inconclusive`, and the `child.kill()` that ended it killed the
+ * `cmd.exe` wrapper while the real test process kept the port and the file
+ * locks. This function exists so there is exactly one answer.
+ */
+export function runShellCommandSafe(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: RunProcessOptions = {}
+): Promise<SpawnResult> {
+  return new Promise((resolveResult) => {
+    const isWindows = process.platform === "win32";
+    const filteredEnv = filterEnv(env);
 
-    const killTree = () => {
-      if (isTerminated) return;
-      isTerminated = true;
-
-      if (isWindows) {
-        // Structured, no-shell process-tree termination. Never interpolate the
-        // pid into a shell string.
-        let killed = false;
-        if (child.pid) {
-          const r = spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { shell: false, windowsHide: true });
-          killed = r.status === 0;
-        }
-        if (!killed) {
-          try { child.kill("SIGKILL"); } catch {}
-        }
-      } else {
-        try {
-          if (child.pid) process.kill(-child.pid, "SIGKILL");
-        } catch {
-          try { child.kill("SIGKILL"); } catch {}
-        }
-      }
-    };
-
-    let timeoutId: NodeJS.Timeout | undefined;
-    if (options.timeoutMs) {
-      timeoutId = setTimeout(() => {
-        terminationReason = "timeout";
-        killTree();
-      }, options.timeoutMs);
+    if (options.abortSignal?.aborted) {
+      return resolveResult({ exitCode: null, stdout: "", stderr: "", durationMs: 0, terminationReason: "cancelled" });
     }
 
-    const onAbort = () => {
-      terminationReason = "cancelled";
-      killTree();
-    };
+    const shell = isWindows ? (filteredEnv.COMSPEC || "cmd.exe") : "/bin/sh";
+    const args = isWindows ? ["/d", "/s", "/c", command] : ["-c", command];
+    // Windows only. Node escapes each argument with backslash-quote (`\"`),
+    // which is the C runtime convention and NOT the one cmd.exe parses — cmd
+    // sees the backslash as literal and loses the quoting. A verification
+    // command containing a quoted argument (`node -e "..."`, `grep "a b"`)
+    // therefore reached the shell mangled and failed for reasons that had
+    // nothing to do with the workspace. The command string is authored as a
+    // single shell line, so it must be handed over as one.
+    runSpawned(shell, args, cwd, filteredEnv, options, resolveResult, isWindows);
+  });
+}
 
-    if (options.abortSignal) {
-      options.abortSignal.addEventListener("abort", onAbort);
+/** Shared spawn/capture/terminate core. `env` is already filtered. */
+function runSpawned(
+  spawnCmd: string,
+  spawnArgs: string[],
+  cwd: string,
+  filteredEnv: NodeJS.ProcessEnv,
+  options: RunProcessOptions,
+  resolveResult: (result: SpawnResult) => void,
+  windowsVerbatimArguments = false
+): void {
+  const isWindows = process.platform === "win32";
+  const start = Date.now();
+
+  const child = spawn(spawnCmd, spawnArgs, {
+    cwd,
+    env: filteredEnv,
+    shell: false,
+    ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    windowsHide: true, // every agent tool-command runs headless; a console must never flash on screen
+    // stdin defaults to an open, unconsumed pipe when unset — never closed,
+    // never a TTY. A tool that reads it (an interactive prompt, or a test
+    // runner deciding whether to enter watch mode) blocks on a pipe that
+    // will never receive data or EOF, which reads to the model — and the
+    // user — as the command having simply stopped. Explicitly closing it
+    // gives every well-behaved CLI immediate EOF, the standard non-TTY
+    // signal to run once and exit rather than wait for input.
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(isWindows ? {} : { detached: true }), // process group for POSIX tree-kill
+  });
+
+  let stdoutBuffer = "";
+  let stderrBuffer = "";
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  const maxBytes = options.maxOutputBytes ?? 65536; // 64 KB default
+  let isTerminated = false;
+  let terminationReason: SpawnResult["terminationReason"] = "completed";
+
+  let timeoutId: NodeJS.Timeout | undefined;
+  let graceId: NodeJS.Timeout | undefined;
+  let settled = false;
+
+  // Every exit path funnels through here, so the caller is answered exactly
+  // once no matter which of close/error/grace wins the race.
+  const settle = (result: SpawnResult) => {
+    if (settled) return;
+    settled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    if (graceId) clearTimeout(graceId);
+    if (options.abortSignal) options.abortSignal.removeEventListener("abort", onAbort);
+    resolveResult(result);
+  };
+
+  const killTree = () => {
+    if (isTerminated) return;
+    isTerminated = true;
+
+    if (isWindows) {
+      // Structured, no-shell process-tree termination. Never interpolate the
+      // pid into a shell string.
+      let killed = false;
+      if (child.pid) {
+        const r = spawnSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { shell: false, windowsHide: true });
+        killed = r.status === 0;
+      }
+      if (!killed) {
+        try { child.kill("SIGKILL"); } catch {}
+      }
+    } else {
+      try {
+        if (child.pid) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try { child.kill("SIGKILL"); } catch {}
+      }
     }
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (stdoutBytes < maxBytes) {
-        const remaining = maxBytes - stdoutBytes;
-        const slice = chunk.slice(0, remaining);
-        const text = slice.toString("utf8");
-        stdoutBuffer += text;
-        stdoutBytes += slice.length;
-        if (options.onChunk) options.onChunk({ stdout: text });
-      }
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (stderrBytes < maxBytes) {
-        const remaining = maxBytes - stderrBytes;
-        const slice = chunk.slice(0, remaining);
-        const text = slice.toString("utf8");
-        stderrBuffer += text;
-        stderrBytes += slice.length;
-        if (options.onChunk) options.onChunk({ stderr: text });
-      }
-    });
-
-    child.on("error", (err) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (options.abortSignal) {
-        options.abortSignal.removeEventListener("abort", onAbort);
-      }
-      resolveResult({
+    // `close` normally follows within milliseconds. If it does not, the tree
+    // outlived a force-kill and no further waiting will help: answer with what
+    // was captured rather than leaving the caller pending forever.
+    graceId = setTimeout(() => {
+      settle({
         exitCode: null,
-        stdout: stdoutBuffer,
-        stderr: stderrBuffer,
-        durationMs: Date.now() - start,
-        terminationReason: "error",
-        error: err.message,
-      });
-    });
-
-    child.on("close", (code) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (options.abortSignal) {
-        options.abortSignal.removeEventListener("abort", onAbort);
-      }
-      resolveResult({
-        // Windows surfaces negative exit codes as large unsigned integers
-        // (0xFFFFFFC6 arrives as 4294963238). Normalize back to signed so
-        // failure messages, durable records, and gates read truthfully.
-        exitCode: typeof code === "number" && code > 0x7fffffff ? code - 0x100000000 : code,
         stdout: stdoutBuffer,
         stderr: stderrBuffer,
         durationMs: Date.now() - start,
         terminationReason,
       });
+    }, KILL_GRACE_MS);
+    graceId.unref?.();
+  };
+
+  function onAbort() {
+    terminationReason = "cancelled";
+    killTree();
+  }
+
+  if (options.timeoutMs) {
+    timeoutId = setTimeout(() => {
+      terminationReason = "timeout";
+      killTree();
+    }, options.timeoutMs);
+  }
+
+  if (options.abortSignal) {
+    options.abortSignal.addEventListener("abort", onAbort);
+  }
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    if (stdoutBytes < maxBytes) {
+      const remaining = maxBytes - stdoutBytes;
+      const slice = chunk.slice(0, remaining);
+      const text = slice.toString("utf8");
+      stdoutBuffer += text;
+      stdoutBytes += slice.length;
+      if (options.onChunk) options.onChunk({ stdout: text });
+    }
+  });
+
+  child.stderr.on("data", (chunk: Buffer) => {
+    if (stderrBytes < maxBytes) {
+      const remaining = maxBytes - stderrBytes;
+      const slice = chunk.slice(0, remaining);
+      const text = slice.toString("utf8");
+      stderrBuffer += text;
+      stderrBytes += slice.length;
+      if (options.onChunk) options.onChunk({ stderr: text });
+    }
+  });
+
+  child.on("error", (err) => {
+    settle({
+      exitCode: null,
+      stdout: stdoutBuffer,
+      stderr: stderrBuffer,
+      durationMs: Date.now() - start,
+      terminationReason: "error",
+      error: err.message,
+    });
+  });
+
+  child.on("close", (code) => {
+    settle({
+      // Windows surfaces negative exit codes as large unsigned integers
+      // (0xFFFFFFC6 arrives as 4294963238). Normalize back to signed so
+      // failure messages, durable records, and gates read truthfully.
+      exitCode: typeof code === "number" && code > 0x7fffffff ? code - 0x100000000 : code,
+      stdout: stdoutBuffer,
+      stderr: stderrBuffer,
+      durationMs: Date.now() - start,
+      terminationReason,
     });
   });
 }

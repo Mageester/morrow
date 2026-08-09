@@ -150,7 +150,14 @@ export const BUILT_IN_MODELS: BundledModelInfo[] = [
 
   // DeepSeek
   model("deepseek", "deepseek-v4-pro", "DeepSeek V4 Pro", { aliases: ["deepseek-pro"], contextWindow: 1000000, speed: "powerful", cost: "low" }),
-  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, speed: "fast", cost: "low" }),
+  // Declared `noReasoning()` until 2026-08-04: live traffic showed the wire
+  // stream emitting `delta.reasoning_content` chunks (task 46ea7980-3905-45ac-
+  // a0cf-48b0ec7e4c25 in morrow.db), i.e. this is a reasoning model in
+  // practice regardless of what the catalog said. The chat-completions
+  // endpoint gives no caller-tunable control over that reasoning (no
+  // `reasoning_effort` support), so `fixed` — same declaration as
+  // deepseek-reasoner below — is the honest capability, not a guess.
+  model("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash", { aliases: ["deepseek-flash"], contextWindow: 1000000, speed: "fast", cost: "low", reasoning: fixedReasoning() }),
   model("deepseek", "deepseek-chat", "DeepSeek Chat", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "balanced", cost: "low" }),
   // The reasoner always thinks; the depth is fixed by the provider, not caller-tunable.
   model("deepseek", "deepseek-reasoner", "DeepSeek Reasoner", { canonicalTarget: { providerId: "deepseek", modelId: "deepseek-v4-flash" }, lifecycle: "deprecated", speed: "powerful", cost: "low", reasoning: fixedReasoning() }),

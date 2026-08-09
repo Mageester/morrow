@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { MissionVerificationStrategy, MissionEvidenceStatus, MissionEvidenceType } from "@morrow/contracts";
 import type { BrowserController } from "../browser/types.js";
+import { filterEnv, runProcessSafe, runShellCommandSafe } from "../tools/command-executor.js";
 
 /**
  * Executes a criterion's verification strategy against a workspace and returns
@@ -19,6 +20,9 @@ export interface EvidenceOutcome {
 }
 
 const MAX_OUTPUT = 8000;
+
+/** A `git status` that has not answered in this long is stuck, not slow. */
+const GIT_STATUS_TIMEOUT_MS = 30_000;
 
 // Guard against destructive verification commands sneaking in from a model.
 const DANGEROUS = /\b(rm\s+-rf|rmdir\s+\/s|del\s+\/|format\s|mkfs|dd\s+if=|:\(\)\s*\{|shutdown|reboot|git\s+push\s+--force|git\s+reset\s+--hard\s+HEAD~|>\s*\/dev\/sd)/i;
@@ -382,7 +386,18 @@ function defaultStartService(command: string, cwd: string): Promise<ServiceHandl
   const isWin = process.platform === "win32";
   const shell = isWin ? "cmd.exe" : "/bin/sh";
   const args = isWin ? ["/d", "/s", "/c", command] : ["-c", command];
-  const child = spawn(shell, args, { cwd, windowsHide: true, ...(isWin ? {} : { detached: true }) });
+  const child = spawn(shell, args, {
+    cwd,
+    // Same environment policy as every other command Morrow runs: filtered,
+    // and marked non-interactive. A dev server that prompts on stdin would
+    // otherwise never become ready, and the gate would blame the app.
+    env: filterEnv(process.env),
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    // As in runShellCommandSafe: cmd.exe does not parse Node's backslash-quote
+    // escaping, so a start command with a quoted argument arrives mangled.
+    ...(isWin ? { windowsVerbatimArguments: true } : { detached: true }),
+  });
 
   let output = "";
   let exit: { code: number | null } | null = null;
@@ -431,21 +446,27 @@ function matchesScope(file: string, scope: string): boolean {
   return f === s || f.startsWith(s + "/");
 }
 
-function defaultExec(command: string, cwd: string, timeoutMs: number): Promise<{ exitCode: number; output: string; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    const isWin = process.platform === "win32";
-    const shell = isWin ? "cmd.exe" : "/bin/sh";
-    const args = isWin ? ["/d", "/s", "/c", command] : ["-c", command];
-    const child = spawn(shell, args, { cwd, windowsHide: true });
-    let output = "";
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
-    const onData = (buf: Buffer) => { if (output.length < MAX_OUTPUT) output += buf.toString("utf8"); };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
-    child.on("error", (err) => { clearTimeout(timer); resolve({ exitCode: 127, output: String(err), timedOut }); });
-    child.on("close", (code) => { clearTimeout(timer); resolve({ exitCode: code ?? 1, output: output.slice(0, MAX_OUTPUT), timedOut }); });
-  });
+/**
+ * Verification commands run on the same hardened boundary as the agent's own
+ * tool commands — not a second, weaker copy of it.
+ *
+ * The copy this replaced left stdin an open pipe and passed the orchestrator's
+ * whole environment through, so a `pnpm test` that saw no `CI` entered watch
+ * mode and burned its entire timeout; the criterion then read `inconclusive`
+ * and the mission could never prove itself. Its `child.kill()` compounded that
+ * by killing only the `cmd.exe` wrapper, orphaning the real test process along
+ * with the ports and file locks it held, which broke the *next* run too.
+ */
+async function defaultExec(command: string, cwd: string, timeoutMs: number): Promise<{ exitCode: number; output: string; timedOut: boolean }> {
+  const result = await runShellCommandSafe(command, cwd, process.env, { timeoutMs, maxOutputBytes: MAX_OUTPUT });
+  if (result.terminationReason === "error") {
+    return { exitCode: 127, output: (result.error ?? "command could not be started").slice(0, MAX_OUTPUT), timedOut: false };
+  }
+  return {
+    exitCode: result.exitCode ?? 1,
+    output: `${result.stdout}${result.stderr}`.slice(0, MAX_OUTPUT),
+    timedOut: result.terminationReason === "timeout",
+  };
 }
 
 async function defaultHttpProbe(url: string): Promise<{ status: number; ok: boolean; error?: string }> {
@@ -460,15 +481,18 @@ async function defaultHttpProbe(url: string): Promise<{ status: number; ok: bool
   }
 }
 
-function defaultGitChangedFiles(cwd: string): Promise<string[]> {
-  return new Promise((resolve) => {
-    const child = spawn("git", ["status", "--porcelain"], { cwd, windowsHide: true });
-    let out = "";
-    child.stdout?.on("data", (b: Buffer) => { out += b.toString("utf8"); });
-    child.on("error", () => resolve([]));
-    child.on("close", () => {
-      const files = out.split("\n").map((l) => l.slice(3).trim()).filter(Boolean).map((f) => f.replace(/^"|"$/g, ""));
-      resolve(files);
-    });
-  });
+/**
+ * Bounded on purpose. This had no timeout at all, and `git status` is not
+ * guaranteed to return promptly — a held `index.lock`, a credential helper, or
+ * a stalled network filesystem is enough to make it sit forever, and a diff
+ * gate awaiting it would hang the whole mission with nothing to show for it.
+ */
+async function defaultGitChangedFiles(cwd: string): Promise<string[]> {
+  const result = await runProcessSafe("git", ["status", "--porcelain"], cwd, process.env, { timeoutMs: GIT_STATUS_TIMEOUT_MS });
+  if (result.terminationReason !== "completed" || result.exitCode !== 0) return [];
+  return result.stdout
+    .split("\n")
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean)
+    .map((f) => f.replace(/^"|"$/g, ""));
 }

@@ -218,6 +218,75 @@ describe("agent browser and vision bridge", () => {
     expect(after?.resultJson).not.toContain('"duplicate":true');
   });
 
+  it("executes a repeated click on the same ref instead of deduplicating a toggle button's second press", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): a Start/Pause control is
+    // the SAME DOM ref clicked twice with opposite intent. The second click
+    // (Pause) had an identical tool-call signature to the first (Start), so it
+    // was deduplicated into a { duplicate: true } placeholder and never reached
+    // the browser — the timer kept running and the model had to notice and
+    // retry. A click is a state mutation, not a re-observation: repeating it is
+    // a genuine distinct action and must always execute.
+    class ToggleBrowser extends FakeBrowser {
+      // Faithfully model the toggle: the button's accessible name flips on
+      // each press, exactly like the live Start/Pause control.
+      override async snapshot(): Promise<PageSnapshot> {
+        const name = this.clicks % 2 === 0 ? "Start" : "Pause";
+        return { url: "http://127.0.0.1:4173/", title: "Pomodoro", viewport: this.viewport, refs: [{ ref: "e1", role: "button", name }], text: "Timer", injectionFindings: 0 };
+      }
+    }
+    const browser = new ToggleBrowser();
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", toolCalls: [
+        { ...tool("open", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!, index: 0 },
+        { ...tool("start", "browser_click", { ref: "e1" }).toolCalls[0]!, index: 1 },
+        { ...tool("pause", "browser_click", { ref: "e1" }).toolCalls[0]!, index: 2 },
+      ] }, done],
+      [{ type: "text", text: "Started then paused the timer." }, done],
+    ]);
+
+    await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => browser, maxTurns: 4 });
+
+    // Ground truth: the controller received BOTH presses.
+    expect(browser.clicks).toBe(2);
+    const pause = conversationsRepository(db).listToolCallsForTask("t").find((item) => item.id === "pause");
+    expect(pause?.status).toBe("completed");
+    expect(pause?.resultJson).not.toContain('"duplicate":true');
+  });
+
+  it("does not flag a diligent repeated-snapshot verification flow as a loop", async () => {
+    // Live bug (Pomodoro build, deepseek-v4-flash): a healthy end-to-end verify
+    // flow snapshotted the page after every interaction — click Start, snapshot,
+    // click Pause, snapshot, snapshot, click Start, snapshot, click Reset,
+    // snapshot. Four identical browser_snapshot {} calls landed inside the loop
+    // detector's 6-wide window and the task was killed with loop_detected at
+    // turn 16 even though every call succeeded and made real progress. A dynamic
+    // browser observation re-reads mutable page state and must not feed the
+    // repeated-signature detector; only interaction/other tools should.
+    const browser = new FakeBrowser();
+    const snap = (id: string) => tool(id, "browser_snapshot", {}).toolCalls[0]!;
+    // A long run of identical browser_snapshot {} calls, one per turn, exactly
+    // like the live verify flow. Without the exemption the detector fires a
+    // loop_recovery and then, unrecovered, a loop_detected interrupt.
+    const provider = new ScriptedProvider([
+      [tool("open", "browser_open", { url: "http://127.0.0.1:4173/" }), done],
+      [{ type: "tool_call", toolCalls: [snap("s1")] }, done],
+      [{ type: "tool_call", toolCalls: [snap("s2")] }, done],
+      [{ type: "tool_call", toolCalls: [snap("s3")] }, done],
+      [{ type: "tool_call", toolCalls: [snap("s4")] }, done],
+      [{ type: "tool_call", toolCalls: [snap("s5")] }, done],
+      [{ type: "tool_call", toolCalls: [snap("s6")] }, done],
+      [{ type: "text", text: "Inspected the page across several observations; everything renders and responds correctly." }, done],
+    ]);
+
+    await executeAgentChatTask({ db, taskId: "t", provider, browserFactory: () => browser, maxTurns: 12 });
+
+    const events = taskRecordsRepository(db).listEvents("t");
+    // No loop machinery of any kind should engage for pure re-observation.
+    expect(events.some((e) => e.type === "task.progress_warning" && (e.payload as any)?.reason === "loop_recovery")).toBe(false);
+    expect(events.some((e) => e.type === "task.interrupted" && (e.payload as any)?.reason === "loop_detected")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
+  });
+
   it("does not let auto-approval authorize a purchase-like browser action", async () => {
     const browser = new FakeBrowser("Buy now");
     const provider = new ScriptedProvider([

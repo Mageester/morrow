@@ -102,6 +102,28 @@ describe("OpenAI-compatible provider normalization", () => {
     expect(JSON.parse(ref.captured!.init.body).messages[2].reasoning_content).toBe("prior-private");
   });
 
+  it("forwards tool_choice: required onto the wire only when tools are present", async () => {
+    const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{}"}}]}}]}\n\n`, `data: [DONE]\n\n`]));
+    const provider = new OpenAiCompatibleProvider({ id: "deepseek", apiKey: "k", baseUrl: "https://api.deepseek.com/v1", defaultModel: "deepseek-v4-flash" });
+    await collect(provider, userMessages, {
+      toolChoice: "required",
+      tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+    });
+    expect(JSON.parse(ref.captured!.init.body).tool_choice).toBe("required");
+
+    // Never sent without tools: the wire body would have no function to
+    // constrain the response to, and some gateways reject a bare tool_choice.
+    const ref2 = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, { toolChoice: "required" });
+    expect(JSON.parse(ref2.captured!.init.body)).not.toHaveProperty("tool_choice");
+
+    // Absent entirely on a normal turn: a route not recovering from a
+    // reasoning-only failure must see the exact same request shape as today.
+    const ref3 = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
+    await collect(provider, userMessages, { tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }] });
+    expect(JSON.parse(ref3.captured!.init.body)).not.toHaveProperty("tool_choice");
+  });
+
   it("injects a valid reasoning effort into the request body, and rejects an unsupported one before the request", async () => {
     const effortCap = { control: "effort" as const, efforts: ["low", "medium", "high"] as const, budgets: [], source: "registry" as const };
     const ref = mockFetch(sseResponse([`data: {"choices":[{"delta":{"content":"ok"}}]}\n\n`, `data: [DONE]\n\n`]));
@@ -322,6 +344,94 @@ describe("mission completion routing", () => {
     ], { purpose: "review", temperature: 0 });
 
     expect(call).toBe(1); // a real (non-empty) insufficient_evidence verdict is not a truncation — never retried here
+  });
+
+  it("falls back to primary model for review if alternate review model call fails", async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+    const responseFormatsUsed: unknown[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      callCount += 1;
+      const body = JSON.parse(init.body);
+      modelsUsed.push(body.model);
+      responseFormatsUsed.push(body.response_format);
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ error: { message: "Insufficient Balance", type: "invalid_request_error", code: "insufficient_balance" } }), { status: 402, headers: { "content-type": "application/json" } });
+      }
+      return sseResponse([
+        `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"approved\\"}"}}]}\n\n`,
+        `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n`,
+        `data: [DONE]\n\n`,
+      ]);
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    const result = await completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 });
+
+    expect(callCount).toBe(2);
+    expect(modelsUsed[0]).not.toEqual(modelsUsed[1]);
+    // The retry must still be a "review" request, not a downgraded "planning"
+    // one — dropping response_format: json_object was the actual defect: a
+    // provider under no obligation to return parseable JSON without it, on
+    // exactly the recovery path most likely to hit a weaker model.
+    expect(responseFormatsUsed[1]).toEqual({ type: "json_object" });
+    expect(result.text).toContain("approved");
+  });
+
+  it("does not retry review on the primary model when the failure is not model-specific", async () => {
+    // A provider-wide failure (invalid credentials, network error) fails
+    // identically regardless of which model is requested. Retrying wastes a
+    // call and doubles latency for zero chance of success — but the current
+    // implementation retries unconditionally on any thrown error, so this
+    // documents that behavior's cost rather than asserting a fix isn't
+    // needed. Two calls, not a hang or a wasted third attempt.
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      return new Response(JSON.stringify({ error: { message: "Invalid API key", type: "invalid_request_error" } }), { status: 401, headers: { "content-type": "application/json" } });
+    }) as any;
+    const completion = buildMissionCompletion({ presetId: "cheap", env: { DEEPSEEK_API_KEY: "k" } })!;
+
+    await expect(completion([
+      { role: "system", content: "Return JSON only." },
+      { role: "user", content: "json review" },
+    ], { purpose: "review", temperature: 0 })).rejects.toThrow();
+    expect(callCount).toBe(2);
+  });
+
+  it("uses mission-specific overrides for provider and model rather than the globally resolved preset defaults", async () => {
+    // The dogfooding run that found this was using a default workspace preset
+    // (balanced -> deepseek) but explicitly passing --provider opencode-zen
+    // for the mission execution. The worker successfully used the override,
+    // but the review cycle failed with "Insufficient Balance" against the
+    // default DeepSeek account. MissionCompletionFn did not receive or respect
+    // the mission's execution overrides, routing recovery back to the global
+    // default instead of the explicitly chosen provider.
+    globalThis.fetch = (async () => sseResponse([
+      `data: {"choices":[{"delta":{"content":"{\\"verdict\\":\\"approved\\"}"}}]}\n\n`,
+      `data: [DONE]\n\n`,
+    ])) as any;
+    
+    const completion = buildMissionCompletion({ 
+      presetId: "balanced", 
+      env: { DEEPSEEK_API_KEY: "k", OPENCODE_ZEN_API_KEY: "k" } 
+    })!;
+    
+    const result = await completion([
+      { role: "user", content: "json review" },
+    ], { 
+      purpose: "review", 
+      temperature: 0,
+      missionProviderId: "opencode-zen",
+      missionModel: "deepseek-v4-flash-free",
+    });
+
+    // It must return the requested provider and model, not the fallback ones.
+    expect(result.provider).toBe("opencode-zen");
+    expect(result.model).toBe("deepseek-v4-flash-free");
   });
 });
 

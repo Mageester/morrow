@@ -30,7 +30,16 @@ function describeTarget(args: unknown): string {
   for (const key of ["path", "file", "filePath", "target"]) {
     if (typeof a[key] === "string" && a[key]) return String(a[key]);
   }
-  if (typeof a.command === "string" && a.command) return String(a.command).slice(0, 120);
+  // run_command's real argument schema (services/orchestrator/src/tools/catalog.ts)
+  // is { executable, args, ... } — there is no single command-string field.
+  // Build one from the parts actually sent so different commands stop
+  // collapsing into the same "unknown:run_command" failure signature, which
+  // was corrupting loop detection: every run_command failure looked like a
+  // repeat of the same command regardless of what actually ran.
+  if (typeof a.executable === "string" && a.executable) {
+    const args = Array.isArray(a.args) ? a.args.filter((v): v is string => typeof v === "string") : [];
+    return [a.executable, ...args].join(" ").slice(0, 120);
+  }
   // propose_patch carries the diff; name the first patched file instead of the body.
   if (typeof a.patch === "string") {
     const m = /^[+-]{3} [ab]\/(\S+)/m.exec(String(a.patch));

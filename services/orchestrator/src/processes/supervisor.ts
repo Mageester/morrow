@@ -117,6 +117,14 @@ export class ProcessSupervisor {
       env: filteredEnv,
       shell: false,
       windowsHide: true,
+      // Pipe mode is unattended by definition: nobody is on the other end of
+      // stdin. Left unset it defaults to an open pipe that never delivers data
+      // or EOF, so a dev server that asks anything at startup ("Port 3000 is
+      // in use, use another?") waits on it forever — holding the port, never
+      // becoming reachable, and reading to every later check as an app that
+      // does not work. PTY mode is exempt below: a terminal session wants a
+      // real TTY.
+      stdio: ["ignore", "pipe", "pipe"],
       ...(isWindows ? {} : { detached: true }),
     });
 

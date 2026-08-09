@@ -288,4 +288,55 @@ describe("assertContainedRealPath (symlink-aware containment)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Found dogfooding: DeepSeek flash models frequently miscount the hunk
+   * header (`@@ -19,7 +19,9 @@`) relative to the lines they actually wrote,
+   * which used to hard-reject an otherwise perfectly applicable patch.
+   *
+   * Safe because the header's declared counts are never an independent
+   * source of truth downstream — `oldComparableLines`/`removeLines` are
+   * derived directly from the hunk body's `-`/` ` lines (the same lines this
+   * repair counts), never from `chunk.oldLines`/`newLines`. Repairing the
+   * header cannot change how many lines get removed or where content is
+   * matched; it only decides whether an arithmetic-only mistake in the
+   * header blocks an otherwise-correct patch.
+   */
+  it("repairs a hunk header that miscounts its own line count instead of rejecting the patch", () => {
+    const original = "line 1\nline 2\nline 3\nline 4\nline 5\n";
+    // Header claims 3 old / 3 new lines; the body actually carries 4 old
+    // (one context + one deletion... ) — declared counts intentionally wrong.
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -2,3 +2,3 @@",
+      " line 2",
+      "-line 3",
+      "+line three",
+      " line 4",
+      " line 5",
+    ].join("\n");
+
+    const patches = parseUnifiedDiff(diff);
+    expect(patches[0]!.chunks[0]).toMatchObject({ oldLines: 4, newLines: 4 });
+    const applied = applyUnifiedPatch(original, patches[0]!.chunks);
+    expect(applied).toBe("line 1\nline 2\nline three\nline 4\nline 5\n");
+  });
+
+  it("still rejects a patch whose body content does not match the file, even with a miscounted header", () => {
+    const original = "line 1\nline 2\nline mismatch\nline 4\nline 5\n";
+    const diff = [
+      "--- a/test.txt",
+      "+++ b/test.txt",
+      "@@ -2,3 +2,3 @@", // still wrong on purpose
+      " line 2",
+      "-line 3",
+      "+line three",
+      " line 4",
+      " line 5",
+    ].join("\n");
+
+    const patches = parseUnifiedDiff(diff);
+    expect(() => applyUnifiedPatch(original, patches[0]!.chunks)).toThrow(/Patch conflict/);
+  });
 });

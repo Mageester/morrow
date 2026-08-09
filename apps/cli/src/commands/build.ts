@@ -23,8 +23,9 @@
  *    autonomy the rest of Morrow uses, with the same hard denials, audit trail,
  *    and undo. `--no-yolo` steps back to approval-per-change.
  */
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { Context } from "../cli/context.js";
 import { EXIT, usageError } from "../cli/errors.js";
 import { flagBool, flagString } from "../cli/args.js";
@@ -64,6 +65,27 @@ export function directoryHasContents(path: string): boolean {
     // Unreadable is not the same as empty; refuse rather than assume.
     return true;
   }
+}
+
+/**
+ * The flags handed to the mission engine's own `Context`, scoped to the
+ * project `build` just created.
+ *
+ * `--in` selected the directory that became this project; carrying it forward
+ * makes `resolveProject` see both `--in` and `--project` and reject the
+ * context outright ("--in and --project both select a workspace"), which
+ * turned every `morrow build --in <dir>` into a dead end. `--in` did its job
+ * choosing the workspace — `--project` is now the authoritative selector for
+ * everything downstream, so `--in` is cleared here rather than carried along.
+ */
+export function buildContextFlags(
+  flags: Record<string, string | boolean>,
+  projectId: string,
+  autonomous: boolean,
+): Record<string, string | boolean> {
+  const next: Record<string, string | boolean> = { ...flags, project: projectId, ...(autonomous ? { yolo: true } : {}) };
+  delete next.in;
+  return next;
 }
 
 export async function buildCommand(ctx: Context, args: string[]): Promise<number> {
@@ -112,6 +134,15 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
     ctx.out.info(`Created ${target}`);
   }
 
+  // A build workspace must be a git repository so the autonomous mission runner
+  // and its reviewer can diff changes.
+  spawnSync("git", ["init", "--initial-branch=main"], { cwd: target, windowsHide: true });
+
+  const gitignorePath = join(target, ".gitignore");
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, "node_modules\n.DS_Store\n");
+  }
+
   const project = await api.createProject(name, target);
   ctx.out.success(`New project "${project.name}" — ${project.workspacePath}`);
 
@@ -122,7 +153,7 @@ export async function buildCommand(ctx: Context, args: string[]): Promise<number
     out: ctx.out,
     config: ctx.config,
     paths: ctx.paths,
-    flags: { ...ctx.flags, project: project.id, ...(autonomous ? { yolo: true } : {}) },
+    flags: buildContextFlags(ctx.flags, project.id, autonomous),
   });
 
   ctx.out.info(
