@@ -22,6 +22,8 @@ import type { FlagshipBuildRun, FlagshipFailureReason } from "./flagship-build.j
 export const FLAGSHIP_GATE_MIN_RUNS = 10;
 export const FLAGSHIP_GATE_MIN_PASSES = 9;
 export const FLAGSHIP_GATE_MIN_PROVIDERS = 2;
+export const FLAGSHIP_SCENARIO_IDS = ["flagship-build-v1", "flagship-web-v1"] as const;
+export type FlagshipScenarioId = typeof FLAGSHIP_SCENARIO_IDS[number];
 
 /** Live-provider suites must be explicitly enabled; configured credentials are not consent. */
 export function isLiveProviderOptedIn(env: Readonly<Record<string, string | undefined>>, flagName: string): boolean {
@@ -39,6 +41,7 @@ export interface FlagshipProviderResult {
 }
 
 export interface FlagshipGateResult {
+  scenarioId: FlagshipScenarioId;
   passed: boolean;
   /** Plain-language statement of what is missing, or of what was proven. */
   summary: string;
@@ -51,6 +54,7 @@ export interface FlagshipGateOptions {
   minRuns?: number;
   minPasses?: number;
   minProviders?: number;
+  scenarioId: FlagshipScenarioId;
 }
 
 /**
@@ -58,13 +62,20 @@ export interface FlagshipGateOptions {
  * assumed to be in chronological order and only the last `minRuns` per
  * provider are scored.
  */
-export function evaluateFlagshipGate(runs: FlagshipBuildRun[], options: FlagshipGateOptions = {}): FlagshipGateResult {
+export function evaluateFlagshipGate(runs: FlagshipBuildRun[], options: FlagshipGateOptions): FlagshipGateResult {
+  const scenarioId = options?.scenarioId;
+  if (scenarioId === undefined) {
+    throw new Error("Flagship gate scenarioId is required and must be a registered scenario.");
+  }
+  if (!(FLAGSHIP_SCENARIO_IDS as readonly string[]).includes(scenarioId)) {
+    throw new Error(`Unsupported flagship scenarioId "${String(scenarioId)}". Registered scenarios: ${FLAGSHIP_SCENARIO_IDS.join(", ")}.`);
+  }
   const minRuns = options.minRuns ?? FLAGSHIP_GATE_MIN_RUNS;
   const minPasses = options.minPasses ?? FLAGSHIP_GATE_MIN_PASSES;
   const minProviders = options.minProviders ?? FLAGSHIP_GATE_MIN_PROVIDERS;
 
-  const otherScenarios = runs.filter((run) => run.scenarioId !== "flagship-build-v1").length;
-  const scenarioRuns = runs.filter((run) => run.scenarioId === "flagship-build-v1");
+  const otherScenarios = runs.filter((run) => run.scenarioId !== scenarioId).length;
+  const scenarioRuns = runs.filter((run) => run.scenarioId === scenarioId);
   const mockRuns = scenarioRuns.filter((run) => run.mode !== "real").length;
   const realRuns = scenarioRuns.filter((run) => run.mode === "real");
 
@@ -103,13 +114,13 @@ export function evaluateFlagshipGate(runs: FlagshipBuildRun[], options: Flagship
   const passed = qualified.length >= minProviders;
 
   const summary = passed
-    ? `Flagship workflow proven: ${qualified.map((p) => `${p.providerId} ${p.passes}/${p.runs}`).join(", ")}.`
+    ? `Flagship workflow ${scenarioId} proven: ${qualified.map((p) => `${p.providerId} ${p.passes}/${p.runs}`).join(", ")}.`
     : providers.length === 0
-      ? `Flagship workflow unproven: no real-provider runs recorded that are scorable (${mockRuns} mock run(s) and ${harnessErrorRuns} harness/environment failure(s) present, which do not count).`
-      : `Flagship workflow unproven: ${qualified.length}/${minProviders} providers at ${minPasses}/${minRuns}. ` +
+      ? `Flagship workflow ${scenarioId} unproven: no real-provider runs recorded that are scorable (${mockRuns} mock run(s) and ${harnessErrorRuns} harness/environment failure(s) present, which do not count).`
+      : `Flagship workflow ${scenarioId} unproven: ${qualified.length}/${minProviders} providers at ${minPasses}/${minRuns}. ` +
         providers.map((p) => `${p.providerId} ${p.passes}/${p.runs}${p.runs < minRuns ? ` (needs ${minRuns - p.runs} more run(s))` : ""}`).join("; ") + ".";
 
-  return { passed, summary, providers, excluded: { mockRuns, otherScenarios, harnessErrorRuns } };
+  return { scenarioId, passed, summary, providers, excluded: { mockRuns, otherScenarios, harnessErrorRuns } };
 }
 
 /** Read a JSONL run log. A missing log reads as no runs, not as an error —

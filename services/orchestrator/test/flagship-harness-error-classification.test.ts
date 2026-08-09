@@ -41,7 +41,7 @@ function runs(count: number, overrides: Partial<FlagshipBuildRun>): FlagshipBuil
 
 describe("environment failures are not evidence about the model", () => {
   it("does not score harness errors against a provider", () => {
-    const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason: "harness_error" }));
+    const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason: "harness_error" }), { scenarioId: "flagship-build-v1" });
     expect(gate.passed).toBe(false);
     // The provider has no scorable runs at all, rather than a 0/10 record.
     expect(gate.providers).toEqual([]);
@@ -49,7 +49,7 @@ describe("environment failures are not evidence about the model", () => {
   });
 
   it("says plainly that nothing scorable was recorded", () => {
-    const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason: "harness_error" }));
+    const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason: "harness_error" }), { scenarioId: "flagship-build-v1" });
     expect(gate.summary).toContain("no real-provider runs recorded that are scorable");
     expect(gate.summary).toContain("10 harness/environment failure(s)");
   });
@@ -60,7 +60,7 @@ describe("environment failures are not evidence about the model", () => {
       ...runs(10, { passed: true, failureReason: null }),
       ...runs(10, { passed: true, failureReason: null, providerId: "opencode-zen" }),
     ];
-    const gate = evaluateFlagshipGate(log);
+    const gate = evaluateFlagshipGate(log, { scenarioId: "flagship-build-v1" });
     expect(gate.passed).toBe(true);
     expect(gate.providers.find((p) => p.providerId === "deepseek")).toMatchObject({ runs: 10, passes: 10 });
   });
@@ -73,7 +73,7 @@ describe("environment failures are not evidence about the model", () => {
       "task_not_completed",
     ];
     for (const failureReason of realFailures) {
-      const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason }));
+      const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason }), { scenarioId: "flagship-build-v1" });
       expect(gate.passed).toBe(false);
       expect(gate.providers[0]).toMatchObject({ providerId: "deepseek", runs: 10, passes: 0 });
       expect(gate.excluded.harnessErrorRuns).toBe(0);
@@ -87,7 +87,7 @@ describe("environment failures are not evidence about the model", () => {
       ...runs(1, { passed: false, failureReason: "harness_error" }),
       ...runs(10, { passed: true, failureReason: null, providerId: "opencode-zen" }),
     ];
-    const gate = evaluateFlagshipGate(log);
+    const gate = evaluateFlagshipGate(log, { scenarioId: "flagship-build-v1" });
     expect(gate.passed).toBe(false);
     expect(gate.providers.find((p) => p.providerId === "deepseek")).toMatchObject({ passes: 0, qualified: false });
   });

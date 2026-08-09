@@ -214,7 +214,7 @@ describe("live: the flagship workflow against real models", () => {
     // Never fabricate: the run log is the deliverable, and every run reached it.
     expect(recorded.length).toBeGreaterThan(0);
 
-    const gate = evaluateFlagshipGate(readFlagshipLog(logPath));
+    const gate = evaluateFlagshipGate(readFlagshipLog(logPath), { scenarioId: "flagship-build-v1" });
     // eslint-disable-next-line no-console
     console.log(`[live] flagship gate: ${gate.summary}`);
 

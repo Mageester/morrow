@@ -1,6 +1,6 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FLAGSHIP_BUILD_PROMPT,
@@ -10,6 +10,7 @@ import {
 import {
   appendFlagshipRun,
   evaluateFlagshipGate,
+  FLAGSHIP_SCENARIO_IDS,
   readFlagshipLog,
   FLAGSHIP_GATE_MIN_PASSES,
   FLAGSHIP_GATE_MIN_RUNS,
@@ -29,6 +30,8 @@ import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions, ToolCall } 
  */
 
 const roots: string[] = [];
+const FLAGSHIP_EVIDENCE_LOG = resolve(import.meta.dirname, "../../../docs/evidence/flagship-runs.jsonl");
+
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), "morrow-flagship-"));
   roots.push(root);
@@ -210,8 +213,10 @@ describe("flagship artifact verification", () => {
 });
 
 describe("flagship release gate", () => {
-  const run = (providerId: string, passed: boolean, mode: "real" | "mock" = "real"): FlagshipBuildRun => ({
-    scenarioId: "flagship-build-v1",
+  type TestScenarioId = "flagship-build-v1" | "flagship-web-v1";
+
+  const run = (providerId: string, passed: boolean, mode: "real" | "mock" = "real", scenarioId: TestScenarioId = "flagship-build-v1"): FlagshipBuildRun => ({
+    scenarioId: scenarioId as FlagshipBuildRun["scenarioId"],
     runId: `${providerId}-${Math.random().toString(36).slice(2)}`,
     startedAt: new Date().toISOString(),
     mode,
@@ -228,29 +233,73 @@ describe("flagship release gate", () => {
     artifactSha256: null,
   });
 
-  const window = (providerId: string, passes: number, total = FLAGSHIP_GATE_MIN_RUNS) =>
-    Array.from({ length: total }, (_, i) => run(providerId, i < passes));
+  const window = (providerId: string, passes: number, total = FLAGSHIP_GATE_MIN_RUNS, scenarioId: TestScenarioId = "flagship-build-v1") =>
+    Array.from({ length: total }, (_, i) => run(providerId, i < passes, "real", scenarioId));
 
   it("passes only when two providers each clear 9/10", () => {
     const result = evaluateFlagshipGate([
       ...window("anthropic", FLAGSHIP_GATE_MIN_PASSES),
       ...window("gemini", FLAGSHIP_GATE_MIN_RUNS),
-    ]);
+    ], { scenarioId: "flagship-build-v1" });
     expect(result.passed).toBe(true);
     expect(result.summary).toContain("proven");
+  });
+
+  it("requires an explicit registered scenario id", () => {
+    expect(() => evaluateFlagshipGate([], undefined as never)).toThrow(/scenarioId is required/i);
+    expect(() => evaluateFlagshipGate([], { scenarioId: "flagship-unsupported-v1" as never })).toThrow(/unsupported.*scenarioId/i);
+  });
+
+  it("registers every scenario id found in the append-only evidence log", () => {
+    const scenarioIds = readFileSync(FLAGSHIP_EVIDENCE_LOG, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      .map((line) => (JSON.parse(line) as { scenarioId?: unknown }).scenarioId)
+      .filter((scenarioId): scenarioId is string => typeof scenarioId === "string");
+    const registered = new Set<string>(FLAGSHIP_SCENARIO_IDS);
+    const undeclared = [...new Set(scenarioIds)].filter((scenarioId) => !registered.has(scenarioId));
+
+    expect(undeclared).toEqual([]);
+  });
+
+  it("scores supported scenarios independently and keeps the build gate isolated", () => {
+    const webRuns = [
+      ...window("anthropic", FLAGSHIP_GATE_MIN_RUNS, FLAGSHIP_GATE_MIN_RUNS, "flagship-web-v1"),
+      ...window("gemini", FLAGSHIP_GATE_MIN_RUNS, FLAGSHIP_GATE_MIN_RUNS, "flagship-web-v1"),
+    ];
+
+    const webGate = evaluateFlagshipGate(webRuns, { scenarioId: "flagship-web-v1" });
+    expect(webGate.passed).toBe(true);
+    expect(webGate.scenarioId).toBe("flagship-web-v1");
+    expect(webGate.summary).toContain("flagship-web-v1");
+    expect(webGate.excluded.otherScenarios).toBe(0);
+
+    const defaultBuildGate = evaluateFlagshipGate(webRuns, { scenarioId: "flagship-build-v1" });
+    expect(defaultBuildGate.passed).toBe(false);
+    expect(defaultBuildGate.providers).toHaveLength(0);
+    expect(defaultBuildGate.excluded.otherScenarios).toBe(webRuns.length);
+
+    const mixedWebGate = evaluateFlagshipGate([
+      ...window("anthropic", 0),
+      ...window("gemini", 0),
+      ...webRuns,
+    ], { scenarioId: "flagship-web-v1" });
+    expect(mixedWebGate.passed).toBe(true);
+    expect(mixedWebGate.excluded.otherScenarios).toBe(FLAGSHIP_GATE_MIN_RUNS * 2);
   });
 
   it("fails when only one provider clears the bar", () => {
     const result = evaluateFlagshipGate([
       ...window("anthropic", FLAGSHIP_GATE_MIN_RUNS),
       ...window("gemini", 5),
-    ]);
+    ], { scenarioId: "flagship-build-v1" });
     expect(result.passed).toBe(false);
     expect(result.providers.find((p) => p.providerId === "gemini")?.qualified).toBe(false);
   });
 
   it("fails on too few runs rather than extrapolating from a short streak", () => {
-    const result = evaluateFlagshipGate([...window("anthropic", 3, 3), ...window("gemini", 3, 3)]);
+    const result = evaluateFlagshipGate([...window("anthropic", 3, 3), ...window("gemini", 3, 3)], { scenarioId: "flagship-build-v1" });
     expect(result.passed).toBe(false);
     expect(result.summary).toContain("needs 7 more run(s)");
   });
@@ -260,7 +309,7 @@ describe("flagship release gate", () => {
       ...window("anthropic", FLAGSHIP_GATE_MIN_RUNS),
       ...window("anthropic", 2),
       ...window("gemini", FLAGSHIP_GATE_MIN_RUNS),
-    ]);
+    ], { scenarioId: "flagship-build-v1" });
     expect(result.passed).toBe(false);
     expect(result.providers.find((p) => p.providerId === "anthropic")?.passes).toBe(2);
   });
@@ -269,7 +318,7 @@ describe("flagship release gate", () => {
     const result = evaluateFlagshipGate([
       ...window("anthropic", FLAGSHIP_GATE_MIN_RUNS).map((r) => ({ ...r, mode: "mock" as const })),
       ...window("gemini", FLAGSHIP_GATE_MIN_RUNS).map((r) => ({ ...r, mode: "mock" as const })),
-    ]);
+    ], { scenarioId: "flagship-build-v1" });
     expect(result.passed).toBe(false);
     expect(result.excluded.mockRuns).toBe(FLAGSHIP_GATE_MIN_RUNS * 2);
     expect(result.summary).toContain("no real-provider runs");
@@ -278,7 +327,7 @@ describe("flagship release gate", () => {
   it("reports the failure reasons behind a short window, not just the count", () => {
     const runs = window("anthropic", 8);
     runs[9] = { ...runs[9]!, failureReason: "task_not_completed" };
-    const result = evaluateFlagshipGate(runs);
+    const result = evaluateFlagshipGate(runs, { scenarioId: "flagship-build-v1" });
     expect(result.providers[0]!.failureReasons).toEqual(["contract_violated", "task_not_completed"]);
   });
 
