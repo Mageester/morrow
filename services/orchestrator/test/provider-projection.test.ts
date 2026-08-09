@@ -126,6 +126,40 @@ describe("durable provider projection", () => {
     });
   });
 
+  it("projects applied-write markers as non-executable history", () => {
+    const messages = providerProjectionModule.buildProviderProjection({
+      prefixMessages: [{ role: "user", content: "mission" }],
+      turns: [{
+        turnKey: "turn-1",
+        assistantText: "Files created.",
+        toolCalls: [
+          { id: "write", name: "create_file", arguments: JSON.stringify({ path: "src/app.ts", content: "export {};" }) },
+          { id: "read", name: "read_file", arguments: JSON.stringify({ path: "src/app.ts" }) },
+        ],
+      }],
+      toolResults: [
+        { id: "write", toolName: "create_file", result: JSON.stringify({ created: true }), status: "completed" },
+        { id: "read", toolName: "read_file", result: "export {};", status: "completed" },
+      ],
+      normalizeToolArguments: (name, args) => name === "create_file"
+        ? JSON.stringify({
+          path: "src/app.ts",
+          _morrowAppliedWrite: { kind: "create_file", contentBytes: 10, contentSha256: "abc" },
+          truncatedForContext: true,
+        })
+        : args,
+    });
+
+    const serialized = JSON.stringify(messages);
+    const calls = messages.flatMap((message) => message.toolCalls ?? []);
+    expect(calls.map((call) => call.id)).toEqual(["read"]);
+    expect(messages.filter((message) => message.role === "tool").map((message) => message.toolCallId)).toEqual(["read"]);
+    expect(serialized).not.toContain("_morrowAppliedWrite");
+    expect(serialized).not.toContain('"created":true');
+    expect(serialized).toContain("create_file completed for src/app.ts");
+    expect(serialized).toContain("historical record, not a tool request");
+  });
+
   it("compacts from the structured checkpoint when the complete envelope crosses the threshold", () => {
     const result = projectProviderRequest({
       checkpoint: snapshot,

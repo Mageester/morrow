@@ -176,6 +176,7 @@ describe("flagship web scenario", () => {
       "server.mjs",
       "acceptance check.test.mjs",
       "flagship web verification",
+      "literal `--` separator",
       "background",
       "before listening",
       "foreground",

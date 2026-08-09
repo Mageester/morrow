@@ -26,6 +26,10 @@ When a user explicitly requires a task-owned background process to be stopped be
 
 Mentioning stdin is not enough to exercise the supervisor's closed-stdin behavior. The flagship web contract must state and behaviorally verify the ordering: no listen URL before EOF, a listen URL after EOF, and continued service until explicit termination. Treating EOF as shutdown is a different valid design, but it does not test the boundary this scenario owns.
 
+### 2026-08-09 - Compacted writes are history, not executable calls
+
+Completed `create_file` and `propose_patch` arguments may be compacted after their effects are durable, but the compacted `_morrowAppliedWrite` representation must never remain in an assistant tool-call slot. `buildProviderProjection`, the shared reconstruction boundary used by agent execution and the server endpoint, converts those markers and their observations into a non-executable historical record. Failed writes retain their original arguments so the provider can repair them.
+
 ## Reliability lessons
 
 - A passing deterministic suite does not prove a boundary has survived a real provider and real process lifecycle.
@@ -33,7 +37,4 @@ Mentioning stdin is not enough to exercise the supervisor's closed-stdin behavio
 - Avoid duplicated status facts when an append-only or changelog record already exists; link to the durable source.
 - Do not gain green tests by relaxing assertions, extending sleeps, raising timeouts, or skipping coverage.
 - A completion directive that says no more tools are needed is itself a boundary decision; it must account for unresolved resource-lifecycle obligations, not only artifact and verification evidence.
-
-## Deferred issue
-
-`buildProviderProjection` still needs a durable fix so `_morrowAppliedWrite` is not converted into a re-emittable `create_file` or `propose_patch` call. This is outside the flagship-web-v1 deliverable unless it directly blocks the new scenario.
+- Context compaction must preserve the distinction between historical effects and executable model output; a schema-shaped placeholder in a tool-call position is still an instruction by example.

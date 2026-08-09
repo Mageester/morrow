@@ -8,7 +8,7 @@
 
 **Current evidence:** Treat [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` and [docs/evidence/flagship-runs.jsonl](../docs/evidence/flagship-runs.jsonl) as the durable campaign record. Do not copy run counts, streak outcomes, or landed-fix lists here.
 
-**Known gap:** The current real-provider scenario is a small single-file CLI build. It does not exercise development-server startup, browser verification, or mission verification. Recent deterministic fixes in those boundaries therefore lack real-run coverage. A separate open defect remains in `buildProviderProjection`: `_morrowAppliedWrite` can be projected as a re-emittable write tool call.
+**Current state:** The web scenario now reaches the real command, supervisor, browser, Git, and evidence-runner boundaries. Serialized live runs are actively exposing cross-boundary defects before a streak can be claimed.
 
 ## Acceptance criteria
 
@@ -47,6 +47,6 @@
 
 ## Blockers and next action
 
-No current blocker. The first live web run exposed a completion-contract defect, now fixed at the owning boundary. Its rerun truthfully interrupted instead of false-completing, then exposed an earlier scenario-contract defect: stdin EOF ordering was not specified, so the generated server treated EOF as shutdown. The prompt and hidden checker now require and behaviorally prove EOF-before-listen semantics. Focused regressions, the full orchestrator suite, repository typecheck, and build are green.
+No current blocker. The latest live run reached the required quoted foreground test and failed because its generated runner treated pnpm's forwarded literal `--` as the verification label. The retained trace also proved that completed-write compaction markers were projected back as executable write calls, including content-less failures. The scenario now specifies separator handling, and `buildProviderProjection` converts applied-write markers into non-executable historical records for both projection consumers. Focused regressions, the full orchestrator suite, repository check/typecheck, and production build are green.
 
-Next: commit the corrected scenario lifecycle contract and append-only evidence, then run one DeepSeek `flagship-web-v1` task. Stop immediately on any failure before another attempt.
+Next: finish deterministic verification, commit the owning-boundary regressions and append-only evidence, then rerun one DeepSeek `flagship-web-v1` task. Stop immediately on any failure before another attempt.

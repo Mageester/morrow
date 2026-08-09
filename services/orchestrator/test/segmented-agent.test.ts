@@ -359,7 +359,11 @@ describe("durable agent segments", () => {
       expect(taskRepository(db).getTaskById("t")?.status).toBe("completed");
       expect(requests).toHaveLength(1);
       expect(requests[0]!.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual(["PHASE_ONE"]);
-      expect(requests[0]!.filter((message) => message.role === "tool")).toHaveLength(1);
+      expect(requests[0]!.flatMap((message) => message.toolCalls ?? [])).toHaveLength(0);
+      expect(requests[0]!.filter((message) => message.role === "tool")).toHaveLength(0);
+      expect(requests[0]!.find((message) => message.content.startsWith("Morrow durable write record."))?.content)
+        .toContain("create_file completed for result.txt");
+      expect(JSON.stringify(requests[0])).not.toContain("_morrowAppliedWrite");
       expect(convs.listToolCallsForMessage("a")).toHaveLength(1);
       expect(continuity.listProviderTurns("t")).toHaveLength(2);
       expect(continuity.getCanonicalAnswer("t")?.content).toBe("RESTARTED_FINAL");

@@ -38,10 +38,29 @@ export interface DurableToolObservation {
 
 const CHECKPOINT_PREFIX = "Morrow durable execution checkpoint.";
 const COMPACTED_BATCH_PREFIX = "Morrow compacted the latest completed execution batch";
+const APPLIED_WRITE_PREFIX = "Morrow durable write record.";
+
+function appliedWriteRecord(toolName: string, argumentsJson: string): string | undefined {
+  if (toolName !== "create_file" && toolName !== "propose_patch") return undefined;
+  try {
+    const args = JSON.parse(argumentsJson) as Record<string, unknown>;
+    if (!args._morrowAppliedWrite) return undefined;
+    const target = typeof args.path === "string"
+      ? args.path
+      : Array.isArray(args.files)
+        ? args.files.filter((value): value is string => typeof value === "string").join(", ")
+        : "workspace files";
+    return `${toolName} completed for ${target}; content remains in the workspace. This is a historical record, not a tool request.`;
+  } catch {
+    return undefined;
+  }
+}
 
 function isGeneratedProjectionMessage(message: ChatMessage): boolean {
   return message.role === "system"
-    && (message.content.startsWith(CHECKPOINT_PREFIX) || message.content.startsWith(COMPACTED_BATCH_PREFIX));
+    && (message.content.startsWith(CHECKPOINT_PREFIX)
+      || message.content.startsWith(COMPACTED_BATCH_PREFIX)
+      || message.content.startsWith(APPLIED_WRITE_PREFIX));
 }
 
 /**
@@ -60,32 +79,38 @@ export function buildProviderProjection(input: {
   const results = new Map(input.toolResults.map((result) => [result.id, result]));
   const projectedResults = new Set<string>();
   for (const turn of input.turns) {
+    const appliedWrites: Array<{ id: string; record: string }> = [];
+    const toolCalls = turn.toolCalls.flatMap((call) => {
+      const observation = results.get(call.id);
+      const normalizedArguments = observation?.status === "failed"
+        ? call.arguments
+        : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments;
+      const record = appliedWriteRecord(call.name, normalizedArguments);
+      if (record) {
+        appliedWrites.push({ id: call.id, record });
+        return [];
+      }
+      return [{
+        id: call.id,
+        type: "function" as const,
+        function: {
+          name: call.name,
+          // Failed write calls need their original body on the next turn
+          // so provider can repair one bad field. Compact only calls whose
+          // effect completed durably.
+          arguments: redactJsonText(normalizedArguments) ?? redactSecrets(normalizedArguments),
+        },
+      }];
+    });
     messages.push({
       role: "assistant",
       content: redactSecrets(turn.assistantText),
-      ...(turn.toolCalls.length > 0 ? {
-      toolCalls: turn.toolCalls.map((call) => {
-          const observation = results.get(call.id);
-          const normalizedArguments = observation?.status === "failed"
-            ? call.arguments
-            : input.normalizeToolArguments?.(call.name, call.arguments) ?? call.arguments;
-          return {
-            id: call.id,
-            type: "function" as const,
-            function: {
-              name: call.name,
-              // Failed write calls need their original body on the next turn
-              // so provider can repair one bad field. Compact only calls whose
-              // effect completed durably.
-              arguments: redactJsonText(normalizedArguments) ?? redactSecrets(normalizedArguments),
-            },
-          };
-        }),
-      } : {}),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(turn.providerContinuation ? { providerContinuation: redactSecretsDeep(turn.providerContinuation) } : {}),
       ...(turn.providerContinuationRouteFingerprint ? { providerContinuationRouteFingerprint: turn.providerContinuationRouteFingerprint } : {}),
     });
     for (const call of turn.toolCalls) {
+      if (appliedWrites.some((write) => write.id === call.id)) continue;
       if (projectedResults.has(call.id)) continue;
       const result = results.get(call.id);
       if (!result) continue;
@@ -95,6 +120,12 @@ export function buildProviderProjection(input: {
         name: result.toolName,
         toolCallId: result.id,
         content: redactJsonText(input.normalizeToolResult?.(result.toolName, result.result) ?? result.result) ?? redactSecrets(result.result),
+      });
+    }
+    if (appliedWrites.length > 0) {
+      messages.push({
+        role: "system",
+        content: redactSecrets(`${APPLIED_WRITE_PREFIX}\n${appliedWrites.map((write) => `- ${write.record}`).join("\n")}`),
       });
     }
   }

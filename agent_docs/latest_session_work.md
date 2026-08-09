@@ -20,10 +20,14 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - Added a completion-contract lifecycle blocker scoped to explicit cleanup language and task-owned running processes, plus pure-contract and full-agent regressions. Revalidated the full orchestrator suite, repository typecheck, and build.
 - The immediate rerun no longer false-completed, but exposed an underspecified scenario lifecycle: DeepSeek used stdin EOF as server shutdown, so the fixed supervisor closed it immediately. The task spent its remaining turns repairing the generated server and was truthfully interrupted by stagnation.
 - Updated the visible contract to require EOF before listen and continued service afterward. Added a harness-owned behavioral check that rejects listen-before-EOF and EOF-as-shutdown servers, and required the quoted test command to complete in foreground with exit code zero.
+- The next serialized run reached the quoted foreground test but failed before server startup because the generated runner treated pnpm's forwarded literal `--` as the verification label. The retained task trace recorded 83 tool calls and a truthful stagnation interruption; no process or mission runtime was created.
+- The same trace proved the previously deferred projection defect was active: five `_morrowAppliedWrite` markers were replayed as executable writes, including two content-less failures. `buildProviderProjection` is the single implementation used by both agent execution and the server reconstruction endpoint; it now projects completed-write markers only as non-executable historical records while preserving ordinary and failed calls.
+- Added red-first deterministic coverage for both projection behavior and the visible separator contract. The focused provider-projection, tool-argument, web-scenario, and restart suites pass.
+- Revalidated the complete orchestrator suite (175 files, 1,890 tests), repository check/typecheck, and production build after the corrections.
 
 ## In progress
 
-- Commit the corrected scenario lifecycle contract and run one DeepSeek web scenario.
+- Commit the verified projection and separator corrections with the append-only failure evidence.
 
 ## Pending
 
@@ -33,4 +37,4 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md`. Commit the verified lifecycle fix, then run one explicit DeepSeek web scenario with `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts.
+Read `agent_docs/project_progress.md`. After deterministic verification and commit, run one explicit DeepSeek web scenario with `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts.

@@ -21,7 +21,7 @@ export const FLAGSHIP_WEB_PROMPT = [
   "Required package scripts:",
   "  start: node server.mjs --port 0",
   '  test: node scripts/test-runner.mjs "tests/acceptance check.test.mjs"',
-  "The test runner is watch-capable: without CI=true it stays open; with CI=true it runs once. It must require the quoted argument `flagship web verification`.",
+  "The test runner is watch-capable: without CI=true it stays open; with CI=true it runs once. It must ignore pnpm's forwarded literal `--` separator and then require the quoted argument `flagship web verification`.",
   "",
   'Run the test in foreground as: pnpm test -- "flagship web verification". The harness supplies CI=true, so this invocation exits after one run.',
   "Start the dev server using the command tool in background mode, inspect the printed loopback URL, verify the page, then stop the background process before finishing.",
