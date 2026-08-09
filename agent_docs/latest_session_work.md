@@ -30,12 +30,14 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 
 ## In progress
 
-- None. This session is ending after the verified harness predicate commit.
+- The baseline campaign integrated cached-observation and projection-compaction repairs, then added one bounded completion-contract cleanup recovery turn.
+- Two independently reviewed evaluator false negatives were corrected: package-manager start-command matching and undocumented/static DOM predicates. The web evaluator now uses rendered accessibility refs and visible text across its browser viewports.
+- The first post-repair real DeepSeek web canary passed with a completed task and artifact hash. The serialized streak package is now active.
 
 ## Pending
 
-- Reach ten consecutive DeepSeek passes before invoking OpenCode Zen.
+- Append nine more consecutive DeepSeek web passes before invoking OpenCode Zen.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md`. Resume with one explicit DeepSeek web scenario using `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts. The last recorded live failure is known to be a corrected harness false negative, so the streak has not yet been established.
+Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-deepseek-web-streak.md`. Run one explicit DeepSeek web scenario using `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; classify and commit the new row before authorizing another attempt.

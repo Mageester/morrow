@@ -1,35 +1,31 @@
 # Project Progress
 
-## Active package: RPR-0 - reliability baseline and DeepSeek canary
+## Active package: RPR-3 - serialized DeepSeek flagship-web streak
 
 **State:** active deployment package on `codex/flagship-web-v1`.
 
-**Goal:** Integrate the two runtime fixes demonstrated by recent failed chats, independently calibrate the committed `flagship-web-v1` evaluator, and record one correctly classified DeepSeek `deepseek-v4-flash` canary before beginning a streak.
+**Goal:** Extend the first verified `flagship-web-v1` DeepSeek pass into ten consecutive passes, one serialized run at a time, stopping on the first failure.
 
 **Current evidence:** Treat [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` and [docs/evidence/flagship-runs.jsonl](../docs/evidence/flagship-runs.jsonl) as the durable campaign record. Do not copy run counts, streak outcomes, or landed-fix lists here.
 
-**Current state:** FWV1-0 through FWV1-3 are complete. Four live web rows remain non-passing. The latest historical row predates the committed supervised-process predicate. Four uncommitted runtime/test files contain the cached-observation and compaction-headroom fixes from two subsequently diagnosed chat failures. Design `06eed01` and plan `8b7e169` govern the new campaign.
+**Current state:** The baseline, completion-cleanup, and semantic rendered-evaluator packages are complete. One real `deepseek-v4-flash` web canary now passes with a completed task and artifact hash. Design `06eed01` and the streak plan govern the next serialized runs.
 
 ## Acceptance criteria
 
-1. Preserve and independently review the four existing runtime/test changes.
-2. Retain red evidence for cached observations and compaction headroom; focused and adjacent deterministic gates pass.
-3. TypeScript, the full orchestrator suite, and `git diff --check` pass after the runtime fixes.
-4. An independent evaluator review proves direct and package-script supervised servers, inspection, browser use, cleanup, append ordering, and failure scoring.
-5. Exactly one live DeepSeek `deepseek-v4-flash` web canary runs after deterministic gates.
-6. The canary appends exactly one redacted evidence row before any assertion.
-7. A failure stops the campaign and becomes one bounded deterministic repair package; a pass advances to the streak plan.
-8. No OpenCode run begins in this package.
+1. Run nine additional DeepSeek web canaries one at a time.
+2. Require a clean preflight and append-only classification for every run.
+3. Commit each evidence row before starting the next run.
+4. Stop immediately on any failed, unsafe, corrupt, or unexplained result.
+5. Finish with ten consecutive passing DeepSeek web rows and a qualified DeepSeek scenario result.
+6. Do not invoke OpenCode Zen in this package.
 
 ## Ordered work packages
 
 | ID | Role | Package | Dependency | Verification gate | Status |
 | --- | --- | --- | --- | --- | --- |
-| RPR-0.1 | Luna Max implementer | Audit and verify cached-observation and compaction-headroom fixes | approved plan | focused, adjacent, typecheck, full orchestrator, diff check | in progress |
-| RPR-0.2 | Luna Max tester/reviewer | Independently review Task 1 and calibrate flagship evaluator | RPR-0.1 | diff review plus focused evaluator gate | pending |
-| RPR-0.3 | main | Integrate accepted fixes as a focused commit | RPR-0.2 | exact scope and clean staged diff | pending |
-| RPR-0.4 | main | Run one DeepSeek flagship-web canary and classify it | RPR-0.3 | exactly one append-only live row | pending |
-| RPR-0.5 | main | Reconcile package evidence and select pass/streak or failure/repair path | RPR-0.4 | design taxonomy and evidence consistency | pending |
+| RPR-3.1 | main | Run and classify each remaining DeepSeek web canary | passing baseline canary | one new append-only row per invocation | in progress |
+| RPR-3.2 | explorer companion | Investigate only if a run fails or classification is ambiguous | failed/ambiguous row | read-only retained evidence report | pending |
+| RPR-3.3 | main | Evaluate the final DeepSeek window and select OpenCode qualification package | ten consecutive passes | scenario-aware gate result | pending |
 
 ## Constraints and parallel boundaries
 
@@ -42,4 +38,4 @@
 
 ## Blockers and next action
 
-No current blocker. Dispatch RPR-0.1 to one Luna Max implementation task. Do not run a provider until the independent RPR-0.2 verdict and main integration commit are complete.
+No current blocker. Follow `docs/superpowers/plans/2026-08-09-deepseek-web-streak.md`: run one DeepSeek web canary, classify and commit its row, then decide whether the next serialized run is authorized.
