@@ -14,7 +14,7 @@ The live runner requires one explicit registered scenario selection and runs onl
 
 ## Scenario design
 
-The new prompt asks for a dependency-light multi-file frontend with a package start command and a small interactive behavior. Its required test script uses a watch-capable runner and contains a quoted path argument with a space. After implementation, the agent must start the development server through `run_command` with `background:true`, inspect it, and stop it. This reaches `ProcessSupervisor`; starting a child directly from acceptance code would not. The prompt states the public behavioral contract but never discloses checker source, selectors, expected implementation, or hidden assertions.
+The new prompt asks for a dependency-light multi-file frontend with a package start command and a small interactive behavior. Its required test script uses a watch-capable runner and contains a quoted path argument with a space. The generated server must wait for stdin EOF before listening, then remain serving until explicitly terminated; EOF is a start signal, not shutdown. After implementation, the agent must start that server through `run_command` with `background:true`, inspect it, and stop it. This reaches `ProcessSupervisor`; starting a child directly from acceptance code would not. The prompt states the public behavioral contract but never discloses checker source, selectors, expected implementation, or hidden assertions.
 
 After `executeAgentChatTask` returns, the harness—not the model—creates any checker assets under the run's private verification directory. The model workspace cannot write or inspect that directory through its scoped tools.
 
@@ -31,7 +31,7 @@ The verifier performs these independent checks:
 | Fixed path | Scenario step that exercises it |
 | --- | --- |
 | Verification command could hang in watch mode | The generated test script uses a watch-capable runner without a forced run flag; `runVerification(test)` leaves `exec` unset, so `CI=true` and closed stdin must make it terminate. |
-| Development server could stall on open stdin | During the agent task, `run_command background:true` starts the server through `ProcessSupervisor.start`; the harness asserts that tool path occurred. Hidden browser verification separately leaves `startService` unset and exercises evidence-runner's default service launcher. |
+| Development server could stall on open stdin | The server contract delays `listen` until stdin EOF and then remains alive. During the agent task, `run_command background:true` starts it through `ProcessSupervisor.start`, whose ignored stdin supplies EOF; the harness asserts that tool path occurred and later stopped. The hidden checker behaviorally proves no URL appears before EOF and one appears after EOF. Hidden browser verification separately leaves `startService` unset and exercises evidence-runner's default service launcher. |
 | Unbounded synchronous Git status could block the event loop | The hidden `diff` strategy runs in a harness-initialized Git workspace with `gitChangedFiles` unset and requires observable changed files. |
 | Windows backslash-quote escaping could be mangled by `cmd.exe` | The required test command contains a quoted file argument with a space and runs through evidence-runner's unset `exec` default. The hidden checker command also uses quoted absolute paths. |
 

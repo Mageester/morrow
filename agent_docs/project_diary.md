@@ -22,6 +22,10 @@ Default tests are deterministic and non-live. Real-provider streaks are deferred
 
 When a user explicitly requires a task-owned background process to be stopped before completion, the completion contract must treat any still-running process as a blocker. The fast path must not request a tool-free final summary while that blocker exists, because doing so forbids the required `stop_process` action. The rule is scoped to task-owned processes and explicit cleanup language so requests that intentionally leave a service running remain valid.
 
+### 2026-08-09 - Lifecycle fixtures must specify event ordering
+
+Mentioning stdin is not enough to exercise the supervisor's closed-stdin behavior. The flagship web contract must state and behaviorally verify the ordering: no listen URL before EOF, a listen URL after EOF, and continued service until explicit termination. Treating EOF as shutdown is a different valid design, but it does not test the boundary this scenario owns.
+
 ## Reliability lessons
 
 - A passing deterministic suite does not prove a boundary has survived a real provider and real process lifecycle.

@@ -47,6 +47,6 @@
 
 ## Blockers and next action
 
-No current blocker. The first live web run exposed a completion-contract defect: Morrow requested a tool-free summary while an explicitly required task-owned server was still running. The owning completion boundary now models that cleanup obligation; focused regressions, the full orchestrator suite, repository typecheck, and build are green.
+No current blocker. The first live web run exposed a completion-contract defect, now fixed at the owning boundary. Its rerun truthfully interrupted instead of false-completing, then exposed an earlier scenario-contract defect: stdin EOF ordering was not specified, so the generated server treated EOF as shutdown. The prompt and hidden checker now require and behaviorally prove EOF-before-listen semantics. Focused regressions, the full orchestrator suite, repository typecheck, and build are green.
 
-Next: commit the completion-boundary regression fix and append-only evidence, then rerun the same DeepSeek `flagship-web-v1` task definition once. Stop immediately on any failure before another attempt.
+Next: commit the corrected scenario lifecycle contract and append-only evidence, then run one DeepSeek `flagship-web-v1` task. Stop immediately on any failure before another attempt.

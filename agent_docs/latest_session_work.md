@@ -18,10 +18,12 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - Ran the first serialized DeepSeek web scenario and stopped on its first failure as required.
 - Traced the divergence to the completion fast path: after browser verification, Morrow emitted `final_summary_requested` and forbade tools while the task-owned server still required `stop_process`.
 - Added a completion-contract lifecycle blocker scoped to explicit cleanup language and task-owned running processes, plus pure-contract and full-agent regressions. Revalidated the full orchestrator suite, repository typecheck, and build.
+- The immediate rerun no longer false-completed, but exposed an underspecified scenario lifecycle: DeepSeek used stdin EOF as server shutdown, so the fixed supervisor closed it immediately. The task spent its remaining turns repairing the generated server and was truthfully interrupted by stagnation.
+- Updated the visible contract to require EOF before listen and continued service afterward. Added a harness-owned behavioral check that rejects listen-before-EOF and EOF-as-shutdown servers, and required the quoted test command to complete in foreground with exit code zero.
 
 ## In progress
 
-- Commit the completion-boundary fix and rerun one identical DeepSeek web scenario.
+- Commit the corrected scenario lifecycle contract and run one DeepSeek web scenario.
 
 ## Pending
 

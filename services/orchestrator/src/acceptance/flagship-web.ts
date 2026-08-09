@@ -16,13 +16,14 @@ export const FLAGSHIP_WEB_PROMPT = [
   "Create `package.json`, `index.html`, `styles.css`, `app.js`, `server.mjs`, `scripts/test-runner.mjs`, and `tests/acceptance check.test.mjs`.",
   "The page must be titled `Flagship Task Board`, show an initial `0 tasks` count, and provide an `Add sample task` button that appends `Verify Morrow` and updates the count.",
   "Include a responsive mobile media query in `styles.css` and serve the files from loopback only.",
+  "In `server.mjs`, wait for stdin to reach EOF before listening; after EOF, listen and keep serving until terminated. Do not treat stdin EOF as a shutdown signal.",
   "",
   "Required package scripts:",
   "  start: node server.mjs --port 0",
   '  test: node scripts/test-runner.mjs "tests/acceptance check.test.mjs"',
   "The test runner is watch-capable: without CI=true it stays open; with CI=true it runs once. It must require the quoted argument `flagship web verification`.",
   "",
-  'Run the test as: pnpm test -- "flagship web verification".',
+  'Run the test in foreground as: pnpm test -- "flagship web verification". The harness supplies CI=true, so this invocation exits after one run.',
   "Start the dev server using the command tool in background mode, inspect the printed loopback URL, verify the page, then stop the background process before finishing.",
 ].join("\n");
 
@@ -62,6 +63,8 @@ export async function initializeFlagshipWebWorkspace(workspace: string): Promise
 
 function hiddenCheckerSource(): string {
   return `import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 const workspace = resolve(process.argv[2]);
@@ -79,6 +82,41 @@ assert.match(read("server.mjs"), /127\\.0\\.0\\.1/, "hidden: loopback server");
 assert.match(read("server.mjs"), /process\\.stdin/, "hidden: server waits on stdin closure");
 assert.match(read("scripts/test-runner.mjs"), /process\\.env\\.CI/, "hidden: test runner is CI-aware");
 assert.match(read("scripts/test-runner.mjs"), /setInterval|watch/, "hidden: test runner has a watch-capable path");
+const child = spawn(process.execPath, ["server.mjs", "--port", "0"], {
+  cwd: workspace,
+  env: { ...process.env, CI: "true" },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+let output = "";
+child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+const waitForUrl = (timeoutMs) => new Promise((resolveWait) => {
+  const current = output.match(/http:\\/\\/127\\.0\\.0\\.1:\\d+\\//)?.[0];
+  if (current) { resolveWait(current); return; }
+  const onData = () => {
+    const url = output.match(/http:\\/\\/127\\.0\\.0\\.1:\\d+\\//)?.[0];
+    if (!url) return;
+    clearTimeout(timer);
+    child.stdout.off("data", onData);
+    child.stderr.off("data", onData);
+    resolveWait(url);
+  };
+  const timer = setTimeout(() => {
+    child.stdout.off("data", onData);
+    child.stderr.off("data", onData);
+    resolveWait(null);
+  }, timeoutMs);
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+});
+try {
+  assert.equal(await waitForUrl(250), null, "hidden: server listened before stdin EOF");
+  child.stdin.end();
+  assert.ok(await waitForUrl(5_000), "hidden: server did not listen after stdin EOF: " + output.slice(0, 300));
+} finally {
+  if (child.exitCode === null) child.kill();
+  if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise((resolveWait) => setTimeout(resolveWait, 2_000))]);
+}
 console.log("hidden flagship web checker passed");
 `;
 }
@@ -189,9 +227,11 @@ export async function runFlagshipWeb(input: FlagshipWebInput): Promise<FlagshipR
       };
       const testCall = toolCalls.find((call) => {
         const args = parseArgs(call);
+        let result: Record<string, unknown> = {};
+        try { result = JSON.parse(call.resultJson ?? "{}") as Record<string, unknown>; } catch { /* not a passing foreground command */ }
         return call.toolName === "run_command" && args.executable === "pnpm"
           && JSON.stringify(args.args) === JSON.stringify(["test", "--", "flagship web verification"])
-          && call.status === "completed";
+          && args.background !== true && call.status === "completed" && result.exitCode === 0;
       });
       if (!testCall) return { ok: false, reason: "contract_violated", detail: "agent did not complete the required quoted test command" };
 

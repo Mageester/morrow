@@ -114,7 +114,7 @@ class WebProvider implements AiProvider {
   }
 }
 
-function writeFixture(workspace: string, overrides: { index?: string; generatedTest?: string } = {}): void {
+function writeFixture(workspace: string, overrides: { index?: string; generatedTest?: string; server?: string } = {}): void {
   mkdirSync(join(workspace, "scripts"), { recursive: true });
   mkdirSync(join(workspace, "tests"), { recursive: true });
   writeFileSync(join(workspace, "package.json"), `${JSON.stringify({
@@ -128,7 +128,7 @@ function writeFixture(workspace: string, overrides: { index?: string; generatedT
   writeFileSync(join(workspace, "index.html"), overrides.index ?? INDEX);
   writeFileSync(join(workspace, "styles.css"), STYLES);
   writeFileSync(join(workspace, "app.js"), APP);
-  writeFileSync(join(workspace, "server.mjs"), SERVER);
+  writeFileSync(join(workspace, "server.mjs"), overrides.server ?? SERVER);
   writeFileSync(join(workspace, "scripts", "test-runner.mjs"), TEST_RUNNER);
   writeFileSync(join(workspace, "tests", "acceptance check.test.mjs"), overrides.generatedTest ?? GENERATED_TEST);
 }
@@ -177,6 +177,8 @@ describe("flagship web scenario", () => {
       "acceptance check.test.mjs",
       "flagship web verification",
       "background",
+      "before listening",
+      "foreground",
       "stop",
     ]) {
       expect(FLAGSHIP_WEB_PROMPT).toContain(clause);
@@ -212,6 +214,20 @@ describe("flagship web scenario", () => {
     writeFixture(workspace, {
       index: INDEX.replace("Flagship Task Board", "Everything is fine"),
       generatedTest: `console.log("all tests pass");`,
+    });
+
+    const result = await verifyFlagshipWebArtifact({ root, workspace, browser: () => browser() });
+
+    expect(result).toMatchObject({ ok: false, reason: "contract_violated" });
+    if (!result.ok) expect(result.detail).toContain("hidden");
+  }, 30_000);
+
+  it("rejects a server that treats stdin EOF as shutdown instead of its listen signal", async () => {
+    const root = scratch();
+    const workspace = join(root, "workspace");
+    await initializeFlagshipWebWorkspace(workspace);
+    writeFixture(workspace, {
+      server: `import { createServer } from "node:http";const server=createServer((_req,res)=>res.end("ok"));server.listen(0,"127.0.0.1",()=>console.log("http://127.0.0.1:"+server.address().port+"/"));process.stdin.resume();process.stdin.once("end",()=>server.close());`,
     });
 
     const result = await verifyFlagshipWebArtifact({ root, workspace, browser: () => browser() });
