@@ -32,7 +32,7 @@ const scenarios: TerminalScenario[] = [
   { kind: "normal_finalize", missionStatus: "completed", initialRuntimeState: "validating", expectedRuntimeState: "completed", taskStatus: "completed" },
   { kind: "user_cancel", missionStatus: "cancelled", initialRuntimeState: "executing", expectedRuntimeState: "cancelled", taskStatus: "running" },
   { kind: "controller_exhausted", missionStatus: "blocked", initialRuntimeState: "recovering", expectedRuntimeState: "blocked", taskStatus: "interrupted" },
-  { kind: "tool_loop_exhausted", missionStatus: "blocked", initialRuntimeState: "executing", expectedRuntimeState: "blocked", taskStatus: "running" },
+  { kind: "tool_loop_exhausted", missionStatus: "blocked", initialRuntimeState: "executing", expectedRuntimeState: "blocked", taskStatus: "interrupted" },
   { kind: "revision_limit", missionStatus: "blocked", initialRuntimeState: "recovering", expectedRuntimeState: "blocked", taskStatus: "interrupted" },
   { kind: "startup_reconciliation", missionStatus: "blocked", initialRuntimeState: "blocked", expectedRuntimeState: "blocked", taskStatus: "queued" },
 ];
@@ -263,24 +263,24 @@ async function runControllerExhaustion(fixture: Fixture): Promise<string> {
   return task.id;
 }
 
-async function runAgentTerminalPath(fixture: Fixture, kind: "tool_loop_exhausted" | "revision_limit"): Promise<string> {
-  const conversations = conversationsRepository(fixture.db);
-  conversations.createConversation({ id: "conversation-1", projectId: "project-1", title: "Terminal path", createdAt: now, updatedAt: now });
-  conversations.appendMessage({ id: "message-user", conversationId: "conversation-1", role: "user", content: "go", createdAt: now, updatedAt: now });
-  const task = createTask(fixture, { id: "task-1" });
-  conversations.appendMessage({ id: "message-assistant", conversationId: "conversation-1", role: "assistant", content: "", taskId: task.id, streamingState: "queued", createdAt: now, updatedAt: now });
-
+async function runMissionFailureTerminalPath(fixture: Fixture, kind: "tool_loop_exhausted" | "revision_limit"): Promise<string> {
+  const task = createTask(fixture, { id: "task-1", status: "interrupted" });
   if (kind === "revision_limit") {
     const cortex = new CortexService({ repo: intelligenceRepository(fixture.db), getWorkspacePath: () => process.cwd(), now: () => now });
+    fixture.service = new MissionService({
+      repo: fixture.repo,
+      getWorkspacePath: () => process.cwd(),
+      backupDir: process.cwd(),
+      cortex,
+      now: () => now,
+    });
     for (let revision = 0; revision < MAX_PLAN_REVISIONS; revision++) {
       cortex.recordPlanRevision(fixture.missionId, { trigger: "repeated_tool_failure", triggerDetail: "seeded conformance limit" });
     }
   }
-  const provider = new MockProvider({
-    chunks: [repeatedFailureTurn(), repeatedFailureTurn(), repeatedFailureTurn(), repeatedFailureTurn(), repeatedFailureTurn()],
-  });
-  await executeAgentChatTask({ db: fixture.db, taskId: task.id, provider });
-  expect(provider.requests.length).toBe(kind === "revision_limit" ? 3 : 4);
+  for (let attempt = 0; attempt < (kind === "revision_limit" ? 3 : 4); attempt++) {
+    fixture.service.recordFailure(fixture.missionId, "unknown_tool same", "repeated recoverable tool failure");
+  }
   const terminalKind = terminalKindFromEvents(fixture, task.id);
   expect(terminalKind).toBe(kind);
 
@@ -301,6 +301,30 @@ async function runAgentTerminalPath(fixture: Fixture, kind: "tool_loop_exhausted
       terminalOutcomeReason: `Worker entered ${kind}.`,
     }),
   );
+  return task.id;
+}
+
+async function runFreeExecutionObservationPath(fixture: Fixture): Promise<string> {
+  const conversations = conversationsRepository(fixture.db);
+  conversations.createConversation({ id: "conversation-1", projectId: "project-1", title: "Free execution path", createdAt: now, updatedAt: now });
+  conversations.appendMessage({ id: "message-user", conversationId: "conversation-1", role: "user", content: "go", createdAt: now, updatedAt: now });
+  const task = createTask(fixture, { id: "task-1" });
+  conversations.appendMessage({ id: "message-assistant", conversationId: "conversation-1", role: "assistant", content: "", taskId: task.id, streamingState: "queued", createdAt: now, updatedAt: now });
+  const provider = new MockProvider({
+    chunks: [
+      repeatedFailureTurn(),
+      repeatedFailureTurn(),
+      repeatedFailureTurn(),
+      repeatedFailureTurn(),
+      [{ type: "text", text: "The repeated tool failures were observed; the model owns the next action." }, { type: "done" }],
+    ],
+  });
+  await executeAgentChatTask({ db: fixture.db, taskId: task.id, provider, maxTurns: 8 });
+  expect(provider.requests.length).toBe(5);
+  expect(taskRepository(fixture.db).getTaskById(task.id)?.status).toBe("completed");
+  expect(fixture.service.get(fixture.missionId).status).toBe("running");
+  expect(terminalKindFromEvents(fixture, task.id)).toBeUndefined();
+  expect(fixture.repo.listEvents(fixture.missionId).some((event) => event.type === "mission.loop_detected")).toBe(true);
   return task.id;
 }
 
@@ -362,7 +386,7 @@ describe("terminal mission outcome conformance", () => {
         break;
       case "tool_loop_exhausted":
       case "revision_limit":
-        taskId = await runAgentTerminalPath(fixture, scenario.kind);
+        taskId = await runMissionFailureTerminalPath(fixture, scenario.kind);
         break;
       case "startup_reconciliation":
         taskId = await runStartupReconciliation(fixture);
@@ -381,6 +405,12 @@ describe("terminal mission outcome conformance", () => {
     expect(events.filter((event) => event.type === "mission.conclusion_started")).toHaveLength(1);
     expect(events.filter((event) => event.type === "mission.terminal_outcome_recorded")).toHaveLength(1);
     expect(settledMission.result?.status).toBe(settledMission.status);
+  });
+
+  it("keeps repeated recoverable agent failures as observations until the model finishes", async () => {
+    const fixture = createFixture();
+    databases.push(fixture.db);
+    await runFreeExecutionObservationPath(fixture);
   });
 
   it("covers controller exhaustion through the default linked-task composition", async () => {

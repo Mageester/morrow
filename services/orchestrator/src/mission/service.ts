@@ -464,7 +464,7 @@ export class MissionService {
   /** Record a failure, run loop detection against persisted history, and return
    *  the chosen escalating recovery plan. Escalates the mission to `blocked`
    *  when safe automated options are exhausted. */
-  recordFailure(missionId: string, operation: string, message: string, ctx: { taskId?: string; agentId?: string; escalation?: "auto" | "loop-only" } = {}): { failure: MissionFailure; plan: RecoveryPlan; terminalEntryKind?: TerminalEntryKind } {
+  recordFailure(missionId: string, operation: string, message: string, ctx: { taskId?: string; agentId?: string; escalation?: "auto" | "loop-only" | "observe-only" } = {}): { failure: MissionFailure; plan: RecoveryPlan; terminalEntryKind?: TerminalEntryKind } {
     const category = categorizeFailure(operation, message);
     const signature = normalizeSignature(category, operation);
     const priorCount = this.repo.countBySignature(missionId, signature);
@@ -473,7 +473,8 @@ export class MissionService {
     // "loop-only" (agent-reported tool failures): a single categorically-denied
     // probe must not block the whole mission — the agent routinely
     // self-corrects. Only genuine repetition escalates.
-    const escalate = plan.exhausted && (ctx.escalation !== "loop-only" || attempt >= 4);
+    const observeOnly = ctx.escalation === "observe-only";
+    const escalate = !observeOnly && plan.exhausted && (ctx.escalation !== "loop-only" || attempt >= 4);
 
     const failure = this.repo.addFailure({
       id: `fail-${randomUUID()}`, missionId, taskId: ctx.taskId ?? null, agentId: ctx.agentId ?? null,
@@ -493,7 +494,7 @@ export class MissionService {
       );
       // Exactly one plan revision per looping signature: reality disproved the
       // current approach, so the plan must change rather than retry forever.
-      if (attempt === 3) {
+      if (attempt === 3 && !observeOnly) {
         terminalEntryKind = this.revisePlan(missionId, {
           trigger: "repeated_tool_failure",
           triggerDetail: `${category} failed ${attempt}× (${signature.slice(0, 160)})`,

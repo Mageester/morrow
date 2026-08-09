@@ -179,7 +179,7 @@ describe("Journey G — self-hosting implementation integrity", () => {
     expect(events.some((e: any) => e.type === "task.interrupted")).toBe(false);
   });
 
-  it("never lets repeated narration become the canonical final answer or a false completion (proven root cause)", async () => {
+  it("preserves the model final and records incomplete delivery when narration repeats", async () => {
     seed(db, ws, REQUEST);
     // The model investigates but never once calls a write tool, then — after
     // several turns each pairing the *same* narration with a distinct
@@ -201,37 +201,37 @@ describe("Journey G — self-hosting implementation integrity", () => {
     await runner.waitFor("t");
 
     const task = taskRepository(db).getTaskById("t")!;
-    // Truthful interruption, never a false "completed".
-    expect(task.status).toBe("interrupted");
+    // The model's final output ends execution. Delivery evidence remains
+    // honestly incomplete in the canonical answer instead of interrupting the
+    // task or replacing the model's final with controller narration.
+    expect(task.status).toBe("completed");
 
-    // No canonical answer was ever recorded for the duplicated narration.
     const continuity = executionContinuityRepository(db);
-    expect(continuity.getCanonicalAnswer("t")).toBeNull();
-
-    // Plan steps cannot all be marked completed when delivery evidence is missing.
-    const steps = taskRecordsRepository(db).listPlanSteps("t");
-    expect(steps.some((step: any) => step.status !== "completed")).toBe(true);
+    expect(continuity.getCanonicalAnswer("t")).toMatchObject({
+      content: REPEATED_NARRATION,
+      evidenceJson: { completion: { complete: false } },
+    });
 
     // No Git diff was produced — an implementation task without one must not complete.
     const gitDiff = execFileSync("git", ["diff", "HEAD", "--", "big.js"], { cwd: ws }).toString();
     expect(gitDiff).toBe("");
     expect(changeSetsRepository(db).listByTask("t")).toHaveLength(0);
 
-    // Terminal status and durable task status agree; no completed event was ever emitted.
+    // Terminal status and durable task status agree; the soft observations are
+    // visible without turning into an interruption.
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
-    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(true);
+    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(false);
+    expect(events.some((e: any) => e.payload?.signal === "duplicate_narration")).toBe(true);
   });
 
-  it("does not complete an implementation request on a NOVEL final answer alone when no write tool ever ran (general missing-delivery protection)", async () => {
+  it("preserves a NOVEL final answer while recording missing delivery evidence", async () => {
     seed(db, ws, REQUEST);
     // Unlike the duplicate-narration case above, this final answer is
     // genuinely novel — it never repeats earlier text. The
-    // duplicatesPriorNarration gate alone would let this one through. The
-    // request still explicitly asks for a file change (REQUEST says "fix the
-    // bug ... and verify"), and the model still never once calls a write
-    // tool, so completion must be refused on missing delivery evidence, not
-    // on duplicated text.
+    // duplicatesPriorNarration does not apply here. The request still
+    // explicitly asks for a file change, and the model never calls a write
+    // tool, so the post-execution evidence must record missing delivery.
     const provider = new MockProvider({
       chunks: [
         [tool("r1", "read_file", { path: "big.js" }), done],
@@ -245,21 +245,22 @@ describe("Journey G — self-hosting implementation integrity", () => {
     await runner.waitFor("t");
 
     const task = taskRepository(db).getTaskById("t")!;
-    expect(task.status).toBe("interrupted");
+    expect(task.status).toBe("completed");
 
     const continuity = executionContinuityRepository(db);
-    expect(continuity.getCanonicalAnswer("t")).toBeNull();
-
-    const steps = taskRecordsRepository(db).listPlanSteps("t");
-    expect(steps.some((step: any) => step.status !== "completed")).toBe(true);
+    expect(continuity.getCanonicalAnswer("t")).toMatchObject({
+      content: "The add() function looks fine to me on inspection; no change appears necessary.",
+      evidenceJson: { completion: { complete: false } },
+    });
 
     expect(changeSetsRepository(db).listByTask("t")).toHaveLength(0);
     const gitDiff = execFileSync("git", ["diff", "HEAD", "--", "big.js"], { cwd: ws }).toString();
     expect(gitDiff).toBe("");
 
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
-    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(true);
+    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(false);
+    expect(events.some((e: any) => e.payload?.signal === "missing_delivery")).toBe(true);
   });
 
   it("still completes a plain read-only/Ask request with no write tool call and no diff (does not over-fire on requests that never asked for a change)", async () => {

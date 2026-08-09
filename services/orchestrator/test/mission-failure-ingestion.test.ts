@@ -119,12 +119,14 @@ describe("mission tool-failure reporter (unit)", () => {
     expect(mission.status).not.toBe("blocked");
   });
 
-  it("repeated identical denials do escalate the mission to blocked", () => {
+  it("repeated identical denials remain durable observations in free execution", () => {
     const r = reporter();
     for (let i = 0; i < 4; i++) {
       r.reportFailure("run_command", { command: "rm -rf ." }, "Command execution denied by user.", "tool_failed");
     }
-    expect(service.get(missionId).status).toBe("blocked");
+    expect(service.get(missionId).status).toBe("running");
+    expect(service.get(missionId).failures).toHaveLength(4);
+    expect(missionsRepository(db).listEvents(missionId).some((event: any) => event.type === "mission.loop_detected")).toBe(true);
   });
 
   it("reports exhaustion only after the durable fourth loop failure", () => {

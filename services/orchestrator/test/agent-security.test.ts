@@ -7,6 +7,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { changeSetsRepository } from "../src/repositories/change-sets.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
@@ -71,14 +72,17 @@ describe("agent security boundaries", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not complete an inspection request from a denied tool call alone", async () => {
+  it("preserves a denied inspection action while recording incomplete evidence", async () => {
     seed(db, ws, "read-only", "Inspect the workspace and report what you find.");
     const provider = new MockProvider({ chunks: [[tool("x1", "run_command", { executable: "node", args: ["-e", "1"], purpose: "inspect" }), done], [text("The inspection is complete."), done]], delayMs: 1 });
     const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, maxTurns: 4 }));
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    const evidence = executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson as { completion?: { complete?: boolean; blockers?: Array<{ code?: string }> } } | undefined;
+    expect(evidence?.completion?.complete).toBe(false);
+    expect(evidence?.completion?.blockers?.some((blocker) => blocker.code === "missing_read_only_observation")).toBe(true);
   });
 
   // Regression: a model can violate run_command's declared `args: string[]`
@@ -101,10 +105,9 @@ describe("agent security boundaries", () => {
     expect(JSON.parse(runCall!.resultJson!).error).toMatch(/args.*must be an array/i);
     // The task itself must not be left crashed/stuck by the host-side
     // TypeError this used to throw — it must reach a real terminal status.
-    // A genuine schema-violating tool call from the model (unlike a
-    // permission-mode boundary) is correctly surfaced as "interrupted" for
-    // review rather than silently treated as a clean completion.
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    // A recoverable schema violation is returned to the model as a structured
+    // observation; the model's later final answer remains authoritative.
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("does not resurrect a cancelled task when its approval is later resolved", async () => {

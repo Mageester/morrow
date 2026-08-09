@@ -178,19 +178,19 @@ describe("adaptive planning through the mission lifecycle", () => {
     return m.id;
   }
 
-  it("a looping tool failure triggers exactly one plan revision for that signature", () => {
+  it("records a looping tool failure without revising or blocking free execution", () => {
     const id = startMission();
     const reporter = createMissionToolFailureReporter({ service: missions, missionId: id, taskId: "t1" });
     for (let i = 0; i < 3; i++) {
       reporter.reportFailure("propose_patch", { patch: "--- a/x.ts\n+++ b/x.ts\n" }, "patch context mismatch at line 4", "tool_failed");
     }
     const revisions = cortex.listPlanRevisions(id);
-    expect(revisions).toHaveLength(1);
-    expect(revisions[0]!.trigger).toBe("repeated_tool_failure");
-    expect(revisions[0]!.invalidatedAssumption).toMatch(/can succeed as attempted/);
-    expect(revisions[0]!.tasksAdded.length).toBeGreaterThan(0);
+    expect(revisions).toHaveLength(0);
     const events = missionsRepository(db).listEvents(id);
-    expect(events.some((e: any) => e.type === "mission.plan_revised")).toBe(true);
+    expect(events.filter((e: any) => e.type === "mission.failure_recorded")).toHaveLength(3);
+    expect(events.some((e: any) => e.type === "mission.loop_detected")).toBe(true);
+    expect(events.some((e: any) => e.type === "mission.plan_revised")).toBe(false);
+    expect(missions.get(id).status).toBe("running");
   });
 
   it("failed criterion verification triggers a test_contradiction revision", async () => {

@@ -81,26 +81,25 @@ describe("agent loop detection", () => {
     { type: "done" },
   ];
 
-  it("interrupts a repeated identical tool call with reason loop_detected and does not mark success", async () => {
+  it("observes a repeated identical tool call and lets the model finish", async () => {
     seed();
-    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
+    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), [{ type: "text", text: "Finished after the repeated inspection." }, { type: "done" }]] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
     const tasks = taskRepository(db);
     const records = taskRecordsRepository(db) as any;
     const finalTask = tasks.getTaskById("task-1");
-    expect(finalTask?.status).toBe("interrupted");
-    expect(finalTask?.status).not.toBe("completed");
+    expect(finalTask?.status).toBe("completed");
     expect(finalTask?.status).not.toBe("verified");
 
     const events = records.listEvents("task-1") as Array<{ type: string; payload: any }>;
-    expect(events.some((e) => e.payload?.reason === "loop_detected")).toBe(true);
-    expect(events.some((e) => e.payload?.reason === "loop_recovery")).toBe(true);
+    expect(events.some((e) => e.payload?.signal === "loop_detected")).toBe(true);
+    expect(events.some((e) => e.payload?.reason === "loop_recovery")).toBe(false);
 
     const msg = conversationsRepository(db).getMessage("msg-assistant");
-    expect(msg?.streamingState).toBe("interrupted");
-    expect(msg?.content).toContain("Loop detected");
+    expect(msg?.streamingState).toBe("completed");
+    expect(msg?.content).toContain("Finished after the repeated inspection");
   });
 
   it("uses one bounded recovery turn when the provider changes strategy", async () => {
@@ -122,7 +121,7 @@ describe("agent loop detection", () => {
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "loop_recovery")).toBe(true);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(true);
   });
 
   it("does not interrupt when the model varies its tool calls and then answers", async () => {
@@ -172,22 +171,19 @@ describe("agent loop detection", () => {
       .toBe(false);
   });
 
-  it("returns a mission loop to the controller as a strategy change", async () => {
+  it("keeps a mission loop in the observation ledger until the model answers", async () => {
     seed(true);
-    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn()] });
+    const provider = new MockProvider({ chunks: [repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), repeatTurn(), [{ type: "text", text: "Mission inspection complete." }, { type: "done" }]] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
-    expect(executionContinuityRepository(db).latestCheckpoint("task-1")?.snapshot.currentPhase)
-      .toBe("strategy_change_required");
-    expect(executionContinuityRepository(db).listSegments("task-1").at(-1)?.boundaryReason)
-      .toBe("strategy_change_required");
-    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "loop_detected"))
-      .toBe(false);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected"))
+      .toBe(true);
   });
 
-  it("ends a mission task after the durable tool-failure loop is exhausted", async () => {
+  it("records durable tool-failure repetition without blocking an active mission", async () => {
     seed(true);
     const repeatedFailure: ProviderChunk[] = [
       {
@@ -196,20 +192,18 @@ describe("agent loop detection", () => {
       },
       { type: "done" },
     ];
-    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure] });
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure, [{ type: "text", text: "The model repaired the task after observing the repeated tool failures." }, { type: "done" }]] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
-    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "blocked" });
-    expect(provider.requests).toHaveLength(4);
-    expect(taskRecordsRepository(db).listEvents("task-1").at(-1)?.payload).toMatchObject({
-      reason: "strategy_change_required",
-      terminalEntryKind: "tool_loop_exhausted",
-    });
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
+    expect(provider.requests).toHaveLength(6);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.type === "task.progress_warning" && event.payload.signal === "loop_detected"))
+      .toBe(true);
   });
 
-  it("ends the mission task at the revision limit before another provider turn", async () => {
+  it("does not let the revision ledger interrupt an active model loop", async () => {
     seed(true);
     const cortex = new CortexService({ repo: intelligenceRepository(db), getWorkspacePath: () => tempDir });
     for (let revision = 0; revision < MAX_PLAN_REVISIONS; revision++) {
@@ -225,17 +219,14 @@ describe("agent loop detection", () => {
       },
       { type: "done" },
     ];
-    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, repeatedFailure] });
+    const provider = new MockProvider({ chunks: [repeatedFailure, repeatedFailure, repeatedFailure, [{ type: "text", text: "Finished after the revision observations." }, { type: "done" }]] });
 
     await executeAgentChatTask({ db, taskId: "task-1", provider });
 
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
-    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "blocked" });
-    expect(provider.requests).toHaveLength(3);
-    expect(taskRecordsRepository(db).listEvents("task-1").at(-1)?.payload).toMatchObject({
-      reason: "strategy_change_required",
-      terminalEntryKind: "revision_limit",
-    });
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(db.prepare("SELECT status FROM missions WHERE id='mission-1'").get()).toEqual({ status: "running" });
+    expect(provider.requests).toHaveLength(4);
+    expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.signal === "loop_detected")).toBe(true);
   });
 
   it("automatically continues a productive Coding-preset task beyond 18 turns", async () => {
@@ -266,7 +257,7 @@ describe("agent loop detection", () => {
       .toBe("candidate_answer_ready");
   });
 
-  it("does not treat turn-budget checkpoints as progress during post-delivery read roaming", async () => {
+  it("lets post-delivery read roaming continue until the model provides a final answer", async () => {
     seed();
     taskRoutingRepository(db).upsert({
       taskId: "task-1",
@@ -329,10 +320,10 @@ describe("agent loop detection", () => {
 
     const reads = conversationsRepository(db).listToolCallsForTask("task-1")
       .filter((call) => call.toolName === "read_file");
-    expect(reads.length).toBeLessThan(20);
-    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(reads.length).toBe(20);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
     expect(taskRecordsRepository(db).listEvents("task-1").some((event) => event.payload.reason === "stalled"))
-      .toBe(true);
+      .toBe(false);
   });
 });
 

@@ -18,6 +18,10 @@ import type { TerminalEntryKind } from "./terminal-outcome.js";
  * - marks a failure bucket recovered when a later attempt of the same tool
  *   against the same target succeeds;
  * - never lets ledger bookkeeping break execution (all calls are guarded).
+ *
+ * Agent-loop failures use the observe-only escalation lane. The ledger still
+ * records the failure and later recovery, but semantic repetition cannot
+ * revise or block the mission while the model still owns execution.
  */
 
 /** Error types the agent loop assigns that are not mission-meaningful. */
@@ -86,7 +90,7 @@ export function createMissionToolFailureReporter(options: {
         const { failure, plan, terminalEntryKind } = service.recordFailure(missionId, operation, message, {
           taskId,
           ...(agentId ? { agentId } : {}),
-          escalation: "loop-only",
+          escalation: "observe-only",
         });
         const open = openFailures.get(operation) ?? { failureIds: [], strategy: null };
         open.failureIds.push(failure.id);

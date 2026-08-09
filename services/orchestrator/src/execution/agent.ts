@@ -25,7 +25,7 @@ import { symbolIndexRepository } from "../repositories/symbols.js";
 import { auditLogRepository } from "../repositories/audit-log.js";
 import { actionAttemptsRepository, actionEnvironmentFingerprint, normalizeActionSignature } from "../repositories/action-attempts.js";
 import { ApprovalContinuationRegistry } from "./continuation.js";
-import { assessExhaustion, assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
+import { assessProgress, isMeaningfulProgress, type MissionProgressSnapshot } from "./progress.js";
 import { buildExecutionProgressSnapshot, fingerprintWorkspacePaths } from "./progress-snapshot.js";
 import { missionRuntimeRepository } from "../repositories/mission-runtime.js";
 import { classifyCommand, canonicalCommandTrustKey, longRunningCommandTimeoutMs } from "../tools/command-policy.js";
@@ -41,7 +41,6 @@ import { eligibleFallbackProviderIds } from "../routing/fallback-eligibility.js"
 import { MissionService } from "../mission/service.js";
 import { createMissionToolFailureReporter } from "../mission/tool-failure-reporter.js";
 import { CortexService } from "../cortex/service.js";
-import type { TerminalEntryKind } from "../mission/terminal-outcome.js";
 import { AiProvider, ChatMessage, ToolDefinition, ProviderChunk, ProviderError, MAX_CHAT_IMAGE_BYTES, type ChatImage } from "../provider/base.js";
 import { createProvider, getProviderDefaultModel, providerCapabilities } from "../provider/registry.js";
 import { isRetryableProviderError, openStreamWithFallback, type FallbackCandidate } from "../provider/fallback.js";
@@ -51,9 +50,9 @@ import { getPreset, DEFAULT_PRESET_ID } from "../routing/presets.js";
 import { resolveModelMetadata } from "../routing/models.js";
 import { MockProvider } from "../provider/mock.js";
 import { redactSecrets } from "../provider/credentials.js";
-import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
+import { adaptiveTurnCeiling, toolProgressFingerprint } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
-import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
+import { createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
 import { observeProcessOutputProgress, seedProcessObservationStatus, type ProcessObservationState } from "./process-observation-progress.js";
 import { evaluateTaskCompletion, inferTaskShape, requiresBackgroundProcessCleanup, type CompletionInput, type CompletionResult } from "./completion-contract.js";
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
@@ -88,6 +87,7 @@ import { browserAuditSink } from "../browser/audit.js";
 import { playwrightController, type PlaywrightControllerOptions } from "../browser/playwright.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../browser/types.js";
 import { isSafeSkillInstructionDirectory, verifySkillDirectory, SKILL_MATCH_STOPWORDS, SKILL_MATCH_MIN_SCORE } from "../skills/registry.js";
+import { createExecutionPolicy, type ExecutionPolicy } from "./execution-policy.js";
 
 /**
  * Best-effort human-readable target for a tool call, included in the
@@ -138,8 +138,8 @@ function displayTarget(toolName: string, argsJson: string): { target?: string; c
  * argument-correction budget keys on this so that independent propose_patch
  * calls on *different* files never share one budget â€” the deepseek-v4-pro
  * failure (task 98159b5c) collapsed three distinct first attempts on three
- * files onto `unknown-target`, climbing 1â†’2â†’3 and interrupting the whole task
- * as `tool_arguments_unrecoverable`. Returns null when no target is derivable
+ * files onto `unknown-target`, climbing 1â†’2â†’3 and treating the whole task as
+ * unrecoverable under the old heuristic. Returns null when no target is derivable
  * (e.g. a fully empty/missing argument object), so the caller can fall back.
  */
 export function proposePatchTarget(
@@ -175,8 +175,8 @@ export function proposePatchTarget(
  * run to completion. Such a call has no exit code yet â€” it is intentionally
  * still running â€” so it must never be scored as a pass/fail *verification*.
  * Treating a started server as a failed verification produced a spurious
- * `failed_final_verification` completion blocker that stopped an otherwise
- * finished frontend build from ever completing.
+ * `failed_final_verification` completion blocker that marked an otherwise
+ * finished frontend build as incomplete.
  */
 export function runCommandStartedBackgroundProcess(resultJson: string | null | undefined): boolean {
   if (!resultJson) return false;
@@ -199,8 +199,8 @@ export function runCommandStartedBackgroundProcess(resultJson: string | null | u
  * that exact shape back verbatim â€” including the real sha256 they can see in
  * context â€” when they want to re-touch a file. The result is a create_file /
  * propose_patch with no `content` / `patch`, which validation would reject as
- * "missing", burning the correction budget and eventually interrupting the
- * whole task even though the file was already written correctly earlier.
+ * "missing", burning the correction budget and eventually treating the whole
+ * task as unrecoverable even though the file was already written correctly earlier.
  *
  * Such a call is not a defect to punish; it is a no-op referencing a durable
  * write that already happened. Recognizing it lets the executor return an
@@ -218,24 +218,20 @@ export function isEchoedAppliedWrite(toolName: string, args: Record<string, unkn
 /**
  * True when a turn's text announces an action the model is ABOUT to take
  * rather than reporting a concluded result â€” the fingerprint of a mid-work
- * narration that must not be shipped to the user as the final report.
+ * narration that should be called out in completion evidence when it is used
+ * as the model final.
  *
- * The completion fast path accepts the current turn's text as the final answer
- * because the model usually writes that text after seeing its evidence. But the
- * text is emitted in the same turn as tool calls whose results the model has
- * not seen yet, so it can be forward-looking. Live example (Pomodoro build,
- * deepseek-v4-flash): "All three viewports captured. Final check: confirm the
- * controls still render correctly on mobile and grab final console evidence." â€”
- * accompanied by browser_snapshot + browser_console calls, then accepted as the
- * entire final report even though the model was describing what it was about to
- * do, not what it had concluded.
+ * This classifier is retained for diagnostics and tests only. The free-execution
+ * loop never uses it as a completion gate, never requests a hidden summary turn,
+ * and never accepts prose beside tool calls as a final answer. Such prose is
+ * provisional until a later tool-free model turn follows the tool observations.
  *
  * The cue set is deliberately biased toward first-person-future / next-action
  * phrasing (and a trailing colon) and deliberately EXCLUDES common words that
  * appear in genuine conclusions ("verified", "confirmed", "works", "passed",
- * "done"). A false positive costs one extra tool-free summary turn; a false
- * negative ships a bad report â€” so the check errs toward flagging. Only the
- * final sentence is weighed, since a conclusion often recaps earlier actions.
+ * "done"). The result has no control-flow authority; it is only an
+ * observation signal. Only the final sentence is weighed, since a conclusion
+ * often recaps earlier actions.
  */
 export function isForwardLookingNarration(text: string): boolean {
   const normalized = (text ?? "").trim();
@@ -602,6 +598,8 @@ type Dependencies = {
   maxTurns?: number;
   /** Upper bound for unattended durable segments; injectable for boundary tests. */
   maxAutomaticSegments?: number;
+  /** Injectable policy boundary for deterministic policy tests. */
+  executionPolicy?: ExecutionPolicy;
   maxFileBytes?: number;
   maxContextBytes?: number;
   abortSignal?: AbortSignal;
@@ -792,6 +790,7 @@ export async function executeAgentChatTask({
   onSegmentBoundary,
   browserFactory,
   supervisor,
+  executionPolicy: injectedExecutionPolicy,
 }: Dependencies): Promise<void> {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
@@ -881,11 +880,6 @@ export async function executeAgentChatTask({
     agentId: (task as { agentId?: string | null }).agentId ?? null,
     log: (message) => console.warn(`[mission ${taskMissionId}] ${message}`),
   });
-  let missionFailureOutcome: { kind: TerminalEntryKind; toolName: string; message: string } | null = null;
-  const noteMissionFailure = (report: { exhausted: boolean; terminalEntryKind?: TerminalEntryKind }, toolName: string, message: string) => {
-    const kind = report.terminalEntryKind ?? (report.exhausted ? "tool_loop_exhausted" : null);
-    if (kind) missionFailureOutcome = { kind, toolName, message };
-  };
   let turn = 0;
   let absoluteTurn = 0;
   const TERMINAL_AGENT_STATES = new Set<AgentExecutionState>(["completed", "failed", "cancelled"]);
@@ -969,7 +963,8 @@ export async function executeAgentChatTask({
     records.replacePlan(taskId, plan);
   }
 
-  // Resolve routing decision + preset-derived execution budgets
+  // Resolve routing decision. Presets provide context/output sizing, not a
+  // hidden semantic stop: free execution only uses caller-configured budgets.
   const routing = routingRepo.get(taskId);
   // Auto-approve is only ever honored in agent mode (double guard: the server
   // already refuses to set it otherwise).
@@ -988,13 +983,25 @@ export async function executeAgentChatTask({
   // Mode is the single source of truth for which tools are exposed. plan-only
   // gets no tools, read-only (inspect) gets read-only tools, agent gets all.
   const activeToolProfile: ToolProfile = agentMode === "plan-only" ? "none" : agentMode === "agent" ? "agent" : "read-only";
-  const turnsLimit = maxTurns ?? (agentMode === "plan-only" ? 1 : preset.maxToolIterations);
-  const turnCeiling = adaptiveTurnCeiling(turnsLimit);
-  // Durable segment rollover is a continuity mechanism, not a terminal budget.
-  // An explicit caller policy may cap segments; there is no hidden default.
-  const automaticSegmentLimit = maxAutomaticSegments === undefined
+  const executionPolicy = injectedExecutionPolicy ?? createExecutionPolicy({ maxTurns, maxAutomaticSegments });
+  // An explicit per-call turn setting remains a continuity boundary. The
+  // historical adaptive expansion is applied only after the caller opts in;
+  // the default free path has no turn ceiling at all.
+  const turnCeiling = executionPolicy.turnBudget === null
     ? null
-    : Math.max(1, maxAutomaticSegments);
+    : adaptiveTurnCeiling(executionPolicy.turnBudget);
+  const automaticSegmentLimit = executionPolicy.segmentBudget;
+  const observePolicy = (signal: Parameters<ExecutionPolicy["observe"]>[0]["signal"], details: Record<string, unknown> = {}) => {
+    const observation = executionPolicy.observe({ signal, details });
+    event("task.progress_warning", {
+      reason: "execution_policy_observed",
+      signal,
+      disposition: observation.disposition,
+      hard: observation.hard,
+      ...details,
+    });
+    return observation;
+  };
   const fileBytesLimit = maxFileBytes ?? 102400; // 100 KB per file
   const contextBytesLimit = maxContextBytes ?? preset.contextBudgetBytes;
 
@@ -1660,7 +1667,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   if (activeToolProfile === "agent" && requestsFrontendBrowserValidation(latestUserPrompt)) {
     chatMessages.push({
       role: "system",
-      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. Completion is deterministically blocked when any evidence class is missing. For a static site with no dev server: node is ALWAYS available â€” never probe runtimes with --version and never use npx/npm/yarn serve (their interactive install prompt hangs until timeout). Start the server yourself with one run_command: executable node, args [-e, STATIC_SERVER_SCRIPT], background true, where STATIC_SERVER_SCRIPT is exactly: const http=require(\"http\"),fs=require(\"fs\"),path=require(\"path\");const types={\".html\":\"text/html\",\".css\":\"text/css\",\".js\":\"text/javascript\",\".json\":\"application/json\",\".svg\":\"image/svg+xml\",\".png\":\"image/png\",\".jpg\":\"image/jpeg\",\".ico\":\"image/x-icon\",\".woff2\":\"font/woff2\"};http.createServer((req,res)=>{try{const p=decodeURIComponent((req.url||\"/\").split(\"?\")[0]);const file=path.join(process.cwd(),p===\"/\"?\"index.html\":p.replace(/^\\/+/,\"\"));if(!file.startsWith(process.cwd())){res.writeHead(403);res.end();return}fs.stat(file,(e,st)=>{if(e||!st.isFile()){res.writeHead(404);res.end();return}res.writeHead(200,{\"content-type\":types[path.extname(file).toLowerCase()]||\"application/octet-stream\"});fs.createReadStream(file).pipe(res)})}catch{res.writeHead(500);res.end()}}).listen(4173,\"127.0.0.1\") â€” then browser_open http://127.0.0.1:4173/ (browser_open accepts HTTP(S) only, never file://). If that port is taken, retry the same script with a different port. Mentally re-reading the files you wrote is not verification: only the browser evidence above counts.",
+      content: "This is a frontend mission. Before claiming completion, run the app or its existing preview, verify route health, capture an explicit DOM snapshot and console evidence, exercise at least one relevant interaction, and capture vision-analyzed screenshots at desktop (1440x900), tablet (768x1024), and mobile (390x844). Perform this validation after the final workspace change; if any defect is found, repair it and repeat the affected checks. If an evidence class is missing, state that limitation in the final response; Morrow records the verification blocker without discarding the model's final output. For a static site with no dev server: node is ALWAYS available â€” never probe runtimes with --version and never use npx/npm/yarn serve (their interactive install prompt hangs until timeout). Start the server yourself with one run_command: executable node, args [-e, STATIC_SERVER_SCRIPT], background true, where STATIC_SERVER_SCRIPT is exactly: const http=require(\"http\"),fs=require(\"fs\"),path=require(\"path\");const types={\".html\":\"text/html\",\".css\":\"text/css\",\".js\":\"text/javascript\",\".json\":\"application/json\",\".svg\":\"image/svg+xml\",\".png\":\"image/png\",\".jpg\":\"image/jpeg\",\".ico\":\"image/x-icon\",\".woff2\":\"font/woff2\"};http.createServer((req,res)=>{try{const p=decodeURIComponent((req.url||\"/\").split(\"?\")[0]);const file=path.join(process.cwd(),p===\"/\"?\"index.html\":p.replace(/^\\/+/,\"\"));if(!file.startsWith(process.cwd())){res.writeHead(403);res.end();return}fs.stat(file,(e,st)=>{if(e||!st.isFile()){res.writeHead(404);res.end();return}res.writeHead(200,{\"content-type\":types[path.extname(file).toLowerCase()]||\"application/octet-stream\"});fs.createReadStream(file).pipe(res)})}catch{res.writeHead(500);res.end()}}).listen(4173,\"127.0.0.1\") â€” then browser_open http://127.0.0.1:4173/ (browser_open accepts HTTP(S) only, never file://). If that port is taken, retry the same script with a different port. Mentally re-reading the files you wrote is not verification: only the browser evidence above counts.",
     });
   }
 
@@ -2224,7 +2231,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           // "regenerate" nudge, but a repeat means the model is looping on a dead
           // patch, so escalate to a full-file create_file rewrite (which
           // auto-converts to a backed-up edit when the target exists) instead of
-          // letting it re-propose until the stagnation kill.
+          // letting it re-propose until the stagnation observer records the pattern.
           const noEffectAttempts = (patchNoEffectCountsByFile.get(pf.newPath) ?? 0) + 1;
           patchNoEffectCountsByFile.set(pf.newPath, noEffectAttempts);
           const escalateToCreateFile = noEffectAttempts >= 2;
@@ -2488,10 +2495,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const knownArtifacts = new Map<string, string>();
   let unattributedWorkspaceWrite = false;
   let previousProgressSnapshot: MissionProgressSnapshot | null = null;
-  let progressWindowStart = 0;
-  let diagnosisCompleted = false;
-  let stagnationRecoveryAttempts = 0;
-  let loopRecoveryAttempts = 0;
   let novelPostDeliveryReadTurns = 0;
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
@@ -2511,7 +2514,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // byte unchanged ("Patch produced no content changes"). These have *valid*
   // arguments, so they never touch the malformed-argument correction budget or
   // its create_file redirect â€” the model is free to re-propose the same dead
-  // patch until the no-progress stagnation kill. Observed live on
+  // patch until the no-progress stagnation observer records the pattern. Observed live on
   // deepseek-v4-flash for a complex build (task f318d8a8: four no-effect patches
   // on the same file). Keyed by target so a repeated no-op on one file escalates
   // to a full-file create_file rewrite instead of looping.
@@ -2644,8 +2647,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             errorMessage = err.message || "Unknown error";
             resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
             event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
-            const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
-            noteMissionFailure(report, continuation.toolName, errorMessage);
+            missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
           }
         } else {
           isSuccess = false;
@@ -2653,8 +2655,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorMessage = continuation.toolName === "propose_patch" ? "Patch application denied by user." : "Command execution denied by user.";
           resultStr = JSON.stringify({ error: errorMessage });
           event("tool.failed", { toolName: continuation.toolName, message: errorMessage });
-          const report = missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
-          noteMissionFailure(report, continuation.toolName, errorMessage);
+          missionFailures.reportFailure(continuation.toolName, continuation.args, errorMessage, errorType);
         }
 
         convs.upsertToolCall({
@@ -2691,7 +2692,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const WORKSPACE_WRITE_TOOLS = new Set(["propose_patch", "create_file", "create_directory"]);
   // Completed browser-validation steps are evidence work the frontend
   // completion gate explicitly demands. Keeping them out of progress
-  // accounting let the stagnation clock interrupt healthy frontend
+  // accounting let the stagnation clock incorrectly classify healthy frontend
   // validation mid-run â€” the live "static site served, browser evidence
   // underway" failure that motivated this set.
   const BROWSER_EVIDENCE_TOOLS = new Set([
@@ -2712,6 +2713,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     || /\b(change|update|create|write|edit|modify)\b[\s\S]{0,60}\b(bug|file|function|test|code|feature|method|class|module)\b/i.test(prompt);
   const requiresArtifactDelivery = agentMode === "agent" && requestsWorkspaceChange(latestUserPrompt);
   const taskShape = inferTaskShape(latestUserPrompt, agentMode);
+  observePolicy("task_shape_inference", { taskShape });
   // Answer-only turns have no independent execution evidence to contractually
   // evaluate. Preserve their existing terminal behavior, while keeping the
   // strict read-only contract for prompts that request inspection/evidence or
@@ -2783,7 +2785,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // that reuses the prior observation. It is neither new evidence nor a failure â€”
   // but because the category checks below use `.every()`, leaving it in would let
   // one repeated click/snapshot/screenshot poison an entire category of otherwise
-  // valid evidence and permanently block frontend completion. Exclude it: the
+  // valid evidence and permanently mark frontend completion evidence incomplete. Exclude it: the
   // original call it duplicates is still counted.
   const isDuplicateBrowserResult = (result: Record<string, unknown> | null): boolean => result?.duplicate === true;
   // An execution-FAILED browser call (the tool itself errored â€” a browser_open
@@ -2798,8 +2800,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // browser-verified app was blocked with frontend_route_missing +
   // frontend_interaction_missing. Only the model's successful calls are evidence;
   // a recovered-from failure must not count against it. (A genuinely unrecovered
-  // failure still blocks: with no successful call the category stays empty, and a
-  // failed LAST action is caught separately by the unverified-completion gate.)
+  // failure still leaves the category empty, and a failed LAST action is caught
+  // separately by the post-execution evidence gate.)
   const isCompletedBrowserCall = (call: ToolCallRecord): boolean => call.status === "completed";
   const isValidInteractionResult = (call: ToolCallRecord, result: Record<string, unknown> | null): boolean => {
     if (hasBrowserFailure(result)) return false;
@@ -2893,7 +2895,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // result. The frontend completion contract still independently gates on
       // browser-evidence QUALITY (route health, clean console, DOM snapshot,
       // interaction, viewports), so this removes a redundant run_command-shaped
-      // check that was interrupting fully browser-verified frontend edits
+      // check that was marking fully browser-verified frontend edits incomplete
       // (deepseek-v4-flash, task 53b36eb3: a working, multi-viewport-verified
       // app rejected as unverified_completion after a final edit).
       if (taskShape === "frontend_application"
@@ -2972,6 +2974,12 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const finalToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
+  // An explicit requirement violation is a hard authorization boundary even
+  // when the failed action left the workspace unchanged and the absence
+  // evaluator would otherwise verify the prohibition. Keep this latched for
+  // the lifetime of the execution so a model final cannot erase the rejected
+  // action from the terminal decision.
+  let requirementViolationObserved = finalToolCalls.some((call) => call.errorType === "requirement_violation");
   for (const id of collectOfferedArtifactIds(finalToolCalls.map((call) => call.resultJson ?? ""))) offeredArtifactIds.add(id);
   const durableTurns = continuity.listProviderTurns(taskId);
   absoluteTurn = durableTurns.length;
@@ -3139,7 +3147,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     .listEvents(taskId)
     .filter((taskEvent) => taskEvent.payload.reason === "artifact_delivery_recovery")
     .at(-1);
-  let artifactDeliveryRecoverySent = latestArtifactDeliveryRecoveryEvent !== undefined;
   let artifactDeliveryRecoveryPending = false;
   if (latestArtifactDeliveryRecoveryEvent) {
     const recoveryTurn = latestArtifactDeliveryRecoveryEvent.payload.turn;
@@ -3157,24 +3164,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       artifactDeliveryRecoveryPending = true;
     }
   }
-  // One-shot guard for the directed final-summary turn (see the fast-path
-  // completion block): a fast-path completion accepts the current turn's text
-  // as the final report, but that text was written alongside the same turn's
-  // tool calls and can be forward-looking narration ("Final check: â€¦ grab
-  // final console evidence") rather than a real conclusion. When it is, we
-  // give the model exactly ONE more tool-free turn to write a genuine summary
-  // instead of shipping the narration as the report.
-  let finalSummaryTurnRequested = false;
-  // A repairable completion blocker gets one explicit model continuation. The
-  // guard is intentionally local and one-shot so a model that returns another
-  // blocked final answer still reaches the strict interruption path below.
-  let completionRecoveryTurnRequested = false;
-  // Tracks the outcome of the most recent workspace-mutating or verification
-  // action so a natural end-of-conversation stop can be gated: the model must
-  // not report "completed" when the last patch/file write failed, or the last
-  // verification command exited non-zero. A subsequent successful mutation or a
-  // clean verification clears it (the model recovered). See the completion gate
-  // at the end of the loop.
+  // Track the most recent workspace-mutating or verification outcome so the
+  // canonical evidence can report an unresolved failure honestly. This is a
+  // post-execution observation; it does not request a semantic summary turn or
+  // replace the model's final output.
   let lastVerificationFailure: { tool: string; detail: string } | null = completionStateFromCalls(finalToolCalls).failure;
   const steps = records.listPlanSteps(taskId);
 
@@ -3568,66 +3561,11 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       priorNarration.map((text) => redactSecrets(text)),
     ));
   };
-
-  const requestCompletionContractRecovery = (evaluation: CompletionResult): boolean => {
-    if (completionRecoveryTurnRequested) return false;
-    const processBlocker = evaluation.blockers.find((item) => item.code === "background_process_running");
-    if (!processBlocker) return false;
-
-    // Re-read only processes owned by this task. The completion contract uses
-    // the same ownership boundary; never put a foreign process identifier into
-    // a provider continuation even if another process in the project is live.
-    const taskOwnedProcessIds = processesRepo
-      .listByProject(projectId, "running")
-      .filter((process) => process.taskId === taskId)
-      .map((process) => process.id);
-    if (taskOwnedProcessIds.length === 0) return false;
-
-    completionRecoveryTurnRequested = true;
-    const message = [
-      `The completion contract is blocked by ${processBlocker.code}: ${processBlocker.message}`,
-      `Task-owned running process ID(s): ${taskOwnedProcessIds.join(", ")}.`,
-      "Call stop_process for each listed process ID, then return a concise final answer after cleanup succeeds.",
-      "Do not stop any process not listed here.",
-    ].join(" ");
-    event("task.progress_warning", {
-      reason: "completion_contract_recovery",
-      message,
-      blocker: processBlocker.code,
-      processIds: taskOwnedProcessIds,
-      turn: absoluteTurn,
-    });
-    chatMessages.push({
-      role: "user",
-      content: `MORROW COMPLETION RECOVERY (turn ${absoluteTurn}): ${message}`,
-    });
-    noProgressTurns = 0;
-    return true;
-  };
-
-  const returnCompletionContractBlock = async (evaluation: CompletionResult): Promise<boolean> => {
-    const primary = evaluation.blockers[0];
-    const message = `Stopping without completion: ${primary?.message ?? "durable completion evidence is incomplete."}`;
-    const details = {
-      taskShape,
-      completionBlockers: evaluation.blockers.map((item) => ({
-        code: item.code,
-        requirementId: item.requirementId,
-        message: item.message,
-      })),
-    };
-    if (await returnMissionWorkerOutcome("validation_required", message, details)) return true;
-    closeCurrentTurn({ final: false, aborted: true });
-    failCurrentSegment("completion_contract_blocked");
-    transitionAgentState("interrupted", { reason: "completion_contract_blocked", message, ...details });
-    records.transitionTask(taskId, "interrupted", {
-      id: randomUUID(),
-      createdAt: now(),
-      payload: { reason: "completion_contract_blocked", message, ...details },
-    });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return true;
+  const observeCompletionQuality = (completion: CompletionResult, details: Record<string, unknown> = {}): void => {
+    const blockers = completion.blockers.map((item) => item.code);
+    if (blockers.includes("background_process_running")) {
+      observePolicy("cleanup_pending", { blockers, ...details });
+    }
   };
 
   /**
@@ -3720,6 +3658,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   const interruptAtSegmentLimit = (checkpointId: string): boolean => {
     if (automaticSegmentLimit === null || currentSegment.sequence < automaticSegmentLimit) return false;
+    const decision = executionPolicy.decide({ signal: "explicit_budget_exhausted", details: { checkpointId, segment: currentSegment.sequence } });
+    if (decision.disposition !== "interrupt") return false;
     closeCurrentTurn({ final: false, aborted: true });
     const message = `Automatic execution paused after ${automaticSegmentLimit} durable segments to bound unattended provider and tool usage.`;
     failCurrentSegment("segment_budget_exhausted");
@@ -3756,12 +3696,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   };
 
   const returnRequirementBlock = async (): Promise<boolean> => {
-    if (canCompleteWithRequirements(executionRequirements, requirementEvaluations)) return false;
+    if (!requirementViolationObserved && canCompleteWithRequirements(executionRequirements, requirementEvaluations)) return false;
     const unresolved = requirementEvaluations
       .filter((evaluation) => evaluation.status !== "verified" && evaluation.status !== "waived")
       .map((evaluation) => `${evaluation.kind ?? "unmapped"}=${evaluation.status}`);
-    const message = `Stopping without completion: explicit task requirements remain unresolved (${unresolved.join(", ") || "evaluation unavailable"}).`;
+    const message = requirementViolationObserved
+      ? "Stopping without completion: an explicit task requirement rejected a tool action."
+      : `Stopping without completion: explicit task requirements remain unresolved (${unresolved.join(", ") || "evaluation unavailable"}).`;
     const details = {
+      ...(requirementViolationObserved ? { requirementViolationObserved: true } : {}),
       requirementEvaluations: requirementEvaluations.map((evaluation) => ({
         requirementId: evaluation.requirementId,
         kind: evaluation.kind,
@@ -3783,67 +3726,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     return true;
   };
 
-  const enforceArtifactDeliveryBoundary = async (): Promise<"continue" | "stop" | null> => {
-    const assessment = assessArtifactDelivery({
-      requiresArtifact: requiresArtifactDelivery,
-      providerTurn: absoluteTurn,
-      mutationObserved: deliveryStarted,
-    });
-    if (assessment.actionOnlyRecoveryRequired && !artifactDeliveryRecoverySent) {
-      artifactDeliveryRecoverySent = true;
-      event("task.progress_warning", {
-        reason: "artifact_delivery_recovery",
-        message: artifactDeliveryRecoveryMessage,
-        turn: absoluteTurn,
-        recoveryTurnKey: currentDurableTurnKey,
-        actionOnly: true,
-      });
-      rebuildArtifactDeliveryRecoveryContext(absoluteTurn);
-      artifactDeliveryRecoveryPending = true;
-      noProgressTurns = 0;
-      return "continue";
-    }
-    if (!assessment.strategyTerminationRequired) {
-      // A narration-only turn is provisional for an artifact task until the
-      // delivery recovery boundary. Otherwise the first polished scene-setting
-      // answer exits before turn 6 can demand a concrete mutation.
-      if (completedWithoutMoreTools && requiresArtifactDelivery && !deliveryStarted) return "continue";
-      return null;
-    }
-
-    const message = `No durable artifact mutation was recorded by provider turn ${absoluteTurn}. Stop discovery and change strategy or report the blocked delivery.`;
-    event("task.progress_warning", {
-      reason: "artifact_delivery_stalled",
-      message,
-      turn: absoluteTurn,
-      actionOnly: true,
-    });
-    if (await returnMissionWorkerOutcome("strategy_change_required", message, {
-      deliveryRequired: true,
-      providerTurn: absoluteTurn,
-    })) return "stop";
-    closeCurrentTurn({ final: false, aborted: true });
-    failCurrentSegment("artifact_delivery_stalled");
-    transitionAgentState("interrupted", { reason: "artifact_delivery_stalled", message, turns: absoluteTurn });
-    records.transitionTask(taskId, "interrupted", {
-      id: randomUUID(),
-      createdAt: now(),
-      payload: { reason: "artifact_delivery_stalled", message, turns: absoluteTurn },
-    });
-    convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Paused: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return "stop";
-  };
-
   const completeWithCanonicalAnswer = (finalText: string, sourceTurnKey: string): void => {
     if (!canCompleteWithRequirements(executionRequirements, requirementEvaluations)) {
       throw new Error("Cannot create canonical answer while an explicit execution requirement is unresolved");
     }
     const completionState = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id));
     const safeFinalText = redactSecrets(finalText);
+    const completion = finalCompletionEvaluation
+      ? {
+          complete: finalCompletionEvaluation.complete,
+          blockers: finalCompletionEvaluation.blockers.map((item) => ({
+            code: item.code,
+            ...(item.requirementId ? { requirementId: item.requirementId } : {}),
+            message: redactSecrets(item.message),
+            ...(item.evidence ? { evidence: item.evidence.map((value) => redactSecrets(value)) } : {}),
+          })),
+        }
+      : null;
     const evidenceJson = {
       sourceTurnKey,
       durableEventCursor: records.latestEvent(taskId)?.sequence ?? 0,
+      completion,
       verification: completionState.verification,
       unresolvedBlocker: completionState.failure?.detail ?? null,
       unresolvedFailures: completionState.failure ? [`${completionState.failure.tool}: ${completionState.failure.detail}`] : [],
@@ -3967,50 +3870,27 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     && !artifactDeliveryRecoveryPending
     && replayableFinalTurn.isFinal
     && replayableFinalTurn.toolCalls.length === 0
-    && replayableFinalTurn.assistantText.trim().length > 0
-    && !lastVerificationFailure) {
+    && replayableFinalTurn.assistantText.trim().length > 0) {
     const priorNarration = durableTurns.slice(0, -1).map((t) => t.assistantText);
     finalCompletionEvaluation = await evaluateCurrentTaskCompletion(replayableFinalTurn.assistantText, priorNarration);
-    if (finalCompletionEvaluation.complete) {
-      for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
-      completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
-      return;
-    }
+    observeCompletionQuality(finalCompletionEvaluation, { replay: true });
     if (duplicatesPriorNarration(replayableFinalTurn.assistantText, priorNarration)) {
-      const message = "Stopping without completion: the final recorded turn duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
-      failCurrentSegment("duplicate_final_narration");
-      transitionAgentState("interrupted", { reason: "duplicate_final_narration", message });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      const message = "The final recorded turn repeats earlier intermediate narration; completion evidence records the duplicate without replacing the model final.";
+      observePolicy("duplicate_narration", { message, replay: true });
     }
     if (agentMode === "agent"
       && requestsWorkspaceChange(latestUserPrompt)
       && !convs.listToolCallsForMessage(assistantMessageRow.id).some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed")) {
-      const message = "Stopping without completion: the request asks for a workspace change, but no write tool ever completed â€” there is no delivery evidence to justify completion.";
-      failCurrentSegment("missing_delivery_evidence");
-      transitionAgentState("interrupted", { reason: "missing_delivery_evidence", message });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_delivery_evidence", message } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      const message = "The request asks for a workspace change, but no write tool completed; completion evidence records missing delivery without replacing the model final.";
+      observePolicy("missing_delivery", { message, replay: true });
     }
     const frontendGaps = frontendValidationGaps(convs.listToolCallsForMessage(assistantMessageRow.id));
     if (frontendGaps.length > 0) {
-      const message = `Stopping without completion: responsive browser validation is incomplete (${frontendGaps.join(", ")}).`;
-      failCurrentSegment("frontend_browser_validation_required");
-      transitionAgentState("interrupted", { reason: "frontend_browser_validation_required", message });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "frontend_browser_validation_required", message, gaps: frontendGaps } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, `${responseContent}\n\n[Incomplete: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      const message = `Responsive browser validation remains incomplete (${frontendGaps.join(", ")}); completion evidence records the gaps without replacing the model final.`;
+      observePolicy("frontend_validation", { message, gaps: frontendGaps, replay: true });
     }
     await refreshRequirementEvaluations();
     if (await returnRequirementBlock()) return;
-    if (finalCompletionEvaluation && !finalCompletionEvaluation.complete) {
-      if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
-    }
     for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
     completeWithCanonicalAnswer(replayableFinalTurn.assistantText, replayableFinalTurn.turnKey);
     return;
@@ -4029,16 +3909,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       return usage ? accumulateUsage(acc, usage) : acc;
     }, EMPTY_CUMULATIVE_USAGE);
 
-  if (missionFailureOutcome) {
-    const outcome = missionFailureOutcome;
-    missionFailureOutcome = null;
-    if (await returnMissionWorkerOutcome(
-      "strategy_change_required",
-      `${outcome.kind === "revision_limit" ? "Plan revision limit reached after" : "Tool loop exhausted after repeated"} ${outcome.toolName} failures: ${outcome.message}`,
-      { terminalEntryKind: outcome.kind, toolName: outcome.toolName },
-    )) return;
-  }
-
   while (true) {
     if (checkCancelled()) {
       handleCancellation();
@@ -4052,7 +3922,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // request, then clear it so a later, unrelated turn never inherits it.
     const requireToolCallThisTurn = forceNextTurnToolChoice;
     forceNextTurnToolChoice = false;
-    const freshArtifactRecoveryAttempt = artifactDeliveryRecoveryPending;
     artifactDeliveryRecoveryPending = false;
 
     turn++;
@@ -5306,7 +5175,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
               // `executable: "node"`, meaning the whole `node -e ...` verification
               // never ran. Thrown as a bare Error it was unretryable AND â€” as the
               // last verify-or-write call â€” became a `failed_final_verification`
-              // completion blocker that interrupted a fully-built, browser-verified
+              // completion blocker that marked a fully-built, browser-verified
               // app. Classify it like the sibling args-shape check below so the
               // argument-correction budget hands the model a retry with a clear
               // fix instead of discarding the finished work.
@@ -5840,6 +5709,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           errorType = err instanceof AgentToolFailure
             ? err.errorType
             : err instanceof SafeReadError || err instanceof WorkspaceSearchError || err instanceof GitInspectionError ? "safe_read_rejected" : "tool_failed";
+          if (errorType === "requirement_violation") requirementViolationObserved = true;
           errorMessage = err.message || "Unknown error";
           resultStr = err instanceof AgentToolFailure ? err.resultJson : JSON.stringify({ error: errorMessage });
           let failureDetails: Record<string, unknown> = {};
@@ -5859,8 +5729,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             classification: errorType,
             ...failureDetails,
           });
-          const report = missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
-          noteMissionFailure(report, tc.name, errorMessage);
+          missionFailures.reportFailure(tc.name, args, errorMessage, errorType);
         }
         if (isSuccess) missionFailures.reportSuccess(tc.name, args);
 
@@ -5980,15 +5849,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           toolCallId: tc.id,
           content: contextResultStr
         });
-        if (missionFailureOutcome) {
-          const outcome = missionFailureOutcome;
-          missionFailureOutcome = null;
-          if (await returnMissionWorkerOutcome(
-            "strategy_change_required",
-            `${outcome.kind === "revision_limit" ? "Plan revision limit reached after" : "Tool loop exhausted after repeated"} ${outcome.toolName} failures: ${outcome.message}`,
-            { terminalEntryKind: outcome.kind, toolName: outcome.toolName },
-          )) return;
-        }
       }
       if (browserVisionQueue.length > 0) {
         const images = browserVisionQueue.splice(0, browserVisionQueue.length);
@@ -6005,36 +5865,6 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // empty provider turn as completion loses the mission outcome while
       // falsely presenting successful tools as a verified task.
       if (responseContent.length === responseLengthAtTurnStart) {
-        if (freshArtifactRecoveryAttempt && requiresArtifactDelivery && !deliveryStarted) {
-          const responseKind = currentReasoningContent ? "reasoning_only" : "empty";
-          const reason = `artifact_delivery_recovery_${responseKind}`;
-          const message = currentReasoningContent
-            ? "The fresh artifact-delivery recovery request returned provider reasoning without a tool call or visible answer before any durable artifact mutation; interrupting without generic empty-response retries."
-            : "The fresh artifact-delivery recovery request returned no visible answer before any durable artifact mutation; interrupting without generic empty-response retries.";
-          event("task.progress_warning", {
-            reason,
-            message,
-            turn: absoluteTurn,
-            actionOnly: true,
-            freshContext: true,
-            responseKind,
-          });
-          if (await returnMissionWorkerOutcome("provider_recovery_required", message, {
-            recoveryReason: reason,
-            responseKind,
-            freshContext: true,
-          })) return;
-          failCurrentSegment(reason);
-          transitionAgentState("interrupted", { reason, message, turns: absoluteTurn, freshContext: true, responseKind });
-          records.transitionTask(taskId, "interrupted", {
-            id: randomUUID(),
-            createdAt: now(),
-            payload: { reason, message, turns: absoluteTurn, freshContext: true, responseKind },
-          });
-          convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-          if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-          return;
-        }
         // Reasoning-heavy compatible routes can consume their whole output
         // allowance before emitting visible text. Retry with a terse recovery
         // instruction instead of blindly replaying the same prompt. No tool ran
@@ -6106,102 +5936,16 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       completedWithoutMoreTools = true;
     }
 
-    const artifactBoundary = await enforceArtifactDeliveryBoundary();
-    if (artifactBoundary === "continue") {
-      // This narration was only an intermediate recovery turn. Do not let it
-      // become the canonical answer if the provider receives another chance
-      // to deliver the requested artifact.
-      completedWithoutMoreTools = false;
-      canonicalFinalText = "";
-      continue;
-    }
-    if (artifactBoundary === "stop") return;
-
-    // Every provider turn has now had its tool observations recorded. Evaluate
-    // a visible candidate before progress/stagnation accounting regardless of
-    // which tool produced the evidence; the old fast path only recognized
-    // run_command and let verified file-delivery turns drift into another
-    // provider request.
-    if (!completedWithoutMoreTools) {
-      const candidateFinalText = redactSecrets(responseContent.slice(responseLengthAtTurnStart));
-      if (candidateFinalText.trim()) {
-        const recordedTurnsAtBoundary = continuity.listProviderTurns(taskId);
-        const persistedToolCalls = convs.listToolCallsForMessage(assistantMessageRow.id);
-        const currentTurnHasSuccessfulVerification = currentToolCalls.some((toolCall) => {
-          const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
-          if (persistedCall?.status !== "completed" || persistedCall.errorType || toolCall.name !== "run_command") return false;
-          try {
-            return runCommandIsVerification(JSON.parse(toolCall.arguments) as Record<string, unknown>);
-          } catch {
-            return false;
-          }
-        });
-        const currentTurnEstablishedCompletionEvidence = currentToolCalls.some((toolCall) => {
-          const persistedCall = persistedToolCalls.find((call) => call.id === toolCall.id);
-          if (persistedCall?.status !== "completed" || persistedCall.errorType) return false;
-          // browser_open is exploratory: the model wrote its narration BEFORE
-          // seeing whether the navigation actually revealed a healthy page.
-          // Live bug: a turn saying "Final check: reload the page to confirm
-          // clean route health" plus a browser_open call was accepted as the
-          // canonical final answer purely because a completed browser-evidence
-          // tool call was present in the same turn â€” the model never got to
-          // react to what the reload actually showed. Every other evidence
-          // tool (click, snapshot, console, screenshot) reports on state the
-          // model already observed before writing its narration, so only
-          // browser_open needs this exclusion.
-          if (WORKSPACE_WRITE_TOOLS.has(toolCall.name) || (BROWSER_EVIDENCE_TOOLS.has(toolCall.name) && toolCall.name !== "browser_open")) return true;
-          return currentTurnHasSuccessfulVerification && toolCall.name === "run_command";
-        });
-        const candidateCompletion = await evaluateCurrentTaskCompletion(
-          candidateFinalText,
-          recordedTurnsAtBoundary.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
-        );
-        // Read-only tool narration remains provisional even when its
-        // observation makes the contract evaluable; only a verification turn
-        // has the established same-turn final-answer semantics. Write,
-        // verification, and frontend evidence are completion-relevant deltas
-        // for delivery/application contracts.
-        const candidateIsBoundToNewEvidence = taskShape === "read_only"
-          ? currentTurnHasSuccessfulVerification
-          : currentTurnEstablishedCompletionEvidence;
-        if (candidateCompletion.complete && candidateIsBoundToNewEvidence) {
-          // The work is durably done and verified, but candidateFinalText was
-          // written in the SAME turn as this turn's tool calls, so it can be
-          // forward-looking narration rather than a real conclusion. Shipping
-          // that as the report is the "silent completion" defect (live:
-          // Pomodoro build ended with "Final check: â€¦ grab final console
-          // evidence" as its entire final message). When the text reads as
-          // mid-work narration, spend exactly one tool-free turn asking the
-          // model to write a genuine summary, then let that clean text-only
-          // turn complete through the main boundary below. Guarded so it can
-          // fire at most once â€” if the model still won't conclude, we fall
-          // through and complete with whatever text we have rather than loop.
-          if (!finalSummaryTurnRequested && isForwardLookingNarration(candidateFinalText)) {
-            finalSummaryTurnRequested = true;
-            const directive = "The implementation is complete and all required verification has already passed â€” every check you were about to run is unnecessary. Reply now with a short, concrete final summary for the user: what you built and what you verified. Do NOT call any tools; respond with prose only.";
-            event("task.progress_warning", { reason: "final_summary_requested", message: directive, turn: absoluteTurn });
-            chatMessages.push({ role: "user", content: `MORROW FINAL SUMMARY (turn ${absoluteTurn}): ${directive}` });
-            noProgressTurns = 0;
-            continue;
-          }
-          for (const step of steps) records.updatePlanStepStatus(step.id, "completed", now());
-          completeWithCanonicalAnswer(candidateFinalText, durableTurnKey);
-          return;
-        }
-      }
-    }
+    // A provider turn that includes tool calls is never a final answer: its
+    // assistant text may have been emitted before the model saw the resulting
+    // observations. Continue through the normal loop so only a subsequent
+    // tool-free model turn can end execution.
     if (completedWithoutMoreTools) {
       const recordedTurnsAtBoundary = continuity.listProviderTurns(taskId);
       finalCompletionEvaluation = await evaluateCurrentTaskCompletion(
         canonicalFinalText,
         recordedTurnsAtBoundary.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
       );
-      if (!finalCompletionEvaluation.complete && requestCompletionContractRecovery(finalCompletionEvaluation)) {
-        completedWithoutMoreTools = false;
-        canonicalFinalText = "";
-        finalCompletionEvaluation = null;
-        continue;
-      }
       // This is the last provider turn after any bounded completion recovery.
       // The final gate below either commits this verified result or records the
       // exact durable blockers; no further recovery turn is allowed.
@@ -6209,40 +5953,17 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     }
 
     if (argumentBudgetSpent) {
-      const message = `${argumentBudgetSpent.toolName} was called with invalid arguments ${argumentBudgetSpent.attempts} times after the correction budget was spent. Stopping instead of retrying further.`;
-      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
-      failCurrentSegment("tool_arguments_unrecoverable");
-      transitionAgentState("interrupted", { reason: "tool_arguments_unrecoverable", message, turns: turn });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "tool_arguments_unrecoverable", message, turns: turn } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      observePolicy("malformed_tool_arguments", {
+        toolName: argumentBudgetSpent.toolName,
+        attempts: argumentBudgetSpent.attempts,
+        turns: turn,
+      });
     }
 
     if (loopDetected) {
       const message = `Loop detected: the same action repeated ${loopDetected.count} times without new progress.`;
-      if (loopRecoveryAttempts < 1) {
-        loopRecoveryAttempts++;
-        loopDetector.reset();
-        event("task.progress_warning", {
-          reason: "loop_recovery",
-          message: `${message} One bounded recovery attempt remains.`,
-          turns: turn,
-          recoveryAttempt: loopRecoveryAttempts,
-        });
-        chatMessages.push({
-          role: "user",
-          content: `MORROW RECOVERY: ${message}\nDo not repeat that action. Continue directly with an unfinished deliverable or required verification from ORIGINAL REQUEST. If nothing useful remains, give the final result now.\n\nORIGINAL REQUEST:\n${latestUserPrompt}`,
-        });
-        continue;
-      }
-      if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
-      failCurrentSegment("loop_detected");
-      transitionAgentState("interrupted", { reason: "loop_detected", message, turns: turn });
-      records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "loop_detected", message, turns: turn } });
-      convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
-      if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-      return;
+      observePolicy("loop_detected", { message, count: loopDetected.count, turns: turn });
+      loopDetector.reset();
     }
 
     // Progress is decided by observable execution deltas â€” changed artifacts,
@@ -6287,85 +6008,14 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       });
     }
     if (noProgressTurns >= 3) {
-      const exhaustion = assessExhaustion(progressHistory.slice(progressWindowStart), {
-        diagnosisCompleted,
-        stagnantTurns: noProgressTurns,
-        availableStrategyFingerprints: [
-          strategyFingerprint,
-          // Only a mission controller can act on strategy_change_required. A
-          // standalone task cannot adopt a different provider mid-run, so
-          // listing untried fallbacks here would loop "change strategy"
-          // forever without ever reaching the standalone exhaustion ladder.
-          ...(taskMissionId
-            ? (fallbackProviders ?? []).flatMap((candidate) => (candidate.id ? [`worker:${candidate.id}:${contextModel}`] : []))
-            : []),
-        ],
-        blocker: lastVerificationFailure ? `${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : null,
-      });
-      event("task.progress_warning", {
-        reason: exhaustion.next,
-        message: exhaustion.reason,
+      observePolicy("stagnation", {
         turns: turn,
-        untriedStrategyFingerprints: exhaustion.untriedStrategyFingerprints,
+        noProgressTurns,
+        strategyFingerprint,
       });
-      if (!exhaustion.exhausted) {
-        // Bounded ladder: diagnose once, then hand a strategy change to the
-        // durable controller when one is available. Standalone tasks keep
-        // working locally because no controller can replan for them.
-        if (exhaustion.next === "focused_diagnosis") {
-          diagnosisCompleted = true;
-          chatMessages.push({
-            role: "user",
-            content: `Autonomous recovery: inspection is no longer progress. Continue original request below. Change a REQUIRED deliverable or run REQUIRED verification now. Do not create placeholder, scratch, temp, or tool-probe files. Do not repeat list_files, search_text, read_file, or narration unless a current verification error names that exact file.${lastVerificationFailure ? ` Latest verification failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
-          });
-          event("task.progress_warning", {
-            reason: "autonomous_recovery",
-            message: "Injected focused action instruction after observable stagnation.",
-            turns: turn,
-            attempt: stagnationRecoveryAttempts + 1,
-          });
-        }
-        else if (await returnMissionWorkerOutcome("strategy_change_required", exhaustion.reason)) return;
-        noProgressTurns = 0;
-        progressWindowStart = progressHistory.length;
-      } else {
-        // Standalone tasks have no mission controller to replan them. Give one
-        // final, explicit action-only recovery before interrupting. Warnings
-        // alone are event metadata and never reach provider context; without
-        // this instruction weaker routes keep inspecting until forced stop.
-        if (!taskMissionId && stagnationRecoveryAttempts < 1) {
-          stagnationRecoveryAttempts++;
-          chatMessages.push({
-            role: "user",
-            content: `Final autonomous recovery (${stagnationRecoveryAttempts}/1): stop inspecting. Finish REQUIRED deliverables from original request below, then run its test/build commands and fix failures. Do not create placeholder, scratch, temp, or tool-probe files. If deliverables already satisfy request, run verification now and return concise final answer. Do not call list_files, search_text, or read_file again unless a new verification error names a specific file.${lastVerificationFailure ? ` Current failure: ${lastVerificationFailure.tool}: ${lastVerificationFailure.detail}` : ""}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
-          });
-          event("task.progress_warning", {
-            reason: "autonomous_recovery",
-            message: "Injected final action-only recovery before interruption.",
-            turns: turn,
-            attempt: stagnationRecoveryAttempts,
-          });
-          noProgressTurns = 0;
-          // Escalation must stay monotonic: resetting diagnosisCompleted here
-          // would re-open a full focused-diagnosis cycle AFTER the final
-          // recovery, letting read-only roaming buy two more stall cycles.
-          // The final recovery is the last chance; continued stagnation now
-          // interrupts.
-          progressWindowStart = progressHistory.length;
-          continue;
-        }
-        const message = exhaustion.reason;
-        if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
-        failCurrentSegment("stalled");
-        transitionAgentState("interrupted", { reason: "stalled", message, turns: turn });
-        records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "stalled", message, turns: turn } });
-        convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Paused: ${message}]`, "interrupted", now());
-        if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-        return;
-      }
     }
 
-    if (turn >= turnCeiling) {
+    if (turnCeiling !== null && turn >= turnCeiling) {
       const checkpointId = await persistExecutionCheckpoint("adaptive_turn_boundary");
       if (interruptAtSegmentLimit(checkpointId)) return;
       currentSegment = continuity.rolloverSegment({
@@ -6415,75 +6065,53 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     canonicalFinalText,
     recordedTurns.slice(0, -1).map((providerTurn) => providerTurn.assistantText),
   );
+  observeCompletionQuality(finalCompletionEvaluation);
   const completionIsDurablySatisfied = finalCompletionEvaluation.complete;
 
-  // Completion gate: the model stopped emitting tool calls (its "I'm done"
-  // signal), but the last workspace mutation or verification it ran failed and
-  // was never recovered. Reporting "completed" here would be dishonest â€” the
-  // required change or check did not actually pass. Stop cleanly with an
-  // incomplete status instead, so the CLI and /output show the truth.
-  if (completedWithoutMoreTools && lastVerificationFailure && !completionIsDurablySatisfied) {
-    const message = `Stopping with unverified result: the last ${lastVerificationFailure.tool === "run_command" ? "verification command" : "change"} did not succeed (${lastVerificationFailure.detail}).`;
-    if (await returnMissionWorkerOutcome("validation_required", message)) return;
-    failCurrentSegment("unverified_completion");
-    transitionAgentState("interrupted", { reason: "unverified_completion", message, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "unverified_completion", message, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
+  // Post-execution evidence: the model stopped emitting tool calls (its
+  // "I'm done" signal), but the last workspace mutation or verification it ran
+  // failed and was never recovered. Preserve the model final and record the
+  // incomplete status so the CLI and /output show the truth.
+  if (completedWithoutMoreTools && lastVerificationFailure) {
+    observePolicy("verification_incomplete", {
+      tool: lastVerificationFailure.tool,
+      detail: lastVerificationFailure.detail,
+      complete: completionIsDurablySatisfied,
+      turns: turn,
+    });
   }
 
   if (!completionIsDurablySatisfied) {
-    if (await returnCompletionContractBlock(finalCompletionEvaluation)) return;
+    observePolicy("verification_incomplete", {
+      blockers: finalCompletionEvaluation.blockers.map((item) => item.code),
+      turns: turn,
+    });
   }
 
-  // Completion gate: a stalled model that re-emits the same scene-setting
-  // narration turn after turn must never have that repeated text mistaken for
-  // a genuine, novel conclusion just because it happened to arrive without a
-  // trailing tool call. Marking plan steps "completed" and storing this text
-  // as the canonical answer would be a false completion â€” stop truthfully
-  // instead, before any plan step is touched.
+  // Post-execution observation: if the model's final turn repeats scene-setting
+  // narration, retain it as the model-owned final while recording the duplicate
+  // as incomplete completion evidence.
   const priorNarration = recordedTurns.slice(0, -1).map((t) => t.assistantText);
   if (duplicatesPriorNarration(canonicalFinalText, priorNarration)) {
-    const message = "Stopping without completion: the final answer duplicates earlier intermediate narration verbatim and cannot be trusted as a genuine conclusion.";
-    if (await returnMissionWorkerOutcome("strategy_change_required", message)) return;
-    failCurrentSegment("duplicate_final_narration");
-    transitionAgentState("interrupted", { reason: "duplicate_final_narration", message, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "duplicate_final_narration", message, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
+    const message = "The final answer duplicates earlier intermediate narration; completion evidence records the duplicate without replacing the model final.";
+    observePolicy("duplicate_narration", { message, turns: turn });
   }
 
-  // Completion gate: a novel, non-duplicated final answer is not by itself
-  // proof that a requested implementation happened. If the request's own
-  // wording asks for a workspace change (agent mode only â€” read-only/plan-only
-  // modes never expose a write tool, so Journey A's "diagnose, do not modify"
-  // requests must still complete), require that a write tool actually
-  // completed before honoring "no more tool calls" as done.
+  // Post-execution observation: a novel final answer is not by itself proof
+  // that a requested implementation happened. Record missing delivery when an
+  // agent-mode request has no completed write, while still honoring the model's
+  // final output as the end of execution.
   if (agentMode === "agent"
     && requestsWorkspaceChange(latestUserPrompt)
     && !convs.listToolCallsForMessage(assistantMessageRow.id).some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed")) {
-    const message = "Stopping without completion: the request asks for a workspace change, but no write tool ever completed â€” there is no delivery evidence to justify completion.";
-    if (await returnMissionWorkerOutcome("validation_required", message)) return;
-    failCurrentSegment("missing_delivery_evidence");
-    transitionAgentState("interrupted", { reason: "missing_delivery_evidence", message, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "missing_delivery_evidence", message, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
+    const message = "The request asks for a workspace change, but no write tool completed; completion evidence records missing delivery without replacing the model final.";
+    observePolicy("missing_delivery", { message, turns: turn });
   }
 
   const frontendGaps = frontendValidationGaps(convs.listToolCallsForMessage(assistantMessageRow.id));
   if (frontendGaps.length > 0) {
-    const message = `Stopping without completion: responsive browser validation is incomplete (${frontendGaps.join(", ")}).`;
-    if (await returnMissionWorkerOutcome("validation_required", message)) return;
-    failCurrentSegment("frontend_browser_validation_required");
-    transitionAgentState("interrupted", { reason: "frontend_browser_validation_required", message, gaps: frontendGaps, turns: turn });
-    records.transitionTask(taskId, "interrupted", { id: randomUUID(), createdAt: now(), payload: { reason: "frontend_browser_validation_required", message, gaps: frontendGaps, turns: turn } });
-    convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
-    if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
-    return;
+    const message = `Responsive browser validation remains incomplete (${frontendGaps.join(", ")}); completion evidence records the gaps without replacing the model final.`;
+    observePolicy("frontend_validation", { message, gaps: frontendGaps, turns: turn });
   }
 
   // Complete plan steps

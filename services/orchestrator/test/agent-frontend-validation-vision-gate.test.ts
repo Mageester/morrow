@@ -6,6 +6,7 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import type { BrowserController, BrowserEvidence, BrowserViewport, PageSnapshot } from "../src/browser/types.js";
@@ -276,7 +277,7 @@ describe("frontend-validation completion gate — vision requirement", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not complete when browser console evidence reports an error", async () => {
+  it("completes model output while recording browser console errors", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
     const provider = new MockProvider({
       chunks: [
@@ -290,7 +291,8 @@ describe("frontend-validation completion gate — vision requirement", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
   it("completes despite benign non-error console noise (regression: diligent console checks were penalized)", async () => {
@@ -319,7 +321,7 @@ describe("frontend-validation completion gate — vision requirement", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not complete when the durable browser route result reports navigation failure", async () => {
+  it("completes model output while recording durable browser navigation failure", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
     const provider = new MockProvider({
       chunks: [
@@ -333,10 +335,11 @@ describe("frontend-validation completion gate — vision requirement", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
-  it("does not complete when the durable DOM snapshot result is malformed", async () => {
+  it("completes model output while recording a malformed durable DOM snapshot", async () => {
     seed(db, ws, "Build a small website and verify it in the browser.", "mock", "mock-model");
     const provider = new MockProvider({
       chunks: [
@@ -350,7 +353,8 @@ describe("frontend-validation completion gate — vision requirement", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
   it("still requires vision-attached screenshots on a route that genuinely supports vision (no regression)", async () => {

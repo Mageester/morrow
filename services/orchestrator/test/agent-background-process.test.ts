@@ -229,7 +229,7 @@ describe("agent background processes (full-stack dev-server capability)", () => 
     expect(provider.requests).toHaveLength(21);
   });
 
-  it("does not let an infinite process offset escape the stagnation boundary", async () => {
+  it("does not let an infinite process offset terminate useful work", async () => {
     const prompt = "Create a local page, start a background server, inspect its output, open it in the browser, and stop the background server before completing.";
     seed(db, ws, "agent", prompt);
 
@@ -286,24 +286,18 @@ describe("agent background processes (full-stack dev-server capability)", () => 
       "read_process_output",
       '{"processId":"owned-process","stream":"stdout","offset":1e999}',
     ), done]);
-    chunks.push([{
-      type: "tool_call",
-      toolCalls: [
-        { ...tool("browser", "browser_open", { url: "http://127.0.0.1:50065/" }).toolCalls[0]!, index: 0 },
-        { ...tool("cleanup", "stop_process", { processId: "owned-process", force: true }).toolCalls[0]!, index: 1 },
-      ],
-    }, done]);
+    chunks.push([text("The background process remains available after the extended diagnosis."), done]);
 
     const provider = new MockProvider({ chunks });
     await executeAgentChatTask({ db, taskId: "t", provider, supervisor, maxTurns: 32 });
 
     expect(readOffsets).toEqual([0, 0]);
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     const calls = conversationsRepository(db).listToolCallsForTask("t");
     expect(calls.find((call: any) => call.id === "infinite-offset")?.status).toBe("completed");
-    expect(calls.some((call: any) => call.toolName === "browser_open")).toBe(false);
     expect(calls.some((call: any) => call.toolName === "stop_process")).toBe(false);
-    expect(provider.requests).toHaveLength(20);
+    expect(provider.requests).toHaveLength(21);
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.payload?.signal === "stagnation")).toBe(true);
   });
 
   it("refuses to read or stop a process belonging to a different project", async () => {

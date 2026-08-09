@@ -413,9 +413,9 @@ describe("durable agent segments", () => {
 
   it.each([
     { label: "unchanged", mutate: (_path: string) => undefined, expected: "completed" },
-    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "interrupted" },
-    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "interrupted" },
-  ])("replays a persisted CLI artifact fingerprint only when the workspace is $label", async ({ mutate, expected }) => {
+    { label: "changed", mutate: (path: string) => writeFileSync(path, "console.log('changed');\n"), expected: "completed" },
+    { label: "missing", mutate: (path: string) => unlinkSync(path), expected: "completed" },
+  ])("replays a persisted CLI artifact fingerprint with honest evidence for $label", async ({ label, mutate, expected }) => {
     const workspace = mkdtempSync(join(tmpdir(), `morrow-artifact-replay-${expected}-`));
     const db = openDatabase(":memory:");
     const taskId = `artifact-replay-${expected}`;
@@ -465,11 +465,11 @@ describe("durable agent segments", () => {
 
       expect(providerCalls).toBe(0);
       expect(taskRepository(db).getTaskById(taskId)?.status).toBe(expected);
-      if (expected === "completed") {
-        expect(continuity.getCanonicalAnswer(taskId)?.content).toBe("The CLI artifact is complete and verified.");
-      } else {
-        expect(continuity.getCanonicalAnswer(taskId)).toBeNull();
-      }
+      const canonical = continuity.getCanonicalAnswer(taskId);
+      expect(canonical?.content).toBe("The CLI artifact is complete and verified.");
+      const evidence = canonical?.evidenceJson as { completion?: { complete?: boolean; blockers?: unknown[] } } | undefined;
+      expect(evidence?.completion?.complete).toBe(label === "unchanged");
+      if (label !== "unchanged") expect(evidence?.completion?.blockers?.length ?? 0).toBeGreaterThan(0);
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

@@ -12,6 +12,7 @@ import { taskRoutingRepository } from "../src/repositories/task-routing.js";
 import { missionRuntimeRepository } from "../src/repositories/mission-runtime.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
 import { MockProvider } from "../src/provider/mock.js";
+import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 
 const TASK_SHAPES = [
   "read_only",
@@ -424,7 +425,8 @@ describe("evidence-driven task completion contracts", () => {
       seedMissionLineage(db, "mission-a", "task-a", "task-b");
       const unrelatedProvider = new MockProvider({ chunks: [[{ type: "text", text: "Inspection complete from unrelated task evidence." }, providerDone]] });
       await executeAgentChatTask({ db, taskId: "task-b", provider: unrelatedProvider, maxTurns: 2 });
-      expect(taskRepository(db).getTaskById("task-b")!.status).toBe("interrupted");
+      expect(taskRepository(db).getTaskById("task-b")!.status).toBe("completed");
+      expect(executionContinuityRepository(db).getCanonicalAnswer("task-b")?.evidenceJson).toMatchObject({ completion: { complete: false } });
 
       seedMissionTask(db, workspace, "task-d", "mission-b", "Inspect the workspace and report findings.");
       seedMissionTask(db, workspace, "task-c", "mission-b", "Inspect the workspace and report findings.");
@@ -454,7 +456,8 @@ describe("evidence-driven task completion contracts", () => {
       runner.run("cli-task");
       await runner.waitFor("cli-task");
 
-      expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("interrupted");
+      expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
+      expect(executionContinuityRepository(db).getCanonicalAnswer("cli-task")?.evidenceJson).toMatchObject({ completion: { complete: false } });
       expect(provider.requests).toHaveLength(2);
     } finally {
       db.close();
@@ -462,7 +465,7 @@ describe("evidence-driven task completion contracts", () => {
     }
   }, 60_000);
 
-  it("closes a verified CLI turn before requesting repeated read-only process polling", async () => {
+  it("lets the model decide whether to continue polling after a verified CLI turn", async () => {
     const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-cli-contract-")));
     const db = openDatabase(":memory:");
     try {
@@ -488,15 +491,17 @@ describe("evidence-driven task completion contracts", () => {
       await runner.waitFor("cli-task");
 
       expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
-      expect(provider.requests).toHaveLength(3);
-      expect(conversationsRepository(db).listToolCallsForTask("cli-task").map((call: any) => call.id)).toEqual(["write", "syntax", "behavior"]);
+      expect(provider.requests).toHaveLength(7);
+      expect(conversationsRepository(db).listToolCallsForTask("cli-task").map((call: any) => call.id)).toEqual([
+        "write", "syntax", "behavior", "poll-1", "poll-2", "poll-3",
+      ]);
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });
     }
   }, 60_000);
 
-  it("evaluates a visible candidate after a non-verification provider turn before another request", async () => {
+  it("does not accept a visible candidate from a tool-bearing provider turn", async () => {
     const workspace = realpathSync(mkdtempSync(join(tmpdir(), "morrow-file-delivery-turn-")));
     const db = openDatabase(":memory:");
     try {
@@ -508,7 +513,7 @@ describe("evidence-driven task completion contracts", () => {
             providerTool("write", "create_file", { path: "report.md", content: "# Report\n" }),
             providerDone,
           ],
-          [{ type: "text", text: "unnecessary follow-up" }, providerDone],
+          [{ type: "text", text: "The final report is delivered." }, providerDone],
         ],
         delayMs: 1,
       });
@@ -517,8 +522,8 @@ describe("evidence-driven task completion contracts", () => {
       await runner.waitFor("cli-task");
 
       expect(taskRepository(db).getTaskById("cli-task")!.status).toBe("completed");
-      expect(provider.requests).toHaveLength(1);
-      expect(conversationsRepository(db).getMessage("cli-assistant")!.content).toBe("The requested report is delivered.");
+      expect(provider.requests).toHaveLength(2);
+      expect(conversationsRepository(db).getMessage("cli-assistant")!.content).toBe("The final report is delivered.");
     } finally {
       db.close();
       rmSync(workspace, { recursive: true, force: true });

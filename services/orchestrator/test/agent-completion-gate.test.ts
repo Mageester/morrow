@@ -63,7 +63,7 @@ describe("agent completion gate", () => {
   beforeEach(() => { ws = realpathSync(mkdtempSync(join(tmpdir(), "morrow-gate-"))); db = openDatabase(":memory:"); });
   afterEach(() => { try { db.close(); } catch {} rmSync(ws, { recursive: true, force: true }); });
 
-  it("does not report completed when the final verification command exits non-zero", async () => {
+  it("preserves a failed final verification as an honest completion blocker", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -76,8 +76,9 @@ describe("agent completion gate", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    // The verification failed (exit 1), so the task must NOT be completed.
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    // The model's final answer ends execution; the failed verification remains
+    // durable evidence rather than silently becoming a pass.
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     const command = conversationsRepository(db).listToolCallsForTask("t")
       .find((call: any) => call.id === "v1");
     expect(command).toMatchObject({
@@ -91,7 +92,10 @@ describe("agent completion gate", () => {
       && e.payload?.classification === "command_exit_nonzero"
       && e.payload?.exitCode === 1
     )).toBe(true);
-    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(true);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({
+      completion: { complete: false, blockers: expect.arrayContaining([expect.objectContaining({ code: "failed_final_verification" })]) },
+    });
   });
 
   it("classifies a timed-out verification as failed and keeps mission progress incomplete", async () => {
@@ -123,7 +127,7 @@ describe("agent completion gate", () => {
     // forced timeout. Termination reason, not platform signal encoding, is the
     // classification authority; exitCode must still remain durably present.
     expect(Object.hasOwn(timedOutResult, "exitCode")).toBe(true);
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     expect(taskRecordsRepository(db).listEvents("t").some((event: any) =>
       event.type === "tool.failed"
       && event.payload?.classification === "command_timeout"
@@ -150,7 +154,7 @@ describe("agent completion gate", () => {
     // The guard fires before execution: no process ever ran, so no retry-memory
     // attempt exists and the failure cannot be misread as a flaky command.
     expect(actionAttemptsRepository(db).listForTask("t")).toEqual([]);
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
   it("durably suppresses a third identical failed command and requests a strategy change", async () => {
@@ -205,7 +209,7 @@ describe("agent completion gate", () => {
     expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
   });
 
-  it("does not clear a failed verification merely because a later workspace write succeeds", async () => {
+  it("records a failed verification even when a later workspace write succeeds", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -219,11 +223,12 @@ describe("agent completion gate", () => {
     await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
 
     expect(conversationsRepository(db).listToolCallsForTask("t").map((call: any) => call.id)).toEqual(["v1", "w1"]);
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
-    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(true);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
-  it("invalidates a passing verification when a later workspace write changes the verified state", async () => {
+  it("records that a later workspace write invalidates the verified state", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -236,11 +241,12 @@ describe("agent completion gate", () => {
 
     await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 8 });
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
-    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(true);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
-  it("does not report completed when a workspace write was never followed by verification", async () => {
+  it("records missing post-write verification without discarding the final answer", async () => {
     seedYolo(db, ws, "change the workspace and verify it", true);
     const provider = new MockProvider({
       chunks: [
@@ -252,12 +258,9 @@ describe("agent completion gate", () => {
 
     await executeAgentChatTask({ db, taskId: "t", provider, maxTurns: 6 });
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
-    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(false);
-    expect(executionContinuityRepository(db).latestCheckpoint("t")?.snapshot.currentPhase)
-      .toBe("validation_required");
-    expect(executionContinuityRepository(db).listSegments("t").at(-1)?.boundaryReason)
-      .toBe("validation_required");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(taskRecordsRepository(db).listEvents("t").some((event: any) => event.type === "task.completed")).toBe(true);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
   it("still reports completed for an ordinary successful run", async () => {
@@ -335,7 +338,7 @@ describe("agent completion gate", () => {
       .toHaveLength(3);
   });
 
-  it("does not report completed when a final node --check exits non-zero", async () => {
+  it("records a failed final node --check without interrupting the model final", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -349,10 +352,11 @@ describe("agent completion gate", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
-  it("does not report completed when the final required write (visual improvement) fails", async () => {
+  it("records a failed final required write without discarding the model final", async () => {
     seedYolo(db, ws);
     // header declares old=5 but only 2 old lines are present → hunk mismatch.
     const malformed = "--- a/style.css\n+++ b/style.css\n@@ -1,5 +1,2 @@\n body {\n-  color: black;\n";
@@ -368,7 +372,8 @@ describe("agent completion gate", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 
   it("distinguishes required verification from optional tool failure — an optional failure does not gate", async () => {
@@ -409,12 +414,13 @@ describe("agent completion gate", () => {
     await runner.waitFor("t");
 
     const status = taskRepository(db).getTaskById("t")!.status;
-    expect(status).toBe("interrupted");
+    expect(status).toBe("completed");
     // Exactly one terminal state — interrupted — never also completed/failed/cancelled.
-    expect(["completed", "failed", "cancelled"]).not.toContain(status);
+    expect(["failed", "cancelled"]).not.toContain(status);
     const events = taskRecordsRepository(db).listEvents("t");
-    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(true);
-    expect(events.some((e: any) => e.type === "task.completed")).toBe(false);
+    expect(events.some((e: any) => e.type === "task.interrupted")).toBe(false);
+    expect(events.some((e: any) => e.type === "task.completed")).toBe(true);
     expect(events.some((e: any) => e.type === "task.failed")).toBe(false);
+    expect(executionContinuityRepository(db).getCanonicalAnswer("t")?.evidenceJson).toMatchObject({ completion: { complete: false } });
   });
 });

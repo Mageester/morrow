@@ -306,7 +306,7 @@ describe("agent patch recovery", () => {
     expect(feedback.instruction).toMatch(/Re-read|reread|currentFile\.content/i);
   });
 
-  it("does not count narration around failed patch calls as observable progress", async () => {
+  it("does not let narration and failed patch calls interrupt the model loop", async () => {
     seedYolo(db, ws);
     const provider = new MockProvider({
       chunks: [
@@ -324,10 +324,10 @@ describe("agent patch recovery", () => {
     runner.run("t");
     await runner.waitFor("t");
 
-    expect(taskRepository(db).getTaskById("t")!.status).toBe("interrupted");
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
     expect(readFileSync(join(ws, "index.html"), "utf8")).toBe("<main>\n  <h1>current</h1>\n</main>\n");
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((e: any) => e.type === "task.progress_warning")).toBe(true);
-    expect(conversationsRepository(db).listMessages("c").find((m: any) => m.id === "ma")?.streamingState).toBe("interrupted");
+    expect(conversationsRepository(db).listMessages("c").find((m: any) => m.id === "ma")?.streamingState).toBe("completed");
   });
 });
