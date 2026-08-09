@@ -54,6 +54,7 @@ import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
+import { observeProcessOutputProgress, seedProcessObservationStatus, type ProcessObservationState } from "./process-observation-progress.js";
 import { evaluateTaskCompletion, inferTaskShape, requiresBackgroundProcessCleanup, type CompletionInput, type CompletionResult } from "./completion-contract.js";
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
 import {
@@ -2490,6 +2491,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   const seenToolSignatures = new Set<string>();
   const seenProgressFingerprints = new Set<string>();
   const toolResultBytesBySignature = new Map<string, number>();
+  const processObservationStates = new Map<string, ProcessObservationState>();
   // Artifact ids this task was actually handed. `read_artifact` serves only
   // these, so a task can never enumerate the store or reach another task's
   // captured output. Seeded from durable tool results below so the permission
@@ -4032,6 +4034,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     let argumentBudgetSpent: { toolName: string; attempts: number } | null = null;
     let hasToolCalls = false;
     const currentToolCalls: any[] = [];
+    let currentTurnHasNovelProcessObservation = false;
     let currentReasoningContent = "";
     let currentServedBy = providerType as string;
     let currentRouteFingerprint = primaryRouteFingerprint;
@@ -5158,9 +5161,22 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
             const owned = processesRepo.get(processId);
             if (!owned || owned.projectId !== project.id) throw new Error(`Process not found: ${processId}`);
             const stream = args.stream === "stderr" ? "stderr" : "stdout";
-            const offset = typeof args.offset === "number" && args.offset >= 0 ? Math.floor(args.offset) : 0;
+            const offset = typeof args.offset === "number" && Number.isFinite(args.offset) && args.offset >= 0 ? Math.floor(args.offset) : 0;
             const slice = procSupervisor.readOutput(processId, stream, offset, 64 * 1024);
-            resultStr = JSON.stringify({ processId, stream, status: processesRepo.get(processId)?.status ?? owned.status, ...slice });
+            const status = processesRepo.get(processId)?.status ?? owned.status;
+            resultStr = JSON.stringify({ processId, stream, status, ...slice });
+            if (owned.taskId === taskId) {
+              const observationKey = `${processId}:${stream}`;
+              const previous = processObservationStates.get(observationKey)
+                ?? seedProcessObservationStatus(undefined, owned.status);
+              const observed = observeProcessOutputProgress(previous, {
+                status,
+                offset,
+                nextOffset: slice.nextOffset,
+              });
+              processObservationStates.set(observationKey, observed.state);
+              if (observed.progress) currentTurnHasNovelProcessObservation = true;
+            }
             event("workspace.inspected", { kind: "read_process_output", processId, truncated: slice.truncated });
           } else if (tc.name === "stop_process") {
             const processId = args.processId;
@@ -6184,7 +6200,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       && novelPostDeliveryReadTurns < postDeliveryReadTurnLimit
       && completedToolSignatures.length > repeatedToolSignatures.length
       && currentToolCalls.some((call) => READ_ONLY_TOOL_NAMES.has(call.name));
-    const madeProgress = meaningfulDelta || boundedNovelRead;
+    const madeProgress = meaningfulDelta || boundedNovelRead || currentTurnHasNovelProcessObservation;
     if (meaningfulDelta) novelPostDeliveryReadTurns = 0;
     else if (boundedNovelRead) novelPostDeliveryReadTurns++;
     noProgressTurns = madeProgress ? 0 : noProgressTurns + 1;
