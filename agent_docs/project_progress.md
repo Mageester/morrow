@@ -47,6 +47,6 @@
 
 ## Blockers and next action
 
-No current blocker. The existing scenario control run passed, the web scenario is implemented, and focused tests, the full orchestrator suite, repository typecheck, and build are green.
+No current blocker. The first live web run exposed a completion-contract defect: Morrow requested a tool-free summary while an explicitly required task-owned server was still running. The owning completion boundary now models that cleanup obligation; focused regressions, the full orchestrator suite, repository typecheck, and build are green.
 
-Next: commit the deterministic implementation, then invoke one DeepSeek `flagship-web-v1` run. Stop immediately on a failure and diagnose the retained task before any retry.
+Next: commit the completion-boundary regression fix and append-only evidence, then rerun the same DeepSeek `flagship-web-v1` task definition once. Stop immediately on any failure before another attempt.

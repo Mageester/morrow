@@ -15,18 +15,20 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - Added `flagship-web-v1`, shared run mechanics, the exact pre-generation `harness_error` rule, harness-owned hidden checks, real evidence-runner defaults, supervised-server evidence requirements, and explicit live scenario selection.
 - Synchronized and committed the merged working agreement and Medium/Heavy workflow files from the main checkout.
 - Passed focused tests, the complete orchestrator deterministic suite, repository typecheck, and production build.
+- Ran the first serialized DeepSeek web scenario and stopped on its first failure as required.
+- Traced the divergence to the completion fast path: after browser verification, Morrow emitted `final_summary_requested` and forbade tools while the task-owned server still required `stop_process`.
+- Added a completion-contract lifecycle blocker scoped to explicit cleanup language and task-owned running processes, plus pure-contract and full-agent regressions. Revalidated the full orchestrator suite, repository typecheck, and build.
 
 ## In progress
 
-- Commit the completed deterministic scenario implementation and begin serialized DeepSeek live validation.
+- Commit the completion-boundary fix and rerun one identical DeepSeek web scenario.
 
 ## Pending
 
-- On the first live web failure, stop and capture the complete retained-task divergence record before changing code.
-- Fix only the owning boundary, add a deterministic class regression, and rerun the same task.
+- Stop and diagnose again if the rerun fails; never launch a second unresolved attempt.
 - Reach ten consecutive DeepSeek passes before invoking OpenCode Zen.
 - Reconcile documentation and evidence at completion or handoff.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md`. The next command is one explicit DeepSeek web run with `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts.
+Read `agent_docs/project_progress.md`. Commit the verified lifecycle fix, then run one explicit DeepSeek web scenario with `MORROW_FLAGSHIP_SCENARIO=flagship-web-v1`; do not batch attempts.

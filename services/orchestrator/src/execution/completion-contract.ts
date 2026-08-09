@@ -45,7 +45,8 @@ export type CompletionBlockerCode =
   | "frontend_console_unclean"
   | "frontend_interaction_missing"
   | "frontend_viewports_incomplete"
-  | "frontend_vision_missing";
+  | "frontend_vision_missing"
+  | "background_process_running";
 
 export interface CompletionBlocker {
   code: CompletionBlockerCode;
@@ -136,6 +137,14 @@ export interface CompletionInput {
   /** A durable gate result supplied by the agent when the last mutation failed. */
   lastMutationOrVerification?: { passed: boolean; detail?: string } | null;
   stagnation?: { stalled?: boolean; reason?: string; interruptionPending?: boolean };
+  /** Task-owned processes that remain live at the completion boundary. */
+  runningBackgroundProcesses?: readonly { id: string; command: string }[];
+  /** True only when the user's prompt explicitly requires cleanup before completion. */
+  requiresBackgroundProcessCleanup?: boolean;
+}
+
+export function requiresBackgroundProcessCleanup(prompt: string): boolean {
+  return /\b(?:stop|terminate|shut\s+down|close)\b[^.\n]{0,160}\b(?:background\s+process|dev(?:elopment)?\s+server|server)\b[^.\n]{0,160}\b(?:before\s+(?:finishing|completion|completing)|when\s+(?:finished|done))\b/i.test(prompt);
 }
 
 export interface CompletionContract {
@@ -305,6 +314,13 @@ function evaluateCommon(input: CompletionInput, contract: CompletionContract, bl
     blockers.push(blocker("failed_final_verification", `The last mutation or verification failed${input.lastMutationOrVerification.detail ? `: ${input.lastMutationOrVerification.detail}` : "."}`));
   }
   evaluateRequirements(input, blockers);
+  if (input.requiresBackgroundProcessCleanup === true && (input.runningBackgroundProcesses?.length ?? 0) > 0) {
+    blockers.push(blocker(
+      "background_process_running",
+      "A task-owned background process is still running even though the request requires it to be stopped before completion.",
+      { evidence: input.runningBackgroundProcesses!.map((process) => `${process.id}: ${process.command}`) },
+    ));
+  }
 }
 
 export const TASK_COMPLETION_CONTRACTS: Record<TaskShape, CompletionContract> = {

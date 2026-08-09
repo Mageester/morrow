@@ -6,6 +6,8 @@ import { taskRepository } from "../src/repositories/tasks.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { processesRepository } from "../src/repositories/processes.js";
+import { ProcessSupervisor } from "../src/processes/supervisor.js";
 import { MockProvider } from "../src/provider/mock.js";
 import { executeAgentChatTask, isForwardLookingNarration } from "../src/execution/agent.js";
 import type { BrowserController, BrowserViewport, PageSnapshot } from "../src/browser/types.js";
@@ -196,6 +198,57 @@ describe("completion fast path — browser_open exclusion", () => {
     // And the directed-summary turn must have actually been requested.
     const events = taskRecordsRepository(db).listEvents("t");
     expect(events.some((e: any) => e.type === "task.progress_warning" && e.payload?.reason === "final_summary_requested")).toBe(true);
+  });
+
+  it("does not request a tool-free final summary while explicitly required process cleanup remains", async () => {
+    seed(db, ws, "Build a small website, verify it in the browser, then stop the background process before finishing.");
+    const supervisor = new ProcessSupervisor(processesRepository(db), join(home, "process-logs"));
+    const started = await supervisor.start({
+      projectId: "p",
+      taskId: "t",
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: ws,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [tool("c1", "create_file", { path: "index.html", content: "<!doctype html><html><body><button id=e1>Inspect</button></body></html>\n" }), done],
+        [{
+          type: "tool_call" as const,
+          toolCalls: [
+            tool("bo1", "browser_open", { url: "http://127.0.0.1:4173/" }).toolCalls[0]!,
+            tool("bs", "browser_snapshot", {}).toolCalls[0]!,
+            tool("bc", "browser_console", {}).toolCalls[0]!,
+            tool("bi", "browser_click", { ref: "e1" }).toolCalls[0]!,
+            tool("bd", "browser_viewport", { preset: "desktop" }).toolCalls[0]!,
+            tool("bds", "browser_screenshot", { label: "desktop" }).toolCalls[0]!,
+            tool("bt", "browser_viewport", { preset: "tablet" }).toolCalls[0]!,
+            tool("bts", "browser_screenshot", { label: "tablet" }).toolCalls[0]!,
+            tool("bm", "browser_viewport", { preset: "mobile" }).toolCalls[0]!,
+            tool("bms", "browser_screenshot", { label: "mobile" }).toolCalls[0]!,
+          ].map((call, index) => ({ ...call, index })),
+        }, done],
+        [text("All three screenshots captured. Final DOM and console check:"), {
+          type: "tool_call" as const,
+          toolCalls: [
+            tool("fs", "browser_snapshot", {}).toolCalls[0]!,
+            tool("fc", "browser_console", {}).toolCalls[0]!,
+          ].map((call, index) => ({ ...call, index })),
+        }, done],
+        [tool("stop", "stop_process", { processId: started.id, force: true }), done],
+        [text("Built and browser-verified the website, then stopped its background server."), done],
+      ],
+      delayMs: 1,
+    });
+    const runner = new TaskRunner(db, async (d) => executeAgentChatTask({ db: d.db, taskId: d.taskId, provider, supervisor, browserFactory: () => new FrontendBrowser(), maxTurns: 16 }));
+    runner.run("t");
+    await runner.waitFor("t");
+
+    expect(taskRepository(db).getTaskById("t")!.status).toBe("completed");
+    expect(processesRepository(db).get(started.id)?.status).not.toBe("running");
+    expect(conversationsRepository(db).listToolCallsForTask("t").some((call) => call.id === "stop" && call.status === "completed")).toBe(true);
+    const events = taskRecordsRepository(db).listEvents("t");
+    expect(events.some((event: any) => event.type === "task.progress_warning" && event.payload?.reason === "final_summary_requested")).toBe(false);
   });
 });
 

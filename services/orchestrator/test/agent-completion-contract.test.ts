@@ -171,6 +171,33 @@ describe("evidence-driven task completion contracts", () => {
     expect(result).toEqual({ complete: true, blockers: [] });
   });
 
+  it("blocks completion while an explicitly required task-owned background process is still running", async () => {
+    const completion = await loadCompletionContractModule();
+    if (!completion) return;
+
+    const result = completion.evaluateTaskCompletion({
+      taskShape: "frontend_application",
+      canonicalFinalAnswer: "The frontend is built and verified.",
+      ...verifiedArtifactEvidence,
+      durableObservations: [{ id: "observation-1", kind: "workspace", independentlyObserved: true }],
+      frontend: {
+        routeHealthy: true,
+        domSnapshot: true,
+        consoleClean: true,
+        interaction: true,
+        viewports: ["1440x900", "768x1024", "390x844"],
+      },
+      requirements: requirementsSatisfied,
+      requiresBackgroundProcessCleanup: true,
+      runningBackgroundProcesses: [{ id: "process-1", command: "pnpm start" }],
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "background_process_running" }),
+    ]));
+  });
+
   it.each([
     ["Review and fix the CLI application in app.mjs.", "cli_application"],
     ["Inspect and implement the responsive frontend dashboard.", "frontend_application"],

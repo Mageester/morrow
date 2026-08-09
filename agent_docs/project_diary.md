@@ -18,14 +18,18 @@ Acceptance checkers are trusted harness code outside the model-visible workspace
 
 Default tests are deterministic and non-live. Real-provider streaks are deferred to a dedicated Medium-route session and run one at a time because flagship executions share ports, SQLite state, and temporary workspaces.
 
+### 2026-08-09 - Explicit process cleanup is part of task completion
+
+When a user explicitly requires a task-owned background process to be stopped before completion, the completion contract must treat any still-running process as a blocker. The fast path must not request a tool-free final summary while that blocker exists, because doing so forbids the required `stop_process` action. The rule is scoped to task-owned processes and explicit cleanup language so requests that intentionally leave a service running remain valid.
+
 ## Reliability lessons
 
 - A passing deterministic suite does not prove a boundary has survived a real provider and real process lifecycle.
 - Fix an entire defect class at its owning boundary, then enumerate every implementation before making a completion claim.
 - Avoid duplicated status facts when an append-only or changelog record already exists; link to the durable source.
 - Do not gain green tests by relaxing assertions, extending sleeps, raising timeouts, or skipping coverage.
+- A completion directive that says no more tools are needed is itself a boundary decision; it must account for unresolved resource-lifecycle obligations, not only artifact and verification evidence.
 
 ## Deferred issue
 
 `buildProviderProjection` still needs a durable fix so `_morrowAppliedWrite` is not converted into a re-emittable `create_file` or `propose_patch` call. This is outside the flagship-web-v1 deliverable unless it directly blocks the new scenario.
-

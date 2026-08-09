@@ -54,7 +54,7 @@ import { redactSecrets } from "../provider/credentials.js";
 import { adaptiveTurnCeiling, toolProgressFingerprint, turnMadeProgress } from "./adaptive-budget.js";
 import { createLoopDetector, toolCallSignature, duplicatesPriorNarration } from "./loop-detector.js";
 import { assessArtifactDelivery, createProgressEpoch, type ObservationRecord } from "./progress-epoch.js";
-import { evaluateTaskCompletion, inferTaskShape, type CompletionInput, type CompletionResult } from "./completion-contract.js";
+import { evaluateTaskCompletion, inferTaskShape, requiresBackgroundProcessCleanup, type CompletionInput, type CompletionResult } from "./completion-contract.js";
 import { projectCheckpointSnapshot } from "./checkpoint-snapshot.js";
 import {
   canCompleteWithRequirements,
@@ -3489,6 +3489,9 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     ];
     const completionState = completionStateFromCalls(calls);
     const frontend = frontendCompletionEvidence(calls);
+    const runningBackgroundProcesses = processesRepo.listByProject(projectId, "running")
+      .filter((process) => process.taskId === taskId)
+      .map((process) => ({ id: process.id, command: `${process.command} ${process.args.join(" ")}`.trim() }));
     return {
       taskShape,
       canonicalFinalAnswer,
@@ -3501,6 +3504,8 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       requirements: { requirements: executionRequirements, evaluations: requirementEvaluations },
       lastMutationOrVerification: completionState.failure ? { passed: false, detail: completionState.failure.detail } : null,
       stagnation: { stalled: noProgressTurns >= 3 },
+      requiresBackgroundProcessCleanup: requiresBackgroundProcessCleanup(latestUserPrompt),
+      runningBackgroundProcesses,
     };
   };
 
