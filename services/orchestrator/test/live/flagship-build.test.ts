@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runFlagshipBuild, type FlagshipBuildRun } from "../../src/acceptance/flagship-build.js";
-import { appendFlagshipRun, evaluateFlagshipGate, FLAGSHIP_SCENARIO_IDS, isLiveProviderOptedIn, readFlagshipLog } from "../../src/acceptance/flagship-gate.js";
+import { runFlagshipWeb } from "../../src/acceptance/flagship-web.js";
+import { appendFlagshipRun, evaluateFlagshipGate, FLAGSHIP_SCENARIO_IDS, isLiveProviderOptedIn, readFlagshipLog, resolveFlagshipScenarioId } from "../../src/acceptance/flagship-gate.js";
 import type { FlagshipScenarioId } from "../../src/acceptance/flagship-gate.js";
 import { getProviderDefaultModel, isProviderConfigured } from "../../src/provider/registry.js";
 import { hydrateProviderEnvFromSecrets } from "../../src/provider/secrets.js";
@@ -27,6 +28,7 @@ import { readFlagshipEvidenceScenarioIds } from "../flagship-evidence.js";
  * Environment:
  *   MORROW_FLAGSHIP_RUNS       runs per provider (default 1; the gate needs 10)
  *   MORROW_FLAGSHIP_PROVIDERS  comma-separated provider ids (default: every configured candidate)
+ *   MORROW_FLAGSHIP_SCENARIO   required registered scenario id
  *   MORROW_FLAGSHIP_LOG        run log path (default docs/evidence/flagship-runs.jsonl)
  *   MORROW_SKIP_LIVE_FLAGSHIP=1  skip entirely
  *
@@ -232,6 +234,7 @@ describe("live: the flagship workflow against real models", () => {
     }
 
     const logPath = process.env.MORROW_FLAGSHIP_LOG ?? DEFAULT_LOG;
+    const scenarioId = resolveFlagshipScenarioId(process.env.MORROW_FLAGSHIP_SCENARIO);
     const runsPerProvider = Math.max(1, Number(process.env.MORROW_FLAGSHIP_RUNS ?? 1) || 1);
     const recorded: FlagshipBuildRun[] = [];
 
@@ -245,7 +248,9 @@ describe("live: the flagship workflow against real models", () => {
       for (let attempt = 0; attempt < runsPerProvider; attempt++) {
         const root = mkdtempSync(join(tmpdir(), "morrow-flagship-live-"));
         roots.push(root);
-        const run = await runFlagshipBuild({ root, providerId, model });
+        const run = scenarioId === "flagship-web-v1"
+          ? await runFlagshipWeb({ root, providerId, model })
+          : await runFlagshipBuild({ root, providerId, model });
         if (!run.passed) {
           roots.splice(roots.indexOf(root), 1);
         }
@@ -262,7 +267,7 @@ describe("live: the flagship workflow against real models", () => {
     // Never fabricate: the run log is the deliverable, and every run reached it.
     expect(recorded.length).toBeGreaterThan(0);
 
-    const gate = evaluateFlagshipGate(readFlagshipLog(logPath), { scenarioId: "flagship-build-v1" });
+    const gate = evaluateFlagshipGate(readFlagshipLog(logPath), { scenarioId });
     // eslint-disable-next-line no-console
     console.log(`[live] flagship gate: ${gate.summary}`);
 

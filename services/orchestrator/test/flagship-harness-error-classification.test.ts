@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFlagshipGate } from "../src/acceptance/flagship-gate.js";
 import type { FlagshipBuildRun, FlagshipFailureReason } from "../src/acceptance/flagship-build.js";
+import { isPreGenerationHarnessFailure } from "../src/acceptance/flagship-runner.js";
 
 /**
  * Reproduced live on 2026-08-03: a DeepSeek account with no balance returned
@@ -40,6 +41,13 @@ function runs(count: number, overrides: Partial<FlagshipBuildRun>): FlagshipBuil
 }
 
 describe("environment failures are not evidence about the model", () => {
+  it("classifies only a failed task with zero tool calls and zero completion tokens as pre-generation", () => {
+    expect(isPreGenerationHarnessFailure("failed", 0, 0)).toBe(true);
+    expect(isPreGenerationHarnessFailure("failed", 1, 0)).toBe(false);
+    expect(isPreGenerationHarnessFailure("failed", 0, 1)).toBe(false);
+    expect(isPreGenerationHarnessFailure("completed", 0, 0)).toBe(false);
+  });
+
   it("does not score harness errors against a provider", () => {
     const gate = evaluateFlagshipGate(runs(10, { passed: false, failureReason: "harness_error" }), { scenarioId: "flagship-build-v1" });
     expect(gate.passed).toBe(false);

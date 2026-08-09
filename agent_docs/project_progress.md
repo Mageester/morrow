@@ -18,33 +18,35 @@
 4. The scenario requires a small multi-file frontend, a supervised development server, a browser check against the served page, and a test command.
 5. The pass/fail checker is owned by the harness and never exposed to the model.
 6. Scoring semantics remain equivalent across supported flagship scenarios.
-7. Build and deterministic unit tests pass without invoking a real provider.
-8. No real-provider streak is run in this session.
-9. The protected prototype UI surfaces remain untouched.
+7. A control run proves the existing live path before the new scenario is introduced.
+8. Build, typecheck, and deterministic tests pass before live web validation.
+9. Run real providers serially: stop at the first failure, diagnose and fix the owning boundary with a deterministic regression, then resume the same task.
+10. Reach ten consecutive DeepSeek passes before beginning OpenCode Zen.
+11. The protected prototype UI surfaces remain untouched.
 
 ## Ordered work packages
 
 | ID | Role | Package | Dependency | Verification gate | Status |
 | --- | --- | --- | --- | --- | --- |
-| FWV1-0 | main | Bootstrap verified project documentation and implementation design | none | bounded source/doc inspection | in progress |
-| FWV1-1 | executor_luna | Generalize flagship gate per scenario using TDD | FWV1-0 | focused red/green unit test and relevant regression | pending |
-| FWV1-2 | executor_luna | Add flagship-web-v1 harness scenario and harness-owned verification using TDD | FWV1-1 | focused deterministic scenario tests and relevant regression | pending |
-| FWV1-3 | tester | Independently verify behavior, boundary coverage, and non-live isolation | FWV1-2 | focused tests, orchestrator suite, typecheck/build as applicable | pending |
-| FWV1-4 | reviewer | Review critical diffs, all boundary implementations, and protected scope | FWV1-3 | clean spec and quality verdict | pending |
-| FWV1-5 | main | Reconcile durable documentation and next-session live-run handoff | FWV1-4 | links and status consistency | pending |
+| FWV1-0 | main | Bootstrap verified project documentation and implementation design | none | bounded source/doc inspection | completed |
+| FWV1-1 | main | Generalize flagship gate per scenario using TDD | FWV1-0 | focused red/green unit test and relevant regression | completed |
+| FWV1-2 | main | Add flagship-web-v1 harness scenario and harness-owned verification using TDD | FWV1-1 | focused deterministic scenario tests and relevant regression | completed |
+| FWV1-3 | main | Verify deterministic behavior and repository compatibility | FWV1-2 | focused tests, full orchestrator suite, typecheck, build | completed |
+| FWV1-4 | main | Run serialized DeepSeek evidence streak and stop on first failure | FWV1-3 | append-only evidence plus failure diagnosis | in progress |
+| FWV1-5 | main | Run serialized OpenCode Zen evidence streak | FWV1-4 | append-only evidence | pending |
+| FWV1-6 | main | Reconcile durable documentation and session handoff | FWV1-5 | links and status consistency | pending |
 
 ## Constraints and parallel boundaries
 
-- Production implementation is sequential because the gate and scenario share acceptance types and tests.
+- All remaining work is sequential because live runs share ports, SQLite state, and temporary workspaces.
 - The persistent explorer remains read-only and may investigate supplementary call sites.
 - Workers must not edit Git state, `project_progress.md`, or `latest_session_work.md`.
 - Do not weaken assertions, extend sleeps, raise timeouts, or skip tests to obtain green.
 - Do not add features, UI work, or aesthetic refactors.
-- Do not run live providers. The next session will run streaks in Medium route, one at a time.
+- Every live run must append to the existing evidence log before assertion, whether it passes or fails.
 
 ## Blockers and next action
 
-The runtime's fixed Luna explorer model was unavailable, so the explorer companion is transparently running on Terra with the same read-only contract. Production executor availability will be checked when implementation begins; no silent role substitution is allowed.
+No current blocker. The existing scenario control run passed, the web scenario is implemented, and focused tests, the full orchestrator suite, repository typecheck, and build are green.
 
-Next: finish bounded interface discovery, write and review the approved design and implementation plan, then start FWV1-1 with a failing gate test.
-
+Next: commit the deterministic implementation, then invoke one DeepSeek `flagship-web-v1` run. Stop immediately on a failure and diagnose the retained task before any retry.

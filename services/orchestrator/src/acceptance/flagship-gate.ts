@@ -25,6 +25,14 @@ export const FLAGSHIP_GATE_MIN_PROVIDERS = 2;
 export const FLAGSHIP_SCENARIO_IDS = ["flagship-build-v1", "flagship-web-v1"] as const;
 export type FlagshipScenarioId = typeof FLAGSHIP_SCENARIO_IDS[number];
 
+export function resolveFlagshipScenarioId(value: string | undefined): FlagshipScenarioId {
+  if (!value) throw new Error("MORROW_FLAGSHIP_SCENARIO is required for every live flagship invocation.");
+  if (!(FLAGSHIP_SCENARIO_IDS as readonly string[]).includes(value)) {
+    throw new Error(`Unsupported flagship scenarioId "${value}". Registered scenarios: ${FLAGSHIP_SCENARIO_IDS.join(", ")}.`);
+  }
+  return value as FlagshipScenarioId;
+}
+
 /** Live-provider suites must be explicitly enabled; configured credentials are not consent. */
 export function isLiveProviderOptedIn(env: Readonly<Record<string, string | undefined>>, flagName: string): boolean {
   return env[flagName] === "1";

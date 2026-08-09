@@ -14,6 +14,7 @@ import {
   readFlagshipLog,
   FLAGSHIP_GATE_MIN_PASSES,
   FLAGSHIP_GATE_MIN_RUNS,
+  resolveFlagshipScenarioId,
 } from "../src/acceptance/flagship-gate.js";
 import type { FlagshipBuildRun } from "../src/acceptance/flagship-build.js";
 import type { AiProvider, ChatMessage, ProviderChunk, StreamOptions, ToolCall } from "../src/provider/base.js";
@@ -249,6 +250,12 @@ describe("flagship release gate", () => {
   it("requires an explicit registered scenario id", () => {
     expect(() => evaluateFlagshipGate([], undefined as never)).toThrow(/scenarioId is required/i);
     expect(() => evaluateFlagshipGate([], { scenarioId: "flagship-unsupported-v1" as never })).toThrow(/unsupported.*scenarioId/i);
+  });
+
+  it("requires the live scenario environment selection to be explicit and registered", () => {
+    expect(() => resolveFlagshipScenarioId(undefined)).toThrow(/MORROW_FLAGSHIP_SCENARIO.*required/i);
+    expect(() => resolveFlagshipScenarioId("unknown-v1")).toThrow(/unsupported/i);
+    expect(resolveFlagshipScenarioId("flagship-web-v1")).toBe("flagship-web-v1");
   });
 
   it("registers every scenario id found in append-only evidence", () => {
