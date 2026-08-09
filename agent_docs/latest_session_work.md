@@ -43,11 +43,17 @@ This deployment session began from commit `b973008` on a dedicated worktree bran
 - Preflight found and safely terminated two old Morrow-owned `server.mjs --port 0` process trees whose served artifact hashes matched retained failed runs `73065230-...` and `d41ca59c-...`; their workspaces and evidence remain preserved.
 - The one authorized RPR-4 canary, `5cbe11ee-3c4a-438c-a1d6-4d8ed923ece9`, failed after three discovery calls. The original prompt was durably present and below compaction thresholds, but DeepSeek repeatedly claimed no request existed; Morrow then spent three reasoning-only retries and interrupted after 235 seconds. The failed evidence row is committed at `8a1daf4` and no server leaked.
 - Opened RPR-5 to perform one trusted fresh-context artifact recovery and bypass generic reasoning-only escalation if that fresh attempt is also empty.
+- Implemented and committed RPR-5 at `dd15b0e`. At the existing artifact-delivery boundary, Morrow now issues at most one fresh request containing trusted pre-memory system context plus the original mission/request, excluding poisoned narration, tool history/results, memory, compaction summaries, browser content, and provider-private continuation while leaving durable audit rows unchanged.
+- Added conservative mutation safety: any successful `run_command` prevents a fresh reset. Recovery one-shot state is restart-safe and uses the exact durable provider `turnKey`, including after context-segment rollover; malformed legacy markers fail safe without a duplicate recovery.
+- Added deterministic coverage for the retained false-missing-task trace, fresh reasoning-only interruption, mutating commands, durable transcript/event preservation, restart before and after the fresh attempt, and multi-segment rollover.
+- Independent Luna Max review initially found command-mutation and process-local restart defects, then found a global-turn/segment-ordinal mismatch and shallow audit assertions. Both review rounds were repaired; final review returned `APPROVED` with no remaining findings.
+- Main verification passed the focused recovery file (24/24), adjacent agent/projection files (31/31), the complete non-live orchestrator suite (175 files / 1,921 tests), and `pnpm --filter @morrow/orchestrator check`.
+- The user stopped the campaign at this verified boundary. No post-fix live provider run, corpus work, OpenCode Zen qualification, or new subagent was started.
 
 ## Pending
 
-- Complete and independently review RPR-5 before one new DeepSeek canary. Do not invoke OpenCode Zen before DeepSeek qualifies.
+- Campaign paused by explicit user instruction. If separately authorized later, run one serialized DeepSeek `flagship-web-v1` canary and append its result unchanged. Do not invoke OpenCode Zen before DeepSeek qualifies.
 
 ## Next entry point
 
-Read `agent_docs/project_progress.md` and `docs/superpowers/plans/2026-08-09-fresh-artifact-recovery.md`. Implement the one-shot trusted context reset with strict red/green coverage, obtain independent review, and complete deterministic verification before authorizing another provider call.
+Read `agent_docs/project_progress.md`, `docs/superpowers/plans/2026-08-09-fresh-artifact-recovery.md`, and commit `dd15b0e`. The repair and deterministic gate are complete. Remain stopped unless the user explicitly resumes the campaign; the next permitted action would be one serialized DeepSeek `flagship-web-v1` canary with append-only evidence and immediate stop-on-failure.
