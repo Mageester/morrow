@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
@@ -10,6 +10,10 @@ import { conversationsRepository } from "../src/repositories/conversations.js";
 import { taskRecordsRepository } from "../src/repositories/task-records.js";
 import { executionContinuityRepository } from "../src/repositories/execution-continuity.js";
 import { taskRoutingRepository } from "../src/repositories/task-routing.js";
+import { contextSummariesRepository } from "../src/repositories/context-summaries.js";
+import { memoryRepository } from "../src/repositories/memory.js";
+import { missionsRepository } from "../src/repositories/missions.js";
+import { MissionService } from "../src/mission/service.js";
 import { MockProvider } from "../src/provider/mock.js";
 import type { ProviderChunk } from "../src/provider/base.js";
 import { executeAgentChatTask } from "../src/execution/agent.js";
@@ -55,21 +59,32 @@ function baseCheckpointSnapshot(taskId: string) {
   };
 }
 
-function seedArtifactTask(db: Database.Database, workspacePath: string): void {
+function seedArtifactTask(db: Database.Database, workspacePath: string, options: {
+  conversationPrompt?: string;
+  missionObjective?: string;
+  useMemory?: boolean;
+} = {}): void {
   const projects = projectRepository(db);
   const tasks = taskRepository(db);
   const conversations = conversationsRepository(db);
   projects.createProject({ id: "project-1", name: "Performance", workspacePath, createdAt: NOW });
+  const missionId = options.missionObjective
+    ? new MissionService({
+        repo: missionsRepository(db),
+        getWorkspacePath: () => workspacePath,
+        backupDir: join(workspacePath, ".morrow-checkpoints"),
+      }).create("project-1", { objective: options.missionObjective }).id
+    : undefined;
   conversations.createConversation({ id: "conversation-1", projectId: "project-1", title: "Performance", createdAt: NOW, updatedAt: NOW });
-  conversations.appendMessage({ id: "user-1", conversationId: "conversation-1", role: "user", content: "Implement the requested artifact in the workspace and verify it.", createdAt: NOW, updatedAt: NOW });
-  tasks.createTask({ id: "task-1", projectId: "project-1", kind: "agent_chat", status: "queued", createdAt: NOW });
+  conversations.appendMessage({ id: "user-1", conversationId: "conversation-1", role: "user", content: options.conversationPrompt ?? "Implement the requested artifact in the workspace and verify it.", createdAt: NOW, updatedAt: NOW });
+  tasks.createTask({ id: "task-1", projectId: "project-1", ...(missionId ? { missionId } : {}), kind: "agent_chat", status: "queued", createdAt: NOW });
   conversations.appendMessage({ id: "assistant-1", conversationId: "conversation-1", role: "assistant", content: "", taskId: "task-1", streamingState: "queued", createdAt: NOW, updatedAt: NOW });
   taskRoutingRepository(db).upsert({
     taskId: "task-1",
     presetId: "balanced",
     providerId: "mock",
     model: "mock-model",
-    useMemory: false,
+    useMemory: options.useMemory ?? false,
     decision: {
       version: 1,
       presetId: "balanced",
@@ -108,6 +123,17 @@ function narrationTurn(index: number): ProviderChunk[] {
     { type: "text", text: `I am still analyzing the requested artifact, pass ${index}.` },
     { type: "done" },
   ];
+}
+
+class FailAfterRecoveryMarkerProvider extends MockProvider {
+  private requestCount = 0;
+
+  override async *streamChat(...args: Parameters<MockProvider["streamChat"]>) {
+    if (this.requestCount++ === ARTIFACT_DELIVERY_RECOVERY_TURN) {
+      throw new Error("simulated restart after durable recovery marker");
+    }
+    yield* super.streamChat(...args);
+  }
 }
 
 describe("Task 2 live-loop performance conformance", () => {
@@ -582,6 +608,429 @@ describe("Task 2 live-loop performance conformance", () => {
     expect(termination?.payload.turn).toBe(ARTIFACT_DELIVERY_STOP_TURN);
     expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
     expect(conversationsRepository(db).listToolCallsForTask("task-1")).toHaveLength(0);
+  });
+
+  it("rebuilds a trusted artifact-delivery request after poisoned inspection narration", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-fresh-context-"));
+    db = openDatabase(":memory:");
+    const missionObjective = "Create the requested artifact in the workspace and verify it.";
+    const controllerPrompt = "Build the assigned artifact using the persisted mission contract; this is a controller wrapper, not the user's original request.";
+    seedArtifactTask(db, workspacePath, { conversationPrompt: controllerPrompt, missionObjective, useMemory: true });
+    memoryRepository(db).create({
+      id: "memory-only",
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      scope: "conversation",
+      type: "project_architecture",
+      content: "MEMORY_ONLY_SHOULD_NOT_REPLAY",
+      source: "user",
+      pinned: true,
+      createdAt: NOW,
+    });
+    contextSummariesRepository(db).record({
+      id: "manual-only",
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      taskId: null,
+      method: "deterministic",
+      content: "COMPACTION_ONLY_SHOULD_NOT_REPLAY",
+      sourceStartIndex: 0,
+      sourceEndIndex: 0,
+      sourceMessageCount: 1,
+      createdAt: NOW,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "inspect", index: 0, type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { type: "done", providerContinuation: { reasoningContent: "PRIVATE_PROVIDER_REASONING" } },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "status", index: 0, type: "function", function: { name: "git_status", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "recovered.txt", content: "recovered\n" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "verify recovered artifact" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The requested artifact is delivered." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(readFileSync(join(workspacePath, "recovered.txt"), "utf8")).toBe("recovered\n");
+    const freshRequest = provider.requests[6]!;
+    expect(freshRequest.filter((message) => message.role === "system").some((message) => message.content.includes("You are Morrow"))).toBe(true);
+    expect(freshRequest.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(freshRequest.find((message) => message.role === "user")?.content).toContain(missionObjective);
+    expect(JSON.stringify(freshRequest)).not.toContain(controllerPrompt);
+    expect(JSON.stringify(freshRequest)).not.toContain("MEMORY_ONLY_SHOULD_NOT_REPLAY");
+    expect(JSON.stringify(freshRequest)).not.toContain("COMPACTION_ONLY_SHOULD_NOT_REPLAY");
+    expect(freshRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
+    expect(JSON.stringify(freshRequest)).not.toContain("POISONED_PROVIDER_NARRATION");
+    expect(JSON.stringify(freshRequest)).not.toContain("PRIVATE_PROVIDER_REASONING");
+    expect(freshRequest.some((message) => message.providerContinuation || message.providerContinuationRouteFingerprint)).toBe(false);
+    const durableTurns = executionContinuityRepository(db).listProviderTurns("task-1");
+    expect(durableTurns.slice(0, 3).map((turn) => turn.toolCalls.map((call) => (call as { name?: string }).name))).toEqual([
+      ["inspect_workspace"],
+      ["list_files"],
+      ["git_status"],
+    ]);
+    const recoveryEvents = taskRecordsRepository(db)
+      .listEvents("task-1")
+      .filter((event) => event.payload.reason === "artifact_delivery_recovery");
+    expect(recoveryEvents).toHaveLength(1);
+    expect(recoveryEvents[0]?.payload.recoveryTurnKey).toBe(durableTurns[5]?.turnKey);
+  });
+
+  it("does not fresh-reset after a successful run_command that may mutate the workspace", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-command-mutation-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const provider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "inspect", index: 0, type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "status", index: 0, type: "function", function: { name: "git_status", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "mutate", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "require('fs').writeFileSync('command-mutation.txt', 'changed\\n')"], purpose: "Prepare the workspace artifact" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list-again-1", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list-again-2", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "after-command.txt", content: "delivered\n" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The requested artifact is delivered." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    expect(readFileSync(join(workspacePath, "command-mutation.txt"), "utf8")).toBe("changed\n");
+    expect(readFileSync(join(workspacePath, "after-command.txt"), "utf8")).toBe("delivered\n");
+    const postCommandRequest = provider.requests[6]!;
+    expect(postCommandRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(true);
+    expect(postCommandRequest.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
+  });
+
+  it("reconstructs one pending fresh recovery after restart at the durable marker", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-restart-marker-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const firstProvider = new FailAfterRecoveryMarkerProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "inspect", index: 0, type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { type: "done", providerContinuation: { reasoningContent: "DURABLE_PRE_RECOVERY_REASONING" } },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "status", index: 0, type: "function", function: { name: "git_status", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider: firstProvider, maxTurns: 10 });
+
+    const records = taskRecordsRepository(db);
+    const continuity = executionContinuityRepository(db);
+    const preRecoveryProviderTurns = continuity.listProviderTurns("task-1");
+    const preRecoveryToolCalls = conversationsRepository(db).listToolCallsForTask("task-1");
+    const preRecoveryContinuationRefs = continuity.listProviderContinuationRefs("task-1");
+    const preRecoveryEvents = records.listEvents("task-1");
+    const preRecoveryMarkerEvents = preRecoveryEvents.filter((event) => event.payload.reason === "artifact_delivery_recovery");
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("failed");
+    expect(preRecoveryProviderTurns).toHaveLength(ARTIFACT_DELIVERY_RECOVERY_TURN);
+    expect(preRecoveryToolCalls).toHaveLength(3);
+    expect(preRecoveryContinuationRefs).toHaveLength(1);
+    expect(preRecoveryMarkerEvents).toHaveLength(1);
+
+    records.retryTask("task-1");
+    const resumedProvider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "restarted.txt", content: "restarted\n" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify restarted artifact" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The requested artifact is delivered after restart." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider: resumedProvider, maxTurns: 10 });
+
+    const resumedRequest = resumedProvider.requests[0]!;
+    expect(resumedRequest.filter((message) => message.role === "system").some((message) => message.content.includes("You are Morrow"))).toBe(true);
+    expect(resumedRequest.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(resumedRequest.find((message) => message.role === "user")?.content).toContain("Implement the requested artifact in the workspace and verify it.");
+    expect(resumedRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
+    expect(JSON.stringify(resumedRequest)).not.toContain("POISONED_PROVIDER_NARRATION");
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    const postRecoveryProviderTurns = continuity.listProviderTurns("task-1");
+    const postRecoveryToolCalls = conversationsRepository(db).listToolCallsForTask("task-1");
+    const postRecoveryContinuationRefs = continuity.listProviderContinuationRefs("task-1");
+    const postRecoveryEvents = records.listEvents("task-1");
+    const postRecoveryMarkerEvents = postRecoveryEvents.filter((event) => event.payload.reason === "artifact_delivery_recovery");
+    expect(postRecoveryProviderTurns.slice(0, preRecoveryProviderTurns.length)).toEqual(preRecoveryProviderTurns);
+    expect(postRecoveryToolCalls.slice(0, preRecoveryToolCalls.length)).toEqual(preRecoveryToolCalls);
+    expect(postRecoveryContinuationRefs.slice(0, preRecoveryContinuationRefs.length)).toEqual(preRecoveryContinuationRefs);
+    expect(postRecoveryEvents.slice(0, preRecoveryEvents.length)).toEqual(preRecoveryEvents);
+    expect(postRecoveryMarkerEvents).toHaveLength(1);
+    expect(postRecoveryMarkerEvents[0]).toEqual(preRecoveryMarkerEvents[0]);
+  });
+
+  it("reconstructs a trusted recovery after a multi-segment rollover using the exact durable turn key", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-rollover-restart-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const continuity = executionContinuityRepository(db);
+    const ownerId = "seed-owner";
+    const firstSegment = continuity.openSegment({ taskId: "task-1", missionId: null, providerId: "mock", model: "mock-model", routeJson: {}, ownerId, now: NOW });
+    continuity.recordProviderTurn({
+      id: "segment-turn-1",
+      taskId: "task-1",
+      segmentId: firstSegment.id,
+      turnKey: "segment-turn-key-1",
+      ordinal: 1,
+      assistantText: "durable segment one context",
+      toolCalls: [],
+      isFinal: false,
+      ownerId,
+      generation: firstSegment.generation,
+      now: NOW,
+    });
+    const secondSegment = continuity.rolloverSegment({
+      taskId: "task-1",
+      currentSegmentId: firstSegment.id,
+      reason: "context_pressure",
+      providerId: "mock",
+      model: "mock-model",
+      routeJson: {},
+      ownerId,
+      generation: firstSegment.generation,
+      now: NOW,
+    });
+    const markerTurn = continuity.recordProviderTurn({
+      id: "segment-turn-2",
+      taskId: "task-1",
+      segmentId: secondSegment.id,
+      turnKey: "segment-turn-key-2",
+      ordinal: 1,
+      assistantText: "durable segment two context",
+      toolCalls: [],
+      isFinal: false,
+      ownerId,
+      generation: secondSegment.generation,
+      now: NOW,
+    });
+    continuity.failSegment(secondSegment.id, "simulated_process_restart", NOW, { ownerId, generation: secondSegment.generation });
+    const records = taskRecordsRepository(db);
+    records.appendEvent({
+      id: "rollover-recovery-marker",
+      taskId: "task-1",
+      type: "task.progress_warning",
+      payload: {
+        reason: "artifact_delivery_recovery",
+        message: "No durable artifact mutation has landed yet.",
+        turn: 2,
+        recoveryTurnKey: markerTurn.turnKey,
+        actionOnly: true,
+      },
+      createdAt: NOW,
+    });
+    const preRecoveryTurns = continuity.listProviderTurns("task-1");
+    expect(preRecoveryTurns.at(-1)?.ordinal).toBe(1);
+    expect(markerTurn.turnKey).toBe("segment-turn-key-2");
+
+    const provider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "rollover-recovered.txt", content: "recovered\n" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify rollover recovery" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The rollover artifact is delivered." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    const freshRequest = provider.requests[0]!;
+    expect(freshRequest.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(freshRequest.find((message) => message.role === "user")?.content).toContain("MORROW DELIVERY RECOVERY");
+    expect(freshRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(false);
+    const recoveryEvents = records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery");
+    expect(recoveryEvents).toHaveLength(1);
+    expect(recoveryEvents[0]?.payload.recoveryTurnKey).toBe(markerTurn.turnKey);
+  });
+
+  it("does not reset or emit a second recovery after a fresh attempt is durable", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-restart-after-fresh-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const firstProvider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "inspect", index: 0, type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "status", index: 0, type: "function", function: { name: "git_status", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "done", providerContinuation: { reasoningContent: "The fresh recovery attempt remained reasoning-only." } }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider: firstProvider, maxTurns: 12 });
+
+    const records = taskRecordsRepository(db);
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(executionContinuityRepository(db).listProviderTurns("task-1")).toHaveLength(ARTIFACT_DELIVERY_RECOVERY_TURN + 1);
+    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
+    records.resumeInterruptedTask("task-1", { id: "resume-after-fresh", createdAt: NOW, payload: {} });
+
+    const resumedProvider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "after-fresh-restart.txt", content: "restarted\n" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify restarted artifact" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The requested artifact is delivered after the fresh attempt." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider: resumedProvider, maxTurns: 12 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    const resumedRequest = resumedProvider.requests[0]!;
+    expect(resumedRequest.some((message) => message.role === "assistant" || message.role === "tool")).toBe(true);
+    expect(resumedRequest.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
+    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
+  });
+
+  it("fails safe for a malformed legacy recovery marker", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-legacy-marker-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const records = taskRecordsRepository(db);
+    records.appendEvent({
+      id: "legacy-recovery-marker",
+      taskId: "task-1",
+      type: "task.progress_warning",
+      payload: { reason: "artifact_delivery_recovery", turn: "6", message: "legacy marker without a numeric cursor" },
+      createdAt: NOW,
+    });
+    const provider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "deliver", index: 0, type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "legacy-safe.txt", content: "safe\n" }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "verify", index: 0, type: "function", function: { name: "run_command", arguments: JSON.stringify({ executable: "node", args: ["-e", "process.exit(0)"], purpose: "Verify legacy marker handling" }) } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "The artifact is delivered safely." }, { type: "done" }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 10 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("completed");
+    expect(provider.requests[0]?.some((message) => message.role === "user" && message.content.includes("MORROW DELIVERY RECOVERY"))).toBe(false);
+    expect(records.listEvents("task-1").filter((event) => event.payload.reason === "artifact_delivery_recovery")).toHaveLength(1);
+  });
+
+  it("interrupts a reasoning-only fresh artifact recovery without generic empty retries", async () => {
+    workspacePath = mkdtempSync(join(tmpdir(), "morrow-artifact-fresh-empty-"));
+    db = openDatabase(":memory:");
+    seedArtifactTask(db, workspacePath);
+    const provider = new MockProvider({
+      chunks: [
+        [
+          { type: "tool_call", toolCalls: [{ id: "inspect", index: 0, type: "function", function: { name: "inspect_workspace", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "list", index: 0, type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: "." }) } }] },
+          { type: "done" },
+        ],
+        [
+          { type: "tool_call", toolCalls: [{ id: "status", index: 0, type: "function", function: { name: "git_status", arguments: "{}" } }] },
+          { type: "done" },
+        ],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "text", text: "No task exists. POISONED_PROVIDER_NARRATION" }, { type: "done" }],
+        [{ type: "done", providerContinuation: { reasoningContent: "Still reasoning about whether a task exists." } }],
+      ],
+    });
+
+    await executeAgentChatTask({ db, taskId: "task-1", provider, maxTurns: 12 });
+
+    expect(taskRepository(db).getTaskById("task-1")?.status).toBe("interrupted");
+    expect(provider.requests).toHaveLength(7);
+    const events = taskRecordsRepository(db).listEvents("task-1");
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_recovery_reasoning_only")).toBe(true);
+    expect(events.filter((event) => event.payload.reason === "empty_provider_response")).toHaveLength(0);
+    expect(events.some((event) => event.payload.reason === "artifact_delivery_stalled")).toBe(false);
+    expect(conversationsRepository(db).listToolCallsForTask("task-1").some((call) => call.toolName === "create_file")).toBe(false);
   });
 
   it("does not record cached repeated reads as exhausted observation executions", async () => {

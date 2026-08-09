@@ -1569,6 +1569,7 @@ export async function executeAgentChatTask({
   // mission objective for mission-linked tasks; ordinary chat tasks continue
   // to use their latest user prompt verbatim.
   const missionObjective = taskMissionId && missionRepo ? missionRepo.get(taskMissionId)?.objective : undefined;
+  const originalRecoveryPrompt = missionObjective ?? latestUserPrompt;
   const requirementPrompt = missionObjective ?? latestUserPrompt;
   const currentRequirementPrompt = (): string => {
     if (taskMissionId && missionRepo) return missionRepo.get(taskMissionId)?.objective ?? requirementPrompt;
@@ -1683,6 +1684,10 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       content: "You are in plan-only mode. Do not use tools, do not claim to have inspected files or run commands, and return only a concise actionable plan."
     });
   }
+
+  const trustedSystemMessages = chatMessages
+    .filter((message) => message.role === "system")
+    .map((message) => ({ role: "system" as const, content: message.content }));
 
   // Inject user-controlled memory (bounded, deterministic, project-isolated).
   if (useMemory) {
@@ -2552,6 +2557,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   // published as a discrete `assistant.turn_completed` event, so a report can
   // pick exactly one canonical turn instead of concatenating all of them.
   let currentTurnId: string | null = null;
+  let currentDurableTurnKey: string | null = null;
   let currentTurnStartLen = 0;
   let currentTurnOpen = false;
   const closeCurrentTurn = (opts: { final: boolean; hasToolCalls?: boolean; aborted?: boolean }): void => {
@@ -3114,8 +3120,43 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
   let providerRecoverySegments = 0;
   let forceProviderCompaction = false;
   let totalBytesRead = 0;
-  let deliveryStarted = finalToolCalls.some((call) => WORKSPACE_WRITE_TOOLS.has(call.toolName) && call.status === "completed");
-  let artifactDeliveryRecoverySent = false;
+  let deliveryStarted = finalToolCalls.some((call) =>
+    call.status === "completed" && (WORKSPACE_WRITE_TOOLS.has(call.toolName) || call.toolName === "run_command"),
+  );
+  const artifactDeliveryRecoveryMessage = "No durable artifact mutation has landed yet. Take one concrete action required by the original request now; do not perform more general discovery unless a specific unresolved prerequisite names the exact file or fact needed.";
+  const rebuildArtifactDeliveryRecoveryContext = (recoveryTurn: number): void => {
+    chatMessages.splice(
+      0,
+      chatMessages.length,
+      ...trustedSystemMessages.map((systemMessage) => ({ ...systemMessage })),
+      {
+        role: "user",
+        content: `MORROW DELIVERY RECOVERY (turn ${recoveryTurn}): ${artifactDeliveryRecoveryMessage}\n\nORIGINAL REQUEST:\n${originalRecoveryPrompt.slice(0, 6_000)}`,
+      },
+    );
+  };
+  const latestArtifactDeliveryRecoveryEvent = records
+    .listEvents(taskId)
+    .filter((taskEvent) => taskEvent.payload.reason === "artifact_delivery_recovery")
+    .at(-1);
+  let artifactDeliveryRecoverySent = latestArtifactDeliveryRecoveryEvent !== undefined;
+  let artifactDeliveryRecoveryPending = false;
+  if (latestArtifactDeliveryRecoveryEvent) {
+    const recoveryTurn = latestArtifactDeliveryRecoveryEvent.payload.turn;
+    const latestDurableTurn = durableTurns.at(-1);
+    const validRecoveryTurn = typeof recoveryTurn === "number"
+      && Number.isSafeInteger(recoveryTurn)
+      && recoveryTurn > 0;
+    const recoveryTurnKey = latestArtifactDeliveryRecoveryEvent.payload.recoveryTurnKey;
+    const validRecoveryTurnKey = typeof recoveryTurnKey === "string" && recoveryTurnKey.length > 0;
+    const recoveryMarkerIsLatestDurableTurn = validRecoveryTurn
+      && validRecoveryTurnKey
+      && latestDurableTurn?.turnKey === recoveryTurnKey;
+    if (requiresArtifactDelivery && !deliveryStarted && recoveryMarkerIsLatestDurableTurn) {
+      rebuildArtifactDeliveryRecoveryContext(recoveryTurn);
+      artifactDeliveryRecoveryPending = true;
+    }
+  }
   // One-shot guard for the directed final-summary turn (see the fast-path
   // completion block): a fast-path completion accepts the current turn's text
   // as the final report, but that text was written alongside the same turn's
@@ -3750,17 +3791,15 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     });
     if (assessment.actionOnlyRecoveryRequired && !artifactDeliveryRecoverySent) {
       artifactDeliveryRecoverySent = true;
-      const message = "No durable artifact mutation has landed yet. Take one concrete action required by the original request now; do not perform more general discovery unless a specific unresolved prerequisite names the exact file or fact needed.";
       event("task.progress_warning", {
         reason: "artifact_delivery_recovery",
-        message,
+        message: artifactDeliveryRecoveryMessage,
         turn: absoluteTurn,
+        recoveryTurnKey: currentDurableTurnKey,
         actionOnly: true,
       });
-      chatMessages.push({
-        role: "user",
-        content: `MORROW DELIVERY RECOVERY (turn ${absoluteTurn}): ${message}\n\nORIGINAL REQUEST:\n${latestUserPrompt.slice(0, 6_000)}`,
-      });
+      rebuildArtifactDeliveryRecoveryContext(absoluteTurn);
+      artifactDeliveryRecoveryPending = true;
       noProgressTurns = 0;
       return "continue";
     }
@@ -3925,6 +3964,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
 
   const replayableFinalTurn = durableTurns.at(-1);
   if (replayableFinalTurn
+    && !artifactDeliveryRecoveryPending
     && replayableFinalTurn.isFinal
     && replayableFinalTurn.toolCalls.length === 0
     && replayableFinalTurn.assistantText.trim().length > 0
@@ -4012,10 +4052,13 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     // request, then clear it so a later, unrelated turn never inherits it.
     const requireToolCallThisTurn = forceNextTurnToolChoice;
     forceNextTurnToolChoice = false;
+    const freshArtifactRecoveryAttempt = artifactDeliveryRecoveryPending;
+    artifactDeliveryRecoveryPending = false;
 
     turn++;
     absoluteTurn++;
     const responseLengthAtTurnStart = responseContent.length;
+    currentDurableTurnKey = null;
     currentTurnId = `${taskId}:turn-${absoluteTurn}`;
     currentTurnStartLen = responseLengthAtTurnStart;
     currentTurnOpen = true;
@@ -4642,6 +4685,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
     const durableTurnKey = createHash("sha256")
       .update(JSON.stringify({ segment: currentSegment.sequence, turn, text: turnText, toolCalls: currentToolCalls }))
       .digest("hex");
+    currentDurableTurnKey = durableTurnKey;
     continuity.recordProviderTurn({
       id: randomUUID(), taskId, segmentId: currentSegment.id, turnKey: durableTurnKey,
       ordinal: turn, assistantText: turnText, toolCalls: currentToolCalls,
@@ -5879,6 +5923,7 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
           lastVerificationFailure = completionStateFromCalls(convs.listToolCallsForMessage(assistantMessageRow.id)).failure;
         }
         if (isSuccess) {
+          if (tc.name === "run_command") deliveryStarted = true;
           const projectedCall = providerAssistantTurn.toolCalls?.find((call) => call.id === tc.id);
           if (projectedCall) projectedCall.function.arguments = capToolArgumentsForContext(tc.name, tc.arguments);
           const progressFingerprint = toolProgressFingerprint(tc.name, args, contextResultStr);
@@ -5960,6 +6005,36 @@ Morrow ships installed skills (reusable expert workflows). They ARE available â€
       // empty provider turn as completion loses the mission outcome while
       // falsely presenting successful tools as a verified task.
       if (responseContent.length === responseLengthAtTurnStart) {
+        if (freshArtifactRecoveryAttempt && requiresArtifactDelivery && !deliveryStarted) {
+          const responseKind = currentReasoningContent ? "reasoning_only" : "empty";
+          const reason = `artifact_delivery_recovery_${responseKind}`;
+          const message = currentReasoningContent
+            ? "The fresh artifact-delivery recovery request returned provider reasoning without a tool call or visible answer before any durable artifact mutation; interrupting without generic empty-response retries."
+            : "The fresh artifact-delivery recovery request returned no visible answer before any durable artifact mutation; interrupting without generic empty-response retries.";
+          event("task.progress_warning", {
+            reason,
+            message,
+            turn: absoluteTurn,
+            actionOnly: true,
+            freshContext: true,
+            responseKind,
+          });
+          if (await returnMissionWorkerOutcome("provider_recovery_required", message, {
+            recoveryReason: reason,
+            responseKind,
+            freshContext: true,
+          })) return;
+          failCurrentSegment(reason);
+          transitionAgentState("interrupted", { reason, message, turns: absoluteTurn, freshContext: true, responseKind });
+          records.transitionTask(taskId, "interrupted", {
+            id: randomUUID(),
+            createdAt: now(),
+            payload: { reason, message, turns: absoluteTurn, freshContext: true, responseKind },
+          });
+          convs.updateMessageContentAndState(assistantMessageRow.id, responseContent + `\n\n[Incomplete: ${message}]`, "interrupted", now());
+          if (activeStepId) records.updatePlanStepStatus(activeStepId, "skipped", now());
+          return;
+        }
         // Reasoning-heavy compatible routes can consume their whole output
         // allowance before emitting visible text. Retry with a terse recovery
         // instruction instead of blindly replaying the same prompt. No tool ran
